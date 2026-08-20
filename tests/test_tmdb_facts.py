@@ -54,6 +54,18 @@ def test_empty_company_list_gives_no_studio():
     assert parse_movie_facts({"production_companies": []}).studio is None
 
 
+def test_genres_with_string_value_returns_empty_list():
+    """Malformed input: genres is a string instead of a list."""
+    facts = parse_movie_facts({"genres": "oops"})
+    assert facts.genres == []
+
+
+def test_genres_with_mixed_valid_and_invalid_entries():
+    """Malformed input: genres list contains a string alongside valid dicts."""
+    facts = parse_movie_facts({"genres": [{"name": "Horror"}, "junk", {"no_name": 1}]})
+    assert facts.genres == ["Horror"]
+
+
 def test_malformed_release_date_is_ignored():
     assert parse_movie_facts({"release_date": ""}).originally_available is None
     assert parse_movie_facts({"release_date": "not-a-date"}).originally_available is None
@@ -68,6 +80,23 @@ def test_season_episode_ratings_are_keyed_by_episode_number():
 def test_zero_rating_is_treated_as_absent():
     """TMDB reports 0.0 for unrated episodes; writing that would show '0%'."""
     assert 3 not in parse_season_episode_ratings(load("tmdb_season.json"))
+
+
+def test_season_episode_ratings_with_string_value_returns_empty_dict():
+    """Malformed input: episodes is a string instead of a list."""
+    ratings = parse_season_episode_ratings({"episodes": "notalist"})
+    assert ratings == {}
+
+
+def test_season_episode_ratings_with_mixed_valid_and_invalid_entries():
+    """Malformed input: episodes list contains a string alongside a valid dict."""
+    ratings = parse_season_episode_ratings({
+        "episodes": [
+            {"episode_number": 1, "vote_average": 7.8},
+            "junk",
+        ]
+    })
+    assert ratings == {1: pytest.approx(7.8)}
 
 
 async def test_client_requests_the_season_endpoint():

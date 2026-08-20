@@ -1,4 +1,3 @@
-import logging
 from datetime import date, datetime
 
 import httpx
@@ -6,8 +5,6 @@ import httpx
 from autoposter.facts.models import GatheredFacts
 from autoposter.providers.cache import ProviderCache
 from autoposter.providers.fetch import fetch_json
-
-logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.themoviedb.org/3"
 
@@ -38,7 +35,11 @@ def _rating(payload: dict) -> float | None:
 
 
 def _genres(payload: dict) -> list[str]:
-    return [g["name"] for g in payload.get("genres") or [] if g.get("name")]
+    """Genre names from the genres list, skipping non-dict entries."""
+    genres = payload.get("genres")
+    if isinstance(genres, list):
+        return [g.get("name") for g in genres if isinstance(g, dict) and g.get("name")]
+    return []
 
 
 def _first_name(entries: object) -> str | None:
@@ -94,12 +95,16 @@ def parse_show_facts(payload: dict) -> GatheredFacts:
 def parse_season_episode_ratings(payload: dict) -> dict[int, float]:
     """``{episode_number: vote_average}`` for one season, skipping unrated."""
     ratings: dict[int, float] = {}
-    for episode in payload.get("episodes") or []:
-        number = episode.get("episode_number")
-        rating = _rating(episode)
-        if number is None or rating is None:
-            continue
-        ratings[int(number)] = rating
+    episodes = payload.get("episodes")
+    if isinstance(episodes, list):
+        for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+            number = episode.get("episode_number")
+            rating = _rating(episode)
+            if number is None or rating is None:
+                continue
+            ratings[int(number)] = rating
     return ratings
 
 
