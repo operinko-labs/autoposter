@@ -160,6 +160,34 @@ async def test_reclaim_stale_resets_old_running_jobs(session):
     assert await claim(session, "worker-b") is not None
 
 
+async def test_reclaim_stale_resets_run_after_so_the_job_is_immediately_claimable(session):
+    # A reclaimed job's old run_after describes a schedule that no longer means
+    # anything once the worker holding it is dead — the work is overdue, not
+    # pending a future slot. Even a job scheduled an hour out must become
+    # immediately claimable once its claim is stale.
+    job_id = await enqueue(session, "process_item", {})
+    await claim(session, "worker-a")
+    await session.execute(
+        text(
+            "UPDATE jobs"
+            " SET claimed_at = now() - interval '20 minutes',"
+            "     run_after = now() + interval '1 hour'"
+            " WHERE id = :id"
+        ),
+        {"id": job_id},
+    )
+    await session.commit()
+
+    count = await reclaim_stale(session, older_than_seconds=900)
+    assert count == 1
+
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.run_after <= db_now
+    assert await claim(session, "worker-b") is not None
+
+
 async def test_reclaim_stale_leaves_recent_claims_alone(session):
     job_id = await enqueue(session, "process_item", {})
     await claim(session, "worker-a")

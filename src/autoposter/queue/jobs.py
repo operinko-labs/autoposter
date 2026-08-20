@@ -76,6 +76,7 @@ _RECLAIM_SQL = text(
        SET state = 'pending',
            claimed_by = NULL,
            claimed_at = NULL,
+           run_after = now(),
            updated_at = now()
      WHERE state = 'running'
        AND claimed_at < now() - make_interval(secs => :older_than_seconds)
@@ -89,6 +90,11 @@ async def reclaim_stale(session: AsyncSession, older_than_seconds: int = 900) ->
     Only claims older than the threshold are touched, not every ``running`` row, so
     this stays correct if a second replica is genuinely still working a job. The
     cutoff is computed by the database clock, matching claim()/enqueue()/fail().
+
+    A reclaimed job is one whose worker died mid-job, so its old ``run_after``
+    describes a schedule that no longer means anything — the work is overdue, not
+    pending a future slot. Resetting ``run_after`` to now() makes the job
+    immediately claimable regardless of what it was originally scheduled for.
     """
     result = await session.execute(_RECLAIM_SQL, {"older_than_seconds": older_than_seconds})
     await session.commit()
