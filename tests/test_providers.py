@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
 
-from autoposter.providers.base import BACKGROUND, LOGO, POSTER, SEASON_POSTER, TITLE_CARD
+from autoposter.providers.base import (
+    BACKGROUND, LOGO, POSTER, SEASON_POSTER, TITLE_CARD, ArtRequest,
+)
 from autoposter.providers.fanart import parse_fanart
-from autoposter.providers.tmdb import parse_tmdb_images
+from autoposter.providers.tmdb import TMDBClient, parse_tmdb_images
 from autoposter.providers.tvdb import parse_tvdb_artworks
 
 FIXTURES = Path(__file__).parent / "fixtures" / "providers"
@@ -94,3 +96,39 @@ def test_fanart_http_urls_are_upgraded_to_https():
 
 def test_fanart_returns_empty_for_missing_art_type():
     assert parse_fanart({}, POSTER, is_movie=True, season_number=None) == []
+
+
+def test_fanart_non_numeric_likes_default_to_zero_score():
+    payload = {
+        "tvposter": [
+            {"id": "1", "url": "https://assets.fanart.tv/bad.jpg", "lang": "en", "likes": "N/A"},
+            {"id": "2", "url": "https://assets.fanart.tv/good.jpg", "lang": "en", "likes": "5"},
+        ]
+    }
+    candidates = parse_fanart(payload, POSTER, is_movie=False, season_number=None)
+    scores = {c.url: c.score for c in candidates}
+    assert scores == {
+        "https://assets.fanart.tv/bad.jpg": 0.0,
+        "https://assets.fanart.tv/good.jpg": 5.0,
+    }
+
+
+class _ExplodingClient:
+    """Fails any test that lets TMDBClient reach the network."""
+
+    async def get(self, *args, **kwargs):
+        raise AssertionError("TMDBClient should not make an HTTP request")
+
+
+async def test_tmdb_client_skips_season_poster_without_season_number():
+    client = TMDBClient(token="t", language_order=["en"], client=_ExplodingClient())
+    request = ArtRequest(art_kind=SEASON_POSTER, is_movie=False, tmdb_id=123)
+    assert await client.fetch(request) == []
+
+
+async def test_tmdb_client_skips_title_card_without_episode_number():
+    client = TMDBClient(token="t", language_order=["en"], client=_ExplodingClient())
+    request = ArtRequest(
+        art_kind=TITLE_CARD, is_movie=False, tmdb_id=123, season_number=1
+    )
+    assert await client.fetch(request) == []

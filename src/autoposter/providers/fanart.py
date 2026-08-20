@@ -46,7 +46,7 @@ def parse_fanart(
                     language=entry.get("lang"),
                     width=_int_or_none(entry.get("width")),
                     height=_int_or_none(entry.get("height")),
-                    score=float(entry.get("likes") or 0),
+                    score=_float_or_zero(entry.get("likes")),
                 )
             )
     return candidates
@@ -57,6 +57,13 @@ def _int_or_none(value: object) -> int | None:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _float_or_zero(value: object) -> float:
+    try:
+        return float(value or 0)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class FanartClient:

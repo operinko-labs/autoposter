@@ -83,6 +83,12 @@ class TMDBClient:
     async def fetch(self, request: ArtRequest) -> list[ArtCandidate]:
         if request.tmdb_id is None:
             return []
+        if request.art_kind == TITLE_CARD and (
+            request.season_number is None or request.episode_number is None
+        ):
+            return []
+        if request.art_kind == SEASON_POSTER and request.season_number is None:
+            return []
         path = self._path(request)
         response = await self._client.get(
             f"{BASE_URL}{path}",
