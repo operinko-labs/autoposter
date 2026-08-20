@@ -32,6 +32,28 @@ environment variables:
 
 None of these are read from the YAML config file.
 
+## Obtaining AUTOPOSTER_PLEX_TOKEN
+
+Run the PIN-based login flow instead of extracting a token from a browser
+URL:
+
+```
+python -m autoposter.plex.auth
+```
+
+This prints an `https://app.plex.tv/auth#?...` URL — open it in a browser and
+sign in to authorise autoposter. The command then polls plex.tv and prints
+the resulting token once authorisation completes, together with a reminder
+that it belongs in `AUTOPOSTER_PLEX_TOKEN`.
+
+The token grants full access to the Plex account it was issued for (not just
+this library), so store it only in the secret manager backing the
+`AUTOPOSTER_PLEX_TOKEN` ExternalSecret — never in the config file, a
+`.env` file, or anywhere else. To rotate it, run the command again; pass
+`--client-identifier` with the value printed by the previous run if you want
+the new token to update the same "Authorized Devices" entry in the Plex
+account rather than adding a new one.
+
 ## Radarr / Sonarr webhooks
 
 Configure Radarr and Sonarr with a webhook notification pointing at this
