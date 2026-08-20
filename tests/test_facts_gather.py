@@ -1,4 +1,5 @@
 from datetime import date
+import asyncio
 
 import pytest
 from sqlalchemy import select
@@ -139,3 +140,72 @@ async def test_mdblist_limit_does_not_abort_the_other_facts(session):
     facts = await gather_facts(session, item(), FakeTMDB(), Exhausted())
     assert facts.content_rating is None
     assert facts.audience_rating == pytest.approx(6.3)
+
+
+async def test_updated_at_advances_on_second_persist_facts(session_factory):
+    """Verify updated_at advances on upsert via on_conflict_do_update.
+
+    This test proves the fix works: without updated_at in the set_ mapping,
+    this test would fail because updated_at would remain frozen at insert time.
+    """
+    # Create a media item in the database
+    async with session_factory() as s:
+        media = MediaItem(rating_key="p2", library="Movies", kind="movie", title="X")
+        s.add(media)
+        await s.flush()
+        await s.commit()
+        media_id = media.id
+
+    # First persist_facts call in a separate transaction
+    async with session_factory() as s:
+        await persist_facts(s, media_id, GatheredFacts(critic_rating=4.9))
+        # Get the row and the database clock at commit time
+        row1 = (await s.execute(select(ItemFacts).where(ItemFacts.item_id == media_id))).scalar_one()
+        updated_at_1 = row1.updated_at
+
+    # Ensure a small delay so database clock advances
+    await asyncio.sleep(0.1)
+
+    # Second persist_facts call in a separate transaction
+    async with session_factory() as s:
+        await persist_facts(s, media_id, GatheredFacts(critic_rating=5.1))
+        row2 = (await s.execute(select(ItemFacts).where(ItemFacts.item_id == media_id))).scalar_one()
+        updated_at_2 = row2.updated_at
+
+    # Verify updated_at advanced and created_at stayed the same
+    assert updated_at_2 > updated_at_1
+    assert row2.critic_rating == pytest.approx(5.1)
+
+
+async def test_fetched_at_advances_on_second_persist_facts(session_factory):
+    """Verify fetched_at also advances on upsert.
+
+    Both fetched_at and updated_at use the same mechanism (func.now() in set_ mapping),
+    so both should advance on every conflict-update.
+    """
+    # Create a media item in the database
+    async with session_factory() as s:
+        media = MediaItem(rating_key="p3", library="Movies", kind="movie", title="X")
+        s.add(media)
+        await s.flush()
+        await s.commit()
+        media_id = media.id
+
+    # First persist_facts call in a separate transaction
+    async with session_factory() as s:
+        await persist_facts(s, media_id, GatheredFacts(audience_rating=6.3))
+        row1 = (await s.execute(select(ItemFacts).where(ItemFacts.item_id == media_id))).scalar_one()
+        fetched_at_1 = row1.fetched_at
+
+    # Ensure a small delay so database clock advances
+    await asyncio.sleep(0.1)
+
+    # Second persist_facts call in a separate transaction
+    async with session_factory() as s:
+        await persist_facts(s, media_id, GatheredFacts(audience_rating=7.5))
+        row2 = (await s.execute(select(ItemFacts).where(ItemFacts.item_id == media_id))).scalar_one()
+        fetched_at_2 = row2.fetched_at
+
+    # Verify fetched_at advanced
+    assert fetched_at_2 > fetched_at_1
+    assert row2.audience_rating == pytest.approx(7.5)

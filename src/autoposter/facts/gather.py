@@ -110,6 +110,7 @@ async def persist_facts(
     mutable = {k: v for k, v in values.items() if k != "item_id"}
     # Database clock, like every other timestamp in this project.
     mutable["fetched_at"] = func.now()
+    mutable["updated_at"] = func.now()
     await session.execute(
         insert(ItemFacts).values(**values).on_conflict_do_update(
             index_elements=["item_id"], set_=mutable
