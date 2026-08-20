@@ -20,7 +20,8 @@ floating tag, so this set is reproducible.
 | `/defaults/overlays/images/rating` | `images/rating` | 36 | IMDb critic / TMDB audience badges |
 | `/defaults/overlays/images/flag` | `images/flag` | 396 | languages badge |
 | `/defaults/overlays/images/Commonsense.png` | `images/Commonsense.png` | 1 | Common Sense badge |
-| `/fonts/Inter-Bold.ttf` | `fonts/Inter-Bold.ttf` | 1 | all badge text |
+| `/fonts/Inter-Bold.ttf` | `fonts/Inter-Bold.ttf` | 1 | ratings 63pt, languages 50pt |
+| `/fonts/Inter-Medium.ttf` | `fonts/Inter-Medium.ttf` | 1 | video_format, runtimes, commonsense, episode_info — all 55pt |
 
 Deliberately **not** taken: `cr/`, `edition/`, `network/`, `ribbon/`, `streaming/`,
 `studio/` — 1,795 files for overlays this deployment does not enable.
