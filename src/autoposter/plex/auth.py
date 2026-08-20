@@ -19,11 +19,26 @@ import sys
 import urllib.parse
 import uuid
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
 import httpx
 
 _PINS_URL = "https://plex.tv/api/v2/pins"
+
+
+def _version() -> str:
+    """Package version for the X-Plex-Version header.
+
+    Falls back rather than raising: this module is also run as a CLI straight
+    from a checkout, where the distribution metadata may not be installed, and a
+    cosmetic header is never worth failing token acquisition over.
+    """
+    try:
+        return _pkg_version("autoposter")
+    except PackageNotFoundError:
+        return "0.0.0+local"
+
 
 
 @dataclass(frozen=True)
@@ -63,7 +78,7 @@ class PlexPinAuth:
         return {
             "Accept": "application/json",
             "X-Plex-Product": "autoposter",
-            "X-Plex-Version": _pkg_version("autoposter"),
+            "X-Plex-Version": _version(),
             "X-Plex-Client-Identifier": self.client_identifier,
             "X-Plex-Device": platform_name,
             "X-Plex-Platform": platform_name,
