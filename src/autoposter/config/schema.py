@@ -150,6 +150,12 @@ class OperationsConfig(BaseModel):
     # Off disables the automatic refresh entirely; the manual
     # `python -m autoposter.facts.imdb` entry point still works.
     imdb_refresh_enabled: bool = True
+    # When a rating lookup finds nothing during fact gathering, attempt one
+    # extra refresh rather than waiting up to imdb_refresh_hours. Rate-limited
+    # to one attempt per this many minutes (see facts/imdb.py's
+    # ImdbMissRefresh) so a season-pack import cannot trigger one download
+    # per episode. 0 disables miss-triggered refreshes entirely.
+    imdb_miss_refresh_minutes: int = 60
 
 
 class Config(BaseModel):

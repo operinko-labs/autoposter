@@ -1,10 +1,15 @@
+from dataclasses import replace
 from datetime import date
+from pathlib import Path
 import asyncio
+import gzip
 
+import httpx
 import pytest
 from sqlalchemy import select
 
 from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.facts import imdb as imdb_module
 from autoposter.facts.gather import (
     format_audience,
     format_critic,
@@ -13,6 +18,8 @@ from autoposter.facts.gather import (
 )
 from autoposter.facts.models import GatheredFacts
 from autoposter.plex.client import ResolvedItem
+
+FIXTURES = Path(__file__).parent / "fixtures" / "facts"
 
 
 def item(kind="movie", season=None, episode=None):
@@ -320,3 +327,49 @@ async def test_fetched_at_advances_on_second_persist_facts(session_factory):
     # Verify fetched_at advanced
     assert fetched_at_2 > fetched_at_1
     assert row2.audience_rating == pytest.approx(7.5)
+
+
+# --- miss-triggered IMDb refresh --------------------------------------------
+#
+# _critic_rating (gather.py) calls imdb.note_rating_miss whenever get_rating
+# / get_episode_rating finds nothing, then retries the lookup once. These
+# tests wire in a real ImdbMissRefresh via the module-level handle gather.py
+# consults (see facts/imdb.py's configure_miss_refresh/note_rating_miss --
+# gather_facts()'s signature is frozen and carries no http client, so that's
+# the seam a fact-gathering pass uses to reach the network).
+
+
+def _gzip_fixture(name: str) -> bytes:
+    return gzip.compress((FIXTURES / name).read_bytes())
+
+
+async def test_a_miss_is_filled_in_on_this_same_gather_pass(session, monkeypatch):
+    def handler(request):
+        return httpx.Response(200, content=_gzip_fixture("title.ratings.sample.tsv"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        monkeypatch.setattr(
+            imdb_module, "_miss_refresh", imdb_module.ImdbMissRefresh(http, cooldown_minutes=60)
+        )
+        facts = await gather_facts(
+            session, replace(item(), imdb_id="tt0111161"), FakeTMDB(), FakeMDBList()
+        )
+
+    assert facts.critic_rating == pytest.approx(9.3)
+    assert facts.sources["critic_rating"] == "imdb"
+
+
+async def test_a_failed_miss_refresh_still_returns_a_null_rating(session, monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("boom", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        monkeypatch.setattr(
+            imdb_module, "_miss_refresh", imdb_module.ImdbMissRefresh(http, cooldown_minutes=60)
+        )
+        facts = await gather_facts(
+            session, replace(item(), imdb_id="tt0111161"), FakeTMDB(), FakeMDBList()
+        )
+
+    assert facts.critic_rating is None
+    assert "critic_rating" not in facts.sources

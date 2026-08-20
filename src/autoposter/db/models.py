@@ -194,3 +194,21 @@ class ImdbEpisode(Base):
     season_number: Mapped[int] = mapped_column(Integer, primary_key=True)
     episode_number: Mapped[int] = mapped_column(Integer, primary_key=True)
     tconst: Mapped[str] = mapped_column(String(16), index=True)
+
+
+class ImdbMissRefreshState(Base):
+    """Rate-limit state for the miss-triggered refresh (see ``facts/imdb.py``).
+
+    A single row, pinned to ``id=1``, recording when a miss-triggered refresh
+    was last *attempted* -- successful or not -- using the database clock.
+    Held here rather than a process variable so every pod behind the same
+    database shares one cooldown window instead of each downloading
+    independently when a season pack lands.
+    """
+
+    __tablename__ = "imdb_miss_refresh_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    attempted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

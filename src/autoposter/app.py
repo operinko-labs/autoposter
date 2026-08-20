@@ -10,6 +10,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from autoposter.config.schema import Config, Secrets
+from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.facts.tmdb_facts import TMDBFactsClient
@@ -82,6 +83,9 @@ def create_app(
             interval_hours=config.operations.imdb_refresh_hours,
             enabled=config.operations.imdb_refresh_enabled,
         )
+        # Miss-triggered refresh (see facts/imdb.py's ImdbMissRefresh): installed
+        # process-wide since gather_facts()'s signature carries no http client.
+        imdb_module.configure_miss_refresh(http, config.operations.imdb_miss_refresh_minutes)
         health_task = asyncio.create_task(health.run(stop_event))
         imdb_task = asyncio.create_task(imdb_refresh.run(stop_event))
         task = asyncio.create_task(
@@ -99,6 +103,7 @@ def create_app(
             health_task.cancel()
             imdb_task.cancel()
             await asyncio.gather(task, health_task, imdb_task, return_exceptions=True)
+            imdb_module.configure_miss_refresh(http, 0)
             await http.aclose()
 
     app = FastAPI(title="autoposter", lifespan=lifespan)

@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.db.base import make_engine, make_session_factory
-from autoposter.db.models import ImdbEpisode, ImdbRating, MediaItem
+from autoposter.db.models import ImdbEpisode, ImdbMissRefreshState, ImdbRating, MediaItem
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +273,116 @@ async def _is_stale(session: AsyncSession, interval_hours: float) -> bool:
     if newest is None:
         return True
     return now - newest >= timedelta(hours=interval_hours)
+
+
+_MISS_REFRESH_ROW_ID = 1
+
+
+async def _miss_refresh_due(session: AsyncSession, cooldown_minutes: int) -> bool:
+    """Whether the cooldown window has elapsed (or no attempt is recorded yet).
+
+    Both sides of the comparison come from the database clock, same reasoning
+    as ``_is_stale`` above.
+    """
+    row = (
+        await session.execute(
+            select(ImdbMissRefreshState.attempted_at, func.now()).where(
+                ImdbMissRefreshState.id == _MISS_REFRESH_ROW_ID
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return True
+    attempted_at, now = row
+    return now - attempted_at >= timedelta(minutes=cooldown_minutes)
+
+
+async def _record_miss_refresh_attempt(session: AsyncSession) -> None:
+    """Record *now* as the last miss-triggered attempt, success or failure.
+
+    Written unconditionally -- including when the refresh below raises -- so
+    a provider outage cannot turn into a retry storm: callers still get at
+    most one attempt per cooldown window, just one that keeps failing until
+    IMDb recovers.
+    """
+    stmt = insert(ImdbMissRefreshState).values(id=_MISS_REFRESH_ROW_ID)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["id"], set_={"attempted_at": func.now()}
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+class ImdbMissRefresh:
+    """Refreshes one IMDb id when a rating lookup during fact gathering finds
+    nothing, rate-limited so a season-pack import cannot trigger one download
+    per episode.
+
+    A genuinely unrated title is the normal case -- a same-day release, or an
+    unaired episode -- so this fires at most once per ``cooldown_minutes``;
+    every miss after the first inside that window returns immediately
+    without touching the network. The cooldown lives in
+    ``imdb_miss_refresh_state`` (the database clock), not a process
+    variable, so multiple pods behind one database share the same window.
+
+    ``_lock`` only prevents *this process* from starting two downloads for
+    two concurrent misses at once; the database check is re-tested once the
+    lock is held, in case a concurrent miss already used up this window while
+    this one was waiting on the lock.
+    """
+
+    def __init__(self, http: httpx.AsyncClient, cooldown_minutes: int):
+        self._http = http
+        self._cooldown_minutes = cooldown_minutes
+        self._lock = asyncio.Lock()
+
+    async def note_miss(self, session: AsyncSession, tconst: str, is_episode: bool) -> None:
+        """Attempt one refresh for ``tconst``, subject to the cooldown.
+
+        Never raises: a failed refresh just means the rating stays null this
+        pass (the caller re-checks the lookup afterwards regardless), same as
+        every other error-swallowing path in this module.
+
+        A movie/show miss (``is_episode=False``) only needs the ratings
+        dataset (8.6 MB); only an episode miss pulls the episode dataset too
+        (54 MB), to learn the new episode's own tconst before it can be
+        looked up in the ratings file.
+        """
+        if self._cooldown_minutes <= 0:
+            return
+        async with self._lock:
+            if not await _miss_refresh_due(session, self._cooldown_minutes):
+                return
+            try:
+                if is_episode:
+                    await refresh(session, self._http, set(), {tconst})
+                else:
+                    await refresh(session, self._http, {tconst}, set())
+            except Exception as exc:  # noqa: BLE001 - a missing rating must never fail the job
+                logger.warning("imdb: miss-triggered refresh failed for %s: %s", tconst, exc)
+            finally:
+                await _record_miss_refresh_attempt(session)
+
+
+# Process-wide handler, installed once at startup (see app.py's lifespan,
+# alongside ImdbAutoRefresh) and consulted by facts/gather.py whenever a
+# rating lookup misses. gather_facts()'s signature is frozen and carries no
+# http client, so this is the seam that lets a fact-gathering pass reach the
+# network without threading one through every call in between. ``None`` means
+# either not configured yet or disabled via imdb_miss_refresh_minutes=0.
+_miss_refresh: "ImdbMissRefresh | None" = None
+
+
+def configure_miss_refresh(http: httpx.AsyncClient, cooldown_minutes: int) -> None:
+    """Install (or disable) the process-wide miss-triggered refresh handler."""
+    global _miss_refresh
+    _miss_refresh = ImdbMissRefresh(http, cooldown_minutes) if cooldown_minutes > 0 else None
+
+
+async def note_rating_miss(session: AsyncSession, tconst: str, *, is_episode: bool) -> None:
+    """Called by facts/gather.py whenever a critic-rating lookup finds nothing."""
+    if _miss_refresh is not None:
+        await _miss_refresh.note_miss(session, tconst, is_episode)
 
 
 class ImdbAutoRefresh:

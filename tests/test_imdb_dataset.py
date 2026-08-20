@@ -14,6 +14,7 @@ from autoposter.facts.imdb import (
     EPISODES_URL,
     RATINGS_URL,
     ImdbAutoRefresh,
+    ImdbMissRefresh,
     _wanted_ids,
     download_tsv,
     get_episode_rating,
@@ -323,3 +324,139 @@ async def test_auto_refresh_does_not_run_when_disabled(session_factory):
         await asyncio.wait_for(refresher.run(asyncio.Event()), timeout=5)
 
     assert called["n"] == 0
+
+
+# --- ImdbMissRefresh --------------------------------------------------------
+#
+# ImdbAutoRefresh above only catches a newly-imported title on its next
+# scheduled pass, up to imdb_refresh_hours later. ImdbMissRefresh closes that
+# gap: whenever facts/gather.py's _critic_rating finds no rating, it calls
+# note_miss(), which attempts one refresh scoped to just that id -- but a
+# genuinely unrated title (a same-day release, an unaired episode) is the
+# normal case, so this must rate-limit itself hard: a season-pack import
+# must trigger at most one download, not one per episode.
+
+
+async def test_miss_refresh_triggers_when_no_attempt_is_recorded(session):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_dataset_handler)) as http:
+        refresher = ImdbMissRefresh(http, cooldown_minutes=60)
+        await refresher.note_miss(session, "tt0111161", is_episode=False)
+
+    assert await get_rating(session, "tt0111161") == pytest.approx(9.3)
+
+
+async def test_second_miss_inside_the_cooldown_window_skips_the_network(session):
+    """The season-pack case: a 10-episode import must not become 10 downloads."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(200, content=_gzip_fixture("title.ratings.sample.tsv"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        refresher = ImdbMissRefresh(http, cooldown_minutes=60)
+        await refresher.note_miss(session, "tt0111161", is_episode=False)
+        assert calls["n"] == 1
+
+        await refresher.note_miss(session, "tt15239678", is_episode=False)
+        assert calls["n"] == 1
+
+
+async def test_miss_after_the_cooldown_window_expires_triggers_again(session):
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(200, content=_gzip_fixture("title.ratings.sample.tsv"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        refresher = ImdbMissRefresh(http, cooldown_minutes=60)
+        await refresher.note_miss(session, "tt0111161", is_episode=False)
+        assert calls["n"] == 1
+
+        # Backdate using the database's own clock, matching how the rest of
+        # this module treats server-side timestamps (see _is_stale's tests).
+        await session.execute(
+            text(
+                "UPDATE imdb_miss_refresh_state SET attempted_at = now() - interval '61 minutes'"
+            )
+        )
+        await session.commit()
+
+        await refresher.note_miss(session, "tt0111161", is_episode=False)
+        assert calls["n"] == 2
+
+
+async def test_movie_miss_does_not_request_the_episode_dataset(session):
+    """8.6 MB, not 54 MB: a movie/show tconst needs only the ratings file."""
+
+    def handler(request):
+        url = str(request.url)
+        if url == EPISODES_URL:
+            raise AssertionError("a movie/show miss must not touch the episode dataset")
+        assert url == RATINGS_URL
+        return httpx.Response(200, content=_gzip_fixture("title.ratings.sample.tsv"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        refresher = ImdbMissRefresh(http, cooldown_minutes=60)
+        await refresher.note_miss(session, "tt0111161", is_episode=False)
+
+    assert await get_rating(session, "tt0111161") == pytest.approx(9.3)
+
+
+async def test_episode_miss_also_requests_the_episode_dataset(session):
+    """Only an episode miss needs the episode map, to learn the new episode's
+    own tconst before its rating can be looked up."""
+    requested_urls = set()
+
+    def handler(request):
+        url = str(request.url)
+        requested_urls.add(url)
+        return _dataset_handler(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        refresher = ImdbMissRefresh(http, cooldown_minutes=60)
+        await refresher.note_miss(session, "tt11280740", is_episode=True)
+
+    assert EPISODES_URL in requested_urls
+    assert RATINGS_URL in requested_urls
+    assert await get_episode_rating(session, "tt11280740", 2, 3) == pytest.approx(7.0)
+
+
+async def test_miss_refresh_failure_is_swallowed_and_cooldown_is_recorded(session, caplog):
+    """A provider outage must not raise, and must still record the attempt --
+    otherwise a failing IMDb becomes a retry storm instead of one attempt per
+    cooldown window."""
+
+    def handler(request):
+        raise httpx.ConnectError("boom", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        refresher = ImdbMissRefresh(http, cooldown_minutes=60)
+        with caplog.at_level("WARNING"):
+            await refresher.note_miss(session, "tt0111161", is_episode=False)  # must not raise
+
+    assert any("miss-triggered refresh failed" in r.message for r in caplog.records)
+    assert await get_rating(session, "tt0111161") is None
+    assert await imdb_module._miss_refresh_due(session, 60) is False
+
+
+async def test_miss_refresh_disabled_when_cooldown_is_zero(session):
+    def handler(request):
+        raise AssertionError("must not touch the network when disabled")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        refresher = ImdbMissRefresh(http, cooldown_minutes=0)
+        await refresher.note_miss(session, "tt0111161", is_episode=False)
+
+    assert await get_rating(session, "tt0111161") is None
+
+
+async def test_configure_miss_refresh_zero_installs_nothing(monkeypatch):
+    monkeypatch.setattr(imdb_module, "_miss_refresh", None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_dataset_handler)) as http:
+        imdb_module.configure_miss_refresh(http, 0)
+        assert imdb_module._miss_refresh is None
+
+        imdb_module.configure_miss_refresh(http, 60)
+        assert imdb_module._miss_refresh is not None

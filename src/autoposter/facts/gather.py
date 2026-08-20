@@ -34,15 +34,34 @@ def format_audience(value: float | None) -> str | None:
 
 
 async def _critic_rating(session: AsyncSession, item: ResolvedItem) -> float | None:
+    """The stored IMDb rating, triggering one miss-refresh attempt if absent.
+
+    A miss is the normal case for a same-day release or an unaired episode,
+    so ``imdb.note_rating_miss`` rate-limits itself (see ``ImdbMissRefresh``)
+    rather than downloading on every call. The lookup is retried afterwards
+    so a *successful* refresh fills in the rating on this same pass; a
+    disabled/rate-limited/failed attempt just leaves the second lookup
+    returning ``None`` again, same as today.
+    """
     if not item.imdb_id:
         return None
     if item.kind == "episode":
         if item.season_number is None or item.episode_number is None:
             return None
-        return await imdb.get_episode_rating(
+        rating = await imdb.get_episode_rating(
             session, item.imdb_id, item.season_number, item.episode_number
         )
-    return await imdb.get_rating(session, item.imdb_id)
+        if rating is None:
+            await imdb.note_rating_miss(session, item.imdb_id, is_episode=True)
+            rating = await imdb.get_episode_rating(
+                session, item.imdb_id, item.season_number, item.episode_number
+            )
+        return rating
+    rating = await imdb.get_rating(session, item.imdb_id)
+    if rating is None:
+        await imdb.note_rating_miss(session, item.imdb_id, is_episode=False)
+        rating = await imdb.get_rating(session, item.imdb_id)
+    return rating
 
 
 async def gather_facts(

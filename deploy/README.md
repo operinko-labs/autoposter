@@ -50,6 +50,8 @@ date — replacing Kometa's `mass_*_update`):
   refreshed in the background; see "Loading IMDb ratings" below.
 - `imdb_refresh_enabled` (default `true`) — off disables the automatic
   refresh entirely, for operators who prefer to run it by hand.
+- `imdb_miss_refresh_minutes` (default `60`) — rate limit for the
+  miss-triggered refresh described below. `0` disables it.
 
 See `config/autoposter.example.yaml` for the full block.
 
@@ -66,6 +68,28 @@ The one behaviour operators will notice: a title imported since the last
 refresh has no IMDb rating until the next one runs, so a newly added film's
 `critic_rating` can lag by up to `imdb_refresh_hours`. This is expected, not
 a bug — set `imdb_refresh_hours` lower if that lag is a problem.
+
+### Miss-triggered refresh
+
+To shrink that blind spot, fact gathering also retries once whenever a
+rating lookup finds nothing: it attempts an immediate refresh scoped to just
+that one IMDb id, then re-checks, so a freshly imported title can get its
+`critic_rating` on the same pass instead of waiting up to
+`imdb_refresh_hours`. It only pulls what that one lookup needs — a movie or
+show miss downloads just `title.ratings.tsv.gz` (8.6 MB); only an *episode*
+miss also downloads `title.episode.tsv.gz` (54 MB), to learn the new
+episode's own IMDb id first.
+
+This is rate-limited to one attempt per `imdb_miss_refresh_minutes` (default
+60), tracked in the database (`imdb_miss_refresh_state`) rather than in
+memory, so every pod behind the same database shares one cooldown window —
+importing a season pack triggers at most one download, not one per episode.
+Set `imdb_miss_refresh_minutes: 0` to disable it entirely.
+
+A title that is genuinely unrated — a same-day release, or an episode that
+hasn't aired yet — will still show a blank `critic_rating` after the retry.
+That is correct behaviour, not a fault: IMDb has no rating to give it until
+it has votes.
 
 To force a refresh immediately (e.g. for a first load before the app has run,
 or after changing which titles are in the library) rather than waiting for
