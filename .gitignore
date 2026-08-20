@@ -18,3 +18,6 @@ dist/
 
 # Tooling
 .serena/
+
+# SDD scratch (ledger, briefs, reports, review packages)
+.superpowers/
