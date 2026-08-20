@@ -112,7 +112,10 @@ async def test_download_tsv_streams_instead_of_materialising_the_whole_file():
         return httpx.Response(200, content=payload)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        result = await download_tsv(http, "https://example.test/title.ratings.tsv.gz")
+        status, _headers, result = await download_tsv(
+            http, "https://example.test/title.ratings.tsv.gz"
+        )
+        assert status == 200
         assert isinstance(result, types.GeneratorType)
         lines = [line.rstrip("\n") for line in result]
 
@@ -120,6 +123,24 @@ async def test_download_tsv_streams_instead_of_materialising_the_whole_file():
     assert lines[0] == header
     assert lines[1] == "tt0000000\t5.0\t100"
     assert lines[-1] == f"tt{row_count - 1:07d}\t{5 + ((row_count - 1) % 5)}.0\t100"
+
+
+async def test_download_tsv_returns_no_lines_on_a_304():
+    """A 304 has no body: the caller must never try to read a temp file that
+    was never created."""
+
+    def handler(request):
+        return httpx.Response(304)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        status, _headers, result = await download_tsv(
+            http,
+            "https://example.test/title.ratings.tsv.gz",
+            headers={"If-Modified-Since": "Wed, 21 Aug 2026 00:38:00 GMT"},
+        )
+
+    assert status == 304
+    assert result is None
 
 
 def _gzip_fixture(name: str) -> bytes:
@@ -460,3 +481,136 @@ async def test_configure_miss_refresh_zero_installs_nothing(monkeypatch):
 
         imdb_module.configure_miss_refresh(http, 60)
         assert imdb_module._miss_refresh is not None
+
+
+# --- Conditional polling ----------------------------------------------------
+#
+# Polling every imdb_refresh_hours (now 6, not 24) must cost nothing on most
+# polls: datasets.imdbws.com rebuilds once a day, so five out of six 6-hourly
+# polls will hit an unchanged file. A matching If-Modified-Since gets a 304
+# with no body. But refresh() discards every row not in its wanted-id set, so
+# "the file is unchanged" alone must never justify skipping the parse -- a
+# title imported since the last refresh would silently stay unrateable
+# forever. Skipping is only safe when the wanted-id set ALSO still matches
+# the last successful refresh (see refresh()'s docstring and _fetch_dataset).
+
+
+class _ConditionalServer:
+    """A MockTransport handler that mimics datasets.imdbws.com's conditional
+    behaviour: a matching If-Modified-Since returns 304 with no body; anything
+    else (missing, stale, or a different id-set forcing an unconditional
+    request) returns 200 with the full fixture body and the current
+    Last-Modified."""
+
+    def __init__(self):
+        self.last_modified = {
+            RATINGS_URL: "Wed, 21 Aug 2026 00:38:00 GMT",
+            EPISODES_URL: "Wed, 21 Aug 2026 00:39:00 GMT",
+        }
+        self.requests: list[httpx.Request] = []
+        # (url, status_code) for every response returned, in order.
+        self.responses: list[tuple[str, int]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        url = str(request.url)
+        current = self.last_modified[url]
+        if request.headers.get("if-modified-since") == current:
+            self.responses.append((url, 304))
+            return httpx.Response(304)
+        fixture = "title.ratings.sample.tsv" if url == RATINGS_URL else "title.episode.sample.tsv"
+        self.responses.append((url, 200))
+        return httpx.Response(200, content=_gzip_fixture(fixture), headers={"Last-Modified": current})
+
+
+async def test_first_refresh_sends_no_conditional_header_and_stores_last_modified(session):
+    server = _ConditionalServer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as http:
+        await refresh(session, http, {"tt0111161"}, set())
+
+    assert len(server.requests) == 1
+    assert "if-modified-since" not in server.requests[0].headers
+
+    state = await imdb_module._get_dataset_state(session, "ratings")
+    assert state.last_modified == server.last_modified[RATINGS_URL]
+
+
+async def test_second_refresh_sends_the_stored_last_modified(session):
+    server = _ConditionalServer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as http:
+        await refresh(session, http, {"tt0111161"}, set())
+        await refresh(session, http, {"tt0111161"}, set())
+
+    assert len(server.requests) == 2
+    assert server.requests[1].headers["if-modified-since"] == server.last_modified[RATINGS_URL]
+
+
+async def test_304_with_unchanged_id_set_skips_the_parse_and_stores_nothing_new(session, caplog):
+    server = _ConditionalServer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as http:
+        await refresh(session, http, {"tt0111161"}, set())
+        with caplog.at_level("INFO"):
+            count = await refresh(session, http, {"tt0111161"}, set())
+
+    assert count == 0
+    assert server.responses[-1] == (RATINGS_URL, 304)
+    assert any(
+        "ratings skipped (unchanged file, unchanged id set)" in r.message for r in caplog.records
+    )
+    rows = (await session.execute(select(ImdbRating))).scalars().all()
+    assert {row.tconst for row in rows} == {"tt0111161"}
+
+
+async def test_304_with_a_changed_id_set_still_downloads_and_parses(session):
+    """The trap: a newly imported title must not stay unrateable just because
+    the dataset file itself hasn't changed since the last poll."""
+    server = _ConditionalServer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as http:
+        await refresh(session, http, {"tt0111161"}, set())
+        # The file is still unchanged (would 304 for the old id set), but the
+        # library gained a title -- this must download and re-parse anyway.
+        count = await refresh(session, http, {"tt0111161", "tt15239678"}, set())
+
+    assert count == 2
+    assert server.responses[-1] == (RATINGS_URL, 200)
+    assert await get_rating(session, "tt15239678") == pytest.approx(8.5)
+
+
+async def test_200_with_a_new_last_modified_replaces_the_stored_value(session):
+    server = _ConditionalServer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as http:
+        await refresh(session, http, {"tt0111161"}, set())
+        server.last_modified[RATINGS_URL] = "Thu, 22 Aug 2026 00:38:00 GMT"
+        await refresh(session, http, {"tt0111161"}, set())
+
+    assert server.responses[-1] == (RATINGS_URL, 200)
+    state = await imdb_module._get_dataset_state(session, "ratings")
+    assert state.last_modified == "Thu, 22 Aug 2026 00:38:00 GMT"
+
+
+async def test_ratings_and_episodes_track_conditional_state_independently(session, caplog):
+    """A skip on one dataset must never skip the other -- their wanted-id
+    sets differ (movies+episode-tconsts vs shows)."""
+    server = _ConditionalServer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as http:
+        await refresh(session, http, {"tt0111161"}, {"tt11280740"})
+        # Only the ratings file changes on the second poll; episodes stays put.
+        server.last_modified[RATINGS_URL] = "Thu, 22 Aug 2026 00:38:00 GMT"
+        with caplog.at_level("INFO"):
+            count = await refresh(session, http, {"tt0111161"}, {"tt11280740"})
+
+    assert count == 2  # tt0111161 + tt9999999 (tt11280740's S02E03), unchanged
+    episode_statuses = [status for url, status in server.responses if url == EPISODES_URL]
+    ratings_statuses = [status for url, status in server.responses if url == RATINGS_URL]
+    assert episode_statuses == [200, 304]
+    assert ratings_statuses == [200, 200]
+    assert any(
+        "episodes skipped (unchanged file, unchanged id set)" in r.message for r in caplog.records
+    )
+    assert any("ratings downloaded, stored 2 rating(s)" in r.message for r in caplog.records)
+
+
+def test_default_imdb_refresh_hours_is_six():
+    from autoposter.config.schema import OperationsConfig
+
+    assert OperationsConfig().imdb_refresh_hours == 6

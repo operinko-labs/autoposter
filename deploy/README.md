@@ -46,8 +46,8 @@ date — replacing Kometa's `mass_*_update`):
 - `write_to_plex` (default `true`) — off means facts are still gathered and
   stored in `item_facts`, but nothing is written to Plex. The safe setting
   while the tool being replaced (Kometa) still owns these fields.
-- `imdb_refresh_hours` (default `24`) — how often the IMDb ratings dataset is
-  refreshed in the background; see "Loading IMDb ratings" below.
+- `imdb_refresh_hours` (default `6`) — how often the IMDb ratings dataset is
+  polled in the background; see "Loading IMDb ratings" below.
 - `imdb_refresh_enabled` (default `true`) — off disables the automatic
   refresh entirely, for operators who prefer to run it by hand.
 - `imdb_miss_refresh_minutes` (default `60`) — rate limit for the
@@ -58,16 +58,35 @@ See `config/autoposter.example.yaml` for the full block.
 ## Loading IMDb ratings
 
 `critic_rating` (IMDb) is populated from IMDb's bulk datasets, not a live API
-call. The app refreshes these automatically in the background: once at
-startup if `imdb_ratings` is missing or older than `imdb_refresh_hours`
-(default 24), then every `imdb_refresh_hours` after that. The refresh runs as
-a background task — like the Plex health probe — so it never blocks startup
-or the request/worker loop, even while parsing the ~60 MB datasets.
+call. The app polls these automatically in the background: once at startup if
+`imdb_ratings` is missing or older than `imdb_refresh_hours` (default 6),
+then every `imdb_refresh_hours` after that. The refresh runs as a background
+task — like the Plex health probe — so it never blocks startup or the
+request/worker loop, even while parsing the ~60 MB datasets.
 
-The one behaviour operators will notice: a title imported since the last
-refresh has no IMDb rating until the next one runs, so a newly added film's
-`critic_rating` can lag by up to `imdb_refresh_hours`. This is expected, not
-a bug — set `imdb_refresh_hours` lower if that lag is a problem.
+IMDb rebuilds these datasets once a day, around 00:38–00:39 UTC. Polling
+every 6 hours (rather than the previous 24h, which could sit up to a full day
+behind a publication) picks up each day's build within 6 hours.
+
+Most of those polls transfer nothing: the request is conditional
+(`If-Modified-Since`), and datasets.imdbws.com replies `304 Not Modified` with
+no body when the file hasn't changed since the last successful refresh, so
+the download and the parse are both skipped. This is tracked per dataset
+(ratings and episodes independently, since their id sets differ), and the
+skip is safe *only* when this library's set of wanted IMDb ids also hasn't
+changed since that refresh — a poll still re-downloads and re-parses an
+otherwise-unchanged file if the library gained titles since the last refresh,
+because `refresh()` only stores rows for ids it was asked about and would
+otherwise silently leave a newly imported title unrateable forever. Check the
+`imdb:` log lines to see, per poll, whether each dataset downloaded (and how
+many rows it stored) or was skipped and why.
+
+The one behaviour operators will still notice: a title imported since the
+last refresh has no IMDb rating until the next poll runs, so a newly added
+film's `critic_rating` can lag by up to `imdb_refresh_hours`. This is
+expected, not a bug — set `imdb_refresh_hours` lower if that lag is a
+problem, or see "Miss-triggered refresh" below for the mechanism that
+usually catches this sooner.
 
 ### Miss-triggered refresh
 

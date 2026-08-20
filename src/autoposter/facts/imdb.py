@@ -8,6 +8,7 @@ carried in README.md.
 import asyncio
 import csv
 import gzip
+import hashlib
 import itertools
 import logging
 import os
@@ -22,7 +23,13 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.db.base import make_engine, make_session_factory
-from autoposter.db.models import ImdbEpisode, ImdbMissRefreshState, ImdbRating, MediaItem
+from autoposter.db.models import (
+    ImdbDatasetState,
+    ImdbEpisode,
+    ImdbMissRefreshState,
+    ImdbRating,
+    MediaItem,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +90,9 @@ def parse_episodes(lines: Iterable[str], parents: set[str]) -> dict[tuple[str, i
     return episodes
 
 
-async def download_tsv(http: httpx.AsyncClient, url: str) -> Iterator[str]:
+async def download_tsv(
+    http: httpx.AsyncClient, url: str, *, headers: dict[str, str] | None = None
+) -> tuple[int, httpx.Headers, Iterator[str] | None]:
     """Stream a gzipped TSV to a temporary file, then yield decoded lines.
 
     ``title.episode.tsv.gz`` decompresses to roughly 500 MB, and this runs in
@@ -97,18 +106,31 @@ async def download_tsv(http: httpx.AsyncClient, url: str) -> Iterator[str]:
     incrementally as each line is requested. The temp file is removed once
     every line has been yielded, or immediately if the download fails; disk
     is cheap and nothing here is cached across calls regardless.
+
+    ``headers`` carries conditional-request headers (``If-Modified-Since``,
+    ``If-None-Match``) when the caller wants to skip the transfer entirely if
+    the file hasn't changed. Returns ``(status_code, response_headers,
+    lines)``; on a 304 there is no body, so ``lines`` is ``None`` and no temp
+    file is ever created.
     """
-    fd, path = tempfile.mkstemp(suffix=".tsv.gz")
-    os.close(fd)
-    try:
-        async with http.stream("GET", url, follow_redirects=True, timeout=300) as response:
-            response.raise_for_status()
+    async with http.stream(
+        "GET", url, follow_redirects=True, timeout=300, headers=headers
+    ) as response:
+        status = response.status_code
+        resp_headers = response.headers
+        if status == 304:
+            return status, resp_headers, None
+        response.raise_for_status()
+
+        fd, path = tempfile.mkstemp(suffix=".tsv.gz")
+        os.close(fd)
+        try:
             with open(path, "wb") as out:
                 async for chunk in response.aiter_bytes():
                     out.write(chunk)
-    except BaseException:
-        os.remove(path)
-        raise
+        except BaseException:
+            os.remove(path)
+            raise
 
     def _lines() -> Iterator[str]:
         try:
@@ -117,7 +139,7 @@ async def download_tsv(http: httpx.AsyncClient, url: str) -> Iterator[str]:
         finally:
             os.remove(path)
 
-    return _lines()
+    return status, resp_headers, _lines()
 
 
 async def store_ratings(session: AsyncSession, ratings: dict[str, float]) -> None:
@@ -151,6 +173,82 @@ async def store_episodes(
     for chunk in _chunked(rows, _UPSERT_CHUNK_SIZE):
         await session.execute(stmt, chunk)
     await session.commit()
+
+
+def _wanted_hash(ids: set[str]) -> str:
+    """Stable hash of a wanted-id set, independent of query/iteration order."""
+    return hashlib.sha256("\n".join(sorted(ids)).encode("utf-8")).hexdigest()
+
+
+async def _get_dataset_state(session: AsyncSession, dataset: str) -> ImdbDatasetState | None:
+    return (
+        await session.execute(
+            select(ImdbDatasetState).where(ImdbDatasetState.dataset == dataset)
+        )
+    ).scalar_one_or_none()
+
+
+async def _save_dataset_state(
+    session: AsyncSession,
+    dataset: str,
+    last_modified: str | None,
+    etag: str | None,
+    wanted_hash: str,
+) -> None:
+    stmt = insert(ImdbDatasetState).values(
+        dataset=dataset, last_modified=last_modified, etag=etag, wanted_hash=wanted_hash
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["dataset"],
+        set_={
+            "last_modified": stmt.excluded.last_modified,
+            "etag": stmt.excluded.etag,
+            "wanted_hash": stmt.excluded.wanted_hash,
+            "updated_at": func.now(),
+        },
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def _fetch_dataset(
+    session: AsyncSession, http: httpx.AsyncClient, url: str, dataset: str, wanted_ids: set[str]
+) -> tuple[Iterator[str] | None, str]:
+    """Conditionally download one dataset, tracking per-dataset poll state.
+
+    Returns ``(lines, reason)``. ``lines`` is ``None`` when the download was
+    skipped; ``reason`` is a human-readable explanation, used for both the
+    "why did we skip" log line and (as an empty string) the "we downloaded"
+    case.
+
+    A 304 only counts as "nothing to do" when the *wanted id set* also
+    matches the one used for the last successful refresh -- see ``refresh``'s
+    docstring for why: the dataset file not changing does not mean this
+    library's current row selection from it hasn't. When the id set changed,
+    no ``If-Modified-Since`` header is sent at all, so the server always
+    returns a full 200 body to re-parse.
+
+    ``Last-Modified``/``ETag`` are stored and replayed verbatim, exactly as
+    received -- never parsed or compared to local time.
+    """
+    wanted_hash = _wanted_hash(wanted_ids)
+    state = await _get_dataset_state(session, dataset)
+
+    headers: dict[str, str] = {}
+    if state is not None and state.last_modified and state.wanted_hash == wanted_hash:
+        headers["If-Modified-Since"] = state.last_modified
+        if state.etag:
+            headers["If-None-Match"] = state.etag
+
+    status, resp_headers, lines = await download_tsv(http, url, headers=headers or None)
+
+    if status == 304:
+        return None, "unchanged file, unchanged id set"
+
+    await _save_dataset_state(
+        session, dataset, resp_headers.get("Last-Modified"), resp_headers.get("ETag"), wanted_hash
+    )
+    return lines, ""
 
 
 async def get_rating(session: AsyncSession, imdb_id: str) -> float | None:
@@ -191,25 +289,67 @@ async def refresh(
 
     Returns the number of ratings stored. Episodes are resolved first so their
     ids can be added to the ratings filter in a single pass.
-    """
-    episodes: dict[tuple[str, int, int], str] = {}
-    if show_ids:
-        # Finding 8: 9.8M rows of gzip + csv is slow enough to stall the event
-        # loop (and the health probe with it) if run inline, so it's offloaded
-        # to a thread same as every other blocking call in this codebase.
-        lines = await download_tsv(http, EPISODES_URL)
-        episodes = await asyncio.to_thread(parse_episodes, lines, show_ids)
-        await store_episodes(session, episodes)
-        logger.info("imdb: kept %d episode rows for %d shows", len(episodes), len(show_ids))
 
-    wanted = set(movie_ids) | set(episodes.values())
-    if wanted:
-        lines = await download_tsv(http, RATINGS_URL)
-        ratings = await asyncio.to_thread(parse_ratings, lines, wanted)
+    Each dataset is fetched conditionally (see ``_fetch_dataset``): a poll
+    that finds both the remote file and this library's wanted-id set
+    unchanged since the last successful refresh downloads and parses
+    nothing. Ratings and episodes are tracked independently -- a skip on one
+    never skips the other, since their id sets differ (movies+episode-tconsts
+    vs shows).
+
+    The correctness trap this guards against: ``refresh()`` only ever stores
+    rows for ids in ``wanted`` at call time, discarding everything else. So
+    "the file is unchanged" does *not* imply "there's nothing to do" -- if a
+    title was imported since the last refresh, its row was thrown away last
+    time and must be re-extracted from the very same unchanged file. Hence
+    the wanted-id-set hash is part of the skip condition, not just
+    ``Last-Modified``.
+    """
+    episode_tconsts: set[str] = set()
+    if show_ids:
+        lines, skip_reason = await _fetch_dataset(session, http, EPISODES_URL, "episodes", show_ids)
+        if lines is None:
+            episode_tconsts = set(
+                (
+                    await session.execute(
+                        select(ImdbEpisode.tconst).where(
+                            ImdbEpisode.parent_tconst.in_(show_ids)
+                        )
+                    )
+                ).scalars()
+            )
+            logger.info(
+                "imdb: episodes skipped (%s); %d row(s) already stored for %d show(s)",
+                skip_reason, len(episode_tconsts), len(show_ids),
+            )
+        else:
+            # Finding 8: 9.8M rows of gzip + csv is slow enough to stall the
+            # event loop (and the health probe with it) if run inline, so
+            # it's offloaded to a thread same as every other blocking call in
+            # this codebase.
+            episodes = await asyncio.to_thread(parse_episodes, lines, show_ids)
+            await store_episodes(session, episodes)
+            episode_tconsts = set(episodes.values())
+            logger.info(
+                "imdb: episodes downloaded, kept %d row(s) for %d show(s)",
+                len(episodes), len(show_ids),
+            )
     else:
-        ratings = {}
+        logger.info("imdb: episodes skipped (no show ids to refresh)")
+
+    wanted = set(movie_ids) | episode_tconsts
+    if not wanted:
+        logger.info("imdb: ratings skipped (no ids to refresh)")
+        return 0
+
+    lines, skip_reason = await _fetch_dataset(session, http, RATINGS_URL, "ratings", wanted)
+    if lines is None:
+        logger.info("imdb: ratings skipped (%s)", skip_reason)
+        return 0
+
+    ratings = await asyncio.to_thread(parse_ratings, lines, wanted)
     await store_ratings(session, ratings)
-    logger.info("imdb: stored %d ratings", len(ratings))
+    logger.info("imdb: ratings downloaded, stored %d rating(s)", len(ratings))
     return len(ratings)
 
 

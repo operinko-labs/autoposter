@@ -26,7 +26,7 @@ providers:
 operations:
   enabled: true
   write_to_plex: true
-  imdb_refresh_hours: 24 # how often to reload the IMDb ratings dataset in the background
+  imdb_refresh_hours: 6 # how often to poll the IMDb ratings dataset in the background
   imdb_refresh_enabled: true # disable to only refresh via `python -m autoposter.facts.imdb`
   imdb_miss_refresh_minutes: 60 # rate limit for the miss-triggered refresh; 0 disables it
 

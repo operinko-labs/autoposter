@@ -82,7 +82,7 @@ def test_missing_secret_names_the_variable(monkeypatch):
 
 def test_imdb_refresh_defaults_from_the_example_config():
     operations = load_config(EXAMPLE).operations
-    assert operations.imdb_refresh_hours == 24
+    assert operations.imdb_refresh_hours == 6
     assert operations.imdb_refresh_enabled is True
 
 

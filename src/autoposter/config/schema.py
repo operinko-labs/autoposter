@@ -143,10 +143,13 @@ class OperationsConfig(BaseModel):
     # Off means gather and store facts but leave Plex untouched — the safe
     # setting while the tool being replaced still owns these fields.
     write_to_plex: bool = True
-    # How often the IMDb ratings dataset is refreshed in the background (see
+    # How often the IMDb ratings dataset is polled in the background (see
     # facts/imdb.py's ImdbAutoRefresh). Also runs once at startup when
-    # imdb_ratings is empty or older than this.
-    imdb_refresh_hours: int = 24
+    # imdb_ratings is empty or older than this. IMDb rebuilds its datasets
+    # once a day; polling every 6h picks up each day's build within 6h of
+    # publication. Conditional requests (If-Modified-Since) mean most polls
+    # transfer nothing when the file hasn't changed.
+    imdb_refresh_hours: int = 6
     # Off disables the automatic refresh entirely; the manual
     # `python -m autoposter.facts.imdb` entry point still works.
     imdb_refresh_enabled: bool = True

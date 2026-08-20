@@ -196,6 +196,32 @@ class ImdbEpisode(Base):
     tconst: Mapped[str] = mapped_column(String(16), index=True)
 
 
+class ImdbDatasetState(Base):
+    """Per-dataset conditional-request state for the periodic IMDb poll.
+
+    ``dataset`` is ``"ratings"`` or ``"episodes"`` (see facts/imdb.py's
+    ``refresh``). ``last_modified``/``etag`` are stored verbatim as received
+    from datasets.imdbws.com and sent back unchanged as
+    ``If-Modified-Since``/``If-None-Match`` on the next poll -- never parsed
+    or compared against local time. ``wanted_hash`` is a sha256 of the sorted
+    set of tconsts this dataset was filtered to on the last successful
+    refresh; a 304 only means "nothing to do" when this also still matches
+    the current wanted set -- otherwise a title imported since that refresh
+    was thrown away last time and must be re-extracted from the unchanged
+    file.
+    """
+
+    __tablename__ = "imdb_dataset_state"
+
+    dataset: Mapped[str] = mapped_column(String(16), primary_key=True)
+    last_modified: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    etag: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    wanted_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ImdbMissRefreshState(Base):
     """Rate-limit state for the miss-triggered refresh (see ``facts/imdb.py``).
 
