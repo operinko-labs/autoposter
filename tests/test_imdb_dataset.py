@@ -614,3 +614,40 @@ def test_default_imdb_refresh_hours_is_six():
     from autoposter.config.schema import OperationsConfig
 
     assert OperationsConfig().imdb_refresh_hours == 6
+
+
+async def test_untracked_refresh_leaves_the_poll_state_alone(session):
+    """The miss-triggered refresh asks about one title, not the library.
+
+    Writing its one-element wanted-id hash into the shared poll state would
+    guarantee a mismatch on the next scheduled poll, forcing a full
+    unconditional re-download of both datasets and defeating the conditional
+    request entirely.
+    """
+    server = _ConditionalServer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as http:
+        await refresh(session, http, {"tt0111161"}, set())
+        before = await imdb_module._get_dataset_state(session, "ratings")
+        stored_hash = before.wanted_hash
+
+        # A miss-triggered refresh for a single unrelated title.
+        await refresh(session, http, {"tt15239678"}, set(), track_state=False)
+        after = await imdb_module._get_dataset_state(session, "ratings")
+        assert after.wanted_hash == stored_hash, "miss refresh must not rewrite poll state"
+
+        # ...so the next scheduled poll still gets its cheap 304.
+        count = await refresh(session, http, {"tt0111161"}, set())
+
+    assert count == 0
+    assert server.responses[-1] == (RATINGS_URL, 304)
+
+
+async def test_untracked_refresh_sends_no_conditional_header(session):
+    server = _ConditionalServer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as http:
+        await refresh(session, http, {"tt0111161"}, set())
+        await refresh(session, http, {"tt0111161"}, set(), track_state=False)
+
+    assert "if-modified-since" not in server.requests[-1].headers
+    assert server.responses[-1] == (RATINGS_URL, 200)
+    assert await get_rating(session, "tt0111161") == pytest.approx(9.3)

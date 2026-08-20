@@ -212,7 +212,12 @@ async def _save_dataset_state(
 
 
 async def _fetch_dataset(
-    session: AsyncSession, http: httpx.AsyncClient, url: str, dataset: str, wanted_ids: set[str]
+    session: AsyncSession,
+    http: httpx.AsyncClient,
+    url: str,
+    dataset: str,
+    wanted_ids: set[str],
+    track_state: bool = True,
 ) -> tuple[Iterator[str] | None, str]:
     """Conditionally download one dataset, tracking per-dataset poll state.
 
@@ -230,9 +235,16 @@ async def _fetch_dataset(
 
     ``Last-Modified``/``ETag`` are stored and replayed verbatim, exactly as
     received -- never parsed or compared to local time.
+
+    ``track_state=False`` fetches unconditionally and leaves the stored state
+    untouched. That is for callers whose ``wanted_ids`` is not the library's
+    id set -- the miss-triggered refresh asks about a single title, and
+    writing its one-element hash here would guarantee a mismatch on the next
+    scheduled poll, forcing a full 62MB re-download and defeating the
+    conditional request.
     """
     wanted_hash = _wanted_hash(wanted_ids)
-    state = await _get_dataset_state(session, dataset)
+    state = await _get_dataset_state(session, dataset) if track_state else None
 
     headers: dict[str, str] = {}
     if state is not None and state.last_modified and state.wanted_hash == wanted_hash:
@@ -245,9 +257,14 @@ async def _fetch_dataset(
     if status == 304:
         return None, "unchanged file, unchanged id set"
 
-    await _save_dataset_state(
-        session, dataset, resp_headers.get("Last-Modified"), resp_headers.get("ETag"), wanted_hash
-    )
+    if track_state:
+        await _save_dataset_state(
+            session,
+            dataset,
+            resp_headers.get("Last-Modified"),
+            resp_headers.get("ETag"),
+            wanted_hash,
+        )
     return lines, ""
 
 
@@ -284,6 +301,7 @@ async def refresh(
     http: httpx.AsyncClient,
     movie_ids: set[str],
     show_ids: set[str],
+    track_state: bool = True,
 ) -> int:
     """Reload both datasets, keeping only rows this library needs.
 
@@ -304,10 +322,16 @@ async def refresh(
     time and must be re-extracted from the very same unchanged file. Hence
     the wanted-id-set hash is part of the skip condition, not just
     ``Last-Modified``.
+
+    ``track_state=False`` bypasses both the conditional request and the state
+    write; the miss-triggered refresh uses it because it asks about one title
+    rather than the whole library.
     """
     episode_tconsts: set[str] = set()
     if show_ids:
-        lines, skip_reason = await _fetch_dataset(session, http, EPISODES_URL, "episodes", show_ids)
+        lines, skip_reason = await _fetch_dataset(
+            session, http, EPISODES_URL, "episodes", show_ids, track_state
+        )
         if lines is None:
             episode_tconsts = set(
                 (
@@ -342,7 +366,9 @@ async def refresh(
         logger.info("imdb: ratings skipped (no ids to refresh)")
         return 0
 
-    lines, skip_reason = await _fetch_dataset(session, http, RATINGS_URL, "ratings", wanted)
+    lines, skip_reason = await _fetch_dataset(
+        session, http, RATINGS_URL, "ratings", wanted, track_state
+    )
     if lines is None:
         logger.info("imdb: ratings skipped (%s)", skip_reason)
         return 0
@@ -495,9 +521,9 @@ class ImdbMissRefresh:
                 return
             try:
                 if is_episode:
-                    await refresh(session, self._http, set(), {tconst})
+                    await refresh(session, self._http, set(), {tconst}, track_state=False)
                 else:
-                    await refresh(session, self._http, {tconst}, set())
+                    await refresh(session, self._http, {tconst}, set(), track_state=False)
             except Exception as exc:  # noqa: BLE001 - a missing rating must never fail the job
                 logger.warning("imdb: miss-triggered refresh failed for %s: %s", tconst, exc)
             finally:
