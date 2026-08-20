@@ -43,3 +43,42 @@ Enable these triggers:
 
 - **Radarr:** On Import Complete, On Rename, On Movie Add
 - **Sonarr:** On Import Complete, On Rename, On Series Add
+
+## Recovering parked jobs
+
+A job moves to `state='parked'` once it has been retried
+`config.plex.resolve_max_attempts` times (Plex-connectivity failures and
+"Plex hasn't scanned this yet") or `MAX_ATTEMPTS` times (everything else)
+without succeeding. Parked jobs are not retried automatically — there is no
+endpoint, script, or sweep that unparks them in this phase, so a Plex outage
+longer than the attempt budget silently and permanently drops the affected
+webhooks unless someone requeues them by hand.
+
+Use this only after confirming the underlying problem (e.g. Plex) is fixed —
+requeuing while the cause is still broken just burns through the attempt
+budget again and re-parks the same jobs.
+
+Requeue every parked job:
+
+```sql
+UPDATE jobs
+   SET state = 'pending',
+       claimed_by = NULL,
+       claimed_at = NULL,
+       attempts = 0
+ WHERE state = 'parked';
+```
+
+Requeue only jobs parked within a time window (e.g. the last 2 hours, to
+avoid resurrecting something parked for an unrelated, still-unresolved
+reason):
+
+```sql
+UPDATE jobs
+   SET state = 'pending',
+       claimed_by = NULL,
+       claimed_at = NULL,
+       attempts = 0
+ WHERE state = 'parked'
+   AND updated_at > now() - interval '2 hours';
+```

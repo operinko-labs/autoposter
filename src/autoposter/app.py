@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 
 import httpx
+import requests
 from fastapi import FastAPI
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
@@ -89,9 +90,12 @@ def _build_providers(config: Config, secrets: Secrets, http: httpx.AsyncClient) 
 async def _handle_intent(session, intent, *, config, http, plex, providers):
     try:
         await process_item(session, config, http, plex, providers, intent)
-    except ItemNotFound as exc:
+    except (ItemNotFound, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         # Threaded through to run_once via the exception itself, so the queue
-        # worker's own signature stays untouched: waiting on Plex gets its own,
+        # worker's own signature stays untouched: waiting on Plex — whether it
+        # just hasn't scanned the file yet (ItemNotFound) or is unreachable
+        # entirely (a connection/timeout error surfacing from
+        # _LazyPlexServer's connect attempt, see main.py) — gets its own,
         # configurable attempt budget instead of the generic retry limit.
         exc.max_attempts = config.plex.resolve_max_attempts
         raise

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+import requests
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.intake.arr import RenderIntent
@@ -37,10 +38,19 @@ async def run_once(session: AsyncSession, worker_id: str, handler) -> bool:
         # Shutdown, not a job failure: hand it straight back so it's immediately
         # claimable again, without charging a retry attempt, then let the
         # cancellation continue propagating so the worker task actually stops.
+        # Rolled back first for the same reason as the branches below: a
+        # cancellation landing mid-database-operation can leave the session in
+        # a failed transaction, and release()'s SELECT would raise
+        # PendingRollbackError instead of releasing the job.
+        await session.rollback()
         await release(session, job_id)
         raise
-    except ItemNotFound as exc:
-        # Expected right after an import: Plex has not scanned the new file yet.
+    except (ItemNotFound, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+        # Expected infrastructure conditions, not a job failure: either Plex
+        # has not scanned the new file yet (ItemNotFound), or Plex itself is
+        # unreachable (a connection/timeout error surfacing from
+        # _LazyPlexServer's connect attempt, see main.py). Both get the same
+        # larger, configurable attempt budget instead of the generic retry cap.
         logger.info("job %s waiting for Plex: %s", job_id, exc)
         # The handler may have left the session mid-transaction (e.g. a DB error
         # surfaced first); fail() issues a SELECT, which would raise

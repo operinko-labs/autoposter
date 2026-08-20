@@ -106,7 +106,11 @@ def title_text_for(
 
 
 def manual_override_path(config: Config, item: ResolvedItem, art_kind: str) -> Path | None:
-    """A hand-placed asset wins over anything fetched from a provider."""
+    """A hand-placed asset wins over anything fetched from a provider.
+
+    Synchronous by design (see the offloaded call site in ``render_artifact``):
+    plain tests call this directly without an event loop to hop off of.
+    """
     relative = naming.asset_path(
         config.model_copy(update={"assets_root": config.manual_assets_root}),
         item.library, item.root_folder, art_kind,
@@ -243,7 +247,10 @@ async def render_artifact(
     with tempfile.TemporaryDirectory() as tmpdir:
         working = Path(tmpdir) / target.name
 
-        override = manual_override_path(config, item, art_kind)
+        # manual_override_path() stats the (possibly NFS) manual-assets mount;
+        # offloaded like the rest of this pipeline's blocking I/O so a hung
+        # mount cannot stall the event loop.
+        override = await asyncio.to_thread(manual_override_path, config, item, art_kind)
         if override is not None:
             base_sha = await asyncio.to_thread(_stage_override, override, working)
             source_url, provider_name, textless = str(override), "manual", None
@@ -329,7 +336,10 @@ async def render_artifact(
         fingerprint = compute_fingerprint(
             config.version, art_kind, source_url, base_sha, text_inputs, asset_hashes
         )
-        if render.fingerprint == fingerprint and target.exists():
+        # target.exists() offloaded (it's a stat() against assets_root, which
+        # can be an NFS mount) — only reached once the fingerprint already
+        # matches, so the short-circuit still skips it entirely otherwise.
+        if render.fingerprint == fingerprint and await asyncio.to_thread(target.exists):
             render.status = "rendered"
             render.detail = "unchanged"
             await session.commit()

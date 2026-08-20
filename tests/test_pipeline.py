@@ -12,8 +12,8 @@ from autoposter.providers.base import ArtCandidate
 from autoposter.render import naming
 from autoposter.render import pipeline as pipeline_module
 from autoposter.render.pipeline import (
-    ART_KINDS_FOR, compute_fingerprint, manual_override_path, render_artifact,
-    title_text_for,
+    ART_KINDS_FOR, _should_skip_title, compute_fingerprint, manual_override_path,
+    render_artifact, title_text_for,
 )
 from autoposter.render.textfit import FitResult
 
@@ -148,6 +148,37 @@ def test_manual_override_is_found_when_present(config, tmp_path):
 def test_manual_override_is_none_when_absent(config, tmp_path):
     config.manual_assets_root = tmp_path
     assert manual_override_path(config, item(), "poster") is None
+
+
+def test_should_skip_title_flags_tba(config):
+    # Finding 4: reachable only once the resolver returns real episode titles.
+    assert _should_skip_title(
+        config, item(kind="episode", title="TBA", season=1, episode=1), "title_card"
+    ) is True
+
+
+def test_should_skip_title_leaves_a_normal_episode_title_alone(config):
+    assert _should_skip_title(
+        config,
+        item(kind="episode", title="Who Is Alive?", season=2, episode=3),
+        "title_card",
+    ) is False
+
+
+async def test_tba_title_card_is_skipped_without_writing_a_file(session, tmp_path):
+    config = _logo_test_config(tmp_path)
+    tba_item = item(kind="episode", title="TBA", season=1, episode=1)
+    target = naming.asset_path(
+        config, tba_item.library, tba_item.root_folder, "title_card",
+        tba_item.season_number, tba_item.episode_number,
+    )
+
+    async with _fake_http() as http:
+        render = await render_artifact(session, config, http, tba_item, "title_card", [])
+
+    assert render.status == "skipped"
+    assert "TBA" in render.detail
+    assert not target.exists()
 
 
 def test_publish_keeps_one_previous_generation(tmp_path):

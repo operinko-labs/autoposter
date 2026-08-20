@@ -23,8 +23,11 @@ class _LazyPlexServer:
     ``PlexServer(...)`` makes a blocking network call. Doing that eagerly at
     boot means a Plex outage crashloops the whole pod, taking webhook intake
     down with it. Connecting lazily lets the process start, serve /healthz,
-    and queue webhooks while Plex is unreachable; jobs that need Plex fail and
-    retry through the normal backoff path until it comes back. Every attribute
+    and queue webhooks while Plex is unreachable; jobs that need Plex get
+    ``config.plex.resolve_max_attempts`` worth of backoff (see
+    ``_handle_intent`` in app.py) instead of the generic retry cap, but an
+    outage longer than that still parks them permanently — see "Recovering
+    parked jobs" in deploy/README.md to requeue them by hand. Every attribute
     access (already happening inside a worker thread via ``PlexClient``)
     triggers a (re)connect attempt if the previous one failed or never ran.
     """

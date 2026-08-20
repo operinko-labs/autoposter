@@ -58,6 +58,12 @@ def _find_season_id(payload: dict, season_number: int) -> int | None:
     TVDB lists a season number once per "type" (official, alternate, dvd, ...);
     prefer the official entry when the type is present, and otherwise accept the
     first match so fixtures that omit type info still resolve.
+
+    NOTE: no TVDB API access is available in this environment, so the assumed
+    shape of the season ``type`` field (a nested object with its own ``type``
+    string, e.g. ``{"type": "official"}``) has not been verified against a
+    real ``/series/{id}/extended`` response. Confirm it and correct this if it
+    turns out wrong.
     """
     data = payload.get("data") or payload
     for season in data.get("seasons") or []:

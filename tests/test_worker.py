@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import asdict
 
 import pytest
+import requests
 from sqlalchemy import func, select, text
 
 from autoposter.db.models import Job
@@ -87,6 +88,31 @@ async def test_cancelled_handler_releases_job_without_consuming_an_attempt(sessi
     assert job.claimed_at is None
 
 
+async def test_cancelled_mid_db_operation_still_releases_and_propagates(session):
+    # Finding 2: if cancellation lands mid-database-operation, the session is
+    # left in a failed transaction. release()'s SELECT would raise
+    # PendingRollbackError instead of releasing the job unless the
+    # CancelledError branch rolls back first, exactly like its ItemNotFound
+    # and generic-exception siblings.
+    async def handler(session_, intent):
+        try:
+            await session_.execute(text("SELECT 1/0"))
+        except Exception:
+            pass  # the session is now in a failed transaction, same as a real DB error
+        raise asyncio.CancelledError()
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=21)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_once(session, "worker-1", handler)
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "pending"
+    assert job.claimed_by is None
+
+
 async def _make_due_now(session, job_id: int) -> None:
     """Reset a job to pending and due, using the database clock."""
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
@@ -130,6 +156,30 @@ async def test_item_not_found_survives_more_attempts_than_a_generic_failure(sess
     job2 = (await session.execute(select(Job).where(Job.id == job_id2))).scalar_one()
     await session.refresh(job2)
     assert job2.state == "parked"
+
+
+async def test_plex_connection_error_survives_more_attempts_than_a_generic_failure(session):
+    # Finding 1: a Plex connectivity failure (surfacing from _LazyPlexServer's
+    # connect attempt as a requests.exceptions.ConnectionError/Timeout, tagged
+    # by app.py's _handle_intent) must get the same larger, configurable
+    # attempt budget as ItemNotFound — not the generic MAX_ATTEMPTS cap that
+    # parks a job after ~450 seconds of backoff.
+    async def connection_error_handler(session_, intent):
+        exc = requests.exceptions.ConnectionError("Plex unreachable")
+        exc.max_attempts = MAX_ATTEMPTS + 3
+        raise exc
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=20)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    for _ in range(MAX_ATTEMPTS):
+        await _make_due_now(session, job_id)
+        await run_once(session, "worker-1", connection_error_handler)
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    # A generic failure would have parked by now; the larger budget keeps
+    # this one retrying instead of silently and permanently dropping the job.
+    assert job.state == "pending"
 
 
 async def test_db_error_in_handler_reschedules_instead_of_stranding_at_running(session):
