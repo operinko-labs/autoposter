@@ -1,3 +1,4 @@
+import asyncio
 import gzip
 import threading
 import types
@@ -5,13 +6,14 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from autoposter.db.models import ImdbRating, MediaItem
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import (
     EPISODES_URL,
     RATINGS_URL,
+    ImdbAutoRefresh,
     _wanted_ids,
     download_tsv,
     get_episode_rating,
@@ -189,3 +191,135 @@ async def test_wanted_ids_splits_movies_from_shows_via_episodes(session):
 
     assert movie_ids == {"tt0111161"}
     assert show_ids == {"tt11280740", "tt22222222"}
+
+
+# --- ImdbAutoRefresh -------------------------------------------------------
+#
+# IMDb ratings change continuously and refresh() only sees ids present in
+# media_items at the moment it runs, so a one-shot load goes stale (or
+# misses newly-imported titles entirely) unless something re-runs it
+# periodically. These tests cover the staleness check and the background
+# loop built on it (see facts/imdb.py's ImdbAutoRefresh, started/stopped in
+# app.py's lifespan the same way as PlexHealth).
+
+
+async def test_is_stale_true_when_the_table_is_empty(session):
+    assert await imdb_module._is_stale(session, interval_hours=24) is True
+
+
+async def test_is_stale_false_when_data_is_within_the_interval(session):
+    await store_ratings(session, {"tt0111161": 9.3})
+    assert await imdb_module._is_stale(session, interval_hours=24) is False
+
+
+async def test_is_stale_true_when_data_is_older_than_the_interval(session):
+    await store_ratings(session, {"tt0111161": 9.3})
+    # Backdate updated_at using the database's own clock (never this process's),
+    # matching how the rest of the codebase treats server-side timestamps.
+    await session.execute(text("UPDATE imdb_ratings SET updated_at = now() - interval '48 hours'"))
+    await session.commit()
+    assert await imdb_module._is_stale(session, interval_hours=24) is True
+
+
+async def _seed_movie(session_factory, tconst: str = "tt0111161") -> None:
+    async with session_factory() as seed:
+        seed.add(MediaItem(
+            rating_key="m1", library="Movies", kind="movie", title="M", imdb_id=tconst
+        ))
+        await seed.commit()
+
+
+async def test_auto_refresh_runs_on_startup_when_the_table_is_empty(session_factory):
+    await _seed_movie(session_factory)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_dataset_handler)) as http:
+        refresher = ImdbAutoRefresh(session_factory, http, interval_hours=24)
+        await refresher._maybe_refresh()
+
+    async with session_factory() as check:
+        assert await get_rating(check, "tt0111161") == pytest.approx(9.3)
+
+
+async def test_auto_refresh_skips_when_data_is_fresh_no_transport_call(session_factory):
+    async with session_factory() as seed:
+        await store_ratings(seed, {"tt0111161": 9.3})
+
+    called = {"n": 0}
+
+    def handler(request):
+        called["n"] += 1
+        raise AssertionError("transport must not be called when data is fresh")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        refresher = ImdbAutoRefresh(session_factory, http, interval_hours=24)
+        await refresher._maybe_refresh()
+
+    assert called["n"] == 0
+
+
+async def test_auto_refresh_runs_when_data_is_older_than_the_interval(session_factory):
+    async with session_factory() as seed:
+        seed.add(MediaItem(
+            rating_key="m1", library="Movies", kind="movie", title="M", imdb_id="tt0111161"
+        ))
+        await store_ratings(seed, {"tt0111161": 9.0})
+        await seed.execute(text("UPDATE imdb_ratings SET updated_at = now() - interval '48 hours'"))
+        await seed.commit()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_dataset_handler)) as http:
+        refresher = ImdbAutoRefresh(session_factory, http, interval_hours=24)
+        await refresher._maybe_refresh()
+
+    async with session_factory() as check:
+        assert await get_rating(check, "tt0111161") == pytest.approx(9.3)
+
+
+async def test_auto_refresh_survives_a_failed_attempt_and_retries_next_interval(
+    session_factory, monkeypatch, caplog
+):
+    """A network failure must be logged, not kill the loop: run() must still
+    make a second attempt (here, effectively immediately, since
+    interval_hours=0 keeps the test from waiting for real)."""
+    await _seed_movie(session_factory)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("boom", request=request)
+        return httpx.Response(200, content=_gzip_fixture("title.ratings.sample.tsv"))
+
+    stop_event = asyncio.Event()
+    real_maybe_refresh = ImdbAutoRefresh._maybe_refresh
+
+    async def stopping_maybe_refresh(self):
+        await real_maybe_refresh(self)
+        if calls["n"] >= 2:
+            stop_event.set()
+
+    monkeypatch.setattr(ImdbAutoRefresh, "_maybe_refresh", stopping_maybe_refresh)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        refresher = ImdbAutoRefresh(session_factory, http, interval_hours=0)
+        with caplog.at_level("WARNING"):
+            await asyncio.wait_for(refresher.run(stop_event), timeout=5)
+
+    assert calls["n"] == 2
+    assert any("automatic refresh failed" in r.message for r in caplog.records)
+    async with session_factory() as check:
+        assert await get_rating(check, "tt0111161") == pytest.approx(9.3)
+
+
+async def test_auto_refresh_does_not_run_when_disabled(session_factory):
+    await _seed_movie(session_factory)
+    called = {"n": 0}
+
+    def handler(request):
+        called["n"] += 1
+        return httpx.Response(200, content=_gzip_fixture("title.ratings.sample.tsv"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        refresher = ImdbAutoRefresh(session_factory, http, interval_hours=24, enabled=False)
+        await asyncio.wait_for(refresher.run(asyncio.Event()), timeout=5)
+
+    assert called["n"] == 0

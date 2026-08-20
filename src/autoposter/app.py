@@ -10,6 +10,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from autoposter.config.schema import Config, Secrets
+from autoposter.facts.imdb import ImdbAutoRefresh
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.intake.routes import router
@@ -76,7 +77,13 @@ def create_app(
             plex=app.state.plex, providers=app.state.providers,
             tmdb_facts=app.state.tmdb_facts, mdblist=app.state.mdblist,
         )
+        imdb_refresh = ImdbAutoRefresh(
+            session_factory, http,
+            interval_hours=config.operations.imdb_refresh_hours,
+            enabled=config.operations.imdb_refresh_enabled,
+        )
         health_task = asyncio.create_task(health.run(stop_event))
+        imdb_task = asyncio.create_task(imdb_refresh.run(stop_event))
         task = asyncio.create_task(
             run_workers(
                 config.workers, session_factory, handler, stop_event,
@@ -90,7 +97,8 @@ def create_app(
             stop_event.set()
             task.cancel()
             health_task.cancel()
-            await asyncio.gather(task, health_task, return_exceptions=True)
+            imdb_task.cancel()
+            await asyncio.gather(task, health_task, imdb_task, return_exceptions=True)
             await http.aclose()
 
     app = FastAPI(title="autoposter", lifespan=lifespan)

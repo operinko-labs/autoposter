@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 from collections.abc import Iterable, Iterator
+from datetime import timedelta
 
 import httpx
 from sqlalchemy import func, select
@@ -247,13 +248,100 @@ async def _wanted_ids(session: AsyncSession) -> tuple[set[str], set[str]]:
     return movie_ids, show_ids
 
 
+async def _stored_episode_count(session: AsyncSession, show_ids: set[str]) -> int:
+    if not show_ids:
+        return 0
+    return (
+        await session.execute(
+            select(func.count()).select_from(ImdbEpisode).where(
+                ImdbEpisode.parent_tconst.in_(show_ids)
+            )
+        )
+    ).scalar_one()
+
+
+async def _is_stale(session: AsyncSession, interval_hours: float) -> bool:
+    """Whether ``imdb_ratings`` is empty or its newest row predates the interval.
+
+    Both sides of the comparison come from the database clock (``func.now()``
+    and the column's server-set ``updated_at``), not the host's — the two can
+    disagree, and this module never mixes them.
+    """
+    newest, now = (
+        await session.execute(select(func.max(ImdbRating.updated_at), func.now()))
+    ).one()
+    if newest is None:
+        return True
+    return now - newest >= timedelta(hours=interval_hours)
+
+
+class ImdbAutoRefresh:
+    """Background refresh of the IMDb datasets.
+
+    Same shape as ``plex.health.PlexHealth``: a single ``run(stop_event)``
+    coroutine that the app lifespan starts as a task and cancels on shutdown,
+    so this never blocks startup and never stalls the event loop (the actual
+    parsing still runs via ``asyncio.to_thread`` inside ``refresh()``).
+
+    IMDb ratings change continuously, and ``refresh()`` only knows about the
+    ids present in ``media_items`` at the moment it runs — a title imported
+    since the last refresh has no row at all until the next one — so this has
+    to run periodically rather than once.
+    """
+
+    def __init__(
+        self,
+        session_factory,
+        http: httpx.AsyncClient,
+        interval_hours: float = 24,
+        enabled: bool = True,
+    ):
+        self._session_factory = session_factory
+        self._http = http
+        self._interval_hours = interval_hours
+        self._enabled = enabled
+
+    async def run(self, stop_event: asyncio.Event) -> None:
+        if not self._enabled:
+            return
+        while not stop_event.is_set():
+            await self._maybe_refresh()
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=self._interval_hours * 3600
+                )
+            except asyncio.TimeoutError:
+                pass
+            else:
+                return
+
+    async def _maybe_refresh(self) -> None:
+        """Refresh if stale. Never raises: a failed attempt just waits for the
+        next interval, same as PlexHealth.refresh_token's error handling."""
+        try:
+            async with self._session_factory() as session:
+                if not await _is_stale(session, self._interval_hours):
+                    return
+                movie_ids, show_ids = await _wanted_ids(session)
+                rating_count = await refresh(session, self._http, movie_ids, show_ids)
+                episode_count = await _stored_episode_count(session, show_ids)
+        except Exception as exc:  # noqa: BLE001 - deliberately never propagates
+            logger.warning("imdb: automatic refresh failed (will retry next interval): %s", exc)
+            return
+        logger.info(
+            "imdb: automatic refresh stored %d rating(s) and %d episode row(s)",
+            rating_count, episode_count,
+        )
+
+
 async def _run_cli() -> int:
     """One-shot loader: ``python -m autoposter.facts.imdb``.
 
-    Phase 3 owns the scheduler; until then, nothing calls ``refresh()`` at
-    all, so an operator must run this by hand — at least once before metadata
-    operations can produce a non-NULL ``critic_rating``, and periodically
-    after (IMDb publishes new datasets daily).
+    The app itself refreshes this dataset automatically in the background
+    (see ``ImdbAutoRefresh``), on the schedule set by
+    ``operations.imdb_refresh_hours``. This entry point remains useful for a
+    first load before the app has run, or to force a refresh immediately
+    rather than waiting for the next interval.
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     database_url = os.environ.get("AUTOPOSTER_DATABASE_URL")
@@ -267,13 +355,7 @@ async def _run_cli() -> int:
         async with session_factory() as session, httpx.AsyncClient() as http:
             movie_ids, show_ids = await _wanted_ids(session)
             rating_count = await refresh(session, http, movie_ids, show_ids)
-            episode_count = (
-                await session.execute(
-                    select(func.count()).select_from(ImdbEpisode).where(
-                        ImdbEpisode.parent_tconst.in_(show_ids)
-                    )
-                )
-            ).scalar_one() if show_ids else 0
+            episode_count = await _stored_episode_count(session, show_ids)
     finally:
         await engine.dispose()
 

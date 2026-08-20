@@ -46,14 +46,30 @@ date — replacing Kometa's `mass_*_update`):
 - `write_to_plex` (default `true`) — off means facts are still gathered and
   stored in `item_facts`, but nothing is written to Plex. The safe setting
   while the tool being replaced (Kometa) still owns these fields.
+- `imdb_refresh_hours` (default `24`) — how often the IMDb ratings dataset is
+  refreshed in the background; see "Loading IMDb ratings" below.
+- `imdb_refresh_enabled` (default `true`) — off disables the automatic
+  refresh entirely, for operators who prefer to run it by hand.
 
 See `config/autoposter.example.yaml` for the full block.
 
 ## Loading IMDb ratings
 
 `critic_rating` (IMDb) is populated from IMDb's bulk datasets, not a live API
-call. Nothing in this phase schedules that load automatically — a scheduler is
-Phase 3's job — so it must be run by hand:
+call. The app refreshes these automatically in the background: once at
+startup if `imdb_ratings` is missing or older than `imdb_refresh_hours`
+(default 24), then every `imdb_refresh_hours` after that. The refresh runs as
+a background task — like the Plex health probe — so it never blocks startup
+or the request/worker loop, even while parsing the ~60 MB datasets.
+
+The one behaviour operators will notice: a title imported since the last
+refresh has no IMDb rating until the next one runs, so a newly added film's
+`critic_rating` can lag by up to `imdb_refresh_hours`. This is expected, not
+a bug — set `imdb_refresh_hours` lower if that lag is a problem.
+
+To force a refresh immediately (e.g. for a first load before the app has run,
+or after changing which titles are in the library) rather than waiting for
+the next interval, run the same loader by hand:
 
 ```
 python -m autoposter.facts.imdb
@@ -63,12 +79,6 @@ This needs only `AUTOPOSTER_DATABASE_URL` in the environment. It selects the
 IMDb ids the library actually needs from `media_items`, downloads and parses
 both datasets, upserts `imdb_ratings`/`imdb_episodes`, and prints how many
 rating and episode rows were stored.
-
-**Run this at least once before metadata operations can produce a non-NULL
-`critic_rating`** — without it, `imdb_ratings`/`imdb_episodes` stay empty
-forever, `get_rating`/`get_episode_rating` return `None` for everything, and
-Plex's critic rating is never written, with no error or warning. Re-run
-periodically afterwards, since IMDb republishes both datasets daily.
 
 ## Obtaining AUTOPOSTER_PLEX_TOKEN
 
