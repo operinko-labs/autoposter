@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from urllib.parse import quote
 
 from autoposter.facts.gather import format_audience, format_critic
 from autoposter.facts.models import GatheredFacts
@@ -26,6 +27,37 @@ WRITABLE_BY_KIND: dict[str, set[str]] = {
 
 def _current_genres(item) -> list[str]:
     return [g.tag for g in getattr(item, "genres", []) or []]
+
+
+def _genre_edits(current: list[str], target: list[str]) -> dict[str, object]:
+    """Field/value pairs that set the genre list to exactly `target`.
+
+    Verified empirically against the production server: a single-item
+    indexed tag write (`genre[0].tag.tag=...`) does not replace the genre
+    set, it merges with whatever genres the item already has -- the same
+    merge behaviour previously found for label edits, now confirmed to
+    also hold for genres on a single-item (non-batch) write. So setting
+    the list exactly means adding what's missing and explicitly removing
+    what's surplus, using the same indexed-tag wire format plexapi's own
+    EditTagsMixin._tagHelper uses (also verified empirically to handle
+    multi-word tag values correctly).
+    """
+    current_set = set(current)
+    target_set = set(target)
+    additions = [g for g in target if g not in current_set]
+    removals = [g for g in current if g not in target_set]
+
+    if not additions and not removals:
+        return {}
+
+    edits: dict[str, object] = {}
+    for i, genre in enumerate(additions):
+        edits[f"genre[{i}].tag.tag"] = genre
+    if removals:
+        edits["genre[].tag.tag-"] = ",".join(quote(str(g)) for g in removals)
+    # Locked so Plex's own agent does not revert a value this tool owns.
+    edits["genre.locked"] = 1
+    return edits
 
 
 def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
@@ -67,6 +99,11 @@ def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
         if current_str != formatted:
             put("originallyAvailableAt", formatted)
 
+    if "genres" in writable and facts.genres:
+        current_genres = _current_genres(item)
+        if sorted(current_genres) != sorted(facts.genres):
+            edits.update(_genre_edits(current_genres, facts.genres))
+
     return edits
 
 
@@ -77,21 +114,12 @@ async def apply_facts(item, facts: GatheredFacts) -> dict[str, object]:
     batching the fields together turns six writes into one.
     """
     edits = plan_edits(item, facts)
-    writable = WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set())
-    new_genres = None
-    if "genres" in writable and facts.genres:
-        if sorted(_current_genres(item)) != sorted(facts.genres):
-            new_genres = facts.genres
-
-    if not edits and new_genres is None:
+    if not edits:
         return {}
 
     def _write() -> None:
         item.batchEdits()
-        if edits:
-            item.edit(**edits)
-        if new_genres is not None:
-            item.addGenre(new_genres, locked=True)
+        item.edit(**edits)
         item.saveEdits()
 
     await asyncio.to_thread(_write)

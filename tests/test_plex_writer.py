@@ -1,4 +1,5 @@
 from datetime import date
+from urllib.parse import unquote
 
 import pytest
 
@@ -7,7 +8,17 @@ from autoposter.plex.writer import WRITABLE_BY_KIND, apply_facts, plan_edits
 
 
 class FakeItem:
-    """Models the plexapi surface the writer touches."""
+    """Models the plexapi surface the writer touches.
+
+    The genre handling here models plexapi's *real* wire behaviour, not the
+    behaviour we'd wish it had: a single-item indexed tag write
+    (`genre[0].tag.tag=...`) MERGES with the item's existing genres rather
+    than replacing them, and does not dedupe -- sending a value that's
+    already present creates a second copy. This was verified empirically
+    against a production Plex server. An earlier version of this double
+    modeled `addGenre` as a set/replace operation, which hid the bug where
+    `apply_facts` could only ever grow the genre list, never correct it.
+    """
 
     def __init__(self, kind="movie", **attrs):
         self.type = kind
@@ -31,10 +42,14 @@ class FakeItem:
 
     def edit(self, **kwargs):
         self.edits.update(kwargs)
-        return self
-
-    def addGenre(self, genres, locked=True):
-        self.edits["genres"] = genres
+        for key, value in kwargs.items():
+            if key.startswith("genre[") and key.endswith("].tag.tag"):
+                # Merge, not replace -- and no dedupe, matching the real
+                # server's behaviour for indexed tag writes.
+                self.genres.append(type("G", (), {"tag": value})())
+            elif key == "genre[].tag.tag-":
+                removed = {unquote(v) for v in value.split(",")}
+                self.genres = [g for g in self.genres if g.tag not in removed]
         return self
 
 
@@ -116,7 +131,35 @@ async def test_apply_does_nothing_when_there_is_nothing_to_write():
     assert item.batched is False
 
 
-async def test_genres_are_applied_through_addgenre():
+async def test_genres_are_applied_through_edit():
     item = FakeItem(genres=["Horror"])
-    await apply_facts(item, GatheredFacts(genres=["Horror", "Drama"]))
-    assert item.edits["genres"] == ["Horror", "Drama"]
+    written = await apply_facts(item, GatheredFacts(genres=["Horror", "Drama"]))
+    assert written["genre[0].tag.tag"] == "Drama"
+    assert written["genre.locked"] == 1
+    assert "genre[].tag.tag-" not in written
+    assert sorted(g.tag for g in item.genres) == ["Drama", "Horror"]
+
+
+async def test_genres_that_drop_one_do_not_survive():
+    """Regression test for the concatenating-addGenre bug: the old
+    implementation could only grow the genre list, so a target that drops
+    a currently-held genre would still leave that genre in place (and
+    duplicate any that were kept). This must actually remove it.
+    """
+    item = FakeItem(genres=["Horror", "Comedy"])
+    written = await apply_facts(item, GatheredFacts(genres=["Horror", "Drama"]))
+    assert sorted(g.tag for g in item.genres) == ["Drama", "Horror"]
+    assert written["genre[0].tag.tag"] == "Drama"
+    assert unquote(written["genre[].tag.tag-"]) == "Comedy"
+
+
+async def test_genre_only_change_is_reported_in_the_return_value():
+    """Finding 2 regression: a genre-only write must not report {} / log 0
+    fields written, since a real write did happen.
+    """
+    item = FakeItem(rating=4.9, genres=["Horror"])
+    written = await apply_facts(
+        item, GatheredFacts(critic_rating=4.9, genres=["Horror", "Drama"])
+    )
+    assert written != {}
+    assert written["genre[0].tag.tag"] == "Drama"
