@@ -1,0 +1,21 @@
+{
+  "name": "Severance",
+  "thetvdb_id": "371980",
+  "tvposter": [
+    { "id": "180539", "url": "https://assets.fanart.tv/a.jpg", "lang": "en", "likes": "3" },
+    { "id": "176503", "url": "https://assets.fanart.tv/b.jpg", "lang": "00", "likes": "7" }
+  ],
+  "showbackground": [
+    { "id": "180543", "url": "https://assets.fanart.tv/c.jpg", "lang": "", "likes": "6",
+      "season": "all" }
+  ],
+  "seasonposter": [
+    { "id": "185928", "url": "https://assets.fanart.tv/s1.jpg", "lang": "00", "likes": "2",
+      "season": "1" },
+    { "id": "185929", "url": "https://assets.fanart.tv/s2.jpg", "lang": "en", "likes": "5",
+      "season": "2" }
+  ],
+  "hdtvlogo": [
+    { "id": "176500", "url": "http://assets.fanart.tv/logo.png", "lang": "en", "likes": "4" }
+  ]
+}

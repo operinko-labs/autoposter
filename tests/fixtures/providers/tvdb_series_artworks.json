@@ -1,0 +1,18 @@
+{
+  "data": {
+    "artworks": [
+      { "id": 63280427, "image": "https://artworks.thetvdb.com/banners/a.jpg",
+        "language": "eng", "type": 2, "score": 100000,
+        "width": 680, "height": 1000, "includesText": true },
+      { "id": 63280428, "image": "https://artworks.thetvdb.com/banners/b.jpg",
+        "language": null, "type": 2, "score": 90000,
+        "width": 680, "height": 1000, "includesText": false },
+      { "id": 63280429, "image": "https://artworks.thetvdb.com/banners/c.jpg",
+        "language": "eng", "type": 2, "score": 120000,
+        "width": 680, "height": 1000, "includesText": false },
+      { "id": 63280430, "image": "https://artworks.thetvdb.com/banners/d.jpg",
+        "language": "eng", "type": 3, "score": 50000,
+        "width": 1920, "height": 1080, "includesText": false }
+    ]
+  }
+}
