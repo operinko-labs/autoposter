@@ -5212,3 +5212,124 @@ Only once 1–6 hold should Posterizarr be switched off.
 - `item_facts` is not created in Phase 1 — it belongs to Phase 2 with the badge overlays, which is where resolution, codec, and rating values first matter.
 - `provider_cache` is created but not yet read from. Phase 2 wires TTL caching in front of the provider clients.
 - Episode title cards depend on TMDB `stills`; TVDB exposes only one image per episode and Fanart has no episode artwork at all. If title-card coverage proves thin, that is the reason, and MediUX sets are the remedy.
+
+---
+
+## Implementation deviations
+
+The task code in this plan was written before implementation. Review found real
+defects in several of those code blocks. The shipped implementation is the
+authority; this section records where it diverges and why, so nobody re-derives
+a fixed bug from the plan text.
+
+**Queue timestamps come from the database clock (Tasks 2, 3, 12).**
+The plan computed `run_after` and the model timestamps in Python. The
+application and database clocks drift — measured at 9.5s between a Windows host
+and its Postgres container, and possible between pods — which made jobs fire
+early or late by the drift. `enqueue()`, `fail()` and every `created_at` /
+`updated_at` / `rendered_at` now derive from Postgres `now()`. Tests obtain
+"now" via `SELECT now()` for the same reason. See the Global Constraints entry.
+
+**Webhook intake hardening (Task 5).**
+Three defects in the plan's `routes.py`: `secrets.compare_digest` on `str`
+raised `TypeError` for a non-ASCII token, returning 500 instead of 401 (now
+compares bytes); a malformed body lost the `events_log` row entirely, which is
+the one record an operator needs when something goes wrong (the body is now
+logged before parsing, and an unparseable body returns 400); and the exception
+guard was wide enough to report a parser bug as the sender's fault, so a
+`parse_*` failure on a well-formed object now logs the structured payload and
+propagates as a 500.
+
+**Provider clients share one signature (Task 9).**
+The plan gave each client a different `fetch` signature while the ladder called
+them interchangeably — that could not have worked. All three now take a single
+`ArtRequest`. A client whose required identifier is missing returns `[]` rather
+than raising, and Fanart's all-strings `likes` field is parsed defensively.
+
+**Plex resolution navigates to the actual item (Tasks 11, 12).**
+The plan's resolver searched only by series GUID, so season and episode intents
+resolved to the *show*. Title cards would have carried the show name instead of
+the episode title, season posters the show name instead of "Season N", and
+`SkipTBA` could never match. Worse, every season and episode of a show
+collapsed into one `media_items` row and one `renders` row per art kind, so
+fingerprints clobbered each other and re-delivery re-rendered everything. The
+resolver now navigates show → season/episode and returns that item's rating key
+and title, while `root_folder` still derives from the show's directory because
+that is where the assets live. `parent_id` is populated when the parent row
+exists.
+
+Also: a library split across several mount points raised an unhandled
+`ValueError`; every root is now tried and a genuine miss raises a diagnostic
+`ItemNotFound`. All `plexapi` attribute access happens inside the worker thread
+via a plain-data `_RawMatch`, because `plexapi` lazily reloads over HTTP and
+would otherwise block the event loop.
+
+**Posters composite a clearlogo, not title text (Task 12).**
+The plan's prose said a clearlogo replaces the title text under `use_logo: true`
+with `logo_text_fallback: false`, but its code never fetched or composited one —
+leaving `build_logo_argv` and the entire `LOGO` provider path as dead code, and
+every poster carrying text where production shows a logo. Now implemented for
+the poster art kind, with all four branches covered.
+
+**The fingerprint covers asset bytes, not just filenames (Task 12).**
+Replacing `overlay.png` or a font in place, keeping the filename, left every
+affected asset with an unchanged fingerprint and silently un-regenerated. The
+overlay, font and logo contents are now hashed into it.
+
+**Upserts are concurrency-safe, and backups keep library identity (Task 12).**
+`_upsert_media_item` / `_get_or_create_render` used select-then-insert against
+unique constraints; with five workers that raised `IntegrityError` and killed a
+render pass. Both now use `ON CONFLICT`, matching `queue/jobs.py::enqueue`.
+`_publish` backed up by the parent folder's *name* alone, so two libraries
+sharing a folder name clobbered each other's only backup generation; it now
+mirrors the asset tree relative to the assets root.
+
+**Blocking work runs off the event loop (Tasks 12, 13).**
+Every ImageMagick call and bulk file operation ran synchronously on the loop
+uvicorn serves from, so `workers: 5` bought no compositing concurrency and a
+season-pack import could stall health probes past a 1s liveness timeout. All of
+it is now offloaded with `asyncio.to_thread`.
+
+**Interrupted jobs are recovered (Task 13).**
+The plan had no reclaim path, so a job left at `running` when the process died
+was stranded forever — breaking completion criterion 5. `asyncio.CancelledError`
+is a `BaseException` and slipped past `except Exception`, so graceful shutdown
+stranded jobs too. Now: cancellation releases the job without charging a retry,
+and `reclaim_stale()` resets claims older than 900s at startup.
+
+**Plex is not a boot dependency (Task 13).**
+Constructing `PlexServer` eagerly meant a Plex outage crashlooped the pod and
+dropped webhooks. It is now lazy, so the service boots, serves `/healthz` and
+queues webhooks while Plex is down. Plex connectivity failures inherit
+`plex.resolve_max_attempts` rather than the generic retry cap.
+
+**Titles are escaped before reaching ImageMagick (Tasks 7, 8).**
+`caption:{text}` interpolated arbitrary titles. A leading `@` makes ImageMagick
+read a local file, and `%` triggers property-escape expansion — "100% Wolf"
+(2020) is a real film. Both are neutralised by a shared helper used by the
+measuring and drawing paths, so the fitted size matches the drawn text.
+
+**Smaller corrections.** `plex.resolve_max_attempts` was a declared config field
+no code read. `Plex` appeared in the default provider order with no such client,
+silently dropped; unknown provider names are now warned about, and `Plex` was
+removed from the default. The TVDB token was cached forever with no refresh,
+silently losing TVDB after a month. `ArtRequest.season_id` was never populated,
+so TVDB could never serve season posters. `session.rollback()` now precedes
+`fail()`, which previously stranded jobs after a database error. The unused
+`structlog` dependency was dropped.
+
+### Still unverified — must be confirmed before cutover
+
+These cannot be checked without the production environment:
+
+1. **Golden-image parity.** The parity tests skip: they need real ImageMagick
+   and fixtures harvested from the production `/assets` tree. Completion
+   criterion 1 is **not met** until they run.
+2. **Asset-path adoption.** `scripts/verify_asset_paths.py` has never run
+   against the real tree. Criterion 2 is unverified.
+3. **Caption escaping.** The `%%` and leading-`@` handling is reasoned, not
+   tested against a real `magick` binary. Flagged in the code.
+4. **TVDB season type shape.** `_find_season_id` assumes a response shape that
+   no live API call has confirmed. Flagged in the code.
+5. **A real season and episode end to end.** No test wires `resolve()` through
+   to `render_artifact` for a non-movie against a live Plex server.
