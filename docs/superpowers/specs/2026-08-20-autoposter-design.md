@@ -181,6 +181,18 @@ All cadences configurable.
   from Radarr/Sonarr get registered in place, with `/mnt/media` ↔
   `/mnt/Media` path mapping. Safety net: any Plex item with no `media_items`
   row is enqueued — eventual consistency even if webhooks fail.
+**Provider request budget (binding on every scheduled pass).** Fanart.tv's
+terms require that a client not "perform more requests than are necessary for
+each user" and explicitly forbid downloading all of their content. The
+event-driven path already satisfies this — one item per webhook — but the
+scheduled passes walk the whole library and are where a careless implementation
+becomes a bulk crawl. Therefore: the adoption run and the ratings drift sweep
+must read from `provider_cache` first, must not re-fetch artwork for items whose
+fingerprint is unchanged, and must rate-limit per provider. Adoption in
+particular resolves nothing from the artwork providers at all — it hashes what
+is already on disk. The same courtesy applies to TMDB and TVDB, which are
+merely less explicit about it.
+
 - **Asset cleanup (weekly).** `AssetCleanup` parity: assets whose item no
   longer exists move to `/assetsbackup`.
 

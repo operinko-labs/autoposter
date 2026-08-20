@@ -122,3 +122,10 @@ build rather than silently changing output.
 
 HDRI also permits float-format source artwork (`.exr`, `.hdr`) to be dropped
 into the manual-assets directory.
+
+## Provider API keys
+
+Each operator supplies their own keys; none are embedded in the image.
+`AUTOPOSTER_FANART_APIKEY` is a personal key from your own fanart.tv account —
+keep that account's email address current, as their terms require, since it is
+how they would contact you about the key.

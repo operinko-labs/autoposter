@@ -80,9 +80,28 @@ user-facing surface yet; see the note below.
 
 Artwork provided by [fanart.tv](https://fanart.tv/).
 
-Their terms of use could not be retrieved automatically to confirm the exact
-wording they require. **Check <https://fanart.tv/terms-of-use/> and adjust this
-section before any public release.**
+Fanart.tv's attribution obligation ("if you have a publicly available program,
+you must inform your users of this website and the images you use") applies to
+their **project API key** — the key a developer embeds in a distributed
+application. This project embeds no key: each operator supplies their own
+personal key via `AUTOPOSTER_FANART_APIKEY`, obtained from their own fanart.tv
+account, so that obligation does not attach and every user reaches the site
+anyway. The credit above is kept as a courtesy.
+
+Two of their conditions do apply regardless of key type and are treated as
+design constraints rather than documentation:
+
+- *"Do not perform more requests than are necessary for each user. This means
+  no downloading all of our content. Play nice with our server."* — the
+  pipeline is event-driven and fetches per item; the scheduled passes in later
+  phases must not bulk-crawl Fanart. See the spec's scheduler section.
+- *"You MUST keep the email address in your account information current and
+  accurate in case we need to contact you regarding your key."* — an operator
+  responsibility, noted in `deploy/README.md`.
+
+If a project key is ever adopted, Fanart also accepts a personal key as
+`client_key` alongside it, which shortens their artwork-freshness delay from
+about seven days to about two.
 
 ### Required in the web UI
 
@@ -94,6 +113,7 @@ showing artwork or metadata from these providers — not only in this file:
 - **TMDB** — the notice above **and the TMDB logo**, displayed prominently, and
   less prominently than this application's own branding. The logo asset needs
   to be added to `assets/` as part of that work.
-- **Fanart.tv** — to be confirmed, as above.
+- **Fanart.tv** — no in-UI attribution required while each operator supplies
+  their own personal key, as above. Revisit if a project key is ever adopted.
 
 This is tracked as a requirement of the UI in the spec, not as a follow-up.
