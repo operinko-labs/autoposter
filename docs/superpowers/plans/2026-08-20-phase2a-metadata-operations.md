@@ -15,6 +15,7 @@
 Every task's requirements implicitly include these. All values were verified against the production deployment or the providers' live APIs — do not substitute guesses.
 
 - **Everything from Phase 1 still applies:** database clock for all timestamps (`func.now()`, never `datetime.now()` — app and DB clocks drift ~9.5s here), Postgres only, `ON CONFLICT` upserts for anything concurrent, `asyncio.to_thread` for blocking work, no secrets in cache keys, tests never make real network calls.
+- **Every provider request goes through the Phase 1 cache** (`providers/fetch.py::fetch_json` + `ProviderCache`, 24h default TTL). This is the single biggest win over the tool being replaced, which re-fetches ratings for all ~13,000 episodes on every library run. Here an episode's season is fetched once and reused, and IMDb needs no per-episode request at all.
 - **Operations run before overlays.** Kometa's default `run_order` is `operations, metadata, collections, overlays`, and its ratings overlay reads **Plex's own fields**, not the providers. So facts must be written to Plex before Phase 2b renders badges from them. Preserve that ordering.
 - **Provider → Plex field mapping** (from the user's Kometa config, reproduce exactly):
 
@@ -796,6 +797,61 @@ async def test_client_returns_empty_facts_on_404():
     ) as http:
         facts = await TMDBFactsClient("tok", http).movie(1)
     assert facts.is_empty()
+
+
+async def test_repeated_season_lookups_hit_the_cache_not_the_api(session):
+    """A season-pack import asks for one season repeatedly — pay once.
+
+    This is the whole reason episode ratings are affordable per-item: without
+    it, importing a 10-episode season means 10 identical TMDB requests.
+    """
+    from autoposter.providers.cache import ProviderCache
+
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json=load("tmdb_season.json"))
+
+    cache = ProviderCache(session_factory_for(session))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = TMDBFactsClient("tok", http, cache=cache, cache_ttl_seconds=3600)
+        first = await client.season_episode_ratings(95396, 2)
+        second = await client.season_episode_ratings(95396, 2)
+
+    assert first == second
+    assert len(calls) == 1, "second lookup should have been served from the cache"
+
+
+async def test_without_a_cache_every_lookup_hits_the_api():
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json=load("tmdb_season.json"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = TMDBFactsClient("tok", http)
+        await client.season_episode_ratings(95396, 2)
+        await client.season_episode_ratings(95396, 2)
+
+    assert len(calls) == 2
+```
+
+`session_factory_for` is a one-line helper the implementer adds to
+`tests/conftest.py`, returning a callable that yields the existing test
+session so `ProviderCache` can open its own context:
+
+```python
+def session_factory_for(session):
+    """Adapt the function-scoped test session to ProviderCache's factory API."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def factory():
+        yield session
+
+    return factory
 ```
 
 - [ ] **Step 3: Run the tests to verify they fail**
@@ -814,6 +870,8 @@ from datetime import date, datetime
 import httpx
 
 from autoposter.facts.models import GatheredFacts
+from autoposter.providers.cache import ProviderCache
+from autoposter.providers.fetch import fetch_json
 
 logger = logging.getLogger(__name__)
 
@@ -916,23 +974,40 @@ class TMDBFactsClient:
 
     Separate from the artwork client because it asks different endpoints for
     different reasons; they share only the bearer token.
+
+    Every request goes through the Phase 1 cache seam. That matters most for
+    episodes: one season-pack import asks for the same season's ratings once
+    per episode, and without the cache that is one API call each. With it, the
+    first episode pays and the rest are free until the TTL expires.
     """
 
     name = "TMDB"
 
-    def __init__(self, token: str, client: httpx.AsyncClient):
+    def __init__(
+        self,
+        token: str,
+        client: httpx.AsyncClient,
+        cache: ProviderCache | None = None,
+        cache_ttl_seconds: int = 24 * 3600,
+    ):
         self._token = token
         self._client = client
+        self._cache = cache
+        self._cache_ttl_seconds = cache_ttl_seconds
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._token}", "accept": "application/json"}
 
     async def _get(self, path: str) -> dict | None:
-        response = await self._client.get(f"{BASE_URL}{path}", headers=self._headers())
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        return response.json()
+        url = f"{BASE_URL}{path}"
+        return await fetch_json(
+            method="GET",
+            url=url,
+            params=None,
+            request=lambda: self._client.get(url, headers=self._headers()),
+            cache=self._cache,
+            ttl_seconds=self._cache_ttl_seconds,
+        )
 
     async def movie(self, tmdb_id: int) -> GatheredFacts:
         payload = await self._get(f"/movie/{tmdb_id}")
@@ -951,7 +1026,7 @@ class TMDBFactsClient:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `rtk proxy python -m pytest tests/test_tmdb_facts.py -v`
-Expected: PASS — 12 passed
+Expected: PASS — 14 passed
 
 - [ ] **Step 6: Commit**
 
