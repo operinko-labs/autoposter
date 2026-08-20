@@ -1,0 +1,17 @@
+# Local copies of the old tools' configs — contain live API keys, never commit
+posterizarr-config.txt
+kometa-config.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# Env / secrets
+.env
+.env.*
