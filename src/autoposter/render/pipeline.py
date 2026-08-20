@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.schema import Config
@@ -42,14 +43,33 @@ def compute_fingerprint(
     source_url: str | None,
     base_sha256: str | None,
     text_inputs: list[str],
+    asset_hashes: list[str] = (),
 ) -> str:
     """Hash every input that affects the finished image.
 
     Re-rendering happens only when this value changes, which is what turns a
     library-wide pass into a cheap comparison instead of 16k image operations.
+    ``asset_hashes`` carries the content hashes of files that affect the pixels
+    but are not otherwise reflected here (overlay, font, logo) — a filename
+    alone does not change when an operator replaces the file in place.
     """
-    parts = [config_version, art_kind, source_url or "", base_sha256 or "", *text_inputs]
+    parts = [
+        config_version, art_kind, source_url or "", base_sha256 or "",
+        *text_inputs, *asset_hashes,
+    ]
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    """SHA-256 of a file's bytes, or ``""`` if it does not exist.
+
+    The sentinel keeps ``compute_fingerprint`` usable in tests and environments
+    that lack the real asset files (fonts, overlays) on disk.
+    """
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return ""
 
 
 def art_config_for(config: Config, art_kind: str):
@@ -108,45 +128,60 @@ async def _download(http: httpx.AsyncClient, url: str, destination: Path) -> str
 
 
 async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> MediaItem:
-    existing = (
+    """Insert or update the item, safe under concurrent workers.
+
+    ``rating_key`` carries a real unique constraint. A select-then-insert here
+    would race: two workers can both miss the select and both try to insert,
+    and the loser's flush raises ``IntegrityError``. The Postgres upsert makes
+    the write atomic; the row is then re-selected to get an ORM-tracked object.
+    """
+    mutable = dict(
+        library=item.library,
+        kind=item.kind,
+        title=item.title,
+        year=item.year,
+        season_number=item.season_number,
+        episode_number=item.episode_number,
+        root_folder=item.root_folder,
+        file_path=item.file_path,
+        tmdb_id=item.tmdb_id,
+        tvdb_id=item.tvdb_id,
+        imdb_id=item.imdb_id,
+    )
+    stmt = insert(MediaItem).values(rating_key=item.rating_key, **mutable)
+    stmt = stmt.on_conflict_do_update(index_elements=["rating_key"], set_=mutable)
+    await session.execute(stmt)
+    await session.flush()
+    return (
         await session.execute(
             select(MediaItem).where(MediaItem.rating_key == item.rating_key)
         )
-    ).scalar_one_or_none()
-    if existing is None:
-        existing = MediaItem(rating_key=item.rating_key)
-        session.add(existing)
-    existing.library = item.library
-    existing.kind = item.kind
-    existing.title = item.title
-    existing.year = item.year
-    existing.season_number = item.season_number
-    existing.episode_number = item.episode_number
-    existing.root_folder = item.root_folder
-    existing.file_path = item.file_path
-    existing.tmdb_id = item.tmdb_id
-    existing.tvdb_id = item.tvdb_id
-    existing.imdb_id = item.imdb_id
-    await session.flush()
-    return existing
+    ).scalar_one()
 
 
 async def _get_or_create_render(
     session: AsyncSession, media_item: MediaItem, art_kind: str, asset_path: Path
 ) -> Render:
-    render = (
+    """Insert or update the render row, safe under concurrent workers.
+
+    ``(item_id, art_kind)`` carries a real unique constraint; see
+    ``_upsert_media_item`` for why select-then-insert is unsafe here.
+    """
+    stmt = insert(Render).values(
+        item_id=media_item.id, art_kind=art_kind, asset_path=str(asset_path)
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["item_id", "art_kind"], set_={"asset_path": str(asset_path)}
+    )
+    await session.execute(stmt)
+    await session.flush()
+    return (
         await session.execute(
             select(Render).where(
                 Render.item_id == media_item.id, Render.art_kind == art_kind
             )
         )
-    ).scalar_one_or_none()
-    if render is None:
-        render = Render(item_id=media_item.id, art_kind=art_kind, asset_path=str(asset_path))
-        session.add(render)
-        await session.flush()
-    render.asset_path = str(asset_path)
-    return render
+    ).scalar_one()
 
 
 async def render_artifact(
@@ -213,9 +248,52 @@ async def render_artifact(
             provider_name = candidate.provider
             textless = candidate.is_textless
 
-        text_inputs = [t for t in (primary_text, secondary_text) if t]
+        # Posterizarr parity: UseLogo/UseClearlogo composites a clearlogo in place
+        # of the title text on posters. With LogoTextFallback false, a poster with
+        # no logo on any provider gets neither logo nor text (spec section on
+        # clearlogos). Other art kinds are unaffected.
+        logo_path: Path | None = None
+        logo_sha = ""
+        suppress_text = False
+        if art_kind == "poster" and config.artwork.use_logo and settings.text is not None:
+            logo_selection = await select_artwork(
+                providers,
+                config.artwork.logo_language_order,
+                art.ArtRequest(
+                    art_kind=art.LOGO,
+                    is_movie=item.kind == "movie",
+                    tmdb_id=item.tmdb_id,
+                    tvdb_id=item.tvdb_id,
+                    imdb_id=item.imdb_id,
+                    season_number=item.season_number,
+                    episode_number=item.episode_number,
+                ),
+            )
+            if logo_selection.candidate is not None:
+                logo_candidate = logo_selection.candidate
+                suffix = Path(httpx.URL(logo_candidate.url).path).suffix or ".png"
+                logo_path = Path(tmpdir) / f"logo{suffix}"
+                logo_sha = await _download(http, logo_candidate.url, logo_path)
+            elif not config.artwork.logo_text_fallback:
+                suppress_text = True
+
+        draw_text = not (art_kind == "poster" and (logo_path is not None or suppress_text))
+
+        text_inputs = [t for t in (primary_text, secondary_text) if t] if draw_text else []
+        overlay_hash = (
+            _file_sha256(Path(config.overlays_root) / settings.overlay_file)
+            if settings.add_overlay
+            else ""
+        )
+        font_hashes = []
+        if draw_text and settings.text is not None and primary_text:
+            font_hashes.append(_file_sha256(Path(config.fonts_root) / settings.text.font))
+        if art_kind == "title_card" and settings.episode_text is not None and secondary_text:
+            font_hashes.append(_file_sha256(Path(config.fonts_root) / settings.episode_text.font))
+        asset_hashes = [overlay_hash, *font_hashes, logo_sha]
+
         fingerprint = compute_fingerprint(
-            config.version, art_kind, source_url, base_sha, text_inputs
+            config.version, art_kind, source_url, base_sha, text_inputs, asset_hashes
         )
         if render.fingerprint == fingerprint and target.exists():
             render.status = "rendered"
@@ -226,7 +304,7 @@ async def render_artifact(
         if render.source_mode == "verbatim":
             # MediUX and similar sources ship finished art; compositing would fight
             # the designer's own title treatment (spec section 11).
-            _publish(working, target, config.backup_root)
+            _publish(working, target, config.backup_root, config.assets_root)
         else:
             overlay = (
                 str(Path(config.overlays_root) / settings.overlay_file)
@@ -241,7 +319,16 @@ async def render_artifact(
                     settings.border_color, settings.border_width,
                 )
             )
-            blocks = [(settings.text, primary_text)]
+            if logo_path is not None:
+                compositor.run(
+                    compositor.build_logo_argv(
+                        config.magick_binary, str(working), str(logo_path),
+                        settings.text, config.artwork.output_quality,
+                    )
+                )
+            blocks = []
+            if draw_text:
+                blocks.append((settings.text, primary_text))
             if art_kind == "title_card":
                 blocks.append((settings.episode_text, secondary_text))
             for style, text in blocks:
@@ -268,7 +355,7 @@ async def render_artifact(
                         fit.point_size, prepared, config.artwork.output_quality,
                     )
                 )
-            _publish(working, target, config.backup_root)
+            _publish(working, target, config.backup_root, config.assets_root)
 
     render.provider = provider_name
     render.source_url = source_url
@@ -283,25 +370,34 @@ async def render_artifact(
     return render
 
 
-def _publish(working: Path, target: Path, backup_root: Path | None = None) -> None:
+def _publish(working: Path, target: Path, backup_root: Path | None, assets_root: Path) -> None:
     """Move the finished image into the asset tree atomically.
 
     ``os.replace`` is atomic within a filesystem, so readers never observe a
     half-written asset. The staging copy lives beside the target so the rename
-    does not cross a mount boundary.
+    does not cross a mount boundary. If anything fails after the staging file is
+    written, it is removed rather than left behind.
 
     Before overwriting, the existing asset is copied into ``backup_root`` under
-    the same relative path, keeping exactly one previous generation so a bad
-    render can be rolled back (spec section 7).
+    the same path relative to ``assets_root``, keeping exactly one previous
+    generation so a bad render can be rolled back (spec section 7). Using the
+    full relative path — not just the immediate parent folder name — keeps two
+    libraries that happen to share a folder name (e.g. "Movies" and "4K Movies"
+    both holding "Dune (2024)") from clobbering each other's backup.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     if backup_root is not None and target.exists():
-        backup = Path(backup_root) / target.parent.name / target.name
+        relative = target.relative_to(Path(assets_root))
+        backup = Path(backup_root) / relative
         backup.parent.mkdir(parents=True, exist_ok=True)
         backup.write_bytes(target.read_bytes())
     staging = target.with_name(f".{target.name}.tmp")
-    staging.write_bytes(working.read_bytes())
-    os.replace(staging, target)
+    try:
+        staging.write_bytes(working.read_bytes())
+        os.replace(staging, target)
+    except Exception:
+        staging.unlink(missing_ok=True)
+        raise
 
 
 async def process_item(

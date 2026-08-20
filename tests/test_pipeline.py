@@ -1,12 +1,20 @@
+import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
+from sqlalchemy import select
 
 from autoposter.config.loader import load_config
+from autoposter.db.models import MediaItem
 from autoposter.plex.client import ResolvedItem
+from autoposter.providers.base import ArtCandidate
+from autoposter.render import pipeline as pipeline_module
 from autoposter.render.pipeline import (
-    ART_KINDS_FOR, compute_fingerprint, manual_override_path, title_text_for,
+    ART_KINDS_FOR, compute_fingerprint, manual_override_path, render_artifact,
+    title_text_for,
 )
+from autoposter.render.textfit import FitResult
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -54,6 +62,42 @@ def test_fingerprint_changes_with_the_text():
     a = compute_fingerprint("v1", "poster", "http://x/a.jpg", "abc", ["DUNE"])
     b = compute_fingerprint("v1", "poster", "http://x/a.jpg", "abc", ["HEAT"])
     assert a != b
+
+
+def test_fingerprint_changes_when_the_overlay_file_bytes_change(tmp_path):
+    from autoposter.render.pipeline import _file_sha256
+
+    overlay = tmp_path / "overlay.png"
+    overlay.write_bytes(b"overlay-v1")
+    a = compute_fingerprint(
+        "v1", "poster", "http://x/a.jpg", "abc", ["DUNE"], [_file_sha256(overlay)]
+    )
+    overlay.write_bytes(b"overlay-v2")
+    b = compute_fingerprint(
+        "v1", "poster", "http://x/a.jpg", "abc", ["DUNE"], [_file_sha256(overlay)]
+    )
+    assert a != b
+
+
+def test_fingerprint_changes_when_the_font_file_bytes_change(tmp_path):
+    from autoposter.render.pipeline import _file_sha256
+
+    font = tmp_path / "Comfortaa-Medium.ttf"
+    font.write_bytes(b"font-v1")
+    a = compute_fingerprint(
+        "v1", "poster", "http://x/a.jpg", "abc", ["DUNE"], [_file_sha256(font)]
+    )
+    font.write_bytes(b"font-v2")
+    b = compute_fingerprint(
+        "v1", "poster", "http://x/a.jpg", "abc", ["DUNE"], [_file_sha256(font)]
+    )
+    assert a != b
+
+
+def test_missing_asset_file_hashes_to_the_empty_sentinel_without_raising(tmp_path):
+    from autoposter.render.pipeline import _file_sha256
+
+    assert _file_sha256(tmp_path / "does-not-exist.ttf") == ""
 
 
 def test_poster_text_is_the_title(config):
@@ -108,28 +152,210 @@ def test_manual_override_is_none_when_absent(config, tmp_path):
 def test_publish_keeps_one_previous_generation(tmp_path):
     from autoposter.render.pipeline import _publish
 
-    target = tmp_path / "assets" / "Dune (2024)" / "poster.jpg"
+    assets_root = tmp_path / "assets"
+    target = assets_root / "Movies" / "Dune (2024)" / "poster.jpg"
     target.parent.mkdir(parents=True)
     target.write_bytes(b"old")
     working = tmp_path / "new.jpg"
     working.write_bytes(b"new")
     backup_root = tmp_path / "backup"
 
-    _publish(working, target, backup_root)
+    _publish(working, target, backup_root, assets_root)
 
     assert target.read_bytes() == b"new"
-    assert (backup_root / "Dune (2024)" / "poster.jpg").read_bytes() == b"old"
+    assert (backup_root / "Movies" / "Dune (2024)" / "poster.jpg").read_bytes() == b"old"
 
 
 def test_publish_without_an_existing_asset_writes_no_backup(tmp_path):
     from autoposter.render.pipeline import _publish
 
-    target = tmp_path / "assets" / "Heat (1995)" / "poster.jpg"
+    assets_root = tmp_path / "assets"
+    target = assets_root / "Heat (1995)" / "poster.jpg"
     working = tmp_path / "new.jpg"
     working.write_bytes(b"new")
     backup_root = tmp_path / "backup"
 
-    _publish(working, target, backup_root)
+    _publish(working, target, backup_root, assets_root)
 
     assert target.read_bytes() == b"new"
     assert not backup_root.exists()
+
+
+def test_publish_keeps_backups_distinct_across_libraries_with_the_same_folder_name(tmp_path):
+    from autoposter.render.pipeline import _publish
+
+    assets_root = tmp_path / "assets"
+    backup_root = tmp_path / "backup"
+
+    movies_target = assets_root / "Movies" / "Dune (2024)" / "poster.jpg"
+    movies_target.parent.mkdir(parents=True)
+    movies_target.write_bytes(b"movies-old")
+
+    fourk_target = assets_root / "4K Movies" / "Dune (2024)" / "poster.jpg"
+    fourk_target.parent.mkdir(parents=True)
+    fourk_target.write_bytes(b"4k-old")
+
+    working = tmp_path / "new.jpg"
+    working.write_bytes(b"new")
+
+    _publish(working, movies_target, backup_root, assets_root)
+    _publish(working, fourk_target, backup_root, assets_root)
+
+    assert (backup_root / "Movies" / "Dune (2024)" / "poster.jpg").read_bytes() == b"movies-old"
+    assert (backup_root / "4K Movies" / "Dune (2024)" / "poster.jpg").read_bytes() == b"4k-old"
+
+
+def test_publish_removes_the_staging_file_when_replace_fails(tmp_path, monkeypatch):
+    from autoposter.render.pipeline import _publish
+
+    assets_root = tmp_path / "assets"
+    target = assets_root / "Dune (2024)" / "poster.jpg"
+    target.parent.mkdir(parents=True)
+    working = tmp_path / "new.jpg"
+    working.write_bytes(b"new")
+
+    def boom(_src, _dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("autoposter.render.pipeline.os.replace", boom)
+
+    with pytest.raises(OSError):
+        _publish(working, target, None, assets_root)
+
+    assert not (target.parent / ".poster.jpg.tmp").exists()
+
+
+async def test_concurrent_upserts_of_the_same_rating_key_succeed_and_leave_one_row(
+    session_factory,
+):
+    # Two workers can both resolve a fresh job for the same item while an earlier
+    # one is still running (spec: finding 3). A select-then-insert would race;
+    # the Postgres upsert must not.
+    from autoposter.render.pipeline import _upsert_media_item
+
+    async def upsert(title):
+        async with session_factory() as s:
+            await _upsert_media_item(s, item(title=title))
+            await s.commit()
+
+    await asyncio.gather(upsert("Dune: Part Two"), upsert("Dune: Part Two (Extended)"))
+
+    async with session_factory() as s:
+        rows = (
+            await s.execute(select(MediaItem).where(MediaItem.rating_key == "1"))
+        ).scalars().all()
+    assert len(rows) == 1
+
+
+class _LogoAwareProvider:
+    """Serves a poster candidate always, and a logo candidate if configured."""
+
+    name = "TMDB"
+
+    def __init__(self, logo_url: str | None = None):
+        self._logo_url = logo_url
+
+    async def fetch(self, request):
+        if request.art_kind == "poster":
+            return [ArtCandidate("TMDB", "https://img/poster.jpg", None, 2000, 3000, 5.0)]
+        if request.art_kind == "logo" and self._logo_url is not None:
+            return [ArtCandidate("TMDB", self._logo_url, "en", 800, 300, 5.0)]
+        return []
+
+
+def _fake_http():
+    async def handler(request):
+        return httpx.Response(200, content=b"fake-image-bytes")
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _stub_out_imagemagick(monkeypatch):
+    """Record every argv passed to compositor.run, without invoking ImageMagick.
+
+    fit_point_size is the only other function on this path that shells out, so
+    it is stubbed too. This lets render_artifact's logo branching be exercised
+    on hosts without ImageMagick installed. build_logo_argv is wrapped (not
+    replaced) so its call count can be asserted directly, rather than sniffing
+    argv strings for "logo" — pytest's own tmp_path can coincidentally contain
+    that substring, since it is derived from the (truncated) test name.
+    """
+    calls: list[list[str]] = []
+    logo_calls: list = []
+    monkeypatch.setattr(pipeline_module.compositor, "run", lambda argv: calls.append(argv))
+    monkeypatch.setattr(
+        pipeline_module, "fit_point_size",
+        lambda *a, **k: FitResult(point_size=120, truncated=False),
+    )
+    original_build_logo_argv = pipeline_module.compositor.build_logo_argv
+
+    def spy_build_logo_argv(*args, **kwargs):
+        logo_calls.append((args, kwargs))
+        return original_build_logo_argv(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module.compositor, "build_logo_argv", spy_build_logo_argv)
+    return calls, logo_calls
+
+
+def _logo_test_config(tmp_path):
+    config = load_config(EXAMPLE)
+    config.assets_root = tmp_path / "assets"
+    config.manual_assets_root = tmp_path / "manual"
+    config.backup_root = tmp_path / "backup"
+    config.fonts_root = tmp_path / "fonts"
+    config.overlays_root = tmp_path / "overlays"
+    return config
+
+
+async def test_poster_composites_the_logo_and_draws_no_text_when_one_is_found(
+    session, tmp_path, monkeypatch
+):
+    config = _logo_test_config(tmp_path)
+    calls, logo_calls = _stub_out_imagemagick(monkeypatch)
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, item(), "poster",
+            [_LogoAwareProvider(logo_url="https://img/logo.png")],
+        )
+
+    assert render.status == "rendered"
+    assert len(logo_calls) == 1
+    flat = [token for call in calls for token in call]
+    assert not any(str(token).startswith("caption:") for token in flat)
+
+
+async def test_poster_draws_neither_logo_nor_text_when_none_found_and_fallback_disabled(
+    session, tmp_path, monkeypatch
+):
+    config = _logo_test_config(tmp_path)
+    assert config.artwork.logo_text_fallback is False
+    calls, logo_calls = _stub_out_imagemagick(monkeypatch)
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, item(), "poster", [_LogoAwareProvider(logo_url=None)],
+        )
+
+    assert render.status == "rendered"
+    assert logo_calls == []
+    flat = [token for call in calls for token in call]
+    assert not any(str(token).startswith("caption:") for token in flat)
+
+
+async def test_poster_falls_back_to_text_when_no_logo_and_fallback_enabled(
+    session, tmp_path, monkeypatch
+):
+    config = _logo_test_config(tmp_path)
+    config.artwork.logo_text_fallback = True
+    calls, logo_calls = _stub_out_imagemagick(monkeypatch)
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, item(), "poster", [_LogoAwareProvider(logo_url=None)],
+        )
+
+    assert render.status == "rendered"
+    assert logo_calls == []
+    flat = [token for call in calls for token in call]
+    assert any(str(token).startswith("caption:") for token in flat)
