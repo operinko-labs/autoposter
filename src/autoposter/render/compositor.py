@@ -48,9 +48,15 @@ def build_base_argv(
 def _caption_group(style: TextStyle, font_path: str, point_size: int, text: str) -> list[str]:
     box = f"{style.max_width}x{style.max_height}"
     text = escape_caption_text(text)
+    # Argument order matches the sequence Posterizarr actually emits, verified
+    # against a production ImageMagickCommands.log. ImageMagick settings are
+    # order-independent as long as they precede the operation they affect, so
+    # this is about keeping the two byte-comparable rather than about behaviour.
     common = [
         "-font", font_path,
         "-pointsize", str(point_size),
+    ]
+    box_settings = [
         "-size", box,
         "-background", "none",
         "-interline-spacing", str(style.line_spacing),
@@ -58,9 +64,14 @@ def _caption_group(style: TextStyle, font_path: str, point_size: int, text: str)
     ]
     if not style.add_stroke:
         return (
-            ["("] + common + ["-fill", style.font_color, f"caption:{text}",
-                              "-trim", "+repage", "-extent", box] + [")"]
+            ["("]
+            + common
+            + ["-fill", style.font_color]
+            + box_settings
+            + [f"caption:{text}", "-trim", "+repage", "-extent", box]
+            + [")"]
         )
+    common = common + box_settings
     # Stroke first, fill second: in a two-image list -composite puts image[1] over
     # image[0], so the stroked copy sits behind.
     stroke = ["("] + common + [

@@ -5318,18 +5318,69 @@ so TVDB could never serve season posters. `session.rollback()` now precedes
 `fail()`, which previously stranded jobs after a database error. The unused
 `structlog` dependency was dropped.
 
+### Verification against the production deployment
+
+Carried out read-only against the live cluster (`media` namespace, Posterizarr
+pod and the shared NFS asset tree).
+
+**Asset-path adoption — verified.** The real tree holds **18,008** image files.
+Every one of them sits at the expected depth and matches the naming rules, with
+**zero** unmatched names. The sweep also confirmed three decisions that had been
+reasoned about rather than observed: specials exist (`Season00.jpg`), three-digit
+episodes exist (`S01E100`–`S01E104`, so zero-padding had to be a minimum rather
+than a fixed width), and 1,953 folder names contain braces such as
+`{tmdb-940143}`, confirming the no-sanitisation rule. No folder currently
+contains square brackets, which would be an ImageMagick frame-selector hazard —
+and it would be harmless anyway, because every magick invocation operates on a
+temp path and never on a path under the asset root.
+
+**Command-level parity — verified.** Posterizarr's own
+`ImageMagickCommands.log` was compared against the argv this code generates for
+the same inputs. They match exactly, including the offset-sign concatenation
+(`-geometry +0-150`) and the episode line `SEASON 3 • EPISODE 4` with unpadded
+numbers and a U+2022 bullet (confirmed from the log bytes `e2 80 a2`). One
+ordering difference in `-fill` was aligned so the two are byte-comparable.
+`tests/test_production_parity.py` pins this using the real logged commands as
+expected values.
+
+**Pixel parity — verified.** Running this pipeline's exact command sequence
+against the real source artwork reproduced the production asset
+`/assets/Movies/All Souls (2023) {tmdb-940143}/poster.jpg` at **RMSE 0** — a
+byte-identical 843,045-byte JPEG. `tests/test_golden.py` reproduces this from
+harvested fixtures, and the full suite passes **233/233 with nothing skipped**
+when run in the runtime container.
+
+**The doubled-sign deviation — verified safe.** Production's logo composite
+emits a malformed `-geometry +0++300`; this code emits `+0+300`. Compositing
+the same image both ways under ImageMagick 7 gives a pixel difference of
+`AE 0`, so ImageMagick ignores the extra sign and the outputs are identical.
+
+**Caption escaping — verified.** Measured, not assumed: `caption:%%` renders one
+literal `%` and `caption:%%%%` renders two, so a title like "100% Wolf" draws
+correctly. A leading `@` turned out **not** to be treated as a file read by the
+tested build, making that escape a harmless no-op; it is kept because the
+behaviour is build- and policy-dependent.
+
+**ImageMagick build affects byte-exactness.** Production runs 7.1.2-29
+**Q16-HDRI**; the runtime image ships Debian's 7.1.1-43 **Q16** without HDRI.
+With production's build the reproduction is byte-identical; with the image's
+build the same render differs by RMSE 0.00077 — 0.077%, visually
+indistinguishable. This does **not** cause the existing library to be
+re-rendered, because adoption compares fingerprints rather than pixels; it only
+affects newly rendered items. Pinning a Q16-HDRI build would restore exact
+equality and is worth considering before cutover.
+
 ### Still unverified — must be confirmed before cutover
 
-These cannot be checked without the production environment:
+Two items remain, both needing credentials or services unavailable during
+implementation:
 
-1. **Golden-image parity.** The parity tests skip: they need real ImageMagick
-   and fixtures harvested from the production `/assets` tree. Completion
-   criterion 1 is **not met** until they run.
-2. **Asset-path adoption.** `scripts/verify_asset_paths.py` has never run
-   against the real tree. Criterion 2 is unverified.
-3. **Caption escaping.** The `%%` and leading-`@` handling is reasoned, not
-   tested against a real `magick` binary. Flagged in the code.
-4. **TVDB season type shape.** `_find_season_id` assumes a response shape that
-   no live API call has confirmed. Flagged in the code.
-5. **A real season and episode end to end.** No test wires `resolve()` through
-   to `render_artifact` for a non-movie against a live Plex server.
+1. **The TVDB season-type response shape.** `_find_season_id` assumes a shape
+   for the season `type` field that no live API call has confirmed, because no
+   TVDB key was available. If it is wrong, season posters silently fall back to
+   TMDB and Fanart rather than failing loudly.
+2. **A real season and episode end to end against the live Plex server.** The
+   title-card command sequence was matched against production output, and the
+   resolver's season/episode navigation is unit-tested against fakes, but
+   nothing has yet driven `resolve()` through to a rendered file for a
+   non-movie against real Plex.

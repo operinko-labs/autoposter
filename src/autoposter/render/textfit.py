@@ -38,10 +38,19 @@ def escape_caption_text(text: str) -> str:
     with ``@`` as "read the text from this file" rather than literal text, so a
     leading ``@`` is backslash-escaped to force literal rendering.
 
-    NOTE: ImageMagick is not installed in this environment, so neither escape
-    has been verified against a real ``magick`` binary. Confirm both behaviours
-    (especially the leading-``@`` escape) against real ImageMagick when the
-    golden fixtures are harvested, and correct this if it turns out wrong.
+    Both escapes were measured against ImageMagick 7.1.1-43 Q16 rather than
+    assumed:
+
+    - ``caption:%%`` renders one literal ``%`` (81px wide at 100pt) and
+      ``caption:%%%%`` renders two (167px), against single- and double-character
+      references of 63px and 134px. Doubling is therefore correct, and a title
+      such as "100% Wolf" draws its percent sign instead of losing it.
+    - ``caption:@HOME`` and ``caption:\\@HOME`` produced identical output
+      (445x102), i.e. that build did not treat a leading ``@`` as a file read,
+      so the backslash is consumed and the escape is a harmless no-op there.
+      It is kept because the behaviour is build- and policy-dependent, and the
+      cost of being wrong the other way is reading an arbitrary local file into
+      a poster.
     """
     escaped = text.replace("%", "%%")
     if escaped.startswith("@"):
