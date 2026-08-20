@@ -58,7 +58,7 @@ Tautulli┘                  ↑       (Postgres)│      ├─ fetch → compo
 | Concern | Choice | Rationale |
 |---|---|---|
 | Language/runtime | Python 3.12+, FastAPI, asyncio | Ecosystem parity with Kometa; `python-plexapi` is what Kometa itself uses; Kometa source is readable as reference implementation |
-| Persistence | PostgreSQL (async SQLAlchemy + asyncpg, Alembic migrations) | User requirement — SQLite ruled out (Volsync snapshot corruption). App expects `DATABASE_URL`, owns its schema |
+| Persistence | PostgreSQL 18 (async SQLAlchemy + asyncpg, Alembic migrations) | User requirement — SQLite ruled out (Volsync snapshot corruption). App expects `DATABASE_URL`, owns its schema |
 | Job queue | Postgres table; claim via `SELECT … FOR UPDATE SKIP LOCKED`; `LISTEN/NOTIFY` wakeups | Durable across restarts, no extra broker, instant worker wakeup |
 | Workers | asyncio tasks, configurable parallelism (default 5, matches current `ParallelJobs`) | Peak load is "one season pack" — a single process handles it today |
 | Base composite | ImageMagick via Wand | Posterizarr renders bases with ImageMagick; same engine ⇒ same text auto-sizing/gravity/stroke semantics |

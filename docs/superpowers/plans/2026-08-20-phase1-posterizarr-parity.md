@@ -6,7 +6,7 @@
 
 **Architecture:** FastAPI process with three internal modules — intake (webhooks → durable Postgres job queue), render pipeline (resolve → fetch art → composite via ImageMagick → atomic asset write), and a worker pool claiming jobs with `FOR UPDATE SKIP LOCKED`. Kometa keeps running unchanged during this phase, still reading `/assets`.
 
-**Tech Stack:** Python 3.12, FastAPI, async SQLAlchemy 2.0 + asyncpg, Alembic, PostgreSQL 16, ImageMagick 7 (`magick` subprocess), httpx, Pydantic v2, pytest + pytest-asyncio, Docker.
+**Tech Stack:** Python 3.12, FastAPI, async SQLAlchemy 2.0 + asyncpg, Alembic, PostgreSQL 18, ImageMagick 7 (`magick` subprocess), httpx, Pydantic v2, pytest + pytest-asyncio, Docker.
 
 **Spec:** `docs/superpowers/specs/2026-08-20-autoposter-design.md` (sections 1–4, 7–10). This plan covers **Phase 1 only** (spec §9.1). Badges, metadata ops, collections, scheduler, and web UI are later phases and MUST NOT be built here.
 
@@ -58,7 +58,7 @@ With the user's config (`UseLogo: true`, `UseClearlogo: true`, `LogoTextFallback
 
 ```
 pyproject.toml                          deps, pytest/ruff config
-docker-compose.yml                      Postgres 16 for dev + tests
+docker-compose.yml                      Postgres 18 for dev + tests
 Dockerfile                              runtime image (python:3.12-slim + ImageMagick)
 alembic.ini                             migration config
 alembic/env.py                          async migration environment
@@ -158,7 +158,7 @@ line-length = 100
 ```yaml
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: autoposter
       POSTGRES_PASSWORD: autoposter
