@@ -23,6 +23,11 @@ providers:
   tmdb_vote_sorting: vote_average
   cache_ttl_seconds: 86400 # 24 hours; 0 disables response caching
 
+operations:
+  enabled: true
+  write_to_plex: true
+  imdb_refresh_hours: 24
+
 artwork:
   use_logo: true
   logo_language_order: [en, fi]

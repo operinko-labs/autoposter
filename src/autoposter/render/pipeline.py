@@ -12,8 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.schema import Config
 from autoposter.db.models import MediaItem, Render
+from autoposter.facts.gather import gather_facts, persist_facts
+from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
+from autoposter.plex.writer import apply_facts
 from autoposter.providers import base as art
 from autoposter.providers.ladder import select_artwork
 from autoposter.render import compositor, naming
@@ -456,6 +459,31 @@ def _publish(working: Path, target: Path, backup_root: Path | None, assets_root:
         raise
 
 
+async def apply_metadata(
+    session: AsyncSession,
+    config: Config,
+    media_item_id: int,
+    item: ResolvedItem,
+    plex_item,
+    tmdb_facts,
+    mdblist,
+) -> GatheredFacts:
+    """Gather this item's facts, store them, and write the changed ones to Plex.
+
+    Runs before any badge rendering, because badges read the values from Plex
+    rather than from the providers.
+    """
+    if not config.operations.enabled:
+        return GatheredFacts()
+
+    facts = await gather_facts(session, item, tmdb_facts, mdblist)
+    await persist_facts(session, media_item_id, facts)
+
+    if config.operations.write_to_plex and plex_item is not None and not facts.is_empty():
+        await apply_facts(plex_item, facts)
+    return facts
+
+
 async def process_item(
     session: AsyncSession,
     config: Config,
@@ -463,9 +491,27 @@ async def process_item(
     plex,
     providers: list,
     intent: RenderIntent,
+    tmdb_facts=None,
+    mdblist=None,
 ) -> list[Render]:
-    """Resolve one intent and build every artifact it implies."""
+    """Resolve one intent and build every artifact it implies.
+
+    ``tmdb_facts``/``mdblist`` are the metadata-operations clients; they are
+    optional (and default to ``None``) so callers that only care about
+    artwork — including every test that predates Phase 2a — keep working
+    unchanged. Metadata operations run only when both are supplied, which
+    also means production wiring skips them gracefully until an operator has
+    configured the MDBList API key.
+    """
     item = await plex.resolve(intent)
+
+    if config.operations.enabled and tmdb_facts is not None and mdblist is not None:
+        media_item = await _upsert_media_item(session, item)
+        plex_item = await plex.fetch_item(item.rating_key)
+        await apply_metadata(
+            session, config, media_item.id, item, plex_item, tmdb_facts, mdblist
+        )
+
     results = []
     for art_kind in ART_KINDS_FOR[intent.kind]:
         results.append(

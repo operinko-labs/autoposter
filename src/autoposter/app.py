@@ -10,6 +10,8 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from autoposter.config.schema import Config, Secrets
+from autoposter.facts.mdblist import MDBListClient
+from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.intake.routes import router
 from autoposter.plex.client import ItemNotFound
 from autoposter.plex.health import PlexHealth
@@ -40,6 +42,17 @@ def create_app(
         # _build_providers never issues a DB round trip for a config that opted out.
         cache = ProviderCache(session_factory) if config.providers.cache_ttl_seconds > 0 else None
         app.state.providers = _build_providers(config, secrets, http, cache)
+        app.state.tmdb_facts = TMDBFactsClient(
+            secrets.tmdb_token, http, cache=cache,
+            cache_ttl_seconds=config.providers.cache_ttl_seconds,
+        )
+        # None (rather than a client with an empty key) until an operator has
+        # configured one: MDBListClient would just fail every call otherwise.
+        # process_item requires both facts clients before it runs metadata
+        # operations at all, so this alone parks that feature until then.
+        app.state.mdblist = (
+            MDBListClient(secrets.mdblist_apikey, http) if secrets.mdblist_apikey else None
+        )
 
         health = PlexHealth(
             url=config.plex.url,
@@ -62,6 +75,7 @@ def create_app(
         handler = functools.partial(
             _handle_intent, config=config, http=http,
             plex=app.state.plex, providers=app.state.providers,
+            tmdb_facts=app.state.tmdb_facts, mdblist=app.state.mdblist,
         )
         health_task = asyncio.create_task(health.run(stop_event))
         task = asyncio.create_task(
@@ -86,6 +100,8 @@ def create_app(
     app.state.secrets = secrets
     app.state.plex = None
     app.state.providers = []
+    app.state.tmdb_facts = None
+    app.state.mdblist = None
     app.include_router(router)
 
     @app.get("/metrics")
@@ -116,9 +132,14 @@ def _build_providers(
     return providers
 
 
-async def _handle_intent(session, intent, *, config, http, plex, providers):
+async def _handle_intent(
+    session, intent, *, config, http, plex, providers, tmdb_facts=None, mdblist=None
+):
     try:
-        await process_item(session, config, http, plex, providers, intent)
+        await process_item(
+            session, config, http, plex, providers, intent,
+            tmdb_facts=tmdb_facts, mdblist=mdblist,
+        )
     except (ItemNotFound, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         # PlexHealth (see plex/health.py) gating run_worker's claiming is now
         # the primary defence against a Plex outage burning through retry

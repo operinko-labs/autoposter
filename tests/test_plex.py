@@ -87,8 +87,9 @@ class FakeItem:
 
 
 class FakeServer:
-    def __init__(self, sections):
+    def __init__(self, sections, items_by_key=None):
         self._sections = sections
+        self._items_by_key = items_by_key or {}
 
     @property
     def library(self):
@@ -99,6 +100,9 @@ class FakeServer:
 
     def sections(self):
         return self._sections
+
+    def fetchItem(self, ekey):
+        return self._items_by_key[ekey]
 
 
 @pytest.fixture
@@ -121,6 +125,16 @@ async def test_resolve_finds_a_movie_by_tmdb_id(server, tmp_path):
     assert item.library == "Movies"
     assert item.root_folder == "Dune Part Two (2024)"
     assert item.imdb_id == "tt15239678"
+
+
+async def test_fetch_item_fetches_by_rating_key_as_int():
+    marker = object()
+    server = FakeServer([], items_by_key={12345: marker})
+    client = PlexClient(server=server, excluded_libraries=[])
+
+    item = await client.fetch_item("12345")
+
+    assert item is marker
 
 
 async def test_resolve_raises_when_plex_has_not_scanned_yet(server):

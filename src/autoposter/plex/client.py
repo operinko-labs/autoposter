@@ -168,6 +168,16 @@ class PlexClient:
                     )
         return None
 
+    async def fetch_item(self, rating_key: str):
+        """Fetch the live ``plexapi`` object for a rating key, for writing.
+
+        Distinct from ``resolve()``'s plain-data ``ResolvedItem``: this is
+        the object the writer calls ``.batchEdits()``/``.edit()`` on. It is a
+        plain GET (``PlexObject.fetchItem``) — unlike a metadata refresh, no
+        agent re-pull is triggered.
+        """
+        return await asyncio.to_thread(self._server.fetchItem, int(rating_key))
+
     async def resolve(self, intent: RenderIntent) -> ResolvedItem:
         match = await asyncio.to_thread(self._search_sync, intent)
         if match is None:

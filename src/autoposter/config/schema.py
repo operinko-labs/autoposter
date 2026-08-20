@@ -25,6 +25,11 @@ class Secrets(BaseModel):
     tvdb_apikey: str
     fanart_apikey: str
     webhook_secret: str
+    # Soft secret, unlike the rest of this class: MDBList content ratings are
+    # one field among several metadata operations gathers, so a deployment
+    # without a key yet still runs, just without that one field. Defaults to
+    # "" rather than being in _SECRET_ENV, which would hard-fail every boot.
+    mdblist_apikey: str = ""
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -34,6 +39,7 @@ class Secrets(BaseModel):
             if not value:
                 raise RuntimeError(f"required environment variable {env_name} is not set")
             values[field] = value
+        values["mdblist_apikey"] = os.environ.get("AUTOPOSTER_MDBLIST_APIKEY", "")
         return cls(**values)
 
 
@@ -130,6 +136,16 @@ class PlexConfig(BaseModel):
     token_refresh_enabled: bool = True
 
 
+class OperationsConfig(BaseModel):
+    """Per-item metadata operations, replacing Kometa's mass_*_update."""
+
+    enabled: bool = True
+    # Off means gather and store facts but leave Plex untouched — the safe
+    # setting while the tool being replaced still owns these fields.
+    write_to_plex: bool = True
+    imdb_refresh_hours: int = 24
+
+
 class Config(BaseModel):
     assets_root: Path
     manual_assets_root: Path
@@ -144,4 +160,5 @@ class Config(BaseModel):
     plex: PlexConfig
     providers: ProvidersConfig
     artwork: ArtworkConfig
+    operations: OperationsConfig = Field(default_factory=OperationsConfig)
     version: str = ""

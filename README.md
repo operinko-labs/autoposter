@@ -105,6 +105,15 @@ If a project key is ever adopted, Fanart also accepts a personal key as
 `client_key` alongside it, which shortens their artwork-freshness delay from
 about seven days to about two.
 
+### IMDb
+
+Information courtesy of IMDb (https://www.imdb.com). Used with permission.
+
+Ratings come from IMDb's bulk non-commercial datasets, which are licensed for
+**personal and non-commercial use only** and must not be republished or
+repurposed into another database. If this project is ever distributed
+commercially, that licence is a blocker and needs review.
+
 ### Required in the web UI
 
 When the UI ships, attribution must appear **in the UI itself**, on any view
