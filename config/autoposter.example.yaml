@@ -1,0 +1,122 @@
+assets_root: /assets
+manual_assets_root: /manualassets
+backup_root: /assetsbackup
+fonts_root: /app/assets/fonts
+overlays_root: /app/assets/overlays
+library_folders: true
+workers: 5
+settle_seconds: 30
+magick_binary: magick
+skip_tba: true
+
+plex:
+  url: https://plex.vaderrp.com
+  excluded_libraries: [Muskarit, Photos]
+  resolve_max_attempts: 10
+
+providers:
+  order: [TMDB, TVDB, Fanart, Plex]
+  favourite: TMDB
+  tmdb_vote_sorting: vote_average
+
+artwork:
+  use_logo: true
+  logo_language_order: [en, fi]
+  logo_text_fallback: false
+  output_quality: 92%
+
+  poster:
+    enabled: true
+    language_order: [xx, en, fi]
+    overlay_file: overlay.png
+    add_overlay: true
+    add_border: false
+    border_color: white
+    border_width: 30
+    text:
+      font: Comfortaa-Medium.ttf
+      all_caps: true
+      font_color: white
+      min_point_size: 83
+      max_point_size: 250
+      max_width: 1200
+      max_height: 485
+      text_offset: "+300"
+      gravity: south
+      line_spacing: 0
+      add_text: true
+      add_stroke: false
+      stroke_color: black
+      stroke_width: 6
+
+  season_poster:
+    enabled: true
+    language_order: [xx, en, fi]
+    overlay_file: bottom-up-fade.png
+    add_overlay: true
+    add_border: false
+    text:
+      font: Comfortaa-Medium.ttf
+      all_caps: true
+      font_color: white
+      min_point_size: 100
+      max_point_size: 250
+      max_width: 1200
+      max_height: 485
+      text_offset: "+300"
+      gravity: south
+      add_text: true
+      add_stroke: false
+
+  background:
+    enabled: true
+    language_order: [xx, en, fi]
+    overlay_file: bottom-up-fade-background.png
+    add_overlay: true
+    add_border: false
+    text:
+      font: Comfortaa-Medium.ttf
+      all_caps: true
+      font_color: white
+      min_point_size: 95
+      max_point_size: 250
+      max_width: 3000
+      max_height: 500
+      text_offset: "+200"
+      gravity: south
+      add_text: false
+      add_stroke: false
+
+  title_card:
+    enabled: true
+    language_order: [xx, en, fi]
+    overlay_file: bottom-up-fade-background.png
+    add_overlay: true
+    add_border: false
+    season_label: Season
+    episode_label: Episode
+    skip_words: [TBA]
+    text:
+      font: Comfortaa-Medium.ttf
+      all_caps: true
+      font_color: white
+      min_point_size: 48
+      max_point_size: 140
+      max_width: 2500
+      max_height: 300
+      text_offset: "-150"
+      gravity: south
+      add_text: true
+      add_stroke: false
+    episode_text:
+      font: Comfortaa-Medium.ttf
+      all_caps: true
+      font_color: white
+      min_point_size: 48
+      max_point_size: 80
+      max_width: 2500
+      max_height: 150
+      text_offset: "+100"
+      gravity: south
+      add_text: true
+      add_stroke: false
