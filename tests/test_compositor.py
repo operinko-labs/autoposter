@@ -41,6 +41,7 @@ def test_base_argv_cover_fits_then_composites_the_overlay():
     assert argv[argv.index("-extent") + 1] == "2000x3000"
     assert "/overlays/overlay.png" in argv
     assert "-composite" in argv
+    assert argv.index("/overlays/overlay.png") < argv.index("-composite")
     assert argv[argv.index("-quality") + 1] == "92%"
     assert argv[0] == "magick"
     assert argv[-1] == "/tmp/x.jpg"
@@ -116,6 +117,24 @@ def test_logo_argv_uses_a_single_sign_geometry(config):
     assert argv[argv.index("-geometry") + 1] == "+0+300"
     assert argv[argv.index("-resize") + 1] == "1200x485"
     assert "/tmp/logo.png" in argv
+
+
+def test_text_argv_escapes_percent_signs_in_the_title(config):
+    style = config.artwork.poster.text
+    argv = build_text_argv(
+        "magick", "/tmp/x.jpg", style, "/f.ttf", 140, "100% WOLF", "92%"
+    )
+    assert "caption:100%% WOLF" in argv
+    assert "caption:100% WOLF" not in argv
+
+
+def test_text_argv_escapes_a_leading_at_sign_in_the_title(config):
+    style = config.artwork.poster.text
+    argv = build_text_argv(
+        "magick", "/tmp/x.jpg", style, "/f.ttf", 140, "@HOME", "92%"
+    )
+    assert "caption:\\@HOME" in argv
+    assert "caption:@HOME" not in argv
 
 
 def test_logo_argv_adds_density_for_svg(config):

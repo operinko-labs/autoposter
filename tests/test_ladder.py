@@ -124,3 +124,28 @@ async def test_a_failing_provider_does_not_stop_the_walk():
 async def test_no_art_anywhere_returns_an_empty_selection():
     result = await select_artwork([FakeProvider("TMDB", [])], ORDER, REQUEST)
     assert result == Selection(candidate=None, is_fallback=False)
+
+
+async def test_only_the_first_text_bearing_candidate_is_parked():
+    """Across three providers, a later text-bearing hit must not replace the parked one.
+
+    The second provider's candidate scores far higher than the first's, so if the
+    park slot were ever overwritten by a later text-bearing candidate, this test
+    would catch it by observing the wrong (higher-scored) candidate win.
+    """
+    first = FakeProvider("TMDB", [candidate("en", score=1.0)])
+    second = FakeProvider("TVDB", [candidate("en", score=99.0, provider="TVDB")])
+    third = FakeProvider("Fanart", [])
+    result = await select_artwork([first, second, third], ORDER, REQUEST)
+    assert result.is_fallback is True
+    assert result.candidate.provider == "TMDB"
+    assert result.candidate.score == 1.0
+
+
+async def test_textless_hit_at_a_later_provider_beats_a_much_higher_scored_parked_candidate():
+    first = FakeProvider("TMDB", [candidate("en", score=99.0)])
+    second = FakeProvider("TVDB", [candidate(None, score=0.1, provider="TVDB")])
+    result = await select_artwork([first, second], ORDER, REQUEST)
+    assert result.candidate.provider == "TVDB"
+    assert result.candidate.language is None
+    assert result.is_fallback is False

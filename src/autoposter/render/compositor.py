@@ -1,6 +1,7 @@
 import subprocess
 
 from autoposter.config.schema import TextStyle
+from autoposter.render.textfit import escape_caption_text
 
 POSTER_SIZE = "2000x3000"
 BACKGROUND_SIZE = "3840x2160"
@@ -46,6 +47,7 @@ def build_base_argv(
 
 def _caption_group(style: TextStyle, font_path: str, point_size: int, text: str) -> list[str]:
     box = f"{style.max_width}x{style.max_height}"
+    text = escape_caption_text(text)
     common = [
         "-font", font_path,
         "-pointsize", str(point_size),

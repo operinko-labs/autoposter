@@ -1,12 +1,15 @@
+import asyncio
 import json
 from pathlib import Path
+
+import httpx
 
 from autoposter.providers.base import (
     BACKGROUND, LOGO, POSTER, SEASON_POSTER, TITLE_CARD, ArtRequest,
 )
 from autoposter.providers.fanart import parse_fanart
 from autoposter.providers.tmdb import TMDBClient, parse_tmdb_images
-from autoposter.providers.tvdb import parse_tvdb_artworks
+from autoposter.providers.tvdb import TVDBClient, parse_tvdb_artworks
 
 FIXTURES = Path(__file__).parent / "fixtures" / "providers"
 
@@ -132,3 +135,96 @@ async def test_tmdb_client_skips_title_card_without_episode_number():
         art_kind=TITLE_CARD, is_movie=False, tmdb_id=123, season_number=1
     )
     assert await client.fetch(request) == []
+
+
+def _tvdb_client(handler) -> TVDBClient:
+    return TVDBClient("key", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+
+async def test_tvdb_a_401_triggers_one_relogin_and_the_retry_succeeds():
+    calls = {"login": 0, "artworks": 0}
+
+    async def handler(request):
+        if request.url.path == "/v4/login":
+            calls["login"] += 1
+            return httpx.Response(200, json={"data": {"token": f"tok-{calls['login']}"}})
+        calls["artworks"] += 1
+        if request.headers.get("Authorization") == "Bearer tok-1":
+            return httpx.Response(401)
+        return httpx.Response(200, json={"data": {"artworks": []}})
+
+    client = _tvdb_client(handler)
+    request = ArtRequest(art_kind=POSTER, is_movie=False, tvdb_id=999)
+    result = await client.fetch(request)
+
+    assert result == []
+    assert calls["login"] == 2  # initial cold login, then exactly one re-login after the 401
+    assert calls["artworks"] == 2  # the original request, then one retry
+
+
+async def test_tvdb_concurrent_fetches_on_a_cold_client_produce_one_login_call():
+    calls = {"login": 0}
+
+    async def handler(request):
+        if request.url.path == "/v4/login":
+            calls["login"] += 1
+            return httpx.Response(200, json={"data": {"token": "tok"}})
+        return httpx.Response(200, json={"data": {"artworks": []}})
+
+    client = _tvdb_client(handler)
+    request = ArtRequest(art_kind=POSTER, is_movie=False, tvdb_id=999)
+    await asyncio.gather(*(client.fetch(request) for _ in range(5)))
+
+    assert calls["login"] == 1
+
+
+async def test_tvdb_season_poster_resolves_the_season_id_then_fetches_its_artwork():
+    calls = []
+
+    async def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/v4/login":
+            return httpx.Response(200, json={"data": {"token": "tok"}})
+        if request.url.path == "/v4/series/999/extended":
+            return httpx.Response(200, json={"data": {"seasons": [
+                {"id": 42, "number": 1, "type": {"type": "official"}},
+                {"id": 43, "number": 2, "type": {"type": "official"}},
+            ]}})
+        if request.url.path == "/v4/seasons/42/extended":
+            return httpx.Response(200, json={"data": {"artworks": [
+                {
+                    "type": 7, "image": "https://artworks.thetvdb.com/s1.jpg",
+                    "language": None, "width": 680, "height": 1000, "score": 5,
+                },
+            ]}})
+        return httpx.Response(404)
+
+    client = _tvdb_client(handler)
+    request = ArtRequest(
+        art_kind=SEASON_POSTER, is_movie=False, tvdb_id=999, season_number=1
+    )
+    result = await client.fetch(request)
+
+    assert len(result) == 1
+    assert result[0].url == "https://artworks.thetvdb.com/s1.jpg"
+    assert "/v4/series/999/extended" in calls
+    assert "/v4/seasons/42/extended" in calls
+
+
+async def test_tvdb_season_poster_returns_empty_when_the_series_has_no_matching_season():
+    async def handler(request):
+        if request.url.path == "/v4/login":
+            return httpx.Response(200, json={"data": {"token": "tok"}})
+        if request.url.path == "/v4/series/999/extended":
+            return httpx.Response(200, json={"data": {"seasons": [
+                {"id": 42, "number": 1, "type": {"type": "official"}},
+            ]}})
+        return httpx.Response(404)
+
+    client = _tvdb_client(handler)
+    request = ArtRequest(
+        art_kind=SEASON_POSTER, is_movie=False, tvdb_id=999, season_number=5
+    )
+    result = await client.fetch(request)
+
+    assert result == []

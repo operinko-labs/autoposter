@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 
 from autoposter.providers.base import (
@@ -50,6 +52,24 @@ def parse_tvdb_artworks(payload: dict, art_kind: str, is_movie: bool) -> list[Ar
     return candidates
 
 
+def _find_season_id(payload: dict, season_number: int) -> int | None:
+    """Pick the id of the season matching ``season_number`` from a series' extended record.
+
+    TVDB lists a season number once per "type" (official, alternate, dvd, ...);
+    prefer the official entry when the type is present, and otherwise accept the
+    first match so fixtures that omit type info still resolve.
+    """
+    data = payload.get("data") or payload
+    for season in data.get("seasons") or []:
+        if season.get("number") != season_number:
+            continue
+        season_type = (season.get("type") or {}).get("type")
+        if season_type is not None and season_type != "official":
+            continue
+        return season.get("id")
+    return None
+
+
 class TVDBClient:
     """Reads artwork from TVDB v4. Login tokens are valid for one month."""
 
@@ -59,14 +79,59 @@ class TVDBClient:
         self._apikey = apikey
         self._client = client
         self._token: str | None = None
+        self._login_lock = asyncio.Lock()
 
-    async def _authenticate(self) -> str:
-        if self._token:
-            return self._token
+    async def _login(self) -> str:
+        """Log in and cache the token. Concurrent cold-start callers share one call.
+
+        The token is not re-checked once acquired here: this is only called by
+        ``_authenticate`` while holding ``_login_lock``, after the double-checked
+        ``self._token is None`` test, and by ``_reauthenticate`` which always
+        wants a fresh token.
+        """
         response = await self._client.post(f"{BASE_URL}/login", json={"apikey": self._apikey})
         response.raise_for_status()
         self._token = response.json()["data"]["token"]
         return self._token
+
+    async def _authenticate(self) -> str:
+        if self._token:
+            return self._token
+        async with self._login_lock:
+            if self._token is None:
+                await self._login()
+            return self._token
+
+    async def _reauthenticate(self) -> str:
+        """Force a fresh token after a 401. TVDB tokens last a month, so this is rare."""
+        async with self._login_lock:
+            return await self._login()
+
+    async def _authenticated_get(self, path: str) -> httpx.Response:
+        """GET with the cached token, retrying once with a fresh token on a 401."""
+        token = await self._authenticate()
+        response = await self._client.get(
+            f"{BASE_URL}{path}", headers={"Authorization": f"Bearer {token}"}
+        )
+        if response.status_code == 401:
+            token = await self._reauthenticate()
+            response = await self._client.get(
+                f"{BASE_URL}{path}", headers={"Authorization": f"Bearer {token}"}
+            )
+        return response
+
+    async def _resolve_season_id(self, tvdb_id: int, season_number: int) -> int | None:
+        """Look up the TVDB season id for a season number.
+
+        ``ArtRequest.season_id`` is never populated by callers, so a season
+        poster request only ever carries ``tvdb_id`` and ``season_number``; the
+        client must resolve the season id itself via the series' extended record.
+        """
+        response = await self._authenticated_get(f"/series/{tvdb_id}/extended")
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return _find_season_id(response.json(), season_number)
 
     async def fetch(self, request: ArtRequest) -> list[ArtCandidate]:
         if request.tvdb_id is None:
@@ -75,19 +140,22 @@ class TVDBClient:
             # An episode record carries a single `image` field, not an artworks
             # array, so TVDB cannot serve title cards through this path.
             return []
-        token = await self._authenticate()
-        headers = {"Authorization": f"Bearer {token}"}
         if request.is_movie:
             path = f"/movies/{request.tvdb_id}/extended"
         elif request.art_kind == SEASON_POSTER:
-            if request.season_id is None:
-                return []
-            path = f"/seasons/{request.season_id}/extended"
+            season_id = request.season_id
+            if season_id is None:
+                if request.season_number is None:
+                    return []
+                season_id = await self._resolve_season_id(request.tvdb_id, request.season_number)
+                if season_id is None:
+                    return []
+            path = f"/seasons/{season_id}/extended"
         else:
             # Fetched without a lang filter on purpose: passing lang= would drop the
             # null-language entries, which are the best textless candidates.
             path = f"/series/{request.tvdb_id}/artworks"
-        response = await self._client.get(f"{BASE_URL}{path}", headers=headers)
+        response = await self._authenticated_get(path)
         if response.status_code == 404:
             return []
         response.raise_for_status()

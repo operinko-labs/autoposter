@@ -7,6 +7,7 @@ from autoposter.config.schema import TextStyle
 from autoposter.render.textfit import (
     FitResult,
     build_fit_argv,
+    escape_caption_text,
     fit_point_size,
     prepare_text,
 )
@@ -84,3 +85,48 @@ def test_unparseable_magick_output_raises(style, monkeypatch):
     monkeypatch.setattr("autoposter.render.textfit._run", lambda argv: "not a number")
     with pytest.raises(RuntimeError, match="point size"):
         fit_point_size("magick", "/f.ttf", style, "A")
+
+
+def test_percent_signs_are_doubled_so_they_render_literally():
+    assert escape_caption_text("100% Wolf") == "100%% Wolf"
+
+
+def test_a_leading_at_sign_is_backslash_escaped():
+    assert escape_caption_text("@Home") == "\\@Home"
+
+
+def test_an_at_sign_not_in_leading_position_is_untouched():
+    assert escape_caption_text("Look @Home") == "Look @Home"
+
+
+def test_text_without_special_characters_is_unchanged():
+    assert escape_caption_text("DUNE") == "DUNE"
+
+
+def test_fit_argv_escapes_percent_signs_in_the_caption(style):
+    argv = build_fit_argv("magick", "/fonts/Comfortaa-Medium.ttf", style, "100% Wolf")
+    assert "caption:100%% Wolf" in argv
+
+
+def test_fit_argv_escapes_a_leading_at_sign_in_the_caption(style):
+    argv = build_fit_argv("magick", "/fonts/Comfortaa-Medium.ttf", style, "@Home")
+    assert "caption:\\@Home" in argv
+
+
+def test_run_attaches_stderr_and_the_command_on_failure(monkeypatch):
+    def fake_run(argv, **kwargs):
+        class Result:
+            returncode = 1
+            stdout = ""
+            stderr = "magick: unable to read font `/f.ttf' @ error/annotate.c/1234."
+
+        return Result()
+
+    monkeypatch.setattr("autoposter.render.textfit.subprocess.run", fake_run)
+    from autoposter.render.textfit import _run
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _run(["magick", "-font", "/f.ttf", "info:"])
+    assert "unable to read font" in str(excinfo.value)
+    assert "/f.ttf" in str(excinfo.value)
+    assert "1" in str(excinfo.value)
