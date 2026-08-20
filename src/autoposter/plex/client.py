@@ -30,7 +30,14 @@ class ResolvedItem:
 
 
 def parse_guids(guids: list[str]) -> dict[str, str]:
-    """Map Plex GUID strings to ``{agent: id}``, tolerating legacy agent prefixes."""
+    """Map Plex GUID strings to ``{agent: id}``.
+
+    Matches ``tmdb://``, ``imdb://`` and ``tvdb://`` GUIDs, optionally prefixed with
+    ``com.plexapp.agents.`` (as produced by the legacy ``imdb``/``tmdb``/``tvdb``
+    agents). Genuine legacy Plex GUIDs such as ``com.plexapp.agents.themoviedb://``
+    and ``com.plexapp.agents.thetvdb://`` use different tokens and are not matched;
+    those are silently dropped.
+    """
     parsed = {}
     for guid in guids:
         match = _GUID_RE.match(guid)
@@ -46,10 +53,32 @@ def _as_int(value: str | None) -> int | None:
         return None
 
 
+@dataclass(frozen=True)
+class _RawMatch:
+    """Plain data extracted from a matched ``plexapi`` item, inside the search thread.
+
+    Nothing here is a ``plexapi`` object, so reading these fields back on the event
+    loop can never trigger a lazy HTTP reload.
+    """
+
+    rating_key: str
+    library: str
+    title: str
+    year: int | None
+    file_path: str | None
+    item_locations: list[str]
+    section_locations: list[str]
+    art_url: str | None
+    guids: list[str]
+
+
 class PlexClient:
     """Resolves render intents to Plex items.
 
     ``plexapi`` is synchronous, so calls run in a thread to keep the event loop free.
+    All ``plexapi`` attribute access happens inside that thread — attributes on
+    partial objects can trigger a synchronous HTTP reload, so nothing touched back
+    on the event loop may be a ``plexapi`` object.
     """
 
     def __init__(self, server, excluded_libraries: list[str]):
@@ -59,7 +88,7 @@ class PlexClient:
     def _sections(self):
         return [s for s in self._server.library().sections() if s.title not in self._excluded]
 
-    def _search_sync(self, intent: RenderIntent):
+    def _search_sync(self, intent: RenderIntent) -> _RawMatch | None:
         wanted = []
         if intent.tmdb_id:
             wanted.append(f"tmdb://{intent.tmdb_id}")
@@ -72,44 +101,69 @@ class PlexClient:
             for guid in wanted:
                 results = section.search(guid=guid)
                 if results:
-                    return section, results[0]
-        return None, None
+                    item = results[0]
+                    file_path = None
+                    if getattr(item, "media", None):
+                        parts = item.media[0].parts
+                        if parts:
+                            file_path = parts[0].file
+                    return _RawMatch(
+                        rating_key=str(item.ratingKey),
+                        library=section.title,
+                        title=item.title,
+                        year=getattr(item, "year", None),
+                        file_path=file_path,
+                        item_locations=list(getattr(item, "locations", None) or section.locations),
+                        section_locations=list(section.locations),
+                        art_url=getattr(item, "thumb", None),
+                        guids=[g.id for g in getattr(item, "guids", [])],
+                    )
+        return None
 
     async def resolve(self, intent: RenderIntent) -> ResolvedItem:
-        section, item = await asyncio.to_thread(self._search_sync, intent)
-        if item is None:
+        match = await asyncio.to_thread(self._search_sync, intent)
+        if match is None:
             raise ItemNotFound(
                 f"no Plex item for {intent.kind} {intent.title!r} "
                 f"(tmdb={intent.tmdb_id}, tvdb={intent.tvdb_id})"
             )
 
-        guids = parse_guids([g.id for g in getattr(item, "guids", [])])
-        file_path = None
-        if getattr(item, "media", None):
-            parts = item.media[0].parts
-            if parts:
-                file_path = parts[0].file
+        guids = parse_guids(match.guids)
+        file_path = match.file_path
 
-        library_root = section.locations[0]
         if intent.kind == "movie":
             if not file_path:
-                raise ItemNotFound(f"Plex item {item.ratingKey} has no media parts yet")
-            root_folder = derive_root_folder(library_root, file_path, is_directory=False)
+                raise ItemNotFound(f"Plex item {match.rating_key} has no media parts yet")
+            target_path = file_path
+            is_directory = False
         else:
-            show_path = file_path or getattr(item, "locations", [library_root])[0]
-            root_folder = derive_root_folder(library_root, show_path, is_directory=True)
+            target_path = file_path or match.item_locations[0]
+            is_directory = True
+
+        root_folder = None
+        for library_root in match.section_locations:
+            try:
+                root_folder = derive_root_folder(library_root, target_path, is_directory=is_directory)
+                break
+            except ValueError:
+                continue
+        if root_folder is None:
+            raise ItemNotFound(
+                f"Plex item {match.rating_key} ({target_path!r}) is not inside any of the "
+                f"library roots {match.section_locations!r} for library {match.library!r}"
+            )
 
         return ResolvedItem(
-            rating_key=str(item.ratingKey),
-            library=section.title,
+            rating_key=match.rating_key,
+            library=match.library,
             kind=intent.kind,
-            title=item.title,
-            year=getattr(item, "year", None),
+            title=match.title,
+            year=match.year,
             season_number=intent.season_number,
             episode_number=intent.episode_number,
             root_folder=root_folder,
             file_path=file_path,
-            art_url=getattr(item, "thumb", None),
+            art_url=match.art_url,
             tmdb_id=_as_int(guids.get("tmdb")) or intent.tmdb_id,
             tvdb_id=_as_int(guids.get("tvdb")) or intent.tvdb_id,
             imdb_id=guids.get("imdb") or intent.imdb_id,
