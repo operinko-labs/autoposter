@@ -1,10 +1,14 @@
+import gzip
+import types
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import select
 
 from autoposter.db.models import ImdbRating
 from autoposter.facts.imdb import (
+    download_tsv,
     get_episode_rating,
     get_rating,
     parse_episodes,
@@ -79,3 +83,31 @@ async def test_episode_rating_is_none_when_the_episode_is_unrated(session):
 
 async def test_episode_rating_is_none_for_an_unknown_episode(session):
     assert await get_episode_rating(session, "tt11280740", 9, 9) is None
+
+
+async def test_download_tsv_streams_instead_of_materialising_the_whole_file():
+    """Proves download_tsv doesn't build one big in-memory object.
+
+    Builds a gzip stream of many thousands of lines (enough that buffering the
+    decompressed text and a full list of lines would be obviously wasteful),
+    feeds it through the same MockTransport code path a real download uses,
+    and checks that (a) the function hands back a lazy generator rather than
+    a list, and (b) iterating it still yields every line correctly.
+    """
+    header = "tconst\taverageRating\tnumVotes"
+    row_count = 20_000
+    rows = [header] + [f"tt{i:07d}\t{5 + (i % 5)}.0\t100" for i in range(row_count)]
+    payload = gzip.compress("\n".join(rows).encode("utf-8"))
+
+    def handler(request):
+        return httpx.Response(200, content=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await download_tsv(http, "https://example.test/title.ratings.tsv.gz")
+        assert isinstance(result, types.GeneratorType)
+        lines = [line.rstrip("\n") for line in result]
+
+    assert len(lines) == row_count + 1
+    assert lines[0] == header
+    assert lines[1] == "tt0000000\t5.0\t100"
+    assert lines[-1] == f"tt{row_count - 1:07d}\t{5 + ((row_count - 1) % 5)}.0\t100"
