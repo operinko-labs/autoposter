@@ -1,0 +1,13 @@
+{
+  "eventType": "MovieAdded",
+  "instanceName": "Radarr",
+  "movie": {
+    "id": 413,
+    "title": "The Substance",
+    "year": 2024,
+    "folderPath": "/data/media/movies/The Substance (2024)",
+    "tmdbId": 933260,
+    "imdbId": "tt17526714"
+  },
+  "addMethod": "manual"
+}

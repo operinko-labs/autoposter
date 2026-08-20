@@ -1,0 +1,27 @@
+{
+  "eventType": "Download",
+  "instanceName": "Sonarr",
+  "series": {
+    "id": 88,
+    "title": "Severance",
+    "path": "/data/media/tv/Severance",
+    "tvdbId": 371980,
+    "tmdbId": 95396,
+    "imdbId": "tt11280740",
+    "type": "standard",
+    "year": 2022
+  },
+  "episodes": [
+    { "id": 10239, "episodeNumber": 1, "seasonNumber": 2, "title": "Hello, Ms. Cobel" },
+    { "id": 10240, "episodeNumber": 2, "seasonNumber": 2, "title": "Goodbye, Mrs. Selvig" },
+    { "id": 10250, "episodeNumber": 1, "seasonNumber": 3, "title": "Cold Harbor" }
+  ],
+  "episodeFiles": [
+    { "id": 20302, "path": "/data/media/tv/Severance/Season 02/S02E01.mkv", "quality": "WEBDL-1080p" },
+    { "id": 20303, "path": "/data/media/tv/Severance/Season 02/S02E02.mkv", "quality": "WEBDL-1080p" },
+    { "id": 20310, "path": "/data/media/tv/Severance/Season 03/S03E01.mkv", "quality": "WEBDL-1080p" }
+  ],
+  "fileCount": 3,
+  "destinationPath": "/data/media/tv/Severance/Season 02",
+  "release": { "releaseType": "seasonPack" }
+}

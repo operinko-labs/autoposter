@@ -1,0 +1,18 @@
+{
+  "eventType": "Test",
+  "instanceName": "Radarr",
+  "movie": {
+    "id": 1,
+    "title": "Test Title",
+    "year": 1970,
+    "folderPath": "C:\\testpath",
+    "tmdbId": 0,
+    "tags": ["test-tag"]
+  },
+  "remoteMovie": {
+    "tmdbId": 1234,
+    "imdbId": "5678",
+    "title": "Test title",
+    "year": 1970
+  }
+}

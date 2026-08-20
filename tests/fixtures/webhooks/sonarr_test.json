@@ -1,0 +1,16 @@
+{
+  "eventType": "Test",
+  "instanceName": "Sonarr",
+  "series": {
+    "id": 1,
+    "title": "Test Title",
+    "path": "C:\\testpath",
+    "tvdbId": 1234,
+    "tmdbId": 0,
+    "type": "standard",
+    "year": 0
+  },
+  "episodes": [
+    { "id": 123, "episodeNumber": 1, "seasonNumber": 1, "title": "Test title" }
+  ]
+}

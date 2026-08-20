@@ -1,0 +1,14 @@
+{
+  "eventType": "SeriesAdd",
+  "instanceName": "Sonarr",
+  "series": {
+    "id": 91,
+    "title": "The Studio",
+    "path": "/data/media/tv/The Studio",
+    "tvdbId": 442446,
+    "tmdbId": 240411,
+    "imdbId": "tt29141112",
+    "type": "standard",
+    "year": 2025
+  }
+}

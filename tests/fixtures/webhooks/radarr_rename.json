@@ -1,0 +1,19 @@
+{
+  "eventType": "Rename",
+  "instanceName": "Radarr",
+  "movie": {
+    "id": 412,
+    "title": "Dune: Part Two",
+    "year": 2024,
+    "folderPath": "/data/media/movies/Dune Part Two (2024)",
+    "tmdbId": 693134,
+    "imdbId": "tt15239678"
+  },
+  "renamedMovieFiles": [
+    {
+      "id": 5501,
+      "path": "/data/media/movies/Dune Part Two (2024)/Dune Part Two (2024) Bluray-2160p.mkv",
+      "previousPath": "/data/media/movies/Dune Part Two (2024)/Dune.Part.Two.2024.mkv"
+    }
+  ]
+}

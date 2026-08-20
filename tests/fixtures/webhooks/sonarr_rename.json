@@ -1,0 +1,20 @@
+{
+  "eventType": "Rename",
+  "instanceName": "Sonarr",
+  "series": {
+    "id": 88,
+    "title": "Severance",
+    "path": "/data/media/tv/Severance",
+    "tvdbId": 371980,
+    "tmdbId": 95396,
+    "type": "standard",
+    "year": 2022
+  },
+  "renamedEpisodeFiles": [
+    {
+      "id": 20302,
+      "path": "/data/media/tv/Severance/Season 02/Severance - S02E01 WEBDL-1080p.mkv",
+      "previousPath": "/data/media/tv/Severance/Season 02/Severance.S02E01.1080p.mkv"
+    }
+  ]
+}
