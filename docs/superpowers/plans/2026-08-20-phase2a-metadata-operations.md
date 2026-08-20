@@ -612,11 +612,41 @@ async def refresh(
 Run: `rtk proxy python -m pytest tests/test_imdb_dataset.py -v`
 Expected: PASS — 11 passed
 
-- [ ] **Step 7: Generate the migration and commit**
+- [ ] **Step 7: Generate the migration against a CLEAN database**
+
+`tests/conftest.py` points at the same database and calls `create_all` on every
+run, so autogenerating **after** running the suite produces an empty migration:
+Alembic correctly sees no difference, and the result silently creates nothing on
+a fresh deployment. Task 1 shipped exactly that bug, and the container runs
+`alembic upgrade head` at startup, so it reaches production. Reset first, replay
+the existing migrations, and only then autogenerate.
 
 ```bash
-rtk proxy python -m alembic revision --autogenerate -m "imdb dataset tables"
+docker compose down -v && docker compose up -d postgres && sleep 8
+export AUTOPOSTER_DATABASE_URL=postgresql+asyncpg://autoposter:autoposter@localhost:5433/autoposter
 rtk proxy python -m alembic upgrade head
+rtk proxy python -m alembic revision --autogenerate -m "imdb dataset tables"
+```
+
+Open the generated file and confirm it contains real `op.create_table` calls for
+**both** `imdb_ratings` and `imdb_episodes`, including the composite primary key
+on `(parent_tconst, season_number, episode_number)`. An `upgrade()` body of
+`pass` means the diff was taken against a database that already had the tables —
+start over from the reset. Then apply and verify:
+
+```bash
+rtk proxy python -m alembic upgrade head
+docker compose exec -T postgres psql -U autoposter -d autoposter -c "\d imdb_episodes"
+rtk proxy python -m pytest tests/test_migrations.py -v
+```
+
+`tests/test_migrations.py` (added in Task 1) applies migrations to its own
+scratch database and fails on any drift from the models — it is the guard
+against repeating this.
+
+- [ ] **Step 8: Commit**
+
+```bash
 git add src/autoposter/facts/imdb.py src/autoposter/db/models.py alembic \
         tests/test_imdb_dataset.py tests/fixtures/facts
 git commit --no-gpg-sign -m "feat: IMDb ratings from the bulk datasets"
