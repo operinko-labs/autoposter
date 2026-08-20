@@ -28,6 +28,12 @@ Every task's requirements implicitly include these. Values are copied verbatim f
 - **Excluded Plex libraries:** `Muskarit`, `Photos`.
 - **Worker parallelism defaults to 5** (matches the current `ParallelJobs`).
 - **Every asset write is atomic:** write to a temp file, then `os.replace` onto the final path.
+- **All queue timestamps come from the database clock**, never from the application
+  clock. `enqueue()` and `fail()` compute `run_after` with Postgres `now()`, and
+  `claim()` compares against Postgres `now()`. Mixing the two makes jobs fire early
+  or late by however far the app and database clocks have drifted — observed at 9.5s
+  between a Windows host and its WSL2 Postgres container, and possible between pods
+  in the cluster. Tests must obtain "now" via `SELECT now()` for the same reason.
 - **Commit after every task.** Conventional-commit prefixes (`feat:`, `test:`, `chore:`).
 
 ### Deliberate deviations from Posterizarr
@@ -1060,9 +1066,9 @@ git commit -m "feat: postgres schema for items, renders, jobs, cache and event l
 `tests/test_queue.py`:
 
 ```python
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from autoposter.db.models import Job
 from autoposter.queue.jobs import MAX_ATTEMPTS, claim, complete, enqueue, fail
@@ -1125,22 +1131,34 @@ async def test_failure_reschedules_with_backoff(session):
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
     assert job.last_error == "boom"
-    assert job.run_after > datetime.now(timezone.utc) + timedelta(seconds=5)
+    # Compare against the database clock, never this process's clock: the two can
+    # drift, and the queue is defined entirely in terms of the database's now().
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    assert job.run_after > db_now + timedelta(seconds=5)
+
+
+async def test_a_job_enqueued_without_delay_is_immediately_claimable(session):
+    # Regression guard for app/database clock skew: with a client-side timestamp
+    # and a database clock running behind, this job would not be due yet.
+    await enqueue(session, "process_item", {"rating_key": "now"})
+    assert await claim(session, "worker-a") is not None
+
+
+async def _make_due_now(session, job_id: int) -> None:
+    """Reset a job to pending and due, using the database clock."""
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    job.state = "pending"
+    job.run_after = (await session.execute(select(func.now()))).scalar_one()
+    await session.commit()
 
 
 async def test_job_parks_after_max_attempts(session):
     job_id = await enqueue(session, "process_item", {})
     for _ in range(MAX_ATTEMPTS - 1):
-        job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
-        job.state = "pending"
-        job.run_after = datetime.now(timezone.utc)
-        await session.commit()
+        await _make_due_now(session, job_id)
         await claim(session, "worker-a")
         assert await fail(session, job_id, "boom") == "pending"
-    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
-    job.state = "pending"
-    job.run_after = datetime.now(timezone.utc)
-    await session.commit()
+    await _make_due_now(session, job_id)
     await claim(session, "worker-a")
     assert await fail(session, job_id, "boom") == "parked"
 
@@ -1163,9 +1181,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'autoposter.queue.jobs'
 Create an empty `src/autoposter/queue/__init__.py`, then `src/autoposter/queue/jobs.py`:
 
 ```python
-from datetime import datetime, timedelta, timezone
-
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1210,7 +1226,10 @@ async def enqueue(
     events therefore produces a single pass whose delay is measured from the first
     event, which bounds latency instead of postponing work indefinitely.
     """
-    run_after = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+    # run_after is computed by Postgres, not by this process. claim() compares it
+    # against the database's now(), and an app clock that drifts from the database
+    # clock would otherwise make jobs run early or late by the size of the drift.
+    run_after = func.now() + func.make_interval(0, 0, 0, 0, 0, 0, delay_seconds)
     stmt = insert(Job).values(
         kind=kind, payload=payload, dedupe_key=dedupe_key, run_after=run_after
     )
@@ -1250,7 +1269,8 @@ async def fail(session: AsyncSession, job_id: int, error: str) -> str:
     else:
         job.state = "pending"
         backoff = BACKOFF_BASE_SECONDS * (2 ** (job.attempts - 1))
-        job.run_after = datetime.now(timezone.utc) + timedelta(seconds=backoff)
+        # Database clock again, for the same reason as enqueue().
+        job.run_after = func.now() + func.make_interval(0, 0, 0, 0, 0, 0, backoff)
     await session.commit()
     return job.state
 ```
@@ -1258,7 +1278,7 @@ async def fail(session: AsyncSession, job_id: int, error: str) -> str:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pytest tests/test_queue.py -v`
-Expected: PASS — 10 passed
+Expected: PASS — 11 passed
 
 - [ ] **Step 5: Commit**
 
