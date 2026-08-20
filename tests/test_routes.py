@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
@@ -121,7 +121,52 @@ async def test_jobs_are_delayed_by_the_settle_window(client, session):
         json=load("radarr_download.json"),
         headers={"X-Autoposter-Token": TOKEN},
     )
-    from datetime import datetime, timedelta, timezone
+    from datetime import timedelta
 
     job = (await session.execute(select(Job))).scalar_one()
-    assert job.run_after > datetime.now(timezone.utc) + timedelta(seconds=20)
+    # Compare against the database clock, never this process's clock: the two
+    # can drift (they measurably do on this machine), and run_after is
+    # computed by Postgres via func.now() + settle_seconds.
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    assert job.run_after > db_now + timedelta(seconds=20)
+
+
+async def test_non_ascii_token_is_rejected_not_500(client):
+    # httpx requires header values to be ASCII-safe str or raw bytes; send the
+    # UTF-8 bytes directly to get a genuinely non-ASCII header on the wire.
+    response = await client.post(
+        "/webhook/radarr",
+        json=load("radarr_download.json"),
+        headers={"X-Autoposter-Token": "tökén-é".encode("utf-8")},
+    )
+    assert response.status_code == 401
+
+
+async def test_invalid_json_body_returns_400_and_is_logged(client, session):
+    response = await client.post(
+        "/webhook/radarr",
+        content=b"{not valid json",
+        headers={
+            "X-Autoposter-Token": TOKEN,
+            "Content-Type": "application/json",
+        },
+    )
+    assert response.status_code == 400
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert len(events) == 1
+    assert events[0].source == "radarr"
+
+
+async def test_non_object_json_body_returns_400_and_is_logged(client, session):
+    response = await client.post(
+        "/webhook/radarr",
+        content=b"[1, 2, 3]",
+        headers={
+            "X-Autoposter-Token": TOKEN,
+            "Content-Type": "application/json",
+        },
+    )
+    assert response.status_code == 400
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert len(events) == 1
+    assert events[0].source == "radarr"
