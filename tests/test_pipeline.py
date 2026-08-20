@@ -6,9 +6,10 @@ import pytest
 from sqlalchemy import select
 
 from autoposter.config.loader import load_config
-from autoposter.db.models import MediaItem
+from autoposter.db.models import MediaItem, Render
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
+from autoposter.render import naming
 from autoposter.render import pipeline as pipeline_module
 from autoposter.render.pipeline import (
     ART_KINDS_FOR, compute_fingerprint, manual_override_path, render_artifact,
@@ -278,6 +279,95 @@ async def test_second_upsert_of_the_same_rating_key_refreshes_updated_at(session
 
     assert second.created_at == first.created_at
     assert second.updated_at > first.updated_at
+
+
+async def test_show_two_seasons_and_two_episodes_produce_five_distinct_rows(
+    session_factory, config
+):
+    # Regression guard: before the fix, PlexClient.resolve() returned the show's
+    # own rating key for every season/episode intent, so upserting a show, two
+    # of its seasons and two of its episodes collapsed onto one media_items row
+    # (whose kind/season_number/episode_number churned as each intent overwrote
+    # the last) and three renders rows (later intents overwriting earlier ones'
+    # season_poster/title_card). With each item carrying its own rating key,
+    # the same five intents must produce five distinct rows in each table, with
+    # distinct asset_paths and fingerprints, and parent_id wired up as each
+    # parent is processed before its children. Exercises the real upsert
+    # functions (_upsert_media_item, _get_or_create_render) against the live
+    # test database, not a mock.
+    from autoposter.render.pipeline import _get_or_create_render, _upsert_media_item
+
+    show = ResolvedItem(
+        rating_key="900", library="Shows", kind="show", title="Severance", year=2022,
+        season_number=None, episode_number=None, root_folder="Severance (2022)",
+        file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
+        parent_rating_key=None,
+    )
+    season1 = ResolvedItem(
+        rating_key="901", library="Shows", kind="season", title="Season 1", year=None,
+        season_number=1, episode_number=None, root_folder="Severance (2022)",
+        file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
+        parent_rating_key="900",
+    )
+    season2 = ResolvedItem(
+        rating_key="902", library="Shows", kind="season", title="Season 2", year=None,
+        season_number=2, episode_number=None, root_folder="Severance (2022)",
+        file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
+        parent_rating_key="900",
+    )
+    episode1 = ResolvedItem(
+        rating_key="903", library="Shows", kind="episode", title="Who Is Alive?", year=None,
+        season_number=2, episode_number=3, root_folder="Severance (2022)",
+        file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
+        parent_rating_key="902",
+    )
+    episode2 = ResolvedItem(
+        rating_key="904", library="Shows", kind="episode", title="Woe's Hollow", year=None,
+        season_number=2, episode_number=4, root_folder="Severance (2022)",
+        file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
+        parent_rating_key="902",
+    )
+
+    entries = [
+        (show, "poster"),
+        (season1, "season_poster"),
+        (season2, "season_poster"),
+        (episode1, "title_card"),
+        (episode2, "title_card"),
+    ]
+
+    async with session_factory() as s:
+        for resolved, art_kind in entries:
+            media_item = await _upsert_media_item(s, resolved)
+            target = naming.asset_path(
+                config, resolved.library, resolved.root_folder, art_kind,
+                resolved.season_number, resolved.episode_number,
+            )
+            primary, secondary = title_text_for(art_kind, resolved, config)
+            fingerprint = compute_fingerprint(
+                config.version, art_kind, None, None,
+                [t for t in (primary, secondary) if t],
+            )
+            render = await _get_or_create_render(s, media_item, art_kind, target)
+            render.fingerprint = fingerprint
+        await s.commit()
+
+    async with session_factory() as s:
+        media_rows = (await s.execute(select(MediaItem))).scalars().all()
+        render_rows = (await s.execute(select(Render))).scalars().all()
+
+    assert len(media_rows) == 5
+    assert {row.rating_key for row in media_rows} == {"900", "901", "902", "903", "904"}
+    assert len(render_rows) == 5
+    assert len({row.asset_path for row in render_rows}) == 5
+    assert len({row.fingerprint for row in render_rows}) == 5
+
+    by_rating_key = {row.rating_key: row for row in media_rows}
+    assert by_rating_key["900"].parent_id is None
+    assert by_rating_key["901"].parent_id == by_rating_key["900"].id
+    assert by_rating_key["902"].parent_id == by_rating_key["900"].id
+    assert by_rating_key["903"].parent_id == by_rating_key["902"].id
+    assert by_rating_key["904"].parent_id == by_rating_key["902"].id
 
 
 class _LogoAwareProvider:

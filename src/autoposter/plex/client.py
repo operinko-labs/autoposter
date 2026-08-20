@@ -2,6 +2,8 @@ import asyncio
 import re
 from dataclasses import dataclass
 
+from plexapi.exceptions import NotFound as PlexNotFound
+
 from autoposter.intake.arr import RenderIntent
 from autoposter.render.naming import derive_root_folder
 
@@ -27,6 +29,7 @@ class ResolvedItem:
     tmdb_id: int | None
     tvdb_id: int | None
     imdb_id: str | None
+    parent_rating_key: str | None = None
 
 
 def parse_guids(guids: list[str]) -> dict[str, str]:
@@ -59,6 +62,13 @@ class _RawMatch:
 
     Nothing here is a ``plexapi`` object, so reading these fields back on the event
     loop can never trigger a lazy HTTP reload.
+
+    The search matches the *show* (or movie) by GUID. ``rating_key``/``title`` are
+    the item the intent actually refers to — the show itself for a ``show`` intent,
+    but the season's or episode's own identity for a ``season``/``episode`` intent,
+    reached by navigating down from the matched show inside this same thread.
+    ``file_path``/``item_locations`` stay the *show's*, because assets for every
+    season and episode live under the show's folder.
     """
 
     rating_key: str
@@ -70,6 +80,7 @@ class _RawMatch:
     section_locations: list[str]
     art_url: str | None
     guids: list[str]
+    parent_rating_key: str | None
 
 
 class PlexClient:
@@ -102,21 +113,48 @@ class PlexClient:
                 results = section.search(guid=guid)
                 if results:
                     item = results[0]
+
+                    # The GUID search always matches the show (or movie). A season/
+                    # episode intent must navigate down from there to the item it
+                    # actually refers to, so the returned identity — rating key and
+                    # title — belongs to that item, not the show.
+                    target = item
+                    parent_rating_key = None
+                    if intent.kind == "season":
+                        try:
+                            target = item.season(season=intent.season_number)
+                        except PlexNotFound:
+                            return None
+                        parent_rating_key = str(item.ratingKey)
+                    elif intent.kind == "episode":
+                        try:
+                            target = item.episode(
+                                season=intent.season_number, episode=intent.episode_number
+                            )
+                        except PlexNotFound:
+                            return None
+                        parent_rating_key = (
+                            str(target.parentRatingKey)
+                            if target.parentRatingKey is not None
+                            else None
+                        )
+
                     file_path = None
                     if getattr(item, "media", None):
                         parts = item.media[0].parts
                         if parts:
                             file_path = parts[0].file
                     return _RawMatch(
-                        rating_key=str(item.ratingKey),
+                        rating_key=str(target.ratingKey),
                         library=section.title,
-                        title=item.title,
+                        title=target.title,
                         year=getattr(item, "year", None),
                         file_path=file_path,
                         item_locations=list(getattr(item, "locations", None) or section.locations),
                         section_locations=list(section.locations),
                         art_url=getattr(item, "thumb", None),
                         guids=[g.id for g in getattr(item, "guids", [])],
+                        parent_rating_key=parent_rating_key,
                     )
         return None
 
@@ -167,4 +205,5 @@ class PlexClient:
             tmdb_id=_as_int(guids.get("tmdb")) or intent.tmdb_id,
             tvdb_id=_as_int(guids.get("tvdb")) or intent.tvdb_id,
             imdb_id=guids.get("imdb") or intent.imdb_id,
+            parent_rating_key=match.parent_rating_key,
         )

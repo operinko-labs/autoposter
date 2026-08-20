@@ -134,10 +134,26 @@ async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> Media
     would race: two workers can both miss the select and both try to insert,
     and the loser's flush raises ``IntegrityError``. The Postgres upsert makes
     the write atomic; the row is then re-selected to get an ORM-tracked object.
+
+    ``parent_id`` is looked up by the parent's rating key rather than passed in,
+    because ``ResolvedItem`` only carries the parent's Plex identity, not its
+    database id. If the parent has not been processed yet there is no row to
+    find, so ``parent_id`` is left null rather than invented — a later upsert
+    of this same item (e.g. a re-delivered webhook) will fill it in once the
+    parent exists.
     """
+    parent_id = None
+    if item.parent_rating_key is not None:
+        parent_id = (
+            await session.execute(
+                select(MediaItem.id).where(MediaItem.rating_key == item.parent_rating_key)
+            )
+        ).scalar_one_or_none()
+
     mutable = dict(
         library=item.library,
         kind=item.kind,
+        parent_id=parent_id,
         title=item.title,
         year=item.year,
         season_number=item.season_number,
