@@ -247,6 +247,39 @@ async def test_concurrent_upserts_of_the_same_rating_key_succeed_and_leave_one_r
     assert len(rows) == 1
 
 
+async def test_second_upsert_of_the_same_rating_key_refreshes_updated_at(session_factory):
+    # on_conflict_do_update is an INSERT statement, so SQLAlchemy's onupdate=
+    # hook (which only fires for genuine UPDATEs) never runs on its own; the
+    # set_ mapping must refresh updated_at explicitly on every conflict.
+    # Compare the two timestamps against each other, not against the host
+    # clock: this machine's Postgres clock lags the host clock by several
+    # seconds (see project constraints).
+    from autoposter.render.pipeline import _upsert_media_item
+
+    async with session_factory() as s:
+        await _upsert_media_item(s, item(title="Dune: Part Two"))
+        await s.commit()
+
+    async with session_factory() as s:
+        first = (
+            await s.execute(select(MediaItem).where(MediaItem.rating_key == "1"))
+        ).scalar_one()
+
+    await asyncio.sleep(1.1)
+
+    async with session_factory() as s:
+        await _upsert_media_item(s, item(title="Dune: Part Two (Extended)"))
+        await s.commit()
+
+    async with session_factory() as s:
+        second = (
+            await s.execute(select(MediaItem).where(MediaItem.rating_key == "1"))
+        ).scalar_one()
+
+    assert second.created_at == first.created_at
+    assert second.updated_at > first.updated_at
+
+
 class _LogoAwareProvider:
     """Serves a poster candidate always, and a logo candidate if configured."""
 

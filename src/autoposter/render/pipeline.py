@@ -149,7 +149,9 @@ async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> Media
         imdb_id=item.imdb_id,
     )
     stmt = insert(MediaItem).values(rating_key=item.rating_key, **mutable)
-    stmt = stmt.on_conflict_do_update(index_elements=["rating_key"], set_=mutable)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["rating_key"], set_={**mutable, "updated_at": func.now()}
+    )
     await session.execute(stmt)
     await session.flush()
     return (
