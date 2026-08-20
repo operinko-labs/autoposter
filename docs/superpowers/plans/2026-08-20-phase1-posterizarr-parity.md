@@ -4351,11 +4351,10 @@ import hashlib
 import logging
 import os
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.schema import Config
@@ -4627,7 +4626,8 @@ async def render_artifact(
     render.fingerprint = fingerprint
     render.status = "rendered"
     render.detail = None
-    render.rendered_at = datetime.now(timezone.utc)
+    # Database clock, per the global constraint: the app and database clocks drift.
+    render.rendered_at = func.now()
     await session.commit()
     return render
 
