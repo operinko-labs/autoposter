@@ -46,3 +46,13 @@ Country flags in `flag/` are not generally a concern.
 Committing them here mirrors what the existing Kometa deployment already does on this
 private, single-operator install. **If this repository is ever published, replace this
 directory with a build-time fetch** rather than shipping the marks in version control.
+
+## `languages.json`
+
+Generated, not copied. Extracted from `/defaults/overlays/languages.yml` in the same image:
+each language entry there carries `{key, text, weight, country}`, where `country` selects the
+flag PNG and defaults to `key` when absent (so `de` uses `de.png`, but `en` uses `us.png`,
+`ja` uses `jp.png`, `ko` uses `kr.png`, `zh` uses `cn.png`, `da` uses `dk.png`).
+
+79 languages, every one of which resolves to a flag file present in `images/flag/round/`.
+`weight` is Kometa's queue ordering: higher weight is drawn in an earlier slot.

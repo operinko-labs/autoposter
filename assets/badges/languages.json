@@ -1,0 +1,397 @@
+{
+  "af": {
+    "country": "za",
+    "text": "AF",
+    "weight": 13
+  },
+  "am": {
+    "country": "et",
+    "text": "AM",
+    "weight": 5
+  },
+  "ar": {
+    "country": "eg",
+    "text": "AR",
+    "weight": 370
+  },
+  "ay": {
+    "country": "bo",
+    "text": "AY",
+    "weight": 19
+  },
+  "bg": {
+    "country": "bg",
+    "text": "BG",
+    "weight": 360
+  },
+  "bm": {
+    "country": "ml",
+    "text": "BM",
+    "weight": 12
+  },
+  "bn": {
+    "country": "bd",
+    "text": "BN",
+    "weight": 350
+  },
+  "bs": {
+    "country": "ba",
+    "text": "BS",
+    "weight": 340
+  },
+  "ca": {
+    "country": "ad",
+    "text": "CA",
+    "weight": 330
+  },
+  "cs": {
+    "country": "cz",
+    "text": "CS",
+    "weight": 400
+  },
+  "cy": {
+    "country": "uk",
+    "text": "CY",
+    "weight": 320
+  },
+  "da": {
+    "country": "dk",
+    "text": "DA",
+    "weight": 530
+  },
+  "de": {
+    "country": "de",
+    "text": "DE",
+    "weight": 600
+  },
+  "el": {
+    "country": "gr",
+    "text": "EL",
+    "weight": 310
+  },
+  "en": {
+    "country": "us",
+    "text": "EN",
+    "weight": 610
+  },
+  "es": {
+    "country": "es",
+    "text": "ES",
+    "weight": 580
+  },
+  "et": {
+    "country": "ee",
+    "text": "ET",
+    "weight": 300
+  },
+  "eu": {
+    "country": "es",
+    "text": "EU",
+    "weight": 290
+  },
+  "fa": {
+    "country": "ir",
+    "text": "FA",
+    "weight": 480
+  },
+  "fi": {
+    "country": "fi",
+    "text": "FI",
+    "weight": 280
+  },
+  "fil": {
+    "country": "ph",
+    "text": "FIL",
+    "weight": 265
+  },
+  "fr": {
+    "country": "fr",
+    "text": "FR",
+    "weight": 590
+  },
+  "ga": {
+    "country": "ie",
+    "text": "GA",
+    "weight": 18
+  },
+  "gl": {
+    "country": "es",
+    "text": "GL",
+    "weight": 260
+  },
+  "he": {
+    "country": "il",
+    "text": "HE",
+    "weight": 250
+  },
+  "hi": {
+    "country": "in",
+    "text": "HI",
+    "weight": 500
+  },
+  "hr": {
+    "country": "hr",
+    "text": "HR",
+    "weight": 240
+  },
+  "hu": {
+    "country": "hu",
+    "text": "HU",
+    "weight": 380
+  },
+  "id": {
+    "country": "id",
+    "text": "ID",
+    "weight": 230
+  },
+  "is": {
+    "country": "is",
+    "text": "IS",
+    "weight": 440
+  },
+  "it": {
+    "country": "it",
+    "text": "IT",
+    "weight": 510
+  },
+  "iu": {
+    "country": "ca",
+    "text": "IK",
+    "weight": 7
+  },
+  "ja": {
+    "country": "jp",
+    "text": "JA",
+    "weight": 560
+  },
+  "ka": {
+    "country": "ge",
+    "text": "KA",
+    "weight": 220
+  },
+  "kk": {
+    "country": "kz",
+    "text": "KK",
+    "weight": 210
+  },
+  "km": {
+    "country": "kh",
+    "text": "KM",
+    "weight": 16
+  },
+  "kn": {
+    "country": "in",
+    "text": "KN",
+    "weight": 200
+  },
+  "ko": {
+    "country": "kr",
+    "text": "KO",
+    "weight": 550
+  },
+  "la": {
+    "country": "it",
+    "text": "LA",
+    "weight": 190
+  },
+  "lb": {
+    "country": "lu",
+    "text": "LB",
+    "weight": 2
+  },
+  "li": {
+    "country": "be",
+    "text": "LI",
+    "weight": 17
+  },
+  "ln": {
+    "country": "cd",
+    "text": "LN",
+    "weight": 11
+  },
+  "lo": {
+    "country": "la",
+    "text": "LO",
+    "weight": 9
+  },
+  "lt": {
+    "country": "lt",
+    "text": "LT",
+    "weight": 180
+  },
+  "lv": {
+    "country": "lv",
+    "text": "LV",
+    "weight": 170
+  },
+  "mk": {
+    "country": "mk",
+    "text": "MK",
+    "weight": 160
+  },
+  "ml": {
+    "country": "in",
+    "text": "ML",
+    "weight": 150
+  },
+  "mn": {
+    "country": "mn",
+    "text": "MN",
+    "weight": 14
+  },
+  "mos": {
+    "country": "bf",
+    "text": "MOS",
+    "weight": 1
+  },
+  "mr": {
+    "country": "in",
+    "text": "MR",
+    "weight": 140
+  },
+  "ms": {
+    "country": "my",
+    "text": "MS",
+    "weight": 130
+  },
+  "myn": {
+    "country": "mx",
+    "text": "MYN",
+    "weight": 8
+  },
+  "nl": {
+    "country": "nl",
+    "text": "NL",
+    "weight": 460
+  },
+  "no": {
+    "country": "no",
+    "text": "NO",
+    "weight": 450
+  },
+  "pa": {
+    "country": "in",
+    "text": "PA",
+    "weight": 100
+  },
+  "pl": {
+    "country": "pl",
+    "text": "PL",
+    "weight": 410
+  },
+  "pt": {
+    "country": "pt",
+    "text": "PT",
+    "weight": 570
+  },
+  "ro": {
+    "country": "ro",
+    "text": "RO",
+    "weight": 90
+  },
+  "rom": {
+    "country": "ro",
+    "text": "ROM",
+    "weight": 6
+  },
+  "ru": {
+    "country": "ru",
+    "text": "RU",
+    "weight": 520
+  },
+  "sk": {
+    "country": "sk",
+    "text": "SK",
+    "weight": 80
+  },
+  "sl": {
+    "country": "si",
+    "text": "SL",
+    "weight": 70
+  },
+  "so": {
+    "country": "so",
+    "text": "SO",
+    "weight": 35
+  },
+  "sq": {
+    "country": "al",
+    "text": "SQ",
+    "weight": 60
+  },
+  "sr": {
+    "country": "rs",
+    "text": "SR",
+    "weight": 50
+  },
+  "su": {
+    "country": "id",
+    "text": "SU",
+    "weight": 4
+  },
+  "sv": {
+    "country": "se",
+    "text": "SV",
+    "weight": 430
+  },
+  "sw": {
+    "country": "tz",
+    "text": "SW",
+    "weight": 40
+  },
+  "ta": {
+    "country": "in",
+    "text": "TA",
+    "weight": 30
+  },
+  "te": {
+    "country": "in",
+    "text": "TE",
+    "weight": 490
+  },
+  "th": {
+    "country": "th",
+    "text": "TH",
+    "weight": 470
+  },
+  "tl": {
+    "country": "ph",
+    "text": "FL",
+    "weight": 270
+  },
+  "tr": {
+    "country": "tr",
+    "text": "TR",
+    "weight": 420
+  },
+  "uk": {
+    "country": "ua",
+    "text": "UK",
+    "weight": 390
+  },
+  "ur": {
+    "country": "pk",
+    "text": "UR",
+    "weight": 20
+  },
+  "vi": {
+    "country": "vn",
+    "text": "VI",
+    "weight": 15
+  },
+  "wo": {
+    "country": "sn",
+    "text": "WO",
+    "weight": 10
+  },
+  "zh": {
+    "country": "cn",
+    "text": "ZH",
+    "weight": 540
+  },
+  "zu": {
+    "country": "za",
+    "text": "ZU",
+    "weight": 3
+  }
+}
