@@ -1293,7 +1293,7 @@ git commit -m "feat: durable postgres job queue with coalescing and backoff"
 
 **Files:**
 - Create: `src/autoposter/intake/__init__.py`, `src/autoposter/intake/arr.py`
-- Create: `tests/fixtures/webhooks/*.json` (7 files, listed below)
+- Create: `tests/fixtures/webhooks/*.json` (9 files, listed below)
 - Test: `tests/test_arr.py`
 
 **Interfaces:**
