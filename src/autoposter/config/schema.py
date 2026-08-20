@@ -116,6 +116,9 @@ class ProvidersConfig(BaseModel):
     order: list[str] = Field(default_factory=lambda: ["TMDB", "TVDB", "Fanart"])
     favourite: str = "TMDB"
     tmdb_vote_sorting: str = "vote_average"
+    # How long a provider response (including "nothing found") stays cached in
+    # provider_cache. 0 disables caching entirely.
+    cache_ttl_seconds: int = 24 * 3600
 
 
 class PlexConfig(BaseModel):

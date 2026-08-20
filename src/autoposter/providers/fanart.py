@@ -3,6 +3,8 @@ import httpx
 from autoposter.providers.base import (
     BACKGROUND, LOGO, POSTER, SEASON_POSTER, ArtCandidate, ArtRequest,
 )
+from autoposter.providers.cache import ProviderCache
+from autoposter.providers.fetch import fetch_json
 
 BASE_URL = "https://webservice.fanart.tv/v3.2"
 
@@ -71,9 +73,17 @@ class FanartClient:
 
     name = "Fanart"
 
-    def __init__(self, apikey: str, client: httpx.AsyncClient):
+    def __init__(
+        self,
+        apikey: str,
+        client: httpx.AsyncClient,
+        cache: ProviderCache | None = None,
+        cache_ttl_seconds: int = 24 * 3600,
+    ):
         self._apikey = apikey
         self._client = client
+        self._cache = cache
+        self._cache_ttl_seconds = cache_ttl_seconds
 
     async def fetch(self, request: ArtRequest) -> list[ArtCandidate]:
         if request.art_kind not in _SUPPORTED_KINDS:
@@ -82,12 +92,16 @@ class FanartClient:
         if external_id is None:
             return []
         segment = "movies" if request.is_movie else "tv"
-        response = await self._client.get(
-            f"{BASE_URL}/{segment}/{external_id}", params={"api_key": self._apikey}
+        url = f"{BASE_URL}/{segment}/{external_id}"
+        params = {"api_key": self._apikey}
+        payload = await fetch_json(
+            method="GET",
+            url=url,
+            params=params,
+            request=lambda: self._client.get(url, params=params),
+            cache=self._cache,
+            ttl_seconds=self._cache_ttl_seconds,
         )
-        if response.status_code == 404:
+        if payload is None:
             return []
-        response.raise_for_status()
-        return parse_fanart(
-            response.json(), request.art_kind, request.is_movie, request.season_number
-        )
+        return parse_fanart(payload, request.art_kind, request.is_movie, request.season_number)

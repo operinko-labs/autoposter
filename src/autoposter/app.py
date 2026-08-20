@@ -13,6 +13,7 @@ from autoposter.config.schema import Config, Secrets
 from autoposter.intake.routes import router
 from autoposter.plex.client import ItemNotFound
 from autoposter.plex.health import PlexHealth
+from autoposter.providers.cache import ProviderCache
 from autoposter.providers.fanart import FanartClient
 from autoposter.providers.tmdb import TMDBClient
 from autoposter.providers.tvdb import TVDBClient
@@ -35,7 +36,10 @@ def create_app(
         # Single client for the process: provider clients borrow it rather than
         # each owning one, so there is exactly one AsyncClient to close on shutdown.
         http = httpx.AsyncClient(timeout=30.0)
-        app.state.providers = _build_providers(config, secrets, http)
+        # None (rather than a cache with ttl_seconds=0) when caching is disabled, so
+        # _build_providers never issues a DB round trip for a config that opted out.
+        cache = ProviderCache(session_factory) if config.providers.cache_ttl_seconds > 0 else None
+        app.state.providers = _build_providers(config, secrets, http, cache)
 
         health = PlexHealth(
             url=config.plex.url,
@@ -91,11 +95,17 @@ def create_app(
     return app
 
 
-def _build_providers(config: Config, secrets: Secrets, http: httpx.AsyncClient) -> list:
+def _build_providers(
+    config: Config, secrets: Secrets, http: httpx.AsyncClient, cache: ProviderCache | None = None
+) -> list:
+    ttl = config.providers.cache_ttl_seconds
     by_name = {
-        "TMDB": TMDBClient(secrets.tmdb_token, config.artwork.poster.language_order, http),
-        "TVDB": TVDBClient(secrets.tvdb_apikey, http),
-        "Fanart": FanartClient(secrets.fanart_apikey, http),
+        "TMDB": TMDBClient(
+            secrets.tmdb_token, config.artwork.poster.language_order, http,
+            cache=cache, cache_ttl_seconds=ttl,
+        ),
+        "TVDB": TVDBClient(secrets.tvdb_apikey, http, cache=cache, cache_ttl_seconds=ttl),
+        "Fanart": FanartClient(secrets.fanart_apikey, http, cache=cache, cache_ttl_seconds=ttl),
     }
     providers = []
     for name in config.providers.order:

@@ -5,6 +5,8 @@ import httpx
 from autoposter.providers.base import (
     BACKGROUND, LOGO, POSTER, SEASON_POSTER, TITLE_CARD, ArtCandidate, ArtRequest,
 )
+from autoposter.providers.cache import ProviderCache
+from autoposter.providers.fetch import fetch_json
 
 BASE_URL = "https://api4.thetvdb.com/v4"
 
@@ -81,11 +83,19 @@ class TVDBClient:
 
     name = "TVDB"
 
-    def __init__(self, apikey: str, client: httpx.AsyncClient):
+    def __init__(
+        self,
+        apikey: str,
+        client: httpx.AsyncClient,
+        cache: ProviderCache | None = None,
+        cache_ttl_seconds: int = 24 * 3600,
+    ):
         self._apikey = apikey
         self._client = client
         self._token: str | None = None
         self._login_lock = asyncio.Lock()
+        self._cache = cache
+        self._cache_ttl_seconds = cache_ttl_seconds
 
     async def _login(self) -> str:
         """Log in and cache the token. Concurrent cold-start callers share one call.
@@ -126,6 +136,22 @@ class TVDBClient:
             )
         return response
 
+    async def _fetch_json(self, path: str) -> dict | None:
+        """Authenticated GET for everything except ``/login``, optionally cached.
+
+        ``/login`` never goes through here — it is a credential with its own
+        lifetime and its own refresh path (the 401 retry above, under
+        ``_login_lock``), and caching it would defeat that.
+        """
+        return await fetch_json(
+            method="GET",
+            url=f"{BASE_URL}{path}",
+            params=None,
+            request=lambda: self._authenticated_get(path),
+            cache=self._cache,
+            ttl_seconds=self._cache_ttl_seconds,
+        )
+
     async def _resolve_season_id(self, tvdb_id: int, season_number: int) -> int | None:
         """Look up the TVDB season id for a season number.
 
@@ -133,11 +159,10 @@ class TVDBClient:
         poster request only ever carries ``tvdb_id`` and ``season_number``; the
         client must resolve the season id itself via the series' extended record.
         """
-        response = await self._authenticated_get(f"/series/{tvdb_id}/extended")
-        if response.status_code == 404:
+        payload = await self._fetch_json(f"/series/{tvdb_id}/extended")
+        if payload is None:
             return None
-        response.raise_for_status()
-        return _find_season_id(response.json(), season_number)
+        return _find_season_id(payload, season_number)
 
     async def fetch(self, request: ArtRequest) -> list[ArtCandidate]:
         if request.tvdb_id is None:
@@ -161,8 +186,7 @@ class TVDBClient:
             # Fetched without a lang filter on purpose: passing lang= would drop the
             # null-language entries, which are the best textless candidates.
             path = f"/series/{request.tvdb_id}/artworks"
-        response = await self._authenticated_get(path)
-        if response.status_code == 404:
+        payload = await self._fetch_json(path)
+        if payload is None:
             return []
-        response.raise_for_status()
-        return parse_tvdb_artworks(response.json(), request.art_kind, request.is_movie)
+        return parse_tvdb_artworks(payload, request.art_kind, request.is_movie)

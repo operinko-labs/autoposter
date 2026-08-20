@@ -3,6 +3,8 @@ import httpx
 from autoposter.providers.base import (
     BACKGROUND, LOGO, POSTER, SEASON_POSTER, TITLE_CARD, ArtCandidate, ArtRequest,
 )
+from autoposter.providers.cache import ProviderCache
+from autoposter.providers.fetch import fetch_json
 
 BASE_URL = "https://api.themoviedb.org/3"
 IMAGE_BASE = "https://image.tmdb.org/t/p/original"
@@ -58,10 +60,19 @@ class TMDBClient:
 
     name = "TMDB"
 
-    def __init__(self, token: str, language_order: list[str], client: httpx.AsyncClient):
+    def __init__(
+        self,
+        token: str,
+        language_order: list[str],
+        client: httpx.AsyncClient,
+        cache: ProviderCache | None = None,
+        cache_ttl_seconds: int = 24 * 3600,
+    ):
         self._token = token
         self._language_order = language_order
         self._client = client
+        self._cache = cache
+        self._cache_ttl_seconds = cache_ttl_seconds
 
     def _params(self) -> dict:
         # "null" is the literal token TMDB uses for images with no language tag.
@@ -90,12 +101,20 @@ class TMDBClient:
         if request.art_kind == SEASON_POSTER and request.season_number is None:
             return []
         path = self._path(request)
-        response = await self._client.get(
-            f"{BASE_URL}{path}",
-            params=self._params(),
-            headers={"Authorization": f"Bearer {self._token}", "accept": "application/json"},
+        url = f"{BASE_URL}{path}"
+        params = self._params()
+        payload = await fetch_json(
+            method="GET",
+            url=url,
+            params=params,
+            request=lambda: self._client.get(
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {self._token}", "accept": "application/json"},
+            ),
+            cache=self._cache,
+            ttl_seconds=self._cache_ttl_seconds,
         )
-        if response.status_code == 404:
+        if payload is None:
             return []
-        response.raise_for_status()
-        return parse_tmdb_images(response.json(), request.art_kind)
+        return parse_tmdb_images(payload, request.art_kind)
