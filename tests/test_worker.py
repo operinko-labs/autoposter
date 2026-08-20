@@ -9,7 +9,7 @@ from autoposter.db.models import Job
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ItemNotFound
 from autoposter.queue.jobs import MAX_ATTEMPTS, enqueue
-from autoposter.queue.worker import run_once
+from autoposter.queue.worker import run_once, run_worker
 
 
 async def test_run_once_processes_a_due_job(session):
@@ -201,3 +201,89 @@ async def test_db_error_in_handler_reschedules_instead_of_stranding_at_running(s
     assert job.state == "pending"
     assert job.claimed_by is None
     assert "division by zero" in job.last_error.lower()
+
+
+async def _wait_until(predicate, timeout: float = 5.0) -> None:
+    async def poll():
+        while not await predicate():
+            await asyncio.sleep(0.02)
+
+    await asyncio.wait_for(poll(), timeout=timeout)
+
+
+async def test_run_worker_skips_claiming_while_unhealthy_and_resumes_on_recovery(
+    session_factory,
+):
+    # PlexHealth's liveness gate: while the server is known unhealthy, a job
+    # must stay pending with attempts untouched, then be claimed normally as
+    # soon as health recovers.
+    handled = []
+
+    async def handler(session_, intent):
+        handled.append(intent)
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=30)
+    async with session_factory() as setup_session:
+        job_id = await enqueue(
+            setup_session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+        )
+
+    healthy = {"value": False}
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        run_worker(
+            "worker-1", session_factory, handler, stop_event, is_healthy=lambda: healthy["value"]
+        )
+    )
+    try:
+        await asyncio.sleep(0.2)
+        async with session_factory() as session:
+            job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+            assert job.state == "pending"
+            assert job.attempts == 0
+        assert handled == []
+
+        healthy["value"] = True
+
+        async def is_done():
+            async with session_factory() as session:
+                job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+                return job.state == "done"
+
+        await _wait_until(is_done)
+        assert handled[0].tmdb_id == 30
+    finally:
+        stop_event.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_run_worker_processes_jobs_normally_when_healthy(session_factory):
+    handled = []
+
+    async def handler(session_, intent):
+        handled.append(intent)
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=31)
+    async with session_factory() as setup_session:
+        job_id = await enqueue(
+            setup_session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+        )
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        run_worker("worker-1", session_factory, handler, stop_event, is_healthy=lambda: True)
+    )
+    try:
+
+        async def is_done():
+            async with session_factory() as session:
+                job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+                return job.state == "done"
+
+        await _wait_until(is_done)
+        assert handled[0].tmdb_id == 31
+    finally:
+        stop_event.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

@@ -54,6 +54,12 @@ endpoint, script, or sweep that unparks them in this phase, so a Plex outage
 longer than the attempt budget silently and permanently drops the affected
 webhooks unless someone requeues them by hand.
 
+A Plex outage itself should no longer be the cause, though: job claiming is
+gated on a periodic Plex liveness check (`plex/health.py`), so while the
+server is known unhealthy jobs stay `pending` and untouched instead of being
+claimed and burning attempts. The retry budget above is now only a fallback
+for an outage that begins between health checks.
+
 Use this only after confirming the underlying problem (e.g. Plex) is fixed —
 requeuing while the cause is still broken just burns through the attempt
 budget again and re-parks the same jobs.

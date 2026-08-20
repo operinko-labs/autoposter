@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Callable
 
 import requests
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,9 +70,31 @@ async def run_once(session: AsyncSession, worker_id: str, handler) -> bool:
     return True
 
 
-async def run_worker(worker_id: str, session_factory, handler, stop_event: asyncio.Event) -> None:
-    """Claim jobs until stopped, sleeping briefly when the queue is empty."""
+async def run_worker(
+    worker_id: str,
+    session_factory,
+    handler,
+    stop_event: asyncio.Event,
+    is_healthy: Callable[[], bool] | None = None,
+) -> None:
+    """Claim jobs until stopped, sleeping briefly when the queue is empty.
+
+    ``is_healthy``, when given, gates claiming: while it returns False the
+    worker sleeps and re-checks instead of claiming, so jobs stay ``pending``
+    (no attempts burned) during a Plex outage rather than being claimed and
+    immediately failed. ``None`` means claim unconditionally, matching the
+    previous behaviour for existing callers.
+
+    Every job kind in this phase needs Plex, so gating *all* claiming here is
+    correct; revisit this once a job kind that doesn't need Plex exists.
+    """
     while not stop_event.is_set():
+        if is_healthy is not None and not is_healthy():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=IDLE_SLEEP_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+            continue
         try:
             async with session_factory() as session:
                 did_work = await run_once(session, worker_id, handler)
@@ -85,10 +108,16 @@ async def run_worker(worker_id: str, session_factory, handler, stop_event: async
                 pass
 
 
-async def run_workers(count: int, session_factory, handler, stop_event: asyncio.Event) -> None:
+async def run_workers(
+    count: int,
+    session_factory,
+    handler,
+    stop_event: asyncio.Event,
+    is_healthy: Callable[[], bool] | None = None,
+) -> None:
     await asyncio.gather(
         *(
-            run_worker(f"worker-{index}", session_factory, handler, stop_event)
+            run_worker(f"worker-{index}", session_factory, handler, stop_event, is_healthy)
             for index in range(count)
         )
     )

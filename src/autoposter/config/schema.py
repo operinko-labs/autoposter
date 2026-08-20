@@ -122,6 +122,9 @@ class PlexConfig(BaseModel):
     url: str
     excluded_libraries: list[str] = Field(default_factory=list)
     resolve_max_attempts: int = 10
+    liveness_interval_seconds: int = 60
+    token_refresh_interval_seconds: int = 12 * 3600
+    token_refresh_enabled: bool = True
 
 
 class Config(BaseModel):

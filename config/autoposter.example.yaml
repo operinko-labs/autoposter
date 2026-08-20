@@ -13,6 +13,9 @@ plex:
   url: https://plex.vaderrp.com
   excluded_libraries: [Muskarit, Photos]
   resolve_max_attempts: 10
+  liveness_interval_seconds: 60
+  token_refresh_interval_seconds: 43200 # 12 hours
+  token_refresh_enabled: true # disable if your token is server-scoped (would just log warnings forever)
 
 providers:
   order: [TMDB, TVDB, Fanart]
