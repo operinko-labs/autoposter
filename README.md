@@ -92,9 +92,11 @@ Two of their conditions do apply regardless of key type and are treated as
 design constraints rather than documentation:
 
 - *"Do not perform more requests than are necessary for each user. This means
-  no downloading all of our content. Play nice with our server."* — the
-  pipeline is event-driven and fetches per item; the scheduled passes in later
-  phases must not bulk-crawl Fanart. See the spec's scheduler section.
+  no downloading all of our content. Play nice with our server."* — comfortably
+  satisfied: Fanart is queried once per title, so a full sweep of a ~2,200-title
+  library is ~2,200 requests, and episode artwork never touches it at all. The
+  scheduled passes still cache, skip unchanged items and rate-limit, as a matter
+  of good behaviour rather than necessity. See the spec's scheduler section.
 - *"You MUST keep the email address in your account information current and
   accurate in case we need to contact you regarding your key."* — an operator
   responsibility, noted in `deploy/README.md`.

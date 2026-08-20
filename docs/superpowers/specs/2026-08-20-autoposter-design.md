@@ -181,17 +181,24 @@ All cadences configurable.
   from Radarr/Sonarr get registered in place, with `/mnt/media` ↔
   `/mnt/Media` path mapping. Safety net: any Plex item with no `media_items`
   row is enqueued — eventual consistency even if webhooks fail.
-**Provider request budget (binding on every scheduled pass).** Fanart.tv's
-terms require that a client not "perform more requests than are necessary for
-each user" and explicitly forbid downloading all of their content. The
-event-driven path already satisfies this — one item per webhook — but the
-scheduled passes walk the whole library and are where a careless implementation
-becomes a bulk crawl. Therefore: the adoption run and the ratings drift sweep
-must read from `provider_cache` first, must not re-fetch artwork for items whose
-fingerprint is unchanged, and must rate-limit per provider. Adoption in
-particular resolves nothing from the artwork providers at all — it hashes what
-is already on disk. The same courtesy applies to TMDB and TVDB, which are
-merely less explicit about it.
+**Provider request budget.** Fanart.tv asks that a client not "perform more
+requests than are necessary for each user" and forbids downloading all of their
+content.
+
+For scale: a complete sweep of this library is about **2,236 requests** — 1,953
+movies plus 283 shows. Fanart is queried once per *title*, and a single response
+carries every artwork type for it, so the 12,598 episode assets generate no
+Fanart traffic at all (it has no episode artwork). Against a corpus of roughly
+950,000 images, that is a rounding error and nowhere near the clause about bulk
+downloading. This is a courtesy and efficiency concern, not a compliance risk,
+and it should not be used to justify avoiding otherwise sensible designs.
+
+What follows from it is ordinary good behaviour rather than a hard limit: the
+scheduled passes read from `provider_cache` first, skip items whose fingerprint
+is unchanged, and rate-limit per provider so a burst does not arrive as a spike.
+Adoption resolves nothing from the artwork providers at all — it hashes what is
+already on disk — because that is faster and correct, not because the traffic
+would be objectionable. The same courtesy applies to TMDB and TVDB.
 
 - **Asset cleanup (weekly).** `AssetCleanup` parity: assets whose item no
   longer exists move to `/assetsbackup`.
