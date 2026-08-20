@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from autoposter.db.models import ImdbEpisode, ImdbRating
+from autoposter.db.models import ImdbRating
 from autoposter.facts.imdb import (
     get_episode_rating,
     get_rating,
