@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from autoposter.facts.mdblist import MDBListClient, parse_content_rating
+from autoposter.facts.mdblist import MDBListClient, NullMDBListClient, parse_content_rating
 
 FIXTURES = Path(__file__).parent / "fixtures" / "facts"
 
@@ -111,3 +111,12 @@ async def test_quota_exhaustion_raises_a_distinct_error():
     ) as http:
         with pytest.raises(MDBListLimitReached):
             await MDBListClient("KEY", http).content_rating(tmdb_id=1, is_movie=True)
+
+
+async def test_null_client_always_returns_none_without_a_request():
+    """Finding 1: the stand-in used when no API key is configured degrades
+    only the content rating; it must never make a request or raise."""
+    client = NullMDBListClient()
+    assert await client.content_rating(tmdb_id=1, is_movie=True) is None
+    assert await client.content_rating(tvdb_id=2, is_movie=False) is None
+    assert await client.content_rating() is None

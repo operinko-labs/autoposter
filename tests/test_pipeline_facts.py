@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -5,7 +6,9 @@ from sqlalchemy import select
 
 from autoposter.config.loader import load_config
 from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
+from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.render import pipeline
 
@@ -114,3 +117,133 @@ def test_example_config_enables_operations():
     config = load_config(EXAMPLE)
     assert config.operations.enabled is True
     assert config.operations.write_to_plex is True
+
+
+async def test_no_mdblist_key_still_gathers_persists_and_writes_other_ratings(session):
+    """Finding 1: with no MDBList key, critic and audience ratings are still
+    gathered, persisted, and written to Plex; only content_rating is None."""
+    from autoposter.facts.imdb import store_ratings
+
+    await store_ratings(session, {"tt1": 4.9})
+    media = await _media(session)
+
+    class FakeTMDBFacts:
+        async def movie(self, tmdb_id):
+            return GatheredFacts(audience_rating=6.3, sources={"audience_rating": "tmdb"})
+
+    config = load_config(EXAMPLE)
+    plex_item = RecordingPlexItem()
+
+    facts = await pipeline.apply_metadata(
+        session, config, media.id, resolved(), plex_item,
+        FakeTMDBFacts(), NullMDBListClient(),
+    )
+
+    assert facts.critic_rating == pytest.approx(4.9)
+    assert facts.audience_rating == pytest.approx(6.3)
+    assert facts.content_rating is None
+
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.critic_rating == pytest.approx(4.9)
+    assert row.audience_rating == pytest.approx(6.3)
+    assert row.content_rating is None
+
+    assert plex_item.edits["rating.value"] == pytest.approx(4.9)
+    assert plex_item.edits["audienceRating.value"] == pytest.approx(6.3)
+    assert "contentRating.value" not in plex_item.edits
+
+
+class _FakePlex:
+    """Minimal Plex stand-in for process_item tests below: resolve() returns
+    a fixed item and fetch_item() a fresh RecordingPlexItem, without any real
+    Plex or network access."""
+
+    def __init__(self, item):
+        self._item = item
+
+    async def resolve(self, intent):
+        return self._item
+
+    async def fetch_item(self, rating_key):
+        return RecordingPlexItem()
+
+
+async def test_metadata_failure_does_not_block_artwork(session, monkeypatch, caplog):
+    """Finding 2: a rating provider hiccup must not fail the whole item —
+    artwork still renders."""
+
+    class BoomTMDBFacts:
+        async def movie(self, tmdb_id):
+            raise RuntimeError("provider hiccup")
+
+    rendered = []
+
+    async def fake_render_artifact(session, config, http, item, art_kind, providers):
+        rendered.append(art_kind)
+        return object()
+
+    monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
+    config = load_config(EXAMPLE)
+    intent = RenderIntent(kind="movie", title="X", tmdb_id=1)
+
+    with caplog.at_level("WARNING"):
+        results = await pipeline.process_item(
+            session, config, None, _FakePlex(resolved()), [], intent,
+            tmdb_facts=BoomTMDBFacts(), mdblist=NullMDBListClient(),
+        )
+
+    assert rendered == ["poster", "background"]
+    assert len(results) == 2
+    assert any("metadata operations failed" in r.message for r in caplog.records)
+
+
+async def test_cancelled_error_during_metadata_still_propagates(session, monkeypatch):
+    """Finding 2 constraint: CancelledError is a BaseException used for
+    shutdown and must not be swallowed by the containment."""
+
+    class CancellingTMDBFacts:
+        async def movie(self, tmdb_id):
+            raise asyncio.CancelledError()
+
+    async def fake_render_artifact(*args, **kwargs):
+        raise AssertionError("must not reach the artifact loop on cancellation")
+
+    monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
+    config = load_config(EXAMPLE)
+    intent = RenderIntent(kind="movie", title="X", tmdb_id=1)
+
+    with pytest.raises(asyncio.CancelledError):
+        await pipeline.process_item(
+            session, config, None, _FakePlex(resolved()), [], intent,
+            tmdb_facts=CancellingTMDBFacts(), mdblist=NullMDBListClient(),
+        )
+
+
+async def test_metadata_runs_before_the_artifact_loop(session, monkeypatch):
+    """Finding 3: process_item must run metadata operations before the first
+    artifact is rendered — the ordering the next phase's badges depend on."""
+    order = []
+
+    class OrderedTMDBFacts:
+        async def movie(self, tmdb_id):
+            order.append("metadata")
+            return GatheredFacts()
+
+    class OrderedMDBList:
+        async def content_rating(self, **kwargs):
+            return None
+
+    async def fake_render_artifact(session, config, http, item, art_kind, providers):
+        order.append(f"artifact:{art_kind}")
+        return object()
+
+    monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
+    config = load_config(EXAMPLE)
+    intent = RenderIntent(kind="movie", title="X", tmdb_id=1)
+
+    await pipeline.process_item(
+        session, config, None, _FakePlex(resolved()), [], intent,
+        tmdb_facts=OrderedTMDBFacts(), mdblist=OrderedMDBList(),
+    )
+
+    assert order == ["metadata", "artifact:poster", "artifact:background"]

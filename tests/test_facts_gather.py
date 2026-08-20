@@ -130,6 +130,23 @@ async def test_persist_is_idempotent(session):
     assert rows[0].critic_rating == pytest.approx(5.1)
 
 
+async def test_no_mdblist_key_only_degrades_content_rating(session):
+    """Finding 1: the stand-in used when no API key is configured must not
+    affect critic rating, audience rating, genres, or studio."""
+    from autoposter.facts.imdb import store_ratings
+    from autoposter.facts.mdblist import NullMDBListClient
+
+    await store_ratings(session, {"tt14316486": 4.9})
+    facts = await gather_facts(session, item(), FakeTMDB(), NullMDBListClient())
+    assert facts.critic_rating == pytest.approx(4.9)
+    assert facts.audience_rating == pytest.approx(6.3)
+    assert facts.genres == ["Horror"]
+    assert facts.studio == "A24"
+    assert facts.content_rating is None
+    assert "content_rating" not in facts.sources
+    assert facts.sources["critic_rating"] == "imdb"
+
+
 async def test_mdblist_limit_does_not_abort_the_other_facts(session):
     from autoposter.facts.mdblist import MDBListLimitReached
 

@@ -499,18 +499,30 @@ async def process_item(
     ``tmdb_facts``/``mdblist`` are the metadata-operations clients; they are
     optional (and default to ``None``) so callers that only care about
     artwork — including every test that predates Phase 2a — keep working
-    unchanged. Metadata operations run only when both are supplied, which
-    also means production wiring skips them gracefully until an operator has
-    configured the MDBList API key.
+    unchanged. Metadata operations run whenever ``tmdb_facts`` is supplied.
+    ``mdblist`` no longer gates them: production wiring always supplies a
+    client, real or a stand-in when no API key is configured (see
+    ``app._build_mdblist``), so an unset key degrades only the content
+    rating rather than every metadata operation.
+
+    A failure anywhere in this step is caught and logged rather than
+    propagated — a ratings-provider hiccup must not cost the item its
+    poster and background, which the artifact loop below still owes it.
     """
     item = await plex.resolve(intent)
 
-    if config.operations.enabled and tmdb_facts is not None and mdblist is not None:
-        media_item = await _upsert_media_item(session, item)
-        plex_item = await plex.fetch_item(item.rating_key)
-        await apply_metadata(
-            session, config, media_item.id, item, plex_item, tmdb_facts, mdblist
-        )
+    if config.operations.enabled and tmdb_facts is not None:
+        try:
+            media_item = await _upsert_media_item(session, item)
+            plex_item = await plex.fetch_item(item.rating_key)
+            await apply_metadata(
+                session, config, media_item.id, item, plex_item, tmdb_facts, mdblist
+            )
+        except Exception:
+            logger.warning(
+                "metadata operations failed for %s; continuing to artwork",
+                item.rating_key, exc_info=True,
+            )
 
     results = []
     for art_kind in ART_KINDS_FOR[intent.kind]:

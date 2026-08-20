@@ -4,9 +4,10 @@ import httpx
 import pytest
 import requests
 
-from autoposter.app import _build_providers, _handle_intent
+from autoposter.app import _build_mdblist, _build_providers, _handle_intent
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
+from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.intake.arr import RenderIntent
 from autoposter.providers.fanart import FanartClient
 from autoposter.providers.tmdb import TMDBClient
@@ -59,3 +60,33 @@ async def test_handle_intent_tags_plex_connection_errors_with_resolve_max_attemp
         )
 
     assert exc_info.value.max_attempts == config.plex.resolve_max_attempts
+
+
+async def test_missing_mdblist_key_warns_and_returns_a_stand_in(secrets, caplog):
+    # Finding 1: an unconfigured MDBList key must degrade only content
+    # ratings, and the operator must be told why via a startup warning
+    # naming the environment variable, not left to discover it by omission.
+    assert secrets.mdblist_apikey == ""
+
+    async with httpx.AsyncClient() as http:
+        with caplog.at_level("WARNING"):
+            mdblist = _build_mdblist(secrets, http)
+
+    assert isinstance(mdblist, NullMDBListClient)
+    assert await mdblist.content_rating(tmdb_id=1, is_movie=True) is None
+    assert any(
+        "AUTOPOSTER_MDBLIST_APIKEY" in record.message for record in caplog.records
+    )
+
+
+async def test_configured_mdblist_key_builds_the_real_client_without_warning(secrets, caplog):
+    secrets.mdblist_apikey = "KEY"
+
+    async with httpx.AsyncClient() as http:
+        with caplog.at_level("WARNING"):
+            mdblist = _build_mdblist(secrets, http)
+
+    assert isinstance(mdblist, MDBListClient)
+    assert not any(
+        "AUTOPOSTER_MDBLIST_APIKEY" in record.message for record in caplog.records
+    )

@@ -10,7 +10,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from autoposter.config.schema import Config, Secrets
-from autoposter.facts.mdblist import MDBListClient
+from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.intake.routes import router
 from autoposter.plex.client import ItemNotFound
@@ -46,13 +46,10 @@ def create_app(
             secrets.tmdb_token, http, cache=cache,
             cache_ttl_seconds=config.providers.cache_ttl_seconds,
         )
-        # None (rather than a client with an empty key) until an operator has
-        # configured one: MDBListClient would just fail every call otherwise.
-        # process_item requires both facts clients before it runs metadata
-        # operations at all, so this alone parks that feature until then.
-        app.state.mdblist = (
-            MDBListClient(secrets.mdblist_apikey, http) if secrets.mdblist_apikey else None
-        )
+        # A stand-in (never None) when no key is configured: only the
+        # content-rating field MDBList would have supplied is affected, so
+        # every other metadata operation still runs. See _build_mdblist.
+        app.state.mdblist = _build_mdblist(secrets, http)
 
         health = PlexHealth(
             url=config.plex.url,
@@ -130,6 +127,22 @@ def _build_providers(
             continue
         providers.append(by_name[name])
     return providers
+
+
+def _build_mdblist(secrets: Secrets, http: httpx.AsyncClient):
+    """The real client when an API key is configured, otherwise a stand-in.
+
+    An operator who has not configured MDBList has no reason to suspect
+    content ratings are the only thing affected unless told so explicitly
+    (finding 1) — hence the warning naming the environment variable.
+    """
+    if secrets.mdblist_apikey:
+        return MDBListClient(secrets.mdblist_apikey, http)
+    logger.warning(
+        "AUTOPOSTER_MDBLIST_APIKEY is not set; content ratings will be skipped "
+        "while other metadata operations continue"
+    )
+    return NullMDBListClient()
 
 
 async def _handle_intent(

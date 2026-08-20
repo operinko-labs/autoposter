@@ -30,6 +30,25 @@ def parse_content_rating(payload: dict) -> str | None:
     return str(age)
 
 
+class NullMDBListClient:
+    """Stand-in used when no MDBList API key is configured.
+
+    Degrades only the ``content_rating`` field MDBList would have supplied;
+    ``gather_facts`` already treats a ``None`` content rating as "no value",
+    so every other metadata operation proceeds untouched (see finding 1).
+    """
+
+    name = "MDBList"
+
+    async def content_rating(
+        self,
+        tmdb_id: int | None = None,
+        tvdb_id: int | None = None,
+        is_movie: bool = True,
+    ) -> str | None:
+        return None
+
+
 class MDBListClient:
     """Reads Common Sense age ratings.
 
