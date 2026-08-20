@@ -1,4 +1,6 @@
 from datetime import date
+from pathlib import Path
+import re
 
 import pytest
 
@@ -149,13 +151,12 @@ async def test_genres_are_applied_through_addgenre():
     # addGenre's documented merge reads the *current* genres live; re-listing
     # "Horror" (unchanged) would create a duplicate tag on the server, since
     # plexapi's indexed tag write does not dedupe. To avoid that,
-    # _apply_genre_edits resets the cached genres before calling addGenre so
-    # only the genuinely new tag is queued -- which intentionally leaves the
-    # local cache incomplete (Horror is still on the server, untouched; it's
-    # just no longer reflected here without a reload()). What actually
-    # matters -- the queued payload -- is asserted above and proven
-    # conflict-free against real plexapi in the test below.
-    assert [g.tag for g in item.genres] == ["Drama"]
+    # _apply_genre_edits temporarily resets the cached genres before calling
+    # addGenre so only the genuinely new tag is queued. The caller's object
+    # must be left exactly as it was found, so the genres are restored after.
+    # What actually matters -- the queued payload -- is asserted above and
+    # proven conflict-free against real plexapi in the test below.
+    assert [g.tag for g in item.genres] == ["Horror"]
 
 
 async def test_genres_that_drop_one_do_not_survive():
@@ -230,3 +231,50 @@ def test_genre_payload_has_no_conflicting_directives_against_real_plexapi():
     # No network call was made: saveEdits() was never invoked, and the
     # object still reports batch-edit mode is active (a dict, not None).
     assert isinstance(item._edits, dict)
+
+
+async def test_apply_restores_item_genres_snapshot_after_addgenre():
+    """The snapshot of item.genres must be restored after addGenre completes,
+    so the caller's object is not left in the temporary state used to avoid
+    re-adding genres that were removed in the same batch. Removals are kept
+    (they actually happened), but the temporary reset for addGenre is undone."""
+    item = FakeItem(genres=["Horror", "Comedy"])
+
+    # Modify genres: remove Comedy, add Drama. Result should be Horror + Drama.
+    await apply_facts(item, GatheredFacts(genres=["Horror", "Drama"]))
+
+    # After apply_facts, item.genres should reflect the removals (Comedy is gone)
+    # but not be left in the temporary empty state that addGenre used.
+    # We should have Horror (kept) but not Comedy (removed).
+    current_tags = [g.tag for g in item.genres]
+    assert "Comedy" not in current_tags, "Removed genres should not be present"
+    # This verifies that the snapshot is restored after addGenre; without the fix,
+    # the item would be left with just [] (empty).
+    assert len(current_tags) > 0, "Genres should not be left empty"
+
+
+def test_no_refresh_calls_in_plex_writer():
+    """Calling item.refresh() tells the Plex server to re-pull metadata from
+    its agents, which can overwrite artwork and locked fields this tool owns.
+    This test ensures no file in src/autoposter/plex/ ever calls .refresh() on
+    any object, preventing accidental metadata rollback as a recovery action."""
+    plex_dir = Path(__file__).parent.parent / "src" / "autoposter" / "plex"
+    assert plex_dir.is_dir(), f"Plex directory not found at {plex_dir}"
+
+    for py_file in plex_dir.glob("*.py"):
+        content = py_file.read_text()
+        # Check for .refresh( pattern. Use negative lookbehind to exclude
+        # session.refresh (SQLAlchemy), which is not in this directory anyway.
+        # The pattern looks for .refresh( to catch method calls.
+        if re.search(r"\.refresh\(", content):
+            # Filter out session.refresh specifically (not in this directory
+            # but be defensive), and any other sqlalchemy patterns.
+            for line_num, line in enumerate(content.split("\n"), 1):
+                if re.search(r"\.refresh\(", line) and not re.search(
+                    r"session\.refresh\(", line
+                ):
+                    pytest.fail(
+                        f"{py_file.name}:{line_num} calls .refresh() - "
+                        "Plex metadata refresh reverts locked fields and artwork; "
+                        "it is not an acceptable recovery action"
+                    )

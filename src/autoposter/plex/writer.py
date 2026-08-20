@@ -128,10 +128,16 @@ def _apply_genre_edits(item, additions: list[str], removals: list[str]) -> None:
     if removals:
         item.removeGenre(removals, locked=True)
     if additions:
-        # See _genre_plan: reset the cached genres so addGenre's merge only
-        # picks up the tags we're actually adding.
-        item.genres = []
-        item.addGenre(additions, locked=True)
+        # addGenre merges with item.genres, so a surplus tag still cached there
+        # would be re-added in the same payload that removes it. Blank it for
+        # the duration of the call, then put it back -- the caller's object must
+        # not be left describing a state that was never true.
+        original_genres = list(getattr(item, "genres", []))
+        try:
+            item.genres = []
+            item.addGenre(additions, locked=True)
+        finally:
+            item.genres = original_genres
 
 
 async def apply_facts(item, facts: GatheredFacts) -> dict[str, object]:
