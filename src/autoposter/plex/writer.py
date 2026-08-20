@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from urllib.parse import quote
 
 from autoposter.facts.gather import format_audience, format_critic
 from autoposter.facts.models import GatheredFacts
@@ -29,18 +28,29 @@ def _current_genres(item) -> list[str]:
     return [g.tag for g in getattr(item, "genres", []) or []]
 
 
-def _genre_edits(current: list[str], target: list[str]) -> dict[str, object]:
-    """Field/value pairs that set the genre list to exactly `target`.
+def _genre_plan(current: list[str], target: list[str]) -> dict[str, object]:
+    """Report-only additions/removals that set the genre list to exactly
+    `target`, using plexapi's documented `addGenre`/`removeGenre` mixin
+    methods rather than a hand-built tag wire format.
 
-    Verified empirically against the production server: a single-item
-    indexed tag write (`genre[0].tag.tag=...`) does not replace the genre
-    set, it merges with whatever genres the item already has -- the same
-    merge behaviour previously found for label edits, now confirmed to
-    also hold for genres on a single-item (non-batch) write. So setting
-    the list exactly means adding what's missing and explicitly removing
-    what's surplus, using the same indexed-tag wire format plexapi's own
-    EditTagsMixin._tagHelper uses (also verified empirically to handle
-    multi-word tag values correctly).
+    These keys are *not* valid `item.edit()` kwargs -- `apply_facts` reads
+    them to decide what to pass to `addGenre`/`removeGenre` and strips them
+    before building the plain-field edit call.
+
+    Why not just call `item.addGenre(missing)`: verified offline against the
+    real plexapi `Movie`/`GenreMixin` classes (constructing a `Movie` from a
+    minimal XML element and running `batchEdits()`, which performs no
+    network I/O), `addGenre`'s "merge with existing genres" reads the item's
+    *current* `genres` property live off its original data -- unaffected by
+    a `removeGenre` queued earlier in the same batch. Passed only the
+    genuinely new tags, it still silently re-emits every currently-held
+    genre as an explicit add, which either duplicates genres that needed no
+    change (plexapi's indexed tag write does not dedupe) or, worse, directly
+    contradicts a `removeGenre` call for the same tag in the same request.
+    `apply_facts` avoids this by resetting the item's cached `genres` to
+    `[]` immediately before calling `addGenre`, so its merge has nothing
+    stale to reintroduce and only the genuinely new tags are queued -- the
+    same payload shape already proven safe on the production server.
     """
     current_set = set(current)
     target_set = set(target)
@@ -50,14 +60,14 @@ def _genre_edits(current: list[str], target: list[str]) -> dict[str, object]:
     if not additions and not removals:
         return {}
 
-    edits: dict[str, object] = {}
-    for i, genre in enumerate(additions):
-        edits[f"genre[{i}].tag.tag"] = genre
+    plan: dict[str, object] = {}
+    if additions:
+        plan["genres.added"] = additions
     if removals:
-        edits["genre[].tag.tag-"] = ",".join(quote(str(g)) for g in removals)
+        plan["genres.removed"] = removals
     # Locked so Plex's own agent does not revert a value this tool owns.
-    edits["genre.locked"] = 1
-    return edits
+    plan["genres.locked"] = 1
+    return plan
 
 
 def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
@@ -102,24 +112,48 @@ def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
     if "genres" in writable and facts.genres:
         current_genres = _current_genres(item)
         if sorted(current_genres) != sorted(facts.genres):
-            edits.update(_genre_edits(current_genres, facts.genres))
+            edits.update(_genre_plan(current_genres, facts.genres))
 
     return edits
+
+
+def _apply_genre_edits(item, additions: list[str], removals: list[str]) -> None:
+    """Queue genre changes via the documented `addGenre`/`removeGenre` mixin
+    methods. Must be called after `item.batchEdits()` and before
+    `item.saveEdits()`; see `_genre_plan` for why the cache reset before
+    `addGenre` matters. Split out from `apply_facts` so this exact code path
+    can be exercised offline (batched, never saved) in tests against real
+    plexapi classes.
+    """
+    if removals:
+        item.removeGenre(removals, locked=True)
+    if additions:
+        # See _genre_plan: reset the cached genres so addGenre's merge only
+        # picks up the tags we're actually adding.
+        item.genres = []
+        item.addGenre(additions, locked=True)
 
 
 async def apply_facts(item, facts: GatheredFacts) -> dict[str, object]:
     """Write the changed fields in one HTTP call.
 
     plexapi routes even a single-item edit through the library section, so
-    batching the fields together turns six writes into one.
+    batching the fields together turns six writes into one. Genres are
+    queued through the documented `removeGenre`/`addGenre` mixin methods
+    (see `_genre_plan`) rather than `item.edit()`, but still land inside the
+    same `batchEdits()`/`saveEdits()` block, so it's still a single request.
     """
     edits = plan_edits(item, facts)
     if not edits:
         return {}
 
+    field_edits = {k: v for k, v in edits.items() if not k.startswith("genres.")}
+
     def _write() -> None:
         item.batchEdits()
-        item.edit(**edits)
+        if field_edits:
+            item.edit(**field_edits)
+        _apply_genre_edits(item, edits.get("genres.added", []), edits.get("genres.removed", []))
         item.saveEdits()
 
     await asyncio.to_thread(_write)
