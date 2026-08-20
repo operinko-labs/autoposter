@@ -64,3 +64,24 @@ async def test_unknown_job_kinds_are_parked_not_retried(session):
     await run_once(session, "worker-1", handler)
     job = (await session.execute(select(Job))).scalar_one()
     assert job.state == "parked"
+
+
+async def test_cancelled_handler_releases_job_without_consuming_an_attempt(session):
+    # A cancelled task (graceful shutdown) must not be treated like a job failure:
+    # the job goes straight back to pending, keeps its original attempt count, and
+    # the CancelledError must keep propagating so the worker task actually stops.
+    async def handler(session_, intent):
+        raise asyncio.CancelledError()
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=3)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_once(session, "worker-1", handler)
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "pending"
+    assert job.attempts == 0
+    assert job.claimed_by is None
+    assert job.claimed_at is None

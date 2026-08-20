@@ -70,6 +70,46 @@ async def claim(session: AsyncSession, worker_id: str) -> Job | None:
     return (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
 
 
+_RECLAIM_SQL = text(
+    """
+    UPDATE jobs
+       SET state = 'pending',
+           claimed_by = NULL,
+           claimed_at = NULL,
+           updated_at = now()
+     WHERE state = 'running'
+       AND claimed_at < now() - make_interval(secs => :older_than_seconds)
+    """
+)
+
+
+async def reclaim_stale(session: AsyncSession, older_than_seconds: int = 900) -> int:
+    """Return jobs stuck at ``running`` (process died mid-job) back to ``pending``.
+
+    Only claims older than the threshold are touched, not every ``running`` row, so
+    this stays correct if a second replica is genuinely still working a job. The
+    cutoff is computed by the database clock, matching claim()/enqueue()/fail().
+    """
+    result = await session.execute(_RECLAIM_SQL, {"older_than_seconds": older_than_seconds})
+    await session.commit()
+    return result.rowcount
+
+
+async def release(session: AsyncSession, job_id: int) -> None:
+    """Return a claimed job to ``pending`` without charging it a retry attempt.
+
+    Used when a worker is cancelled (graceful shutdown) mid-job: the job didn't
+    fail, the process just stopped, so it should be immediately claimable again
+    exactly as if it had never been picked up.
+    """
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    job.state = "pending"
+    job.claimed_by = None
+    job.claimed_at = None
+    job.attempts = max(job.attempts - 1, 0)
+    await session.commit()
+
+
 async def complete(session: AsyncSession, job_id: int) -> None:
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     job.state = "done"

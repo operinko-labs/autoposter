@@ -1,10 +1,10 @@
 import asyncio
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from autoposter.db.models import Job
-from autoposter.queue.jobs import MAX_ATTEMPTS, claim, complete, enqueue, fail
+from autoposter.queue.jobs import MAX_ATTEMPTS, claim, complete, enqueue, fail, reclaim_stale
 
 
 async def test_enqueue_returns_a_job_id(session):
@@ -136,3 +136,38 @@ async def test_complete_marks_done(session):
     await complete(session, job_id)
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     assert job.state == "done"
+
+
+async def test_reclaim_stale_resets_old_running_jobs(session):
+    # A job whose claim is far older than the threshold means the process that
+    # claimed it is gone (crash, OOM, SIGKILL) — it must become claimable again.
+    job_id = await enqueue(session, "process_item", {})
+    await claim(session, "worker-a")
+    await session.execute(
+        text("UPDATE jobs SET claimed_at = now() - interval '20 minutes' WHERE id = :id"),
+        {"id": job_id},
+    )
+    await session.commit()
+
+    count = await reclaim_stale(session, older_than_seconds=900)
+    assert count == 1
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "pending"
+    assert job.claimed_by is None
+    assert job.claimed_at is None
+    assert await claim(session, "worker-b") is not None
+
+
+async def test_reclaim_stale_leaves_recent_claims_alone(session):
+    job_id = await enqueue(session, "process_item", {})
+    await claim(session, "worker-a")
+
+    count = await reclaim_stale(session, older_than_seconds=900)
+    assert count == 0
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "running"
+    assert job.claimed_by == "worker-a"

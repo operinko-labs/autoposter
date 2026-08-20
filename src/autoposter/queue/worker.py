@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autoposter.db.models import Job
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ItemNotFound
-from autoposter.queue.jobs import claim, complete, fail
+from autoposter.queue.jobs import claim, complete, fail, release
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,12 @@ async def run_once(session: AsyncSession, worker_id: str, handler) -> bool:
     try:
         intent = RenderIntent(**job.payload)
         await handler(session, intent)
+    except asyncio.CancelledError:
+        # Shutdown, not a job failure: hand it straight back so it's immediately
+        # claimable again, without charging a retry attempt, then let the
+        # cancellation continue propagating so the worker task actually stops.
+        await release(session, job.id)
+        raise
     except ItemNotFound as exc:
         # Expected right after an import: Plex has not scanned the new file yet.
         logger.info("job %s waiting for Plex: %s", job.id, exc)
