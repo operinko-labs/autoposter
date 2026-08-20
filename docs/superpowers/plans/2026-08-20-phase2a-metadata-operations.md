@@ -152,11 +152,13 @@ async def test_fetched_at_comes_from_the_database_clock(session):
 
 
 def test_gathered_facts_is_frozen_and_defaults_empty():
+    import dataclasses
+
     facts = GatheredFacts()
     assert facts.genres == []
     assert facts.sources == {}
-    with pytest.raises(Exception):
-        facts.studio = "nope"  # frozen
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        facts.studio = "nope"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
