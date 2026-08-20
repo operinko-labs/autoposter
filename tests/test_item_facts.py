@@ -68,3 +68,26 @@ def test_gathered_facts_is_frozen_and_defaults_empty():
     assert facts.sources == {}
     with pytest.raises(dataclasses.FrozenInstanceError):
         facts.studio = "nope"
+
+
+def test_is_empty_false_for_zero_rating():
+    """A rating of 0.0 is a real, present value, not a missing one."""
+    assert GatheredFacts(critic_rating=0.0).is_empty() is False
+
+
+def test_is_empty_false_for_zero_content_rating():
+    """A content rating of '0' is a present string, not a missing one."""
+    assert GatheredFacts(content_rating="0").is_empty() is False
+
+
+def test_is_empty_true_for_empty_genre_list():
+    assert GatheredFacts(genres=[]).is_empty() is True
+
+
+def test_is_empty_true_for_default_instance():
+    assert GatheredFacts().is_empty() is True
+
+
+def test_is_empty_true_when_only_sources_populated():
+    """sources is provenance, not a fact, so it must not count toward emptiness."""
+    assert GatheredFacts(sources={"critic_rating": "imdb"}).is_empty() is True
