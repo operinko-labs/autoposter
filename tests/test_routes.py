@@ -155,6 +155,7 @@ async def test_invalid_json_body_returns_400_and_is_logged(client, session):
     events = (await session.execute(select(EventLog))).scalars().all()
     assert len(events) == 1
     assert events[0].source == "radarr"
+    assert "_raw" in events[0].payload
 
 
 async def test_non_object_json_body_returns_400_and_is_logged(client, session):
@@ -170,3 +171,26 @@ async def test_non_object_json_body_returns_400_and_is_logged(client, session):
     events = (await session.execute(select(EventLog))).scalars().all()
     assert len(events) == 1
     assert events[0].source == "radarr"
+    assert "_raw" in events[0].payload
+
+
+async def test_parser_bug_returns_500_and_logs_structured_payload(session_factory, secrets, session):
+    # A well-formed JSON object whose shape our parser mishandles is our bug,
+    # not the sender's: it must surface as a 500, and the EventLog row must
+    # keep the structured payload (not a "_raw" text blob) as evidence.
+    app = create_app(load_config(EXAMPLE), session_factory, secrets)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as broken_client:
+        response = await broken_client.post(
+            "/webhook/radarr",
+            json={"eventType": "Download", "movie": "not-an-object"},
+            headers={"X-Autoposter-Token": TOKEN},
+        )
+    assert response.status_code == 500
+
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert len(events) == 1
+    assert events[0].source == "radarr"
+    assert "eventType" in events[0].payload
+    assert "_raw" not in events[0].payload
+    assert "parser error" in events[0].outcome

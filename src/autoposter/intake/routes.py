@@ -40,15 +40,32 @@ async def _ingest(request: Request, source: str, parser) -> dict:
         payload = json.loads(raw_body)
         if not isinstance(payload, dict):
             raise ValueError("payload is not a JSON object")
-        payload_for_log = payload
-        event_type = payload.get("eventType")
-        intents = parser(payload)
     except Exception as exc:
         error = f"unparseable payload: {exc}"
         text = raw_body.decode("utf-8", errors="replace")
         if len(text) > _MAX_RAW_BODY_CHARS:
             text = text[:_MAX_RAW_BODY_CHARS] + "...(truncated)"
         payload_for_log = {"_raw": text}
+    else:
+        payload_for_log = payload
+        event_type = payload.get("eventType")
+        try:
+            intents = parser(payload)
+        except Exception as exc:
+            # A bug in our parser, not a malformed request from the sender.
+            # Preserve the structured payload as evidence and commit it
+            # before propagating, then let the exception surface as a 500.
+            async with session_factory() as session:
+                session.add(
+                    EventLog(
+                        source=source,
+                        event_type=event_type,
+                        payload=payload_for_log,
+                        outcome=f"parser error: {exc}",
+                    )
+                )
+                await session.commit()
+            raise
 
     queued = 0
     async with session_factory() as session:
