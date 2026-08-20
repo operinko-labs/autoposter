@@ -138,3 +138,45 @@ def test_language_slots_are_capped():
 def test_unknown_languages_are_dropped_not_guessed():
     info = MediaInfo(None, None, None, None, ("en", "zzz"), frozenset(), None, None)
     assert language_slots(info) == [("us", "EN")]
+
+
+def test_dolby_vision_over_hlg_names_a_file_that_exists():
+    """Profile 8.4 streams report both DV and HLG. No `dvhlg` asset is
+    vendored for any resolution, so concatenating both would name a
+    nonexistent PNG and the badge would fail at render time."""
+    info = MediaInfo("1080", None, None, None, (), frozenset({"dv", "hlg"}), None, None)
+    assert resolution_image(info) == "1080pdv"
+
+
+def test_dv_hdr_plus_picks_the_most_specific_vendored_variant():
+    info = MediaInfo("4k", None, None, None, (), frozenset({"dv", "hdr", "plus"}), None, None)
+    assert resolution_image(info) == "4kdvhdrplus"
+
+
+def test_every_resolution_image_name_exists_on_disk():
+    """Guards the whole mapping, not just the combinations we thought to list."""
+    import itertools
+    from pathlib import Path
+
+    flags = ("dv", "hdr", "hlg", "plus")
+    root = Path("assets/badges/images/resolution")
+    for resolution in ("4k", "1080", "720", "576", "480"):
+        for size in range(len(flags) + 1):
+            for combo in itertools.combinations(flags, size):
+                info = MediaInfo(resolution, None, None, None, (), frozenset(combo), None, None)
+                stem = resolution_image(info)
+                assert (root / ("%s.png" % stem)).exists(), (
+                    "%s + %s -> %s.png which does not exist" % (resolution, combo, stem)
+                )
+
+
+def test_every_audio_codec_image_name_exists_on_disk():
+    from pathlib import Path
+
+    from autoposter.badges.values import AUDIO_CODECS
+
+    root = Path("assets/badges/images/audio_codec/compact")
+    for codec in AUDIO_CODECS:
+        info = MediaInfo(None, codec, None, None, (), frozenset(), None, None)
+        stem = audio_codec_image(info)
+        assert (root / ("%s.png" % stem)).exists(), "%s -> %s.png missing" % (codec, stem)
