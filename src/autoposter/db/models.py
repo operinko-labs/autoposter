@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -10,16 +10,13 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from autoposter.db.base import Base
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class MediaItem(Base):
@@ -43,9 +40,9 @@ class MediaItem(Base):
     episode_number: Mapped[int | None] = mapped_column(Integer)
     root_folder: Mapped[str | None] = mapped_column(Text)
     file_path: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -74,9 +71,9 @@ class Render(Base):
     status: Mapped[str] = mapped_column(String(24), default="pending")
     detail: Mapped[str | None] = mapped_column(Text)
     rendered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -104,13 +101,13 @@ class Job(Base):
     # pending | running | done | failed | parked
     state: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
-    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     claimed_by: Mapped[str | None] = mapped_column(String(64))
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -135,5 +132,5 @@ class EventLog(Base):
     payload: Mapped[dict] = mapped_column(JSONB)
     outcome: Mapped[str | None] = mapped_column(Text)
     received_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, index=True
+        DateTime(timezone=True), server_default=func.now(), index=True
     )

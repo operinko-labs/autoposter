@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 
 from sqlalchemy import func, select
@@ -45,6 +46,20 @@ async def test_claim_returns_none_when_queue_is_empty(session):
 
 
 async def test_two_workers_never_claim_the_same_job(session_factory):
+    # A single job, claimed concurrently by two independent sessions, exercises the
+    # FOR UPDATE SKIP LOCKED guarantee: exactly one claim succeeds, the other skips
+    # the locked row rather than double-claiming it.
+    async with session_factory() as setup:
+        job_id = await enqueue(setup, "process_item", {"n": 1})
+    async with session_factory() as s1, session_factory() as s2:
+        first, second = await asyncio.gather(claim(s1, "worker-1"), claim(s2, "worker-2"))
+    claimed = [job for job in (first, second) if job is not None]
+    assert len(claimed) == 1
+    assert claimed[0].id == job_id
+    assert claimed[0].attempts == 1
+
+
+async def test_two_workers_claim_distinct_jobs_independently(session_factory):
     async with session_factory() as setup:
         await enqueue(setup, "process_item", {"n": 1}, dedupe_key="a")
         await enqueue(setup, "process_item", {"n": 2}, dedupe_key="b")
@@ -74,6 +89,26 @@ async def test_a_job_enqueued_without_delay_is_immediately_claimable(session):
     # and a database clock running behind, this job would not be due yet.
     await enqueue(session, "process_item", {"rating_key": "now"})
     assert await claim(session, "worker-a") is not None
+
+
+async def test_created_at_uses_the_database_clock(session):
+    # Regression guard for finding 1: created_at must be a server-side default
+    # (func.now()), not one computed in this process, because the app clock and
+    # the database clock can drift by several seconds on this machine.
+    job_id = await enqueue(session, "process_item", {})
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    assert abs((job.created_at - db_now).total_seconds()) < 1
+
+
+async def test_fail_clears_claim_metadata(session):
+    job_id = await enqueue(session, "process_item", {})
+    await claim(session, "worker-a")
+    await fail(session, job_id, "boom")
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.claimed_by is None
+    assert job.claimed_at is None
 
 
 async def _make_due_now(session, job_id: int) -> None:
