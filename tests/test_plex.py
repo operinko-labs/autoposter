@@ -36,13 +36,15 @@ class FakeSection:
         self.locations = [location]
         self._items = items
 
-    def search(self, **kwargs):
-        results = []
+    def getGuid(self, guid):
+        # Mirrors plexapi: an EXTERNAL id (tvdb://, tmdb://, imdb://) is matched
+        # against the item's `guids` list, not its primary `.guid`, and a miss
+        # raises NotFound. Modelling this as `search(guid=...)` previously hid a
+        # bug where nothing resolved against a real server.
         for item in self._items:
-            guid_values = [g.id for g in item.guids]
-            if any(kwargs.get("guid", "") == value for value in guid_values):
-                results.append(item)
-        return results
+            if any(g.id == guid for g in item.guids):
+                return item
+        raise PlexNotFound(f"Guid '{guid}' is not found in the library")
 
 
 class FakeItem:
@@ -88,7 +90,11 @@ class FakeServer:
     def __init__(self, sections):
         self._sections = sections
 
+    @property
     def library(self):
+        # plexapi exposes `library` as a property, not a method. Modelling it as
+        # a method here once hid a TypeError that only showed up against a real
+        # server, so the double deliberately mirrors the real shape.
         return self
 
     def sections(self):

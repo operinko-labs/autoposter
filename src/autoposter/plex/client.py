@@ -97,7 +97,10 @@ class PlexClient:
         self._excluded = set(excluded_libraries)
 
     def _sections(self):
-        return [s for s in self._server.library().sections() if s.title not in self._excluded]
+        # plexapi exposes `library` as a property and `sections` as a method.
+        return [
+            s for s in self._server.library.sections() if s.title not in self._excluded
+        ]
 
     def _search_sync(self, intent: RenderIntent) -> _RawMatch | None:
         wanted = []
@@ -110,9 +113,16 @@ class PlexClient:
 
         for section in self._sections():
             for guid in wanted:
-                results = section.search(guid=guid)
-                if results:
-                    item = results[0]
+                # `search(guid=...)` matches only an item's PRIMARY guid, which under
+                # the Plex Movie/TV agents is a `plex://` URI — external ids live in
+                # the item's `guids` list, so searching for `tvdb://...` there always
+                # returns nothing. `getGuid` resolves the external id through the
+                # agent and is what actually works against a real library.
+                try:
+                    item = section.getGuid(guid)
+                except PlexNotFound:
+                    continue
+                if item is not None:
 
                     # The GUID search always matches the show (or movie). A season/
                     # episode intent must navigate down from there to the item it
