@@ -1,0 +1,12 @@
+{
+  "id": 940143,
+  "title": "All Souls",
+  "vote_average": 6.3,
+  "vote_count": 41,
+  "release_date": "2023-05-12",
+  "genres": [{"id": 27, "name": "Horror"}, {"id": 18, "name": "Drama"}],
+  "production_companies": [
+    {"id": 1, "name": "First Studio"},
+    {"id": 2, "name": "Second Studio"}
+  ]
+}

@@ -30,3 +30,14 @@ async def session_factory(engine):
 async def session(session_factory):
     async with session_factory() as s:
         yield s
+
+
+def session_factory_for(session):
+    """Adapt the function-scoped test session to ProviderCache's factory API."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def factory():
+        yield session
+
+    return factory

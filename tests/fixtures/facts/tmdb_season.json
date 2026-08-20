@@ -1,0 +1,9 @@
+{
+  "id": 3624,
+  "season_number": 2,
+  "episodes": [
+    {"id": 1, "episode_number": 1, "vote_average": 7.8, "name": "Hello, Ms. Cobel"},
+    {"id": 2, "episode_number": 2, "vote_average": 8.1, "name": "Goodbye, Mrs. Selvig"},
+    {"id": 3, "episode_number": 3, "vote_average": 0.0, "name": "Who Is Alive?"}
+  ]
+}
