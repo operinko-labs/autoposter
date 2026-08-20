@@ -14,6 +14,38 @@ from autoposter.plex.client import PlexClient
 
 CONFIG_PATH = Path(os.environ.get("AUTOPOSTER_CONFIG", "/config/autoposter.yaml"))
 
+logger = logging.getLogger(__name__)
+
+
+class _LazyPlexServer:
+    """Defers connecting to Plex until the server is actually used.
+
+    ``PlexServer(...)`` makes a blocking network call. Doing that eagerly at
+    boot means a Plex outage crashloops the whole pod, taking webhook intake
+    down with it. Connecting lazily lets the process start, serve /healthz,
+    and queue webhooks while Plex is unreachable; jobs that need Plex fail and
+    retry through the normal backoff path until it comes back. Every attribute
+    access (already happening inside a worker thread via ``PlexClient``)
+    triggers a (re)connect attempt if the previous one failed or never ran.
+    """
+
+    def __init__(self, url: str, token: str):
+        self._url = url
+        self._token = token
+        self._server = None
+
+    def _connect(self):
+        if self._server is None:
+            try:
+                self._server = PlexServer(self._url, self._token)
+            except Exception:
+                logger.error("failed to connect to Plex at %s", self._url, exc_info=True)
+                raise
+        return self._server
+
+    def __getattr__(self, name):
+        return getattr(self._connect(), name)
+
 
 def build() -> FastAPI:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -25,7 +57,7 @@ def build() -> FastAPI:
     app = create_app(config, session_factory, secrets, run_background=True)
 
     app.state.plex = PlexClient(
-        server=PlexServer(config.plex.url, secrets.plex_token),
+        server=_LazyPlexServer(config.plex.url, secrets.plex_token),
         excluded_libraries=config.plex.excluded_libraries,
     )
     return app

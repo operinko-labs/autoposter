@@ -1,5 +1,3 @@
-import pytest
-
 from autoposter.providers.base import POSTER, ArtCandidate, ArtRequest
 from autoposter.providers.ladder import (
     Selection, best_candidate, language_rank, select_artwork,

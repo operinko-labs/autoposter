@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 import os
@@ -70,6 +71,12 @@ def _file_sha256(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except FileNotFoundError:
         return ""
+
+
+def _stage_override(override: Path, working: Path) -> str:
+    """Copy the manual-override file into the working directory and hash it."""
+    working.write_bytes(override.read_bytes())
+    return hashlib.sha256(working.read_bytes()).hexdigest()
 
 
 def art_config_for(config: Config, art_kind: str):
@@ -238,8 +245,7 @@ async def render_artifact(
 
         override = manual_override_path(config, item, art_kind)
         if override is not None:
-            working.write_bytes(override.read_bytes())
-            base_sha = hashlib.sha256(working.read_bytes()).hexdigest()
+            base_sha = await asyncio.to_thread(_stage_override, override, working)
             source_url, provider_name, textless = str(override), "manual", None
         else:
             selection = await select_artwork(
@@ -299,15 +305,25 @@ async def render_artifact(
 
         text_inputs = [t for t in (primary_text, secondary_text) if t] if draw_text else []
         overlay_hash = (
-            _file_sha256(Path(config.overlays_root) / settings.overlay_file)
+            await asyncio.to_thread(
+                _file_sha256, Path(config.overlays_root) / settings.overlay_file
+            )
             if settings.add_overlay
             else ""
         )
         font_hashes = []
         if draw_text and settings.text is not None and primary_text:
-            font_hashes.append(_file_sha256(Path(config.fonts_root) / settings.text.font))
+            font_hashes.append(
+                await asyncio.to_thread(
+                    _file_sha256, Path(config.fonts_root) / settings.text.font
+                )
+            )
         if art_kind == "title_card" and settings.episode_text is not None and secondary_text:
-            font_hashes.append(_file_sha256(Path(config.fonts_root) / settings.episode_text.font))
+            font_hashes.append(
+                await asyncio.to_thread(
+                    _file_sha256, Path(config.fonts_root) / settings.episode_text.font
+                )
+            )
         asset_hashes = [overlay_hash, *font_hashes, logo_sha]
 
         fingerprint = compute_fingerprint(
@@ -322,27 +338,34 @@ async def render_artifact(
         if render.source_mode == "verbatim":
             # MediUX and similar sources ship finished art; compositing would fight
             # the designer's own title treatment (spec section 11).
-            _publish(working, target, config.backup_root, config.assets_root)
+            await asyncio.to_thread(
+                _publish, working, target, config.backup_root, config.assets_root
+            )
         else:
             overlay = (
                 str(Path(config.overlays_root) / settings.overlay_file)
                 if settings.add_overlay
                 else None
             )
-            compositor.run(compositor.build_stamp_argv(config.magick_binary, str(working)))
-            compositor.run(
+            await asyncio.to_thread(
+                compositor.run,
+                compositor.build_stamp_argv(config.magick_binary, str(working)),
+            )
+            await asyncio.to_thread(
+                compositor.run,
                 compositor.build_base_argv(
                     config.magick_binary, str(working), _CANVAS[art_kind], overlay,
                     config.artwork.output_quality, settings.add_border,
                     settings.border_color, settings.border_width,
-                )
+                ),
             )
             if logo_path is not None:
-                compositor.run(
+                await asyncio.to_thread(
+                    compositor.run,
                     compositor.build_logo_argv(
                         config.magick_binary, str(working), str(logo_path),
                         settings.text, config.artwork.output_quality,
-                    )
+                    ),
                 )
             blocks = []
             if draw_text:
@@ -354,7 +377,9 @@ async def render_artifact(
                     continue
                 prepared = prepare_text(text, style)
                 font_path = str(Path(config.fonts_root) / style.font)
-                fit = fit_point_size(config.magick_binary, font_path, style, prepared)
+                fit = await asyncio.to_thread(
+                    fit_point_size, config.magick_binary, font_path, style, prepared
+                )
                 if fit.truncated:
                     # Posterizarr writes no file when text cannot fit at the minimum
                     # point size. Emitting one here would produce artwork the current
@@ -367,13 +392,16 @@ async def render_artifact(
                     )
                     await session.commit()
                     return render
-                compositor.run(
+                await asyncio.to_thread(
+                    compositor.run,
                     compositor.build_text_argv(
                         config.magick_binary, str(working), style, font_path,
                         fit.point_size, prepared, config.artwork.output_quality,
-                    )
+                    ),
                 )
-            _publish(working, target, config.backup_root, config.assets_root)
+            await asyncio.to_thread(
+                _publish, working, target, config.backup_root, config.assets_root
+            )
 
     render.provider = provider_name
     render.source_url = source_url

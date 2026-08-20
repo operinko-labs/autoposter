@@ -15,7 +15,7 @@ plex:
   resolve_max_attempts: 10
 
 providers:
-  order: [TMDB, TVDB, Fanart, Plex]
+  order: [TMDB, TVDB, Fanart]
   favourite: TMDB
   tmdb_vote_sorting: vote_average
 

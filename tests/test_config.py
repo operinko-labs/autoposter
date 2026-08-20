@@ -17,7 +17,7 @@ def test_example_config_loads():
     cfg = load_config(EXAMPLE)
     assert cfg.assets_root == Path("/assets")
     assert cfg.workers == 5
-    assert cfg.providers.order == ["TMDB", "TVDB", "Fanart", "Plex"]
+    assert cfg.providers.order == ["TMDB", "TVDB", "Fanart"]
     assert cfg.artwork.poster.language_order == ["xx", "en", "fi"]
     assert "Muskarit" in cfg.plex.excluded_libraries
 

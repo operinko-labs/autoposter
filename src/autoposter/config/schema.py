@@ -113,7 +113,7 @@ class ArtworkConfig(BaseModel):
 
 
 class ProvidersConfig(BaseModel):
-    order: list[str] = Field(default_factory=lambda: ["TMDB", "TVDB", "Fanart", "Plex"])
+    order: list[str] = Field(default_factory=lambda: ["TMDB", "TVDB", "Fanart"])
     favourite: str = "TMDB"
     tmdb_vote_sorting: str = "vote_average"
 

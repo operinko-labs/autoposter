@@ -10,6 +10,7 @@ from starlette.responses import Response
 
 from autoposter.config.schema import Config, Secrets
 from autoposter.intake.routes import router
+from autoposter.plex.client import ItemNotFound
 from autoposter.providers.fanart import FanartClient
 from autoposter.providers.tmdb import TMDBClient
 from autoposter.providers.tvdb import TVDBClient
@@ -32,12 +33,7 @@ def create_app(
         # Single client for the process: provider clients borrow it rather than
         # each owning one, so there is exactly one AsyncClient to close on shutdown.
         http = httpx.AsyncClient(timeout=30.0)
-        by_name = {
-            "TMDB": TMDBClient(secrets.tmdb_token, config.artwork.poster.language_order, http),
-            "TVDB": TVDBClient(secrets.tvdb_apikey, http),
-            "Fanart": FanartClient(secrets.fanart_apikey, http),
-        }
-        app.state.providers = [by_name[name] for name in config.providers.order if name in by_name]
+        app.state.providers = _build_providers(config, secrets, http)
 
         async with session_factory() as session:
             reclaimed = await reclaim_stale(session)
@@ -75,5 +71,27 @@ def create_app(
     return app
 
 
+def _build_providers(config: Config, secrets: Secrets, http: httpx.AsyncClient) -> list:
+    by_name = {
+        "TMDB": TMDBClient(secrets.tmdb_token, config.artwork.poster.language_order, http),
+        "TVDB": TVDBClient(secrets.tvdb_apikey, http),
+        "Fanart": FanartClient(secrets.fanart_apikey, http),
+    }
+    providers = []
+    for name in config.providers.order:
+        if name not in by_name:
+            logger.warning("configured provider %r has no implementation; skipping", name)
+            continue
+        providers.append(by_name[name])
+    return providers
+
+
 async def _handle_intent(session, intent, *, config, http, plex, providers):
-    await process_item(session, config, http, plex, providers, intent)
+    try:
+        await process_item(session, config, http, plex, providers, intent)
+    except ItemNotFound as exc:
+        # Threaded through to run_once via the exception itself, so the queue
+        # worker's own signature stays untouched: waiting on Plex gets its own,
+        # configurable attempt budget instead of the generic retry limit.
+        exc.max_attempts = config.plex.resolve_max_attempts
+        raise

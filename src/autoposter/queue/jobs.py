@@ -117,13 +117,15 @@ async def complete(session: AsyncSession, job_id: int) -> None:
     await session.commit()
 
 
-async def fail(session: AsyncSession, job_id: int, error: str) -> str:
+async def fail(
+    session: AsyncSession, job_id: int, error: str, max_attempts: int = MAX_ATTEMPTS
+) -> str:
     """Reschedule with exponential backoff, or park once attempts are exhausted."""
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     job.last_error = error
     job.claimed_by = None
     job.claimed_at = None
-    if job.attempts >= MAX_ATTEMPTS:
+    if job.attempts >= max_attempts:
         job.state = "parked"
     else:
         job.state = "pending"

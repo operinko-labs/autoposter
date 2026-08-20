@@ -1,13 +1,11 @@
 import asyncio
 import logging
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import Job
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ItemNotFound
-from autoposter.queue.jobs import claim, complete, fail, release
+from autoposter.queue.jobs import MAX_ATTEMPTS, claim, complete, fail, release
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +17,11 @@ async def run_once(session: AsyncSession, worker_id: str, handler) -> bool:
     job = await claim(session, worker_id)
     if job is None:
         return False
+
+    # Captured up front: a rollback() below expires every attribute on this ORM
+    # object, and re-loading one afterwards needs IO that isn't safe to trigger
+    # via plain attribute access on an AsyncSession.
+    job_id = job.id
 
     if job.kind != "process_item":
         # Not retryable — a rescheduled unknown kind would spin until it parks anyway.
@@ -34,17 +37,25 @@ async def run_once(session: AsyncSession, worker_id: str, handler) -> bool:
         # Shutdown, not a job failure: hand it straight back so it's immediately
         # claimable again, without charging a retry attempt, then let the
         # cancellation continue propagating so the worker task actually stops.
-        await release(session, job.id)
+        await release(session, job_id)
         raise
     except ItemNotFound as exc:
         # Expected right after an import: Plex has not scanned the new file yet.
-        logger.info("job %s waiting for Plex: %s", job.id, exc)
-        await fail(session, job.id, str(exc))
+        logger.info("job %s waiting for Plex: %s", job_id, exc)
+        # The handler may have left the session mid-transaction (e.g. a DB error
+        # surfaced first); fail() issues a SELECT, which would raise
+        # PendingRollbackError on a failed transaction instead of rescheduling.
+        await session.rollback()
+        # config.plex.resolve_max_attempts, threaded through via the exception
+        # rather than a run_once parameter — see _handle_intent in app.py.
+        max_attempts = getattr(exc, "max_attempts", MAX_ATTEMPTS)
+        await fail(session, job_id, str(exc), max_attempts)
     except Exception as exc:  # noqa: BLE001 - the queue is the error boundary
-        logger.warning("job %s failed: %s", job.id, exc, exc_info=True)
-        await fail(session, job.id, f"{type(exc).__name__}: {exc}")
+        logger.warning("job %s failed: %s", job_id, exc, exc_info=True)
+        await session.rollback()
+        await fail(session, job_id, f"{type(exc).__name__}: {exc}")
     else:
-        await complete(session, job.id)
+        await complete(session, job_id)
     return True
 
 
