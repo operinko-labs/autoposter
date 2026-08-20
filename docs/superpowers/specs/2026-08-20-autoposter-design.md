@@ -92,9 +92,10 @@ Names illustrative; final schema in migrations.
   critic rating, TMDB audience rating, Common Sense rating, genres, studio,
   originally-available date. Each fact records source and fetch time.
 - **`renders`** — one row per artifact (poster / season poster / background /
-  title card) per item: base art provenance (provider, source URL, textless
-  or not), base file hash, render fingerprint, `/assets` path, Plex upload
-  time, status.
+  title card) per item: `source_mode` (`generate` = fetch textless art and
+  composite our own text/fade; `verbatim` = apply supplied art as-is), base
+  art provenance (provider, source URL, textless or not), base file hash,
+  render fingerprint, `/assets` path, Plex upload time, status.
 - **`jobs`** — the queue: type (`process_item`, `refresh_collections`,
   `ratings_sweep`, …), payload, state, attempts, scheduled time,
   claimed-by/claimed-at.
@@ -279,3 +280,36 @@ The new YAML config carries over, 1:1 where sensible:
 
 Settings from either tool not listed in Non-goals but absent here default to
 current behavior; the implementation plan enumerates the full mapping table.
+
+## 11. MediUX (deferred, seam built in Phase 1)
+
+MediUX (mediux.pro) hosts curated designer **sets** — a matching poster,
+backdrop, every season poster, and every episode title card for one title by
+a single designer, optionally grouped into franchise-wide boxsets. It is the
+only source that supplies coherent title cards across a whole show, which is
+otherwise the weakest part of the art ladder.
+
+**It cannot join the provider ladder.** MediUX art ships with the title
+treatment already composited in, and the API exposes no language field at
+all, so the `xx`/null-language textless inference used for TMDB/Fanart/TVDB
+is structurally impossible. The handful of textless sets that exist are
+discoverable only by string-matching creator-authored set titles such as
+"(Textless)". MediUX is therefore modelled as `source_mode: verbatim` — apply
+the set's images as-is and **skip the text/fade compositing entirely** —
+selected per item, never as a fallback inside the generate path.
+
+**Status: deferred.** The API is real and fully mapped (a Directus GraphQL
+endpoint at `https://images.mediux.io/graphql`; the AURA project embeds the
+complete query set, and image bytes at
+`https://api.mediux.io/assets/{uuid}?v={modified_on}` are public and need no
+auth). The blocker is the metadata bearer token, which is allowlist-gated via
+the MediUX Discord rather than self-service — the same blocker recorded in
+Posterizarr issue #111. Anonymous GraphQL introspection returns an empty
+schema.
+
+**What Phase 1 builds for it:** the `source_mode` column on `renders` and a
+render pipeline that branches on it. Nothing else. Adding MediUX later is a
+new provider module plus a `mediux_sets`/`item_set_bindings` table tracking
+which set is bound to which item and each image's `modified_on`, so designer
+updates and newly-aired episodes pull matching art. No rewrite of the render
+model is required.
