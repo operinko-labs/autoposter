@@ -519,6 +519,13 @@ async def process_item(
                 session, config, media_item.id, item, plex_item, tmdb_facts, mdblist
             )
         except Exception:
+            # Finding 5: if the failure was a database error, the transaction
+            # is already aborted; without rolling back here, the artifact
+            # loop's first session.execute() below would raise
+            # PendingRollbackError instead of rendering, defeating this
+            # containment's whole purpose. Every other error path in this
+            # codebase rolls back first (see queue/worker.py).
+            await session.rollback()
             logger.warning(
                 "metadata operations failed for %s; continuing to artwork",
                 item.rating_key, exc_info=True,

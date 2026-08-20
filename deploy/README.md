@@ -20,8 +20,8 @@ These correspond to `assets_root`, `manual_assets_root` and `backup_root` in
 
 ## Secrets
 
-Secrets come from an ExternalSecret providing the six `AUTOPOSTER_*`
-environment variables:
+Secrets come from an ExternalSecret providing the `AUTOPOSTER_*` environment
+variables:
 
 - `AUTOPOSTER_DATABASE_URL`
 - `AUTOPOSTER_PLEX_TOKEN`
@@ -29,8 +29,46 @@ environment variables:
 - `AUTOPOSTER_TVDB_APIKEY`
 - `AUTOPOSTER_FANART_APIKEY`
 - `AUTOPOSTER_WEBHOOK_SECRET`
+- `AUTOPOSTER_MDBLIST_APIKEY` — optional. Unset, only the `content_rating`
+  metadata field is skipped; every other metadata operation (ratings, genres,
+  studio, release date) still runs (see `app.py`'s `_build_mdblist`).
 
 None of these are read from the YAML config file.
+
+## Metadata operations config
+
+The `operations:` block in `autoposter.yaml` controls the per-item metadata
+writes added in Phase 2a (ratings, content rating, genres, studio, release
+date — replacing Kometa's `mass_*_update`):
+
+- `enabled` (default `true`) — off means metadata operations do not run at
+  all; artwork rendering is unaffected either way.
+- `write_to_plex` (default `true`) — off means facts are still gathered and
+  stored in `item_facts`, but nothing is written to Plex. The safe setting
+  while the tool being replaced (Kometa) still owns these fields.
+
+See `config/autoposter.example.yaml` for the full block.
+
+## Loading IMDb ratings
+
+`critic_rating` (IMDb) is populated from IMDb's bulk datasets, not a live API
+call. Nothing in this phase schedules that load automatically — a scheduler is
+Phase 3's job — so it must be run by hand:
+
+```
+python -m autoposter.facts.imdb
+```
+
+This needs only `AUTOPOSTER_DATABASE_URL` in the environment. It selects the
+IMDb ids the library actually needs from `media_items`, downloads and parses
+both datasets, upserts `imdb_ratings`/`imdb_episodes`, and prints how many
+rating and episode rows were stored.
+
+**Run this at least once before metadata operations can produce a non-NULL
+`critic_rating`** — without it, `imdb_ratings`/`imdb_episodes` stay empty
+forever, `get_rating`/`get_episode_rating` return `None` for everything, and
+Plex's critic rating is never written, with no error or warning. Re-run
+periodically afterwards, since IMDb republishes both datasets daily.
 
 ## Obtaining AUTOPOSTER_PLEX_TOKEN
 

@@ -2,6 +2,9 @@ import logging
 
 import httpx
 
+from autoposter.providers.cache import ProviderCache
+from autoposter.providers.fetch import fetch_json
+
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.mdblist.com"
@@ -53,14 +56,26 @@ class MDBListClient:
     """Reads Common Sense age ratings.
 
     Movies are addressed by TMDB id and shows by TVDB id — the asymmetry is
-    MDBList's, not ours.
+    MDBList's, not ours. MDBList is slow-moving data (see the Global
+    Constraints), so every request goes through the Phase 1 cache seam, same
+    as ``TMDBFactsClient``. ``apikey`` is sent as a query parameter, but
+    ``build_cache_key`` already strips it from the cache key, so it is never
+    persisted in ``provider_cache``.
     """
 
     name = "MDBList"
 
-    def __init__(self, apikey: str, client: httpx.AsyncClient):
+    def __init__(
+        self,
+        apikey: str,
+        client: httpx.AsyncClient,
+        cache: ProviderCache | None = None,
+        cache_ttl_seconds: int = 24 * 3600,
+    ):
         self._apikey = apikey
         self._client = client
+        self._cache = cache
+        self._cache_ttl_seconds = cache_ttl_seconds
 
     async def content_rating(
         self,
@@ -73,15 +88,20 @@ class MDBListClient:
             return None
         provider = "tmdb" if is_movie else "tvdb"
         media_type = "movie" if is_movie else "show"
-        response = await self._client.get(
-            f"{BASE_URL}/{provider}/{media_type}/{identifier}/",
-            params={"apikey": self._apikey},
-            headers={"User-Agent": "autoposter"},
+        url = f"{BASE_URL}/{provider}/{media_type}/{identifier}/"
+        params = {"apikey": self._apikey}
+        payload = await fetch_json(
+            method="GET",
+            url=url,
+            params=params,
+            request=lambda: self._client.get(
+                url, params=params, headers={"User-Agent": "autoposter"}
+            ),
+            cache=self._cache,
+            ttl_seconds=self._cache_ttl_seconds,
         )
-        if response.status_code == 404:
+        if payload is None:
             return None
-        response.raise_for_status()
-        payload = response.json()
         error = payload.get("error") if isinstance(payload, dict) else None
         if error in _LIMIT_ERRORS:
             raise MDBListLimitReached(error)

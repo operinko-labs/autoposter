@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from autoposter.config.loader import load_config
 from autoposter.db.models import ItemFacts, MediaItem
@@ -193,6 +193,39 @@ async def test_metadata_failure_does_not_block_artwork(session, monkeypatch, cap
         )
 
     assert rendered == ["poster", "background"]
+    assert len(results) == 2
+    assert any("metadata operations failed" in r.message for r in caplog.records)
+
+
+async def test_metadata_db_error_still_lets_artwork_use_the_session(session, monkeypatch, caplog):
+    """Finding 5: if the metadata step fails with a database error, the
+    session's transaction is left aborted. Without a rollback in the
+    containment, the artifact loop's first session.execute() would raise
+    PendingRollbackError instead of rendering -- defeating the containment's
+    whole purpose."""
+
+    class BoomTMDBFacts:
+        async def movie(self, tmdb_id):
+            # Same failure shape as the worker's own DB-error tests
+            # (test_worker.py): leaves the session mid-failed-transaction.
+            await session.execute(text("SELECT 1/0"))
+
+    async def fake_render_artifact(session_, config, http, item, art_kind, providers):
+        # Proves the session is usable again: a PendingRollbackError here
+        # would mean the rollback in process_item's except block is missing.
+        await session_.execute(select(1))
+        return object()
+
+    monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
+    config = load_config(EXAMPLE)
+    intent = RenderIntent(kind="movie", title="X", tmdb_id=1)
+
+    with caplog.at_level("WARNING"):
+        results = await pipeline.process_item(
+            session, config, None, _FakePlex(resolved()), [], intent,
+            tmdb_facts=BoomTMDBFacts(), mdblist=NullMDBListClient(),
+        )
+
     assert len(results) == 2
     assert any("metadata operations failed" in r.message for r in caplog.records)
 

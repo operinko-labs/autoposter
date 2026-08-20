@@ -130,6 +130,77 @@ async def test_persist_is_idempotent(session):
     assert rows[0].critic_rating == pytest.approx(5.1)
 
 
+async def test_persist_a_full_row_survives_a_later_empty_gather(session):
+    """Finding 4: a transient failure (e.g. a cached TMDB 404, or an item
+    resolving without a tmdb_id) must not blank a previously complete row."""
+    media = MediaItem(rating_key="p4", library="Movies", kind="movie", title="X")
+    session.add(media)
+    await session.flush()
+
+    full = GatheredFacts(
+        critic_rating=4.9, audience_rating=6.3, content_rating="17",
+        genres=["Horror"], studio="A24", originally_available=date(2023, 5, 12),
+        sources={"critic_rating": "imdb", "audience_rating": "tmdb"},
+    )
+    await persist_facts(session, media.id, full)
+    await persist_facts(session, media.id, GatheredFacts())
+
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.critic_rating == pytest.approx(4.9)
+    assert row.audience_rating == pytest.approx(6.3)
+    assert row.content_rating == "17"
+    assert row.genres == ["Horror"]
+    assert row.studio == "A24"
+    assert row.originally_available == date(2023, 5, 12)
+    assert row.sources == {"critic_rating": "imdb", "audience_rating": "tmdb"}
+
+
+async def test_persist_a_partial_gather_only_overwrites_what_it_found(session):
+    """A partial gather (e.g. no tmdb_id this pass, so only critic_rating is
+    present) must not blank the genres/studio a previous gather stored, and
+    must merge into -- not replace -- the stored sources map."""
+    media = MediaItem(rating_key="p5", library="Movies", kind="movie", title="X")
+    session.add(media)
+    await session.flush()
+
+    full = GatheredFacts(
+        critic_rating=4.9, audience_rating=6.3, genres=["Horror"], studio="A24",
+        sources={"audience_rating": "tmdb", "genres": "tmdb", "studio": "tmdb"},
+    )
+    await persist_facts(session, media.id, full)
+
+    partial = GatheredFacts(critic_rating=5.5, sources={"critic_rating": "imdb"})
+    await persist_facts(session, media.id, partial)
+
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    # The genuinely-changed field overwrote.
+    assert row.critic_rating == pytest.approx(5.5)
+    # Fields the partial gather did not touch survive.
+    assert row.audience_rating == pytest.approx(6.3)
+    assert row.genres == ["Horror"]
+    assert row.studio == "A24"
+    # sources is merged, not replaced: the new key is added, the old ones remain.
+    assert row.sources == {
+        "audience_rating": "tmdb", "genres": "tmdb", "studio": "tmdb",
+        "critic_rating": "imdb",
+    }
+
+
+async def test_persist_season_produces_no_pointless_row(session):
+    """Finding 4: a season carries no facts of its own (see gather_facts), so
+    persisting its always-empty GatheredFacts() must not create a row at all."""
+    media = MediaItem(
+        rating_key="p6", library="Shows", kind="season", title="S1", season_number=1,
+    )
+    session.add(media)
+    await session.flush()
+
+    result = await persist_facts(session, media.id, GatheredFacts())
+
+    assert result is None
+    assert (await session.execute(select(ItemFacts))).scalars().all() == []
+
+
 async def test_no_mdblist_key_only_degrades_content_rating(session):
     """Finding 1: the stand-in used when no API key is configured must not
     affect critic rating, audience rating, genres, or studio."""
@@ -157,6 +228,29 @@ async def test_mdblist_limit_does_not_abort_the_other_facts(session):
     facts = await gather_facts(session, item(), FakeTMDB(), Exhausted())
     assert facts.content_rating is None
     assert facts.audience_rating == pytest.approx(6.3)
+
+
+async def test_mdblist_http_error_does_not_abort_the_other_facts(session):
+    """Finding 3: MDBListClient's raise_for_status() means a 429/500/502 or a
+    connection error surfaces as httpx.HTTPError, not MDBListLimitReached --
+    that must not discard the TMDB/IMDb facts already gathered."""
+    import httpx as httpx_module
+
+    from autoposter.facts.imdb import store_ratings
+
+    class Broken:
+        async def content_rating(self, **kwargs):
+            raise httpx_module.HTTPStatusError(
+                "server error", request=httpx_module.Request("GET", "https://x"),
+                response=httpx_module.Response(502),
+            )
+
+    await store_ratings(session, {"tt14316486": 4.9})
+    facts = await gather_facts(session, item(), FakeTMDB(), Broken())
+    assert facts.content_rating is None
+    assert facts.audience_rating == pytest.approx(6.3)
+    assert facts.genres == ["Horror"]
+    assert facts.critic_rating == pytest.approx(4.9)
 
 
 async def test_updated_at_advances_on_second_persist_facts(session_factory):

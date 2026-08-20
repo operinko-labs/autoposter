@@ -1,6 +1,7 @@
 import logging
 from dataclasses import replace
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,6 +86,12 @@ async def gather_facts(
             # Budget spent for today. Everything else we gathered is still
             # good; the content rating fills in on a later pass.
             logger.warning("mdblist daily limit reached; skipping content rating")
+        except httpx.HTTPError as exc:
+            # A 429/500/502 or connection error from MDBListClient's
+            # raise_for_status(). Same reasoning as MDBListLimitReached above:
+            # everything else we gathered is still good and must not be
+            # thrown away over one provider's transient failure.
+            logger.warning("mdblist request failed; skipping content rating: %s", exc)
         if content_rating:
             sources["content_rating"] = "mdb_commonsense"
 
@@ -95,26 +102,70 @@ async def gather_facts(
 
 async def persist_facts(
     session: AsyncSession, media_item_id: int, facts: GatheredFacts
-) -> ItemFacts:
-    """Upsert the row, so concurrent workers on one item cannot collide."""
-    values = {
-        "item_id": media_item_id,
-        "critic_rating": facts.critic_rating,
-        "audience_rating": facts.audience_rating,
-        "content_rating": facts.content_rating,
-        "genres": facts.genres,
-        "studio": facts.studio,
-        "originally_available": facts.originally_available,
-        "sources": facts.sources,
+) -> ItemFacts | None:
+    """Upsert the row, so concurrent workers on one item cannot collide.
+
+    Finding 4: never overwrite a stored value with an absent one. Chosen
+    approach is a combination of the two offered: "skip the upsert entirely"
+    for a totally empty gather, plus a per-field version of "COALESCE" for a
+    partial one, since a plain SQL ``COALESCE(new, old)`` cannot tell "this
+    round found nothing for this field" apart from "this round found an
+    honestly-empty value" when the column type has no ``NULL`` at all
+    (``genres``/``sources`` are ``NOT NULL`` JSONB, defaulting to ``[]``/``{}``).
+    Building the ``values``/``SET`` clauses only from fields the gather
+    actually populated sidesteps that ambiguity entirely.
+
+    A gather that found nothing at all (``facts.is_empty()``) is skipped
+    entirely rather than upserted — most commonly a season (which never
+    carries its own facts) or a fully failed/negative-cached gather, and
+    writing an all-NULL row for either would be pure noise. Returns the
+    existing row unchanged in that case, or ``None`` if there isn't one yet.
+
+    When there IS something new, only the fields this round actually
+    populated are written — a field is included only when non-``None`` (or
+    non-empty, for ``genres``/``sources``) — so e.g. a gather that found only
+    a critic rating (no ``tmdb_id`` this pass) cannot blank the genres/studio
+    a previous, more complete gather already stored. ``sources`` is merged
+    with whatever is already stored (via Postgres's jsonb ``||``) rather than
+    replaced outright, for the same reason: a partial gather's provenance map
+    must not erase the entries a previous pass recorded for fields it did not
+    touch this time. A field the new gather DID populate always overwrites
+    the old value, per-field, via ``ON CONFLICT``.
+    """
+    if facts.is_empty():
+        return (
+            await session.execute(
+                select(ItemFacts).where(ItemFacts.item_id == media_item_id)
+            )
+        ).scalar_one_or_none()
+
+    values: dict[str, object] = {"item_id": media_item_id}
+    if facts.critic_rating is not None:
+        values["critic_rating"] = facts.critic_rating
+    if facts.audience_rating is not None:
+        values["audience_rating"] = facts.audience_rating
+    if facts.content_rating:
+        values["content_rating"] = facts.content_rating
+    if facts.genres:
+        values["genres"] = facts.genres
+    if facts.studio:
+        values["studio"] = facts.studio
+    if facts.originally_available:
+        values["originally_available"] = facts.originally_available
+    if facts.sources:
+        values["sources"] = facts.sources
+
+    stmt = insert(ItemFacts).values(**values)
+    set_ = {
+        k: stmt.excluded[k] for k in values if k not in ("item_id", "sources")
     }
-    mutable = {k: v for k, v in values.items() if k != "item_id"}
+    if "sources" in values:
+        set_["sources"] = ItemFacts.sources.op("||")(stmt.excluded.sources)
     # Database clock, like every other timestamp in this project.
-    mutable["fetched_at"] = func.now()
-    mutable["updated_at"] = func.now()
+    set_["fetched_at"] = func.now()
+    set_["updated_at"] = func.now()
     await session.execute(
-        insert(ItemFacts).values(**values).on_conflict_do_update(
-            index_elements=["item_id"], set_=mutable
-        )
+        stmt.on_conflict_do_update(index_elements=["item_id"], set_=set_)
     )
     await session.commit()
     return (

@@ -4,7 +4,10 @@ from pathlib import Path
 import httpx
 import pytest
 
+from conftest import session_factory_for
+
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient, parse_content_rating
+from autoposter.providers.cache import ProviderCache
 
 FIXTURES = Path(__file__).parent / "fixtures" / "facts"
 
@@ -111,6 +114,60 @@ async def test_quota_exhaustion_raises_a_distinct_error():
     ) as http:
         with pytest.raises(MDBListLimitReached):
             await MDBListClient("KEY", http).content_rating(tmdb_id=1, is_movie=True)
+
+
+async def test_repeated_lookups_hit_the_cache_not_the_transport(session):
+    """Finding 2: MDBList must go through the Phase 1 cache seam, like every
+    other provider request — it is slow-moving data worth caching."""
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json=load("mdblist_movie.json"))
+
+    cache = ProviderCache(session_factory_for(session))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = MDBListClient("KEY", http, cache=cache, cache_ttl_seconds=3600)
+        first = await client.content_rating(tmdb_id=940143, is_movie=True)
+        second = await client.content_rating(tmdb_id=940143, is_movie=True)
+
+    assert first == second == "17"
+    assert len(calls) == 1, "second lookup should have been served from the cache"
+
+
+async def test_without_a_cache_every_lookup_hits_the_transport():
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json=load("mdblist_movie.json"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = MDBListClient("KEY", http)
+        await client.content_rating(tmdb_id=940143, is_movie=True)
+        await client.content_rating(tmdb_id=940143, is_movie=True)
+
+    assert len(calls) == 2
+
+
+async def test_a_cached_404_still_returns_none(session):
+    """fetch_json caches a negative (404) result too; that must still surface
+    as None, not raise or return stale data."""
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(404, json={})
+
+    cache = ProviderCache(session_factory_for(session))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = MDBListClient("KEY", http, cache=cache, cache_ttl_seconds=3600)
+        first = await client.content_rating(tmdb_id=1, is_movie=True)
+        second = await client.content_rating(tmdb_id=1, is_movie=True)
+
+    assert first is None
+    assert second is None
+    assert len(calls) == 1
 
 
 async def test_null_client_always_returns_none_without_a_request():

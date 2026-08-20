@@ -9,6 +9,14 @@ logger = logging.getLogger(__name__)
 # plexapi raises AttributeError for fields a type does not carry: a season has
 # no contentRating, studio, genres or originallyAvailableAt; an episode has no
 # genres or studio.
+#
+# Finding 9: this phase's gather_facts never populates season's ratings or
+# episode's content_rating/originally_available (a season returns no facts of
+# its own at all, and TMDB's episode endpoint carries neither field) — those
+# four entries are unreachable today. Left in deliberately, permissive for a
+# later phase that fills them in, rather than removed: shrinking this set
+# would mean re-adding entries later just to catch up with gather_facts,
+# instead of gather_facts simply growing into a map that already allows it.
 WRITABLE_BY_KIND: dict[str, set[str]] = {
     "movie": {
         "critic_rating", "audience_rating", "content_rating",
@@ -22,6 +30,16 @@ WRITABLE_BY_KIND: dict[str, set[str]] = {
     "episode": {"critic_rating", "audience_rating", "content_rating",
                 "originally_available"},
 }
+
+
+def _one_decimal(value: float) -> float:
+    """Round to one decimal place, matching the tool being replaced.
+
+    ``f"{value:.1f}"`` (the same string-based rounding ``format_critic``/
+    ``format_audience`` already use for the comparison) avoids binary
+    floating point rounding surprises like ``round(2.675, 1) == 2.67``.
+    """
+    return float(f"{float(value):.1f}")
 
 
 def _current_genres(item) -> list[str]:
@@ -87,12 +105,12 @@ def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
 
     if "critic_rating" in writable and facts.critic_rating is not None:
         if format_critic(getattr(item, "rating", None)) != format_critic(facts.critic_rating):
-            put("rating", facts.critic_rating)
+            put("rating", _one_decimal(facts.critic_rating))
 
     if "audience_rating" in writable and facts.audience_rating is not None:
         current = format_audience(getattr(item, "audienceRating", None))
         if current != format_audience(facts.audience_rating):
-            put("audienceRating", facts.audience_rating)
+            put("audienceRating", _one_decimal(facts.audience_rating))
 
     if "content_rating" in writable and facts.content_rating:
         if getattr(item, "contentRating", None) != facts.content_rating:

@@ -5,20 +5,23 @@ data. Use is personal and non-commercial only, and requires the attribution
 carried in README.md.
 """
 
+import asyncio
 import csv
 import gzip
 import itertools
 import logging
 import os
+import sys
 import tempfile
 from collections.abc import Iterable, Iterator
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import ImdbEpisode, ImdbRating
+from autoposter.db.base import make_engine, make_session_factory
+from autoposter.db.models import ImdbEpisode, ImdbRating, MediaItem
 
 logger = logging.getLogger(__name__)
 
@@ -190,12 +193,93 @@ async def refresh(
     """
     episodes: dict[tuple[str, int, int], str] = {}
     if show_ids:
-        episodes = parse_episodes(await download_tsv(http, EPISODES_URL), show_ids)
+        # Finding 8: 9.8M rows of gzip + csv is slow enough to stall the event
+        # loop (and the health probe with it) if run inline, so it's offloaded
+        # to a thread same as every other blocking call in this codebase.
+        lines = await download_tsv(http, EPISODES_URL)
+        episodes = await asyncio.to_thread(parse_episodes, lines, show_ids)
         await store_episodes(session, episodes)
         logger.info("imdb: kept %d episode rows for %d shows", len(episodes), len(show_ids))
 
     wanted = set(movie_ids) | set(episodes.values())
-    ratings = parse_ratings(await download_tsv(http, RATINGS_URL), wanted) if wanted else {}
+    if wanted:
+        lines = await download_tsv(http, RATINGS_URL)
+        ratings = await asyncio.to_thread(parse_ratings, lines, wanted)
+    else:
+        ratings = {}
     await store_ratings(session, ratings)
     logger.info("imdb: stored %d ratings", len(ratings))
     return len(ratings)
+
+
+async def _wanted_ids(session: AsyncSession) -> tuple[set[str], set[str]]:
+    """The movie/show tconst sets this library actually needs.
+
+    An episode row's own ``imdb_id`` is IMDb's episode tconst, not its show's
+    — the join to per-episode ratings goes through ``imdb_episodes`` instead
+    (see ``get_episode_rating``). What ``refresh()`` needs for its
+    ``show_ids`` argument is the *show*'s tconst, which both a show item and
+    each of its episode items carry as ``imdb_id`` (set from the parent show
+    at webhook time) — hence ``kind IN ('show', 'episode')`` rather than just
+    ``'show'``: a show only has its own row if a ``SeriesAdd`` webhook
+    happened to arrive, but every episode of it does.
+    """
+    movie_ids = set(
+        (
+            await session.execute(
+                select(MediaItem.imdb_id)
+                .where(MediaItem.kind == "movie", MediaItem.imdb_id.is_not(None))
+                .distinct()
+            )
+        ).scalars()
+    )
+    show_ids = set(
+        (
+            await session.execute(
+                select(MediaItem.imdb_id)
+                .where(
+                    MediaItem.kind.in_(("show", "episode")), MediaItem.imdb_id.is_not(None)
+                )
+                .distinct()
+            )
+        ).scalars()
+    )
+    return movie_ids, show_ids
+
+
+async def _run_cli() -> int:
+    """One-shot loader: ``python -m autoposter.facts.imdb``.
+
+    Phase 3 owns the scheduler; until then, nothing calls ``refresh()`` at
+    all, so an operator must run this by hand — at least once before metadata
+    operations can produce a non-NULL ``critic_rating``, and periodically
+    after (IMDb publishes new datasets daily).
+    """
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    database_url = os.environ.get("AUTOPOSTER_DATABASE_URL")
+    if not database_url:
+        print("AUTOPOSTER_DATABASE_URL is not set.", file=sys.stderr)
+        return 1
+
+    engine = make_engine(database_url)
+    session_factory = make_session_factory(engine)
+    try:
+        async with session_factory() as session, httpx.AsyncClient() as http:
+            movie_ids, show_ids = await _wanted_ids(session)
+            rating_count = await refresh(session, http, movie_ids, show_ids)
+            episode_count = (
+                await session.execute(
+                    select(func.count()).select_from(ImdbEpisode).where(
+                        ImdbEpisode.parent_tconst.in_(show_ids)
+                    )
+                )
+            ).scalar_one() if show_ids else 0
+    finally:
+        await engine.dispose()
+
+    print(f"Stored {rating_count} rating(s) and {episode_count} episode row(s).")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(_run_cli()))

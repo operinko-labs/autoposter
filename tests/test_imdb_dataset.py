@@ -1,4 +1,5 @@
 import gzip
+import threading
 import types
 from pathlib import Path
 
@@ -6,13 +7,18 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from autoposter.db.models import ImdbRating
+from autoposter.db.models import ImdbRating, MediaItem
+from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import (
+    EPISODES_URL,
+    RATINGS_URL,
+    _wanted_ids,
     download_tsv,
     get_episode_rating,
     get_rating,
     parse_episodes,
     parse_ratings,
+    refresh,
     store_episodes,
     store_ratings,
 )
@@ -111,3 +117,75 @@ async def test_download_tsv_streams_instead_of_materialising_the_whole_file():
     assert lines[0] == header
     assert lines[1] == "tt0000000\t5.0\t100"
     assert lines[-1] == f"tt{row_count - 1:07d}\t{5 + ((row_count - 1) % 5)}.0\t100"
+
+
+def _gzip_fixture(name: str) -> bytes:
+    return gzip.compress((FIXTURES / name).read_bytes())
+
+
+def _dataset_handler(request):
+    url = str(request.url)
+    if url == EPISODES_URL:
+        return httpx.Response(200, content=_gzip_fixture("title.episode.sample.tsv"))
+    if url == RATINGS_URL:
+        return httpx.Response(200, content=_gzip_fixture("title.ratings.sample.tsv"))
+    raise AssertionError(f"unexpected URL {url}")
+
+
+async def test_refresh_stores_movie_and_show_episode_ratings_end_to_end(session):
+    """Finding 1/8: refresh() end-to-end against both real dataset shapes."""
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_dataset_handler)) as http:
+        count = await refresh(session, http, {"tt0111161"}, {"tt11280740"})
+
+    # tt0111161 (movie) + tt9999999 (tt11280740's S02E03, via the episode map).
+    assert count == 2
+    assert await get_rating(session, "tt0111161") == pytest.approx(9.3)
+    assert await get_episode_rating(session, "tt11280740", 2, 3) == pytest.approx(7.0)
+
+
+async def test_refresh_parses_off_the_event_loop(session, monkeypatch):
+    """Finding 8: both parse_ratings and parse_episodes must run via
+    asyncio.to_thread -- 9.8M rows of gzip+csv on the event loop would stall
+    every worker and the health probe."""
+    seen_threads = []
+    real_parse_ratings = imdb_module.parse_ratings
+    real_parse_episodes = imdb_module.parse_episodes
+
+    def spy_ratings(lines, wanted=None):
+        seen_threads.append(threading.current_thread())
+        return real_parse_ratings(lines, wanted)
+
+    def spy_episodes(lines, parents):
+        seen_threads.append(threading.current_thread())
+        return real_parse_episodes(lines, parents)
+
+    monkeypatch.setattr(imdb_module, "parse_ratings", spy_ratings)
+    monkeypatch.setattr(imdb_module, "parse_episodes", spy_episodes)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_dataset_handler)) as http:
+        await imdb_module.refresh(session, http, {"tt0111161"}, {"tt11280740"})
+
+    assert len(seen_threads) == 2
+    assert all(t is not threading.main_thread() for t in seen_threads)
+
+
+async def test_wanted_ids_splits_movies_from_shows_via_episodes(session):
+    """Finding 1: an episode's imdb_id is the SHOW's tconst, and a show only
+    has its own row if a SeriesAdd webhook happened to arrive -- so the show
+    set must be drawn from kind IN ('show', 'episode'), not just 'show'."""
+    session.add_all([
+        MediaItem(rating_key="m1", library="Movies", kind="movie", title="M",
+                  imdb_id="tt0111161"),
+        MediaItem(rating_key="s1", library="Shows", kind="show", title="S",
+                  imdb_id="tt11280740"),
+        MediaItem(rating_key="e1", library="Shows", kind="episode", title="E",
+                  imdb_id="tt22222222", season_number=1, episode_number=1),
+        MediaItem(rating_key="e2", library="Shows", kind="episode", title="E2",
+                  imdb_id=None, season_number=1, episode_number=2),
+    ])
+    await session.commit()
+
+    movie_ids, show_ids = await _wanted_ids(session)
+
+    assert movie_ids == {"tt0111161"}
+    assert show_ids == {"tt11280740", "tt22222222"}

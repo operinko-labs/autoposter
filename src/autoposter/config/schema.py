@@ -143,7 +143,6 @@ class OperationsConfig(BaseModel):
     # Off means gather and store facts but leave Plex untouched — the safe
     # setting while the tool being replaced still owns these fields.
     write_to_plex: bool = True
-    imdb_refresh_hours: int = 24
 
 
 class Config(BaseModel):

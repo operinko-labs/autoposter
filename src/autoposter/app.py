@@ -49,7 +49,9 @@ def create_app(
         # A stand-in (never None) when no key is configured: only the
         # content-rating field MDBList would have supplied is affected, so
         # every other metadata operation still runs. See _build_mdblist.
-        app.state.mdblist = _build_mdblist(secrets, http)
+        app.state.mdblist = _build_mdblist(
+            secrets, http, cache=cache, cache_ttl_seconds=config.providers.cache_ttl_seconds
+        )
 
         health = PlexHealth(
             url=config.plex.url,
@@ -129,7 +131,12 @@ def _build_providers(
     return providers
 
 
-def _build_mdblist(secrets: Secrets, http: httpx.AsyncClient):
+def _build_mdblist(
+    secrets: Secrets,
+    http: httpx.AsyncClient,
+    cache: ProviderCache | None = None,
+    cache_ttl_seconds: int = 24 * 3600,
+):
     """The real client when an API key is configured, otherwise a stand-in.
 
     An operator who has not configured MDBList has no reason to suspect
@@ -137,7 +144,9 @@ def _build_mdblist(secrets: Secrets, http: httpx.AsyncClient):
     (finding 1) — hence the warning naming the environment variable.
     """
     if secrets.mdblist_apikey:
-        return MDBListClient(secrets.mdblist_apikey, http)
+        return MDBListClient(
+            secrets.mdblist_apikey, http, cache=cache, cache_ttl_seconds=cache_ttl_seconds
+        )
     logger.warning(
         "AUTOPOSTER_MDBLIST_APIKEY is not set; content ratings will be skipped "
         "while other metadata operations continue"

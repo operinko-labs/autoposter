@@ -89,6 +89,16 @@ def test_none_values_are_never_written():
     assert plan_edits(item, GatheredFacts()) == {}
 
 
+def test_ratings_are_written_rounded_to_one_decimal():
+    """Finding 6: the plan requires ratings stored to one decimal, matching
+    Kometa -- writing the raw multi-decimal TMDB/IMDb value instead makes
+    the badge (int(v*10)) render a different percentage than Kometa did."""
+    item = FakeItem()
+    edits = plan_edits(item, GatheredFacts(critic_rating=6.284, audience_rating=8.6499))
+    assert edits["rating.value"] == pytest.approx(6.3)
+    assert edits["audienceRating.value"] == pytest.approx(8.6)
+
+
 def test_every_written_field_is_locked():
     item = FakeItem()
     edits = plan_edits(item, GatheredFacts(critic_rating=4.9, content_rating="17"))
