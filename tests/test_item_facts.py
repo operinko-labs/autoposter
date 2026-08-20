@@ -1,0 +1,70 @@
+from datetime import date
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+
+from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.facts.models import GatheredFacts
+
+
+async def _item(session, rating_key="1"):
+    item = MediaItem(rating_key=rating_key, library="Movies", kind="movie", title="X")
+    session.add(item)
+    await session.flush()
+    return item
+
+
+async def test_facts_roundtrip(session):
+    item = await _item(session)
+    session.add(ItemFacts(
+        item_id=item.id, critic_rating=4.9, audience_rating=6.3,
+        content_rating="17", genres=["Horror", "Drama"], studio="A24",
+        originally_available=date(2023, 5, 12),
+        sources={"critic_rating": "imdb", "audience_rating": "tmdb"},
+    ))
+    await session.commit()
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.critic_rating == pytest.approx(4.9)
+    assert row.genres == ["Horror", "Drama"]
+    assert row.sources["critic_rating"] == "imdb"
+
+
+async def test_one_facts_row_per_item(session):
+    item = await _item(session, "dup")
+    session.add(ItemFacts(item_id=item.id))
+    await session.commit()
+    session.add(ItemFacts(item_id=item.id))
+    with pytest.raises(IntegrityError):
+        await session.commit()
+
+
+async def test_all_facts_are_optional(session):
+    """A brand new item has no facts yet; nothing may be NOT NULL."""
+    item = await _item(session, "empty")
+    session.add(ItemFacts(item_id=item.id))
+    await session.commit()
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.critic_rating is None
+    assert row.genres == []
+
+
+async def test_fetched_at_comes_from_the_database_clock(session):
+    from sqlalchemy import func
+
+    item = await _item(session, "clock")
+    session.add(ItemFacts(item_id=item.id))
+    await session.commit()
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    assert abs((db_now - row.fetched_at).total_seconds()) < 1
+
+
+def test_gathered_facts_is_frozen_and_defaults_empty():
+    import dataclasses
+
+    facts = GatheredFacts()
+    assert facts.genres == []
+    assert facts.sources == {}
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        facts.studio = "nope"
