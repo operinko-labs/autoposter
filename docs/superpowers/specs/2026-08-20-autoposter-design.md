@@ -212,6 +212,27 @@ React SPA served by the app; REST API + WebSocket for live updates.
 
 Auth: single admin password (bcrypt), behind the cluster ingress.
 
+**Attribution (required, not optional).** The UI is a user-facing surface
+displaying metadata and artwork from third-party APIs whose terms mandate
+attribution, so every view that shows provider-sourced artwork or metadata must
+carry it:
+
+- **TheTVDB** — attribution with a **direct link to TheTVDB.com**. Their terms:
+  *"Unless approved by TheTVDB, attribution with a direct link to TheTVDB.com
+  must be displayed to end users viewing metadata from our API. Command line
+  products or development libraries may display attribution on your about or
+  readme pages."* The readme exemption applies only while there is no UI; it
+  lapses when this ships.
+- **TMDB** — the exact notice *"This product uses TMDB and the TMDB APIs but is
+  not endorsed, certified, or otherwise approved by TMDB."*, displayed
+  prominently, **plus the TMDB logo**, which must be less prominent than this
+  application's own branding. The logo asset is a deliverable of this phase.
+- **Fanart.tv** — requirements not yet confirmed; their terms page blocks
+  automated retrieval. Confirm before release.
+
+Treat this as an acceptance criterion for the UI phase, not a documentation
+task.
+
 ## 7. Error handling
 
 - **At-least-once, idempotent jobs.** Any job can crash at any line and
