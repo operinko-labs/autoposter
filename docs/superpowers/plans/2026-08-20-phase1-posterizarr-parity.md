@@ -5361,26 +5361,43 @@ correctly. A leading `@` turned out **not** to be treated as a file read by the
 tested build, making that escape a harmless no-op; it is kept because the
 behaviour is build- and policy-dependent.
 
-**ImageMagick build affects byte-exactness.** Production runs 7.1.2-29
-**Q16-HDRI**; the runtime image ships Debian's 7.1.1-43 **Q16** without HDRI.
-With production's build the reproduction is byte-identical; with the image's
-build the same render differs by RMSE 0.00077 — 0.077%, visually
-indistinguishable. This does **not** cause the existing library to be
-re-rendered, because adoption compares fingerprints rather than pixels; it only
-affects newly rendered items. Pinning a Q16-HDRI build would restore exact
-equality and is worth considering before cutover.
+**The runtime image is Q16-HDRI, and output is byte-identical.** Production
+runs ImageMagick 7.1.2-29 **Q16-HDRI**. Debian's package is Q16 *without*
+HDRI, and HDRI changes internal pixel maths: on that build the same render came
+out 0.077% different (RMSE 0.00077). The image therefore uses Alpine, whose
+ImageMagick is Q16-HDRI, and the build asserts `magick -version | grep HDRI`
+so a base-image change cannot silently regress it. On that image the render is
+**byte-identical** to the production asset — 843,045 bytes, RMSE 0. The exact
+patch version does not matter (verified equal across 7.1.2-27 and 7.1.2-29);
+the HDRI flag does. HDRI additionally allows float-format source art
+(`.exr`/`.hdr`) to be supplied by hand.
+
+**TVDB season resolution — verified against the live API.** A season entry's
+`type` is a nested object
+(`{"id": 1, "name": "Aired Order", "type": "official", "alternateName": null}`),
+matching TVDB's own `SeasonType` schema, so preferring `type.type == "official"`
+is correct. `/seasons/{id}/extended` really does return an `artwork` array —
+the swagger omits the field — and its entries carry `id`, `image`, `language`,
+`type`, `score`, `width`, `height` and `includesText`, with `type: 7` for a
+season poster exactly as mapped. Note TVDB **does** require an API key: `POST
+/login` takes `apikey` and returns a bearer token, and every endpoint but
+`/countries` is behind `bearerAuth`.
+
+**TMDB and Fanart parsers — verified against the live APIs.** A real TMDB
+response parsed to 10 poster candidates, 2 of them textless via
+`iso_639_1: null`, with the ladder correctly selecting a textless one and the
+image URL correctly assembled. Fanart parsed 21 posters and 7 backgrounds for a
+well-populated title, with `http://` upgraded to `https://` and language
+handling intact; a sparse title correctly yielded zero rather than erroring.
 
 ### Still unverified — must be confirmed before cutover
 
-Two items remain, both needing credentials or services unavailable during
-implementation:
+One item remains:
 
-1. **The TVDB season-type response shape.** `_find_season_id` assumes a shape
-   for the season `type` field that no live API call has confirmed, because no
-   TVDB key was available. If it is wrong, season posters silently fall back to
-   TMDB and Fanart rather than failing loudly.
-2. **A real season and episode end to end against the live Plex server.** The
+1. **A real season and episode end to end against the live Plex server.** The
    title-card command sequence was matched against production output, and the
    resolver's season/episode navigation is unit-tested against fakes, but
    nothing has yet driven `resolve()` through to a rendered file for a
-   non-movie against real Plex.
+   non-movie against real Plex. This is the last check before cutover, and it
+   writes a real asset, so it needs a deliberate go-ahead rather than being
+   folded into a test run.

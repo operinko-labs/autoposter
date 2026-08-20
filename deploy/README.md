@@ -110,3 +110,15 @@ UPDATE jobs
  WHERE state = 'parked'
    AND updated_at > now() - interval '2 hours';
 ```
+
+## ImageMagick build
+
+The image is built on Alpine because its ImageMagick is **Q16-HDRI**, matching
+the Posterizarr deployment this service replaces. This is not cosmetic: a Q16
+build without HDRI renders the same source 0.077% differently, so new artwork
+would no longer be byte-identical to what is already in the asset tree. The
+Docker build asserts the flag is present, so swapping the base image fails the
+build rather than silently changing output.
+
+HDRI also permits float-format source artwork (`.exr`, `.hdr`) to be dropped
+into the manual-assets directory.

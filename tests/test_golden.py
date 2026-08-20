@@ -16,23 +16,18 @@ That is the path this test exercises, because it is the one the library
 actually contains. Testing the text path here would prove nothing about the
 18,008 assets already on disk.
 
-Run with production's own ImageMagick build (7.1.2-29 **Q16-HDRI**), this
-sequence reproduced the real asset at ``RMSE 0`` — a byte-identical
-843,045-byte JPEG. That is the strongest available evidence that the pipeline
-matches.
+This asserts **byte-identical** output, not merely similar output: the
+sequence reproduces the real asset as an identical 843,045-byte JPEG.
 
-The tolerance below exists because ImageMagick builds are not bit-identical to
-each other. The runtime container currently ships Debian's 7.1.1-43 **Q16**
-(no HDRI); HDRI changes internal pixel math, and that build reproduces the same
-asset at ``RMSE 0.00077`` — 0.077%, visually indistinguishable, but not
-bit-equal. Pinning a Q16-HDRI build would restore exact equality.
+That requires a **Q16-HDRI** ImageMagick build, which is what the runtime image
+ships and what production runs. HDRI changes internal pixel maths, so a Q16
+build without it renders the same source 0.077% differently (``RMSE 0.00077``)
+— visually indistinguishable, but not bit-equal. The test therefore skips
+rather than fails on a non-HDRI build; the exact patch version does not matter
+(verified equal across 7.1.2-27 and 7.1.2-29).
 
-This does not cause the existing library to be re-rendered: adoption compares
-fingerprints, not pixels, so the 18,008 assets already on disk are adopted
-untouched either way. The difference only affects newly rendered items.
-
-If this test fails by a wide margin, the compositing pipeline has drifted from
-what the existing library was built with.
+If this fails on an HDRI build, the compositing pipeline has drifted from what
+the existing library was built with.
 """
 
 import shutil
@@ -53,9 +48,19 @@ from autoposter.render.compositor import (
 GOLDEN = Path(__file__).parent / "fixtures" / "golden"
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
+def _has_hdri_magick() -> bool:
+    """Byte-exact parity needs a Q16-HDRI build; a Q16 build differs by ~0.08%."""
+    if shutil.which("magick") is None:
+        return False
+    result = subprocess.run(
+        ["magick", "-version"], capture_output=True, text=True, check=False
+    )
+    return "HDRI" in result.stdout
+
+
 pytestmark = pytest.mark.skipif(
-    shutil.which("magick") is None or not (GOLDEN / "expected_poster.jpg").exists(),
-    reason="requires ImageMagick and the harvested golden fixtures",
+    not _has_hdri_magick() or not (GOLDEN / "expected_poster.jpg").exists(),
+    reason="requires a Q16-HDRI ImageMagick build and the harvested golden fixtures",
 )
 
 
@@ -87,7 +92,7 @@ def _identify(path: Path, fmt: str) -> str:
 
 
 def test_poster_matches_the_production_asset(tmp_path):
-    """Our pipeline reproduces a real production poster exactly."""
+    """Our pipeline reproduces a real production poster byte-for-byte."""
     config = load_config(EXAMPLE)
     settings = config.artwork.poster
 
@@ -122,17 +127,15 @@ def test_poster_matches_the_production_asset(tmp_path):
 
     expected = GOLDEN / "expected_poster.jpg"
 
-    # 0 on production's Q16-HDRI build; 0.00077 on Debian's Q16 build. The
-    # threshold is far below any visible difference but far above the observed
-    # cross-build noise, so a genuine pipeline regression still fails loudly.
     difference = _rmse(working, expected)
-    assert difference < 0.005, (
+    assert difference == 0.0, (
         f"rendered poster differs from the production asset (RMSE {difference}) — "
         "the compositing pipeline has drifted from what the existing library "
         "was built with"
     )
-
-    # Structural properties that must hold on any build.
+    assert working.read_bytes() == expected.read_bytes(), (
+        "pixels match but the encoded bytes differ — check the ImageMagick build"
+    )
     assert _identify(working, "%wx%h") == _identify(expected, "%wx%h")
     assert _identify(expected, "%[comment]") == "created with posterizarr"
     assert _identify(working, "%[comment]") == "created with posterizarr"
