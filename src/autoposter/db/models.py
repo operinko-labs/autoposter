@@ -167,3 +167,30 @@ class ItemFacts(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ImdbRating(Base):
+    """One IMDb title rating, from the bulk dataset.
+
+    Only ids the library actually contains are stored, so this stays in the
+    thousands rather than the 1.7 million rows the dataset carries.
+    """
+
+    __tablename__ = "imdb_ratings"
+
+    tconst: Mapped[str] = mapped_column(String(16), primary_key=True)
+    rating: Mapped[float] = mapped_column(Float)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ImdbEpisode(Base):
+    """Maps a show's IMDb id + season + episode to the episode's own IMDb id."""
+
+    __tablename__ = "imdb_episodes"
+
+    parent_tconst: Mapped[str] = mapped_column(String(16), primary_key=True)
+    season_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    episode_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tconst: Mapped[str] = mapped_column(String(16), index=True)
