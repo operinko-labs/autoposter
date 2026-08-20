@@ -52,9 +52,15 @@ def draw_text_centered(
     box: tuple[int, int, int, int],
     color: tuple[int, int, int, int] = FONT_COLOR,
 ) -> None:
-    """Draw text centred on a box, anchored top-left like Kometa does."""
+    """Draw text centred on a box, anchored top-left like Kometa does.
+
+    The bounding box is measured with the same ``lt`` anchor the text is drawn
+    with, so the ink lands exactly where it was measured. Measuring with the
+    default ``la`` anchor instead offsets the result by the font's
+    ascender-to-cap gap -- 13px for Inter-Medium at 55pt.
+    """
     drawing = ImageDraw.Draw(layer)
-    left, top, right, bottom = drawing.textbbox((0, 0), text, font=font)
+    left, top, right, bottom = drawing.textbbox((0, 0), text, font=font, anchor="lt")
     x = (box[0] + box[2]) // 2 - (right - left) // 2 - left
     y = (box[1] + box[3]) // 2 - (bottom - top) // 2 - top
     drawing.text((x, y), text, font=font, fill=color, anchor="lt")
