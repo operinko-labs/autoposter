@@ -1,0 +1,37 @@
+'2027': {}
+'2026':
+  oscar:
+    best achievement in directing:
+      nominee: [tt14905854, tt30144839]
+      winner: [tt30144839]
+    best motion picture of the year:
+      nominee: [tt30144839, tt31193180]
+      winner: [tt31193180]
+'2025':
+  oscar:
+    best achievement in directing:
+      nominee: [tt1000001, tt1000002]
+      winner: [tt1000002]
+    best motion picture of the year:
+      nominee: [tt1000002, tt1000003]
+      winner: [tt1000003]
+'2024':
+  oscar:
+    best picture:
+      nominee: [tt2000001]
+      winner: [tt2000001]
+'2023':
+  oscar:
+    best picture:
+      nominee: [tt3000001]
+      winner: [tt3000001]
+'2022':
+  oscar:
+    best picture:
+      nominee: [tt4000001]
+      winner: [tt4000001]
+'2021':
+  oscar:
+    best picture:
+      nominee: [tt5000001]
+      winner: [tt5000001]
