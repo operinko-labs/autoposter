@@ -110,7 +110,11 @@ async def reconcile_list_collection(
 
     wanted = _members_hash(items, summary)
     if collection is not None and record is not None and record.definition_hash == wanted:
-        return []
+        # The membership is already correct, but a claim just written a label
+        # to Plex. Returning [] here would drop that write from the summary --
+        # the operator would see "0 action(s)" for a pass that changed the
+        # collection's ownership. ``reconcile.py`` reports it the same way.
+        return [claim_action] if claim_action else []
 
     if dry_run:
         return ["%s %r with %d item(s)" % (

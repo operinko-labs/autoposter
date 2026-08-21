@@ -8,6 +8,7 @@ asserts against the real classes, offline.
 import inspect
 
 import pytest
+import requests
 from plexapi import utils
 from plexapi.collection import Collection
 from plexapi.library import LibrarySection
@@ -58,6 +59,39 @@ def test_collection_exposes_filters_and_smart():
 
 def test_collections_are_listable_from_a_section():
     assert callable(LibrarySection.collections)
+
+
+def test_collections_forwards_keyword_filters_to_search():
+    """``section.collections(label=...)`` is what keeps the leftovers report
+    to one request instead of a ``reload()`` per collection in the library.
+    That only works if ``collections`` passes its keywords through rather
+    than swallowing them."""
+    params = inspect.signature(LibrarySection.collections).parameters
+    assert "kwargs" in params and params["kwargs"].kind is inspect.Parameter.VAR_KEYWORD
+    source = inspect.getsource(LibrarySection.collections)
+    assert "self.search(" in source
+    assert "**kwargs" in source
+    assert "libtype='collection'" in source
+
+
+def test_an_unknown_search_keyword_becomes_a_server_side_filter():
+    """The filtering must happen on the Plex server, not in plexapi after
+    the fact -- a client-side filter would still fetch (and reload) every
+    collection. ``_buildSearchKey`` routes any keyword that is not a PlexAPI
+    operator through ``_validateFilterField``, which encodes it into the
+    query string of the ``/library/sections/<key>/all`` request."""
+    source = inspect.getsource(LibrarySection._buildSearchKey)
+    assert "OPERATORS" in source, "keywords are no longer split on PlexAPI operators"
+    assert "_validateFilterField" in source
+    assert "/library/sections/" in source
+
+    validate = inspect.getsource(LibrarySection._validateFilterField)
+    assert "urlencode" in validate, "filter fields are no longer encoded into the URL"
+
+
+def test_label_is_a_documented_search_filter_field():
+    """``label`` specifically -- the field the leftovers report filters on."""
+    assert "**label** (:class:`~plexapi.media.MediaTag`)" in LibrarySection.search.__doc__
 
 
 def test_collection_delete_exists_but_we_never_call_it():
@@ -133,6 +167,16 @@ def test_plex_server_query_accepts_a_method_override_for_post():
     assert "method" in params
     source = inspect.getsource(PlexServer.query)
     assert "method = method or" in source, "query must still default to GET when method is omitted"
+
+
+def test_plex_server_exposes_the_requests_session_the_post_is_issued_through():
+    """``server._session.post`` is the ``method`` handed to ``query``. Like
+    ``_uriRoot`` it is private, and the separator's fake stands in for it, so
+    it is pinned here rather than only discovered against a real server."""
+    assert "session" in inspect.signature(PlexServer.__init__).parameters
+    source = inspect.getsource(PlexServer.__init__)
+    assert "self._session = session or requests.Session()" in source
+    assert callable(requests.Session().post)
 
 
 def test_join_args_url_encodes_a_dict_into_a_query_string():

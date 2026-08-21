@@ -22,7 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autoposter.collections.buckets import derive_buckets
 from autoposter.collections.reconcile import (
     SEPARATOR_TITLE,
-    prior_tool_label,
+    load_labels,
+    protected_label,
     reconcile_content_ratings,
 )
 from autoposter.collections.sources import AWARD_COLLECTIONS, CHART_COLLECTIONS, build_all
@@ -63,6 +64,10 @@ def _managed_titles(collections, library_type: str, config: Config) -> set[str]:
     actually present in the library -- its titles come from the key/library-type
     pair alone -- so an empty ``present`` set recovers every bucket title
     without another Plex round trip.
+
+    ``collections`` is only read to recover the dynamically-named Oscars year
+    titles, so the caller may pass the subset it is about to test rather than
+    the whole library: a title absent from that subset cannot be reported.
     """
     titles = {bucket.title for bucket in derive_buckets(set(), library_type)}
 
@@ -82,24 +87,47 @@ def _managed_titles(collections, library_type: str, config: Config) -> set[str]:
     return titles
 
 
-def unmanaged_prior_collections(
-    collections, managed_titles: set[str], adopt_from: list[str]
-) -> list[str]:
+def unmanaged_prior_collections(section, library_type: str, config: Config) -> list[str]:
     """Titles carrying a prior tool's label that this service does not manage.
 
     Reports titles only -- there is no argument for a service deciding what to
     do with a collection it does not manage, so nothing here modifies, claims
-    or deletes anything. An unlabelled collection never carries a prior-tool
-    label, so the operator's hand-made collections and Plex's own franchise
-    collections are never reported either.
+    or deletes anything.
+
+    The prior-tool label is matched by the *server*, not here: ``labels`` is a
+    ``cached_data_property`` that ``section.collections()`` never populates, so
+    reading it per collection would mean a ``reload()`` GET for each of the
+    library's 305 collections on every pass -- and this report is gated by
+    neither ``adopt`` nor ``apply_to_plex``, so a scheduled no-op pass would
+    pay all 276 of them. ``LibrarySection.collections(label=...)`` forwards the
+    keyword to ``search``, which validates it into a server-side filter
+    argument (pinned in ``tests/test_plexapi_collection_contract.py``), so one
+    filtered request per ``adopt_from`` entry returns exactly the candidates.
+
+    An unlabelled collection carries no prior-tool label, so the operator's
+    hand-made collections and Plex's own franchise collections are never
+    returned by that filter in the first place.
     """
+    candidates: dict[str, object] = {}
+    for label in config.collections.adopt_from:
+        for collection in section.collections(label=label):
+            candidates.setdefault(collection.title, collection)
+
+    managed = _managed_titles(candidates.values(), library_type, config)
+    protect_labels = config.collections.protect_labels
+
     leftovers = []
-    for collection in collections:
-        if collection.title in managed_titles:
+    for title, collection in candidates.items():
+        if title in managed:
             continue
-        collection.reload()
-        if prior_tool_label(collection, adopt_from) is not None:
-            leftovers.append(collection.title)
+        if protect_labels:
+            # Maintainerr's collections also carry the prior tool's label.
+            # Reporting one as "left behind" invites the operator to act on
+            # the collection this service works hardest never to touch.
+            load_labels(collection)
+            if protected_label(collection, protect_labels) is not None:
+                continue
+        leftovers.append(title)
     return sorted(leftovers)
 
 
@@ -143,18 +171,26 @@ async def reconcile_libraries(
             for action in actions:
                 logger.info("   %s", action)
 
-            collections = section.collections()
-            leftovers = unmanaged_prior_collections(
-                collections, _managed_titles(collections, library_type, config),
-                config.collections.adopt_from,
-            )
+            await session.commit()
+
+            # Below the commit, and with its own handler: the reconcile's Plex
+            # writes have already landed, so a read failure in this purely
+            # diagnostic scan must not reach the handler below and roll back
+            # the library's ManagedCollection rows. Losing them would make the
+            # next pass rewrite the whole library -- exactly what this
+            # function's per-library commit boundary exists to prevent.
+            leftovers: list[str] = []
+            try:
+                leftovers = unmanaged_prior_collections(section, library_type, config)
+            except Exception:
+                logger.exception("failed scanning %r for prior-tool leftovers", name)
+
             if leftovers:
                 logger.info(
                     "%s: %d prior-tool collection(s) left behind: %s",
                     name, len(leftovers), ", ".join(leftovers),
                 )
 
-            await session.commit()
             summary = "%s: %d action(s)" % (name, len(actions))
             if leftovers:
                 summary += "; %d left behind (%s)" % (len(leftovers), ", ".join(leftovers))

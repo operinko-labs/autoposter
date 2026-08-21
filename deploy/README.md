@@ -490,7 +490,10 @@ What adoption never claims, regardless of title:
 A prior-tool collection genuinely left over after adoption — one that
 still carries an `adopt_from` label but whose title this service does not
 manage — is named once in the leftovers report appended to that library's
-summary line, so it is flagged rather than silently forgotten.
+summary line, so it is flagged rather than silently forgotten. Collections
+carrying a `protect_labels` label are left out of that report as well:
+naming a Maintainerr collection as "left behind" would invite action on the
+one collection this service must never touch.
 
 **Numbers for this library, audited against the live server:** Movies
 holds 305 collections, of which 30 would be touched by adoption (29
@@ -506,6 +509,19 @@ label at all (plausibly stripped by the previous tool at some point) —
 neither title collides with anything this service manages, and both are
 additionally covered by `protect_labels` and by the
 never-adopt-an-unlabelled-collection rule.
+
+**Unverified: creating a separator in a fresh library.** The blank
+`Ratings Collections` divider cannot be made through plexapi
+(`createCollection` rejects an empty item list), so it is created with a
+raw `POST /library/collections` carrying a `uri` that names no item keys —
+the same call Kometa makes. On this server both separators already exist,
+so only the update path ever runs and the create path is untested against
+live Plex; the test suite cannot cover it either, since no test may make a
+real outbound request. If you point `collections.libraries` at a library
+that has no `Ratings Collections` collection yet, **check its member count
+in Plex after the first run**: it must be empty. If it instead contains the
+whole library, remove it and report it — nothing in this service ever adds
+members to it, so the only way that can happen is the POST itself.
 
 The server has four libraries — `Movies`, `TV Shows`, `Photos` and
 `Muskarit` (a second movie library) — but only the first two are in the

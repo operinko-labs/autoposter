@@ -50,13 +50,24 @@ def definition_hash(bucket: Bucket) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def has_label(collection, label: str) -> bool:
-    # ``labels`` is a cached_data_property plexapi never populates from
-    # ``section.collections()`` results -- reading it relies on an implicit
-    # reload gated on ``plexapi.autoreload``, which can be turned off. Force
-    # the reload explicitly rather than depend on that global setting.
-    # ``reload()``, never ``refresh()``: refresh() re-scans metadata on Plex.
+def load_labels(collection) -> None:
+    """Populate ``collection.labels`` from the server.
+
+    ``labels`` is a cached_data_property plexapi never populates from
+    ``section.collections()`` results -- reading it relies on an implicit
+    reload gated on ``plexapi.autoreload``, which can be turned off. Force
+    the reload explicitly rather than depend on that global setting.
+    ``reload()``, never ``refresh()``: refresh() re-scans metadata on Plex.
+
+    Every reader below is pure, so this is called exactly once per
+    collection: three readers each forcing their own reload cost three GETs
+    per title collision, roughly 150 wasted requests per Movies pass.
+    """
     collection.reload()
+
+
+def has_label(collection, label: str) -> bool:
+    """Pure reader -- ``load_labels`` must have been called on ``collection``."""
     return any(tag.tag == label for tag in (getattr(collection, "labels", None) or []))
 
 
@@ -64,10 +75,9 @@ def prior_tool_label(collection, adopt_from: list[str]) -> str | None:
     """Return the first label ``collection`` carries that belongs to a tool
     being replaced, or ``None`` if it carries none of them.
 
-    Called only after ``has_label`` has already forced a ``reload()`` on this
-    same object, so this reads ``labels`` directly rather than reloading
-    again per candidate -- a collection with no label at all (the operator's
-    hand-made ones) must never match here.
+    Pure reader -- ``load_labels`` must have been called on ``collection``
+    first. A collection with no label at all (the operator's hand-made ones)
+    must never match here.
     """
     tags = {tag.tag for tag in (getattr(collection, "labels", None) or [])}
     for candidate in adopt_from:
@@ -82,10 +92,9 @@ def protected_label(collection, protect_labels: list[str]) -> str | None:
     carries none of them.
 
     Checked before ownership or adoption -- a protected label wins even when
-    the collection also carries our own label or an ``adopt_from`` label, so
-    it forces its own ``reload()`` rather than relying on one done later.
+    the collection also carries our own label or an ``adopt_from`` label.
+    Pure reader -- ``load_labels`` must have been called on ``collection``.
     """
-    collection.reload()
     tags = {tag.tag for tag in (getattr(collection, "labels", None) or [])}
     for candidate in protect_labels:
         if candidate in tags:
@@ -126,7 +135,12 @@ def resolve_collision(
     The protected-label check runs first and wins unconditionally -- before
     ownership, before adoption -- so a collection carrying a protected label
     is never claimed even if it also carries an ``adopt_from`` label.
+
+    This is the one place the labels are fetched: every reader it calls is
+    pure, so one collision costs one GET rather than one per check.
     """
+    load_labels(collection)
+
     protecting = protected_label(collection, protect_labels)
     if protecting is not None:
         return False, (

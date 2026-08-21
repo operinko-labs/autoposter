@@ -179,7 +179,21 @@ async def test_a_drifted_summary_and_sort_title_are_corrected(session):
 
 async def test_no_members_are_ever_added(session):
     """The one rule that must never break: this code path cannot populate
-    the collection, no matter what state it starts or ends in."""
+    the collection, no matter what state it starts or ends in.
+
+    What this does *not* prove: that the raw POST in ``_create_separator``
+    produces an empty collection on a real Plex server. The fake never has
+    ``addItems`` called on it by any code path, so this assertion cannot
+    fail -- it is a regression pin against a future edit adding one, not
+    evidence about the server. The open question is whether a POST carrying
+    ``uri=<root>/library/metadata`` with no item keys appended yields zero
+    members or the entire library; that has not been verified against live
+    Plex, and it cannot be verified from this suite (no test may make a real
+    outbound request). It also will not be exercised on the target server,
+    where both separators already exist and only the update path runs. An
+    operator creating a separator in a fresh library must check its member
+    count -- see ``deploy/README.md``.
+    """
     theirs = FakeCollection(SEPARATOR_TITLE, labels=[LABEL], summary="wrong")
     section = FakeSection({"R"}, existing=[theirs])
 
