@@ -6,6 +6,7 @@ quality 90 with the overlay EXIF marker.
 """
 import hashlib
 import io
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,7 +37,12 @@ EXIF_OVERLAY_TAG = 0x04BC
 # Kometa's ``addon_offset``: the gap between a badge's logo and its text.
 ADDON_OFFSET = 15
 
-MANIFEST_SHA = hashlib.sha256((ASSETS / "MANIFEST.sha256").read_bytes()).hexdigest()
+@lru_cache(maxsize=1)
+def manifest_sha() -> str:
+    """Hash of the badge asset manifest, so replacing any badge file
+    invalidates every fingerprint. Lazy for the same reason as the language
+    table: an import-time read turns a missing asset into a startup crash."""
+    return hashlib.sha256((ASSETS / "MANIFEST.sha256").read_bytes()).hexdigest()
 
 # Badges whose value is an image stem rather than a string to draw.
 # ``compact`` is Kometa's audio_codec file default and what production uses --
@@ -208,4 +214,4 @@ def _draw_languages(poster: Image.Image, canvas: tuple[int, int], inputs: BadgeI
         composite(poster, layer)
 
 
-__all__ = ["MANIFEST_SHA", "BadgeInputs", "badge_fingerprint", "badge_values", "compose"]
+__all__ = ["manifest_sha", "BadgeInputs", "badge_fingerprint", "badge_values", "compose"]

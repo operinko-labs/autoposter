@@ -27,6 +27,9 @@ COPY assets ./assets
 COPY alembic ./alembic
 COPY alembic.ini ./
 
+# The package is pip-installed into site-packages while assets are copied to
+# /app/assets, so the assets cannot be found relative to the module files.
+ENV AUTOPOSTER_ASSETS_ROOT=/app/assets
 ENV AUTOPOSTER_CONFIG=/config/autoposter.yaml
 EXPOSE 8080
 CMD ["sh", "-c", "alembic upgrade head && python -m autoposter.main"]

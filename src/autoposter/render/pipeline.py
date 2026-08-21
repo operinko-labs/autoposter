@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.badges.compose import (
-    MANIFEST_SHA,
+    manifest_sha,
     BadgeInputs,
     badge_fingerprint,
     badge_values,
@@ -532,7 +532,7 @@ async def apply_badges(session, config, render, item, plex_item, facts) -> None:
     # from the *base we rendered*, so the gate has to track what went into that
     # base -- see badge_fingerprint's docstring.
     fingerprint = badge_fingerprint(
-        render.fingerprint or "", render.art_kind, values, MANIFEST_SHA
+        render.fingerprint or "", render.art_kind, values, manifest_sha()
     )
     if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
         return

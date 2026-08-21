@@ -8,7 +8,9 @@ docs/research/kometa-overlays.md.
 from dataclasses import dataclass
 from pathlib import Path
 
-ASSETS = Path(__file__).resolve().parents[3] / "assets" / "badges"
+from autoposter.assets import asset_path
+
+ASSETS = asset_path("badges")
 FONTS = ASSETS / "fonts"
 IMAGES = ASSETS / "images"
 
