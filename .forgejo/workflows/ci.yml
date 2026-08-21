@@ -118,8 +118,18 @@ jobs:
         # Poster output is byte-identical to the tool being replaced only on a
         # Q16-HDRI build; a plain Q16 renders the same source 0.077% differently.
         run: |
-          docker run --rm ${{ env.IMAGE_NAME }}:ci magick -version
-          docker run --rm ${{ env.IMAGE_NAME }}:ci magick -version | grep -q HDRI
+          # Captured rather than piped into `grep -q`. That form failed with
+          # "write /dev/stdout: broken pipe": grep exits the moment it
+          # matches, docker gets EPIPE writing the rest, and the runner's
+          # shell has pipefail set, so the pipeline fails even though the
+          # match succeeded. It is a race, which is why it passed several
+          # runs before biting. No pipe, no race.
+          version=$(docker run --rm ${{ env.IMAGE_NAME }}:ci magick -version)
+          echo "$version"
+          case "$version" in
+            *HDRI*) echo "Q16-HDRI confirmed" ;;
+            *) echo "not a Q16-HDRI build; poster parity depends on it" >&2; exit 1 ;;
+          esac
 
       - name: Verify the bundled assets are present and reachable
         # The package installs to site-packages while assets are copied to
