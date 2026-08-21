@@ -278,11 +278,28 @@ what it would use to decide our artwork should be reverted. The config flag
 exists and defaults off; leave it off unless the label is wanted for
 filtering in Plex's own UI.
 
-**Orphaned uploads: reap them.** The previous tool uploads a fresh poster on
-every run and never removes the old ones, leaving roughly five orphaned
-`upload://` entries per item — on the order of 11,000 across the library.
-Fingerprint-gated upload stops it growing; the accumulated ones are to be
-cleaned up, dry-run first.
+**Orphaned uploads: cannot be reaped through the Plex API.** The previous
+tool uploads a fresh poster every run and never removes the old ones. Measured
+over a random sample of 40 movies: **3.3 orphaned `upload://` posters per
+item at ~602 KB each**, so roughly **6,400 orphans and 4 GB across the movie
+library** alone, more counting shows and episodes.
+
+They cannot be removed. Every candidate endpoint returns 404 —
+`DELETE /library/metadata/{id}/posters/{hash}`, the same with a `url`
+parameter, and the poster's own `/file?url=` key. The only deletion plexapi
+exposes is `deletePoster()`, which issues `DELETE /library/metadata/{id}/thumb`
+and takes no argument.
+
+The obvious workaround — select the orphan, delete the selection, reselect
+ours — was tested on one item and **does not work**: the delete returns HTTP
+200 and the upload is still there afterwards. That endpoint reverts the
+*selection*; it does not remove the stored file.
+
+So the only route is filesystem cleanup inside Plex's own Metadata directory
+on the server host, which is outside this service and risky enough to be a
+deliberate, separate operator decision. What this project controls is that
+the pile stops growing: fingerprint-gated upload means an unchanged item is
+never re-uploaded.
 
 **Collection posters: implement them.** The previous tool downloads a static
 hosted image per collection, preferring a local `/assets/<collection>/poster.*`
