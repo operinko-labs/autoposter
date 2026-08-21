@@ -11,6 +11,7 @@
  * the real entry point puts the real application in the document".
  */
 import { act, screen } from "@testing-library/react";
+import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 function jsonResponse(body: unknown): Response {
@@ -28,17 +29,51 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.innerHTML = "";
+  vi.doUnmock("react-dom/client");
 });
 
-it("mounts the application at #root, not a placeholder", async () => {
+/** Imports the real entry point, capturing the React root it creates so the
+ * test can unmount it afterwards. Without this, `main.tsx`'s `createRoot`
+ * call is invisible to the test -- `afterEach` above only clears the DOM, it
+ * does not stop React -- so Dashboard's 5-second poll interval outlives the
+ * test. It never fired against the throwing `fetch` `test-setup.ts` restores
+ * between tests only because this file finishes in ~1.4s; that is a latent
+ * flake, not a guarantee.
+ *
+ * `vi.spyOn` cannot patch this: `react-dom/client`'s namespace object is not
+ * configurable under native ESM, so reassigning `createRoot` on it throws.
+ * `vi.doMock` sidesteps that by substituting the module at resolution time,
+ * before `main.tsx` ever imports it, rather than mutating it afterwards. */
+async function mountMain(): Promise<Root> {
+  let root: Root | undefined;
+  vi.doMock("react-dom/client", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("react-dom/client")>();
+    return {
+      ...actual,
+      createRoot: (...args: Parameters<typeof actual.createRoot>) => {
+        root = actual.createRoot(...args);
+        return root;
+      },
+    };
+  });
+
   await act(async () => {
     await import("./main");
   });
+
+  if (!root) throw new Error("main.tsx did not call createRoot");
+  return root;
+}
+
+it("mounts the application at #root, not a placeholder", async () => {
+  const root = await mountMain();
 
   // No session, so the gate renders the login form. Any of this is only in
   // the document if main.tsx mounted App.
   expect(screen.getByLabelText("Password")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+
+  await act(async () => root.unmount());
 });
 
 it("mounts the routed shell when a session already exists", async () => {
@@ -62,12 +97,12 @@ it("mounts the routed shell when a session already exists", async () => {
     ),
   );
 
-  await act(async () => {
-    await import("./main");
-  });
+  const root = await mountMain();
 
   expect(screen.getByRole("link", { name: "Dashboard" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Failures" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+
+  await act(async () => root.unmount());
 });
