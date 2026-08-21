@@ -193,6 +193,56 @@ jobs:
           print('assets reachable at', root, 'with', len(BADGES), 'badges defined')
           "
 
+      - name: Verify the web UI is inside the image and actually served
+        # Same class of failure as the entrypoint-import check above, one layer
+        # further out. If the Node stage were dropped, AUTOPOSTER_SPA_DIST were
+        # wrong, or dist/ landed somewhere else, the API would still start and
+        # every probe -- /healthz, /metrics, the import check -- would pass,
+        # while a browser got a 404 at `/`. Nothing else in this job looks at
+        # the UI at all.
+        #
+        # Asserting index.html exists on disk is not enough: `mount_spa` also
+        # has to be reachable, and a bundle whose JS is missing is a blank page
+        # behind a 200. So this drives the real ASGI app and follows the shell
+        # to the script it references, checking the content type as
+        # tests/test_attribution_present.py does -- a path the /assets mount
+        # does not claim comes back as HTML with a 200, which asserting on the
+        # status code alone would not catch.
+        run: |
+          docker run --rm ${{ env.IMAGE_NAME }}:ci python -c "
+          import asyncio, os, re
+          from pathlib import Path
+          from fastapi import FastAPI
+          from httpx import ASGITransport, AsyncClient
+          from autoposter.api.spa import mount_spa, spa_dist
+
+          dist = spa_dist()
+          assert dist == Path(os.environ['AUTOPOSTER_SPA_DIST']), dist
+          assert (dist / 'index.html').is_file(), f'no SPA build at {dist}'
+
+          app = FastAPI()
+          mount_spa(app, dist)
+
+          async def main():
+              transport = ASGITransport(app=app)
+              async with AsyncClient(transport=transport, base_url='http://image') as client:
+                  index = await client.get('/')
+                  assert index.status_code == 200, index.status_code
+                  assert index.headers['content-type'].startswith('text/html'), index.headers
+                  scripts = re.findall(r'[\"\'](/assets/[^\"\']+\.js)[\"\']', index.text)
+                  assert scripts, f'the shell references no bundled script: {index.text!r}'
+                  for path in scripts:
+                      asset = await client.get(path)
+                      assert asset.status_code == 200, f'{path}: {asset.status_code}'
+                      content_type = asset.headers['content-type']
+                      assert not content_type.startswith('text/html'), (
+                          f'{path} was answered with the SPA shell, not the file'
+                      )
+                  print('SPA served from', dist, 'with', len(scripts), 'script(s)')
+
+          asyncio.run(main())
+          "
+
       - name: Verify migrations apply to an empty database
         # The container runs `alembic upgrade head` on startup, so a migration
         # that cannot apply is a failure to boot, not a deferred problem.

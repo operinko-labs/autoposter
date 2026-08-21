@@ -13,6 +13,10 @@ packaging are genuinely covered here —
 - ``config/autoposter.example.yaml`` — ``test_example_config_matches_schema``
   checks every key exists in the schema, which caught two collection toggles
   silently sitting in the wrong section.
+- ``frontend/**`` — the Dockerfile builds it into the image and
+  ``test_attribution_present`` asserts against the resulting bundle, so a
+  frontend-only change is a change to what the container serves. Ignoring it
+  would let the UI be replaced wholesale with no CI run at all.
 
 so none of them may be ignored. This test reads the ignore list out of the
 workflow and checks it against that set, rather than trusting a comment to
@@ -42,6 +46,16 @@ VERIFIED_NON_SOURCE = [
     "src/autoposter/app.py",
     "tests/test_ci_path_filters.py",
     "alembic/env.py",
+    # The web UI. `npm run build` turns these into the bundle the image serves
+    # and tests/test_attribution_present.py reads, so nothing under frontend/
+    # may skip CI -- including the manifests, since the lockfile is what
+    # decides which versions that build resolves.
+    "frontend/package.json",
+    "frontend/package-lock.json",
+    "frontend/vite.config.ts",
+    "frontend/index.html",
+    "frontend/src/main.tsx",
+    "frontend/src/pages/Settings.tsx",
 ]
 
 
