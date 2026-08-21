@@ -14,7 +14,7 @@ export function loginErrorMessage(caught: unknown): string {
   if (caught.status === 429) {
     return "Too many attempts. Wait a moment and try again.";
   }
-  return `Could not reach the server (error ${caught.status}). Try again.`;
+  return `The server returned an error (${caught.status}). Try again.`;
 }
 
 export function Login() {
