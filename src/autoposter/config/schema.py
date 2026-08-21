@@ -241,6 +241,12 @@ class CollectionsConfig(BaseModel):
     protect_labels: list[str] = Field(
         default_factory=lambda: ["Collection managed by Maintainerr"]
     )
+    # Give every collection this service manages a poster: a local override
+    # under assets_root if the operator placed one, otherwise Kometa's hosted
+    # default for that collection. Applied only after resolve_collision has
+    # approved the collection, so a conflicting or protected one is never
+    # reached.
+    posters: bool = True
 
 
 class CleanupConfig(BaseModel):

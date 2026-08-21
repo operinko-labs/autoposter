@@ -119,6 +119,9 @@ def _config(*, charts=True, awards=True, apply_to_plex=True):
             charts=charts, awards=awards, apply_to_plex=apply_to_plex,
             adopt=False, adopt_from=["Kometa"], adopt_removes_prior_label=False,
             protect_labels=[],
+            # Posters are exercised in test_collection_poster_wiring.py; off
+            # here so this file stays scoped to source wiring, not artwork.
+            posters=False,
         )
     )
 

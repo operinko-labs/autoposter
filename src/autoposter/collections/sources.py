@@ -71,6 +71,12 @@ AWARD_COLLECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ("Oscars Best Director Winners", BEST_DIRECTOR, _OSCAR_SUMMARY % "Director"),
 ]
 
+# collection title -> the poster kind's key, for the two static award collections.
+AWARD_POSTER_KEYS: dict[str, str] = {
+    "Oscars Best Picture Winners": "best_picture_winner",
+    "Oscars Best Director Winners": "best_director_winner",
+}
+
 YEAR_SUMMARY = "Academy Awards (Oscars) Winners for %s."
 
 # §2.4: the five dynamic year collections override collection_order to
@@ -142,6 +148,7 @@ async def build_all(
                 adopt=adopt, adopt_from=adopt_from,
                 adopt_removes_prior_label=adopt_removes_prior_label,
                 protect_labels=protect_labels,
+                kind="chart", key=title, http=http, config=config,
             )
 
     if awards:
@@ -156,6 +163,7 @@ async def build_all(
                 adopt=adopt, adopt_from=adopt_from,
                 adopt_removes_prior_label=adopt_removes_prior_label,
                 protect_labels=protect_labels,
+                kind="award_static", key=AWARD_POSTER_KEYS[title], http=http, config=config,
             )
 
         for year in (recent_years(event) if event else []):
@@ -167,6 +175,7 @@ async def build_all(
                 adopt=adopt, adopt_from=adopt_from,
                 adopt_removes_prior_label=adopt_removes_prior_label,
                 protect_labels=protect_labels,
+                kind="award_year", key=str(year), http=http, config=config,
             )
 
     return actions

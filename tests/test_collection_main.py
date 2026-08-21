@@ -111,6 +111,9 @@ def _config(libraries):
             charts=False, awards=False, separators=False,
             adopt=False, adopt_from=["Kometa"], adopt_removes_prior_label=False,
             protect_labels=[],
+            # Posters are exercised in test_collection_poster_wiring.py; off
+            # here for the same reason charts/awards/separators are.
+            posters=False,
         )
     )
 

@@ -110,6 +110,9 @@ def _config(libraries=("Movies", "TV Shows"), enabled=True, apply_to_plex=True):
             charts=False, awards=False, separators=False,
             adopt=False, adopt_from=["Kometa"], adopt_removes_prior_label=False,
             protect_labels=[],
+            # Posters are exercised in test_collection_poster_wiring.py; off
+            # here for the same reason charts/awards/separators are.
+            posters=False,
         ),
         scheduler=SimpleNamespace(collections_hours=24),
     )

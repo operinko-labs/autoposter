@@ -47,6 +47,7 @@ collections:
   charts: true # IMDb Popular / Top 250 / Lowest Rated
   awards: true # Oscars winner collections
   separators: true # the blank "Ratings Collections" section-divider collection
+  posters: true # give managed collections a poster
   adopt: false # claim collections created by a tool being replaced; a Plex write, off by default
   adopt_from: # labels belonging to tools being replaced
     - Kometa

@@ -159,6 +159,8 @@ async def reconcile_libraries(
                 adopt_removes_prior_label=config.collections.adopt_removes_prior_label,
                 separators=config.collections.separators,
                 protect_labels=config.collections.protect_labels,
+                http=http,
+                config=config,
             )
 
             if config.collections.charts or config.collections.awards:

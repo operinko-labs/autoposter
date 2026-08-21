@@ -11,9 +11,11 @@ means "make no changes", never "remove everything".
 import hashlib
 import logging
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.collections.posters import apply_poster
 from autoposter.collections.reconcile import resolve_collision
 from autoposter.db.models import ManagedCollection
 
@@ -72,6 +74,10 @@ async def reconcile_list_collection(
     adopt_from: list[str] | None = None,
     adopt_removes_prior_label: bool = False,
     protect_labels: list[str] | None = None,
+    kind: str | None = None,
+    key: str | None = None,
+    http: httpx.AsyncClient | None = None,
+    config=None,
 ) -> list[str]:
     """Bring one list collection in line with ``items`` (already in source order).
 
@@ -163,6 +169,13 @@ async def reconcile_list_collection(
     else:
         record.definition_hash = wanted
         record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+
+    if kind is not None and http is not None and config is not None and config.collections.posters:
+        message = await apply_poster(
+            session, http, config, collection, record, library, kind, key, dry_run=False,
+        )
+        if message:
+            actions.append(message)
 
     await session.flush()
     return actions

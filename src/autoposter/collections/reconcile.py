@@ -12,11 +12,13 @@ franchise collections, another tool's, or hand-made by the operator.
 import hashlib
 import logging
 
+import httpx
 from plexapi.utils import joinArgs
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections.buckets import Bucket, derive_buckets
+from autoposter.collections.posters import apply_poster
 from autoposter.db.models import ManagedCollection
 
 logger = logging.getLogger(__name__)
@@ -206,6 +208,8 @@ async def _reconcile_separator(
     adopt_removes_prior_label: bool,
     dry_run: bool,
     protect_labels: list[str],
+    http: httpx.AsyncClient | None = None,
+    config=None,
 ) -> list[str]:
     """The blank ``Ratings Collections`` divider: same ownership and
     adoption rules as every other collection this family manages, but it is
@@ -255,6 +259,14 @@ async def _reconcile_separator(
         record.definition_hash = SEPARATOR_HASH
         record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
 
+    if config is not None and http is not None and config.collections.posters:
+        message = await apply_poster(
+            session, http, config, collection, record, library_name,
+            "separator", "content_rating", dry_run=False,
+        )
+        if message:
+            actions.append(message)
+
     return actions
 
 
@@ -270,6 +282,8 @@ async def reconcile_content_ratings(
     adopt_removes_prior_label: bool = False,
     separators: bool = False,
     protect_labels: list[str] | None = None,
+    http: httpx.AsyncClient | None = None,
+    config=None,
 ) -> list[str]:
     """Bring this library's Common Sense collections in line with its ratings.
 
@@ -359,11 +373,20 @@ async def reconcile_content_ratings(
             record.definition_hash = wanted
             record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
 
+        if config is not None and http is not None and config.collections.posters:
+            poster_kind = "content_rating_other" if bucket.key == "other" else "content_rating"
+            message = await apply_poster(
+                session, http, config, collection, record, library_name,
+                poster_kind, bucket.key, dry_run=False,
+            )
+            if message:
+                actions.append(message)
+
     if separators:
         actions += await _reconcile_separator(
             session, section, library_name, libtype, label,
             existing, stored, adopt, adopt_from or [], adopt_removes_prior_label, dry_run,
-            protect_labels or [],
+            protect_labels or [], http, config,
         )
 
     await session.flush()
