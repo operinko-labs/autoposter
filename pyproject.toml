@@ -45,6 +45,15 @@ packages = ["src/autoposter"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# `imagemagick` is both the gate and the selector. tests/conftest.py's
+# `imagemagick` fixture turns a missing binary into a skip locally and a
+# failure under CI, and .forgejo/workflows/ci.yml deselects these from the
+# main run (`-m "not imagemagick"`) so a dedicated step can run them where a
+# Q16-HDRI build exists. Registering it here keeps a typo'd marker from
+# quietly meaning "unmarked".
+markers = [
+    'imagemagick: needs a real `magick` binary; pass "hdri" when byte-exact parity requires a Q16-HDRI build',
+]
 
 [tool.ruff]
 line-length = 100

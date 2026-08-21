@@ -24,6 +24,7 @@ keep people honest.
 """
 
 import fnmatch
+import re
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,10 @@ VERIFIED_NON_SOURCE = [
     # that reads the workflow's `# renovate:` annotations, without which the
     # workflow's versions silently stop being updated.
     "renovate.json",
+    # The harvested production poster tests/test_golden.py is byte-compared
+    # against. It is the whole of the parity claim; a change to it is a change
+    # to what "identical" means.
+    "tests/fixtures/golden/expected_poster.jpg",
 ]
 
 
@@ -121,6 +126,54 @@ def test_ci_sets_the_ci_environment_variable():
         "env block; tests/test_attribution_present.py's hard-fail guard "
         "would silently skip instead of failing on a missing frontend/dist"
     )
+
+
+def _run_scripts() -> list[str]:
+    """Every `run:` script in the workflow, across all jobs."""
+    loaded = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return [
+        step["run"]
+        for job in (loaded.get("jobs") or {}).values()
+        for step in (job.get("steps") or [])
+        if isinstance(step.get("run"), str)
+    ]
+
+
+def test_ci_actually_executes_the_imagemagick_gated_tests():
+    """The parity tests must be run, not merely deselected.
+
+    They carry `@pytest.mark.imagemagick`, and the main pytest step
+    deselects them with `-m "not imagemagick"` because no runner has a
+    `magick`. That is only safe while something else selects them: drop the
+    second step and CI is back to reporting green over the one claim this
+    project makes -- byte-identical posters -- having rendered nothing. Which
+    is what it did for the whole of this branch's history.
+
+    `CI=true` is asserted alongside because it is what arms the guard.
+    tests/conftest.py's `imagemagick` fixture fails rather than skips only
+    when it is set, so a step that ran these without it would go green on a
+    container that had somehow lost ImageMagick -- the exact silence this
+    replaced.
+    """
+    deselecting = [s for s in _run_scripts() if "not imagemagick" in s]
+    selecting = [s for s in _run_scripts() if re.search(r"-m\s+[\"']?imagemagick", s)]
+
+    assert deselecting, (
+        "no CI step deselects the ImageMagick-gated tests; if that is "
+        "deliberate, this test and the -m flags in the workflow should go "
+        "together"
+    )
+    assert selecting, (
+        "CI deselects the ImageMagick-gated tests with -m \"not imagemagick\" "
+        "but no step runs them with -m imagemagick, so the byte-identical "
+        "poster parity is verified nowhere"
+    )
+    for script in selecting:
+        assert "CI=true" in script, (
+            "the step running the ImageMagick-gated tests does not pass "
+            "CI=true, so tests/conftest.py's guard would skip instead of "
+            "failing if ImageMagick went missing from it"
+        )
 
 
 @pytest.mark.parametrize(

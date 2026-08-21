@@ -40,6 +40,27 @@ def _scratch_url(database: str) -> str:
 SCRATCH_DB_URL = _scratch_url(SCRATCH_DB_NAME)
 
 
+def _unreachable_postgres() -> None:
+    """Skip on a machine with no database; fail in CI, which has one.
+
+    Same reasoning as tests/conftest.py's `imagemagick` fixture and
+    tests/test_attribution_present.py: these two are the only check that a
+    migration matches the models, and the whole point of them is the
+    item_facts incident above. A green skip because
+    AUTOPOSTER_MAINTENANCE_DATABASE_URL stopped being exported -- it comes
+    from .forgejo/scripts/wait_for_postgres.py, not from the workflow -- would
+    look exactly like a pass.
+    """
+    message = f"postgres is not reachable at {MAINTENANCE_DB_URL}"
+    if os.environ.get("CI", "").lower() in {"1", "true", "yes"}:
+        pytest.fail(
+            f"{message}, so nothing verified that the migrations match the "
+            "models. CI starts PostgreSQL and exports its URLs; that must "
+            "have broken."
+        )
+    pytest.skip(f"{message}. This is a hard failure in CI.")
+
+
 async def _postgres_reachable() -> bool:
     try:
         conn = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
@@ -52,7 +73,7 @@ async def _postgres_reachable() -> bool:
 async def test_alembic_head_matches_models():
     """``alembic upgrade head`` on a fresh DB must leave no drift from the models."""
     if not await _postgres_reachable():
-        pytest.skip("postgres is not reachable")
+        _unreachable_postgres()
 
     maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
     try:
@@ -97,7 +118,7 @@ async def test_migrations_apply_to_a_populated_renders_table():
     before the badge columns, puts a row in, and then upgrades.
     """
     if not await _postgres_reachable():
-        pytest.skip("postgres is not reachable")
+        _unreachable_postgres()
 
     before_badges = "716a0d6b8941"
 

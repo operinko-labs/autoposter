@@ -1,4 +1,3 @@
-import shutil
 from pathlib import Path
 
 import httpx
@@ -15,10 +14,12 @@ from autoposter.render.pipeline import process_item
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 GOLDEN = Path(__file__).parent / "fixtures" / "golden"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("magick") is None or not GOLDEN.exists(),
-    reason="requires ImageMagick and harvested golden fixtures",
-)
+# Needs a real `magick` and the harvested fixtures. The `imagemagick` fixture
+# in conftest.py decides what a missing one means: a skip locally, a failure
+# in CI. The marker also selects these tests -- the main CI run deselects them
+# with `-m "not imagemagick"` and a later step runs them where a `magick`
+# exists, so a skip here can no longer pass for a pass.
+pytestmark = pytest.mark.imagemagick
 
 
 class FakePlexItem:

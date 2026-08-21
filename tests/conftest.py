@@ -1,4 +1,6 @@
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -15,6 +17,72 @@ TEST_DB_URL = os.environ.get(
 )
 
 EXAMPLE_CONFIG = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+
+GOLDEN = Path(__file__).parent / "fixtures" / "golden"
+
+
+def _running_in_ci() -> bool:
+    return os.environ.get("CI", "").lower() in {"1", "true", "yes"}
+
+
+def _imagemagick_problem(hdri: bool) -> str | None:
+    """Why the ImageMagick-backed tests cannot run here, or None if they can."""
+    if shutil.which("magick") is None:
+        return (
+            "there is no `magick` on PATH. Note that installing Ubuntu's "
+            "`imagemagick` package does not fix this: that is ImageMagick 6, "
+            "whose binary is `convert`"
+        )
+    if not GOLDEN.is_dir():
+        return f"the harvested golden fixtures are missing from {GOLDEN}"
+    if not hdri:
+        return None
+    version = subprocess.run(
+        ["magick", "-version"], capture_output=True, text=True, check=False
+    ).stdout
+    if "HDRI" not in version:
+        first = version.splitlines()[0] if version else "(no output)"
+        return (
+            "`magick` is not a Q16-HDRI build, and byte-exact parity with the "
+            f"replaced tool only holds on one: {first}"
+        )
+    if not (GOLDEN / "expected_poster.jpg").is_file():
+        return f"the harvested reference poster is missing from {GOLDEN}"
+    return None
+
+
+@pytest.fixture(autouse=True)
+def imagemagick(request):
+    """Gate for tests marked ``@pytest.mark.imagemagick`` (``("hdri")`` for a
+    Q16-HDRI build), following tests/test_attribution_present.py.
+
+    Skipping on a developer machine is deliberate: nobody should need
+    ImageMagick installed to run ``pytest tests/``. Skipping *in CI* is not,
+    and until this fixture existed that is exactly what happened everywhere:
+    no runner has a ``magick``, so the byte-identical poster parity this
+    project's central claim rests on was verified nowhere, which is how
+    ``FakePlex`` went without a ``fetch_item`` until it was found by accident.
+    A guard that reports green having run nothing is worse than no guard,
+    because it is mistaken for one.
+
+    So when ``CI`` is set these fail instead. The workflow runs them in a
+    container carrying the image's own ImageMagick packages; if that ever
+    stops provisioning one, CI goes red rather than quietly passing.
+    """
+    marker = request.node.get_closest_marker("imagemagick")
+    if marker is None:
+        return
+    problem = _imagemagick_problem(hdri="hdri" in marker.args)
+    if problem is None:
+        return
+    if _running_in_ci():
+        pytest.fail(
+            f"this test needs ImageMagick and {problem}, so the poster parity "
+            "it exists to prove went unverified. CI must provide one -- see "
+            'the "Test the ImageMagick-gated poster parity" step in '
+            ".forgejo/workflows/ci.yml."
+        )
+    pytest.skip(f"{problem}. This is a hard failure in CI.")
 
 
 @pytest.fixture(autouse=True)

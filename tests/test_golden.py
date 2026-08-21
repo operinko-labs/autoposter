@@ -22,9 +22,11 @@ sequence reproduces the real asset as an identical 843,045-byte JPEG.
 That requires a **Q16-HDRI** ImageMagick build, which is what the runtime image
 ships and what production runs. HDRI changes internal pixel maths, so a Q16
 build without it renders the same source 0.077% differently (``RMSE 0.00077``)
-— visually indistinguishable, but not bit-equal. The test therefore skips
-rather than fails on a non-HDRI build; the exact patch version does not matter
-(verified equal across 7.1.2-27 and 7.1.2-29).
+— visually indistinguishable, but not bit-equal. On a machine without such a
+build these therefore skip rather than fail; **in CI they fail**, because a
+skip there leaves the central claim unproven while reporting green (see the
+``imagemagick`` fixture in ``tests/conftest.py``). The exact patch version does
+not matter (verified equal across 7.1.2-27 and 7.1.2-29).
 
 If this fails on an HDRI build, the compositing pipeline has drifted from what
 the existing library was built with.
@@ -48,20 +50,14 @@ from autoposter.render.compositor import (
 GOLDEN = Path(__file__).parent / "fixtures" / "golden"
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
-def _has_hdri_magick() -> bool:
-    """Byte-exact parity needs a Q16-HDRI build; a Q16 build differs by ~0.08%."""
-    if shutil.which("magick") is None:
-        return False
-    result = subprocess.run(
-        ["magick", "-version"], capture_output=True, text=True, check=False
-    )
-    return "HDRI" in result.stdout
-
-
-pytestmark = pytest.mark.skipif(
-    not _has_hdri_magick() or not (GOLDEN / "expected_poster.jpg").exists(),
-    reason="requires a Q16-HDRI ImageMagick build and the harvested golden fixtures",
-)
+# "hdri" is what makes the `imagemagick` fixture in conftest.py insist on a
+# Q16-HDRI build rather than any `magick`. That fixture also decides what an
+# unsuitable one means: a skip locally, a failure in CI. The marker selects
+# these tests too -- the main CI run deselects them with `-m "not imagemagick"`
+# and a later step runs them somewhere a Q16-HDRI build exists, because this
+# file is the one that proves the byte-identical claim and it had never once
+# executed in CI.
+pytestmark = pytest.mark.imagemagick("hdri")
 
 
 def _rmse(a: Path, b: Path) -> float:

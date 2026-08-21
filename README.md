@@ -67,7 +67,10 @@ pytest
 ```
 
 The image-parity tests require a **Q16-HDRI** ImageMagick build and skip
-without one; the runtime image provides it. See `deploy/README.md`.
+without one, so a checkout with no ImageMagick still runs `pytest`. They carry
+`@pytest.mark.imagemagick`; CI deselects them from the main run and executes
+them in a container that has such a build, where the same gate is a hard
+failure rather than a skip. See `deploy/README.md`.
 
 ## Obtaining a Plex token
 

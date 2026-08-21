@@ -129,10 +129,77 @@ jobs:
         run: ruff check src tests
 
       - name: Test
-        # The byte-identical poster test skips unless ImageMagick is a Q16-HDRI
-        # build, which the runner's is not. That path is covered in the image
-        # job below, which does have one.
-        run: pytest tests/ -q
+        # Everything except the ImageMagick-gated tests, which this runner
+        # cannot satisfy and which the next step runs somewhere that can. They
+        # are deselected rather than left to skip because `CI` is set above,
+        # and tests/conftest.py's `imagemagick` fixture fails rather than skips
+        # when it is -- so leaving them in this run would make it red here for
+        # a reason that is not a defect.
+        run: pytest tests/ -q -m "not imagemagick"
+
+      # The tests that prove poster output is byte-identical to the tool this
+      # service replaces had, until this step, never run in CI at all: they
+      # gate on a `magick` binary, no runner has one, and they skipped in
+      # silence while the job went green. `apt-get install imagemagick` does
+      # not fix that -- Ubuntu ships ImageMagick 6, whose binary is `convert`,
+      # so `shutil.which("magick")` stays None and the gate stays shut. The
+      # image job below does have a Q16-HDRI build but never invokes pytest.
+      # The cost of that gap was real: `FakePlex` sat here without a
+      # `fetch_item` method until it was found by accident.
+      #
+      # So they run in a container carrying exactly the Dockerfile's
+      # ImageMagick packages. Alpine's is the Q16-HDRI build byte-equality
+      # depends on; a plain Q16 renders the same source 0.077% differently.
+      # The delegate subpackages are not decoration -- with `imagemagick`
+      # alone this fails with "no decode delegate for this image format".
+      #
+      # `CI=true` is passed in on purpose. It is what makes the fixture fail
+      # instead of skip, so if this step ever stops providing a `magick` the
+      # run goes red rather than quietly passing having rendered nothing.
+      # tests/test_ci_path_filters.py asserts both that flag and this step.
+      - name: Test the ImageMagick-gated poster parity
+        run: |
+          # A private database. The run above drops and recreates every table
+          # in `autoposter`; sharing it with a second suite is what produced a
+          # StaleDataError when this was tried. Separate `psql` invocations
+          # because CREATE DATABASE cannot run inside a transaction block.
+          docker exec ci-postgres psql -U autoposter -d postgres \
+            -c 'DROP DATABASE IF EXISTS autoposter_magick'
+          docker exec ci-postgres psql -U autoposter -d postgres \
+            -c 'CREATE DATABASE autoposter_magick OWNER autoposter'
+
+          # `docker create` + `docker cp` rather than `-v "$PWD:/repo"`,
+          # because this job is itself a container: a bind mount would ask the
+          # host's daemon for a path that exists only in here. `docker cp`
+          # streams over the API, so it does not care. It creates only the
+          # last path component, hence copying into /usr/src, which the image
+          # already has -- and which is where `assets_root()` then resolves
+          # `assets/` from, since it walks up two levels from the package.
+          cid=$(docker create --network ci-db -w /usr/src \
+            -e CI=true \
+            -e AUTOPOSTER_TEST_DATABASE_URL=postgresql+asyncpg://autoposter:autoposter@ci-postgres:5432/autoposter_magick \
+            python:${{ env.PYTHON_VERSION }}-alpine sh -euc '
+              apk add --no-cache imagemagick imagemagick-jpeg imagemagick-webp \
+                imagemagick-svg font-dejavu
+              magick -version
+              pip install -q -e ".[dev]"
+              # -v so the report names every test that ran: a reviewer can see
+              # these executed rather than inferring it from a count. A marker
+              # matching nothing exits 5, which fails this step -- deleting
+              # the marker cannot quietly empty this run either.
+              python -m pytest tests/ -v -m imagemagick
+            ')
+          docker cp pyproject.toml "${cid}:/usr/src/pyproject.toml"
+          for path in src tests config assets; do
+            docker cp "$path" "${cid}:/usr/src/${path}"
+          done
+          # `|| status=$?` rather than reading $? afterwards: the runner's
+          # shell exits on error, so a failing pytest would abort this script
+          # before the container could be removed.
+          status=0
+          docker start -a "$cid" || status=$?
+          docker rm -f "$cid" >/dev/null
+          exit $status
 
   image:
     name: Build, verify and push the image
