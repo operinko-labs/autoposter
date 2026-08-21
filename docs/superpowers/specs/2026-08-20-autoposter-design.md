@@ -246,11 +246,49 @@ carry it:
   not endorsed, certified, or otherwise approved by TMDB."*, displayed
   prominently, **plus the TMDB logo**, which must be less prominent than this
   application's own branding. The logo asset is a deliverable of this phase.
-- **Fanart.tv** — requirements not yet confirmed; their terms page blocks
-  automated retrieval. Confirm before release.
+- **Fanart.tv** — **confirmed: no attribution requirement.** The attribution
+  clause belongs to their *project* API key terms; this deployment uses a
+  personal API key, which carries no such condition. Nothing to display.
+
+**Where it goes (decided).** Both notices live on the Web UI's **API settings
+page**, alongside the key fields for each provider — the place a user is
+already looking at that provider. TheTVDB publishes a ready-made attribution
+image in their brand assets ("Metadata provided by TheTVDB. Please consider
+adding missing information or subscribing.") with light and dark logo
+variants; use their asset rather than reproducing the wording by hand, and
+pick the variant matching the active theme.
 
 Treat this as an acceptance criterion for the UI phase, not a documentation
 task.
+
+## 6a. Decisions carried out of phases 1-3
+
+Recorded here so they are not rediscovered as open questions.
+
+**The `Overlay` Plex label: deliberately not applied.** The tool being
+replaced labels every item it overlays, and that label is its *state*: it
+reads it back to decide whether an item still needs overlaying
+(`overlays.py:104` — no label means "not overlaid yet"), and it uses it as the
+index of items to **restore original artwork to** when overlays are removed or
+unconfigured (`overlays.py:63-74`). This service keeps that state in
+`renders.badge_fingerprint`/`upload_status` and, since phase 3d, in the
+uploaded image's own EXIF — so the label is redundant. Applying it would also
+be a small hazard: if the old tool were ever run again, the label is exactly
+what it would use to decide our artwork should be reverted. The config flag
+exists and defaults off; leave it off unless the label is wanted for
+filtering in Plex's own UI.
+
+**Orphaned uploads: reap them.** The previous tool uploads a fresh poster on
+every run and never removes the old ones, leaving roughly five orphaned
+`upload://` entries per item — on the order of 11,000 across the library.
+Fingerprint-gated upload stops it growing; the accumulated ones are to be
+cleaned up, dry-run first.
+
+**Collection posters: implement them.** The previous tool downloads a static
+hosted image per collection, preferring a local `/assets/<collection>/poster.*`
+when one exists. Adopted collections keep whatever poster they already have,
+so nothing regressed — but a newly created collection has none, so this is a
+real gap to close rather than a deferral.
 
 ## 7. Error handling
 
