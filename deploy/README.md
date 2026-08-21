@@ -32,6 +32,10 @@ variables:
 - `AUTOPOSTER_MDBLIST_APIKEY` — optional. Unset, only the `content_rating`
   metadata field is skipped; every other metadata operation (ratings, genres,
   studio, release date) still runs (see `app.py`'s `_build_mdblist`).
+- `AUTOPOSTER_RADARR_APIKEY` / `AUTOPOSTER_SONARR_APIKEY` — optional, same
+  posture as the MDBList key. Unset, `radarr.enabled`/`sonarr.enabled`
+  default to `false` anyway, so the app boots the same either way; see
+  "Radarr and Sonarr sync" below.
 
 None of these are read from the YAML config file.
 
@@ -529,6 +533,94 @@ default `collections.libraries`. `Muskarit` is left completely untouched
 unless it is added there; adding it would create a full set of Common
 Sense, chart and award collections on it too, the same as any other
 configured library.
+
+See `config/autoposter.example.yaml` for the full block.
+
+## Radarr and Sonarr sync
+
+The `radarr:`, `sonarr:` and `arr_sync:` blocks in `autoposter.yaml` control
+Phase 3f: registering Plex movies/shows that Radarr or Sonarr does not know
+about yet, in place against the file already on disk, without ever
+triggering a search or a download. Neither service is contacted or written
+to unless it is explicitly configured — see "Two independent things" below.
+
+### Configuring a service
+
+For each of `radarr:`/`sonarr:`:
+
+- `enabled` (default `false`) — off means this service is never contacted at
+  all: no read, no write. Turn on only once `base_url` is set and the
+  matching API key is exported.
+- `base_url` — the service's URL, e.g. `http://radarr.media.svc.cluster.local`.
+- The API key is **not** a config file setting. It comes from the
+  environment, the same pattern every other credential in this project
+  follows: `AUTOPOSTER_RADARR_APIKEY` / `AUTOPOSTER_SONARR_APIKEY` (see
+  "Secrets" above). It is never read from, or written to, the YAML file, and
+  never appears in a log line.
+- `add_existing` (default `false`) — dry run by default, the same posture as
+  `badges.upload_to_plex`, `collections.apply_to_plex` and `cleanup.apply`:
+  with this off, a pass still reports what it would register, but issues no
+  `POST`. Registering an item **never triggers a search or a download** —
+  Radarr's `addOptions.searchForMovie` and Sonarr's
+  `addOptions.searchForMissingEpisodes` are always sent `false`, and this is
+  not configurable: there is no legitimate reason for this service to start
+  a download, and a config key that could set either flag would eventually
+  get flipped by accident.
+- `quality_profile` — the exact quality profile name to register new items
+  under (e.g. `HD Bluray + WEB` for Radarr, `WEB-1080p` for Sonarr). If the
+  name does not resolve against the service, the pass for that service fails
+  loudly (logged with a full traceback, and named in
+  `scheduled_runs.last_detail`) — but it does **not** stop the other
+  service's sync or the safety-net enqueue described below.
+- `monitor` (Radarr `monitor`, Sonarr `monitor`) and, Radarr-only,
+  `minimum_availability` (default `announced`); Sonarr-only, `season_folder`
+  (default `true`) and `series_type` (default `standard`) — passed straight
+  through on every registration, mirroring how the tool being replaced was
+  configured.
+
+**Nothing is ever removed from or modified in either service.** This phase
+only ever adds an item the service is missing, registered against the file
+already on disk; there is no delete or update path at all, regardless of any
+setting above.
+
+### The path mapping is mandatory and case-sensitive
+
+`plex_path` (default `/mnt/Media`) and `arr_path` (default `/mnt/media`) map
+a Plex item's file location to the path the service should register.
+**Verified live: Plex mounts the library at `/mnt/Media` (capital M);
+Radarr and Sonarr see the same files at `/mnt/media` (lowercase).** The
+mapping is an exact, case-sensitive path-segment replacement — get it wrong
+and a registration points the service at a directory it cannot read (or,
+worse, silently matches an unrelated path that merely shares a prefix). A
+path that does not fall under `plex_path` is skipped rather than guessed at.
+
+### Two independent things run per Plex library
+
+Every pass over a Plex library (movie or show) does two independent things:
+
+1. **Registration with the matching service** — only when that service's
+   own `enabled` is `true`. **Both services being unconfigured is a clean
+   no-op for this half, not an error.**
+2. **The safety net** — `arr_sync.enabled` (default `true`) — enqueues every
+   Plex item in that library with no `media_items` row yet, so the library
+   still converges on a missed webhook even with both services above
+   disabled entirely. This runs **independently** of `radarr.enabled` /
+   `sonarr.enabled`.
+
+`arr_sync.hours` (default `24`) is the registration cadence; `arr_sync.batch_size`
+(default `500`) caps how many unknown items the safety net enqueues per
+pass — the same safety valve as `scheduler.drift_batch_size`, for the same
+reason: a first run against a fresh database can find every item unknown.
+
+### Expected first-run outcome for this library
+
+Audited against the live services: **0 movies** in Plex are missing from
+Radarr. **2 series are missing from Sonarr: `Limitless` and `The Moomins`.**
+A first real run (`radarr.add_existing`/`sonarr.add_existing` both `true`)
+is expected to add exactly those two series and nothing else. One further
+show in the library carries no TVDB id at all, so it can never be matched
+by this sync and is counted in the report as skipped, not added — that is
+expected, not a bug to chase.
 
 See `config/autoposter.example.yaml` for the full block.
 

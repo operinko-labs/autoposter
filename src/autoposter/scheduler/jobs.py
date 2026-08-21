@@ -19,8 +19,10 @@ import httpx
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.arr.client import RADARR, SONARR, ArrClient, ArrKind
+from autoposter.arr.sync import ArrSyncSettings, enqueue_unknown_items, sync_section
 from autoposter.collections.service import reconcile_libraries
-from autoposter.config.schema import Config
+from autoposter.config.schema import Config, RadarrConfig, Secrets, SonarrConfig
 from autoposter.db.models import ItemFacts, MediaItem, Render
 from autoposter.intake.arr import RenderIntent
 from autoposter.queue.jobs import enqueue
@@ -149,6 +151,122 @@ def make_drift_job(config: Config) -> Job:
     return Job(
         name="ratings_drift_sweep",
         interval_seconds=config.scheduler.drift_days * 24 * 3600,
+        run=run,
+    )
+
+
+def _radarr_settings(cfg: RadarrConfig) -> ArrSyncSettings:
+    return ArrSyncSettings(
+        plex_root=cfg.plex_path,
+        arr_root=cfg.arr_path,
+        quality_profile=cfg.quality_profile,
+        monitored=cfg.monitor,
+        minimum_availability=cfg.minimum_availability,
+    )
+
+
+def _sonarr_settings(cfg: SonarrConfig) -> ArrSyncSettings:
+    return ArrSyncSettings(
+        plex_root=cfg.plex_path,
+        arr_root=cfg.arr_path,
+        quality_profile=cfg.quality_profile,
+        monitored=cfg.monitor,
+        series_type=cfg.series_type,
+        season_folder=cfg.season_folder,
+    )
+
+
+async def _sync_one_service(
+    http: httpx.AsyncClient,
+    section,
+    arr_kind: ArrKind,
+    service_cfg,
+    settings: ArrSyncSettings,
+    api_key: str,
+) -> str:
+    """Register one section's missing items with one service.
+
+    ``sync_section`` raises ``ValueError`` when the configured quality
+    profile cannot be resolved -- an operator misconfiguration, not a
+    transient fault. It is caught here, not left to propagate: it must be
+    loud (logged with a full traceback) but it must not take down the other
+    service's sync or the safety-net enqueue that runs after this in
+    ``make_arr_sync_job``. Any other failure (the service unreachable, a
+    bad api key, ...) is contained the same way for the same reason.
+    """
+    client = ArrClient(http, service_cfg.base_url, api_key, arr_kind)
+    try:
+        report = await sync_section(
+            client, section, arr_kind, settings, dry_run=not service_cfg.add_existing
+        )
+    except Exception:
+        logger.error(
+            "arr_sync: %s sync failed for %r", arr_kind.name, section.title, exc_info=True
+        )
+        return f"{section.title} {arr_kind.name}: failed, see log"
+    return (
+        f"{section.title} {arr_kind.name}: checked {report.checked}, "
+        f"missing {report.missing}, added {report.added}, failed {report.failed}"
+    )
+
+
+def make_arr_sync_job(
+    config: Config, server_factory: Callable[[], object], http: httpx.AsyncClient, secrets: Secrets
+) -> Job:
+    """Build the scheduled Radarr/Sonarr sync and safety-net job.
+
+    Two independent things run per Plex library: the Radarr/Sonarr
+    registration (only for the service configured ``enabled`` for that
+    library's type) and the safety-net enqueue (unconditional, whenever
+    ``arr_sync.enabled`` -- see ``enqueue_unknown_items``). Neither service
+    being configured is a clean no-op, not an error: with both disabled this
+    job only runs the safety net.
+
+    ``server_factory`` is a zero-argument callable returning a connected
+    ``PlexServer``, the same contract ``make_collections_job`` uses, and for
+    the same reason it runs through ``asyncio.to_thread``: connecting is a
+    blocking call sharing the event loop with the worker pool and the Plex
+    liveness probe.
+    """
+
+    async def run(session: AsyncSession) -> str:
+        if not config.arr_sync.enabled:
+            return "skipped: arr_sync disabled"
+        server = await asyncio.to_thread(server_factory)
+        sections = await asyncio.to_thread(server.library.sections)
+
+        parts: list[str] = []
+        for section in sections:
+            if section.title in config.plex.excluded_libraries:
+                continue
+
+            if section.type == "movie":
+                plex_kind = "movie"
+                if config.radarr.enabled:
+                    parts.append(await _sync_one_service(
+                        http, section, RADARR, config.radarr,
+                        _radarr_settings(config.radarr), secrets.radarr_apikey,
+                    ))
+            elif section.type == "show":
+                plex_kind = "show"
+                if config.sonarr.enabled:
+                    parts.append(await _sync_one_service(
+                        http, section, SONARR, config.sonarr,
+                        _sonarr_settings(config.sonarr), secrets.sonarr_apikey,
+                    ))
+            else:
+                continue
+
+            enqueued = await enqueue_unknown_items(
+                session, section, plex_kind, batch_size=config.arr_sync.batch_size
+            )
+            parts.append(f"{section.title}: enqueued {enqueued} unknown item(s)")
+
+        return "; ".join(parts) if parts else "no libraries to sync"
+
+    return Job(
+        name="arr_sync",
+        interval_seconds=config.arr_sync.hours * 3600,
         run=run,
     )
 

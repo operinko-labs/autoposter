@@ -27,7 +27,12 @@ from autoposter.queue.jobs import reclaim_stale
 from autoposter.queue.worker import run_workers
 from autoposter.render.pipeline import process_item
 from autoposter.scheduler.core import Scheduler
-from autoposter.scheduler.jobs import make_cleanup_job, make_collections_job, make_drift_job
+from autoposter.scheduler.jobs import (
+    make_arr_sync_job,
+    make_cleanup_job,
+    make_collections_job,
+    make_drift_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,13 +114,13 @@ def create_app(
 
         scheduler_jobs = []
         if config.scheduler.enabled:
+            server_factory = functools.partial(PlexServer, config.plex.url, secrets.plex_token)
             if config.collections.enabled:
-                server_factory = functools.partial(
-                    PlexServer, config.plex.url, secrets.plex_token
-                )
                 scheduler_jobs.append(make_collections_job(config, server_factory, http))
             scheduler_jobs.append(make_drift_job(config))
             scheduler_jobs.append(make_cleanup_job(config))
+            if config.arr_sync.enabled:
+                scheduler_jobs.append(make_arr_sync_job(config, server_factory, http, secrets))
         scheduler = Scheduler(
             session_factory, scheduler_jobs, poll_seconds=config.scheduler.poll_seconds
         )

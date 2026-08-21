@@ -30,6 +30,13 @@ class Secrets(BaseModel):
     # without a key yet still runs, just without that one field. Defaults to
     # "" rather than being in _SECRET_ENV, which would hard-fail every boot.
     mdblist_apikey: str = ""
+    # Soft secrets, same reasoning as mdblist_apikey: both radarr.enabled and
+    # sonarr.enabled default to false, so a deployment that never configures
+    # either service must still boot. Left empty, ArrClient's requests to
+    # that service simply fail (and are caught and logged by the scheduled
+    # job), rather than the whole process refusing to start.
+    radarr_apikey: str = ""
+    sonarr_apikey: str = ""
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -40,6 +47,8 @@ class Secrets(BaseModel):
                 raise RuntimeError(f"required environment variable {env_name} is not set")
             values[field] = value
         values["mdblist_apikey"] = os.environ.get("AUTOPOSTER_MDBLIST_APIKEY", "")
+        values["radarr_apikey"] = os.environ.get("AUTOPOSTER_RADARR_APIKEY", "")
+        values["sonarr_apikey"] = os.environ.get("AUTOPOSTER_SONARR_APIKEY", "")
         return cls(**values)
 
 
@@ -294,6 +303,67 @@ class SchedulerConfig(BaseModel):
     cleanup_days: int = 7
 
 
+class RadarrConfig(BaseModel):
+    """Registering Plex movies Radarr does not know about. See ``arr/sync.py``.
+
+    ``api_key`` is deliberately not a field here -- it comes from
+    ``Secrets.radarr_apikey`` (``AUTOPOSTER_RADARR_APIKEY``), the same
+    pattern every other credential in this project follows. Nothing about
+    the search flag is configurable: ``sync_section`` always pins
+    ``addOptions.searchForMovie`` to ``False``.
+    """
+
+    enabled: bool = False
+    base_url: str = ""
+    # Dry run by default, the same posture as every other outward-facing
+    # write in this project: register nothing until the operator opts in.
+    add_existing: bool = False
+    # Verified live: Plex mounts the library at /mnt/Media (capital M),
+    # Radarr sees the same files at /mnt/media (lowercase). Case-sensitive
+    # on purpose -- see arr/paths.py.
+    plex_path: str = "/mnt/Media"
+    arr_path: str = "/mnt/media"
+    quality_profile: str = ""
+    monitor: bool = True
+    minimum_availability: str = "announced"
+
+
+class SonarrConfig(BaseModel):
+    """Registering Plex shows Sonarr does not know about. See ``arr/sync.py``.
+
+    ``api_key`` is deliberately not a field here -- see ``RadarrConfig``'s
+    docstring; the same reasoning applies, via
+    ``Secrets.sonarr_apikey``/``AUTOPOSTER_SONARR_APIKEY``.
+    """
+
+    enabled: bool = False
+    base_url: str = ""
+    add_existing: bool = False
+    plex_path: str = "/mnt/Media"
+    arr_path: str = "/mnt/media"
+    quality_profile: str = ""
+    monitor: bool = True
+    season_folder: bool = True
+    series_type: str = "standard"
+
+
+class ArrSyncConfig(BaseModel):
+    """The safety net that catches any Plex item this service has never
+    processed, plus the cadence for the Radarr/Sonarr registration pass.
+
+    Runs whenever ``enabled`` is true, independently of whether either
+    service is configured -- with both ``radarr.enabled`` and
+    ``sonarr.enabled`` false, a pass still enqueues unknown items, it just
+    registers nothing with either service.
+    """
+
+    enabled: bool = True
+    hours: int = 24
+    # The safety valve, same reasoning as scheduler.drift_batch_size: a first
+    # run against a fresh database can find every item unknown.
+    batch_size: int = 500
+
+
 class Config(BaseModel):
     assets_root: Path
     manual_assets_root: Path
@@ -314,4 +384,7 @@ class Config(BaseModel):
     cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     adopt: AdoptConfig = Field(default_factory=AdoptConfig)
+    radarr: RadarrConfig = Field(default_factory=RadarrConfig)
+    sonarr: SonarrConfig = Field(default_factory=SonarrConfig)
+    arr_sync: ArrSyncConfig = Field(default_factory=ArrSyncConfig)
     version: str = ""

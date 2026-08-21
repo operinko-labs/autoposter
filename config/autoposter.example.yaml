@@ -76,6 +76,32 @@ scheduler:
   # cleanup_apply is not a setting here -- see cleanup.apply above, which
   # already governs whether the cleanup pass writes (dry run by default)
 
+radarr:
+  enabled: false # off until base_url is set and AUTOPOSTER_RADARR_APIKEY is exported
+  base_url: http://radarr.media.svc.cluster.local
+  add_existing: false # register Plex movies Radarr does not know about, in place, without downloading
+  plex_path: /mnt/Media # Plex mounts the library here (capital M)
+  arr_path: /mnt/media # Radarr sees the same files here (lowercase) -- case-sensitive, see arr/paths.py
+  quality_profile: HD Bluray + WEB
+  monitor: true
+  minimum_availability: announced
+
+sonarr:
+  enabled: false # off until base_url is set and AUTOPOSTER_SONARR_APIKEY is exported
+  base_url: http://sonarr.media.svc.cluster.local
+  add_existing: false # register Plex shows Sonarr does not know about, in place, without downloading
+  plex_path: /mnt/Media
+  arr_path: /mnt/media
+  quality_profile: WEB-1080p
+  monitor: true
+  season_folder: true
+  series_type: standard
+
+arr_sync:
+  enabled: true # the safety net (enqueue unrecorded Plex items) runs even when both services above are disabled
+  hours: 24 # Radarr/Sonarr registration cadence
+  batch_size: 500 # safety-net items enqueued per pass; same safety valve as scheduler.drift_batch_size
+
 artwork:
   use_logo: true
   logo_language_order: [en, fi]
