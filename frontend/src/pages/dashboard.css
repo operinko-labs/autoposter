@@ -1,0 +1,86 @@
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.stat {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.stat-value {
+  color: var(--text-strong);
+  font-size: 26px;
+  line-height: 1.2;
+}
+
+.stat-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-running {
+  border-top-color: var(--accent);
+}
+
+.stat-done {
+  border-top-color: var(--ok);
+}
+
+.stat-failed,
+.stat-parked {
+  border-top-color: var(--error);
+}
+
+.dashboard-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.dashboard-columns .panel {
+  padding: 16px 0 0;
+}
+
+.dashboard-columns h2 {
+  padding: 0 16px;
+}
+
+.pill {
+  display: inline-block;
+  border-radius: 10px;
+  padding: 1px 9px;
+  font-size: 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.pill-ok,
+.pill-success,
+.pill-accepted,
+.pill-done {
+  background: color-mix(in srgb, var(--ok) 22%, transparent);
+  color: var(--ok);
+}
+
+.pill-error,
+.pill-failed,
+.pill-rejected,
+.pill-parked {
+  background: color-mix(in srgb, var(--error) 22%, transparent);
+  color: var(--error);
+}
+
+.pill-skipped,
+.pill-ignored {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--warn);
+}

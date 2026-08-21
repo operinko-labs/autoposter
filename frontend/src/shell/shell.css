@@ -1,0 +1,93 @@
+.app-shell {
+  display: flex;
+  min-height: 100%;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 var(--sidebar-width);
+  width: var(--sidebar-width);
+  background: var(--bg-elevated);
+  border-right: 1px solid var(--border);
+}
+
+.sidebar-brand {
+  padding: 18px 16px;
+  color: var(--text-strong);
+  font-size: 16px;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-nav {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  flex: 1;
+}
+
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  color: var(--text);
+  /* The active marker is a left border in the *arr layout. Transparent
+   * rather than absent so the label does not shift by 3px when it lights. */
+  border-left: 3px solid transparent;
+  text-decoration: none;
+}
+
+.sidebar-link:hover {
+  background: var(--surface-hover);
+  color: var(--text-strong);
+  text-decoration: none;
+}
+
+.sidebar-link.active {
+  background: var(--surface);
+  border-left-color: var(--accent);
+  color: var(--text-strong);
+}
+
+.sidebar-link svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  flex: 0 0 16px;
+}
+
+.sidebar-logout {
+  margin: 12px;
+  background: transparent;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  padding: 24px 28px;
+  overflow-x: auto;
+}
+
+.page-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.page-error {
+  border: 1px solid var(--error);
+  border-radius: var(--radius);
+  color: var(--error);
+  padding: 10px 14px;
+  margin-bottom: 16px;
+}
+
+.empty {
+  color: var(--text-muted);
+  padding: 24px;
+  text-align: center;
+}

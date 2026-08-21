@@ -1,0 +1,43 @@
+.attribution {
+  margin-bottom: 16px;
+}
+
+.provider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.provider:last-of-type {
+  border-bottom: none;
+}
+
+/* TMDB's terms require their logo to be less prominent than this
+ * application's own branding. The sidebar wordmark is 16px on a 210px
+ * column; this is a 72px image at reduced opacity, well under that. */
+.provider-logo {
+  flex: 0 0 auto;
+  width: 72px;
+  height: auto;
+  opacity: 0.85;
+}
+
+.provider-notice {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  max-width: 70ch;
+}
+
+.config-dump {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 0;
+  max-height: 460px;
+  overflow: auto;
+  white-space: pre;
+}
