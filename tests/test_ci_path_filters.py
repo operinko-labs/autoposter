@@ -56,6 +56,9 @@ VERIFIED_NON_SOURCE = [
     "frontend/index.html",
     "frontend/src/main.tsx",
     "frontend/src/pages/Settings.tsx",
+    # tests/test_toolchain_versions.py holds the developer database to the same
+    # PostgreSQL patch CI runs, so a change here is a change the suite checks.
+    "docker-compose.yml",
 ]
 
 
