@@ -290,6 +290,14 @@ jobs:
         # tests/test_attribution_present.py does -- a path the /assets mount
         # does not claim comes back as HTML with a 200, which asserting on the
         # status code alone would not catch.
+        #
+        # TMDB's required notice is checked here as well as in
+        # tests/test_attribution_present.py, because that suite reads the
+        # `frontend/dist` the *runner* built at "Build the frontend" -- same
+        # source and same pinned Node, so equivalent in practice, but still one
+        # artefact standing in for another. This job already has each script's
+        # body in hand, so proving the licence condition against the bundle
+        # that ships costs one assertion.
         run: |
           docker run --rm ${{ env.IMAGE_NAME }}:ci python -c "
           import asyncio, os, re
@@ -297,6 +305,11 @@ jobs:
           from fastapi import FastAPI
           from httpx import ASGITransport, AsyncClient
           from autoposter.api.spa import mount_spa, spa_dist
+
+          # Verbatim from TMDB's attribution requirements, and identical to
+          # TMDB_NOTICE in tests/test_attribution_present.py.
+          notice = ('This product uses TMDB and the TMDB APIs but is not '
+                    'endorsed, certified, or otherwise approved by TMDB.')
 
           dist = spa_dist()
           assert dist == Path(os.environ['AUTOPOSTER_SPA_DIST']), dist
@@ -313,6 +326,7 @@ jobs:
                   assert index.headers['content-type'].startswith('text/html'), index.headers
                   scripts = re.findall(r'[\"\'](/assets/[^\"\']+\.js)[\"\']', index.text)
                   assert scripts, f'the shell references no bundled script: {index.text!r}'
+                  served = [index.text]
                   for path in scripts:
                       asset = await client.get(path)
                       assert asset.status_code == 200, f'{path}: {asset.status_code}'
@@ -320,6 +334,13 @@ jobs:
                       assert not content_type.startswith('text/html'), (
                           f'{path} was answered with the SPA shell, not the file'
                       )
+                      served.append(asset.text)
+                  assert any(notice in text for text in served), (
+                      'the image serves a bundle without TMDB required notice, '
+                      'which their terms make a condition of using their API. '
+                      'Either the Settings page was reworded or nothing routes '
+                      'to it in the bundle this image ships'
+                  )
                   print('SPA served from', dist, 'with', len(scripts), 'script(s)')
 
           asyncio.run(main())
