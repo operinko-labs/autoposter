@@ -19,10 +19,26 @@ from urllib.parse import urlsplit, urlunsplit
 
 REPO_ROOT = Path(__file__).parent.parent
 
-MAINTENANCE_DB_URL = os.environ.get(
-    "AUTOPOSTER_MAINTENANCE_DATABASE_URL",
-    "postgresql://autoposter:autoposter@localhost:5433/postgres",
-)
+
+def _required_env(name: str) -> str:
+    """An environment variable the suite cannot run without.
+
+    No fallback: a hardcoded ``localhost:5433`` default here once happened to
+    match one developer's own PostgreSQL, so a misconfigured environment
+    connected anyway instead of saying so. The sanctioned way to run this
+    suite is the container, which sets this.
+    """
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(
+            f"{name} is not set. Run the suite in the container instead: "
+            "`docker compose run --rm test pytest` (see docker-compose.yml's "
+            "`test` service, which sets it)."
+        )
+    return value
+
+
+MAINTENANCE_DB_URL = _required_env("AUTOPOSTER_MAINTENANCE_DATABASE_URL")
 SCRATCH_DB_NAME = "autoposter_migrations_check"
 
 
@@ -43,24 +59,22 @@ SCRATCH_DB_URL = _scratch_url(SCRATCH_DB_NAME)
 
 
 def _unreachable_postgres() -> None:
-    """Skip on a machine with no database; fail in CI, which has one.
+    """Always a hard failure, never a skip.
 
-    Same reasoning as tests/conftest.py's `imagemagick` fixture and
-    tests/test_attribution_present.py: these two are the only check that a
-    migration matches the models, and the whole point of them is the
-    item_facts incident above. A green skip because
-    AUTOPOSTER_MAINTENANCE_DATABASE_URL stopped being exported -- it comes
-    from .forgejo/scripts/wait_for_postgres.py, not from the workflow -- would
-    look exactly like a pass.
+    These two are the only check that a migration matches the models, and the
+    whole point of them is the item_facts incident above. A skip here once
+    hid exactly the defect they exist to catch -- multiple alembic heads --
+    from a developer running the full suite in the containerised dev
+    environment, where PostgreSQL should always be reachable
+    (docker-compose.yml's `test` service depends on it being healthy). If it
+    is not, that is a real problem to see, not a reason to report green
+    having verified nothing.
     """
-    message = f"postgres is not reachable at {MAINTENANCE_DB_URL}"
-    if os.environ.get("CI", "").lower() in {"1", "true", "yes"}:
-        pytest.fail(
-            f"{message}, so nothing verified that the migrations match the "
-            "models. CI starts PostgreSQL and exports its URLs; that must "
-            "have broken."
-        )
-    pytest.skip(f"{message}. This is a hard failure in CI.")
+    pytest.fail(
+        f"postgres is not reachable at {MAINTENANCE_DB_URL}, so nothing "
+        "verified that the migrations match the models. Run the suite in "
+        "the container: `docker compose run --rm test pytest`."
+    )
 
 
 async def _postgres_reachable() -> bool:

@@ -11,10 +11,25 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from autoposter.config.loader import load_config
 from autoposter.db.base import Base
 
-TEST_DB_URL = os.environ.get(
-    "AUTOPOSTER_TEST_DATABASE_URL",
-    "postgresql+asyncpg://autoposter:autoposter@localhost:5433/autoposter",
-)
+def _required_env(name: str) -> str:
+    """An environment variable the suite cannot run without.
+
+    No fallback: a hardcoded ``localhost:5433`` default here once happened to
+    match one developer's own PostgreSQL, so a misconfigured environment
+    connected anyway instead of saying so. The sanctioned way to run this
+    suite is the container, which sets this.
+    """
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(
+            f"{name} is not set. Run the suite in the container instead: "
+            "`docker compose run --rm test pytest` (see docker-compose.yml's "
+            "`test` service, which sets it)."
+        )
+    return value
+
+
+TEST_DB_URL = _required_env("AUTOPOSTER_TEST_DATABASE_URL")
 
 EXAMPLE_CONFIG = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
