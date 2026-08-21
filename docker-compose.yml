@@ -70,11 +70,9 @@ services:
       - frontend_node_modules:/frontend/node_modules
     ports:
       - "5173:5173"
-    # `npm ci` deletes node_modules wholesale every run, so doing it on every
-    # `up` would cost half a minute each time. Install only into an empty
-    # volume; `docker compose run --rm web npm ci` forces it when a dependency
-    # actually changes.
-    command: sh -c "[ -d node_modules/vite ] || npm ci; npm run dev -- --host 0.0.0.0"
+    # The lazy install itself lives in the webdev stage's ENTRYPOINT, which
+    # runs ahead of this command whatever it is -- see the Dockerfile for why.
+    command: npm run dev -- --host 0.0.0.0
 
   # The application, with hot reload. Unlike `test` and `web`, this one needs
   # credentials -- exactly as production does. Copy .env.example to .env and

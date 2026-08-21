@@ -8,6 +8,7 @@ configuration file right up until someone runs the dev server, which is how it
 survived in this repository until 2026-08-21.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -45,6 +46,75 @@ def test_the_runtime_stage_is_the_last_one():
         f"the last stage in the Dockerfile is {stages[-1]!r}, not 'runtime'; "
         "`docker build .` builds the last stage and the image job passes no "
         "`target:`, so this is what would be pushed to Harbor as production"
+    )
+
+
+def _stage_lines(name: str) -> list[str]:
+    """The Dockerfile lines belonging to the stage named ``name``, in order."""
+    lines = DOCKERFILE.read_text(encoding="utf-8").splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        match = re.match(r"FROM\s+\S+\s+AS\s+(\S+)\s*$", line)
+        if start is None and match and match.group(1) == name:
+            start = i + 1
+            continue
+        if start is not None and re.match(r"FROM\s+\S+", line):
+            return lines[start:i]
+    assert start is not None, f"no stage named {name!r} in the Dockerfile"
+    return lines[start:]
+
+
+def test_the_webdev_entrypoint_installs_and_forwards_the_command():
+    """The lazy install must survive a ``command:`` override, not just a bare ``up``.
+
+    docker-compose.yml's `web` service mounts a named volume at
+    /frontend/node_modules, and README documents `docker compose run --rm web
+    npm run build` / `npm test` -- both of which replace the service's
+    `command:` outright. Only an ENTRYPOINT in *exec* (JSON array) form still
+    runs ahead of a replaced command; a shell-form ENTRYPOINT would ignore
+    whatever docker compose run passes, and no ENTRYPOINT at all is exactly
+    the regression c0e7589 fixed (`sh: tsc: not found` / `sh: vitest: not
+    found` against a fresh clone's empty volume). This does not run Docker: it
+    proves the Dockerfile *declares* the install-then-exec structure, not that
+    `npm ci` actually succeeds inside a real container.
+    """
+    text = "\n".join(_stage_lines("webdev"))
+
+    entrypoint_match = re.search(r"^ENTRYPOINT\s+(\[.*\])\s*$", text, re.MULTILINE)
+    assert entrypoint_match, (
+        "the webdev stage declares no ENTRYPOINT; without one, `docker compose "
+        "run --rm web <cmd>` replaces `command:` outright and never installs "
+        "into the empty named volume"
+    )
+    entrypoint_argv = json.loads(entrypoint_match.group(1))
+    assert isinstance(entrypoint_argv, list) and entrypoint_argv, (
+        f"ENTRYPOINT {entrypoint_match.group(1)!r} must be exec (JSON array) "
+        "form; shell form ignores the command docker compose run passes, so "
+        "the install would run but the user's command never would"
+    )
+    script_path = entrypoint_argv[0]
+
+    # The script's actual content, as written into the image by the RUN that
+    # creates it -- not just that some RUN mentions the path.
+    write_match = re.search(
+        r"RUN printf .*?> " + re.escape(script_path), text, re.DOTALL
+    )
+    assert write_match, (
+        f"found no `RUN printf ... > {script_path}` writing the script "
+        "ENTRYPOINT points at, so its contents can't be verified"
+    )
+    script = "\n".join(re.findall(r"'([^']*)'", write_match.group(0)))
+
+    assert re.search(r"\[ -d node_modules/\S+ \]\s*\|\|\s*npm ci", script), (
+        f"the entrypoint script ({script!r}) does not guard `npm ci` behind a "
+        "check for an already-populated node_modules -- either the lazy "
+        "install is gone, or it now reinstalls unconditionally on every `up`"
+    )
+    last_line = script.strip().splitlines()[-1].strip()
+    assert last_line == 'exec "$@"', (
+        f"the entrypoint script's last line is {last_line!r}, not `exec "
+        '"$@"`; without that, the command docker compose run/up passes would '
+        "never actually execute"
     )
 
 
