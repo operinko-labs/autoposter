@@ -11,7 +11,10 @@ import "@testing-library/jest-dom/vitest";
  * as the value to restore and `unstubGlobals` puts the guard back afterwards.
  */
 globalThis.fetch = (async (input: RequestInfo | URL) => {
-  const url = typeof input === "string" ? input : input.toString();
+  // `Request.prototype.toString()` yields the useless "[object Request]" --
+  // it does not override `Object.prototype.toString`. `input.url` is the
+  // actual address, which is the whole point of this diagnostic.
+  const url = input instanceof Request ? input.url : String(input);
   throw new Error(
     `tests must not make real network calls; fetch("${url}") was attempted. ` +
       "Stub it with vi.stubGlobal(\"fetch\", ...).",
