@@ -21,12 +21,30 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+class FakePlexItem:
+    """The live object the badge stage fetches, carrying only what
+    media_info_from_plex() reads. `.media` is populated because its absence
+    makes that function call reload(), a blocking request to a Plex server
+    no test has."""
+
+    def __init__(self, file_path):
+        part = type("Part", (), {"streams": [], "file": file_path})()
+        self.media = [type("Media", (), {"parts": [part], "videoResolution": "1080",
+                                         "audioCodec": "eac3", "audioChannels": 6})()]
+        self.duration = 4845912
+        self.seasonNumber = None
+        self.episodeNumber = None
+
+
 class FakePlex:
     def __init__(self, item):
         self._item = item
 
     async def resolve(self, intent):
         return self._item
+
+    async def fetch_item(self, rating_key):
+        return FakePlexItem(self._item.file_path)
 
 
 class FakeProvider:
@@ -75,6 +93,13 @@ async def test_movie_intent_writes_poster_and_background(config, session, tmp_pa
     poster = config.assets_root / "Movies" / "Dune Part Two (2024)" / "poster.jpg"
     assert poster.exists()
     assert poster.stat().st_size > 0
+
+    # The badge stage swallows its own failures, so "no exception" proves
+    # nothing about it -- assert it ran. The example config badges but does
+    # not upload, so the poster is composed and the upload is skipped.
+    poster_render = next(r for r in renders if r.art_kind == "poster")
+    assert poster_render.badge_fingerprint is not None
+    assert poster_render.upload_status == "skipped"
 
 
 async def test_second_run_is_a_no_op(config, session):

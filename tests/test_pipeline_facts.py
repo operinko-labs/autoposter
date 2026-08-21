@@ -280,3 +280,26 @@ async def test_metadata_runs_before_the_artifact_loop(session, monkeypatch):
     )
 
     assert order == ["metadata", "artifact:poster", "artifact:background"]
+
+
+async def test_a_plex_without_fetch_item_is_not_swallowed(session, monkeypatch):
+    """A `plex` missing fetch_item is a wiring bug, not the runtime failure
+    the badge stage contains: it must propagate rather than become a WARNING
+    that resurfaces later as an unrelated error."""
+
+    class PlexWithoutFetchItem:
+        async def resolve(self, intent):
+            return resolved()
+
+    async def fake_render_artifact(session, config, http, item, art_kind, providers):
+        return object()
+
+    monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
+    config = load_config(EXAMPLE)
+    assert config.badges.enabled, "the badge stage must be reached for this to mean anything"
+
+    with pytest.raises(AttributeError, match="fetch_item"):
+        await pipeline.process_item(
+            session, config, None, PlexWithoutFetchItem(), [],
+            RenderIntent(kind="movie", title="X", tmdb_id=1),
+        )

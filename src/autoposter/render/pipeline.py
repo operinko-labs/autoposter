@@ -731,9 +731,15 @@ async def process_item(
     media_item = None
     plex_item = None
     if config.operations.enabled and tmdb_facts is not None:
+        # Bound outside the try on purpose: a `plex` that has no fetch_item at
+        # all is a wiring bug, not the runtime failure this block contains, and
+        # the except below would demote it to a WARNING and carry on. That is
+        # exactly how a test double missing the method stayed hidden until it
+        # resurfaced as an unrelated error much later.
+        fetch_item = plex.fetch_item
         try:
             media_item = await _upsert_media_item(session, item)
-            plex_item = await plex.fetch_item(item.rating_key)
+            plex_item = await fetch_item(item.rating_key)
             await apply_metadata(
                 session, config, media_item.id, item, plex_item, tmdb_facts, mdblist
             )
@@ -757,11 +763,12 @@ async def process_item(
         )
 
     if config.badges.enabled:
+        fetch_item = plex.fetch_item  # outside the try; see the block above
         try:
             if media_item is None:
                 media_item = await _upsert_media_item(session, item)
             if plex_item is None:
-                plex_item = await plex.fetch_item(item.rating_key)
+                plex_item = await fetch_item(item.rating_key)
             # The persisted row, not the in-memory GatheredFacts from the
             # metadata-operations block above: a partial gather this pass
             # (e.g. only a new critic rating) must not blank out fields a
