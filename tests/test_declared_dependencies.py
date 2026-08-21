@@ -90,3 +90,20 @@ def test_the_audit_can_actually_fail():
     imported = _imported()
     assert "PIL" in imported, "the AST walk stopped seeing Pillow's import"
     assert "sqlalchemy" in imported
+
+
+def test_the_lint_rule_set_is_pinned_explicitly():
+    """Ruff's default rule set is not a stable contract.
+
+    With no explicit `select`, ruff 0.15.13 (local) found nothing while
+    ruff 0.16.4 (CI, resolved from `ruff>=0.8`) found 127 errors in exactly
+    the same code -- because the defaults broadened between them. Pinning the
+    selection makes lint results a property of this repository rather than of
+    whichever ruff a resolver happened to pick.
+    """
+    data = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    select = data.get("tool", {}).get("ruff", {}).get("lint", {}).get("select")
+    assert select, (
+        "pyproject.toml has no [tool.ruff.lint] select, so lint results depend "
+        "on the ruff version CI happens to install"
+    )
