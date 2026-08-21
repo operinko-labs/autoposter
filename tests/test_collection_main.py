@@ -69,6 +69,18 @@ class FakeSection:
         return collection
 
 
+class BreaksOnTheLeftoversScan(FakeSection):
+    """The reconcile itself succeeds and its Plex writes land; only the
+    diagnostic leftovers scan afterwards fails -- a collection deleted
+    mid-pass, a timeout, a 500. The scan is the only caller that passes a
+    ``label`` filter, so failing on that alone isolates it."""
+
+    def collections(self, label=None, **kw):
+        if label is not None:
+            raise RuntimeError("simulated failure listing collections by label")
+        return super().collections(**kw)
+
+
 class BreaksOnSecondLibrary:
     """``server.library.section()`` returns a section for known names and
     raises for anything else -- simulating a Plex read failure partway
@@ -123,6 +135,31 @@ async def test_a_failure_on_the_second_library_does_not_roll_back_the_first(
             "the first library's row must already be committed -- not rolled back "
             "by a failure on the second -- or a bare commit() at the end of the "
             "loop would never run at all"
+        )
+
+
+async def test_a_failed_leftovers_scan_does_not_discard_the_librarys_rows(
+    session, session_factory
+):
+    """The leftovers report is diagnostic and runs after the library's Plex
+    writes have already landed. If its failure reached the per-library
+    handler, the rollback there would throw away every ``ManagedCollection``
+    row for that library -- and the next pass, seeing no rows, would rewrite
+    the whole library. That is precisely what the per-library commit
+    boundary exists to prevent."""
+    server = BreaksOnSecondLibrary({"Movies": BreaksOnTheLeftoversScan({"R", "17"})})
+
+    async with httpx.AsyncClient() as http:
+        summary = await reconcile_libraries(session, server, _config(["Movies"]), http)
+
+    assert summary_has_failure(summary) is False, (
+        "a failed diagnostic scan must not be reported as a failed library"
+    )
+
+    async with session_factory() as verify:
+        rows = (await verify.execute(select(ManagedCollection))).scalars().all()
+        assert any(r.title == "Age 17+ Movies" and r.library == "Movies" for r in rows), (
+            "the library's rows must survive a read failure in the leftovers scan"
         )
 
 
