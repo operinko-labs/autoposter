@@ -257,3 +257,17 @@ def test_the_dockerfile_ships_the_built_spa():
         "the image does not point AUTOPOSTER_SPA_DIST at the copied bundle, so "
         "spa_dist() falls back to a path relative to site-packages and finds nothing"
     )
+    # `npm ci` installs exactly what package-lock.json pins and fails on a
+    # mismatch; `npm install` would quietly resolve something newer and
+    # rewrite the lockfile instead. A swap from one to the other would leave
+    # the two assertions above green while silently reintroducing the kind of
+    # version skew (ruff, Pillow, fastapi) that has broken this repo three
+    # times, so it has to be pinned here explicitly. Checked against the
+    # actual command rather than a bare substring: the comment above `RUN npm
+    # ci` in the Dockerfile itself says the words "npm install", which a bare
+    # `"npm install" not in dockerfile` would trip over.
+    assert "npm ci" in dockerfile, "the frontend stage must install with npm ci, not npm install"
+    assert "RUN npm install" not in dockerfile, (
+        "npm install would ignore package-lock.json and rewrite it, defeating "
+        "the point of a committed lockfile"
+    )
