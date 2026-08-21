@@ -66,6 +66,9 @@ async def reconcile_libraries(
                 session, section, name, library_type,
                 config.collections.ownership_label,
                 dry_run=not config.collections.apply_to_plex,
+                adopt=config.collections.adopt,
+                adopt_from=config.collections.adopt_from,
+                adopt_removes_prior_label=config.collections.adopt_removes_prior_label,
             )
 
             if config.collections.charts or config.collections.awards:

@@ -14,7 +14,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.collections.reconcile import has_label
+from autoposter.collections.reconcile import resolve_collision
 from autoposter.db.models import ManagedCollection
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,9 @@ async def reconcile_list_collection(
     sort: str = "custom",
     dry_run: bool = True,
     existing: dict | None = None,
+    adopt: bool = False,
+    adopt_from: list[str] | None = None,
+    adopt_removes_prior_label: bool = False,
 ) -> list[str]:
     """Bring one list collection in line with ``items`` (already in source order).
 
@@ -86,13 +89,14 @@ async def reconcile_list_collection(
         existing = {c.title: c for c in section.collections()}
     collection = existing.get(title)
 
+    claim_action = None
     if collection is not None:
-        collection.reload()
-        if not has_label(collection, label):
-            return [
-                "conflict: %r exists without the %r label; leaving it untouched"
-                % (title, label)
-            ]
+        ok, message = resolve_collision(
+            collection, label, adopt, adopt_from or [], adopt_removes_prior_label, dry_run,
+        )
+        if not ok:
+            return [message] if message else []
+        claim_action = message
 
     record = (
         await session.execute(
@@ -110,7 +114,7 @@ async def reconcile_list_collection(
         return ["%s %r with %d item(s)" % (
             "would update" if collection else "would create", title, len(items))]
 
-    actions: list[str] = []
+    actions: list[str] = [claim_action] if claim_action else []
     if collection is None:
         collection = section.createCollection(title=title, items=items, smart=False)
         existing[title] = collection

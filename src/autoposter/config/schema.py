@@ -209,6 +209,17 @@ class CollectionsConfig(BaseModel):
     charts: bool = True
     # Oscars winner list collections (movies only).
     awards: bool = True
+    # Take over collections created by a tool this service replaces. Off by
+    # default: it is a Plex write against collections we did not create, and
+    # it should happen once, deliberately, as part of cutover.
+    adopt: bool = False
+    # Labels belonging to tools being replaced. A collection carrying one of
+    # these, whose title this service manages, is eligible to be claimed. A
+    # collection with no label is never eligible -- those are the operator's.
+    adopt_from: list[str] = Field(default_factory=lambda: ["Kometa"])
+    # Strip the prior tool's label once claimed. Keeping it is reversible;
+    # removing it is not, so it is opt-in.
+    adopt_removes_prior_label: bool = False
 
 
 class CleanupConfig(BaseModel):
