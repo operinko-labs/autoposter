@@ -81,6 +81,15 @@ and language badges onto the base artwork and uploading the result to Plex.
   `upload_status`), so the label is not needed for this project's own
   purposes, but it is visible and filterable in Plex, so it is offered rather
   than silently dropped.
+- `adopt_from_plex` (default `true`) — before uploading a render this service
+  has no `badge_fingerprint` for (after adoption, after a database restore, or
+  anything never badged here), read the EXIF provenance off the artwork Plex is
+  already serving. If it records exactly the fingerprint about to be uploaded,
+  the correct image is already there: the fingerprint is recorded, the render
+  is marked uploaded, and both the composite and the upload are skipped. Costs
+  one small HTTP Range request per such render — one, not two, for JPEG artwork
+  or for a WebP whose header says it carries no EXIF at all. Entirely
+  best-effort: any failure reading provenance falls through to a normal upload.
 
 See `config/autoposter.example.yaml` for the full block.
 
@@ -370,10 +379,25 @@ Run the cutover in this order:
    than expected, stop and find out why (wrong `assets_root`, wrong
    `library_folders` setting, a library not yet fully populated) before
    proceeding — this report is exactly what it exists to catch.
+
+   `not rendered by this config` is a separate count and is *not* a gap: those
+   are art kinds this configuration would never produce anyway — a kind with
+   `enabled: false` (e.g. `artwork.background`), or a title card whose episode
+   title matches a `skip_tba` word. They are excluded from `missing_assets`
+   deliberately, so that number stays a number worth acting on.
 2. **Set `adopt.apply: true` and run it again.** This time it writes the
    `media_items`/`renders` rows. The numbers in the report should be
    unchanged from the dry run; if they differ, something in the library or
    asset tree changed between the two runs.
+
+   Flipping this setting is safe for the rows just written. `config.version`,
+   which is the first component of every render fingerprint, is derived from
+   the *render-affecting* settings only — the `artwork:` block,
+   `library_folders`, and the asset/font/overlay roots — so editing `adopt`,
+   `scheduler`, `cleanup`, `collections`, `operations`, `badges`, worker or
+   connection settings, or adding a comment, leaves every adopted fingerprint
+   valid. Editing anything under `artwork:` or repointing a root does not, and
+   will re-render the library; make those changes *before* adopting, not after.
 3. **Repoint the Radarr and Sonarr webhooks** at this service (see below) and
    **stop the old tools** (Posterizarr, Kometa) so they stop writing to the
    same asset tree and Plex fields this service now owns.
@@ -388,9 +412,37 @@ reason, which could be months. Instead, an adopted item keeps its expensive
 *base* artwork — that is what adoption exists to preserve — and re-badges on
 its next pass, which costs one composite and one upload rather than a full
 re-render, and produces badge artwork this service actually owns and can
-track a fingerprint for. `scheduler.drift_batch_size` (see below) throttles
-how fast that re-badging works through the library after cutover, the same
-way it throttles the ratings-drift sweep.
+track a fingerprint for.
+
+Artwork this service has uploaded before is recognised without a re-upload:
+`badges.adopt_from_plex` (default `true`) reads our own EXIF provenance back
+off whatever Plex is currently serving and, when it records exactly the
+fingerprint about to be composed, marks the render uploaded and skips the
+work. That covers a database restore or a re-run against a library this
+service already badged; it does **not** cover cutover from the old tools,
+whose overlays carry no provenance of ours. Turning it off costs one
+redundant upload per affected item, never correctness.
+
+### What the drift sweep will and will not re-badge
+
+`scheduler.drift_batch_size` throttles how fast the ratings-drift sweep works
+through the library, but the sweep does **not** reach every adopted artifact:
+
+- `sweep_stale_facts` selects only `media_items` whose `kind` is `movie` or
+  `show`, and
+- a pass over one item renders only the art kinds that item's own kind
+  implies — a show gets its poster and background, and nothing else.
+
+So a show's drift pass never descends into its seasons or episodes. On this
+library that leaves roughly **2,800 adopted season posters and 13,000 adopted
+title cards that the drift sweep will never re-badge**; they keep the
+replaced tool's overlays indefinitely, until a Sonarr webhook (import,
+rename, series add) happens to touch that season or episode and put it
+through the pipeline itself. Movie posters/backgrounds and show
+posters/backgrounds do get re-badged on the sweep's cadence.
+
+If you want the season and episode artwork re-badged sooner than Sonarr
+activity will manage, drive it by hand rather than waiting for the sweep.
 
 See `config/autoposter.example.yaml` for the full block.
 
