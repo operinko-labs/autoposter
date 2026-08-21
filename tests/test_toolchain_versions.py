@@ -11,7 +11,7 @@ nothing verified the interpreter production actually runs.
 
 Six files declare the toolchain, and they have to agree:
 
-- ``Dockerfile`` -- the Python and Node that actually ship.
+- ``Dockerfile`` -- the Python and Node that actually ship, across every stage.
 - ``.forgejo/workflows/ci.yml`` -- the Python the suite is proven on, the Node
   the bundle CI typechecks is built with, and the PostgreSQL the suite and the
   migration check run against.
@@ -103,16 +103,29 @@ ANNOTATED_VERSIONS = {
 
 
 def _dockerfile_version(image: str) -> str:
-    """The version from the one ``FROM <image>:<version>-<variant>`` line."""
+    """The version every ``FROM <image>:<version>-<variant>`` line names.
+
+    Development stages made this plural: two ``FROM node:`` lines now exist,
+    one building the bundle and one running the vite dev server. Asserting
+    that they agree is strictly stronger than the previous assertion that
+    there was only ever one of them, and it is what lets stages multiply
+    without the pin quietly forking between them.
+    """
     tags = re.findall(
         rf"^FROM {re.escape(image)}:(\S+)",
         DOCKERFILE.read_text(encoding="utf-8"),
         re.MULTILINE,
     )
-    assert len(tags) == 1, f"expected exactly one `FROM {image}:` line, found {tags}"
-    version, _, variant = tags[0].partition("-")
-    assert variant, f"`FROM {image}:{tags[0]}` names no image variant"
-    return version
+    assert tags, f"no `FROM {image}:` line in the Dockerfile"
+    for tag in tags:
+        assert tag.partition("-")[2], f"`FROM {image}:{tag}` names no image variant"
+    versions = {tag.partition("-")[0] for tag in tags}
+    assert len(versions) == 1, (
+        f"the Dockerfile builds on more than one {image}: {sorted(versions)}; "
+        "every stage must name the same exact patch, or what a development "
+        "stage produces is not what the runtime stage ships"
+    )
+    return versions.pop()
 
 
 def _workflow() -> dict:

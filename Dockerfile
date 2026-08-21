@@ -23,6 +23,15 @@ COPY frontend/ ./
 # image build rather than shipping a bundle nothing typechecked.
 RUN npm run build
 
+# The vite dev server for `docker compose up web`. Deliberately bare: both the
+# frontend/ tree and node_modules arrive at run time, one as a bind mount and
+# one as a named volume, so anything copied in here would only be shadowed.
+# It exists so that the Node version stays declared in this file alone, rather
+# than being repeated as an `image:` tag in docker-compose.yml where nothing
+# would hold it to the same patch.
+FROM node:26.7.0-alpine AS webdev
+WORKDIR /frontend
+
 # Alpine, because its ImageMagick is built Q16-HDRI — the same configuration the
 # Posterizarr deployment this service replaces runs (7.1.2-29 Q16-HDRI). Debian's
 # package is Q16 without HDRI, which changes internal pixel maths: the same render
@@ -33,7 +42,12 @@ RUN npm run build
 # The patch is pinned, and .forgejo/workflows/ci.yml's PYTHON_VERSION and
 # pyproject.toml's requires-python are held to it, so the suite is proven on
 # the interpreter that actually ships rather than a neighbouring one.
-FROM python:3.14.7-alpine
+#
+# Split out as its own stage so `dev` inherits exactly this ImageMagick rather
+# than approximating it. tests/test_golden.py and tests/test_pipeline_e2e.py
+# skip without a Q16-HDRI build, which is every development machine here; from
+# `dev` they run against the same build production uses.
+FROM python:3.14.7-alpine AS pybase
 
 # imagemagick's format support is split into subpackages on Alpine. jpeg is not
 # optional here — every asset this service writes is a .jpg. svg is needed because
@@ -48,6 +62,23 @@ RUN apk add --no-cache \
  && magick -version
 
 WORKDIR /app
+
+# Development only. Never reachable from `docker build .`, which targets the
+# last stage: `runtime` does not depend on this one, so BuildKit does not build
+# it unless it is asked for by name. tests/test_dev_environment.py asserts that
+# ordering, because a dev stage that became the default target would be built,
+# verified and pushed as production with every existing check still passing.
+#
+# Installed editable, and the source is copied only so hatchling has something
+# to build against: the editable install records a path pointing at /app/src,
+# which docker-compose.yml then replaces with a bind mount of the host tree, so
+# an edit needs no rebuild.
+FROM pybase AS dev
+COPY pyproject.toml ./
+COPY src ./src
+RUN pip install --no-cache-dir -e ".[dev]"
+
+FROM pybase AS runtime
 COPY pyproject.toml ./
 COPY src ./src
 # Remove pip once the package is installed. Nothing at runtime needs it --
