@@ -1,7 +1,20 @@
 "on":
   push:
     branches: [main]
+    # Skip only what nothing verifies. Deliberately NOT listed here, because
+    # the suite genuinely reads them: Dockerfile (test_assets_root asserts it
+    # sets AUTOPOSTER_ASSETS_ROOT), pyproject.toml (test_declared_dependencies
+    # walks src/ imports against its dependency list) and
+    # config/autoposter.example.yaml (test_example_config_matches_schema
+    # checks every key exists in the schema). A change to any of those must
+    # still run CI. tests/test_ci_path_filters.py enforces that.
+    paths-ignore: &docs_only
+      - 'docs/**'
+      - '**/*.md'
+      - '.gitignore'
+      - 'LICENSE'
   pull_request:
+    paths-ignore: *docs_only
   workflow_dispatch:
 
 concurrency:
