@@ -53,6 +53,28 @@ class ArrClient:
                 ids.add(str(value))
         return ids
 
+    async def existing_paths(self) -> dict[str, dict]:
+        """Every path this service already has registered, normalised (no
+        trailing slash, case preserved), mapped to that entry's title and
+        external id.
+
+        Comparing by id alone misses the case where the service holds the
+        right folder under the *wrong* id -- a different item entirely. The
+        sync uses this to catch that before ever adding, by checking a
+        mapped Plex path against what the service already has on disk.
+        """
+        url = f"{self._base_url}/api/v3/{self._kind.resource}"
+        response = await self._http.get(url, headers=self._headers())
+        response.raise_for_status()
+        paths: dict[str, dict] = {}
+        for entry in response.json():
+            path = entry.get("path")
+            if not path:
+                continue
+            normalized = path.replace("\\", "/").rstrip("/")
+            paths[normalized] = {"title": entry.get("title"), self._kind.id_field: entry.get(self._kind.id_field)}
+        return paths
+
     async def quality_profile_id(self, name: str) -> int | None:
         """Resolve a quality profile by exact name. None if it is absent.
 

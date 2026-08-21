@@ -206,7 +206,8 @@ async def _sync_one_service(
         return f"{section.title} {arr_kind.name}: failed, see log"
     return (
         f"{section.title} {arr_kind.name}: checked {report.checked}, "
-        f"missing {report.missing}, added {report.added}, failed {report.failed}"
+        f"missing {report.missing}, added {report.added}, failed {report.failed}, "
+        f"misassigned {report.skipped_path_taken}"
     )
 
 

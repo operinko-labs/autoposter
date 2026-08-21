@@ -108,6 +108,53 @@ async def test_existing_ids_raises_on_non_2xx_instead_of_an_empty_set():
             await client.existing_ids()
 
 
+async def test_existing_paths_maps_normalised_path_to_title_and_id():
+    movies = [
+        {"id": 1, "title": "Sam Bai Mai Thao (2014)", "tvdbId": 415381,
+         "path": "/mnt/media/TV/Muumien maailma (2014)"},
+    ]
+
+    async def handler(request):
+        return httpx.Response(200, json=movies)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://sonarr.example", "key", SONARR)
+        paths = await client.existing_paths()
+
+    assert paths == {
+        "/mnt/media/TV/Muumien maailma (2014)": {
+            "title": "Sam Bai Mai Thao (2014)", "tvdbId": 415381,
+        },
+    }
+
+
+async def test_existing_paths_strips_trailing_slash():
+    movies = [{"id": 1, "title": "Dune", "tmdbId": 438631, "path": "/mnt/media/Movies/Dune (2021)/"}]
+
+    async def handler(request):
+        return httpx.Response(200, json=movies)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        paths = await client.existing_paths()
+
+    assert "/mnt/media/Movies/Dune (2021)" in paths
+    assert "/mnt/media/Movies/Dune (2021)/" not in paths
+
+
+async def test_existing_paths_skips_entries_with_no_path():
+    movies = [{"id": 1, "title": "No Path", "tmdbId": 1}]
+
+    async def handler(request):
+        return httpx.Response(200, json=movies)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        paths = await client.existing_paths()
+
+    assert paths == {}
+
+
 async def test_quality_profile_id_resolves_exact_name():
     async def handler(request):
         return httpx.Response(200, json=RADARR_PROFILES)

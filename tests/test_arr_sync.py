@@ -269,6 +269,141 @@ async def test_the_report_counts_add_up():
     assert report.failed == 1
 
 
+async def test_an_item_whose_mapped_path_is_already_registered_under_another_id_is_not_added():
+    """The real observed case: Plex's The Moomins (tvdb 82850) maps to a
+    folder Sonarr already holds -- under tvdb 415381, as a different show
+    entirely. The guard must block the add and count it separately from an
+    ordinary skip.
+    """
+    moomins = FakeItem("The Moomins", ["tvdb://82850"], ["/mnt/Media/TV/Muumien maailma (2014)"])
+    section = FakeSection([moomins])
+    existing = [
+        {"tvdbId": 415381, "title": "Sam Bai Mai Thao (2014)",
+         "path": "/mnt/media/TV/Muumien maailma (2014)"},
+    ]
+
+    async def on_post(request):  # pragma: no cover
+        raise AssertionError("a path collision must never be posted")
+
+    async with _fake_http(_handler(existing, SONARR_PROFILES, on_post)) as http:
+        client = ArrClient(http, "https://sonarr.example", "key", SONARR)
+        report = await sync_section(client, section, SONARR, SONARR_SETTINGS, dry_run=False)
+
+    assert report.added == 0
+    assert report.skipped_path_taken == 1
+    assert report.titles == []
+    assert len(report.misassignments) == 1
+    message = report.misassignments[0]
+    assert "The Moomins" in message
+    assert "82850" in message
+    assert "Sam Bai Mai Thao (2014)" in message
+    assert "415381" in message
+
+
+async def test_a_path_collision_is_still_reported_under_dry_run():
+    moomins = FakeItem("The Moomins", ["tvdb://82850"], ["/mnt/Media/TV/Muumien maailma (2014)"])
+    section = FakeSection([moomins])
+    existing = [
+        {"tvdbId": 415381, "title": "Sam Bai Mai Thao (2014)",
+         "path": "/mnt/media/TV/Muumien maailma (2014)"},
+    ]
+
+    async def on_post(request):  # pragma: no cover
+        raise AssertionError("dry run must never POST")
+
+    async with _fake_http(_handler(existing, SONARR_PROFILES, on_post)) as http:
+        client = ArrClient(http, "https://sonarr.example", "key", SONARR)
+        report = await sync_section(client, section, SONARR, SONARR_SETTINGS, dry_run=True)
+
+    assert report.added == 0
+    assert report.skipped_path_taken == 1
+    assert len(report.misassignments) == 1
+
+
+async def test_path_collision_applies_to_radarr_too():
+    movie = FakeItem("Real Movie", ["tmdb://999"], ["/mnt/Media/Movies/Real Movie (2020)/movie.mkv"])
+    section = FakeSection([movie])
+    existing = [
+        {"tmdbId": 111, "title": "Wrong Movie", "path": "/mnt/media/Movies/Real Movie (2020)"},
+    ]
+
+    async def on_post(request):  # pragma: no cover
+        raise AssertionError("a path collision must never be posted")
+
+    async with _fake_http(_handler(existing, RADARR_PROFILES, on_post)) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        report = await sync_section(client, section, RADARR, RADARR_SETTINGS, dry_run=False)
+
+    assert report.added == 0
+    assert report.skipped_path_taken == 1
+    assert "Wrong Movie" in report.misassignments[0]
+    assert "111" in report.misassignments[0]
+
+
+async def test_an_item_whose_mapped_path_is_free_is_still_added_normally():
+    """The guard must not block a legitimate addition just because the
+    service has other, unrelated paths registered."""
+    show = FakeItem("Severance", ["tvdb://371980"], ["/mnt/Media/TV/Severance"])
+    section = FakeSection([show])
+    existing = [
+        {"tvdbId": 1, "title": "Something Else", "path": "/mnt/media/TV/Something Else"},
+    ]
+    seen = {}
+
+    async def on_post(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"id": 12})
+
+    async with _fake_http(_handler(existing, SONARR_PROFILES, on_post)) as http:
+        client = ArrClient(http, "https://sonarr.example", "key", SONARR)
+        report = await sync_section(client, section, SONARR, SONARR_SETTINGS, dry_run=False)
+
+    assert report.added == 1
+    assert report.skipped_path_taken == 0
+    assert report.titles == ["Severance"]
+
+
+async def test_collision_check_is_exact_not_a_prefix_match():
+    """A service holding '/mnt/media/TV/Show Two' must not block adding
+    '/mnt/media/TV/Show' -- exact, case-sensitive path equality only."""
+    show = FakeItem("Show", ["tvdb://1"], ["/mnt/Media/TV/Show"])
+    section = FakeSection([show])
+    existing = [
+        {"tvdbId": 2, "title": "Show Two", "path": "/mnt/media/TV/Show Two"},
+    ]
+    seen = {}
+
+    async def on_post(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"id": 1})
+
+    async with _fake_http(_handler(existing, SONARR_PROFILES, on_post)) as http:
+        client = ArrClient(http, "https://sonarr.example", "key", SONARR)
+        report = await sync_section(client, section, SONARR, SONARR_SETTINGS, dry_run=False)
+
+    assert report.skipped_path_taken == 0
+    assert report.added == 1
+    assert seen["body"]["path"] == "/mnt/media/TV/Show"
+
+
+async def test_trailing_slash_on_the_registered_path_does_not_cause_a_false_negative():
+    show = FakeItem("Severance", ["tvdb://371980"], ["/mnt/Media/TV/Severance"])
+    section = FakeSection([show])
+    existing = [
+        {"tvdbId": 1, "title": "Other Show", "path": "/mnt/media/TV/Severance/"},
+    ]
+
+    async def on_post(request):  # pragma: no cover
+        raise AssertionError("a path collision must never be posted")
+
+    async with _fake_http(_handler(existing, SONARR_PROFILES, on_post)) as http:
+        client = ArrClient(http, "https://sonarr.example", "key", SONARR)
+        report = await sync_section(client, section, SONARR, SONARR_SETTINGS, dry_run=False)
+
+    assert report.skipped_path_taken == 1
+    assert report.added == 0
+
+
 async def test_section_all_is_called_exactly_once():
     dune = FakeItem("Dune", ["tmdb://438631"], ["/mnt/Media/Movies/Dune (2021)/Dune.mkv"])
     section = FakeSection([dune])

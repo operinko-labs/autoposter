@@ -54,8 +54,10 @@ class ArrSyncReport:
     added: int
     skipped_no_id: int
     skipped_no_path: int
+    skipped_path_taken: int
     failed: int
     titles: list[str]
+    misassignments: list[str]
 
 
 def _external_id(item, guid_key: str) -> str | None:
@@ -117,19 +119,33 @@ async def sync_section(
     Under ``dry_run`` (the default) the report is identical to a real run
     except ``added`` is zero and no POST is ever issued -- ``titles`` still
     names every item that would be registered, and a path that would fail to
-    map is still counted in ``skipped_no_path``.
+    map is still counted in ``skipped_no_path``. A path collision is still
+    reported under ``dry_run`` too -- that is exactly when an operator wants
+    to discover it.
+
+    Before adding, the mapped target path is checked against every path the
+    service already has registered (``ArrClient.existing_paths``). A service
+    can hold the right folder under the *wrong* external id -- a leftover
+    misidentification, not a genuine gap -- and comparing ids alone would
+    try to register a second entry over that same folder. Such an item is
+    not added; it is counted in ``skipped_path_taken`` and a message naming
+    both sides (the Plex title/id and the title/id the service currently has
+    for that folder) is logged and appended to ``misassignments``, so an
+    operator can go and fix the misassignment by hand.
 
     A failure adding one item is logged and counted in ``failed``; it never
     stops the rest of the batch.
     """
     guid_key = _GUID_KEY[kind.name]
     existing = await client.existing_ids()
+    existing_paths = await client.existing_paths()
     quality_profile_id = await client.quality_profile_id(settings.quality_profile)
     if quality_profile_id is None:
         raise ValueError(f"quality profile {settings.quality_profile!r} not found in {kind.name}")
 
-    checked = missing = added = skipped_no_id = skipped_no_path = failed = 0
+    checked = missing = added = skipped_no_id = skipped_no_path = skipped_path_taken = failed = 0
     titles: list[str] = []
+    misassignments: list[str] = []
 
     for item in section.all():
         checked += 1
@@ -147,6 +163,20 @@ async def sync_section(
         mapped = map_path(_source_path(item, kind), settings.plex_root, settings.arr_root)
         if mapped is None:
             skipped_no_path += 1
+            continue
+
+        mapped = mapped.rstrip("/")
+        collision = existing_paths.get(mapped)
+        if collision is not None:
+            skipped_path_taken += 1
+            other_title = collision.get("title")
+            other_id = collision.get(kind.id_field)
+            message = (
+                f"{item.title!r} ({guid_key} {ext_id}) maps to {mapped!r}, already "
+                f"registered in {kind.name} as {other_title!r} ({guid_key} {other_id})"
+            )
+            misassignments.append(message)
+            logger.warning("arr_sync path collision: %s", message)
             continue
 
         titles.append(item.title)
@@ -167,7 +197,8 @@ async def sync_section(
     return ArrSyncReport(
         checked=checked, missing=missing, added=added,
         skipped_no_id=skipped_no_id, skipped_no_path=skipped_no_path,
-        failed=failed, titles=titles,
+        skipped_path_taken=skipped_path_taken,
+        failed=failed, titles=titles, misassignments=misassignments,
     )
 
 
