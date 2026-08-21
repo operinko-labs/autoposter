@@ -14,7 +14,15 @@ from autoposter.api.auth import (
     session_for_token,
     verify_password,
 )
-from autoposter.db.models import EventLog, Job, ScheduledRun
+from autoposter.db.models import (
+    EventLog,
+    ItemFacts,
+    Job,
+    ManagedCollection,
+    MediaItem,
+    Render,
+    ScheduledRun,
+)
 from autoposter.db.models import Session as SessionModel
 
 logger = logging.getLogger(__name__)
@@ -26,6 +34,16 @@ JOB_STATES = ("pending", "running", "done", "failed", "parked")
 
 DEFAULT_EVENTS_LIMIT = 50
 MAX_EVENTS_LIMIT = 200
+
+DEFAULT_ITEMS_LIMIT = 50
+MAX_ITEMS_LIMIT = 200
+
+
+def _escape_like(value: str) -> str:
+    """Escape ``%``, ``_`` and the escape character itself, so a search term
+    containing them matches literally instead of acting as an ILIKE wildcard."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
 
 router = APIRouter(prefix="/api")
 
@@ -160,6 +178,167 @@ async def events(
                 "event_type": row.event_type,
                 "outcome": row.outcome,
                 "received_at": row.received_at,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/items")
+async def list_items(
+    request: Request,
+    limit: int = DEFAULT_ITEMS_LIMIT,
+    offset: int = 0,
+    library: str | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    capped_limit = min(max(limit, 1), MAX_ITEMS_LIMIT)
+    capped_offset = max(offset, 0)
+
+    conditions = []
+    if library is not None:
+        conditions.append(MediaItem.library == library)
+    if kind is not None:
+        conditions.append(MediaItem.kind == kind)
+    if search is not None:
+        conditions.append(MediaItem.title.ilike(f"%{_escape_like(search)}%", escape="\\"))
+    if status is not None:
+        conditions.append(
+            select(Render.id)
+            .where(Render.item_id == MediaItem.id, Render.status == status)
+            .exists()
+        )
+
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        # A separate COUNT(*), not len() of a fully-fetched result -- this
+        # library runs to ~16,000 rows.
+        total = (
+            await session.execute(
+                select(func.count()).select_from(MediaItem).where(*conditions)
+            )
+        ).scalar_one()
+
+        items = (
+            (
+                await session.execute(
+                    select(MediaItem)
+                    .where(*conditions)
+                    .order_by(MediaItem.id)
+                    .limit(capped_limit)
+                    .offset(capped_offset)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        # One extra query for the whole page's renders rather than one per
+        # item, to avoid N+1 round trips.
+        item_ids = [item.id for item in items]
+        render_status_by_item: dict[int, dict[str, str]] = {item_id: {} for item_id in item_ids}
+        if item_ids:
+            render_rows = await session.execute(
+                select(Render.item_id, Render.art_kind, Render.status).where(
+                    Render.item_id.in_(item_ids)
+                )
+            )
+            for item_id, art_kind, render_status in render_rows:
+                render_status_by_item[item_id][art_kind] = render_status
+
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "library": item.library,
+                "kind": item.kind,
+                "rating_key": item.rating_key,
+                "render_status": render_status_by_item[item.id],
+            }
+            for item in items
+        ],
+    }
+
+
+@router.get("/items/{item_id}")
+async def item_detail(
+    item_id: int, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        item = (
+            await session.execute(select(MediaItem).where(MediaItem.id == item_id))
+        ).scalar_one_or_none()
+        if item is None:
+            raise HTTPException(status_code=404, detail="item not found")
+
+        facts = (
+            await session.execute(select(ItemFacts).where(ItemFacts.item_id == item_id))
+        ).scalar_one_or_none()
+
+        renders = (
+            (await session.execute(select(Render).where(Render.item_id == item_id)))
+            .scalars()
+            .all()
+        )
+
+    return {
+        "id": item.id,
+        "title": item.title,
+        "library": item.library,
+        "kind": item.kind,
+        "rating_key": item.rating_key,
+        "facts": None
+        if facts is None
+        else {
+            "critic_rating": facts.critic_rating,
+            "audience_rating": facts.audience_rating,
+            "content_rating": facts.content_rating,
+            "genres": facts.genres,
+            "studio": facts.studio,
+            "originally_available": facts.originally_available,
+        },
+        "renders": [
+            {
+                "art_kind": render.art_kind,
+                "status": render.status,
+                "fingerprint": render.fingerprint,
+                "badge_fingerprint": render.badge_fingerprint,
+                "upload_status": render.upload_status,
+                "adopted": render.adopted,
+                "rendered_at": render.rendered_at,
+                "uploaded_at": render.uploaded_at,
+            }
+            for render in renders
+        ],
+    }
+
+
+@router.get("/collections")
+async def list_collections(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        rows = (
+            (await session.execute(select(ManagedCollection).order_by(ManagedCollection.id)))
+            .scalars()
+            .all()
+        )
+    return {
+        "collections": [
+            {
+                "id": row.id,
+                "library": row.library,
+                "title": row.title,
+                "kind": row.kind,
+                # definition_hash is the only hash managed_collections records.
+                "has_poster_hash": bool(row.definition_hash),
             }
             for row in rows
         ]
