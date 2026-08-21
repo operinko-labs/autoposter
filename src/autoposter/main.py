@@ -6,6 +6,7 @@ import uvicorn
 from fastapi import FastAPI
 from plexapi.server import PlexServer
 
+from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
@@ -63,6 +64,12 @@ def build() -> FastAPI:
         server=_LazyPlexServer(config.plex.url, secrets.plex_token),
         excluded_libraries=config.plex.excluded_libraries,
     )
+    # Last, and here rather than in create_app(): the SPA's catch-all matches
+    # whatever no router claimed, so anything mounted afterwards is
+    # unreachable. Keeping it out of the factory also keeps it out of the test
+    # suite, which would otherwise pick up a stale frontend/dist from the
+    # developer's checkout and quietly serve it during every test.
+    mount_spa(app, spa_dist())
     return app
 
 
