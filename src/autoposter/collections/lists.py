@@ -71,6 +71,7 @@ async def reconcile_list_collection(
     adopt: bool = False,
     adopt_from: list[str] | None = None,
     adopt_removes_prior_label: bool = False,
+    protect_labels: list[str] | None = None,
 ) -> list[str]:
     """Bring one list collection in line with ``items`` (already in source order).
 
@@ -93,6 +94,7 @@ async def reconcile_list_collection(
     if collection is not None:
         ok, message = resolve_collision(
             collection, label, adopt, adopt_from or [], adopt_removes_prior_label, dry_run,
+            protect_labels or [],
         )
         if not ok:
             return [message] if message else []

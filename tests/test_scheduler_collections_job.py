@@ -109,6 +109,7 @@ def _config(libraries=("Movies", "TV Shows"), enabled=True, apply_to_plex=True):
             # here since these fakes have no _server.
             charts=False, awards=False, separators=False,
             adopt=False, adopt_from=["Kometa"], adopt_removes_prior_label=False,
+            protect_labels=[],
         ),
         scheduler=SimpleNamespace(collections_hours=24),
     )

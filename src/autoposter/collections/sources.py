@@ -119,6 +119,7 @@ async def build_all(
     adopt = config.collections.adopt
     adopt_from = config.collections.adopt_from
     adopt_removes_prior_label = config.collections.adopt_removes_prior_label
+    protect_labels = config.collections.protect_labels
 
     index: dict[str, object] | None = None
 
@@ -140,6 +141,7 @@ async def build_all(
                 dry_run=dry_run, existing=existing,
                 adopt=adopt, adopt_from=adopt_from,
                 adopt_removes_prior_label=adopt_removes_prior_label,
+                protect_labels=protect_labels,
             )
 
     if awards:
@@ -153,6 +155,7 @@ async def build_all(
                 summary=summary, dry_run=dry_run, existing=existing,
                 adopt=adopt, adopt_from=adopt_from,
                 adopt_removes_prior_label=adopt_removes_prior_label,
+                protect_labels=protect_labels,
             )
 
         for year in (recent_years(event) if event else []):
@@ -163,6 +166,7 @@ async def build_all(
                 dry_run=dry_run, existing=existing,
                 adopt=adopt, adopt_from=adopt_from,
                 adopt_removes_prior_label=adopt_removes_prior_label,
+                protect_labels=protect_labels,
             )
 
     return actions

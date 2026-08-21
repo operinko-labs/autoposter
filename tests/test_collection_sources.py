@@ -118,6 +118,7 @@ def _config(*, charts=True, awards=True, apply_to_plex=True):
         collections=SimpleNamespace(
             charts=charts, awards=awards, apply_to_plex=apply_to_plex,
             adopt=False, adopt_from=["Kometa"], adopt_removes_prior_label=False,
+            protect_labels=[],
         )
     )
 
