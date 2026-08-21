@@ -14,6 +14,14 @@ dependencies = [
     "plexapi>=4.15",
     "prometheus-client>=0.21",
     "requests>=2.31",
+    # Badge rendering and the EXIF provenance reader. Imported at module scope
+    # by render/pipeline.py, so a missing Pillow stops the service starting --
+    # which is exactly what happened in the built image, because it was only
+    # ever present in developers' environments.
+    "pillow>=11.0",
+    # Imported directly by app.py. It arrives transitively via fastapi, but a
+    # module this codebase imports itself belongs in its own dependency list.
+    "starlette>=0.40",
 ]
 
 [project.optional-dependencies]
