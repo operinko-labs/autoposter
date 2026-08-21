@@ -48,6 +48,13 @@ export function Settings() {
       {error !== null && <p className="page-error">{error}</p>}
 
       <section className="panel attribution">
+        {/* TMDB's terms require their logo to be less prominent than this
+            application's own branding. The sidebar wordmark is not a sound
+            basis for that comparison from this page (see settings.css), so
+            this page carries its own, directly above the logo it is being
+            weighed against. */}
+        <p className="brand-mark">Autoposter</p>
+
         <h2>Metadata providers</h2>
 
         {/* Required attribution, not decoration. Both providers' terms make
