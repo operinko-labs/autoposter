@@ -527,12 +527,12 @@ in Plex after the first run**: it must be empty. If it instead contains the
 whole library, remove it and report it — nothing in this service ever adds
 members to it, so the only way that can happen is the POST itself.
 
-The server has four libraries — `Movies`, `TV Shows`, `Photos` and
-`Muskarit` (a second movie library) — but only the first two are in the
-default `collections.libraries`. `Muskarit` is left completely untouched
-unless it is added there; adding it would create a full set of Common
-Sense, chart and award collections on it too, the same as any other
-configured library.
+Only the libraries named in `collections.libraries` are touched at all;
+everything else on the server is left completely alone. The default is
+`Movies` and `TV Shows`. Adding another library there would create a full
+set of Common Sense, chart and award collections on it too, the same as any
+other configured library — so add one deliberately, and run with
+`apply_to_plex: false` first to see what it would create.
 
 See `config/autoposter.example.yaml` for the full block.
 
@@ -665,7 +665,6 @@ four categories:
   This usually means the item is unmatched in Plex itself, so the fix
   belongs in Plex or its metadata source, not here.
 
-See `config/autoposter.example.yaml` for the full block.
 
 ## Radarr / Sonarr webhooks
 
