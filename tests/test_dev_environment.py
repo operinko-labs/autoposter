@@ -95,6 +95,15 @@ def test_the_test_service_needs_no_secrets():
         f"the test service points at {database!r}; inside the compose network "
         "the database is postgres:5432, not the host's published 5433"
     )
+    maintenance = (service.get("environment") or {}).get(
+        "AUTOPOSTER_MAINTENANCE_DATABASE_URL", ""
+    )
+    assert "@postgres:5432/" in maintenance, (
+        f"the test service points its maintenance connection at {maintenance!r}; "
+        "inside the compose network the database is postgres:5432, not the "
+        "host's published 5433 -- without this, tests/test_migrations.py's two "
+        "migration guards (which catch multiple alembic heads) cannot run"
+    )
 
 
 def _uvicorn_port() -> int:

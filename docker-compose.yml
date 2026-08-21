@@ -20,9 +20,20 @@ services:
       context: .
       target: dev
     environment:
-      # tests/conftest.py defaults to the host's published 5433; inside the
-      # compose network the server is reachable by service name instead.
+      # tests/conftest.py requires this rather than defaulting it -- a
+      # hardcoded fallback here once happened to match one developer's own
+      # PostgreSQL on the host's published 5433, so a misconfigured
+      # environment connected anyway instead of saying so. Inside the compose
+      # network the server is reachable by service name instead.
       AUTOPOSTER_TEST_DATABASE_URL: postgresql+asyncpg://autoposter:autoposter@postgres:5432/autoposter
+      # tests/test_migrations.py requires this the same way, for its
+      # maintenance connection (used to create/drop scratch databases). A
+      # sync postgresql:// URL rather than +asyncpg -- asyncpg.connect() takes
+      # either, but this matches what .forgejo/scripts/wait_for_postgres.py
+      # exports in CI. Without it, the two tests that catch multiple alembic
+      # heads (the defect that left the shipped image unable to boot) fail
+      # immediately rather than silently connecting somewhere else.
+      AUTOPOSTER_MAINTENANCE_DATABASE_URL: postgresql://autoposter:autoposter@postgres:5432/postgres
     volumes:
       # The whole tree, not a curated list of subdirectories. This suite tests
       # the repository, not just the package: test_toolchain_versions.py reads
