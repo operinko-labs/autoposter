@@ -43,11 +43,11 @@ collections:
   libraries: # Plex library names to reconcile
     - Movies
     - TV Shows
+  charts: true # IMDb Popular / Top 250 / Lowest Rated
+  awards: true # Oscars winner collections
 
 cleanup:
   apply: false # dry run by default: report what would move, change nothing
-  charts: true # IMDb Popular / Top 250 / Lowest Rated
-  awards: true # Oscars winner collections
 
 scheduler:
   enabled: true # run the periodic passes (collections reconcile, drift sweep, asset cleanup)

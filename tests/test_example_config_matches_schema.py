@@ -1,0 +1,50 @@
+"""The example config must actually mean what it says.
+
+Pydantic ignores unknown keys, so a setting written under the wrong section is
+silently dropped and the default applies instead. That is worse than an error:
+the file documents a choice the application never makes. This happened -- the
+`charts` and `awards` toggles sat under `cleanup:` rather than `collections:`,
+so setting `charts: false` there would have had no effect at all.
+"""
+from pathlib import Path
+
+import yaml
+
+from autoposter.config.schema import Config
+
+EXAMPLE = Path("config/autoposter.example.yaml")
+
+
+def _model_for(field):
+    annotation = field.annotation
+    return annotation if hasattr(annotation, "model_fields") else None
+
+
+def test_every_key_in_the_example_exists_in_the_schema():
+    data = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    unknown: list[str] = []
+
+    for key, value in data.items():
+        field = Config.model_fields.get(key)
+        if field is None:
+            unknown.append(key)
+            continue
+        model = _model_for(field)
+        if model is None or not isinstance(value, dict):
+            continue
+        for subkey in value:
+            if subkey not in model.model_fields:
+                unknown.append("%s.%s" % (key, subkey))
+
+    assert not unknown, (
+        "these keys are in the example config but not in the schema, so they "
+        "are silently ignored: %s" % ", ".join(sorted(unknown))
+    )
+
+
+def test_the_collections_toggles_are_under_collections():
+    """Regression: these were under `cleanup:`, where they did nothing."""
+    data = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    assert "charts" in data["collections"]
+    assert "awards" in data["collections"]
+    assert "charts" not in data.get("cleanup", {})
