@@ -280,3 +280,28 @@ class ImdbMissRefreshState(Base):
     attempted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ScheduledRun(Base):
+    """When each periodic job last ran.
+
+    In the database rather than in process memory so that restarts do not
+    re-run everything, and so two replicas coordinate rather than both firing
+    the same pass.
+    """
+
+    __tablename__ = "scheduled_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # ok | failed
+    last_status: Mapped[str | None] = mapped_column(String(16))
+    last_detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
