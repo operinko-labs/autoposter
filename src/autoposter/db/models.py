@@ -94,6 +94,14 @@ class Render(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    # Set by the adoption run for artwork that already existed on disk when
+    # this service took over. Such a render cannot know the source_url its
+    # base came from, so the pipeline compares its fingerprint without that
+    # input -- see render_artifact. Cleared as soon as anything genuinely
+    # changes and a real render happens.
+    adopted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
 
 
 class Job(Base):
