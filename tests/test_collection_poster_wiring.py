@@ -71,6 +71,7 @@ class RatingCollection:
         self.labels_added = []
         self.items_added = []
         self.uploaded_bytes = []
+        self.locks = 0
 
     @property
     def labels(self):
@@ -101,6 +102,9 @@ class RatingCollection:
     def uploadPoster(self, filepath):
         with open(filepath, "rb") as handle:
             self.uploaded_bytes.append(handle.read())
+
+    def lockPoster(self):
+        self.locks += 1
 
 
 class RatingSection:
@@ -141,9 +145,9 @@ class RatingSection:
         return collection
 
 
-async def test_a_smart_bucket_gets_its_poster(session, config_factory):
+async def test_a_smart_bucket_gets_its_poster(session, config_factory, tmp_path):
     section = RatingSection({"17"})
-    config = config_factory()
+    config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     data = _jpeg_bytes()
     seen = []
@@ -156,15 +160,16 @@ async def test_a_smart_bucket_gets_its_poster(session, config_factory):
 
     collection = section._existing["Age 17+ Movies"]
     assert collection.uploaded_bytes == [data]
+    assert collection.locks == 1
     assert seen == [hosted_poster_url("content_rating", "17")]
 
     row = (await session.execute(select(ManagedCollection))).scalars().one()
     assert row.poster_sha256 is not None
 
 
-async def test_the_catch_all_gets_the_nr_poster(session, config_factory):
+async def test_the_catch_all_gets_the_nr_poster(session, config_factory, tmp_path):
     section = RatingSection({"NR"})
-    config = config_factory()
+    config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     data = _jpeg_bytes()
     seen = []
@@ -181,9 +186,9 @@ async def test_the_catch_all_gets_the_nr_poster(session, config_factory):
     assert seen[0].endswith("NR.jpg")
 
 
-async def test_the_separator_gets_the_separator_poster(session, config_factory):
+async def test_the_separator_gets_the_separator_poster(session, config_factory, tmp_path):
     section = RatingSection(())
-    config = config_factory()
+    config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     data = _jpeg_bytes()
     seen = []
@@ -199,10 +204,12 @@ async def test_the_separator_gets_the_separator_poster(session, config_factory):
     assert seen == [hosted_poster_url("separator", "content_rating")]
 
 
-async def test_a_protected_collision_never_gets_a_poster_applied(session, config_factory):
+async def test_a_protected_collision_never_gets_a_poster_applied(
+    session, config_factory, tmp_path
+):
     theirs = RatingCollection("Age 17+ Movies", labels=["Collection managed by Maintainerr"])
     section = RatingSection({"17"}, existing=[theirs])
-    config = config_factory()
+    config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
 
     async with _client(_refusing_handler()) as http:
@@ -218,10 +225,12 @@ async def test_a_protected_collision_never_gets_a_poster_applied(session, config
     assert rows == []
 
 
-async def test_an_unlabelled_collision_never_gets_a_poster_applied(session, config_factory):
+async def test_an_unlabelled_collision_never_gets_a_poster_applied(
+    session, config_factory, tmp_path
+):
     theirs = RatingCollection("Age 17+ Movies")  # the operator's own, no label at all
     section = RatingSection({"17"}, existing=[theirs])
-    config = config_factory()
+    config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
 
     async with _client(_refusing_handler()) as http:
@@ -236,9 +245,9 @@ async def test_an_unlabelled_collision_never_gets_a_poster_applied(session, conf
     assert rows == []
 
 
-async def test_posters_false_disables_smart_collection_posters(session, config_factory):
+async def test_posters_false_disables_smart_collection_posters(session, config_factory, tmp_path):
     section = RatingSection({"17"})
-    config = config_factory()
+    config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     config.collections.posters = False
 
@@ -249,6 +258,129 @@ async def test_posters_false_disables_smart_collection_posters(session, config_f
         )
 
     collection = section._existing["Age 17+ Movies"]
+    assert collection.uploaded_bytes == []
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is None
+
+
+async def test_a_smart_collection_with_an_unchanged_definition_still_gets_a_missing_poster(
+    session, config_factory, tmp_path
+):
+    """The 49 collections already on the deployed instance have a correct
+    definition, so the definition-hash return fires before the poster block.
+    A NULL ``poster_sha256`` -- never set, or a fetch that failed on the pass
+    that created the collection -- must still bring us back here."""
+    section = RatingSection({"17"})
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    config.collections.posters = False
+
+    async with _client(_refusing_handler()) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+
+    collection = section._existing["Age 17+ Movies"]
+    assert collection.uploaded_bytes == []
+
+    config.collections.posters = True
+    data = _jpeg_bytes()
+    seen = []
+    async with _client(_serving_handler(data, seen)) as http:
+        actions = await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+
+    assert collection.uploaded_bytes == [data]
+    assert collection.updated_filters is None  # the definition was left alone
+    assert any("poster" in a for a in actions)
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is not None
+
+
+async def test_a_third_pass_over_an_unchanged_collection_uploads_nothing(
+    session, config_factory, tmp_path
+):
+    """Once the hash is stored the definition-hash return resumes and the
+    poster block is not reached at all: no fetch, no upload, no action."""
+    section = RatingSection({"17"})
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    data = _jpeg_bytes()
+    seen = []
+
+    async with _client(_serving_handler(data, seen)) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+        collection = section._existing["Age 17+ Movies"]
+        assert collection.uploaded_bytes == [data]
+
+        actions = await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+
+    assert collection.uploaded_bytes == [data]  # no second upload
+    assert actions == []
+
+
+async def test_the_separator_with_an_unchanged_definition_still_gets_a_missing_poster(
+    session, config_factory, tmp_path
+):
+    section = RatingSection(())
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    config.collections.posters = False
+
+    async with _client(_refusing_handler()) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            separators=True, http=http, config=config,
+        )
+
+    collection = section._existing[SEPARATOR_TITLE]
+    assert collection.uploaded_bytes == []
+
+    config.collections.posters = True
+    data = _jpeg_bytes()
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            separators=True, http=http, config=config,
+        )
+
+    assert collection.uploaded_bytes == [data]
+
+
+async def test_a_dry_run_reports_the_poster_it_would_set_without_uploading(
+    session, config_factory, tmp_path
+):
+    """``apply_to_plex: false`` used to produce a report that never mentioned
+    posters at all, because every call site hardcoded ``dry_run=False``."""
+    section = RatingSection({"17"})
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    config.collections.posters = False
+
+    async with _client(_refusing_handler()) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+
+    config.collections.posters = True
+    collection = section._existing["Age 17+ Movies"]
+    async with _client(_serving_handler(_jpeg_bytes(), [])) as http:
+        actions = await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=True,
+            http=http, config=config,
+        )
+
+    assert any("would set the poster" in a for a in actions)
     assert collection.uploaded_bytes == []
     row = (await session.execute(select(ManagedCollection))).scalars().one()
     assert row.poster_sha256 is None
@@ -274,6 +406,7 @@ class ListCollection:
         self._labels = [type("L", (), {"tag": t})() for t in labels]
         self.summary = summary
         self.uploaded_bytes = []
+        self.locks = 0
 
     def reload(self):
         self._cache = list(self._live)
@@ -308,6 +441,9 @@ class ListCollection:
         with open(filepath, "rb") as handle:
             self.uploaded_bytes.append(handle.read())
 
+    def lockPoster(self):
+        self.locks += 1
+
 
 class ListSection:
     def __init__(self, existing=()):
@@ -322,9 +458,9 @@ class ListSection:
         return collection
 
 
-async def test_a_chart_collection_gets_its_chart_poster(session, config_factory):
+async def test_a_chart_collection_gets_its_chart_poster(session, config_factory, tmp_path):
     section = ListSection()
-    config = config_factory()
+    config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     data = _jpeg_bytes()
     seen = []
@@ -337,12 +473,13 @@ async def test_a_chart_collection_gets_its_chart_poster(session, config_factory)
 
     collection = section._existing["IMDb Top 250"]
     assert collection.uploaded_bytes == [data]
+    assert collection.locks == 1
     assert seen == [hosted_poster_url("chart", "IMDb Top 250")]
 
 
-async def test_an_oscars_year_collection_gets_that_years_poster(session, config_factory):
+async def test_an_oscars_year_collection_gets_that_years_poster(session, config_factory, tmp_path):
     section = ListSection()
-    config = config_factory()
+    config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     data = _jpeg_bytes()
     seen = []
@@ -358,9 +495,9 @@ async def test_an_oscars_year_collection_gets_that_years_poster(session, config_
     assert seen == [hosted_poster_url("award_year", "2026")]
 
 
-async def test_posters_false_disables_list_collection_posters(session, config_factory):
+async def test_posters_false_disables_list_collection_posters(session, config_factory, tmp_path):
     section = ListSection()
-    config = config_factory()
+    config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     config.collections.posters = False
 
@@ -368,6 +505,90 @@ async def test_posters_false_disables_list_collection_posters(session, config_fa
         await reconcile_list_collection(
             session, section, "Movies", "IMDb Top 250", [FakeItem("a")], LABEL,
             dry_run=False, kind="chart", key="IMDb Top 250", http=http, config=config,
+        )
+
+    collection = section._existing["IMDb Top 250"]
+    assert collection.uploaded_bytes == []
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is None
+
+
+async def test_a_list_collection_with_unchanged_membership_still_gets_a_missing_poster(
+    session, config_factory, tmp_path
+):
+    """Same hole as the smart path: the membership-hash return fires before
+    the poster block, so a row whose ``poster_sha256`` is NULL would never be
+    revisited once its members were correct."""
+    section = ListSection()
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    config.collections.posters = False
+    items = [FakeItem("a")]
+
+    async with _client(_refusing_handler()) as http:
+        await reconcile_list_collection(
+            session, section, "Movies", "IMDb Top 250", items, LABEL,
+            dry_run=False, kind="chart", key="IMDb Top 250", http=http, config=config,
+        )
+
+    collection = section._existing["IMDb Top 250"]
+    assert collection.uploaded_bytes == []
+
+    config.collections.posters = True
+    data = _jpeg_bytes()
+    seen = []
+    async with _client(_serving_handler(data, seen)) as http:
+        actions = await reconcile_list_collection(
+            session, section, "Movies", "IMDb Top 250", items, LABEL,
+            dry_run=False, kind="chart", key="IMDb Top 250", http=http, config=config,
+        )
+
+    assert collection.uploaded_bytes == [data]
+    assert any("poster" in a for a in actions)
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is not None
+
+
+async def test_a_list_collection_dry_run_reports_the_poster_it_would_set(
+    session, config_factory, tmp_path
+):
+    section = ListSection()
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    config.collections.posters = False
+    items = [FakeItem("a")]
+
+    async with _client(_refusing_handler()) as http:
+        await reconcile_list_collection(
+            session, section, "Movies", "IMDb Top 250", items, LABEL,
+            dry_run=False, kind="chart", key="IMDb Top 250", http=http, config=config,
+        )
+
+    config.collections.posters = True
+    collection = section._existing["IMDb Top 250"]
+    async with _client(_serving_handler(_jpeg_bytes(), [])) as http:
+        actions = await reconcile_list_collection(
+            session, section, "Movies", "IMDb Top 250", items, LABEL,
+            dry_run=True, kind="chart", key="IMDb Top 250", http=http, config=config,
+        )
+
+    assert any("would set the poster" in a for a in actions)
+    assert collection.uploaded_bytes == []
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is None
+
+
+async def test_a_kind_without_a_key_makes_no_request(session, config_factory, tmp_path):
+    """``key`` is typed ``str | None``. Guarding only ``kind`` would build a
+    URL with the literal string "None" in it."""
+    section = ListSection()
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+
+    async with _client(_refusing_handler()) as http:
+        await reconcile_list_collection(
+            session, section, "Movies", "IMDb Top 250", [FakeItem("a")], LABEL,
+            dry_run=False, kind="chart", key=None, http=http, config=config,
         )
 
     collection = section._existing["IMDb Top 250"]

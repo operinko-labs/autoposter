@@ -27,8 +27,10 @@ def upload_artwork(plex_item, data: bytes, art_kind: str, lock: bool = True) -> 
     is_background = art_kind == "background"
     handle = tempfile.NamedTemporaryFile(suffix=".webp", delete=False)
     try:
-        handle.write(data)
-        handle.close()
+        # Closed by the ``with`` even when the write itself fails, so the
+        # ``finally`` below never unlinks a file that is still open.
+        with handle:
+            handle.write(data)
         if is_background:
             plex_item.uploadArt(filepath=handle.name)
             if lock:

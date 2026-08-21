@@ -7,11 +7,14 @@ against real bytes.
 import hashlib
 import io
 import os
+import tempfile
+import threading
 
 import httpx
+import pytest
 from PIL import Image
 
-from autoposter.collections.posters import apply_poster
+from autoposter.collections.posters import _write_and_upload, apply_poster
 from autoposter.db.models import ManagedCollection
 
 LIBRARY = "Movies"
@@ -33,11 +36,15 @@ class _FakeCollection:
     def __init__(self):
         self.uploaded_paths: list[str] = []
         self.uploaded_bytes: list[bytes] = []
+        self.locks = 0
 
     def uploadPoster(self, filepath):
         self.uploaded_paths.append(filepath)
         with open(filepath, "rb") as handle:
             self.uploaded_bytes.append(handle.read())
+
+    def lockPoster(self):
+        self.locks += 1
 
 
 class _ExplodingCollection:
@@ -50,6 +57,9 @@ class _ExplodingCollection:
     def uploadPoster(self, filepath):
         self.captured_path = filepath
         raise RuntimeError("plex rejected the upload")
+
+    def lockPoster(self):
+        raise AssertionError("must not lock a poster that failed to upload")
 
 
 async def _record(session, poster_sha256=None):
@@ -93,7 +103,7 @@ async def test_a_local_file_takes_precedence_and_no_request_is_made(
     config = config_factory(assets_root=str(tmp_path), library_folders=True)
     folder = tmp_path / LIBRARY / TITLE
     folder.mkdir(parents=True)
-    local_bytes = b"a local poster, not a real jpeg"
+    local_bytes = _jpeg_bytes("blue")
     (folder / "poster.jpg").write_bytes(local_bytes)
     record = await _record(session)
     collection = _FakeCollection()
@@ -135,7 +145,8 @@ async def test_a_changed_local_file_re_uploads(tmp_path, config_factory, session
     config = config_factory(assets_root=str(tmp_path), library_folders=True)
     folder = tmp_path / LIBRARY / TITLE
     folder.mkdir(parents=True)
-    (folder / "poster.jpg").write_bytes(b"new poster bytes")
+    new_bytes = _jpeg_bytes("green")
+    (folder / "poster.jpg").write_bytes(new_bytes)
     record = await _record(session, poster_sha256=hashlib.sha256(b"old poster bytes").hexdigest())
     collection = _FakeCollection()
 
@@ -148,8 +159,90 @@ async def test_a_changed_local_file_re_uploads(tmp_path, config_factory, session
         )
 
     assert message is not None
-    assert collection.uploaded_bytes == [b"new poster bytes"]
-    assert record.poster_sha256 == hashlib.sha256(b"new poster bytes").hexdigest()
+    assert collection.uploaded_bytes == [new_bytes]
+    assert record.poster_sha256 == hashlib.sha256(new_bytes).hexdigest()
+
+
+async def test_a_corrupt_local_file_falls_through_to_the_hosted_default(
+    tmp_path, config_factory, session
+):
+    """The operator's file can be truncated, zero-byte, or saved HTML just as
+    easily as a response body can. Validating only the fetch path would let it
+    be uploaded, hashed and recorded as current -- never self-correcting."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    folder = tmp_path / LIBRARY / TITLE
+    folder.mkdir(parents=True)
+    (folder / "poster.jpg").write_bytes(b"<html><body>404 not found</body></html>")
+    hosted = _jpeg_bytes()
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        return httpx.Response(200, content=hosted)
+
+    async with _client(handler) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY, KIND, KEY, dry_run=False
+        )
+
+    assert message is not None
+    assert collection.uploaded_bytes == [hosted]
+    assert record.poster_sha256 == hashlib.sha256(hosted).hexdigest()
+
+
+async def test_a_zero_byte_local_file_falls_through_to_the_hosted_default(
+    tmp_path, config_factory, session
+):
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    folder = tmp_path / LIBRARY / TITLE
+    folder.mkdir(parents=True)
+    (folder / "poster.jpg").write_bytes(b"")
+    hosted = _jpeg_bytes()
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        return httpx.Response(200, content=hosted)
+
+    async with _client(handler) as http:
+        await apply_poster(
+            session, http, config, collection, record, LIBRARY, KIND, KEY, dry_run=False
+        )
+
+    assert collection.uploaded_bytes == [hosted]
+
+
+async def test_the_upload_is_locked_and_runs_off_the_event_loop(
+    tmp_path, config_factory, session
+):
+    """``uploadPoster`` is a synchronous ``requests`` POST of the whole image,
+    so it must not run on the loop the scheduler and liveness probe share; and
+    without ``lockPoster`` Plex's agent can reclaim the field, which the stored
+    hash would then stop us ever re-applying."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    data = _jpeg_bytes()
+    record = await _record(session)
+    collection = _FakeCollection()
+    upload_threads: list[int] = []
+
+    original = collection.uploadPoster
+
+    def recording_upload(filepath):
+        upload_threads.append(threading.get_ident())
+        original(filepath)
+
+    collection.uploadPoster = recording_upload
+
+    async def handler(request):
+        return httpx.Response(200, content=data)
+
+    async with _client(handler) as http:
+        await apply_poster(
+            session, http, config, collection, record, LIBRARY, KIND, KEY, dry_run=False
+        )
+
+    assert collection.locks == 1
+    assert upload_threads and upload_threads[0] != threading.get_ident()
 
 
 async def test_a_404_leaves_the_collection_untouched_and_reports_it(
@@ -254,3 +347,37 @@ async def test_the_temporary_file_is_removed_on_the_failure_path(
     assert collection.captured_path is not None
     assert not os.path.exists(collection.captured_path)
     assert record.poster_sha256 is None
+
+
+class _FailingHandle:
+    """A ``NamedTemporaryFile`` stand-in whose write blows up, so a test can
+    tell whether the handle was closed before ``finally`` unlinked it."""
+
+    def __init__(self, path):
+        self.name = path
+        self.closed = False
+
+    def write(self, data):
+        raise OSError("no space left on device")
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def test_a_failing_write_closes_the_handle_before_the_file_is_unlinked(tmp_path, monkeypatch):
+    """``close()`` used to sit inside the ``try`` after ``write()``, so a
+    failing write left ``finally`` unlinking a still-open descriptor."""
+    handle = _FailingHandle(str(tmp_path / "poster.tmp"))
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", lambda **kw: handle)
+
+    with pytest.raises(OSError):
+        _write_and_upload(_FakeCollection(), b"poster-bytes")
+
+    assert handle.closed is True

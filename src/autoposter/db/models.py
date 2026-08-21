@@ -271,8 +271,11 @@ class ManagedCollection(Base):
     definition_hash: Mapped[str] = mapped_column(String(64))
     # Hash of the poster we last set, so an unchanged pass uploads nothing.
     # NULL means we have never set this collection's poster -- true for every
-    # row that existed before this column, since adopted collections keep
-    # whatever poster they already have.
+    # row that existed before this column, and for one whose fetch failed.
+    # Posters are applied to every managed collection, adopted ones included,
+    # so a NULL here is exactly what makes the next pass set one even when the
+    # definition is unchanged. An operator pins a different poster with a
+    # local file, not by leaving this NULL.
     poster_sha256: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

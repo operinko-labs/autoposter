@@ -15,7 +15,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.collections.posters import apply_poster
+from autoposter.collections.posters import apply_poster, posters_enabled
 from autoposter.collections.reconcile import resolve_collision
 from autoposter.db.models import ManagedCollection
 
@@ -115,64 +115,79 @@ async def reconcile_list_collection(
     ).scalar_one_or_none()
 
     wanted = _members_hash(items, summary)
-    if collection is not None and record is not None and record.definition_hash == wanted:
+    # ``key`` is checked alongside ``kind``: one without the other would
+    # interpolate the string "None" into a poster URL.
+    posters_on = (
+        kind is not None and key is not None and posters_enabled(config, http)
+    )
+    definition_current = (
+        collection is not None and record is not None and record.definition_hash == wanted
+    )
+    # An unchanged membership is not on its own a reason to stop: a row whose
+    # ``poster_sha256`` is still NULL -- one that predates posters being
+    # enabled, or whose fetch failed on the pass that created it -- would
+    # otherwise never be revisited. Once the hash is stored, the return below
+    # resumes.
+    if definition_current and not (posters_on and record.poster_sha256 is None):
         # The membership is already correct, but a claim just written a label
         # to Plex. Returning [] here would drop that write from the summary --
         # the operator would see "0 action(s)" for a pass that changed the
         # collection's ownership. ``reconcile.py`` reports it the same way.
         return [claim_action] if claim_action else []
 
-    if dry_run:
-        return ["%s %r with %d item(s)" % (
-            "would update" if collection else "would create", title, len(items))]
-
     actions: list[str] = [claim_action] if claim_action else []
-    if collection is None:
-        collection = section.createCollection(title=title, items=items, smart=False)
-        existing[title] = collection
-        collection.addLabel(label)
-        collection.sortUpdate(sort)
-        if summary:
-            collection.editSummary(summary)
-        actions.append("created %r with %d item(s)" % (title, len(items)))
-    else:
-        # The summary is part of the members hash, so a corrected summary
-        # takes the update branch. Writing it only on create would mean the
-        # new hash gets stored while the old summary stays on the collection
-        # forever, with every later pass short-circuiting on that hash.
-        if summary and getattr(collection, "summary", None) != summary:
-            collection.editSummary(summary)
-            actions.append("updated the summary of %r" % title)
 
-        current = {str(i.ratingKey): i for i in collection.items()}
-        desired = {str(i.ratingKey): i for i in items}
+    if not definition_current:
+        if dry_run:
+            actions.append("%s %r with %d item(s)" % (
+                "would update" if collection else "would create", title, len(items)))
+        elif collection is None:
+            collection = section.createCollection(title=title, items=items, smart=False)
+            existing[title] = collection
+            collection.addLabel(label)
+            collection.sortUpdate(sort)
+            if summary:
+                collection.editSummary(summary)
+            actions.append("created %r with %d item(s)" % (title, len(items)))
+        else:
+            # The summary is part of the members hash, so a corrected summary
+            # takes the update branch. Writing it only on create would mean the
+            # new hash gets stored while the old summary stays on the collection
+            # forever, with every later pass short-circuiting on that hash.
+            if summary and getattr(collection, "summary", None) != summary:
+                collection.editSummary(summary)
+                actions.append("updated the summary of %r" % title)
 
-        adding = [i for key, i in desired.items() if key not in current]
-        removing = [i for key, i in current.items() if key not in desired]
-        if adding:
-            collection.addItems(adding)
-        if removing:
-            collection.removeItems(removing)
-        moves = _enforce_order(collection, items)
-        if adding or removing or moves:
-            actions.append(
-                "updated %r: +%d -%d, %d move(s)" % (title, len(adding), len(removing), moves)
-            )
+            current = {str(i.ratingKey): i for i in collection.items()}
+            desired = {str(i.ratingKey): i for i in items}
 
-    if record is None:
-        record = ManagedCollection(
-            library=library, title=title, kind="manual",
-            plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
-            definition_hash=wanted,
-        )
-        session.add(record)
-    else:
-        record.definition_hash = wanted
-        record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+            adding = [i for k, i in desired.items() if k not in current]
+            removing = [i for k, i in current.items() if k not in desired]
+            if adding:
+                collection.addItems(adding)
+            if removing:
+                collection.removeItems(removing)
+            moves = _enforce_order(collection, items)
+            if adding or removing or moves:
+                actions.append(
+                    "updated %r: +%d -%d, %d move(s)" % (title, len(adding), len(removing), moves)
+                )
 
-    if kind is not None and http is not None and config is not None and config.collections.posters:
+        if not dry_run:
+            if record is None:
+                record = ManagedCollection(
+                    library=library, title=title, kind="manual",
+                    plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
+                    definition_hash=wanted,
+                )
+                session.add(record)
+            else:
+                record.definition_hash = wanted
+                record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+
+    if posters_on and collection is not None and record is not None:
         message = await apply_poster(
-            session, http, config, collection, record, library, kind, key, dry_run=False,
+            session, http, config, collection, record, library, kind, key, dry_run=dry_run,
         )
         if message:
             actions.append(message)

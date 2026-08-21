@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections.buckets import Bucket, derive_buckets
-from autoposter.collections.posters import apply_poster
+from autoposter.collections.posters import apply_poster, posters_enabled
 from autoposter.db.models import ManagedCollection
 
 logger = logging.getLogger(__name__)
@@ -228,41 +228,46 @@ async def _reconcile_separator(
         if not ok:
             return actions
 
+    posters_on = posters_enabled(config, http)
     record = stored.get(SEPARATOR_TITLE)
-    if collection is not None and record is not None and record.definition_hash == SEPARATOR_HASH:
+    definition_current = (
+        collection is not None and record is not None
+        and record.definition_hash == SEPARATOR_HASH
+    )
+    if definition_current and not (posters_on and record.poster_sha256 is None):
         return actions
 
-    if dry_run:
-        actions.append(
-            "%s %r" % ("would update" if collection else "would create", SEPARATOR_TITLE)
-        )
-        return actions
+    if not definition_current:
+        if dry_run:
+            actions.append(
+                "%s %r" % ("would update" if collection else "would create", SEPARATOR_TITLE)
+            )
+        else:
+            if collection is None:
+                collection = _create_separator(section, libtype)
+                collection.addLabel(label)
+                actions.append("created %r" % SEPARATOR_TITLE)
+            else:
+                actions.append("updated %r" % SEPARATOR_TITLE)
 
-    if collection is None:
-        collection = _create_separator(section, libtype)
-        collection.addLabel(label)
-        actions.append("created %r" % SEPARATOR_TITLE)
-    else:
-        actions.append("updated %r" % SEPARATOR_TITLE)
+            collection.editSummary(SEPARATOR_SUMMARY)
+            collection.editSortTitle(SEPARATOR_SORT_TITLE)
 
-    collection.editSummary(SEPARATOR_SUMMARY)
-    collection.editSortTitle(SEPARATOR_SORT_TITLE)
+            if record is None:
+                record = ManagedCollection(
+                    library=library_name, title=SEPARATOR_TITLE, kind="separator",
+                    plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
+                    definition_hash=SEPARATOR_HASH,
+                )
+                session.add(record)
+            else:
+                record.definition_hash = SEPARATOR_HASH
+                record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
 
-    if record is None:
-        record = ManagedCollection(
-            library=library_name, title=SEPARATOR_TITLE, kind="separator",
-            plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
-            definition_hash=SEPARATOR_HASH,
-        )
-        session.add(record)
-    else:
-        record.definition_hash = SEPARATOR_HASH
-        record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
-
-    if config is not None and http is not None and config.collections.posters:
+    if posters_on and collection is not None and record is not None:
         message = await apply_poster(
             session, http, config, collection, record, library_name,
-            "separator", "content_rating", dry_run=False,
+            "separator", "content_rating", dry_run=dry_run,
         )
         if message:
             actions.append(message)
@@ -314,6 +319,7 @@ async def reconcile_content_ratings(
         ).scalars()
     }
 
+    posters_on = posters_enabled(config, http)
     actions: list[str] = []
     for bucket in derive_buckets(present, library_type):
         if not bucket.values:
@@ -335,49 +341,57 @@ async def reconcile_content_ratings(
                 continue
 
         record = stored.get(bucket.title)
-        if collection is not None and record is not None and record.definition_hash == wanted:
+        definition_current = (
+            collection is not None and record is not None and record.definition_hash == wanted
+        )
+        # An unchanged definition is not on its own a reason to skip: a
+        # collection whose definition was already correct when posters were
+        # first enabled, or whose poster fetch failed on the pass that created
+        # it, still carries a NULL ``poster_sha256`` and would otherwise never
+        # be revisited. Once the hash is stored, the skip resumes.
+        if definition_current and not (posters_on and record.poster_sha256 is None):
             continue
 
-        if dry_run:
-            actions.append(
-                "%s %r -> %s"
-                % ("would update" if collection else "would create",
-                   bucket.title, ", ".join(bucket.values))
-            )
-            continue
+        if not definition_current:
+            if dry_run:
+                actions.append(
+                    "%s %r -> %s"
+                    % ("would update" if collection else "would create",
+                       bucket.title, ", ".join(bucket.values))
+                )
+            else:
+                if collection is None:
+                    collection = section.createCollection(
+                        title=bucket.title, smart=True, libtype=libtype, sort=SORT,
+                        filters={"contentRating": list(bucket.values)},
+                    )
+                    collection.addLabel(label)
+                    actions.append("created %r" % bucket.title)
+                else:
+                    collection.updateFilters(
+                        libtype=libtype, sort=SORT,
+                        filters={"contentRating": list(bucket.values)},
+                    )
+                    actions.append("updated %r" % bucket.title)
 
-        if collection is None:
-            collection = section.createCollection(
-                title=bucket.title, smart=True, libtype=libtype, sort=SORT,
-                filters={"contentRating": list(bucket.values)},
-            )
-            collection.addLabel(label)
-            actions.append("created %r" % bucket.title)
-        else:
-            collection.updateFilters(
-                libtype=libtype, sort=SORT,
-                filters={"contentRating": list(bucket.values)},
-            )
-            actions.append("updated %r" % bucket.title)
+                collection.editSummary(bucket.summary)
 
-        collection.editSummary(bucket.summary)
+                if record is None:
+                    record = ManagedCollection(
+                        library=library_name, title=bucket.title, kind="smart",
+                        plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
+                        definition_hash=wanted,
+                    )
+                    session.add(record)
+                else:
+                    record.definition_hash = wanted
+                    record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
 
-        if record is None:
-            record = ManagedCollection(
-                library=library_name, title=bucket.title, kind="smart",
-                plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
-                definition_hash=wanted,
-            )
-            session.add(record)
-        else:
-            record.definition_hash = wanted
-            record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
-
-        if config is not None and http is not None and config.collections.posters:
+        if posters_on and collection is not None and record is not None:
             poster_kind = "content_rating_other" if bucket.key == "other" else "content_rating"
             message = await apply_poster(
                 session, http, config, collection, record, library_name,
-                poster_kind, bucket.key, dry_run=False,
+                poster_kind, bucket.key, dry_run=dry_run,
             )
             if message:
                 actions.append(message)

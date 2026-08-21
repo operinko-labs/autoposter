@@ -1,5 +1,6 @@
 """Uploading badged artwork to Plex."""
 import os
+import tempfile
 
 import pytest
 
@@ -81,3 +82,37 @@ def test_the_temporary_file_is_removed_when_the_upload_fails():
     with pytest.raises(RuntimeError):
         upload_artwork(item, b"x", "poster")
     assert not os.path.exists(item.uploaded_poster)
+
+
+class _FailingHandle:
+    """A ``NamedTemporaryFile`` stand-in whose write blows up, so a test can
+    tell whether the handle was closed before ``finally`` unlinked it."""
+
+    def __init__(self, path):
+        self.name = path
+        self.closed = False
+
+    def write(self, data):
+        raise OSError("no space left on device")
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def test_a_failing_write_closes_the_handle_before_the_file_is_unlinked(tmp_path, monkeypatch):
+    """``close()`` used to sit inside the ``try`` after ``write()``, so a
+    failing write left ``finally`` unlinking a still-open descriptor."""
+    handle = _FailingHandle(str(tmp_path / "artwork.tmp"))
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", lambda **kw: handle)
+
+    with pytest.raises(OSError):
+        upload_artwork(FakePlexItem(), b"webp-bytes", "poster")
+
+    assert handle.closed is True

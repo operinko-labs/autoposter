@@ -16,6 +16,7 @@ That is a lighter posture than ``assets/badges/``, which *are* committed
 here. If this repository is ever published, revisit this alongside
 ``assets/badges/PROVENANCE.md``.
 """
+import asyncio
 import hashlib
 import io
 import logging
@@ -86,14 +87,63 @@ def local_poster_path(config: Config, library: str, title: str) -> Path | None:
     return None
 
 
+def posters_enabled(config, http: httpx.AsyncClient | None) -> bool:
+    """Whether the reconcilers should run their poster step at all.
+
+    Both reconcilers reach ``apply_poster`` from two places now -- a
+    definition that changed, and a row whose ``poster_sha256`` is still NULL
+    -- so the gate lives here rather than being spelled out at each one.
+    """
+    return config is not None and http is not None and config.collections.posters
+
+
+def _is_image(data: bytes) -> bool:
+    """Whether ``data`` decodes as an image.
+
+    Every byte string that reaches an upload goes through here, whichever
+    branch produced it. Uploading a non-image would be worse than uploading
+    nothing: it would also get hashed and recorded, so a later pass would
+    never retry it.
+    """
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.verify()
+    except Exception:
+        return False
+    return True
+
+
+def _write_and_upload(collection, data: bytes) -> None:
+    """Write ``data`` to a temporary file, upload it, and lock the field.
+
+    Blocking: ``uploadPoster`` is a synchronous ``requests`` POST of the whole
+    image, so callers run this in a thread. The file is written inside a
+    ``with`` so it is closed even when the write fails, and removed on both
+    the success and the failure path.
+
+    Locking matters for the same reason it does in ``plex/artwork.py``:
+    without it Plex's metadata agent can reclaim the field, and a reclaimed
+    poster would never be re-applied because the hash still matches.
+    """
+    handle = tempfile.NamedTemporaryFile(delete=False)
+    try:
+        with handle:
+            handle.write(data)
+        collection.uploadPoster(filepath=handle.name)
+        collection.lockPoster()
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            logger.warning("could not remove temporary poster file %s", handle.name)
+
+
 async def fetch_poster(http: httpx.AsyncClient, url: str) -> bytes | None:
     """Fetch a poster and validate it, or ``None`` on any failure.
 
     A 200 response is not proof of an image -- a failure mode upstream can
-    still answer 200 with an HTML body -- so the response is opened with
-    Pillow before being trusted. Uploading that page as a collection poster
-    would be worse than uploading nothing: it would also get hashed and
-    recorded, so a later pass would never retry it.
+    still answer 200 with an HTML body -- so the body is checked with
+    ``_is_image`` before being trusted.
     """
     try:
         response = await http.get(url)
@@ -102,10 +152,7 @@ async def fetch_poster(http: httpx.AsyncClient, url: str) -> bytes | None:
         logger.info("could not fetch poster from %s", url)
         return None
     data = response.content
-    try:
-        with Image.open(io.BytesIO(data)) as image:
-            image.verify()
-    except Exception:
+    if not _is_image(data):
         logger.info("poster at %s did not decode as an image", url)
         return None
     return data
@@ -130,11 +177,19 @@ async def apply_poster(
     unchanged pass uploads nothing, the same guarantee ``definition_hash``
     already gives the collection's filter.
 
+    Both branches are validated with ``_is_image``: an operator's file can be
+    truncated, zero-byte, or an HTML error page saved as ``poster.jpg`` just
+    as easily as a response body can. An unusable local file falls through to
+    the hosted default rather than failing the collection outright.
+
     plexapi's ``uploadPoster`` only accepts a filepath, so the bytes are
-    written to a ``NamedTemporaryFile`` that is removed on both the success
-    and the failure path, never through its ``url=`` form: that makes the
-    Plex server fetch the image itself, so we would neither see nor hash
-    what actually landed.
+    written to a temporary file, never through its ``url=`` form: that makes
+    the Plex server fetch the image itself, so we would neither see nor hash
+    what actually landed. That write and the upload are a blocking
+    ``requests`` POST of the whole image, so they run in
+    ``asyncio.to_thread`` -- the same treatment ``render/pipeline.py`` gives
+    ``upload_artwork``. Left on the loop, a first pass over 51 collections
+    would stall the scheduler and the liveness probe for the duration.
 
     Under ``dry_run`` the poster is still resolved and fetched -- that is
     deliberate, so the report can say whether the source is reachable -- but
@@ -144,11 +199,19 @@ async def apply_poster(
     collection untouched and is reported rather than raised: a missing
     poster is cosmetic and must never fail the surrounding pass.
     """
+    data: bytes | None = None
+    source = ""
     local = local_poster_path(config, library, record.title)
     if local is not None:
-        data = local.read_bytes()
-        source = "local file %s" % local
-    else:
+        candidate = local.read_bytes()
+        if _is_image(candidate):
+            data = candidate
+            source = "local file %s" % local
+        else:
+            logger.info(
+                "local poster %s did not decode as an image; using the hosted default", local
+            )
+    if data is None:
         url = hosted_poster_url(kind, key)
         if url is None:
             return "no poster source for %r" % record.title
@@ -164,19 +227,11 @@ async def apply_poster(
     if dry_run:
         return "would set the poster for %r from %s" % (record.title, source)
 
-    handle = tempfile.NamedTemporaryFile(delete=False)
     try:
-        handle.write(data)
-        handle.close()
-        collection.uploadPoster(filepath=handle.name)
+        await asyncio.to_thread(_write_and_upload, collection, data)
     except Exception:
         logger.exception("failed to upload the poster for %r", record.title)
         return "failed to upload the poster for %r" % record.title
-    finally:
-        try:
-            os.unlink(handle.name)
-        except OSError:
-            logger.warning("could not remove temporary poster file %s", handle.name)
 
     record.poster_sha256 = digest
     await session.flush()

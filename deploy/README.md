@@ -176,17 +176,24 @@ service manages get a poster:
 
 - `posters` (default `true`) — give every managed collection (the Common
   Sense buckets and separator, the IMDb charts, the Oscars collections) a
-  poster. Applied only after a collection has been created or updated and
-  `resolve_collision` has approved it, so a conflicting or protected
-  collection is never touched.
+  poster. Applied only after `resolve_collision` has approved the collection,
+  so a conflicting or protected collection is never touched.
+
+**Turning this on sets a poster on every collection this service manages,
+adopted ones included** — not just newly created ones. The first pass after
+enabling it fills in every managed collection whose poster we have never set,
+whether or not its definition changed. Adopted collections are already
+carrying these same images, set by the tool being replaced, so in practice
+this is a visual no-op for them.
 
 A file at `<assets_root>/<library>/<collection title>/poster.{jpg,jpeg,png,webp}`
-overrides the hosted default — this is how to supply your own poster for a
-managed collection, the same `prioritize_assets`-style override the badge
-pipeline uses for item artwork. Without one, the poster is fetched at
-runtime from Kometa's `Default-Images` repository and never vendored into
-this repository (see the module docstring on `autoposter/collections/posters.py`
-for the reasoning).
+overrides the hosted default, and is the supported way to pin your own poster
+on one managed collection — the same `prioritize_assets`-style override the
+badge pipeline uses for item artwork. An unreadable or non-image file there is
+ignored and the hosted default used instead. Without one, the poster is
+fetched at runtime from Kometa's `Default-Images` repository and never
+vendored into this repository (see the module docstring on
+`autoposter/collections/posters.py` for the reasoning).
 
 **A failed fetch leaves the collection untouched, not the pass.** A missing
 poster is cosmetic; the collection is logged and skipped, and the rest of
@@ -194,7 +201,9 @@ the run continues normally. A content hash on each collection's database row
 means an unchanged pass uploads nothing.
 
 `apply_to_plex` still gates every write, the same dry-run-by-default posture
-as the rest of this block.
+as the rest of this block. A dry run resolves and fetches each poster — so it
+can tell you whether the source is reachable — and reports the ones it would
+set without uploading anything.
 
 See `config/autoposter.example.yaml` for the full block.
 
