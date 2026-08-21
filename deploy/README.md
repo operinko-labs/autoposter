@@ -612,15 +612,30 @@ Every pass over a Plex library (movie or show) does two independent things:
 pass — the same safety valve as `scheduler.drift_batch_size`, for the same
 reason: a first run against a fresh database can find every item unknown.
 
-### Expected first-run outcome for this library
+### Expected steady-state outcome for this library
 
-Audited against the live services: **0 movies** in Plex are missing from
-Radarr. **2 series are missing from Sonarr: `Limitless` and `The Moomins`.**
-A first real run (`radarr.add_existing`/`sonarr.add_existing` both `true`)
-is expected to add exactly those two series and nothing else. One further
-show in the library carries no TVDB id at all, so it can never be matched
-by this sync and is counted in the report as skipped, not added — that is
-expected, not a bug to chase.
+Audited against the live services: Radarr holds 1,982 movies and Sonarr
+holds 287 series, with nothing missing and no path collisions on either
+side. The expected outcome of a run against a healthy library is that the
+sync **adds nothing at all**. The report groups every item into one of
+four categories:
+
+- **missing** — genuinely absent from the service. With `add_existing:
+  true` this is what gets registered, in place, against the file already
+  on disk.
+- **misassignment** — the service already holds this folder, but under a
+  *different* external id. This service will not touch it; comparing ids
+  alone would otherwise try to register a second, colliding entry. It has
+  to be fixed by hand in Radarr or Sonarr. Both discrepancies previously
+  seen on this library (`Limitless` and `The Moomins`) turned out to be of
+  this kind, not missing registrations.
+- **already present by path** — Plex has no usable external id for the
+  item, but the service already has the folder registered. `Tractor Tom`
+  is the current example: its TVDB guid had not yet reached Plex, but
+  Sonarr already had the show at the mapped path. Nothing to do.
+- **unmatchable** — no external id in Plex and no registered path either.
+  This usually means the item is unmatched in Plex itself, so the fix
+  belongs in Plex or its metadata source, not here.
 
 See `config/autoposter.example.yaml` for the full block.
 

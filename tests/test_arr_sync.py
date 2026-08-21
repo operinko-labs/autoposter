@@ -179,9 +179,38 @@ async def test_an_item_with_no_external_id_is_skipped_and_counted():
 
     assert report.checked == 1
     assert report.skipped_no_id == 1
+    assert report.present_by_path == 0
     assert report.missing == 0
     assert report.added == 0
     assert report.titles == []
+
+
+async def test_an_item_with_no_external_id_but_a_registered_path_is_already_present():
+    """The real observed case: Plex's Tractor Tom has no tvdb guid yet (its
+    TVDB entry is an hour old and Plex's agent has not picked it up), but
+    Sonarr already has the show registered at the mapped path. That is not
+    a gap -- it must not be reported as skipped_no_id, and nothing is added.
+    """
+    tractor_tom = FakeItem("Tractor Tom", ["imdb://tt0442647", "tmdb://16613"], ["/mnt/Media/TV/Tractor Tom"])
+    section = FakeSection([tractor_tom])
+    existing = [
+        {"tvdbId": 481561, "title": "Tractor Tom", "path": "/mnt/media/TV/Tractor Tom"},
+    ]
+
+    async def on_post(request):  # pragma: no cover
+        raise AssertionError("an item already present by path must not be posted")
+
+    async with _fake_http(_handler(existing, SONARR_PROFILES, on_post)) as http:
+        client = ArrClient(http, "https://sonarr.example", "key", SONARR)
+        report = await sync_section(client, section, SONARR, SONARR_SETTINGS, dry_run=False)
+
+    assert report.checked == 1
+    assert report.present_by_path == 1
+    assert report.skipped_no_id == 0
+    assert report.missing == 0
+    assert report.added == 0
+    assert report.titles == []
+    assert report.misassignments == []
 
 
 async def test_an_item_whose_path_will_not_map_is_skipped_and_counted():

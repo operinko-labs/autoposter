@@ -53,6 +53,7 @@ class ArrSyncReport:
     missing: int
     added: int
     skipped_no_id: int
+    present_by_path: int
     skipped_no_path: int
     skipped_path_taken: int
     failed: int
@@ -133,6 +134,13 @@ async def sync_section(
     for that folder) is logged and appended to ``misassignments``, so an
     operator can go and fix the misassignment by hand.
 
+    An item with no external id at all is checked the same way before being
+    called unmatchable: if its mapped path is already registered, the
+    service plainly already has it -- Plex just has not picked up the id yet
+    (an agent lag, typically) -- and it is counted in ``present_by_path``,
+    not reported as a gap. Only when the id is absent *and* the path is not
+    registered is the item genuinely unmatchable (``skipped_no_id``).
+
     A failure adding one item is logged and counted in ``failed``; it never
     stops the rest of the batch.
     """
@@ -143,7 +151,8 @@ async def sync_section(
     if quality_profile_id is None:
         raise ValueError(f"quality profile {settings.quality_profile!r} not found in {kind.name}")
 
-    checked = missing = added = skipped_no_id = skipped_no_path = skipped_path_taken = failed = 0
+    checked = missing = added = skipped_no_id = present_by_path = 0
+    skipped_no_path = skipped_path_taken = failed = 0
     titles: list[str] = []
     misassignments: list[str] = []
 
@@ -152,7 +161,12 @@ async def sync_section(
 
         ext_id = _external_id(item, guid_key)
         if ext_id is None:
-            skipped_no_id += 1
+            source_path = _source_path(item, kind)
+            mapped_for_check = map_path(source_path, settings.plex_root, settings.arr_root)
+            if mapped_for_check is not None and mapped_for_check.rstrip("/") in existing_paths:
+                present_by_path += 1
+            else:
+                skipped_no_id += 1
             continue
 
         if ext_id in existing:
@@ -196,7 +210,8 @@ async def sync_section(
 
     return ArrSyncReport(
         checked=checked, missing=missing, added=added,
-        skipped_no_id=skipped_no_id, skipped_no_path=skipped_no_path,
+        skipped_no_id=skipped_no_id, present_by_path=present_by_path,
+        skipped_no_path=skipped_no_path,
         skipped_path_taken=skipped_path_taken,
         failed=failed, titles=titles, misassignments=misassignments,
     )
