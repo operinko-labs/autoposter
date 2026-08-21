@@ -1,0 +1,91 @@
+.item-meta {
+  margin: -8px 0 20px;
+}
+
+.item-outcome {
+  margin: 0 0 16px;
+  color: var(--ok);
+}
+
+.art-panes {
+  display: grid;
+  /* Two columns while there is room for two legible posters, one below the
+   * other when there is not. The panes are meant to be compared, so a pair
+   * squeezed to thumbnail width would defeat the page. */
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.art-pane {
+  margin: 0;
+}
+
+.art-pane figcaption {
+  margin-bottom: 8px;
+  color: var(--text-strong);
+}
+
+.art-image,
+.art-blank {
+  display: block;
+  width: 100%;
+  /* Both states reserve the same box, so the pane does not jump when the
+   * bytes land -- and the two panes stay the same size as each other even
+   * when only one of them has an image. */
+  aspect-ratio: 2 / 3;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  object-fit: contain;
+}
+
+.art-blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+.art-note {
+  margin: 0;
+  color: var(--text);
+}
+
+.art-detail {
+  margin: 0;
+  font-size: 12px;
+}
+
+.item-panel {
+  margin-bottom: 20px;
+}
+
+.fact-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 20px;
+  margin: 0;
+}
+
+.fact-list dt {
+  color: var(--text-muted);
+}
+
+.fact-list dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.render-table td,
+.render-table th {
+  white-space: nowrap;
+}
+
+.fingerprint {
+  /* The whole digest is on the title attribute; this is the visible prefix. */
+  cursor: help;
+}

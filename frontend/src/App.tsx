@@ -4,6 +4,7 @@ import { SessionProvider, useSession } from "./auth/SessionContext";
 import { Collections } from "./pages/Collections";
 import { Dashboard } from "./pages/Dashboard";
 import { Failures } from "./pages/Failures";
+import { ItemDetail } from "./pages/ItemDetail";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Settings } from "./pages/Settings";
@@ -18,14 +19,7 @@ function AuthenticatedApp() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/library" element={<Library />} />
-          {/* A placeholder until the item detail page lands. The route has to
-              exist even so: without it the catch-all below sends every tile's
-              link back to the dashboard, which looks like a broken grid rather
-              than an unfinished page. */}
-          <Route
-            path="/items/:itemId"
-            element={<p className="empty">The item detail page is not built yet.</p>}
-          />
+          <Route path="/items/:itemId" element={<ItemDetail />} />
           <Route path="/collections" element={<Collections />} />
           <Route path="/failures" element={<Failures />} />
           <Route path="/settings" element={<Settings />} />

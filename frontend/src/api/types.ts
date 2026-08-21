@@ -99,6 +99,50 @@ export interface ItemFiltersResponse {
   statuses: string[];
 }
 
+/** One row of `renders`, as GET /api/items/{id} returns it. `(item_id,
+ * art_kind)` is unique, so `art_kind` identifies a row within an item. */
+export interface ItemRender {
+  art_kind: string;
+  status: string;
+  fingerprint: string | null;
+  badge_fingerprint: string | null;
+  upload_status: string;
+  adopted: boolean;
+  rendered_at: string | null;
+  uploaded_at: string | null;
+}
+
+/** The facts the badges are drawn from. `originally_available` is a date, not
+ * a timestamp -- it serialises as "2019-06-28" with no time in it. */
+export interface ItemFacts {
+  critic_rating: number | null;
+  audience_rating: number | null;
+  content_rating: string | null;
+  genres: string[];
+  studio: string | null;
+  originally_available: string | null;
+}
+
+/** GET /api/items/{id}. `facts` is null for an item nothing has been collected
+ * for yet, which is an ordinary state, not an error. */
+export interface ItemDetailResponse {
+  id: number;
+  title: string;
+  library: string;
+  kind: string;
+  rating_key: string | null;
+  facts: ItemFacts | null;
+  renders: ItemRender[];
+}
+
+/** POST /api/items/{id}/reprocess. `queued` is false, with a null `job_id`,
+ * when an identical job was already pending -- the endpoint de-duplicates on
+ * the intent's dedupe_key rather than queueing a second one. */
+export interface ReprocessResponse {
+  queued: boolean;
+  job_id: number | null;
+}
+
 export interface LoginResponse {
   token: string;
   expires_at: string;
