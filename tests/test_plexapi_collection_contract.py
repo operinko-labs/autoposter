@@ -34,6 +34,10 @@ def test_library_section_methods_take_the_parameters_we_pass(name, required):
         ("addLabel", ["labels"]),
         ("removeLabel", ["labels"]),
         ("editSummary", ["summary"]),
+        ("addItems", ["items"]),
+        ("removeItems", ["items"]),
+        ("moveItem", ["item", "after"]),
+        ("sortUpdate", ["sort"]),
     ],
 )
 def test_collection_methods_take_the_parameters_we_pass(name, required):
@@ -70,3 +74,29 @@ def test_collection_labels_is_lazy_and_must_be_reloaded_explicitly():
 
     assert isinstance(Collection.__dict__.get("labels"), cached_data_property)
     assert callable(Collection.reload)
+
+
+def test_items_takes_no_arguments_and_returns_the_cached_list():
+    assert list(inspect.signature(Collection.items).parameters) == ["self"]
+    assert "self._items" in inspect.getsource(Collection.items)
+
+
+def test_collection_items_are_cached_and_only_reload_invalidates_them():
+    """``Collection._items`` is a ``cached_data_property``: ``addItems``,
+    ``removeItems`` and ``moveItem`` each issue their query and return
+    without invalidating it, so ``items()`` keeps handing back the snapshot
+    taken before the write. Anything that reads the membership after a write
+    must ``reload()`` first."""
+    from plexapi.base import cached_data_property
+
+    assert isinstance(Collection.__dict__.get("_items"), cached_data_property)
+    for name in ("addItems", "removeItems", "moveItem"):
+        source = inspect.getsource(getattr(Collection, name))
+        assert "_items" not in source, "%s now touches the item cache" % name
+
+
+def test_sort_update_accepts_the_two_orders_this_phase_uses():
+    """``custom`` for the static collections, ``release`` for the dynamic
+    Oscars year collections (kometa-collections.md §2.4)."""
+    source = inspect.getsource(Collection.sortUpdate)
+    assert "'custom'" in source and "'release'" in source

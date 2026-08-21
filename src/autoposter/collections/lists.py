@@ -26,7 +26,17 @@ def _members_hash(items: list, summary: str | None) -> str:
 
 
 def _enforce_order(collection, desired: list) -> int:
-    """Move only the items that are out of place. Returns moves made."""
+    """Move only the items that are out of place. Returns moves made.
+
+    ``Collection.items()`` returns ``self._items``, a ``cached_data_property``
+    that ``addItems``, ``removeItems`` and ``moveItem`` all leave in place --
+    only ``reload()`` invalidates it. So the order is read exactly once, from
+    a freshly reloaded collection, and every move is then applied to a local
+    copy. Re-reading inside the loop would keep handing back the pre-add
+    snapshot: ``index()`` would raise for a newly added item, and the moves it
+    did compute would be against stale positions.
+    """
+    collection.reload()
     current = [str(i.ratingKey) for i in collection.items()]
     wanted = [str(i.ratingKey) for i in desired]
     if current == wanted:
@@ -34,11 +44,14 @@ def _enforce_order(collection, desired: list) -> int:
     moves = 0
     previous = None
     for item in desired:
-        current = [str(i.ratingKey) for i in collection.items()]
-        position = current.index(str(item.ratingKey))
+        key = str(item.ratingKey)
+        position = current.index(key)
         expected = 0 if previous is None else current.index(str(previous.ratingKey)) + 1
         if position != expected:
             collection.moveItem(item, after=previous)
+            current.pop(position)
+            after = 0 if previous is None else current.index(str(previous.ratingKey)) + 1
+            current.insert(after, key)
             moves += 1
         previous = item
     return moves
@@ -52,15 +65,25 @@ async def reconcile_list_collection(
     items: list,
     label: str,
     summary: str | None = None,
+    sort: str = "custom",
     dry_run: bool = True,
+    existing: dict | None = None,
 ) -> list[str]:
-    """Bring one list collection in line with ``items`` (already in source order)."""
+    """Bring one list collection in line with ``items`` (already in source order).
+
+    ``existing`` is a ``{title: collection}`` map of the section's collections.
+    Listing them costs one request that returns every collection in the
+    library -- 305 of them on the production Movies section -- so the caller
+    reconciling several collections in a row passes one listing in rather than
+    paying for it per collection. Omitting it falls back to listing here.
+    """
     if not items:
         return [
             "%r: source returned no items; leaving the collection untouched" % title
         ]
 
-    existing = {collection.title: collection for collection in section.collections()}
+    if existing is None:
+        existing = {c.title: c for c in section.collections()}
     collection = existing.get(title)
 
     if collection is not None:
@@ -90,12 +113,21 @@ async def reconcile_list_collection(
     actions: list[str] = []
     if collection is None:
         collection = section.createCollection(title=title, items=items, smart=False)
+        existing[title] = collection
         collection.addLabel(label)
-        collection.sortUpdate("custom")
+        collection.sortUpdate(sort)
         if summary:
             collection.editSummary(summary)
         actions.append("created %r with %d item(s)" % (title, len(items)))
     else:
+        # The summary is part of the members hash, so a corrected summary
+        # takes the update branch. Writing it only on create would mean the
+        # new hash gets stored while the old summary stays on the collection
+        # forever, with every later pass short-circuiting on that hash.
+        if summary and getattr(collection, "summary", None) != summary:
+            collection.editSummary(summary)
+            actions.append("updated the summary of %r" % title)
+
         current = {str(i.ratingKey): i for i in collection.items()}
         desired = {str(i.ratingKey): i for i in items}
 

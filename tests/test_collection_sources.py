@@ -41,37 +41,50 @@ class FakeItem:
 
 
 class FakeCollection:
+    """Same caching model as tests/test_collection_lists.py: ``items()``
+    returns a snapshot that only ``reload()`` refreshes."""
+
     def __init__(self, title):
         self.title = title
         self.ratingKey = "c-" + title
-        self._items = []
+        self._live = []
+        self._cache = []
         self._labels = []
+        self.summary = None
+        self.sort_set = None
+        self.summary_set = None
 
     def reload(self):
-        pass
+        self._cache = list(self._live)
 
     @property
     def labels(self):
         return self._labels
 
     def items(self):
-        return list(self._items)
+        return list(self._cache)
 
     def addItems(self, items):
-        self._items.extend(items)
+        self._live.extend(items)
 
     def removeItems(self, items):
         removed = {i.ratingKey for i in items}
-        self._items = [i for i in self._items if i.ratingKey not in removed]
+        self._live = [i for i in self._live if i.ratingKey not in removed]
 
     def moveItem(self, item, after=None):
-        pass
+        self._live = [i for i in self._live if i.ratingKey != item.ratingKey]
+        if after is None:
+            self._live.insert(0, item)
+        else:
+            position = [i.ratingKey for i in self._live].index(after.ratingKey)
+            self._live.insert(position + 1, item)
 
     def sortUpdate(self, sort=None):
-        pass
+        self.sort_set = sort
 
     def editSummary(self, summary, locked=True):
         self.summary_set = summary
+        self.summary = summary
 
     def addLabel(self, labels, locked=True):
         self._labels.append(type("L", (), {"tag": labels})())
@@ -82,17 +95,20 @@ class FakeSection:
         self._items = items
         self._existing: dict[str, FakeCollection] = {}
         self.all_calls = 0
+        self.collection_calls = 0
 
     def all(self):
         self.all_calls += 1
         return self._items
 
     def collections(self, **kw):
+        self.collection_calls += 1
         return list(self._existing.values())
 
     def createCollection(self, title, items=None, smart=False, **kw):
         collection = FakeCollection(title)
-        collection._items = list(items or [])
+        collection._live = list(items or [])
+        collection._cache = list(items or [])
         self._existing[title] = collection
         return collection
 
@@ -147,6 +163,58 @@ async def test_award_collections_are_movies_only(session):
     assert actions == []
 
 
+async def test_a_library_with_nothing_to_build_pays_for_no_index(session):
+    """``build_imdb_index`` costs a full ``section.all()``. A Show library
+    with only awards enabled builds no collection at all, so it must not pay
+    for the index -- nor list the section's collections."""
+
+    def handler(request):
+        return httpx.Response(200, text=AWARD_FIXTURE)
+
+    section = FakeSection([FakeItem("bp", ["imdb://tt31193180"])])
+    config = _config(charts=False, awards=True)
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        await build_all(http, session, section, "TV Shows", "Show", "autoposter", config)
+
+    assert section.all_calls == 0
+    assert section.collection_calls == 0
+
+
+async def test_both_sources_disabled_touches_nothing(session):
+    def handler(request):
+        raise AssertionError("no request should be made")
+
+    section = FakeSection([FakeItem("bp", ["imdb://tt31193180"])])
+    config = _config(charts=False, awards=False)
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        assert await build_all(
+            http, session, section, "Movies", "Movie", "autoposter", config
+        ) == []
+
+    assert section.all_calls == 0
+    assert section.collection_calls == 0
+
+
+async def test_the_section_is_listed_once_for_the_whole_library(session):
+    """The production Movies section holds 305 collections; listing it once
+    per collection would fetch all ten times."""
+
+    def handler(request):
+        if "graphql.imdb.com" in str(request.url):
+            return httpx.Response(200, text=CHART_FIXTURE)
+        return httpx.Response(200, text=AWARD_FIXTURE)
+
+    section = FakeSection([FakeItem("a", ["imdb://tt0111161"])])
+    config = _config()
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        await build_all(http, session, section, "Movies", "Movie", "autoposter", config)
+
+    assert section.collection_calls == 1
+
+
 async def test_the_imdb_index_is_built_once_for_the_library(session):
     """One chart plus the whole award family must still be a single index
     build, not one per collection."""
@@ -165,9 +233,9 @@ async def test_the_imdb_index_is_built_once_for_the_library(session):
     assert section.all_calls == 1
 
 
-async def test_chart_collections_get_no_invented_summary(session):
-    """Only the year award collections have known summary text; a chart
-    title is not a summary."""
+async def test_chart_summaries_are_the_verbatim_kometa_strings(session):
+    """Summaries are transcribed from Kometa's translations file
+    (kometa-collections.md §5), never worded here."""
 
     def handler(request):
         return httpx.Response(200, text=CHART_FIXTURE)
@@ -178,8 +246,51 @@ async def test_chart_collections_get_no_invented_summary(session):
     async with httpx.AsyncClient(transport=_transport(handler)) as http:
         await build_all(http, session, section, "Movies", "Movie", "autoposter", config)
 
-    collection = section._existing["IMDb Top 250"]
-    assert getattr(collection, "summary_set", None) is None
+    assert section._existing["IMDb Popular"].summary_set == "List of IMDb Popular movies."
+    assert section._existing["IMDb Top 250"].summary_set == "List of IMDb Top 250 movies."
+    assert (
+        section._existing["IMDb Lowest Rated"].summary_set
+        == "List of IMDb Lowest Rated movies."
+    )
+
+
+async def test_show_chart_summaries_say_show_not_movie(session):
+    def handler(request):
+        return httpx.Response(200, text=CHART_FIXTURE)
+
+    section = FakeSection([FakeItem("a", ["imdb://tt0111161"])])
+    config = _config(charts=True, awards=False)
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        await build_all(http, session, section, "TV Shows", "Show", "autoposter", config)
+
+    assert section._existing["IMDb Popular"].summary_set == "List of IMDb Popular shows."
+    assert section._existing["IMDb Top 250"].summary_set == "List of IMDb Top 250 shows."
+
+
+async def test_static_award_summaries_are_the_verbatim_kometa_strings(session):
+    def handler(request):
+        return httpx.Response(200, text=AWARD_FIXTURE)
+
+    section = FakeSection([
+        FakeItem("bp", ["imdb://tt31193180"]),
+        FakeItem("bd", ["imdb://tt30144839"]),
+    ])
+    config = _config(charts=False, awards=True)
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        await build_all(http, session, section, "Movies", "Movie", "autoposter", config)
+
+    assert section._existing["Oscars Best Picture Winners"].summary_set == (
+        "The Academy Award for Best Picture is one of the Academy Awards presented "
+        "annually by the Academy of Motion Picture Arts and Sciences since the awards "
+        "debuted in 1929."
+    )
+    assert section._existing["Oscars Best Director Winners"].summary_set == (
+        "The Academy Award for Best Director is one of the Academy Awards presented "
+        "annually by the Academy of Motion Picture Arts and Sciences since the awards "
+        "debuted in 1929."
+    )
 
 
 async def test_year_collections_get_the_templated_summary(session):
@@ -193,7 +304,30 @@ async def test_year_collections_get_the_templated_summary(session):
         await build_all(http, session, section, "Movies", "Movie", "autoposter", config)
 
     collection = section._existing["Oscars Winners 2026"]
-    assert collection.summary_set == "The winners of the 2026 Academy Awards."
+    assert collection.summary_set == "Academy Awards (Oscars) Winners for 2026."
+
+
+async def test_the_year_collections_sort_by_release_and_the_rest_by_custom(session):
+    """§2.4: the dynamic year collections override collection_order to
+    release; the two static winner collections keep custom."""
+
+    def handler(request):
+        if "graphql.imdb.com" in str(request.url):
+            return httpx.Response(200, text=CHART_FIXTURE)
+        return httpx.Response(200, text=AWARD_FIXTURE)
+
+    section = FakeSection([
+        FakeItem("a", ["imdb://tt0111161"]),
+        FakeItem("bp", ["imdb://tt31193180"]),
+    ])
+    config = _config()
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        await build_all(http, session, section, "Movies", "Movie", "autoposter", config)
+
+    assert section._existing["Oscars Winners 2026"].sort_set == "release"
+    assert section._existing["Oscars Best Picture Winners"].sort_set == "custom"
+    assert section._existing["IMDb Top 250"].sort_set == "custom"
 
 
 async def test_dry_run_writes_nothing_and_still_reports(session):

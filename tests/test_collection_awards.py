@@ -17,6 +17,9 @@ from autoposter.collections.awards import (
 )
 
 FIXTURE = Path("tests/fixtures/collections/ev0000003.yml").read_text(encoding="utf-8")
+MIXED_KEYS_FIXTURE = Path(
+    "tests/fixtures/collections/ev0000003_mixed_year_keys.yml"
+).read_text(encoding="utf-8")
 
 
 def _client(body=None, status=200):
@@ -91,6 +94,30 @@ async def test_winners_for_year_returns_every_category():
     async with _client() as http:
         event = await fetch_event(http)
     assert sorted(winners_for_year(event, "2026")) == ["tt30144839", "tt31193180"]
+
+
+async def test_an_unquoted_year_in_the_dataset_does_not_crash_the_run():
+    """One unquoted key parses as an int, and ``sorted`` over a mix of int
+    and str raises TypeError -- outside the caller's try, taking the whole
+    run down. 2025 and 2023 are unquoted in this fixture."""
+    async with _client(body=MIXED_KEYS_FIXTURE) as http:
+        event = await fetch_event(http)
+
+    assert 2025 in event and "2024" in event, "the fixture must mix int and str keys"
+    assert recent_years(event, count=5) == ["2026", "2025", "2024", "2023", "2022"]
+    assert winners_for_categories(event, BEST_PICTURE)[0] == "tt31193180"
+
+
+async def test_an_unquoted_year_is_still_looked_up_by_its_string_key():
+    """``recent_years`` hands back str years, so ``winners_for_year`` must
+    find the int-keyed ones too -- otherwise that year silently resolves to
+    no winners and its collection is left empty."""
+    async with _client(body=MIXED_KEYS_FIXTURE) as http:
+        event = await fetch_event(http)
+
+    for year in recent_years(event, count=5):
+        assert winners_for_year(event, year), "no winners resolved for %r" % year
+    assert sorted(winners_for_year(event, "2025")) == ["tt1000002", "tt1000003"]
 
 
 async def test_duplicates_are_removed_keeping_first_occurrence():

@@ -37,6 +37,18 @@ async def fetch_event(http: httpx.AsyncClient, event_id: str = EVENT_ID) -> dict
     return event
 
 
+def _by_year(event: dict) -> dict[str, dict]:
+    """The event re-keyed by ``str`` year.
+
+    Years are quoted in the dataset today, but nothing enforces that: a
+    single unquoted key parses as an ``int``, and sorting a mix of ``int``
+    and ``str`` raises ``TypeError`` -- outside the caller's try, so it takes
+    the whole run down. Coercing here also keeps a ``str`` year handed back
+    by ``recent_years`` usable as a lookup in ``winners_for_year``.
+    """
+    return {str(year): data for year, data in event.items()}
+
+
 def recent_years(event: dict, count: int = 5) -> list[str]:
     """The most recent ceremony years that actually have data, newest first.
 
@@ -44,7 +56,8 @@ def recent_years(event: dict, count: int = 5) -> list[str]:
     the next, unheld ceremony, and including it would create an empty
     collection for a year that has no winners.
     """
-    return sorted((y for y in event if event[y]), reverse=True)[:count]
+    years = _by_year(event)
+    return sorted((y for y in years if years[y]), reverse=True)[:count]
 
 
 def _dedupe(ids: list[str]) -> list[str]:
@@ -56,9 +69,10 @@ def _dedupe(ids: list[str]) -> list[str]:
 def winners_for_categories(event: dict, categories: tuple[str, ...]) -> list[str]:
     """Winners of the given categories across every year, newest first."""
     wanted = {c.lower() for c in categories}
+    years = _by_year(event)
     ids: list[str] = []
-    for year in sorted((y for y in event if event[y]), reverse=True):
-        for group in event[year].values():
+    for year in sorted((y for y in years if years[y]), reverse=True):
+        for group in years[year].values():
             for category, entry in group.items():
                 if category.lower() in wanted:
                     ids.extend(entry.get("winner") or [])
@@ -68,7 +82,7 @@ def winners_for_categories(event: dict, categories: tuple[str, ...]) -> list[str
 def winners_for_year(event: dict, year: str) -> list[str]:
     """Every category's winners for one ceremony year."""
     ids: list[str] = []
-    for group in (event.get(year) or {}).values():
+    for group in (_by_year(event).get(str(year)) or {}).values():
         for entry in group.values():
             ids.extend(entry.get("winner") or [])
     return _dedupe(ids)

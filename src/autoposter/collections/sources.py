@@ -10,8 +10,12 @@ down but easy to lose sight of when wiring several sources together:
   list" -- which ``reconcile_list_collection`` already treats as "make no
   changes", never "remove everything". One dead chart or a GitHub outage
   must not take the rest of the run down with it.
-- The award event and the IMDb index are each fetched once and shared across
-  every collection that needs them, rather than once per collection.
+- The award event, the IMDb index and the section's collection listing are
+  each obtained once and shared across every collection that needs them,
+  rather than once per collection. The index costs a full ``section.all()``
+  and the listing returns all 305 collections on the production Movies
+  section, so the index is additionally deferred until something actually
+  asks for it -- a library with no enabled source must not pay for it.
 """
 import logging
 
@@ -46,13 +50,32 @@ CHART_COLLECTIONS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# Summaries are not ours to word: they come verbatim from Kometa's
+# translations file, transcribed in docs/research/kometa-collections.md §5.
+# The chart templates take the lower-cased library type ("movie"/"show").
+CHART_SUMMARIES: dict[str, str] = {
+    "IMDb Popular": "List of IMDb Popular %ss.",
+    "IMDb Top 250": "List of IMDb Top 250 %ss.",
+    "IMDb Lowest Rated": "List of IMDb Lowest Rated %ss.",
+}
+
+_OSCAR_SUMMARY = (
+    "The Academy Award for Best %s is one of the Academy Awards presented "
+    "annually by the Academy of Motion Picture Arts and Sciences since the "
+    "awards debuted in 1929."
+)
+
 # The two static winner collections, movies only.
-AWARD_COLLECTIONS: list[tuple[str, tuple[str, ...]]] = [
-    ("Oscars Best Picture Winners", BEST_PICTURE),
-    ("Oscars Best Director Winners", BEST_DIRECTOR),
+AWARD_COLLECTIONS: list[tuple[str, tuple[str, ...], str]] = [
+    ("Oscars Best Picture Winners", BEST_PICTURE, _OSCAR_SUMMARY % "Picture"),
+    ("Oscars Best Director Winners", BEST_DIRECTOR, _OSCAR_SUMMARY % "Director"),
 ]
 
-YEAR_SUMMARY = "The winners of the %s Academy Awards."
+YEAR_SUMMARY = "Academy Awards (Oscars) Winners for %s."
+
+# §2.4: the five dynamic year collections override collection_order to
+# release; only the two static winner collections keep the custom order.
+YEAR_SORT = "release"
 
 
 async def _chart_ids(http: httpx.AsyncClient, chart: str) -> list[str]:
@@ -82,37 +105,54 @@ async def build_all(
 ) -> list[str]:
     """Reconcile every configured chart and award collection for one library.
 
-    Chart collections have no known summary text -- passing one would
-    invent copy the operator never wrote, so ``None`` is passed and
-    whatever Plex already has is left alone. The year award collections are
-    the one exception: their summary is templated, not invented.
+    Every summary written here is a verbatim Kometa translation string, not
+    copy invented for this project -- see ``CHART_SUMMARIES``, the
+    ``AWARD_COLLECTIONS`` entries and ``YEAR_SUMMARY``.
     """
     actions: list[str] = []
     dry_run = not config.collections.apply_to_plex
-    index = build_imdb_index(section)
+    charts = config.collections.charts
+    awards = config.collections.awards and library_type == "Movie"
+    if not charts and not awards:
+        return actions
 
-    if config.collections.charts:
+    index: dict[str, object] | None = None
+
+    def imdb_index() -> dict[str, object]:
+        nonlocal index
+        if index is None:
+            index = build_imdb_index(section)
+        return index
+
+    existing = {c.title: c for c in section.collections()}
+    library_word = library_type.lower()
+
+    if charts:
         for title, chart in CHART_COLLECTIONS.get(library_type, []):
-            items = resolve_ids(index, await _chart_ids(http, chart))
+            items = resolve_ids(imdb_index(), await _chart_ids(http, chart))
             actions += await reconcile_list_collection(
-                session, section, library, title, items, label, dry_run=dry_run,
+                session, section, library, title, items, label,
+                summary=CHART_SUMMARIES[title] % library_word,
+                dry_run=dry_run, existing=existing,
             )
 
-    if config.collections.awards and library_type == "Movie":
+    if awards:
         event = await _award_event(http)
 
-        for title, categories in AWARD_COLLECTIONS:
+        for title, categories, summary in AWARD_COLLECTIONS:
             ids = winners_for_categories(event, categories) if event else []
-            items = resolve_ids(index, ids)
+            items = resolve_ids(imdb_index(), ids)
             actions += await reconcile_list_collection(
-                session, section, library, title, items, label, dry_run=dry_run,
+                session, section, library, title, items, label,
+                summary=summary, dry_run=dry_run, existing=existing,
             )
 
         for year in (recent_years(event) if event else []):
-            items = resolve_ids(index, winners_for_year(event, year))
+            items = resolve_ids(imdb_index(), winners_for_year(event, year))
             actions += await reconcile_list_collection(
                 session, section, library, "Oscars Winners %s" % year, items, label,
-                summary=YEAR_SUMMARY % year, dry_run=dry_run,
+                summary=YEAR_SUMMARY % year, sort=YEAR_SORT,
+                dry_run=dry_run, existing=existing,
             )
 
     return actions
