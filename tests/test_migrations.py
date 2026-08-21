@@ -13,6 +13,7 @@ from pathlib import Path
 
 import asyncpg
 import pytest
+from urllib.parse import urlsplit, urlunsplit
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -21,9 +22,22 @@ MAINTENANCE_DB_URL = os.environ.get(
     "postgresql://autoposter:autoposter@localhost:5433/postgres",
 )
 SCRATCH_DB_NAME = "autoposter_migrations_check"
-SCRATCH_DB_URL = (
-    f"postgresql+asyncpg://autoposter:autoposter@localhost:5433/{SCRATCH_DB_NAME}"
-)
+
+
+def _scratch_url(database: str) -> str:
+    """A scratch-database URL on the same server as the maintenance URL.
+
+    Derived rather than hardcoded: hardcoding the host and port meant the
+    scratch database was created on whichever server the maintenance URL names
+    while alembic was pointed at localhost:5433, which is only the same server
+    on a developer's machine running docker-compose. In CI it is not, and the
+    two migration tests failed with nothing to say about migrations.
+    """
+    parsed = urlsplit(MAINTENANCE_DB_URL)
+    return urlunsplit(("postgresql+asyncpg", parsed.netloc, "/" + database, "", ""))
+
+
+SCRATCH_DB_URL = _scratch_url(SCRATCH_DB_NAME)
 
 
 async def _postgres_reachable() -> bool:
