@@ -59,12 +59,13 @@ def test_alembic_has_a_single_head():
 
     This only inspects the revision files present in *this* checkout, so it
     does not need a database and never skips. It would not have caught that
-    incident before the merge -- each PR was single-headed in its own
-    checkout, and this branch's own migration files are just as
-    single-headed for any other feature branch built the same way. It does
-    catch a fork once one actually lands in a checkout: a self-inflicted
-    fork within a single branch, or the state of ``main`` itself right after
-    a merge like the one above.
+    incident before the merge; this Forgejo instance publishes only
+    ``refs/pull/N/head`` (PR branch tips), not ``refs/pull/N/merge`` refs
+    (merge previews). On a forge providing merge-preview refs, this test
+    would fire when a re-run of PR #24's CI after PR #23 merged would have
+    seen both heads at once. It does catch a fork once one lands in a
+    checkout: a self-inflicted fork within a single branch, or the state of
+    ``main`` itself right after a merge like the one above.
     """
     config = Config(str(REPO_ROOT / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
