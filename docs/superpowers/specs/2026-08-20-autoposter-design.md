@@ -342,9 +342,24 @@ page-level `.brand-mark` wordmark was added to the Settings page so TMDB's
 on that same page to be measured against — the sidebar wordmark isn't visible
 from Settings itself.
 
-**Node is pinned to 26** (`frontend/package.json`'s `engines: ">=26.0.0"`,
-`node:26-alpine` in the Dockerfile, `node-version: "26"` in CI), after the
-user noted this box's local 24.8.0 was neither the 24 LTS nor current.
+**Node is pinned to one exact patch, and a range is a failure.** Node 26 was
+chosen after the user noted this box's local 24.8.0 was neither the 24 LTS nor
+current; the exactness arrived with the rest of the toolchain pinning.
+`frontend/package.json`'s `engines.node` names a single patch with no range,
+the Dockerfile's `frontend` and `webdev` stages both use the matching
+`node:<patch>-alpine` tag, and CI's `NODE_VERSION` names the same one.
+`frontend/.npmrc` sets `engine-strict=true`, which is what makes that
+declaration a rule rather than a note: without it a mismatched Node prints
+`EBADENGINE` and installs anyway.
+
+The patch itself is deliberately not written down here.
+`tests/test_toolchain_versions.py`'s module docstring is the authoritative
+description of the scheme — which files must agree, and why each one is on
+the list — and `test_package_json_pins_node_exactly` rejects a floor such as
+`">=26.0.0"` outright. This paragraph previously documented that very floor as
+current, three commits after the pinning had replaced it, which is the
+argument for pointing at an executable description rather than copying a
+version string into prose.
 
 **The dashboard polls; it does not use a WebSocket.** This section calls for
 one, but no such endpoint exists yet, and adding it is a phase 4c server
