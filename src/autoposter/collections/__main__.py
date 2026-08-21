@@ -18,10 +18,12 @@ import logging
 import os
 from pathlib import Path
 
+import httpx
 from plexapi.server import PlexServer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections.reconcile import reconcile_content_ratings
+from autoposter.collections.sources import build_all
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Config, Secrets
 from autoposter.db.base import make_engine, make_session_factory
@@ -40,22 +42,30 @@ async def _reconcile_libraries(session: AsyncSession, server, config: Config) ->
     Plex writes have already landed, which would force a full rewrite next
     run instead of the cheap no-op the hash gate is meant to give.
     """
-    for name in config.collections.libraries:
-        section = server.library.section(name)
-        library_type = LIBRARY_TYPES.get(section.type)
-        if library_type is None:
-            logger.info("skipping %r: unsupported library type %r", name, section.type)
-            continue
+    async with httpx.AsyncClient() as http:
+        for name in config.collections.libraries:
+            section = server.library.section(name)
+            library_type = LIBRARY_TYPES.get(section.type)
+            if library_type is None:
+                logger.info("skipping %r: unsupported library type %r", name, section.type)
+                continue
 
-        actions = await reconcile_content_ratings(
-            session, section, name, library_type,
-            config.collections.ownership_label,
-            dry_run=not config.collections.apply_to_plex,
-        )
-        logger.info("%s: %d action(s)", name, len(actions))
-        for action in actions:
-            logger.info("   %s", action)
-        await session.commit()
+            actions = await reconcile_content_ratings(
+                session, section, name, library_type,
+                config.collections.ownership_label,
+                dry_run=not config.collections.apply_to_plex,
+            )
+
+            if config.collections.charts or config.collections.awards:
+                actions += await build_all(
+                    http, session, section, name, library_type,
+                    config.collections.ownership_label, config,
+                )
+
+            logger.info("%s: %d action(s)", name, len(actions))
+            for action in actions:
+                logger.info("   %s", action)
+            await session.commit()
 
 
 async def main() -> None:
