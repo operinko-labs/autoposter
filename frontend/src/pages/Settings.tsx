@@ -2,6 +2,13 @@ import { useEffect, useState } from "react";
 
 import { apiFetch } from "../api/client";
 import type { ConfigResponse } from "../api/types";
+/** Imported rather than referenced as `/tmdb-logo.png` from `public/`. Vite
+ * copies `public/` to the *root* of `dist/`, which `src/autoposter/api/spa.py`
+ * does not serve -- it mounts `/assets` and answers everything else with
+ * index.html, so the logo would come back as a 200 of HTML and render broken
+ * with nothing failing loudly. Importing it puts the file under `/assets/`
+ * with a content hash, where the mount already serves it. */
+import tmdbLogo from "../assets/tmdb-logo.png";
 import "./settings.css";
 
 /** Verbatim, because TMDB's terms specify the wording. Do not paraphrase. */
@@ -49,7 +56,7 @@ export function Settings() {
         <div className="provider">
           <img
             className="provider-logo"
-            src="/tmdb-logo.png"
+            src={tmdbLogo}
             alt="TMDB"
             width={72}
             height={38}
