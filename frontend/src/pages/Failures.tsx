@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "../api/client";
 import type { ParkedJob, ParkedJobsResponse } from "../api/types";
@@ -9,12 +9,26 @@ export function Failures() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
 
+  // `load` is awaited from the effect and again from a click handler, so a
+  // response can land after the page has gone. A ref rather than a local flag
+  // because the same guard has to cover both callers, and the sibling pages'
+  // per-effect `cancelled` local cannot reach a click handler.
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+
   const load = useCallback(async () => {
     try {
       const response = await apiFetch<ParkedJobsResponse>("/api/jobs/parked");
+      if (!live.current) return;
       setJobs(response.jobs);
       setError(null);
     } catch (caught) {
+      if (!live.current) return;
       setError((caught as Error).message);
     }
   }, []);
@@ -33,9 +47,9 @@ export function Failures() {
       // and the queue is the authority on what state a job is now in.
       await load();
     } catch (caught) {
-      setError((caught as Error).message);
+      if (live.current) setError((caught as Error).message);
     } finally {
-      setBusyId(null);
+      if (live.current) setBusyId(null);
     }
   }
 

@@ -4,6 +4,19 @@ import { ApiError } from "../api/client";
 import { useSession } from "../auth/SessionContext";
 import "./login.css";
 
+export function loginErrorMessage(caught: unknown): string {
+  if (!(caught instanceof ApiError)) {
+    // fetch itself rejected: no route to the server, DNS, TLS, or a body the
+    // client could not read.
+    return "Could not reach the server. Check that it is running and try again.";
+  }
+  if (caught.status === 401) return "Incorrect password.";
+  if (caught.status === 429) {
+    return "Too many attempts. Wait a moment and try again.";
+  }
+  return `Could not reach the server (error ${caught.status}). Try again.`;
+}
+
 export function Login() {
   const { login } = useSession();
   const [password, setPassword] = useState("");
@@ -17,14 +30,12 @@ export function Login() {
     try {
       await login(password);
     } catch (caught) {
-      // The server answers a wrong password and an unknown one identically,
-      // and so does this: anything more specific tells an attacker which half
-      // they got right.
-      setError(
-        caught instanceof ApiError && caught.status === 429
-          ? "Too many attempts. Wait a moment and try again."
-          : "Incorrect password.",
-      );
+      // Only a 401 means the credentials were wrong. Reporting a 500 or a
+      // dropped connection as "Incorrect password." tells someone whose
+      // server is down to go hunting for a typo. The don't-say-which-half
+      // rule applies to the 401 itself -- every rejected password gets the
+      // same message, whatever was wrong with it -- not to transport errors.
+      setError(loginErrorMessage(caught));
       setPassword("");
     } finally {
       setBusy(false);
