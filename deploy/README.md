@@ -594,6 +594,34 @@ and a registration points the service at a directory it cannot read (or,
 worse, silently matches an unrelated path that merely shares a prefix). A
 path that does not fall under `plex_path` is skipped rather than guessed at.
 
+An item whose mapped path *is* a root — `arr_path` itself, or one of the
+root folders the service manages (`/mnt/media/Movies`, `/mnt/media/TV`) — is
+never registered. That happens when a file sits directly under the library
+root with no folder of its own; registering it would tell the service that
+one item owns the whole tree, and a later "delete with files" would take the
+library with it.
+
+### A service that cannot be the right one is refused, not acted on
+
+Before comparing anything, each pass checks the service's own answers
+against the configuration, and refuses the whole pass for that service
+(logged with a full traceback, reported as `refused` in
+`scheduled_runs.last_detail`, nothing added) when either check fails:
+
+- **Root folders.** `arr_path` must share a tree with one of the root
+  folders the service actually manages — verified live, exactly one each:
+  `/mnt/media/Movies` for Radarr and `/mnt/media/TV` for Sonarr. A service
+  managing something else entirely is not the instance this sync was
+  configured for (a wrong `base_url`, the wrong container).
+- **An empty listing.** A service answering "I hold nothing at all" for a
+  Plex library with more than ten items is treated as a misconfiguration,
+  not as a library-sized gap. That answer would make every Plex item look
+  missing *and* leave the path-collision guard nothing to compare against —
+  under `add_existing` roughly 1,982 POSTs into the wrong instance.
+
+Both refusals are contained the same way a missing quality profile is: the
+other service's sync and the safety-net enqueue below still run.
+
 ### Two independent things run per Plex library
 
 Every pass over a Plex library (movie or show) does two independent things:

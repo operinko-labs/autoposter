@@ -6,9 +6,10 @@ one item. Authentication is the ``X-Api-Key`` request header on every call
 -- never a query string, never logged.
 
 A non-2xx response always raises rather than being swallowed into an empty
-collection: an empty ``existing_ids`` would make every Plex item look
-missing, which under ``add_existing`` is a request to register the entire
-library.
+collection: an empty listing would make every Plex item look missing, which
+under ``add_existing`` is a request to register the entire library. A 200-OK
+*empty* listing is just as dangerous and cannot be caught here -- see
+``sync.sync_section``, which refuses to act on one.
 """
 from dataclasses import dataclass
 
@@ -36,38 +37,45 @@ class ArrClient:
     def _headers(self) -> dict[str, str]:
         return {"X-Api-Key": self._api_key}
 
-    async def existing_ids(self) -> set[str]:
-        """Ids the service already has, as strings, for comparing against Plex guids.
+    async def listing(self) -> list[dict]:
+        """Everything the service currently holds, in one GET.
+
+        Both views the sync needs -- the set of external ids and the map of
+        registered paths -- are derived from this single response by
+        ``ids_in``/``paths_in``, rather than each fetching the same endpoint
+        again: one round trip instead of two, and the two views cannot
+        disagree with each other about what the service holds.
+        """
+        url = f"{self._base_url}/api/v3/{self._kind.resource}"
+        response = await self._http.get(url, headers=self._headers())
+        response.raise_for_status()
+        return response.json()
+
+    def ids_in(self, entries: list[dict]) -> set[str]:
+        """Ids in a listing, as strings, for comparing against Plex guids.
 
         Entries whose id field is absent or zero are skipped -- an unmatched
         item in the service has no external id and must not collide with
         anything.
         """
-        url = f"{self._base_url}/api/v3/{self._kind.resource}"
-        response = await self._http.get(url, headers=self._headers())
-        response.raise_for_status()
         ids = set()
-        for entry in response.json():
+        for entry in entries:
             value = entry.get(self._kind.id_field)
             if value:
                 ids.add(str(value))
         return ids
 
-    async def existing_paths(self) -> dict[str, dict]:
-        """Every path this service already has registered, normalised (no
-        trailing slash, case preserved), mapped to that entry's title and
-        external id.
+    def paths_in(self, entries: list[dict]) -> dict[str, dict]:
+        """Every path in a listing, normalised (no trailing slash, case
+        preserved), mapped to that entry's title and external id.
 
         Comparing by id alone misses the case where the service holds the
         right folder under the *wrong* id -- a different item entirely. The
         sync uses this to catch that before ever adding, by checking a
         mapped Plex path against what the service already has on disk.
         """
-        url = f"{self._base_url}/api/v3/{self._kind.resource}"
-        response = await self._http.get(url, headers=self._headers())
-        response.raise_for_status()
         paths: dict[str, dict] = {}
-        for entry in response.json():
+        for entry in entries:
             path = entry.get("path")
             if not path:
                 continue
@@ -90,6 +98,12 @@ class ArrClient:
         return None
 
     async def root_folders(self) -> list[str]:
+        """The roots this instance actually manages, e.g. ``/mnt/media/Movies``.
+
+        ``sync_section`` checks the configured path mapping against these
+        before comparing anything: a service that manages a completely
+        different tree is not the instance this sync was configured for.
+        """
         url = f"{self._base_url}/api/v3/rootfolder"
         response = await self._http.get(url, headers=self._headers())
         response.raise_for_status()

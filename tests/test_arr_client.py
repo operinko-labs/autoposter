@@ -50,41 +50,41 @@ async def test_api_key_is_sent_as_a_header_and_never_in_the_url():
 
     async with _fake_http(handler) as http:
         client = ArrClient(http, "https://radarr.example", "secret-key", RADARR)
-        await client.existing_ids()
+        await client.listing()
 
     assert seen["headers"]["X-Api-Key"] == "secret-key"
     assert "secret-key" not in seen["url"]
 
 
-async def test_existing_ids_returns_string_ids_for_radarr():
+async def test_ids_in_returns_string_ids_for_radarr():
     async def handler(request):
         return httpx.Response(200, json=RADARR_MOVIES)
 
     async with _fake_http(handler) as http:
         client = ArrClient(http, "https://radarr.example", "key", RADARR)
-        ids = await client.existing_ids()
+        ids = client.ids_in(await client.listing())
 
     assert ids == {"438631"}
 
 
-async def test_existing_ids_returns_string_ids_for_sonarr():
+async def test_ids_in_returns_string_ids_for_sonarr():
     async def handler(request):
         return httpx.Response(200, json=SONARR_SERIES)
 
     async with _fake_http(handler) as http:
         client = ArrClient(http, "https://sonarr.example", "key", SONARR)
-        ids = await client.existing_ids()
+        ids = client.ids_in(await client.listing())
 
     assert ids == {"371980"}
 
 
-async def test_existing_ids_skips_entries_with_missing_or_zero_id():
+async def test_ids_in_skips_entries_with_missing_or_zero_id():
     async def handler(request):
         return httpx.Response(200, json=RADARR_MOVIES)
 
     async with _fake_http(handler) as http:
         client = ArrClient(http, "https://radarr.example", "key", RADARR)
-        ids = await client.existing_ids()
+        ids = client.ids_in(await client.listing())
 
     # Only the id-1 movie (tmdbId 438631) is present; the zero and missing
     # id-field entries must not contribute any id, e.g. not "0" or "None".
@@ -93,8 +93,8 @@ async def test_existing_ids_skips_entries_with_missing_or_zero_id():
     assert "None" not in ids
 
 
-async def test_existing_ids_raises_on_non_2xx_instead_of_an_empty_set():
-    """An empty existing_ids means "add the whole library" under add_existing.
+async def test_listing_raises_on_non_2xx_instead_of_an_empty_set():
+    """An empty listing means "add the whole library" under add_existing.
 
     A failed list request must therefore raise, never be swallowed into an
     empty set.
@@ -105,10 +105,10 @@ async def test_existing_ids_raises_on_non_2xx_instead_of_an_empty_set():
     async with _fake_http(handler) as http:
         client = ArrClient(http, "https://radarr.example", "key", RADARR)
         with pytest.raises(httpx.HTTPStatusError):
-            await client.existing_ids()
+            await client.listing()
 
 
-async def test_existing_paths_maps_normalised_path_to_title_and_id():
+async def test_paths_in_maps_normalised_path_to_title_and_id():
     movies = [
         {"id": 1, "title": "Sam Bai Mai Thao (2014)", "tvdbId": 415381,
          "path": "/mnt/media/TV/Muumien maailma (2014)"},
@@ -119,7 +119,7 @@ async def test_existing_paths_maps_normalised_path_to_title_and_id():
 
     async with _fake_http(handler) as http:
         client = ArrClient(http, "https://sonarr.example", "key", SONARR)
-        paths = await client.existing_paths()
+        paths = client.paths_in(await client.listing())
 
     assert paths == {
         "/mnt/media/TV/Muumien maailma (2014)": {
@@ -128,7 +128,7 @@ async def test_existing_paths_maps_normalised_path_to_title_and_id():
     }
 
 
-async def test_existing_paths_strips_trailing_slash():
+async def test_paths_in_strips_trailing_slash():
     movies = [{"id": 1, "title": "Dune", "tmdbId": 438631, "path": "/mnt/media/Movies/Dune (2021)/"}]
 
     async def handler(request):
@@ -136,13 +136,13 @@ async def test_existing_paths_strips_trailing_slash():
 
     async with _fake_http(handler) as http:
         client = ArrClient(http, "https://radarr.example", "key", RADARR)
-        paths = await client.existing_paths()
+        paths = client.paths_in(await client.listing())
 
     assert "/mnt/media/Movies/Dune (2021)" in paths
     assert "/mnt/media/Movies/Dune (2021)/" not in paths
 
 
-async def test_existing_paths_skips_entries_with_no_path():
+async def test_paths_in_skips_entries_with_no_path():
     movies = [{"id": 1, "title": "No Path", "tmdbId": 1}]
 
     async def handler(request):
@@ -150,7 +150,7 @@ async def test_existing_paths_skips_entries_with_no_path():
 
     async with _fake_http(handler) as http:
         client = ArrClient(http, "https://radarr.example", "key", RADARR)
-        paths = await client.existing_paths()
+        paths = client.paths_in(await client.listing())
 
     assert paths == {}
 
@@ -279,7 +279,7 @@ async def test_trailing_slash_on_base_url_does_not_double_the_path():
 
     async with _fake_http(handler) as http:
         client = ArrClient(http, "https://radarr.example/", "key", RADARR)
-        await client.existing_ids()
+        await client.listing()
 
     assert seen["url"] == "https://radarr.example/api/v3/movie"
     assert "//api" not in seen["url"]

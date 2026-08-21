@@ -49,7 +49,9 @@ def parse_guids(guids: list[str]) -> dict[str, str]:
     return parsed
 
 
-def _as_int(value: str | None) -> int | None:
+def as_int(value: str | None) -> int | None:
+    """``int(value)`` or None -- for optional external ids that may be absent
+    or malformed. Shared with ``arr.sync``."""
     try:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -222,8 +224,8 @@ class PlexClient:
             root_folder=root_folder,
             file_path=file_path,
             art_url=match.art_url,
-            tmdb_id=_as_int(guids.get("tmdb")) or intent.tmdb_id,
-            tvdb_id=_as_int(guids.get("tvdb")) or intent.tvdb_id,
+            tmdb_id=as_int(guids.get("tmdb")) or intent.tmdb_id,
+            tvdb_id=as_int(guids.get("tvdb")) or intent.tvdb_id,
             imdb_id=guids.get("imdb") or intent.imdb_id,
             parent_rating_key=match.parent_rating_key,
         )

@@ -20,7 +20,12 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.arr.client import RADARR, SONARR, ArrClient, ArrKind
-from autoposter.arr.sync import ArrSyncSettings, enqueue_unknown_items, sync_section
+from autoposter.arr.sync import (
+    ArrSyncRefused,
+    ArrSyncSettings,
+    enqueue_unknown_items,
+    sync_section,
+)
 from autoposter.collections.service import reconcile_libraries
 from autoposter.config.schema import Config, RadarrConfig, Secrets, SonarrConfig
 from autoposter.db.models import ItemFacts, MediaItem, Render
@@ -178,7 +183,8 @@ def _sonarr_settings(cfg: SonarrConfig) -> ArrSyncSettings:
 
 async def _sync_one_service(
     http: httpx.AsyncClient,
-    section,
+    section_title: str,
+    items: list,
     arr_kind: ArrKind,
     service_cfg,
     settings: ArrSyncSettings,
@@ -187,25 +193,32 @@ async def _sync_one_service(
     """Register one section's missing items with one service.
 
     ``sync_section`` raises ``ValueError`` when the configured quality
-    profile cannot be resolved -- an operator misconfiguration, not a
-    transient fault. It is caught here, not left to propagate: it must be
-    loud (logged with a full traceback) but it must not take down the other
-    service's sync or the safety-net enqueue that runs after this in
-    ``make_arr_sync_job``. Any other failure (the service unreachable, a
-    bad api key, ...) is contained the same way for the same reason.
+    profile cannot be resolved, and ``ArrSyncRefused`` when the service's
+    own answers say it is not the instance this sync was configured for --
+    operator misconfigurations, not transient faults. Both are caught here,
+    not left to propagate: they must be loud (logged with a full traceback)
+    but they must not take down the other service's sync or the safety-net
+    enqueue that runs after this in ``make_arr_sync_job``. Any other failure
+    (the service unreachable, a bad api key, ...) is contained the same way
+    for the same reason.
     """
     client = ArrClient(http, service_cfg.base_url, api_key, arr_kind)
     try:
         report = await sync_section(
-            client, section, arr_kind, settings, dry_run=not service_cfg.add_existing
+            client, items, arr_kind, settings, dry_run=not service_cfg.add_existing
         )
+    except ArrSyncRefused as exc:
+        logger.error(
+            "arr_sync: %s refused for %r: %s", arr_kind.name, section_title, exc, exc_info=True
+        )
+        return f"{section_title} {arr_kind.name}: refused, {exc}"
     except Exception:
         logger.error(
-            "arr_sync: %s sync failed for %r", arr_kind.name, section.title, exc_info=True
+            "arr_sync: %s sync failed for %r", arr_kind.name, section_title, exc_info=True
         )
-        return f"{section.title} {arr_kind.name}: failed, see log"
+        return f"{section_title} {arr_kind.name}: failed, see log"
     return (
-        f"{section.title} {arr_kind.name}: checked {report.checked}, "
+        f"{section_title} {arr_kind.name}: checked {report.checked}, "
         f"missing {report.missing}, added {report.added}, failed {report.failed}, "
         f"misassigned {report.skipped_path_taken}"
     )
@@ -227,7 +240,10 @@ def make_arr_sync_job(
     ``PlexServer``, the same contract ``make_collections_job`` uses, and for
     the same reason it runs through ``asyncio.to_thread``: connecting is a
     blocking call sharing the event loop with the worker pool and the Plex
-    liveness probe.
+    liveness probe. Listing the sections and listing each section's items
+    block for the same reason and are offloaded the same way -- and each
+    section is listed exactly once per pass, with that one list handed to
+    both the registration and the safety net.
     """
 
     async def run(session: AsyncSession) -> str:
@@ -243,23 +259,29 @@ def make_arr_sync_job(
 
             if section.type == "movie":
                 plex_kind = "movie"
-                if config.radarr.enabled:
-                    parts.append(await _sync_one_service(
-                        http, section, RADARR, config.radarr,
-                        _radarr_settings(config.radarr), secrets.radarr_apikey,
-                    ))
             elif section.type == "show":
                 plex_kind = "show"
-                if config.sonarr.enabled:
-                    parts.append(await _sync_one_service(
-                        http, section, SONARR, config.sonarr,
-                        _sonarr_settings(config.sonarr), secrets.sonarr_apikey,
-                    ))
             else:
                 continue
 
+            # Listed once per pass, off the loop, and shared by both halves:
+            # a section of ~2,000 items takes seconds to list, and this loop
+            # is shared with the worker pool and the Plex liveness probe.
+            items = await asyncio.to_thread(section.all)
+
+            if plex_kind == "movie" and config.radarr.enabled:
+                parts.append(await _sync_one_service(
+                    http, section.title, items, RADARR, config.radarr,
+                    _radarr_settings(config.radarr), secrets.radarr_apikey,
+                ))
+            elif plex_kind == "show" and config.sonarr.enabled:
+                parts.append(await _sync_one_service(
+                    http, section.title, items, SONARR, config.sonarr,
+                    _sonarr_settings(config.sonarr), secrets.sonarr_apikey,
+                ))
+
             enqueued = await enqueue_unknown_items(
-                session, section, plex_kind, batch_size=config.arr_sync.batch_size
+                session, items, plex_kind, batch_size=config.arr_sync.batch_size
             )
             parts.append(f"{section.title}: enqueued {enqueued} unknown item(s)")
 

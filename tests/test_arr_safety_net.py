@@ -24,14 +24,6 @@ class FakeItem:
         self.year = 2021
 
 
-class FakeSection:
-    def __init__(self, items):
-        self._items = items
-
-    def all(self):
-        return self._items
-
-
 async def _pending_jobs(session):
     return (await session.execute(select(Job).where(Job.state == "pending"))).scalars().all()
 
@@ -40,16 +32,16 @@ async def test_an_item_with_a_media_items_row_is_not_enqueued(session):
     session.add(MediaItem(rating_key="1", library="Movies", kind="movie", title="Dune"))
     await session.commit()
 
-    section = FakeSection([FakeItem("1", "Dune", ["tmdb://438631"])])
-    count = await enqueue_unknown_items(session, section, "movie")
+    items = [FakeItem("1", "Dune", ["tmdb://438631"])]
+    count = await enqueue_unknown_items(session, items, "movie")
 
     assert count == 0
     assert await _pending_jobs(session) == []
 
 
 async def test_an_item_with_no_media_items_row_is_enqueued(session):
-    section = FakeSection([FakeItem("2", "Severance", ["tvdb://371980"])])
-    count = await enqueue_unknown_items(session, section, "show")
+    items = [FakeItem("2", "Severance", ["tvdb://371980"])]
+    count = await enqueue_unknown_items(session, items, "show")
 
     assert count == 1
     jobs = await _pending_jobs(session)
@@ -60,22 +52,22 @@ async def test_an_item_with_no_media_items_row_is_enqueued(session):
 
 
 async def test_batch_size_caps_how_many_are_enqueued(session):
-    section = FakeSection([
+    items = [
         FakeItem("10", "A", ["tmdb://10"]),
         FakeItem("11", "B", ["tmdb://11"]),
         FakeItem("12", "C", ["tmdb://12"]),
-    ])
-    count = await enqueue_unknown_items(session, section, "movie", batch_size=2)
+    ]
+    count = await enqueue_unknown_items(session, items, "movie", batch_size=2)
 
     assert count == 2
     assert len(await _pending_jobs(session)) == 2
 
 
 async def test_running_twice_does_not_double_enqueue(session):
-    section = FakeSection([FakeItem("20", "Only", ["tmdb://20"])])
+    items = [FakeItem("20", "Only", ["tmdb://20"])]
 
-    first = await enqueue_unknown_items(session, section, "movie")
-    second = await enqueue_unknown_items(session, section, "movie")
+    first = await enqueue_unknown_items(session, items, "movie")
+    second = await enqueue_unknown_items(session, items, "movie")
 
     assert first == 1
     assert second == 0
@@ -86,19 +78,30 @@ async def test_the_returned_count_matches_the_number_of_rows_still_missing(sessi
     session.add(MediaItem(rating_key="30", library="Movies", kind="movie", title="Known"))
     await session.commit()
 
-    section = FakeSection([
+    items = [
         FakeItem("30", "Known", ["tmdb://30"]),
         FakeItem("31", "Unknown One", ["tmdb://31"]),
         FakeItem("32", "Unknown Two", ["tmdb://32"]),
-    ])
-    count = await enqueue_unknown_items(session, section, "movie")
+    ]
+    count = await enqueue_unknown_items(session, items, "movie")
 
     assert count == 2
     assert len(await _pending_jobs(session)) == 2
 
 
 async def test_an_empty_section_enqueues_nothing(session):
-    count = await enqueue_unknown_items(session, FakeSection([]), "movie")
+    count = await enqueue_unknown_items(session, [], "movie")
 
     assert count == 0
     assert await _pending_jobs(session) == []
+
+
+def test_the_id_coercion_helper_is_shared_with_the_plex_client():
+    """``as_int`` had a verbatim duplicate here and in ``plex.client``. One
+    definition, imported -- two copies of the same coercion would drift.
+    """
+    from autoposter.arr import sync
+    from autoposter.plex.client import as_int
+
+    assert sync.as_int is as_int
+    assert not hasattr(sync, "_as_int")

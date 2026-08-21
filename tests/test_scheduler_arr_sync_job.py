@@ -46,12 +46,21 @@ class FakeItem:
 
 
 class FakeSection:
+    """Records how ``all()`` was called: listing a real section of ~2,000
+    items takes seconds, so it must happen off the event loop and exactly
+    once per pass, with the one list shared by the registration and the
+    safety net."""
+
     def __init__(self, title, section_type, items):
         self.title = title
         self.type = section_type
         self._items = items
+        self.all_calls = 0
+        self.all_threads = []
 
     def all(self):
+        self.all_calls += 1
+        self.all_threads.append(threading.current_thread())
         return self._items
 
 
@@ -76,10 +85,23 @@ class Unreachable(httpx.AsyncBaseTransport):
         raise AssertionError(f"unexpected request to a service that must not be called: {request.url}")
 
 
-def _service_handler(profiles_json, existing_json=None):
+# Verified live: one root folder each, matching the default path mapping.
+RADARR_ROOT_FOLDERS = [{"id": 1, "path": "/mnt/media/Movies", "accessible": True}]
+SONARR_ROOT_FOLDERS = [{"id": 1, "path": "/mnt/media/TV", "accessible": True}]
+
+
+def _service_handler(profiles_json, existing_json=None, root_folders=None):
     async def handler(request):
         if request.method == "GET" and request.url.path.endswith("/qualityprofile"):
             return httpx.Response(200, json=profiles_json)
+        if request.method == "GET" and request.url.path.endswith("/rootfolder"):
+            if root_folders is None:
+                root_folders_json = (
+                    RADARR_ROOT_FOLDERS if "radarr" in request.url.host else SONARR_ROOT_FOLDERS
+                )
+            else:
+                root_folders_json = root_folders
+            return httpx.Response(200, json=root_folders_json)
         if request.method == "GET":
             return httpx.Response(200, json=existing_json or [])
         if request.method == "POST":
@@ -206,24 +228,94 @@ async def test_an_excluded_library_is_skipped_entirely(session):
     assert await _pending_jobs(session) == []
 
 
-async def test_the_plex_connection_runs_off_the_event_loop(session):
+async def test_connecting_and_listing_both_run_off_the_event_loop(session):
+    """Both blocking Plex calls -- connecting and listing a section -- must
+    be offloaded. A section of ~2,000 items takes seconds to list, on the
+    loop the worker pool and the liveness probe share.
+    """
     main_thread = threading.current_thread()
     connect_thread = {}
+    section = FakeSection(
+        "Movies", "movie", [FakeItem("40", "Dune", ["tmdb://40"], ["/mnt/Media/Movies/Dune/D.mkv"])]
+    )
 
     def server_factory():
         connect_thread["thread"] = threading.current_thread()
-        return FakeServer([])
+        return FakeServer([section])
 
-    config = _config(radarr=RadarrConfig(enabled=False), sonarr=SonarrConfig(enabled=False))
-    async with httpx.AsyncClient(transport=Unreachable()) as http:
+    config = _config(radarr=RADARR_SETTINGS, sonarr=SonarrConfig(enabled=False))
+    transport = MultiplexTransport({
+        "radarr.example": _service_handler(
+            profiles_json=[{"id": 7, "name": "HD Bluray + WEB"}], existing_json=[]
+        ),
+    })
+    async with httpx.AsyncClient(transport=transport) as http:
         job = make_arr_sync_job(config, server_factory, http, _secrets())
-        await job.run(session)
+        summary = await job.run(session)
 
+    assert "Movies radarr: checked 1, missing 1, added 1" in summary
     assert connect_thread["thread"] is not None
     assert connect_thread["thread"] is not main_thread, (
         "server_factory must run via asyncio.to_thread, not directly on the "
         "event loop thread"
     )
+    assert section.all_threads, "the section was never listed"
+    assert all(thread is not main_thread for thread in section.all_threads), (
+        "section.all() must run via asyncio.to_thread, not directly on the "
+        "event loop thread"
+    )
+
+
+async def test_a_section_is_listed_exactly_once_per_pass(session):
+    """The registration and the safety net share one listing -- listing the
+    same movie section twice per pass doubles the most expensive call in the
+    job."""
+    section = FakeSection(
+        "Movies", "movie", [FakeItem("50", "Dune", ["tmdb://50"], ["/mnt/Media/Movies/Dune/D.mkv"])]
+    )
+    config = _config(radarr=RADARR_SETTINGS, sonarr=SonarrConfig(enabled=False))
+    transport = MultiplexTransport({
+        "radarr.example": _service_handler(
+            profiles_json=[{"id": 7, "name": "HD Bluray + WEB"}], existing_json=[]
+        ),
+    })
+    async with httpx.AsyncClient(transport=transport) as http:
+        job = make_arr_sync_job(config, lambda: FakeServer([section]), http, _secrets())
+        summary = await job.run(session)
+
+    assert section.all_calls == 1
+    assert "Movies: enqueued 1 unknown item(s)" in summary
+
+
+async def test_a_service_that_reports_nothing_is_refused_and_the_safety_net_still_runs(session):
+    """A 200-OK empty listing against a real library is a misconfiguration,
+    not a library-sized gap: the pass is refused loudly and nothing is
+    posted, while the safety net still runs.
+    """
+    items = [
+        FakeItem(str(n), f"Movie {n}", [f"tmdb://{n}"], [f"/mnt/Media/Movies/Movie {n}/m.mkv"])
+        for n in range(100, 120)
+    ]
+    server = FakeServer([FakeSection("Movies", "movie", items)])
+    config = _config(radarr=RADARR_SETTINGS, sonarr=SonarrConfig(enabled=False))
+
+    async def handler(request):
+        if request.method == "POST":  # pragma: no cover
+            raise AssertionError("a refused pass must never POST")
+        if request.url.path.endswith("/rootfolder"):
+            return httpx.Response(200, json=RADARR_ROOT_FOLDERS)
+        if request.url.path.endswith("/qualityprofile"):
+            return httpx.Response(200, json=[{"id": 7, "name": "HD Bluray + WEB"}])
+        return httpx.Response(200, json=[])
+
+    transport = MultiplexTransport({"radarr.example": handler})
+    async with httpx.AsyncClient(transport=transport) as http:
+        job = make_arr_sync_job(config, lambda: server, http, _secrets())
+        summary = await job.run(session)
+
+    assert "Movies radarr: refused" in summary
+    assert "Movies: enqueued 20 unknown item(s)" in summary
+    assert len(await _pending_jobs(session)) == 20
 
 
 def _secrets():
