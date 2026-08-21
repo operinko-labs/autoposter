@@ -10,12 +10,18 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    // `npm run dev` talks to a locally running `uvicorn autoposter.main:app`.
-    // Only used in development -- in the container the API and the built
-    // assets are the same origin, so no proxy exists at runtime.
+    // The dev server runs inside the compose network (docker-compose.yml's
+    // `web` service), so the API is reachable by service name. Only used in
+    // development -- in the container the API and the built assets are the
+    // same origin, so no proxy exists at runtime.
+    //
+    // This proxied localhost:8000 for two phases, which no process ever
+    // listened on: main.py binds 8080. The dev server forwarded every /api
+    // call into nothing and the config file looked entirely reasonable, so
+    // tests/test_dev_environment.py now asserts the two agree.
     proxy: {
-      "/api": "http://localhost:8000",
-      "/healthz": "http://localhost:8000",
+      "/api": "http://api:8080",
+      "/healthz": "http://api:8080",
     },
   },
   test: {

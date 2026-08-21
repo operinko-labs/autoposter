@@ -11,3 +11,95 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
+
+  # The suite, on the interpreter and the ImageMagick build the image ships.
+  # Needs no credentials: `docker compose run --rm test pytest` is the whole
+  # requirement, which is the substance of "a working Docker is enough".
+  test:
+    build:
+      context: .
+      target: dev
+    environment:
+      # tests/conftest.py defaults to the host's published 5433; inside the
+      # compose network the server is reachable by service name instead.
+      AUTOPOSTER_TEST_DATABASE_URL: postgresql+asyncpg://autoposter:autoposter@postgres:5432/autoposter
+    volumes:
+      # The whole tree, not a curated list of subdirectories. This suite tests
+      # the repository, not just the package: test_toolchain_versions.py reads
+      # the Dockerfile and the workflow, test_ci_path_filters.py reads
+      # .forgejo/, test_attribution_present.py reads frontend/dist. Mounting
+      # src/ and tests/ alone made 44 of them fail on a missing file, which
+      # looks exactly like a real regression and is not one.
+      #
+      # It also matches what the `dev` stage's editable install expects: the
+      # recorded path points at /app/src, so the host tree lands where an edit
+      # takes effect with no rebuild.
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: pytest
+
+  # The vite dev server. Needs no credentials.
+  web:
+    build:
+      context: .
+      target: webdev
+    environment:
+      # A bind mount from Windows does not deliver inotify events reliably, so
+      # vite's watcher sees nothing and hot reload silently stops reloading.
+      # This lives here rather than in vite.config.ts so a committed config
+      # file does not carry one platform's workaround.
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./frontend:/frontend
+      # Never the bind mount: these packages ship per-platform binaries, and a
+      # Windows or macOS tree mounted into Alpine fails outright -- the same
+      # reasoning .dockerignore already records for the build context.
+      - frontend_node_modules:/frontend/node_modules
+    ports:
+      - "5173:5173"
+    # `npm ci` deletes node_modules wholesale every run, so doing it on every
+    # `up` would cost half a minute each time. Install only into an empty
+    # volume; `docker compose run --rm web npm ci` forces it when a dependency
+    # actually changes.
+    command: sh -c "[ -d node_modules/vite ] || npm ci; npm run dev -- --host 0.0.0.0"
+
+  # The application, with hot reload. Unlike `test` and `web`, this one needs
+  # credentials -- exactly as production does. Copy .env.example to .env and
+  # fill it in; compose refuses to start without the file, and
+  # Secrets.from_env() would refuse anyway.
+  api:
+    build:
+      context: .
+      target: dev
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      # Compose owns the wiring, .env owns the credentials. Set here so the
+      # host-oriented URL in .env cannot point the container at a database it
+      # has no route to.
+      AUTOPOSTER_DATABASE_URL: postgresql+asyncpg://autoposter:autoposter@postgres:5432/autoposter
+      AUTOPOSTER_CONFIG: /app/config/autoposter.example.yaml
+    volumes:
+      - .:/app
+    ports:
+      # 8081 on the host, 8080 in the container. qBittorrent's WebUI holds
+      # 8080 on the development machine, the same reason postgres above is
+      # published on 5433 rather than 5432. Only the published port moves --
+      # the app still binds 8080, which is what vite.config.ts proxies to
+      # inside the compose network, so nothing else has to know about this.
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Mirrors the image's CMD, plus --reload against the bind-mounted source.
+    # `--factory` because main.py builds the app through build() rather than
+    # exposing a module-level `app`, and --reload needs an import string.
+    command: >
+      sh -c "alembic upgrade head &&
+      uvicorn autoposter.main:build --factory --reload --host 0.0.0.0 --port 8080"
+
+volumes:
+  frontend_node_modules:

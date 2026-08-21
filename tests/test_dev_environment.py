@@ -11,6 +11,8 @@ survived in this repository until 2026-08-21.
 import re
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO / "Dockerfile"
 COMPOSE = REPO / "docker-compose.yml"
@@ -43,4 +45,118 @@ def test_the_runtime_stage_is_the_last_one():
         f"the last stage in the Dockerfile is {stages[-1]!r}, not 'runtime'; "
         "`docker build .` builds the last stage and the image job passes no "
         "`target:`, so this is what would be pushed to Harbor as production"
+    )
+
+
+def _compose() -> dict:
+    return yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+
+def _service(name: str) -> dict:
+    services = _compose().get("services") or {}
+    assert name in services, f"docker-compose.yml declares no {name!r} service"
+    return services[name]
+
+
+def test_development_services_build_from_the_dockerfile():
+    """An ``image:`` tag here would be a second declaration of a pinned version.
+
+    The whole point of the ``webdev`` and ``dev`` stages is that Node and
+    Python are named once, in the Dockerfile, where
+    tests/test_toolchain_versions.py already holds every stage to the same
+    patch. A service naming an image directly escapes that entirely.
+    """
+    for name in ("test", "web", "api"):
+        service = _service(name)
+        assert "image" not in service, (
+            f"the {name!r} service names an `image:` directly, which declares a "
+            "version nothing holds to the Dockerfile's; build from a stage"
+        )
+        build = service.get("build")
+        assert isinstance(build, dict) and build.get("target"), (
+            f"the {name!r} service must build from a named Dockerfile stage"
+        )
+
+
+def test_the_test_service_needs_no_secrets():
+    """Running the suite must need nothing but Docker.
+
+    ``api`` legitimately requires credentials, as production does. If that
+    requirement leaks into ``test``, the claim that a fresh clone can run the
+    suite stops being true, and nobody finds out until a new machine tries.
+    """
+    service = _service("test")
+    assert "env_file" not in service, (
+        "the test service reads an env file, so running the suite now depends "
+        "on credentials a fresh clone does not have"
+    )
+    database = (service.get("environment") or {}).get("AUTOPOSTER_TEST_DATABASE_URL", "")
+    assert "@postgres:5432/" in database, (
+        f"the test service points at {database!r}; inside the compose network "
+        "the database is postgres:5432, not the host's published 5433"
+    )
+
+
+def _uvicorn_port() -> int:
+    """The port ``main()`` actually binds."""
+    # Non-greedy across anything, because the call is
+    # `uvicorn.run(build(), host=..., port=...)` -- a `[^)]*` would stop at the
+    # closing paren of `build()` and find no port at all.
+    match = re.search(
+        r"uvicorn\.run\(.*?port=(\d+)", MAIN.read_text(encoding="utf-8"), re.DOTALL
+    )
+    assert match, "no `uvicorn.run(..., port=...)` call found in main.py"
+    return int(match.group(1))
+
+
+def test_the_vite_proxy_targets_the_port_the_app_binds():
+    """This drifted once already and nothing noticed.
+
+    vite.config.ts proxied to :8000 while main.py bound :8080, so the
+    documented ``npm run dev`` hot-reload path could not have worked -- the
+    config file looked entirely reasonable, and the mismatch surfaced only by
+    running it. Two files naming one port is a fact worth asserting.
+    """
+    targets = re.findall(r'"(https?://[^"]+)"', VITE_CONFIG.read_text(encoding="utf-8"))
+    assert targets, "vite.config.ts declares no proxy targets"
+    port = _uvicorn_port()
+    for target in targets:
+        host, _, declared = target.rpartition(":")
+        assert declared.isdigit() and int(declared) == port, (
+            f"vite proxies to {target} while main.py binds port {port}; the dev "
+            "server would forward /api to a port nothing is listening on"
+        )
+        assert host.endswith("//api"), (
+            f"vite proxies to {target}; inside the compose network the API is "
+            "reachable as the service name `api`, not on localhost"
+        )
+
+
+def test_the_api_service_fails_closed_without_credentials():
+    """``Secrets.from_env()`` raises on any of six missing variables.
+
+    Compose declaring the env file means the failure arrives as "no .env" at
+    start-up rather than as a traceback later, and it keeps the development
+    stack honest about the same thing production is: no credentials, no
+    service.
+    """
+    env_file = _service("api").get("env_file")
+    declared = env_file if isinstance(env_file, list) else [env_file]
+    paths = [e if isinstance(e, str) else (e or {}).get("path") for e in declared]
+    assert ".env" in paths, (
+        "the api service does not declare `env_file: .env`, so it would start "
+        "without credentials and fail later inside Secrets.from_env()"
+    )
+
+
+def test_the_api_service_applies_migrations_like_production_does():
+    """The production CMD is ``alembic upgrade head && python -m autoposter.main``.
+
+    A development stack that skips the migration step is one where "works on
+    my machine" can mean "against a schema main does not have".
+    """
+    command = _service("api").get("command") or ""
+    assert "alembic upgrade head" in command, (
+        "the api service does not run migrations on start, while the image's "
+        "CMD does; the two would drift on any branch that adds a revision"
     )
