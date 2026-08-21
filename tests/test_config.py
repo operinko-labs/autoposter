@@ -94,3 +94,66 @@ def test_config_version_changes_with_content(tmp_path):
         encoding="utf-8",
     )
     assert a.version != load_config(changed).version
+
+
+# --- config.version covers render-affecting settings ONLY --------------------
+#
+# It is the first component of every render fingerprint, so anything it covers
+# invalidates all ~16,000 stored fingerprints when it changes. The documented
+# cutover in deploy/README.md has the operator edit `adopt.apply` twice; when
+# this was a hash of the raw file bytes, that edit alone re-rendered the whole
+# library through the provider ladder.
+
+
+def _variant(tmp_path, name, old, new):
+    path = tmp_path / name
+    text = EXAMPLE.read_text(encoding="utf-8")
+    assert old in text, f"{old!r} is no longer in the example config"
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return load_config(path)
+
+
+def test_version_is_stable_across_two_loads_of_identical_content(tmp_path):
+    copy = tmp_path / "copy.yaml"
+    copy.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    assert load_config(EXAMPLE).version == load_config(copy).version
+
+
+def test_flipping_adopt_apply_does_not_change_the_version(tmp_path):
+    """The cutover procedure's own edit must not strand every adopted row."""
+    changed = _variant(
+        tmp_path, "adopt.yaml",
+        "apply: false # dry run by default: produce the report",
+        "apply: true # dry run by default: produce the report",
+    )
+    assert changed.adopt.apply is True
+    assert changed.version == load_config(EXAMPLE).version
+
+
+def test_adding_a_comment_does_not_change_the_version(tmp_path):
+    changed = _variant(
+        tmp_path, "commented.yaml", "assets_root: /assets",
+        "# a note the operator left for themselves\nassets_root: /assets",
+    )
+    assert changed.version == load_config(EXAMPLE).version
+
+
+def test_retuning_the_drift_batch_size_does_not_change_the_version(tmp_path):
+    changed = _variant(tmp_path, "drift.yaml", "drift_batch_size: 500", "drift_batch_size: 250")
+    assert changed.scheduler.drift_batch_size == 250
+    assert changed.version == load_config(EXAMPLE).version
+
+
+def test_changing_an_artwork_setting_does_change_the_version(tmp_path):
+    changed = _variant(tmp_path, "artwork.yaml", "output_quality: 92%", "output_quality: 88%")
+    assert changed.artwork.output_quality == "88%"
+    assert changed.version != load_config(EXAMPLE).version
+
+
+def test_changing_an_asset_root_does_change_the_version(tmp_path):
+    changed = _variant(
+        tmp_path, "roots.yaml",
+        "overlays_root: /app/assets/overlays",
+        "overlays_root: /app/assets/overlays-v2",
+    )
+    assert changed.version != load_config(EXAMPLE).version
