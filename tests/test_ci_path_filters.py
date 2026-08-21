@@ -59,6 +59,10 @@ VERIFIED_NON_SOURCE = [
     # tests/test_toolchain_versions.py holds the developer database to the same
     # PostgreSQL patch CI runs, so a change here is a change the suite checks.
     "docker-compose.yml",
+    # tests/test_toolchain_versions.py asserts this enables the custom manager
+    # that reads the workflow's `# renovate:` annotations, without which the
+    # workflow's versions silently stop being updated.
+    "renovate.json",
 ]
 
 

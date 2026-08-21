@@ -27,7 +27,10 @@ Dashboard, Failures, Collections (read-only) and Settings views the phase 4a
 REST API can already answer; see `docs/superpowers/specs/2026-08-20-autoposter-design.md`
 section 6a for what's provisional and what's still deferred to a later phase.
 
-Building it locally requires **Node >= 26**:
+Building it locally requires **Node 26.7.0** — the exact patch, not a floor.
+`frontend/package.json`'s `engines.node` is the declaration; the Dockerfile
+stage and CI name the same patch, and `tests/test_toolchain_versions.py` fails
+if any of them drift apart:
 
 ```bash
 cd frontend && npm ci && npm run build

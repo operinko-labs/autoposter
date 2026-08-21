@@ -1,3 +1,37 @@
 {
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json"
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Five files declare the toolchain and tests/test_toolchain_versions.py fails the build if they ever disagree. That test is a safety net only while Renovate can (a) see every declaration and (b) move them all in one pull request. Miss either and it becomes a tripwire: the next Python patch bumps the Dockerfile, leaves .forgejo/workflows/ci.yml behind, and the test blocks the PR.",
+    "(a) Visibility. The dockerfile, docker-compose and npm managers are enabled by default, so Dockerfile, docker-compose.yml and frontend/package.json are already read. The workflow's PYTHON_VERSION, NODE_VERSION and POSTGRES_VERSION are plain `env:` values that no manager reads; the `# renovate:` comments above them are parsed only by the custom manager that customManagers:githubActionsVersions installs, and that is a preset, not a default. Its managerFilePatterns cover `.forgejo/workflows`, so ci.yml is in scope.",
+    "pyproject.toml's requires-python has no Renovate manager at all and stays a manual edit. The agreement test derives the expected value from the Dockerfile, so patch bumps stay green and only a minor bump needs that edit.",
+    "(b) Grouping is keyed on the dependency, never on the datasource -- see the packageRules below."
+  ],
+  "extends": [
+    "config:recommended",
+    "customManagers:githubActionsVersions"
+  ],
+  "packageRules": [
+    {
+      "description": [
+        "Dockerfile's `FROM python:` and ci.yml's PYTHON_VERSION are one decision, so they belong in one PR. Split across two, either PR alone fails test_ci_tests_the_python_the_image_ships."
+      ],
+      "matchDepNames": ["python"],
+      "groupName": "python toolchain"
+    },
+    {
+      "description": [
+        "Node is why these rules match on the dependency name rather than the datasource. It is reported under datasource `docker` from the Dockerfile's `FROM node:` and from the annotated NODE_VERSION, but under datasource `node-version` from frontend/package.json's `engines.node` -- the npm manager maps engines.node to the node-version datasource. A group keyed on matchDatasources: [\"docker\"] would therefore leave engines.node behind in a second PR, and either PR alone fails test_package_json_pins_node_exactly.",
+        "depName is the same bare string in all three: the dockerfile manager reports the image name without registry or tag, the npm manager reports the key from `engines`, and the custom manager reports whatever the annotation's depName= says. matchDepNames is what unifies them."
+      ],
+      "matchDepNames": ["node"],
+      "groupName": "node toolchain"
+    },
+    {
+      "description": [
+        "docker-compose.yml's postgres image and ci.yml's POSTGRES_VERSION, which the workflow's `docker run` lines all reference. The developer database and the database CI verifies migrations against have to be the same server."
+      ],
+      "matchDepNames": ["postgres"],
+      "groupName": "postgresql"
+    }
+  ]
 }

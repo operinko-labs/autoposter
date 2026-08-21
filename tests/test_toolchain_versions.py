@@ -23,7 +23,10 @@ Five files declare the toolchain, and they have to agree:
 Renovate is meant to keep these in step, which is the other reason this test
 exists: a grouping mis-config that bumps the Dockerfile but not the workflow
 looks exactly like the drift asserted against below, and should stop a merge
-rather than ship.
+rather than ship. ``renovate.json`` is therefore asserted against here too --
+the manager that reads the workflow's ``# renovate:`` annotations is opt-in
+while the ones that read the other four files are not, so an unconfigured
+Renovate produces that drift on its very first pull request.
 
 Every assertion is about agreement and exactness, never about a particular
 number, so a deliberate upgrade means changing the declarations together and
@@ -43,12 +46,59 @@ WORKFLOW = REPO / ".forgejo" / "workflows" / "ci.yml"
 PYPROJECT = REPO / "pyproject.toml"
 PACKAGE_JSON = REPO / "frontend" / "package.json"
 COMPOSE = REPO / "docker-compose.yml"
+RENOVATE = REPO / "renovate.json"
 
 # Python and Node release as major.minor.patch, so an exact pin has three
 # components. PostgreSQL's patch is its second component (18.1), so it needs a
 # shape of its own rather than being waved through by a looser pattern.
 EXACT_THREE_PART = re.compile(r"\d+\.\d+\.\d+")
 EXACT_TWO_PART = re.compile(r"\d+\.\d+")
+
+# The preset that reads the workflow's ``# renovate:`` annotations, and the only
+# thing that does. It is a preset rather than a default, so ``renovate.json``
+# has to name it or the annotations are decoration.
+ANNOTATION_PRESET = "customManagers:githubActionsVersions"
+
+# That preset's ``matchStrings`` regex, transcribed from Renovate's own source
+# (``lib/config/presets/internal/custom-managers.preset.ts``) with two
+# mechanical changes: JavaScript's ``(?<name>...)`` group syntax becomes
+# Python's ``(?P<name>...)``, and a capture group is wrapped around the
+# already-present ``[A-Za-z0-9_]+?_VERSION`` atom so a match can be tied back to
+# the variable it annotates. Neither changes what the pattern matches.
+#
+# Holding the annotations to *this* rather than to ``startswith("# renovate:")``
+# is the whole point: Renovate does not error on a malformed annotation, it just
+# does not match. ``datasoure=docker``, ``depname=python``, a second space
+# between two fields, ``versioning=`` written before ``depName=``, or a variable
+# renamed to something not ending in ``_VERSION`` all leave the comment looking
+# correct while the pin silently stops being updated -- and the drift then
+# surfaces one Docker bump later as a failure in a different test, pointing at
+# the wrong thing.
+#
+# Note the field order is fixed and the separators are single spaces: after the
+# mandatory ``datasource=`` and ``depName=`` come optional ``packageName=``
+# (or its legacy alias ``lookupName=``), ``versioning=``, ``extractVersion=``
+# and ``registryUrl=``, in that order. ``\s+`` between the comment and the
+# variable allows only whitespace between them, so the annotation has to sit on
+# the immediately preceding line.
+GITHUB_ACTIONS_VERSIONS = re.compile(
+    r"# renovate: datasource=(?P<datasource>[a-zA-Z0-9-._]+?)"
+    r" depName=(?P<depName>[^\s]+?)"
+    r"(?: (?:lookupName|packageName)=(?P<packageName>[^\s]+?))?"
+    r"(?: versioning=(?P<versioning>[^\s]+?))?"
+    r"(?: extractVersion=(?P<extractVersion>[^\s]+?))?"
+    r"(?: registryUrl=(?P<registryUrl>[^\s]+?))?"
+    r"\s+(?P<variable>[A-Za-z0-9_]+?_VERSION)\s*:\s*[\"']?(?P<currentValue>.+?)[\"']?\s"
+)
+
+# Which dependency each annotated variable has to name. These are the image
+# names the Dockerfile and docker-compose.yml use, which is what lets one
+# Renovate group resolve every location to the same string.
+ANNOTATED_VERSIONS = {
+    "PYTHON_VERSION": "python",
+    "NODE_VERSION": "node",
+    "POSTGRES_VERSION": "postgres",
+}
 
 
 def _dockerfile_version(image: str) -> str:
@@ -234,15 +284,85 @@ def test_the_workflow_version_pins_stay_visible_to_renovate():
     every assertion above starts failing on an unrelated dependency PR. The
     annotation is what keeps this module a safety net rather than a tripwire.
     """
-    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
-    for name in ("PYTHON_VERSION", "NODE_VERSION", "POSTGRES_VERSION"):
-        index = next(
-            (i for i, line in enumerate(lines) if line.strip().startswith(f"{name}:")),
-            None,
+    text = WORKFLOW.read_text(encoding="utf-8")
+    parsed = {m.group("variable"): m for m in GITHUB_ACTIONS_VERSIONS.finditer(text)}
+
+    for name, dependency in ANNOTATED_VERSIONS.items():
+        assert f"{name}:" in text, f"{name} is not declared in the workflow"
+        assert name in parsed, (
+            f"{name} has no `# renovate:` annotation Renovate would actually "
+            f"parse. {ANNOTATION_PRESET} matches only "
+            "`# renovate: datasource=<x> depName=<y>` -- one space between each "
+            "field, that field order, and the variable on the very next line -- "
+            "and it reports nothing when an annotation is malformed, so this "
+            "pin would silently stop being updated and fall behind the Dockerfile"
         )
-        assert index is not None, f"{name} is not declared in the workflow"
-        assert index > 0 and lines[index - 1].strip().startswith("# renovate:"), (
-            f"{name} has no `# renovate:` annotation on the line above it, so "
-            "Renovate cannot see or update it and it will silently fall behind "
-            "the Dockerfile"
+        match = parsed[name]
+        assert match.group("datasource") == "docker", (
+            f"{name} is annotated datasource={match.group('datasource')!r}; the "
+            "Dockerfile and docker-compose.yml declare these as Docker images, "
+            "and a different datasource resolves a different version string, so "
+            "the locations cannot agree even when both are updated"
         )
+        assert match.group("depName") == dependency, (
+            f"{name} is annotated depName={match.group('depName')!r} but names "
+            f"the {dependency} version; Renovate would group and bump the wrong "
+            "dependency here"
+        )
+        assert match.group("currentValue") == _workflow_env(name), (
+            f"the annotation above {name} reads a value of "
+            f"{match.group('currentValue')!r} while the env block sets "
+            f"{_workflow_env(name)!r}; Renovate updates what it parsed"
+        )
+
+    annotations = [
+        line for line in text.splitlines() if line.strip().startswith("# renovate:")
+    ]
+    assert len(annotations) == len(parsed), (
+        f"the workflow has {len(annotations)} `# renovate:` annotations but "
+        f"{len(parsed)} of them match the shape {ANNOTATION_PRESET} requires; "
+        "the rest are inert comments. Check field order, single spaces between "
+        "fields, and that the variable annotated ends in _VERSION"
+    )
+
+
+def test_renovate_is_configured_to_read_those_annotations():
+    """The annotations above do nothing on their own.
+
+    ``customManagers:githubActionsVersions`` is a preset, not a default. Without
+    it in ``extends``, no Renovate manager parses ``# renovate:`` comments at
+    all -- while the dockerfile, docker-compose and npm managers, which are on
+    by default, carry on bumping the other four files. That asymmetry is exactly
+    the half-applied update every test above is written to catch, arriving on
+    the first dependency PR rather than through anyone's mistake.
+    """
+    config = json.loads(RENOVATE.read_text(encoding="utf-8"))
+    extends = config.get("extends") or []
+    assert ANNOTATION_PRESET in extends, (
+        f"renovate.json does not extend {ANNOTATION_PRESET}, so the "
+        "`# renovate:` annotations in .forgejo/workflows/ci.yml are inert and "
+        "the workflow's versions will fall behind the Dockerfile's"
+    )
+
+    groups = {
+        rule.get("groupName"): rule
+        for rule in config.get("packageRules") or []
+        if rule.get("groupName")
+    }
+    assert groups, (
+        "renovate.json defines no grouped packageRules; each declaration of a "
+        "version would then be its own PR, and every one of them fails the "
+        "agreement tests above"
+    )
+    grouped = {
+        name for rule in groups.values() for name in rule.get("matchDepNames") or []
+    }
+    missing = set(ANNOTATED_VERSIONS.values()) - grouped
+    assert not missing, (
+        f"renovate.json groups no packageRule on matchDepNames for {sorted(missing)}; "
+        "those declarations would be updated in separate PRs and each one alone "
+        "leaves the files disagreeing. Group on the dependency name, not the "
+        "datasource -- node is reported as datasource `docker` from the "
+        "Dockerfile and the workflow but as `node-version` from "
+        "frontend/package.json's engines"
+    )
