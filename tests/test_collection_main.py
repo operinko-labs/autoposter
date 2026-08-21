@@ -1,16 +1,21 @@
-"""The per-library commit boundary in ``python -m autoposter.collections``.
+"""The per-library commit boundary in ``autoposter.collections.service``,
+exercised the way ``python -m autoposter.collections`` uses it.
 
 Moving the commit inside the loop (rather than once after every configured
 library) matters because a failure partway through must not roll back a
 library that already succeeded and already wrote to Plex -- without this,
 the hash gate never gets to see that library again and it is rewritten in
-full on every subsequent run.
+full on every subsequent run. Containing the failure to its own library,
+rather than letting it end the pass, matters because the scheduler runs this
+same function and one bad library must not stop the rest of the configured
+libraries from being tried.
 """
 from types import SimpleNamespace
 
+import httpx
 from sqlalchemy import select
 
-from autoposter.collections.__main__ import _reconcile_libraries
+from autoposter.collections.service import reconcile_libraries
 from autoposter.db.models import ManagedCollection
 
 LABEL = "autoposter"
@@ -99,12 +104,13 @@ async def test_a_failure_on_the_second_library_does_not_roll_back_the_first(
     server = BreaksOnSecondLibrary({"Movies": FakeSection({"R", "17"})})
     config = _config(["Movies", "TV Shows"])
 
-    raised = False
-    try:
-        await _reconcile_libraries(session, server, config)
-    except RuntimeError:
-        raised = True
-    assert raised, "expected the simulated failure fetching the second library"
+    async with httpx.AsyncClient() as http:
+        summary = await reconcile_libraries(session, server, config, http)
+
+    assert "TV Shows" in summary and "failed" in summary.lower(), (
+        "a failure reconciling one library must be recorded, not left to "
+        "abort the pass silently"
+    )
 
     async with session_factory() as verify:
         rows = (await verify.execute(select(ManagedCollection))).scalars().all()
