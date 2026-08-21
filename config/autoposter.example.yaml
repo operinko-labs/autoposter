@@ -51,6 +51,8 @@ collections:
   adopt_from: # labels belonging to tools being replaced
     - Kometa
   adopt_removes_prior_label: false # strip the prior label once claimed; keeping it is reversible, this isn't
+  protect_labels: # labels of other tools' collections, e.g. Maintainerr; never touched, even if also adopt_from-labelled
+    - Collection managed by Maintainerr
 
 cleanup:
   apply: false # dry run by default: report what would move, change nothing

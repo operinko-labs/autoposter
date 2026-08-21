@@ -70,6 +70,7 @@ async def reconcile_libraries(
                 adopt_from=config.collections.adopt_from,
                 adopt_removes_prior_label=config.collections.adopt_removes_prior_label,
                 separators=config.collections.separators,
+                protect_labels=config.collections.protect_labels,
             )
 
             if config.collections.charts or config.collections.awards:

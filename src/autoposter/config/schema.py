@@ -224,6 +224,14 @@ class CollectionsConfig(BaseModel):
     # Strip the prior tool's label once claimed. Keeping it is reversible;
     # removing it is not, so it is opt-in.
     adopt_removes_prior_label: bool = False
+    # Labels belonging to other tools' collections that must never be
+    # touched, no matter what -- this wins over ownership and adoption both,
+    # even when the collection also carries an ``adopt_from`` label. Default
+    # covers Maintainerr, whose "Deleted Soon" collections this service must
+    # never claim.
+    protect_labels: list[str] = Field(
+        default_factory=lambda: ["Collection managed by Maintainerr"]
+    )
 
 
 class CleanupConfig(BaseModel):

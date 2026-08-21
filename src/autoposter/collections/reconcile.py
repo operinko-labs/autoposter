@@ -76,6 +76,23 @@ def prior_tool_label(collection, adopt_from: list[str]) -> str | None:
     return None
 
 
+def protected_label(collection, protect_labels: list[str]) -> str | None:
+    """Return the first label ``collection`` carries that marks it as
+    belonging to a tool this service must never touch, or ``None`` if it
+    carries none of them.
+
+    Checked before ownership or adoption -- a protected label wins even when
+    the collection also carries our own label or an ``adopt_from`` label, so
+    it forces its own ``reload()`` rather than relying on one done later.
+    """
+    collection.reload()
+    tags = {tag.tag for tag in (getattr(collection, "labels", None) or [])}
+    for candidate in protect_labels:
+        if candidate in tags:
+            return candidate
+    return None
+
+
 def claim_ownership(collection, label: str, prior: str, remove_prior: bool) -> None:
     """Claim a prior tool's collection by adding our ownership label.
 
@@ -94,6 +111,7 @@ def resolve_collision(
     adopt_from: list[str],
     remove_prior: bool,
     dry_run: bool,
+    protect_labels: list[str] = (),
 ) -> tuple[bool, str | None]:
     """Decide what to do with an existing collection at a title collision.
 
@@ -101,10 +119,21 @@ def resolve_collision(
     them. Returns ``(ok, message)``: ``ok`` is ``True`` when the caller
     should proceed to reconcile the collection normally -- it already
     carries our label, or was just claimed -- and ``False`` for a true
-    conflict or an eligible adoption still held back by ``dry_run``.
-    ``message`` is the action to report, or ``None`` when there is nothing
-    to say (the collection was already ours).
+    conflict, a protected collection, or an eligible adoption still held
+    back by ``dry_run``. ``message`` is the action to report, or ``None``
+    when there is nothing to say (the collection was already ours).
+
+    The protected-label check runs first and wins unconditionally -- before
+    ownership, before adoption -- so a collection carrying a protected label
+    is never claimed even if it also carries an ``adopt_from`` label.
     """
+    protecting = protected_label(collection, protect_labels)
+    if protecting is not None:
+        return False, (
+            "protected: %r carries %r; leaving it untouched"
+            % (collection.title, protecting)
+        )
+
     if has_label(collection, label):
         return True, None
 
@@ -162,6 +191,7 @@ async def _reconcile_separator(
     adopt_from: list[str],
     adopt_removes_prior_label: bool,
     dry_run: bool,
+    protect_labels: list[str],
 ) -> list[str]:
     """The blank ``Ratings Collections`` divider: same ownership and
     adoption rules as every other collection this family manages, but it is
@@ -173,6 +203,7 @@ async def _reconcile_separator(
     if collection is not None:
         ok, message = resolve_collision(
             collection, label, adopt, adopt_from, adopt_removes_prior_label, dry_run,
+            protect_labels,
         )
         if message:
             actions.append(message)
@@ -224,6 +255,7 @@ async def reconcile_content_ratings(
     adopt_from: list[str] | None = None,
     adopt_removes_prior_label: bool = False,
     separators: bool = False,
+    protect_labels: list[str] | None = None,
 ) -> list[str]:
     """Bring this library's Common Sense collections in line with its ratings.
 
@@ -267,6 +299,7 @@ async def reconcile_content_ratings(
         if collection is not None:
             ok, message = resolve_collision(
                 collection, label, adopt, adopt_from or [], adopt_removes_prior_label, dry_run,
+                protect_labels or [],
             )
             if message:
                 actions.append(message)
@@ -316,6 +349,7 @@ async def reconcile_content_ratings(
         actions += await _reconcile_separator(
             session, section, library_name, libtype, label,
             existing, stored, adopt, adopt_from or [], adopt_removes_prior_label, dry_run,
+            protect_labels or [],
         )
 
     await session.flush()

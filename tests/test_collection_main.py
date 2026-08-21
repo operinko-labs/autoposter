@@ -98,6 +98,7 @@ def _config(libraries):
             # reason -- and off here since these fakes have no _server.
             charts=False, awards=False, separators=False,
             adopt=False, adopt_from=["Kometa"], adopt_removes_prior_label=False,
+            protect_labels=[],
         )
     )
 
