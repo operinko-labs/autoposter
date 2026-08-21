@@ -329,3 +329,101 @@ async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents(sessio
     ).scalar_one()
     assert season_render.adopted is True
     assert season_render.base_sha256 == hashlib.sha256(b"season-poster").hexdigest()
+
+
+# --- every plexapi attribute is read inside the worker thread ----------------
+
+
+class LazyPlexObject:
+    """A plexapi-shaped double where *reading any attribute* records the thread.
+
+    ``PlexPartialObject.__getattribute__`` issues a blocking ``_reload()`` HTTP
+    GET whenever the value it finds is ``None`` or ``[]`` -- which for seasons
+    and episodes (``year is None``) and unmatched items (empty ``guids``) is
+    the common case, not the exception. Any such read landing on the event loop
+    is up to ~16,000 synchronous GETs on the loop, so the guard is simply that
+    no attribute of these objects is ever touched from the test's own thread.
+    """
+
+    def __init__(self, reads, **values):
+        self.__dict__["_reads"] = reads
+        self.__dict__["_values"] = values
+
+    def __getattr__(self, name):
+        values = self.__dict__["_values"]
+        if name not in values:
+            raise AttributeError(name)
+        self.__dict__["_reads"].append(threading.current_thread())
+        return values[name]
+
+
+def _lazy_show_section(tmp_path, reads):
+    library_root = tmp_path / "TV Shows"
+    episode = LazyPlexObject(
+        reads, type="episode", ratingKey="30", title="Pilot",
+        parentIndex=1, index=1, year=None, guids=[],
+    )
+    season = LazyPlexObject(
+        reads, type="season", ratingKey="20", title="Season 1", index=1,
+        year=None, guids=[], episodes=lambda: [episode],
+    )
+    show = LazyPlexObject(
+        reads, type="show", ratingKey="10", title="Breaking Bad", year=2008,
+        locations=[str(library_root / "Breaking Bad (2008)")],
+        guids=[], seasons=lambda: [season],
+    )
+    return LazyPlexObject(
+        reads, title="TV Shows", locations=[str(library_root)], all=lambda: [show],
+    )
+
+
+async def test_no_plexapi_attribute_is_read_on_the_event_loop(session, tmp_path):
+    config = _config(tmp_path)
+    reads = []
+    section = _lazy_show_section(tmp_path, reads)
+    show_poster = naming.asset_path(config, "TV Shows", "Breaking Bad (2008)", "poster")
+    _write(show_poster, b"show-poster")
+
+    report = await adopt_library(session, config, section, dry_run=False)
+
+    assert report.items == 3
+    assert reads, "the walk read no plexapi attributes at all"
+    assert all(t is not threading.current_thread() for t in reads)
+
+
+# --- art kinds this config would never render are not phantom gaps -----------
+
+
+async def test_a_disabled_art_kind_is_not_counted_as_a_missing_asset(session, tmp_path):
+    config = _config(tmp_path)
+    config.artwork.background.enabled = False
+    section = _movie_section(tmp_path)
+    poster = naming.asset_path(config, "Movies", "Dune (2024)", "poster")
+    _write(poster, b"poster-bytes")
+
+    report = await adopt_library(session, config, section, dry_run=False)
+
+    # Without this gate the disabled background counts as a missing asset --
+    # the one number deploy/README.md tells the operator to scrutinise.
+    assert report.missing_assets == 0
+    assert report.skipped_by_config == 1
+    assert report.renders == 1
+
+
+async def test_a_tba_titled_episode_title_card_is_not_counted_as_a_missing_asset(
+    session, tmp_path
+):
+    config = _config(tmp_path)
+    library_root = tmp_path / "TV Shows"
+    episode = FakeEpisode("30", "TBA", season_number=1, episode_number=1)
+    season = FakeSeason("20", "Season 1", season_number=1, episodes=[episode])
+    show = FakeShow("10", "Breaking Bad", str(library_root / "Breaking Bad (2008)"), [season])
+    section = FakeSection("TV Shows", [str(library_root)], [show])
+
+    report = await adopt_library(session, config, section, dry_run=True)
+
+    assert config.skip_tba is True
+    # show poster + show background + season poster are genuinely absent; the
+    # title card is one render_artifact would refuse to make at all.
+    assert report.missing_assets == 3
+    assert report.skipped_by_config == 1

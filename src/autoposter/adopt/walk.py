@@ -24,8 +24,10 @@ from autoposter.render import naming
 from autoposter.render.pipeline import (
     ART_KINDS_FOR,
     _get_or_create_render,
+    _should_skip_title,
     _upsert_media_item,
     adopted_fingerprint,
+    art_config_for,
     gather_fingerprint_inputs,
 )
 
@@ -43,6 +45,12 @@ class AdoptionReport:
     missing_assets: int
     skipped: int
     by_kind: dict[str, int]
+    # Art kinds this config would never render anyway: the kind is disabled
+    # (``artwork.background.enabled: false``) or the title matches a
+    # ``skip_tba`` word. Counted separately rather than as missing_assets --
+    # deploy/README.md tells the operator to scrutinise that number, and with
+    # backgrounds off it would otherwise report ~2,000 phantom gaps.
+    skipped_by_config: int = 0
 
 
 @dataclass
@@ -53,6 +61,7 @@ class _Counters:
     renders: int = 0
     missing_assets: int = 0
     skipped: int = 0
+    skipped_by_config: int = 0
     hashed: int = 0
     by_kind: dict[str, int] = field(default_factory=dict)
 
@@ -82,16 +91,16 @@ def _root_folder(section_locations: list[str], target_path: str, is_directory: b
     return None
 
 
-def _resolved_movie(section, movie) -> ResolvedItem | None:
+def _resolved_movie(library: str, section_locations: list[str], movie) -> ResolvedItem | None:
     locations = movie.locations
     if not locations:
         return None
-    root_folder = _root_folder(section.locations, locations[0], is_directory=False)
+    root_folder = _root_folder(section_locations, locations[0], is_directory=False)
     if root_folder is None:
         return None
     guids = _guids(movie)
     return ResolvedItem(
-        rating_key=str(movie.ratingKey), library=section.title, kind="movie",
+        rating_key=str(movie.ratingKey), library=library, kind="movie",
         title=movie.title, year=getattr(movie, "year", None),
         season_number=None, episode_number=None,
         root_folder=root_folder, file_path=locations[0], art_url=None,
@@ -100,16 +109,16 @@ def _resolved_movie(section, movie) -> ResolvedItem | None:
     )
 
 
-def _resolved_show(section, show) -> ResolvedItem | None:
+def _resolved_show(library: str, section_locations: list[str], show) -> ResolvedItem | None:
     locations = show.locations
     if not locations:
         return None
-    root_folder = _root_folder(section.locations, locations[0], is_directory=True)
+    root_folder = _root_folder(section_locations, locations[0], is_directory=True)
     if root_folder is None:
         return None
     guids = _guids(show)
     return ResolvedItem(
-        rating_key=str(show.ratingKey), library=section.title, kind="show",
+        rating_key=str(show.ratingKey), library=library, kind="show",
         title=show.title, year=getattr(show, "year", None),
         season_number=None, episode_number=None,
         root_folder=root_folder, file_path=None, art_url=None,
@@ -118,13 +127,13 @@ def _resolved_show(section, show) -> ResolvedItem | None:
     )
 
 
-def _resolved_season(section, show, season, root_folder: str) -> ResolvedItem:
+def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedItem:
     # Seasons and episodes carry no location of their own -- their artifacts
     # live under the show's folder, so root_folder is passed down rather than
     # derived again.
     guids = _guids(season)
     return ResolvedItem(
-        rating_key=str(season.ratingKey), library=section.title, kind="season",
+        rating_key=str(season.ratingKey), library=library, kind="season",
         title=season.title, year=getattr(season, "year", None),
         season_number=season.index, episode_number=None,
         root_folder=root_folder, file_path=None, art_url=None,
@@ -133,16 +142,58 @@ def _resolved_season(section, show, season, root_folder: str) -> ResolvedItem:
     )
 
 
-def _resolved_episode(section, season, episode, root_folder: str) -> ResolvedItem:
+def _resolved_episode(library: str, season, episode, root_folder: str) -> ResolvedItem:
     guids = _guids(episode)
     return ResolvedItem(
-        rating_key=str(episode.ratingKey), library=section.title, kind="episode",
+        rating_key=str(episode.ratingKey), library=library, kind="episode",
         title=episode.title, year=getattr(episode, "year", None),
         season_number=episode.parentIndex, episode_number=episode.index,
         root_folder=root_folder, file_path=None, art_url=None,
         tmdb_id=_as_int(guids.get("tmdb")), tvdb_id=_as_int(guids.get("tvdb")),
         imdb_id=guids.get("imdb"), parent_rating_key=str(season.ratingKey),
     )
+
+
+def _resolve_section(section) -> list[ResolvedItem]:
+    """Walk one section and build every ``ResolvedItem``, all inside one thread.
+
+    Blocking -- call via ``asyncio.to_thread``, and never touch a ``plexapi``
+    object outside it.
+
+    ``PlexPartialObject.__getattribute__`` issues a synchronous ``_reload()``
+    HTTP GET whenever the attribute it is asked for is ``None`` or ``[]``. That
+    is not a rare path here: seasons and episodes routinely have ``year is
+    None``, and an unmatched item has empty ``guids``. Offloading only
+    ``section.all()``/``seasons()``/``episodes()`` and then reading
+    ``.locations``, ``.guids`` and ``.year`` back on the event loop therefore
+    meant up to ~16,000 blocking GETs on the loop -- so the resolved items are
+    built here, in the same thread that fetched the objects, exactly as
+    ``PlexClient._search_sync`` does for the render path.
+
+    Returning plain ``ResolvedItem`` dataclasses (never a ``plexapi`` object)
+    is what makes that guarantee hold at the boundary.
+    """
+    library = section.title
+    section_locations = list(section.locations)
+    resolved: list[ResolvedItem] = []
+    for top in section.all():
+        kind = getattr(top, "type", None)
+        if kind == "movie":
+            movie = _resolved_movie(library, section_locations, top)
+            if movie is not None:
+                resolved.append(movie)
+        elif kind == "show":
+            show = _resolved_show(library, section_locations, top)
+            if show is None:
+                continue
+            resolved.append(show)
+            for season in top.seasons():
+                resolved.append(_resolved_season(library, top, season, show.root_folder))
+                for episode in season.episodes():
+                    resolved.append(
+                        _resolved_episode(library, season, episode, show.root_folder)
+                    )
+    return resolved
 
 
 def _hash_file(path: Path) -> str:
@@ -172,6 +223,17 @@ async def _adopt_item(
         media_item = await _upsert_media_item(session, resolved)
 
     for art_kind in ART_KINDS_FOR[resolved.kind]:
+        # The same two gates render_artifact applies before it does anything
+        # else. Without them a deployment with `artwork.background.enabled:
+        # false` reports every background as a missing asset -- ~2,000 of them
+        # -- which is precisely the number deploy/README.md asks the operator
+        # to check before cutover.
+        if not art_config_for(config, art_kind).enabled or _should_skip_title(
+            config, resolved, art_kind
+        ):
+            counters.skipped_by_config += 1
+            continue
+
         target = naming.asset_path(
             config, resolved.library, resolved.root_folder, art_kind,
             resolved.season_number, resolved.episode_number,
@@ -215,38 +277,19 @@ async def adopt_library(
 ) -> AdoptionReport:
     """Walk one Plex library section and adopt whatever art already exists there.
 
-    ``section.all()`` returns items with their guids already populated in one
-    call. For a show library that call yields the shows themselves; their
-    seasons and episodes are walked underneath, since each carries its own
-    artifacts. ``dry_run=True`` (the default) computes and reports everything
-    and writes no rows -- the mode to run before cutover.
+    The whole Plex side of the walk happens in one thread (see
+    ``_resolve_section``) and hands back plain dataclasses; nothing below this
+    line touches a ``plexapi`` object. For a show library the walk yields the
+    shows themselves plus their seasons and episodes, since each carries its
+    own artifacts. ``dry_run=True`` (the default) computes and reports
+    everything and writes no rows -- the mode to run before cutover.
     """
     counters = _Counters()
-    top_level = await asyncio.to_thread(section.all)
-    for top in top_level:
-        kind = getattr(top, "type", None)
-        if kind == "movie":
-            resolved = _resolved_movie(section, top)
-            if resolved is not None:
-                await _adopt_item(session, config, resolved, dry_run, counters)
-        elif kind == "show":
-            resolved_show = _resolved_show(section, top)
-            if resolved_show is None:
-                continue
-            await _adopt_item(session, config, resolved_show, dry_run, counters)
-            seasons = await asyncio.to_thread(top.seasons)
-            for season in seasons:
-                resolved_season = _resolved_season(section, top, season, resolved_show.root_folder)
-                await _adopt_item(session, config, resolved_season, dry_run, counters)
-                episodes = await asyncio.to_thread(season.episodes)
-                for episode in episodes:
-                    resolved_episode = _resolved_episode(
-                        section, season, episode, resolved_show.root_folder
-                    )
-                    await _adopt_item(session, config, resolved_episode, dry_run, counters)
+    for resolved in await asyncio.to_thread(_resolve_section, section):
+        await _adopt_item(session, config, resolved, dry_run, counters)
 
     return AdoptionReport(
         items=counters.items, renders=counters.renders,
         missing_assets=counters.missing_assets, skipped=counters.skipped,
-        by_kind=counters.by_kind,
+        skipped_by_config=counters.skipped_by_config, by_kind=counters.by_kind,
     )

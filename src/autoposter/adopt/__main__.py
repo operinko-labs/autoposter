@@ -28,6 +28,17 @@ CONFIG_PATH = Path(os.environ.get("AUTOPOSTER_CONFIG", "/config/autoposter.yaml"
 logger = logging.getLogger(__name__)
 
 
+async def fetch_section(server, name: str):
+    """Fetch one library section with every ``plexapi`` access inside the thread.
+
+    ``server.library`` is itself an HTTP-fetching property, so evaluating it
+    before the ``asyncio.to_thread`` call -- as ``server.library.section``
+    would -- puts a blocking GET on the event loop. The lambda defers the
+    whole expression into the worker thread.
+    """
+    return await asyncio.to_thread(lambda: server.library.section(name))
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     config = load_config(CONFIG_PATH)
@@ -41,22 +52,26 @@ async def main() -> None:
     try:
         async with session_factory() as session:
             total_items = total_renders = total_missing = total_skipped = 0
+            total_by_config = 0
             for name in config.adopt.libraries:
-                section = await asyncio.to_thread(server.library.section, name)
+                section = await fetch_section(server, name)
                 report = await adopt_library(session, config, section, dry_run=dry_run)
                 logger.info(
-                    "%s: %d item(s), %d render(s), %d missing asset(s), %d skipped, by kind %s",
+                    "%s: %d item(s), %d render(s), %d missing asset(s), %d skipped, "
+                    "%d not rendered by this config, by kind %s",
                     name, report.items, report.renders, report.missing_assets,
-                    report.skipped, report.by_kind,
+                    report.skipped, report.skipped_by_config, report.by_kind,
                 )
                 total_items += report.items
                 total_renders += report.renders
                 total_missing += report.missing_assets
                 total_skipped += report.skipped
+                total_by_config += report.skipped_by_config
 
             logger.info(
-                "total: %d item(s), %d render(s), %d missing asset(s), %d skipped%s",
-                total_items, total_renders, total_missing, total_skipped,
+                "total: %d item(s), %d render(s), %d missing asset(s), %d skipped, "
+                "%d not rendered by this config%s",
+                total_items, total_renders, total_missing, total_skipped, total_by_config,
                 " (dry run -- nothing written)" if dry_run else "",
             )
     finally:
