@@ -23,5 +23,10 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test-setup.ts"],
     css: false,
+    // vi.restoreAllMocks() does not undo vi.stubGlobal, so without this a
+    // `fetch` or `localStorage` stub set by one test is still in place for
+    // the next one -- including the next test that meant to assert against
+    // the guard in test-setup.ts.
+    unstubGlobals: true,
   },
 });
