@@ -138,6 +138,72 @@ def _should_skip_title(config: Config, item: ResolvedItem, art_kind: str) -> boo
     return item.title.strip().lower() in skip_words
 
 
+async def gather_fingerprint_inputs(
+    config: Config,
+    item: ResolvedItem,
+    art_kind: str,
+    *,
+    draw_text: bool = True,
+    logo_sha: str = "",
+) -> tuple[list[str], list[str]]:
+    """Collect the ``(text_inputs, asset_hashes)`` halves of the fingerprint.
+
+    The single definition of "what goes into a fingerprint besides the source
+    URL and the base image". ``render_artifact`` calls it, and so does the
+    adoption walk — which cannot know a source URL, having resolved no provider
+    (spec section 5). Two implementations of this would silently stop agreeing,
+    and the cost of that disagreement is re-rendering the whole library.
+
+    ``draw_text`` and ``logo_sha`` are what the render path knows and adoption
+    does not: whether a clearlogo replaced the title text, and which logo. The
+    defaults are the adoption case — no logo, title text drawn — so an adopted
+    row and the short-circuit that reads it always agree.
+    """
+    settings = art_config_for(config, art_kind)
+    primary_text, secondary_text = title_text_for(art_kind, item, config)
+
+    text_inputs = [t for t in (primary_text, secondary_text) if t] if draw_text else []
+    overlay_hash = (
+        await asyncio.to_thread(
+            _file_sha256, Path(config.overlays_root) / settings.overlay_file
+        )
+        if settings.add_overlay
+        else ""
+    )
+    font_hashes = []
+    if draw_text and settings.text is not None and primary_text:
+        font_hashes.append(
+            await asyncio.to_thread(
+                _file_sha256, Path(config.fonts_root) / settings.text.font
+            )
+        )
+    if art_kind == "title_card" and settings.episode_text is not None and secondary_text:
+        font_hashes.append(
+            await asyncio.to_thread(
+                _file_sha256, Path(config.fonts_root) / settings.episode_text.font
+            )
+        )
+    return text_inputs, [overlay_hash, *font_hashes, logo_sha]
+
+
+def adopted_fingerprint(
+    config: Config,
+    art_kind: str,
+    base_sha256: str | None,
+    text_inputs: list[str],
+    asset_hashes: list[str],
+) -> str:
+    """``compute_fingerprint`` with the one input adoption cannot know left out.
+
+    An artifact adopted from the existing library carries no record of which
+    provider URL produced it, so the comparison drops ``source_url`` on both
+    sides rather than guessing at it.
+    """
+    return compute_fingerprint(
+        config.version, art_kind, None, base_sha256, text_inputs, asset_hashes
+    )
+
+
 async def _download(http: httpx.AsyncClient, url: str, destination: Path) -> str:
     """Fetch artwork to ``destination`` and return its SHA-256."""
     digest = hashlib.sha256()
@@ -254,6 +320,26 @@ async def render_artifact(
         await session.commit()
         return render
 
+    # An adopted row describes an artifact this service found already on disk,
+    # never rendered, and resolved no provider for. Compare the fingerprint it
+    # could compute -- everything but the source URL -- and stop here if it
+    # still holds. This sits above every provider call on purpose: the whole
+    # point of the adoption run is that the first real pass over an existing
+    # library costs zero outbound requests (spec section 5).
+    if render.adopted and render.base_sha256:
+        text_inputs, asset_hashes = await gather_fingerprint_inputs(config, item, art_kind)
+        candidate = adopted_fingerprint(
+            config, art_kind, render.base_sha256, text_inputs, asset_hashes
+        )
+        # target.exists() offloaded, as elsewhere here, because assets_root can
+        # be an NFS mount. An adopted row whose file has since been deleted has
+        # to be re-rendered -- the row would otherwise claim art that is gone.
+        if candidate == render.fingerprint and await asyncio.to_thread(target.exists):
+            render.status = "rendered"
+            render.detail = "adopted"
+            await session.commit()
+            return render
+
     primary_text, secondary_text = title_text_for(art_kind, item, config)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -322,28 +408,9 @@ async def render_artifact(
 
         draw_text = not (art_kind == "poster" and (logo_path is not None or suppress_text))
 
-        text_inputs = [t for t in (primary_text, secondary_text) if t] if draw_text else []
-        overlay_hash = (
-            await asyncio.to_thread(
-                _file_sha256, Path(config.overlays_root) / settings.overlay_file
-            )
-            if settings.add_overlay
-            else ""
+        text_inputs, asset_hashes = await gather_fingerprint_inputs(
+            config, item, art_kind, draw_text=draw_text, logo_sha=logo_sha
         )
-        font_hashes = []
-        if draw_text and settings.text is not None and primary_text:
-            font_hashes.append(
-                await asyncio.to_thread(
-                    _file_sha256, Path(config.fonts_root) / settings.text.font
-                )
-            )
-        if art_kind == "title_card" and settings.episode_text is not None and secondary_text:
-            font_hashes.append(
-                await asyncio.to_thread(
-                    _file_sha256, Path(config.fonts_root) / settings.episode_text.font
-                )
-            )
-        asset_hashes = [overlay_hash, *font_hashes, logo_sha]
 
         fingerprint = compute_fingerprint(
             config.version, art_kind, source_url, base_sha, text_inputs, asset_hashes
@@ -432,6 +499,9 @@ async def render_artifact(
     render.fingerprint = fingerprint
     render.status = "rendered"
     render.detail = None
+    # A real render just happened, so the adoption no longer describes reality:
+    # this row now has a source URL and a fingerprint that covers it.
+    render.adopted = False
     # Database clock, per the global constraint: the app and database clocks drift.
     render.rendered_at = func.now()
     await session.commit()
