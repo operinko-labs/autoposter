@@ -220,6 +220,22 @@ class CleanupConfig(BaseModel):
     max_orphan_share: float = 0.25
 
 
+class AdoptConfig(BaseModel):
+    """One-time adoption of an existing library: ``python -m autoposter.adopt``.
+
+    Hashes artwork already on disk instead of resolving providers, so a
+    library taken over from the tool being replaced does not get re-rendered
+    on its first real pass. See ``adopt/walk.py``.
+    """
+
+    # Dry run by default, the same posture as badges.upload_to_plex,
+    # collections.apply_to_plex and cleanup.apply: the walk computes and
+    # reports what it would adopt, but writes no rows until the operator has
+    # read the report and opted in.
+    apply: bool = False
+    libraries: list[str] = Field(default_factory=lambda: ["Movies", "TV Shows"])
+
+
 class SchedulerConfig(BaseModel):
     """Cadences for the periodic passes in ``scheduler/jobs.py``: the
     collections reconcile, the ratings-drift sweep and the asset cleanup.
@@ -263,4 +279,5 @@ class Config(BaseModel):
     collections: CollectionsConfig = Field(default_factory=CollectionsConfig)
     cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    adopt: AdoptConfig = Field(default_factory=AdoptConfig)
     version: str = ""

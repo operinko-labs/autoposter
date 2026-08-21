@@ -336,6 +336,64 @@ this library), so store it only in the secret manager backing the
 the new token to update the same "Authorized Devices" entry in the Plex
 account rather than adding a new one.
 
+## Adopting an existing library (cutover)
+
+The `adopt:` block in `autoposter.yaml` controls one-time adoption: taking
+over a library already populated by Posterizarr and Kometa without
+re-rendering any of it. Adoption walks each configured Plex library and the
+asset tree beneath it, hashing whatever artwork already exists on disk and
+recording it in `media_items`/`renders` as `adopted`, rather than resolving
+anything from the artwork providers. The render pipeline then short-circuits
+an adopted item's first real pass to a single file hash and no provider
+requests, as long as nothing else about it (title, config version, overlay
+or font file) has changed since adoption.
+
+- `apply` (default `false`) — dry run by default, the same posture as
+  `badges.upload_to_plex`, `collections.apply_to_plex` and `cleanup.apply`:
+  the walk computes and reports everything it would adopt, but writes no
+  database rows until the operator opts in. This is deliberately the last of
+  these settings to be flipped on, not the first.
+- `libraries` (default `[Movies, TV Shows]`) — Plex library names to adopt.
+
+Run the cutover in this order:
+
+1. **Run the adoption report with `adopt.apply: false`** (the default):
+
+   ```
+   python -m autoposter.adopt
+   ```
+
+   This writes nothing. Read the printed report for each library and the
+   total, in particular `missing_assets` — every item counted there has no
+   artwork on disk for that art kind and will render from scratch on its
+   first real pass, same as a brand new item. If that count is far higher
+   than expected, stop and find out why (wrong `assets_root`, wrong
+   `library_folders` setting, a library not yet fully populated) before
+   proceeding — this report is exactly what it exists to catch.
+2. **Set `adopt.apply: true` and run it again.** This time it writes the
+   `media_items`/`renders` rows. The numbers in the report should be
+   unchanged from the dry run; if they differ, something in the library or
+   asset tree changed between the two runs.
+3. **Repoint the Radarr and Sonarr webhooks** at this service (see below) and
+   **stop the old tools** (Posterizarr, Kometa) so they stop writing to the
+   same asset tree and Plex fields this service now owns.
+
+**Adoption deliberately does not mark existing Plex artwork as already
+badged.** It would be possible to record every adopted item as carrying
+current badge overlays too, avoiding a re-upload for the whole library on
+cutover — but the overlays currently on the Plex server were produced by the
+tool being replaced, not by this one. Marking them current would mean Plex
+keeps those overlays until each item happens to change for some other
+reason, which could be months. Instead, an adopted item keeps its expensive
+*base* artwork — that is what adoption exists to preserve — and re-badges on
+its next pass, which costs one composite and one upload rather than a full
+re-render, and produces badge artwork this service actually owns and can
+track a fingerprint for. `scheduler.drift_batch_size` (see below) throttles
+how fast that re-badging works through the library after cutover, the same
+way it throttles the ratings-drift sweep.
+
+See `config/autoposter.example.yaml` for the full block.
+
 ## Radarr / Sonarr webhooks
 
 Configure Radarr and Sonarr with a webhook notification pointing at this

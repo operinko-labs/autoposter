@@ -51,6 +51,12 @@ cleanup:
   max_orphans: 500 # refuse the pass if more than this many directories look orphaned
   max_orphan_share: 0.25 # ...or more than this share of the tree; "almost everything is garbage" means something is wrong
 
+adopt:
+  apply: false # dry run by default: produce the report, write nothing
+  libraries: # Plex library names to adopt
+    - Movies
+    - TV Shows
+
 scheduler:
   enabled: true # run the periodic passes (collections reconcile, drift sweep, asset cleanup)
   poll_seconds: 60 # how often to check whether anything is due
