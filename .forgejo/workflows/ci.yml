@@ -182,6 +182,18 @@ jobs:
             exit 1
           }
 
+      # Scan before publishing, not after. The first push landed an image
+      # Harbor then flagged with three vulnerabilities -- all of them from
+      # pip's vendored dependency manifest rather than anything the
+      # application imports. Failing here keeps that class of thing out of
+      # the registry instead of discovering it in the UI afterwards.
+      - name: Scan the image for vulnerabilities
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity MEDIUM,HIGH,CRITICAL --no-progress             ${{ env.IMAGE_NAME }}:ci
+          # Medium findings are reported above but do not block; anything
+          # HIGH or CRITICAL fails the job and so is never pushed.
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity HIGH,CRITICAL --exit-code 1 --no-progress             ${{ env.IMAGE_NAME }}:ci
+
       - name: Resolve Harbor registry host
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |

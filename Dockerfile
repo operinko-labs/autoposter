@@ -21,7 +21,20 @@ RUN apk add --no-cache \
 WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
-RUN pip install --no-cache-dir .
+# Remove pip once the package is installed. Nothing at runtime needs it --
+# the container runs `alembic upgrade head && python -m autoposter.main` --
+# and pip is where the image's only reported vulnerabilities come from. They
+# are not in anything this application imports: pip *vendors* its own
+# dependencies and declares them in pip/_vendor/vendor.txt, which scanners
+# read, so `msgpack==1.1.2` and `setuptools==70.3.0` get reported against the
+# image even though neither is installed as a real package. Dropping pip
+# removes all three findings rather than chasing versions of code we never
+# call.
+RUN pip install --no-cache-dir . \
+ && python -m pip uninstall -y pip \
+ && rm -rf /usr/local/lib/python3.*/site-packages/pip \
+           /usr/local/lib/python3.*/site-packages/pip-*.dist-info \
+           /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.*
 
 COPY assets ./assets
 COPY alembic ./alembic
