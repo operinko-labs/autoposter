@@ -32,6 +32,28 @@ RUN npm run build
 FROM node:26.7.0-alpine AS webdev
 WORKDIR /frontend
 
+# The lazy install lives here rather than only in docker-compose.yml's
+# `command:`, because a `command:` is exactly what `docker compose run --rm web
+# npm run build` replaces. The named volume at /frontend/node_modules starts
+# empty on a fresh clone, so both of the one-liners README's "Development"
+# section documents used to die with `sh: tsc: not found` / `sh: vitest: not
+# found` on the machine that most needs them to work -- the one where "a
+# working Docker installation is the only requirement" is being taken at its
+# word. An ENTRYPOINT is not overridden by a `command:` or by trailing
+# arguments to `docker compose run`, so it happens whatever command is asked
+# for.
+#
+# `npm ci` deletes node_modules wholesale, so it is skipped when the volume is
+# already populated; `docker compose run --rm web npm ci` still forces it.
+RUN printf '%s\n' \
+      '#!/bin/sh' \
+      'set -e' \
+      '[ -d node_modules/vite ] || npm ci' \
+      'exec "$@"' \
+    > /usr/local/bin/webdev-entrypoint \
+ && chmod +x /usr/local/bin/webdev-entrypoint
+ENTRYPOINT ["/usr/local/bin/webdev-entrypoint"]
+
 # Alpine, because its ImageMagick is built Q16-HDRI — the same configuration the
 # Posterizarr deployment this service replaces runs (7.1.2-29 Q16-HDRI). Debian's
 # package is Q16 without HDRI, which changes internal pixel maths: the same render
