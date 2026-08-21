@@ -51,6 +51,10 @@ def create_app(
         # Single client for the process: provider clients borrow it rather than
         # each owning one, so there is exactly one AsyncClient to close on shutdown.
         http = httpx.AsyncClient(timeout=30.0)
+        # Published so request handlers can borrow it too -- the artwork
+        # endpoints proxy Plex on behalf of the SPA. Closed in the `finally`
+        # below with everything else that holds it.
+        app.state.http = http
         # None (rather than a cache with ttl_seconds=0) when caching is disabled, so
         # _build_providers never issues a DB round trip for a config that opted out.
         cache = ProviderCache(session_factory) if config.providers.cache_ttl_seconds > 0 else None
@@ -175,6 +179,10 @@ def create_app(
             "admin password configured, so every login attempt will fail"
         )
     app.state.plex = None
+    # Set by the lifespan, like app.state.plex is set by main.build(). Handlers
+    # that need to talk to Plex check for None rather than making a client of
+    # their own, so there stays exactly one AsyncClient to close on shutdown.
+    app.state.http = None
     app.state.providers = []
     app.state.tmdb_facts = None
     app.state.mdblist = None

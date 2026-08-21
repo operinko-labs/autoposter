@@ -1,8 +1,13 @@
-"""Upload badged artwork to Plex, and read our own provenance back from it.
+"""Upload badged artwork to Plex, and read what Plex is serving back off it.
 
 plexapi's upload methods take a filepath rather than bytes, so the encoded
 image goes to a temporary file that is removed on both the success and the
 failure path.
+
+Reading back comes in two depths over the same fetch path: ``artwork_provenance``
+wants only the EXIF fingerprint and pays a range request or two for it, while
+``fetch_artwork`` wants the whole image because a human is about to look at it.
+Both derive the URL the same way, through ``_artwork_url``.
 """
 import asyncio
 import logging
@@ -12,6 +17,24 @@ import tempfile
 from autoposter.plex.exif import PROVENANCE_TAG, parse_provenance, probe_exif
 
 logger = logging.getLogger(__name__)
+
+# Which Plex field holds the artwork for one of our art kinds. The inverse of
+# ``upload_artwork``'s split below, and it has to stay the inverse: an episode's
+# badged image is its *poster*, so ``background`` is the only kind that is Plex's
+# ``art``. Reading ``.art`` for a title card would answer with the show's
+# backdrop -- a real image, plausibly rendered, and the wrong one.
+PLEX_ART_FIELDS = {
+    "poster": "thumb",
+    "season_poster": "thumb",
+    "title_card": "thumb",
+    "background": "art",
+}
+
+# The whole image, unlike the provenance probe's few kilobytes, over a link that
+# may be a LAN hop or a tunnel. Long enough for a poster on a slow one; short
+# enough that a caller waiting on a dead Plex is told so rather than left
+# holding a spinner for the client default.
+ARTWORK_FETCH_TIMEOUT = 15.0
 
 
 def upload_artwork(plex_item, data: bytes, art_kind: str, lock: bool = True) -> None:
@@ -46,6 +69,50 @@ def upload_artwork(plex_item, data: bytes, art_kind: str, lock: bool = True) -> 
             logger.warning("could not remove temporary upload file %s", handle.name)
 
 
+async def _artwork_url(plex_item, base_url: str, art_kind: str = "poster") -> str | None:
+    """The absolute URL Plex serves ``plex_item``'s current artwork from.
+
+    ``None`` when the item has no artwork of that kind at all.
+
+    The field is read in a thread: on a partial ``plexapi`` object attribute
+    access can trigger a blocking ``_reload()`` HTTP GET. That is a plain GET
+    for the item's own metadata -- it is not ``refresh()``, which would ask
+    Plex to re-pull from its agents and can overwrite the artwork we uploaded.
+    """
+    field = PLEX_ART_FIELDS.get(art_kind, "thumb")
+    path = await asyncio.to_thread(getattr, plex_item, field, None)
+    if not path:
+        return None
+    return f"{base_url.rstrip('/')}{path}"
+
+
+async def fetch_artwork(
+    http, plex_item, base_url: str, headers: dict, art_kind: str = "poster",
+    timeout: float = ARTWORK_FETCH_TIMEOUT,
+) -> tuple[bytes, str] | None:
+    """The bytes Plex is currently serving for ``plex_item``, and their type.
+
+    ``None`` when Plex has no artwork of that kind -- either the field is empty
+    or the URL it names 404s, which is the same answer to the caller and a
+    different one from "Plex could not be asked".
+
+    Deliberately *not* defensive, unlike ``artwork_provenance``: this answers a
+    person who opened a page, so a transport failure has to reach them as
+    "Plex is not answering" rather than being swallowed into "no artwork".
+    Raises ``httpx.HTTPError`` for both, and carries its own ``timeout`` so a
+    Plex that accepts the connection and then says nothing cannot hold the
+    request open for however long the shared client's default happens to be.
+    """
+    url = await _artwork_url(plex_item, base_url, art_kind)
+    if url is None:
+        return None
+    response = await http.get(url, headers=headers, timeout=timeout)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.content, response.headers.get("content-type", "")
+
+
 async def artwork_provenance(http, plex_item, base_url: str, headers: dict) -> str | None:
     """The fingerprint recorded in ``plex_item``'s currently-selected artwork.
 
@@ -55,19 +122,18 @@ async def artwork_provenance(http, plex_item, base_url: str, headers: dict) -> s
     for a JPEG or an unstamped WebP, two only when the WebP header says there
     is an EXIF chunk at the end worth fetching.
 
-    ``.thumb`` is read in a thread: on a partial ``plexapi`` object attribute
-    access can trigger a blocking ``_reload()`` HTTP GET, and this is called
-    per item across a whole library.
+    ``.thumb`` is read in a thread -- see ``_artwork_url`` -- because on a
+    partial ``plexapi`` object attribute access can trigger a blocking
+    ``_reload()`` HTTP GET, and this is called per item across a whole library.
 
     Every failure answers ``None``. The caller treats that as "no usable
     provenance" and does the normal upload, so a Plex hiccup costs one
     redundant upload rather than an exception out of the badge stage.
     """
     try:
-        thumb = await asyncio.to_thread(getattr, plex_item, "thumb", None)
-        if not thumb:
+        url = await _artwork_url(plex_item, base_url)
+        if url is None:
             return None
-        url = f"{base_url.rstrip('/')}{thumb}"
         tags = await probe_exif(http, url, headers)
     except Exception:
         logger.debug("could not read artwork provenance", exc_info=True)
