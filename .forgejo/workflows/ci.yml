@@ -21,38 +21,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # Deliberately not a `services:` block. On this runner the job itself is
-      # a container on the default bridge network, so a service container is
-      # not reachable at localhost -- the first run failed with 327 setup
-      # errors, all "Connect call failed ('127.0.0.1', 5432)", while the
-      # service sat there healthy. Starting the database on a network this
-      # job joins works whether the job runs in a container or on the host.
-      - name: Start PostgreSQL and make it reachable from this job
-        run: |
-          docker rm -f ci-postgres >/dev/null 2>&1 || true
-          docker network create ci-db >/dev/null 2>&1 || true
-          # Succeeds when the job is a container; harmlessly fails when it is
-          # not, in which case the published port below is the route instead.
-          docker network connect ci-db "$(hostname)" >/dev/null 2>&1 || true
-          docker run -d --name ci-postgres --network ci-db -p 5432:5432             -e POSTGRES_USER=autoposter             -e POSTGRES_PASSWORD=autoposter             -e POSTGRES_DB=autoposter             postgres:18-alpine
-          for i in $(seq 1 60); do
-            docker exec ci-postgres pg_isready -U autoposter >/dev/null 2>&1 && break
-            sleep 2
-          done
-          docker exec ci-postgres pg_isready -U autoposter
-
-          if getent hosts ci-postgres >/dev/null 2>&1; then
-            DB_HOST=ci-postgres
-          else
-            DB_HOST=localhost
-          fi
-          echo "Reaching PostgreSQL at ${DB_HOST}:5432"
-          {
-            echo "AUTOPOSTER_TEST_DATABASE_URL=postgresql+asyncpg://autoposter:autoposter@${DB_HOST}:5432/autoposter"
-            echo "AUTOPOSTER_DATABASE_URL=postgresql+asyncpg://autoposter:autoposter@${DB_HOST}:5432/autoposter"
-            echo "AUTOPOSTER_MAINTENANCE_DATABASE_URL=postgresql://autoposter:autoposter@${DB_HOST}:5432/postgres"
-          } >> "$GITHUB_ENV"
-
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -63,18 +31,40 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      # Fail loudly here rather than as hundreds of fixture errors further on.
-      - name: Confirm the database is actually reachable
+      # Deliberately not a `services:` block. On this runner the job is itself
+      # a container on the default bridge network, so a service container is
+      # not reachable at localhost -- that attempt failed with 327 setup
+      # errors, every one "Connect call failed ('127.0.0.1', 5432)", while the
+      # service sat there reporting healthy.
+      - name: Start PostgreSQL
         run: |
-          python - <<'PY'
-          import asyncio, os, asyncpg
-          url = os.environ["AUTOPOSTER_MAINTENANCE_DATABASE_URL"]
-          async def main():
-              conn = await asyncpg.connect(url, timeout=15)
-              print("connected:", (await conn.fetchval("select version()")).split(",")[0])
-              await conn.close()
-          asyncio.run(main())
-          PY
+          docker rm -f ci-postgres >/dev/null 2>&1 || true
+          docker network create ci-db >/dev/null 2>&1 || true
+          # Succeeds when the job is a container; harmlessly fails when it is
+          # not, in which case the published port below is the route instead.
+          docker network connect ci-db "$(hostname)" >/dev/null 2>&1 || true
+          docker run -d --name ci-postgres --network ci-db -p 5432:5432 \
+            -e POSTGRES_USER=autoposter \
+            -e POSTGRES_PASSWORD=autoposter \
+            -e POSTGRES_DB=autoposter \
+            postgres:18-alpine
+
+      # Waiting on `pg_isready` inside the container was the previous attempt's
+      # mistake: it probes the unix socket, while the suite connects over TCP
+      # from here. During initdb the image runs a temporary server on the
+      # socket only, so the socket reports ready while TCP is still refused --
+      # the wait broke early on a signal that did not mean what it looked like,
+      # and the very next check reported "rejecting connections".
+      #
+      # Wait on exactly what the tests use instead: a real asyncpg connection
+      # over TCP, from this job, to the host the tests will be handed. Nothing
+      # is inferred from a proxy signal.
+      - name: Wait for PostgreSQL and resolve its host
+        run: python .forgejo/scripts/wait_for_postgres.py
+
+      - name: Show PostgreSQL logs if it never came up
+        if: failure()
+        run: docker logs ci-postgres || true
 
       - name: Lint
         run: ruff check src tests
@@ -157,10 +147,26 @@ jobs:
           docker run -d --name ci-pg --network ci-net \
             -e POSTGRES_USER=autoposter -e POSTGRES_PASSWORD=autoposter \
             -e POSTGRES_DB=autoposter postgres:18-alpine
-          for i in $(seq 1 30); do
-            docker exec ci-pg pg_isready -U autoposter && break
+          # Probe over TCP from a peer container, not with `docker exec
+          # pg_isready`: that checks the unix socket, which reports ready
+          # while initdb's temporary server is up and TCP is still refused.
+          # alembic below connects over TCP, so wait on that.
+          ready=0
+          for i in $(seq 1 60); do
+            if docker run --rm --network ci-net postgres:18-alpine                  pg_isready -h ci-pg -p 5432 -U autoposter >/dev/null 2>&1; then
+              ready=$((ready + 1))
+            else
+              ready=0
+            fi
+            if [ "$ready" -ge 2 ]; then break; fi
             sleep 2
           done
+          if [ "$ready" -lt 2 ]; then
+            echo "PostgreSQL never accepted TCP connections" >&2
+            docker logs ci-pg || true
+            docker rm -f ci-pg; docker network rm ci-net
+            exit 1
+          fi
           docker run --rm --network ci-net \
             -e AUTOPOSTER_DATABASE_URL=postgresql+asyncpg://autoposter:autoposter@ci-pg:5432/autoposter \
             ${{ env.IMAGE_NAME }}:ci alembic upgrade head
