@@ -444,6 +444,76 @@ posters/backgrounds do get re-badged on the sweep's cadence.
 If you want the season and episode artwork re-badged sooner than Sonarr
 activity will manage, drive it by hand rather than waiting for the sweep.
 
+### Taking over Kometa's collections
+
+The Common Sense age buckets, the IMDb chart collections and the Oscars
+collections all collide by title with what Kometa already created on this
+library, so without adoption they are reported as conflicts and left alone
+forever. `collections.adopt` (default `false`) takes them over instead.
+
+**Stop Kometa first.** This is the same "stop the old tools" step above,
+but it matters more here: with adoption enabled on both sides, this service
+and Kometa would claim the same collections and fight over their contents
+on every pass. Adoption is a cutover step, run once with Kometa already
+stopped — not something to enable while it is still scheduled.
+
+With Kometa stopped:
+
+1. **Set `collections.adopt: true` and run with `apply_to_plex: false`**
+   (the default):
+
+   ```
+   python -m autoposter.collections
+   ```
+
+   This writes nothing. The report names every collection it would claim,
+   e.g. `would adopt 'Age 17+ Movies' (currently labelled 'Kometa')`.
+2. **Set `collections.apply_to_plex: true` and run it again.** Each named
+   collection gains the `autoposter` label — and keeps the `Kometa` label
+   unless `adopt_removes_prior_label` is set — then is reconciled
+   normally from then on: the Common Sense buckets have their filters
+   rewritten, the IMDb chart and Oscars collections have their membership
+   diffed against the source.
+
+What adoption never claims, regardless of title:
+
+- **Unlabelled collections** — the operator's own hand-made collections
+  and Plex's own franchise collections (269 of them on this library) carry
+  no label at all and are never eligible.
+- **Collections carrying a protected label** (`protect_labels`, default
+  `Collection managed by Maintainerr`) — protected even if the same
+  collection also carries an `adopt_from` label.
+- **Any collection whose title this service does not manage** —
+  adoption only ever happens at the point an existing collection's title
+  collides with one this service is about to create or update.
+
+A prior-tool collection genuinely left over after adoption — one that
+still carries an `adopt_from` label but whose title this service does not
+manage — is named once in the leftovers report appended to that library's
+summary line, so it is flagged rather than silently forgotten.
+
+**Numbers for this library, audited against the live server:** Movies
+holds 305 collections, of which 30 would be touched by adoption (29
+content/chart/award collections plus the `Ratings Collections` separator,
+which is now managed as part of the Common Sense family rather than left
+over). TV Shows holds 20 collections, of which 19 would be touched. 49
+collections across both libraries carry the `Kometa` label, and — with the
+separator now managed — **all 49 have titles this service manages**; none
+of them is expected to appear in the leftovers report. Two collections are
+deliberately never touched: Movies' `Deleted Soon` carries the `Collection
+managed by Maintainerr` label, and TV Shows' `Deleted Soon` carries no
+label at all (plausibly stripped by the previous tool at some point) —
+neither title collides with anything this service manages, and both are
+additionally covered by `protect_labels` and by the
+never-adopt-an-unlabelled-collection rule.
+
+The server has four libraries — `Movies`, `TV Shows`, `Photos` and
+`Muskarit` (a second movie library) — but only the first two are in the
+default `collections.libraries`. `Muskarit` is left completely untouched
+unless it is added there; adding it would create a full set of Common
+Sense, chart and award collections on it too, the same as any other
+configured library.
+
 See `config/autoposter.example.yaml` for the full block.
 
 ## Radarr / Sonarr webhooks
