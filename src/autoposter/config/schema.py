@@ -37,6 +37,11 @@ class Secrets(BaseModel):
     # job), rather than the whole process refusing to start.
     radarr_apikey: str = ""
     sonarr_apikey: str = ""
+    # Soft secret, same reasoning as mdblist_apikey: a deployment without it
+    # must still boot, just with every Web UI login attempt 401ing -- see
+    # api/auth.py and api/routes.py. Never a plaintext password, always a
+    # bcrypt hash produced by hash_password().
+    admin_password_hash: str = ""
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -49,6 +54,7 @@ class Secrets(BaseModel):
         values["mdblist_apikey"] = os.environ.get("AUTOPOSTER_MDBLIST_APIKEY", "")
         values["radarr_apikey"] = os.environ.get("AUTOPOSTER_RADARR_APIKEY", "")
         values["sonarr_apikey"] = os.environ.get("AUTOPOSTER_SONARR_APIKEY", "")
+        values["admin_password_hash"] = os.environ.get("AUTOPOSTER_ADMIN_PASSWORD_HASH", "")
         return cls(**values)
 
 

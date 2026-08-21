@@ -22,6 +22,8 @@ dependencies = [
     # Imported directly by app.py. It arrives transitively via fastapi, but a
     # module this codebase imports itself belongs in its own dependency list.
     "starlette>=0.40",
+    # Password hashing for the Web UI's API (api/auth.py).
+    "bcrypt>=4.2",
 ]
 
 [project.optional-dependencies]

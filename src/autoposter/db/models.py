@@ -303,6 +303,25 @@ class ImdbMissRefreshState(Base):
     )
 
 
+class Session(Base):
+    """One logged-in Web UI session, keyed by the SHA-256 hash of its token.
+
+    Only the hash is stored, exactly as for the password: a database dump
+    must not hand someone a working session. SHA-256 needs no key stretching
+    here -- the token is high-entropy random, unlike the password.
+    """
+
+    __tablename__ = "sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ScheduledRun(Base):
     """When each periodic job last ran.
 
