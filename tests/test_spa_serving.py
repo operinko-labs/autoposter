@@ -24,6 +24,7 @@ from autoposter.config.schema import Secrets
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 INDEX_MARKER = "<!-- test index -->"
+SECRET = "do not serve me"
 
 
 def _secrets() -> Secrets:
@@ -59,6 +60,55 @@ async def client_with_spa(session_factory, dist):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+def _app_with_spa(session_factory, dist):
+    app = create_app(load_config(EXAMPLE), session_factory, _secrets())
+    mount_spa(app, dist)
+    return app
+
+
+async def _raw_asgi_get(app, raw_path: str) -> tuple[int, dict[bytes, bytes], bytes]:
+    """GET `raw_path` verbatim, with no client-side normalisation.
+
+    httpx canonicalises dot segments as it builds the URL --
+    ``httpx.URL("http://test/assets/../../x").raw_path`` is ``b"/x"`` -- so
+    anything asserting on traversal has to bypass it or it is only testing
+    httpx. This speaks ASGI directly instead: the scope carries the path
+    exactly as an attacker's client would put it on the wire.
+    """
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": raw_path,
+        "raw_path": raw_path.encode("utf-8"),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"test")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    status = 500
+    headers: dict[bytes, bytes] = {}
+    body = bytearray()
+
+    async def send(message):
+        nonlocal status
+        if message["type"] == "http.response.start":
+            status = message["status"]
+            headers.update(dict(message["headers"]))
+        elif message["type"] == "http.response.body":
+            body.extend(message.get("body", b""))
+
+    await app(scope, receive, send)
+    return status, headers, bytes(body)
 
 
 async def test_root_serves_the_index(client_with_spa):
@@ -128,11 +178,60 @@ async def test_a_missing_dist_directory_is_not_an_error(session_factory):
         assert (await c.get("/failures")).status_code == 404
 
 
-async def test_a_dotdot_path_cannot_escape_the_dist_directory(client_with_spa, dist):
-    """Path traversal. The secret it would reach here is a test fixture, but
-    the container's dist sits next to the application's own files."""
-    outside = dist.parent / "outside.txt"
-    outside.write_text("do not serve me", encoding="utf-8")
+@pytest.mark.parametrize(
+    "raw_path",
+    [
+        "/assets/../../outside.txt",
+        "/assets/../outside.txt",
+        "/assets/subdir/../../../outside.txt",
+    ],
+)
+async def test_traversal_through_the_assets_mount_is_refused(
+    session_factory, dist, raw_path
+):
+    """Path traversal into the directory dist sits in.
 
-    response = await client_with_spa.get("/assets/../../outside.txt")
-    assert "do not serve me" not in response.text
+    The secret here is a fixture file; in the container dist sits beside the
+    application's own files and its config mount.
+
+    Driven straight at the ASGI app rather than through AsyncClient: httpx
+    resolves dot segments while building the URL, so
+    `client.get("/assets/../../outside.txt")` puts `/outside.txt` on the wire
+    and the server never sees a `..` to reject. A test written that way passes
+    against an implementation that would have served the file, which is what
+    the previous version of this test did. A hostile client does not normalise,
+    so neither does this one.
+    """
+    outside = dist.parent / "outside.txt"
+    outside.write_text(SECRET, encoding="utf-8")
+
+    status, _headers, body = await _raw_asgi_get(_app_with_spa(session_factory, dist), raw_path)
+
+    assert status == 404
+    assert SECRET not in body.decode("utf-8", "replace")
+
+
+@pytest.mark.parametrize(
+    "raw_path",
+    ["/../outside.txt", "/failures/../../outside.txt", "/./../outside.txt"],
+)
+async def test_traversal_through_the_catch_all_serves_the_shell_not_the_file(
+    session_factory, dist, raw_path
+):
+    """The other half of the same surface.
+
+    The catch-all is handed whatever the /assets mount did not claim, so a
+    `..` arrives there too. It must keep treating the path as an opaque
+    client-side route and answer with index.html -- never resolve it against
+    the filesystem.
+    """
+    outside = dist.parent / "outside.txt"
+    outside.write_text(SECRET, encoding="utf-8")
+
+    status, headers, body = await _raw_asgi_get(_app_with_spa(session_factory, dist), raw_path)
+
+    assert status == 200
+    assert headers[b"content-type"].startswith(b"text/html")
+    text = body.decode("utf-8", "replace")
+    assert INDEX_MARKER in text
+    assert SECRET not in text
