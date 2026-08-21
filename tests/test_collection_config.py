@@ -31,3 +31,7 @@ def test_the_ownership_label_defaults_to_our_own_name():
 
 def test_both_libraries_are_configured_by_default():
     assert load_config(EXAMPLE_CONFIG).collections.libraries == ["Movies", "TV Shows"]
+
+
+def test_the_separator_toggle_defaults_to_enabled():
+    assert load_config(EXAMPLE_CONFIG).collections.separators is True

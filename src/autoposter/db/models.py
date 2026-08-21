@@ -264,7 +264,7 @@ class ManagedCollection(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     library: Mapped[str] = mapped_column(String(128), index=True)
     title: Mapped[str] = mapped_column(String(255))
-    # smart | manual
+    # smart | manual | separator
     kind: Mapped[str] = mapped_column(String(16), default="smart")
     plex_rating_key: Mapped[str | None] = mapped_column(String(32))
     # Hash of the desired filter and summary, so an unchanged pass writes nothing.

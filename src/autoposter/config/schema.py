@@ -209,6 +209,10 @@ class CollectionsConfig(BaseModel):
     charts: bool = True
     # Oscars winner list collections (movies only).
     awards: bool = True
+    # The blank "Ratings Collections" divider, part of the Common Sense
+    # family: a permanently-empty collection whose sort title makes it act
+    # as a visual separator in Plex's alphabetised collection list.
+    separators: bool = True
     # Take over collections created by a tool this service replaces. Off by
     # default: it is a Plex write against collections we did not create, and
     # it should happen once, deliberately, as part of cutover.

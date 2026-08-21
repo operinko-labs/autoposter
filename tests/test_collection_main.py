@@ -93,8 +93,10 @@ def _config(libraries):
             libraries=libraries, ownership_label=LABEL, apply_to_plex=True,
             # Charts/awards are exercised in test_collection_sources.py; keeping
             # them off here keeps this test scoped to the commit-boundary
-            # behaviour and out of real network calls.
-            charts=False, awards=False,
+            # behaviour and out of real network calls. Separators are
+            # exercised in test_collection_separator.py, for the same
+            # reason -- and off here since these fakes have no _server.
+            charts=False, awards=False, separators=False,
             adopt=False, adopt_from=["Kometa"], adopt_removes_prior_label=False,
         )
     )
