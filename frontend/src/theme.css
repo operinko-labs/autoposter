@@ -1,0 +1,165 @@
+/* The *arr look reduced to tokens.
+ *
+ * Every colour in this application comes from here as var(--name); no
+ * component hard-codes one. The accent in particular is one line: the *arr
+ * suite gives each application its own (Sonarr blue, Radarr gold, Prowlarr
+ * orange) precisely so it is identifiable at tab-strip size, and violet is
+ * the unclaimed one. Changing it is a single edit here.
+ */
+
+:root {
+  --bg: #1a1a1a;
+  --bg-elevated: #212121;
+  --surface: #262626;
+  --surface-hover: #2f2f2f;
+  --border: #333333;
+  --text: #cccccc;
+  --text-strong: #ffffff;
+  --text-muted: #888888;
+  --accent: #8b5cf6;
+  --accent-hover: #a78bfa;
+  --ok: #27c24c;
+  --warn: #ddbf42;
+  --error: #f05050;
+  --radius: 4px;
+  --sidebar-width: 210px;
+
+  /* No webfont. Fetching Roboto from Google Fonts would put a runtime
+   * network dependency into a cluster-internal deployment, and vendoring it
+   * costs a licence file and ~150 KB for a visual detail. */
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas,
+    "Liberation Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--text-strong);
+  font-weight: 400;
+  margin: 0 0 16px;
+}
+
+h1 {
+  font-size: 22px;
+}
+
+h2 {
+  font-size: 17px;
+}
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-strong);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+input {
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}

@@ -85,6 +85,13 @@ size, which is the whole point of their per-app accents. It is defined once as
 one-line edit. **Flagged for the user** — this was asked and not answered, and
 is trivially reversible.
 
+**Node 26.7.0, pinned across all three environments.** This box had 24.8.0,
+which is neither the 24 LTS nor current, so the frontend targets the latest
+release instead. `engines` requires `>=26.0.0`, the Dockerfile and CI both use
+`node:26-alpine`, and — since local Node is older — every frontend build and
+test in this phase is run inside that container rather than on the host, so
+what is verified is what ships.
+
 **Polling, not WebSocket.** The spec wants live updates over a WebSocket. No
 such endpoint exists yet, and adding one is a server task that belongs with
 the other 4c endpoints. The dashboard polls every 5 seconds; the fetch layer
@@ -333,7 +340,7 @@ the redaction marker rather than any value that looks like a key.
 - Modify: `.forgejo/workflows/ci.yml`
 - Modify: `tests/test_ci_path_filters.py`
 
-A `node:24-alpine` stage runs `npm ci && npm run build`; the Python stage
+A `node:26-alpine` stage runs `npm ci && npm run build`; the Python stage
 copies `frontend/dist` to `/app/frontend/dist`, and `AUTOPOSTER_SPA_DIST`
 points at it. `npm ci`, not `npm install` — it fails on a lockfile mismatch
 instead of silently resolving something else.

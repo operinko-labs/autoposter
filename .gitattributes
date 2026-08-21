@@ -1,0 +1,20 @@
+# Line endings are normalised to LF on commit.
+#
+# Tooling run from Windows writes CRLF by default -- Python's write_text()
+# translates \n to os.linesep -- which twice turned a fifteen-line edit into a
+# whole-file rewrite in the diff, burying the actual change. Normalising here
+# makes that a property of the repository rather than of whoever's editor or
+# script touched the file last.
+* text=auto eol=lf
+
+# Never touch these. Poster output in this project is byte-identical to the
+# tool it replaces (RMSE 0), and the badge assets are checksummed by
+# assets/badges/MANIFEST.sha256 -- a newline "fix" applied to any of them
+# would corrupt the bytes and break both.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ttf binary
+*.otf binary
+*.ico binary
