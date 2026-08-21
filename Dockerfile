@@ -1,3 +1,23 @@
+# The web UI is built here rather than committed, so the image always serves a
+# bundle built from the source in this commit. node:26-alpine matches the floor
+# frontend/package.json declares (`engines: {"node": ">=26.0.0"}`) and the
+# major .forgejo/workflows/ci.yml installs, so what CI tests and what the image
+# ships come off the same toolchain.
+FROM node:26-alpine AS frontend
+WORKDIR /frontend
+# The manifests alone first: a change to src/ then reuses this layer instead of
+# re-installing every dependency.
+COPY frontend/package.json frontend/package-lock.json ./
+# `npm ci`, never `npm install`. It installs exactly what package-lock.json
+# pins and fails outright on a mismatch, where `npm install` would quietly
+# resolve something newer and rewrite the lockfile -- the skew that broke this
+# repository three times over.
+RUN npm ci
+COPY frontend/ ./
+# `npm run build` is `tsc --noEmit && vite build`, so a type error fails the
+# image build rather than shipping a bundle nothing typechecked.
+RUN npm run build
+
 # Alpine, because its ImageMagick is built Q16-HDRI — the same configuration the
 # Posterizarr deployment this service replaces runs (7.1.2-29 Q16-HDRI). Debian's
 # package is Q16 without HDRI, which changes internal pixel maths: the same render
@@ -39,10 +59,16 @@ RUN pip install --no-cache-dir . \
 COPY assets ./assets
 COPY alembic ./alembic
 COPY alembic.ini ./
+COPY --from=frontend /frontend/dist ./frontend/dist
 
 # The package is pip-installed into site-packages while assets are copied to
 # /app/assets, so the assets cannot be found relative to the module files.
 ENV AUTOPOSTER_ASSETS_ROOT=/app/assets
+# Same reasoning for the built SPA: `spa_dist()` falls back to a path relative
+# to the installed module, which in this image is inside site-packages and has
+# no frontend/ beside it. Without this the API starts perfectly and every probe
+# passes while `/` answers 404, so the failure looks like a healthy service.
+ENV AUTOPOSTER_SPA_DIST=/app/frontend/dist
 ENV AUTOPOSTER_CONFIG=/config/autoposter.yaml
 EXPOSE 8080
 CMD ["sh", "-c", "alembic upgrade head && python -m autoposter.main"]

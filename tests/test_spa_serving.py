@@ -235,3 +235,25 @@ async def test_traversal_through_the_catch_all_serves_the_shell_not_the_file(
     text = body.decode("utf-8", "replace")
     assert INDEX_MARKER in text
     assert SECRET not in text
+
+
+def test_the_dockerfile_ships_the_built_spa():
+    """The image is where all of the above has to hold, and it is the one
+    place `spa_dist()`'s fallback cannot work: the package is pip-installed
+    into site-packages, which has no frontend/ beside it. So the Node stage's
+    output has to be copied in and AUTOPOSTER_SPA_DIST pointed at it, exactly
+    as AUTOPOSTER_ASSETS_ROOT is for the bundled assets.
+
+    Drop either line and the service still starts, /healthz still passes and
+    the API still answers -- while `/` returns 404 and the UI simply is not
+    there. The image job in .forgejo/workflows/ci.yml catches that by asking
+    the built image for the page; this catches it without a Docker daemon.
+    """
+    dockerfile = (Path(__file__).parent.parent / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY --from=frontend /frontend/dist ./frontend/dist" in dockerfile, (
+        "the image does not copy the built SPA in, so there is nothing to serve"
+    )
+    assert "AUTOPOSTER_SPA_DIST=/app/frontend/dist" in dockerfile, (
+        "the image does not point AUTOPOSTER_SPA_DIST at the copied bundle, so "
+        "spa_dist() falls back to a path relative to site-packages and finds nothing"
+    )

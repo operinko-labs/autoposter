@@ -1,0 +1,9 @@
+# The Node stage runs `npm ci` and then copies frontend/ over the result, so a
+# developer's node_modules would land on top of the one just installed. That is
+# not merely wasteful: esbuild and rollup ship per-platform binaries, so a
+# Windows or macOS tree copied into the alpine stage fails the build outright.
+# The same COPY would drop a stale dist/ in, which `vite build` then rebuilds
+# anyway. Excluding both also keeps a few hundred megabytes out of the context
+# sent to the daemon on every build.
+frontend/node_modules
+frontend/dist
