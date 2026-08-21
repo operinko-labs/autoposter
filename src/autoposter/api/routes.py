@@ -1,8 +1,10 @@
 """The /api router: login, logout and everything behind require_session."""
 import logging
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy import func, select
 
 from autoposter.api.auth import (
     create_session,
@@ -12,9 +14,18 @@ from autoposter.api.auth import (
     session_for_token,
     verify_password,
 )
+from autoposter.db.models import EventLog, Job, ScheduledRun
 from autoposter.db.models import Session as SessionModel
 
 logger = logging.getLogger(__name__)
+
+# jobs.state values (see db/models.py's Job docstring); always reported even
+# when zero, so an empty database returns zeroed counts rather than an
+# incomplete dict.
+JOB_STATES = ("pending", "running", "done", "failed", "parked")
+
+DEFAULT_EVENTS_LIMIT = 50
+MAX_EVENTS_LIMIT = 200
 
 router = APIRouter(prefix="/api")
 
@@ -71,3 +82,85 @@ async def logout(
     async with session_factory() as session:
         await revoke(session, token)
     return {"ok": True}
+
+
+@router.get("/status")
+async def status(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        # GROUP BY in SQL rather than fetching every job row and counting in
+        # Python -- the jobs table is the hot one at this library's size.
+        state_counts = (
+            await session.execute(select(Job.state, func.count()).group_by(Job.state))
+        ).all()
+        jobs_by_state = dict.fromkeys(JOB_STATES, 0)
+        for state, count in state_counts:
+            jobs_by_state[state] = count
+
+        processed_last_24h = (
+            await session.execute(
+                select(func.count())
+                .select_from(Job)
+                .where(
+                    Job.state == "done",
+                    Job.updated_at >= func.now() - timedelta(hours=24),
+                )
+            )
+        ).scalar_one()
+
+        scheduled_rows = (
+            (await session.execute(select(ScheduledRun).order_by(ScheduledRun.name)))
+            .scalars()
+            .all()
+        )
+
+    return {
+        "jobs_by_state": jobs_by_state,
+        "workers": request.app.state.config.workers,
+        "processed_last_24h": processed_last_24h,
+        "scheduled_jobs": [
+            {
+                "name": row.name,
+                "last_started_at": row.last_started_at,
+                "last_finished_at": row.last_finished_at,
+                "last_status": row.last_status,
+                "last_detail": row.last_detail,
+            }
+            for row in scheduled_rows
+        ],
+    }
+
+
+@router.get("/events")
+async def events(
+    request: Request,
+    limit: int = DEFAULT_EVENTS_LIMIT,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    capped_limit = min(max(limit, 1), MAX_EVENTS_LIMIT)
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        # payload is never selected -- it holds whole webhook bodies and can
+        # carry tokens from the sending service.
+        rows = (
+            await session.execute(
+                select(
+                    EventLog.source, EventLog.event_type, EventLog.outcome, EventLog.received_at
+                )
+                .order_by(EventLog.received_at.desc())
+                .limit(capped_limit)
+            )
+        ).all()
+    return {
+        "events": [
+            {
+                "source": row.source,
+                "event_type": row.event_type,
+                "outcome": row.outcome,
+                "received_at": row.received_at,
+            }
+            for row in rows
+        ]
+    }
