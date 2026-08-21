@@ -31,6 +31,7 @@ from autoposter.badges.values import (
     resolution_image,
     runtime_text,
 )
+from autoposter.plex.exif import PROVENANCE_TAG, format_provenance
 
 WEBP_QUALITY = 90
 EXIF_OVERLAY_TAG = 0x04BC
@@ -140,8 +141,15 @@ def _text_size(
     return right - left, bottom - top
 
 
-def compose(base_path: Path, art_kind: str, inputs: BadgeInputs) -> bytes:
-    """Badge the base artwork and return encoded WebP bytes."""
+def compose(
+    base_path: Path, art_kind: str, inputs: BadgeInputs, fingerprint: str | None = None
+) -> bytes:
+    """Badge the base artwork and return encoded WebP bytes.
+
+    ``fingerprint``, when given, is stamped alongside the overlay marker as
+    the image's provenance -- see ``autoposter.plex.exif`` -- so a later read
+    of what Plex is serving can tell whether it is still ours and current.
+    """
     canvas = canvas_for(art_kind)
     poster = Image.open(base_path).convert("RGB").resize(canvas, Image.Resampling.LANCZOS)
 
@@ -186,6 +194,8 @@ def compose(base_path: Path, art_kind: str, inputs: BadgeInputs) -> bytes:
 
     exif = Image.Exif()
     exif[EXIF_OVERLAY_TAG] = "overlay"
+    if fingerprint is not None:
+        exif[PROVENANCE_TAG] = format_provenance(fingerprint)
     buffer = io.BytesIO()
     poster.save(buffer, format="WEBP", quality=WEBP_QUALITY, exif=exif)
     return buffer.getvalue()

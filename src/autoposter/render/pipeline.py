@@ -608,7 +608,7 @@ async def apply_badges(session, config, render, item, plex_item, facts) -> None:
         return
 
     data = await asyncio.to_thread(
-        compose_badges, Path(render.asset_path), render.art_kind, inputs
+        compose_badges, Path(render.asset_path), render.art_kind, inputs, fingerprint
     )
     render.badge_fingerprint = fingerprint
 

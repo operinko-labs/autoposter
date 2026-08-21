@@ -1,4 +1,4 @@
-"""Upload badged artwork to Plex.
+"""Upload badged artwork to Plex, and read our own provenance back from it.
 
 plexapi's upload methods take a filepath rather than bytes, so the encoded
 image goes to a temporary file that is removed on both the success and the
@@ -7,6 +7,8 @@ failure path.
 import logging
 import os
 import tempfile
+
+from autoposter.plex.exif import PROVENANCE_TAG, fetch_exif_tail, parse_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -39,3 +41,18 @@ def upload_artwork(plex_item, data: bytes, art_kind: str, lock: bool = True) -> 
             os.unlink(handle.name)
         except OSError:
             logger.warning("could not remove temporary upload file %s", handle.name)
+
+
+async def artwork_provenance(http, plex_item, base_url: str, headers: dict) -> str | None:
+    """The fingerprint recorded in ``plex_item``'s currently-selected artwork.
+
+    ``None`` if the item has no artwork, the request fails, or what is there
+    was never stamped by us. A cheap suffix read via ``fetch_exif_tail`` --
+    see ``autoposter.plex.exif`` -- rather than a full download.
+    """
+    thumb = getattr(plex_item, "thumb", None)
+    if not thumb:
+        return None
+    url = f"{base_url.rstrip('/')}{thumb}"
+    tags = await fetch_exif_tail(http, url, headers)
+    return parse_provenance(tags.get(PROVENANCE_TAG))
