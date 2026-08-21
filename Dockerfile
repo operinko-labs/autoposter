@@ -4,7 +4,7 @@
 # came out 0.077% different (RMSE 0.00077) from the production asset, where the
 # HDRI build reproduces it byte-for-byte. HDRI also brings float-format support
 # (.exr/.hdr) for hand-supplied artwork.
-FROM python:3.12-alpine
+FROM python:3.14-alpine
 
 # imagemagick's format support is split into subpackages on Alpine. jpeg is not
 # optional here — every asset this service writes is a .jpg. svg is needed because
