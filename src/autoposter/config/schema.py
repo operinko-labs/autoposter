@@ -200,6 +200,15 @@ class CollectionsConfig(BaseModel):
     awards: bool = True
 
 
+class CleanupConfig(BaseModel):
+    """Periodic sweep for orphaned asset directories. Moves to backup_root, never deletes."""
+
+    # Dry run by default, the same posture as badges.upload_to_plex and
+    # collections.apply_to_plex: report what would move, change nothing until
+    # the operator opts in.
+    apply: bool = False
+
+
 class Config(BaseModel):
     assets_root: Path
     manual_assets_root: Path
@@ -217,4 +226,5 @@ class Config(BaseModel):
     operations: OperationsConfig = Field(default_factory=OperationsConfig)
     badges: BadgesConfig = Field(default_factory=BadgesConfig)
     collections: CollectionsConfig = Field(default_factory=CollectionsConfig)
+    cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
     version: str = ""

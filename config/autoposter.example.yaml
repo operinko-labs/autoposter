@@ -43,6 +43,9 @@ collections:
   libraries: # Plex library names to reconcile
     - Movies
     - TV Shows
+
+cleanup:
+  apply: false # dry run by default: report what would move, change nothing
   charts: true # IMDb Popular / Top 250 / Lowest Rated
   awards: true # Oscars winner collections
 
