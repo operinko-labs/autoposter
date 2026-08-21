@@ -30,7 +30,7 @@ def definition_hash(bucket: Bucket) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _has_label(collection, label: str) -> bool:
+def has_label(collection, label: str) -> bool:
     # ``labels`` is a cached_data_property plexapi never populates from
     # ``section.collections()`` results -- reading it relies on an implicit
     # reload gated on ``plexapi.autoreload``, which can be turned off. Force
@@ -81,7 +81,7 @@ async def reconcile_content_ratings(
         wanted = definition_hash(bucket)
         collection = existing.get(bucket.title)
 
-        if collection is not None and not _has_label(collection, label):
+        if collection is not None and not has_label(collection, label):
             actions.append(
                 "conflict: %r exists without the %r label; leaving it untouched"
                 % (bucket.title, label)
