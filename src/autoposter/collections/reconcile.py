@@ -12,6 +12,7 @@ franchise collections, another tool's, or hand-made by the operator.
 import hashlib
 import logging
 
+from plexapi.utils import joinArgs
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +23,25 @@ logger = logging.getLogger(__name__)
 
 SORT = "originallyAvailableAt:desc"
 LIBTYPES = {"Movie": "movie", "Show": "show"}
+
+# The "Ratings Collections" separator: a permanently-empty divider for the
+# Common Sense age buckets, identical in both libraries. Values measured off
+# the live server and the pinned Kometa image, not re-derived here: the
+# summary is Kometa's own translation string, and the sort title reproduces
+# its ``separator`` template (``defaults/templates.yml``) --
+# ``sort_title: <<sort_prefix>><<collection_section>>_!<<title>>`` with
+# ``sort_prefix: "!"`` and ``collection_section: "110"``
+# (``defaults/both/content_rating_cs.yml``). That prefix is what makes the
+# collection sort as a divider instead of alphabetically by title.
+SEPARATOR_TITLE = "Ratings Collections"
+SEPARATOR_SUMMARY = "Section separator for Ratings Collections."
+SEPARATOR_SORT_TITLE = "!110_!" + SEPARATOR_TITLE
+# The separator's desired state never varies by library, so its hash is a
+# constant -- computed once here rather than by ``definition_hash()``, whose
+# ``Bucket`` shape does not fit it.
+SEPARATOR_HASH = hashlib.sha256(
+    "\x1f".join([SEPARATOR_TITLE, SEPARATOR_SUMMARY, SEPARATOR_SORT_TITLE]).encode("utf-8")
+).hexdigest()
 
 
 def definition_hash(bucket: Bucket) -> str:
@@ -102,6 +122,97 @@ def resolve_collision(
     return True, "claimed %r (was labelled %r)" % (collection.title, prior)
 
 
+def _create_separator(section, libtype: str):
+    """Create the empty ``Ratings Collections`` divider via a raw POST.
+
+    ``section.createCollection`` raises ``BadRequest`` when given no items --
+    plexapi has no way to create an empty collection through its normal API.
+    Kometa's own client resorts to the same direct POST for exactly this
+    reason (Kometa v2.4.8 ``modules/plex.py:1602``): a ``uri`` that names no
+    item keys is what produces a collection with zero members.
+
+    Verified against the installed plexapi 4.18.2 (pinned alongside this in
+    ``tests/test_plexapi_collection_contract.py``): ``PlexServer._uriRoot``
+    still returns ``f"server://{machineIdentifier}/com.plexapp.plugins.library"``,
+    ``plexapi.utils.joinArgs`` still builds a URL-encoded query string from a
+    dict, and ``PlexServer.query`` still accepts a ``method`` override to
+    issue the POST instead of its default GET.
+    """
+    server = section._server
+    args = {
+        "type": 1 if libtype == "movie" else 2,
+        "title": SEPARATOR_TITLE,
+        "smart": 0,
+        "sectionId": section.key,
+        "uri": "%s/library/metadata" % server._uriRoot(),
+    }
+    server.query("/library/collections%s" % joinArgs(args), method=server._session.post)
+    return section.collection(SEPARATOR_TITLE)
+
+
+async def _reconcile_separator(
+    session: AsyncSession,
+    section,
+    library_name: str,
+    libtype: str,
+    label: str,
+    existing: dict,
+    stored: dict,
+    adopt: bool,
+    adopt_from: list[str],
+    adopt_removes_prior_label: bool,
+    dry_run: bool,
+) -> list[str]:
+    """The blank ``Ratings Collections`` divider: same ownership and
+    adoption rules as every other collection this family manages, but it is
+    never populated -- nothing here ever calls ``addItems``.
+    """
+    collection = existing.get(SEPARATOR_TITLE)
+    actions: list[str] = []
+
+    if collection is not None:
+        ok, message = resolve_collision(
+            collection, label, adopt, adopt_from, adopt_removes_prior_label, dry_run,
+        )
+        if message:
+            actions.append(message)
+        if not ok:
+            return actions
+
+    record = stored.get(SEPARATOR_TITLE)
+    if collection is not None and record is not None and record.definition_hash == SEPARATOR_HASH:
+        return actions
+
+    if dry_run:
+        actions.append(
+            "%s %r" % ("would update" if collection else "would create", SEPARATOR_TITLE)
+        )
+        return actions
+
+    if collection is None:
+        collection = _create_separator(section, libtype)
+        collection.addLabel(label)
+        actions.append("created %r" % SEPARATOR_TITLE)
+    else:
+        actions.append("updated %r" % SEPARATOR_TITLE)
+
+    collection.editSummary(SEPARATOR_SUMMARY)
+    collection.editSortTitle(SEPARATOR_SORT_TITLE)
+
+    if record is None:
+        record = ManagedCollection(
+            library=library_name, title=SEPARATOR_TITLE, kind="separator",
+            plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
+            definition_hash=SEPARATOR_HASH,
+        )
+        session.add(record)
+    else:
+        record.definition_hash = SEPARATOR_HASH
+        record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+
+    return actions
+
+
 async def reconcile_content_ratings(
     session: AsyncSession,
     section,
@@ -112,6 +223,7 @@ async def reconcile_content_ratings(
     adopt: bool = False,
     adopt_from: list[str] | None = None,
     adopt_removes_prior_label: bool = False,
+    separators: bool = False,
 ) -> list[str]:
     """Bring this library's Common Sense collections in line with its ratings.
 
@@ -119,6 +231,12 @@ async def reconcile_content_ratings(
     ``"Kids Movies"``) and is what ``ManagedCollection.library`` is keyed on --
     two libraries of the same ``library_type`` must not collide. ``library_type``
     (``"Movie"``/``"Show"``) only drives title/summary text and ``libtype``.
+
+    ``separators`` additionally maintains the blank ``Ratings Collections``
+    divider that belongs to this same family -- production always passes it
+    from ``config.collections.separators``, which defaults to ``True``; it
+    defaults to ``False`` here so that direct callers not concerned with it
+    (most tests) do not also need a ``section._server`` double.
 
     Returns a description of every action taken -- or, under ``dry_run``,
     every action that would be taken.
@@ -193,6 +311,12 @@ async def reconcile_content_ratings(
         else:
             record.definition_hash = wanted
             record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+
+    if separators:
+        actions += await _reconcile_separator(
+            session, section, library_name, libtype, label,
+            existing, stored, adopt, adopt_from or [], adopt_removes_prior_label, dry_run,
+        )
 
     await session.flush()
     return actions

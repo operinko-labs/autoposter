@@ -104,8 +104,10 @@ def _config(libraries=("Movies", "TV Shows"), enabled=True, apply_to_plex=True):
             apply_to_plex=apply_to_plex,
             # Charts/awards are exercised in test_collection_sources.py; keeping
             # them off here keeps this test scoped to the job wiring and out of
-            # real network calls.
-            charts=False, awards=False,
+            # real network calls. Separators are exercised in
+            # test_collection_separator.py, for the same reason -- and off
+            # here since these fakes have no _server.
+            charts=False, awards=False, separators=False,
             adopt=False, adopt_from=["Kometa"], adopt_removes_prior_label=False,
         ),
         scheduler=SimpleNamespace(collections_hours=24),
