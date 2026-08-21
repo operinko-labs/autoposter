@@ -19,6 +19,33 @@ full-library scan.
 Phase 1 (Posterizarr parity) is implemented. Rendered output is byte-identical
 to the tool it replaces, verified against the production asset tree.
 
+## Web UI
+
+A React SPA (`frontend/`) is built and served by the same container, behind
+the app's own routes — no separate server or deployment. It covers the
+Dashboard, Failures, Collections (read-only) and Settings views the phase 4a
+REST API can already answer; see `docs/superpowers/specs/2026-08-20-autoposter-design.md`
+section 6a for what's provisional and what's still deferred to a later phase.
+
+Building it locally requires **Node >= 26**:
+
+```bash
+cd frontend && npm ci && npm run build
+```
+
+This emits `frontend/dist/`, which the app serves automatically if present —
+`npm run build` first (`tsc --noEmit && vite build`), so a type error fails
+the build rather than shipping something nothing typechecked. Without a
+`frontend/dist/`, the app still starts and answers `/api`, `/healthz` and
+`/metrics` normally; only `/` and the SPA's own routes are unavailable. The
+container image builds the frontend itself in a `node:26-alpine` stage, so no
+Node toolchain is needed to run the image.
+
+The UI sits behind a single admin password: set `AUTOPOSTER_ADMIN_PASSWORD_HASH`
+to a bcrypt hash (never the plaintext) to allow logins — unset, every login
+attempt fails closed rather than skipping auth. See `deploy/README.md`'s
+"Web UI authentication" section for how to generate the hash.
+
 ## Development
 
 ```bash
@@ -45,14 +72,14 @@ Runs the Plex PIN flow and prints a token for `AUTOPOSTER_PLEX_TOKEN`.
 This project retrieves artwork and metadata from third-party APIs whose terms
 require attribution.
 
-A web UI is part of the design (spec section 6), and that is a user-facing
-surface displaying metadata from these APIs — so **in-application attribution
-is a hard requirement of this project, not an optional extra**. The notice
-below satisfies the current phase, where no UI has shipped yet and TheTVDB
-explicitly permits readme attribution for command line products and libraries.
-It stops being sufficient the moment the UI does ship. The requirement is
-recorded in the spec alongside the UI's own definition so it is designed in
-rather than bolted on.
+The web UI (see "Web UI" above) is a user-facing surface displaying metadata
+from these APIs — so **in-application attribution is a hard requirement of
+this project, not an optional extra**. It now ships on the UI's Settings page
+(`frontend/src/pages/Settings.tsx`), which is where TheTVDB's and TMDB's
+requirements below are actually satisfied; the readme exemption TheTVDB grants
+"command line products or development libraries" no longer applies now that a
+UI exists. This file keeps the notices too, both as background on why each one
+is required and so they still cover any use of this project without its UI.
 
 ### TheTVDB
 
@@ -66,6 +93,13 @@ Please consider [supporting TheTVDB](https://www.thetvdb.com/subscribe).
 >
 > — [TheTVDB API information](https://www.thetvdb.com/api-information#attribution)
 
+The UI renders this as text with a direct link to `https://thetvdb.com`,
+which satisfies the "direct link" requirement, rather than TheTVDB's official
+brand image — that asset is not vendored into this repository, and fetching a
+third-party brand image from the network unattended isn't something this
+project does without asking. **Open item**: vendor the image and swap it in;
+see `docs/superpowers/specs/2026-08-20-autoposter-design.md` section 6a.
+
 ### TMDB
 
 This product uses TMDB and the TMDB APIs but is not endorsed, certified, or
@@ -73,8 +107,9 @@ otherwise approved by TMDB.
 
 [TMDB](https://www.themoviedb.org/) requires this notice to be displayed
 prominently, together with the TMDB logo, identified as less prominent than the
-application's own branding. The logo is not shipped here because there is no
-user-facing surface yet; see the note below.
+application's own branding. The UI renders the notice verbatim alongside the
+logo (`frontend/src/assets/tmdb-logo.png`), sized smaller than the
+application's own wordmark on the same Settings page.
 
 ### Fanart.tv
 
@@ -114,17 +149,19 @@ Ratings come from IMDb's bulk non-commercial datasets, which are licensed for
 repurposed into another database. If this project is ever distributed
 commercially, that licence is a blocker and needs review.
 
-### Required in the web UI
+### In the web UI
 
-When the UI ships, attribution must appear **in the UI itself**, on any view
-showing artwork or metadata from these providers — not only in this file:
+Attribution appears **in the UI itself**, on the Settings page
+(`frontend/src/pages/Settings.tsx`):
 
-- **TheTVDB** — attribution with a **direct link to TheTVDB.com**, shown to end
-  users viewing that metadata.
-- **TMDB** — the notice above **and the TMDB logo**, displayed prominently, and
-  less prominently than this application's own branding. The logo asset needs
-  to be added to `assets/` as part of that work.
+- **TheTVDB** — attribution text with a **direct link to TheTVDB.com**. See
+  the open item above about the official brand image.
+- **TMDB** — the notice above, rendered verbatim, **and the TMDB logo**,
+  displayed prominently and less prominently than this application's own
+  branding.
 - **Fanart.tv** — no in-UI attribution required while each operator supplies
   their own personal key, as above. Revisit if a project key is ever adopted.
 
-This is tracked as a requirement of the UI in the spec, not as a follow-up.
+This was tracked as an acceptance criterion of the UI phase in the spec, not
+as a follow-up — `tests/test_attribution_present.py` asserts against the
+built bundle so the requirement can't regress silently.

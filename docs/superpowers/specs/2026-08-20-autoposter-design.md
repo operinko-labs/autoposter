@@ -261,7 +261,7 @@ pick the variant matching the active theme.
 Treat this as an acceptance criterion for the UI phase, not a documentation
 task.
 
-## 6a. Decisions carried out of phases 1-3
+## 6a. Decisions carried out of phases 1-4b
 
 Recorded here so they are not rediscovered as open questions.
 
@@ -306,6 +306,68 @@ hosted image per collection, preferring a local `/assets/<collection>/poster.*`
 when one exists. Adopted collections keep whatever poster they already have,
 so nothing regressed — but a newly created collection has none, so this is a
 real gap to close rather than a deferral.
+
+**Web UI accent colour: violet `#8b5cf6`, chosen but never confirmed.** The
+*arr suite already claims blue (Sonarr), gold (Radarr) and orange (Prowlarr);
+violet is distinct from all three at tab-strip size, which is the point of a
+per-app accent. It is defined once as `--accent` in `frontend/src/theme.css`
+and used nowhere as a literal, so reversing it is a one-line edit. **This was
+asked of the user during phase 4b and never answered** — recorded here as
+provisional rather than left to look like a settled choice.
+
+**TheTVDB attribution ships as text with a direct link, not their brand
+image.** Their terms require "attribution with a direct link to
+TheTVDB.com," which the text and anchor in `frontend/src/pages/Settings.tsx`
+satisfy. TheTVDB also publishes a ready-made attribution image with light and
+dark variants, which this section's own "Where it goes" guidance prefers, but
+that asset is not vendored into this repository, and fetching a third-party
+brand image from the network unattended is not something this project does
+without asking. **Open item for the user** — vendoring the image and swapping
+it in is a drop-in replacement: the TheTVDB `.provider` block becomes the same
+shape the TMDB block already is.
+
+**TMDB attribution uses the vendored logo, relocated so the SPA mount
+actually serves it.** The logo lived at
+`assets/badges/images/rating/TMDb.png` under the Kometa MIT carry-over; phase
+4b moves a copy to `frontend/src/assets/tmdb-logo.png` and imports it from
+`Settings.tsx` instead of referencing it as a `public/`-relative path. Vite
+copies `public/` to the *root* of `dist/`, and `spa.py`'s mount does not serve
+that root — it mounts `/assets` and answers everything else with
+`index.html` — so a `public/`-relative logo would come back as a `200
+text/html` and render broken with nothing failing loudly. Importing it puts
+the file under `/assets/` with a content hash, where the mount already
+serves it. The exact required notice text renders verbatim, and a
+page-level `.brand-mark` wordmark was added to the Settings page so TMDB's
+"less prominent than the application's own branding" condition has something
+on that same page to be measured against — the sidebar wordmark isn't visible
+from Settings itself.
+
+**Node is pinned to 26** (`frontend/package.json`'s `engines: ">=26.0.0"`,
+`node:26-alpine` in the Dockerfile, `node-version: "26"` in CI), after the
+user noted this box's local 24.8.0 was neither the 24 LTS nor current.
+
+**The dashboard polls; it does not use a WebSocket.** This section calls for
+one, but no such endpoint exists yet, and adding it is a phase 4c server
+task, not a frontend one. The dashboard instead polls `/api/status` and
+`/api/events` every 5 seconds. `frontend/src/api/client.ts` is written so a
+later socket swap touches one module rather than every page.
+
+**`GET /api/collections` does not return member counts.** It returns `id`,
+`library`, `title` and `kind` only — the phase 4a endpoint was never built to
+carry counts, diff results or a "diff now" affordance. Phase 4b's Collections
+page is therefore a plain name/library/kind list, not the richer view this
+section describes; member counts, diff status and diff actions all need a
+new or extended endpoint and are phase 4c work.
+
+**Phase 4c inherits: image serving, item detail, the library browser, config
+write plus hot-reload, collection member counts and actions, and the
+WebSocket.** None of these were cut for being low-value — each is blocked on
+a server endpoint that does not exist today, and phase 4b deliberately did
+not design one inside a frontend task. `GET /api/items/{id}` returns
+fingerprints and upload status but no artwork URL, so "base vs. badged
+side-by-side" cannot be drawn without an image-serving endpoint first; `GET
+/api/config` is read-only and redacted, so an editor needs a write endpoint
+with schema validation before it can exist at all.
 
 ## 7. Error handling
 

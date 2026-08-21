@@ -66,9 +66,11 @@ phase 4a shipped; two are not, and the gap is in the API rather than the UI:
 | Library browser, item detail | needs an **image-serving endpoint** — `GET /api/items/{id}` returns fingerprints and upload status but no artwork URL, so "base vs. badged side-by-side" cannot be drawn | **No — 4c** |
 | Config editor | needs a **config write endpoint** with schema validation and hot-reload; `GET /api/config` is read-only and redacted | **No — 4c** |
 
-Collections are a partial case: `GET /api/collections` returns member counts,
-so a read-only list is buildable, but "last diff result" and "diff now" have
-no endpoint. This phase ships the read-only list and leaves the actions to 4c.
+Collections are a partial case: `GET /api/collections` returns `id`,
+`library`, `title` and `kind` — no member counts. A read-only name/library/kind
+list is buildable from that, but member counts, "last diff result" and
+"diff now" all need an endpoint that does not exist yet. This phase ships the
+read-only list; the counts and the actions are 4c.
 
 Deferring these is a scope call, not an omission — building either view now
 would mean designing its API endpoint inside a frontend task, which is how
