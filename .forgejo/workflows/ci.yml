@@ -29,7 +29,22 @@ env:
   # tests/test_ci_path_filters.py::test_ci_sets_the_ci_environment_variable
   # asserts this stays present.
   CI: "true"
-  PYTHON_VERSION: "3.13"
+  # Every toolchain version is an exact patch, and each is named in exactly one
+  # place here so a bump is one edit. The `# renovate:` lines are what make
+  # these visible to Renovate at all: it reads `uses:`, `container:` and
+  # `services:` natively but not `env:` values, so without the annotation these
+  # would silently stop being updated while the Dockerfile moved on.
+  # datasource=docker throughout, matching the Dockerfile's `FROM python:` /
+  # `FROM node:` and docker-compose.yml's `postgres:` -- the same datasource and
+  # depName as those, so a Renovate group bumps every location to one string.
+  # tests/test_toolchain_versions.py fails if a half-applied group leaves them
+  # disagreeing.
+  # renovate: datasource=docker depName=python versioning=docker
+  PYTHON_VERSION: "3.14.7"
+  # renovate: datasource=docker depName=node versioning=docker
+  NODE_VERSION: "26.7.0"
+  # renovate: datasource=docker depName=postgres versioning=docker
+  POSTGRES_VERSION: "18.1"
   IMAGE_NAME: autoposter
 
 jobs:
@@ -67,7 +82,7 @@ jobs:
             -e POSTGRES_USER=autoposter \
             -e POSTGRES_PASSWORD=autoposter \
             -e POSTGRES_DB=autoposter \
-            postgres:18-alpine
+            postgres:${{ env.POSTGRES_VERSION }}-alpine
 
       # Waiting on `pg_isready` inside the container was the previous attempt's
       # mistake: it probes the unix socket, while the suite connects over TCP
@@ -89,7 +104,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "26"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -250,14 +265,14 @@ jobs:
           docker network create ci-net
           docker run -d --name ci-pg --network ci-net \
             -e POSTGRES_USER=autoposter -e POSTGRES_PASSWORD=autoposter \
-            -e POSTGRES_DB=autoposter postgres:18-alpine
+            -e POSTGRES_DB=autoposter postgres:${{ env.POSTGRES_VERSION }}-alpine
           # Probe over TCP from a peer container, not with `docker exec
           # pg_isready`: that checks the unix socket, which reports ready
           # while initdb's temporary server is up and TCP is still refused.
           # alembic below connects over TCP, so wait on that.
           ready=0
           for i in $(seq 1 60); do
-            if docker run --rm --network ci-net postgres:18-alpine                  pg_isready -h ci-pg -p 5432 -U autoposter >/dev/null 2>&1; then
+            if docker run --rm --network ci-net postgres:${{ env.POSTGRES_VERSION }}-alpine                  pg_isready -h ci-pg -p 5432 -U autoposter >/dev/null 2>&1; then
               ready=$((ready + 1))
             else
               ready=0

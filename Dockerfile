@@ -1,9 +1,10 @@
 # The web UI is built here rather than committed, so the image always serves a
-# bundle built from the source in this commit. node:26-alpine matches the floor
-# frontend/package.json declares (`engines: {"node": ">=26.0.0"}`) and the
-# major .forgejo/workflows/ci.yml installs, so what CI tests and what the image
-# ships come off the same toolchain.
-FROM node:26-alpine AS frontend
+# bundle built from the source in this commit. The tag names an exact patch,
+# not a floating major: frontend/package.json's `engines` and
+# .forgejo/workflows/ci.yml's NODE_VERSION name that same patch, so the bundle
+# CI typechecks is built by the same Node as the bundle that ships.
+# tests/test_toolchain_versions.py fails if those three ever disagree.
+FROM node:26.7.0-alpine AS frontend
 WORKDIR /frontend
 # The manifests alone first: a change to src/ then reuses this layer instead of
 # re-installing every dependency.
@@ -24,7 +25,11 @@ RUN npm run build
 # came out 0.077% different (RMSE 0.00077) from the production asset, where the
 # HDRI build reproduces it byte-for-byte. HDRI also brings float-format support
 # (.exr/.hdr) for hand-supplied artwork.
-FROM python:3.14-alpine
+#
+# The patch is pinned, and .forgejo/workflows/ci.yml's PYTHON_VERSION and
+# pyproject.toml's requires-python are held to it, so the suite is proven on
+# the interpreter that actually ships rather than a neighbouring one.
+FROM python:3.14.7-alpine
 
 # imagemagick's format support is split into subpackages on Alpine. jpeg is not
 # optional here — every asset this service writes is a .jpg. svg is needed because

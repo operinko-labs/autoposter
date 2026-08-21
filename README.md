@@ -38,7 +38,7 @@ This emits `frontend/dist/`, which the app serves automatically if present —
 the build rather than shipping something nothing typechecked. Without a
 `frontend/dist/`, the app still starts and answers `/api`, `/healthz` and
 `/metrics` normally; only `/` and the SPA's own routes are unavailable. The
-container image builds the frontend itself in a `node:26-alpine` stage, so no
+container image builds the frontend itself in a `node:26.7.0-alpine` stage, so no
 Node toolchain is needed to run the image.
 
 The UI sits behind a single admin password: set `AUTOPOSTER_ADMIN_PASSWORD_HASH`
