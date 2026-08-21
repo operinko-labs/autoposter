@@ -13,6 +13,8 @@ from pathlib import Path
 
 import asyncpg
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from urllib.parse import urlsplit, urlunsplit
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -68,6 +70,30 @@ async def _postgres_reachable() -> bool:
         return False
     await conn.close()
     return True
+
+
+def test_alembic_has_a_single_head():
+    """Two migrations that both name the same ``down_revision`` fork the
+    graph; ``alembic upgrade head`` then refuses to run at all, which is
+    exactly what happened when PR #23 and PR #24 each branched off
+    ``a6dc650926a0`` and were merged without a merge revision joining them.
+
+    This only inspects the revision files present in *this* checkout, so it
+    does not need a database and never skips. It would not have caught that
+    incident before the merge; this Forgejo instance publishes only
+    ``refs/pull/N/head`` (PR branch tips), not ``refs/pull/N/merge`` refs
+    (merge previews). On a forge providing merge-preview refs, this test
+    would fire when a re-run of PR #24's CI after PR #23 merged would have
+    seen both heads at once. It does catch a fork once one lands in a
+    checkout: a self-inflicted fork within a single branch, or the state of
+    ``main`` itself right after a merge like the one above.
+    """
+    config = Config(str(REPO_ROOT / "alembic.ini"))
+    script = ScriptDirectory.from_config(config)
+    heads = script.get_heads()
+    assert len(heads) == 1, (
+        "multiple alembic heads, needs a merge revision: %r" % (heads,)
+    )
 
 
 async def test_alembic_head_matches_models():
