@@ -16,8 +16,9 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from starlette.routing import Mount
 
-from autoposter.api.spa import mount_spa
+from autoposter.api.spa import RESERVED_PREFIXES, mount_spa
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
@@ -235,6 +236,105 @@ async def test_traversal_through_the_catch_all_serves_the_shell_not_the_file(
     text = body.decode("utf-8", "replace")
     assert INDEX_MARKER in text
     assert SECRET not in text
+
+
+CATCH_ALL_PATH = "/{full_path:path}"
+
+
+def _registered_routes(routes, prefix: str = ""):
+    """Every (route, full path) the app serves, across both FastAPI layouts.
+
+    FastAPI used to flatten `include_router` straight into `app.routes`, so a
+    walk over `.path` saw everything. The version this project pins does not:
+    it leaves an opaque `_IncludedRouter` there and resolves the real routes
+    from it, so the same walk sees two routers plus `/metrics` and none of the
+    API's own paths at all.
+
+    That difference is exactly the trap this file keeps catching in other
+    forms. A walk written for the flat layout passes on the nested one having
+    inspected nothing -- it was written against a host interpreter, went green,
+    and only the anchor assertions in the caller showed that the container
+    running the pinned FastAPI was checking three routes out of seventeen.
+
+    So handle both, and let the caller prove the walk found something. A route
+    with a `.path` is a real route, including a `Mount`, which owns its whole
+    subtree and is therefore not recursed into. One without is an inclusion,
+    and its routes are read back off it with the include-time prefix applied.
+    """
+    for route in routes:
+        path = getattr(route, "path", None)
+        if path is not None:
+            yield route, prefix + path
+            continue
+        included = getattr(route, "original_router", None)
+        if included is None:
+            continue
+        context = getattr(route, "include_context", None)
+        nested = getattr(context, "prefix", "") or ""
+        yield from _registered_routes(included.routes, prefix + nested)
+
+
+@pytest.mark.parametrize("api_docs_enabled", [False, True])
+def test_every_registered_top_level_segment_is_reserved(dist, api_docs_enabled):
+    """`RESERVED_PREFIXES` is hand-maintained; this ties it to the real routes.
+
+    Every test above names a path. That is fine for the paths that existed
+    when they were written and useless for the next one: phase 4c adds
+    image-serving and item endpoints, and a new top-level prefix would work
+    perfectly for its own paths while every *miss* under it -- a bad id, a
+    trailing slash, a typo -- came back as a 200 of index.html instead of a
+    404. The API client then parses HTML looking for an error, which is the
+    single failure this module exists to prevent, reintroduced by a file
+    nobody thought to edit.
+
+    So walk what the app actually registered rather than restating it. A route
+    is safe from the catch-all only if its first segment is reserved, because
+    the catch-all matches on that segment alone.
+
+    Both `api_docs_enabled` settings are exercised: FastAPI registers `/docs`,
+    `/redoc` and `/openapi.json` outside any router and only when they are
+    switched on, so a run with the example config's default alone would never
+    see them.
+    """
+    config = load_config(EXAMPLE).model_copy(update={"api_docs_enabled": api_docs_enabled})
+    # No session factory: nothing here sends a request, and building one would
+    # make an introspection test wait on PostgreSQL.
+    app = create_app(config, None, _secrets())
+    mount_spa(app, dist)
+
+    registered = list(_registered_routes(app.routes))
+    paths = [path for _route, path in registered]
+    # Anchors, before believing anything the walk reports. Both of these are
+    # about the walk, not about the app: if it stops understanding how routes
+    # are registered it must go red rather than quietly finding nothing.
+    assert CATCH_ALL_PATH in paths, (
+        f"no {CATCH_ALL_PATH!r} route, so mount_spa did not install the catch-all "
+        "and this test is checking an app that has no SPA fallback at all"
+    )
+    assert "/api/status" in paths, (
+        "the walk did not reach the API router's routes, so it would report no "
+        f"offenders whatever spa.py said. Found: {sorted(paths)}"
+    )
+
+    offenders: dict[str, list[str]] = {}
+    for route, path in registered:
+        if path == CATCH_ALL_PATH:
+            continue
+        if isinstance(route, Mount):
+            # A Mount owns its whole subtree -- `/assets/missing.js` is
+            # answered by StaticFiles' own 404, never by the catch-all -- so
+            # it cannot leak the shell the way an unreserved APIRoute can.
+            continue
+        first = path.lstrip("/").split("/", 1)[0]
+        if first and first not in RESERVED_PREFIXES:
+            offenders.setdefault(first, []).append(path)
+
+    assert not offenders, (
+        f"these top-level prefixes are registered on the app but missing from "
+        f"RESERVED_PREFIXES in src/autoposter/api/spa.py: {offenders}. Their own "
+        "paths work, but any unmatched path under them falls through to the SPA "
+        "catch-all and comes back as a 200 of index.html instead of a 404"
+    )
 
 
 def test_the_dockerfile_ships_the_built_spa():
