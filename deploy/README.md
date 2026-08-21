@@ -36,8 +36,46 @@ variables:
   posture as the MDBList key. Unset, `radarr.enabled`/`sonarr.enabled`
   default to `false` anyway, so the app boots the same either way; see
   "Radarr and Sonarr sync" below.
+- `AUTOPOSTER_ADMIN_PASSWORD_HASH` — the bcrypt hash of the Web UI's admin
+  password. See "Web UI authentication" below: unlike the keys above, an
+  unset value does not mean "no auth required", it means every login attempt
+  401s.
 
 None of these are read from the YAML config file.
+
+## Web UI authentication
+
+The `/api` routes the Web UI (Phase 4b) talks to sit behind a single admin
+password, supplied as a bcrypt *hash* via `AUTOPOSTER_ADMIN_PASSWORD_HASH` —
+never the plaintext password itself, following the same pattern as every
+other credential in this project.
+
+Generate the hash with `hash_password()` from `autoposter.api.auth`:
+
+```
+python -c "from autoposter.api.auth import hash_password; print(hash_password('your password here'))"
+```
+
+Store the printed hash (not the password) in the `AUTOPOSTER_ADMIN_PASSWORD_HASH`
+ExternalSecret.
+
+**An unset hash means nobody can log in, not that authentication is
+skipped.** `POST /api/login` always runs the bcrypt check — even with no hash
+configured, against a dummy hash — so response timing cannot reveal whether
+the deployment has one set; every attempt still fails with `401` either way.
+This fails closed rather than open: a forgotten secret locks operators out of
+the Web UI instead of leaving the API open to anyone.
+
+A successful login returns an opaque session token good for 24 hours
+(`SESSION_TTL_HOURS` in `api/routes.py`), after which the operator has to log
+in again. Sessions are rows in the `sessions` table, not signed cookies, so
+`POST /api/logout` can revoke one immediately rather than waiting for it to
+expire.
+
+`/healthz` and `/metrics` are the only routes not behind this session check —
+they stay open so Kubernetes probes and Prometheus scraping keep working
+without credentials. Every other route, including everything under `/api`
+except `/api/login`, requires a valid session.
 
 ## Metadata operations config
 
@@ -721,10 +759,16 @@ Enable these triggers:
 A job moves to `state='parked'` once it has been retried
 `config.plex.resolve_max_attempts` times (Plex-connectivity failures and
 "Plex hasn't scanned this yet") or `MAX_ATTEMPTS` times (everything else)
-without succeeding. Parked jobs are not retried automatically — there is no
-endpoint, script, or sweep that unparks them in this phase, so a Plex outage
-longer than the attempt budget silently and permanently drops the affected
-webhooks unless someone requeues them by hand.
+without succeeding. Parked jobs are not retried automatically, so a Plex
+outage longer than the attempt budget silently drops the affected webhooks
+unless someone requeues them.
+
+`GET /api/jobs/parked` lists parked jobs with why they parked;
+`POST /api/jobs/{id}/retry` resets one to pending with a fresh attempt count;
+`POST /api/jobs/{id}/dismiss` marks one dismissed without deleting it, for a
+failure nobody intends to requeue. The SQL below remains useful for bulk
+recovery (e.g. after an extended outage) that would be tedious one job at a
+time through the API.
 
 A Plex outage itself should no longer be the cause, though: job claiming is
 gated on a periodic Plex liveness check (`plex/health.py`), so while the

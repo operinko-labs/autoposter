@@ -1,5 +1,6 @@
 """The /api router: login, logout and everything behind require_session."""
 import logging
+from dataclasses import asdict
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -24,6 +25,8 @@ from autoposter.db.models import (
     ScheduledRun,
 )
 from autoposter.db.models import Session as SessionModel
+from autoposter.intake.arr import RenderIntent
+from autoposter.queue.jobs import enqueue
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,12 @@ MAX_EVENTS_LIMIT = 200
 
 DEFAULT_ITEMS_LIMIT = 50
 MAX_ITEMS_LIMIT = 200
+
+DEFAULT_JOBS_LIMIT = 50
+MAX_JOBS_LIMIT = 200
+
+# Never the real value -- see get_config()'s docstring.
+_REDACTED = "***REDACTED***"
 
 
 def _escape_like(value: str) -> str:
@@ -343,3 +352,131 @@ async def list_collections(
             for row in rows
         ]
     }
+
+
+@router.get("/jobs/parked")
+async def parked_jobs(
+    request: Request,
+    limit: int = DEFAULT_JOBS_LIMIT,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    capped_limit = min(max(limit, 1), MAX_JOBS_LIMIT)
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(Job)
+                    .where(Job.state == "parked")
+                    .order_by(Job.updated_at.desc())
+                    .limit(capped_limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return {
+        "jobs": [
+            {
+                "id": row.id,
+                "kind": row.kind,
+                "payload": row.payload,
+                "attempts": row.attempts,
+                "reason": row.last_error,
+                "updated_at": row.updated_at,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_job(
+    job_id: int, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Reset a parked job to pending and clear its attempt count, so the
+    worker pool picks it up again. Acting on a job that is not currently
+    parked -- unknown, already dismissed, or in any other state -- is a 404
+    rather than a no-op or a 500."""
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        job = (
+            await session.execute(select(Job).where(Job.id == job_id, Job.state == "parked"))
+        ).scalar_one_or_none()
+        if job is None:
+            raise HTTPException(status_code=404, detail="parked job not found")
+        job.state = "pending"
+        job.attempts = 0
+        job.claimed_by = None
+        job.claimed_at = None
+        job.run_after = func.now()
+        await session.commit()
+    return {"id": job.id, "state": job.state}
+
+
+@router.post("/jobs/{job_id}/dismiss")
+async def dismiss_job(
+    job_id: int, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Mark a parked job dismissed without deleting it -- what failed and why
+    is worth keeping, and this project deletes nothing anywhere else either."""
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        job = (
+            await session.execute(select(Job).where(Job.id == job_id, Job.state == "parked"))
+        ).scalar_one_or_none()
+        if job is None:
+            raise HTTPException(status_code=404, detail="parked job not found")
+        job.state = "dismissed"
+        await session.commit()
+    return {"id": job.id, "state": job.state}
+
+
+@router.post("/items/{item_id}/reprocess")
+async def reprocess_item(
+    item_id: int, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Enqueue a process_item job for one item, via the same enqueue()/dedupe_key
+    convention every other intake path uses -- asking twice while the first
+    request is still pending queues nothing the second time."""
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        item = (
+            await session.execute(select(MediaItem).where(MediaItem.id == item_id))
+        ).scalar_one_or_none()
+        if item is None:
+            raise HTTPException(status_code=404, detail="item not found")
+
+        intent = RenderIntent(
+            kind=item.kind,
+            title=item.title,
+            tmdb_id=item.tmdb_id,
+            tvdb_id=item.tvdb_id,
+            imdb_id=item.imdb_id,
+            year=item.year,
+            season_number=item.season_number,
+            episode_number=item.episode_number,
+        )
+        job_id = await enqueue(
+            session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key
+        )
+    return {"queued": job_id is not None, "job_id": job_id}
+
+
+@router.get("/config")
+async def get_config(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """The running configuration, with every secret redacted.
+
+    Provider API keys, the Plex token, the database URL and the admin
+    password hash never leave this process -- every field of ``Secrets`` is
+    replaced with the same marker regardless of whether it is set, so the
+    response cannot even reveal a secret's length or prefix, let alone its
+    value.
+    """
+    config = request.app.state.config
+    secrets = request.app.state.secrets
+    body = config.model_dump(mode="json")
+    body["secrets"] = {field: _REDACTED for field in secrets.model_dump()}
+    return body
