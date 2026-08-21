@@ -84,6 +84,44 @@ and language badges onto the base artwork and uploading the result to Plex.
 
 See `config/autoposter.example.yaml` for the full block.
 
+## Common Sense collections config
+
+The `collections:` block in `autoposter.yaml` controls the Phase 3a Common
+Sense age-bucket smart collections, replacing Kometa's. These are Plex-native
+smart collections — Plex evaluates the filter live, so reconciliation is
+manual in this phase, run by hand with:
+
+```
+python -m autoposter.collections
+```
+
+- `enabled` (default `true`) — off means reconciliation does not run at all.
+- `apply_to_plex` (default `false`) — dry run by default, the same posture as
+  `operations.write_to_plex` and `badges.upload_to_plex`: reconciliation
+  computes what each bucket's filter should be and reports it, but changes
+  nothing in Plex until the operator opts in. Dry-run output looks like:
+
+  ```
+  Movies: 2 action(s)
+     would create 'Age 17+ Movies' -> 17, R
+     would update 'Age 13+ Movies' -> 13, PG-13
+  ```
+
+- `ownership_label` (default `autoposter`) — the safety boundary. Only
+  collections carrying this label are ever created or modified; anything
+  else (Plex/TMDB franchise collections, hand-made operator collections,
+  Kometa's own `Kometa`-labelled collections) is left untouched. **Changing
+  this after a run orphans every collection created under the old label** —
+  they are not renamed or migrated, just no longer recognised as ours.
+- `libraries` (default `[Movies, TV Shows]`) — Plex library names to
+  reconcile.
+
+**No collection is ever deleted by this service**, including ones that are
+empty or whose filter currently matches nothing in the library — that is
+expected and normal, not a bug to fix.
+
+See `config/autoposter.example.yaml` for the full block.
+
 ## Loading IMDb ratings
 
 `critic_rating` (IMDb) is populated from IMDb's bulk datasets, not a live API

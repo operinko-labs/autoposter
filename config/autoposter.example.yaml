@@ -36,6 +36,14 @@ badges:
   lock_artwork: true # lock the Plex field after upload so the agent cannot reclaim it
   apply_overlay_label: false # add the literal Plex label "Overlay", as the previous tool did
 
+collections:
+  enabled: true # reconcile the Common Sense age-bucket collections
+  apply_to_plex: false # dry run by default: report the actions, change nothing
+  ownership_label: autoposter # only collections carrying this label are ever modified
+  libraries: # Plex library names to reconcile
+    - Movies
+    - TV Shows
+
 artwork:
   use_logo: true
   logo_language_order: [en, fi]

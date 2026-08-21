@@ -179,6 +179,23 @@ class BadgesConfig(BaseModel):
     apply_overlay_label: bool = False
 
 
+class CollectionsConfig(BaseModel):
+    """Common Sense age-bucket smart collections, replacing Kometa's."""
+
+    enabled: bool = True
+    # Dry run by default, the same posture as operations.write_to_plex and
+    # badges.upload_to_plex: reconciliation runs and reports, nothing is
+    # written to Plex until the operator opts in.
+    apply_to_plex: bool = False
+    # The ownership boundary: only collections carrying this label are ever
+    # created or modified. Must not be "Kometa" -- that is the label the tool
+    # being replaced uses, and sharing it would make both tools claim the
+    # same collections. Changing this after a run orphans every collection
+    # created under the old label; they are left untouched, not renamed.
+    ownership_label: str = "autoposter"
+    libraries: list[str] = Field(default_factory=lambda: ["Movies", "TV Shows"])
+
+
 class Config(BaseModel):
     assets_root: Path
     manual_assets_root: Path
@@ -195,4 +212,5 @@ class Config(BaseModel):
     artwork: ArtworkConfig
     operations: OperationsConfig = Field(default_factory=OperationsConfig)
     badges: BadgesConfig = Field(default_factory=BadgesConfig)
+    collections: CollectionsConfig = Field(default_factory=CollectionsConfig)
     version: str = ""
