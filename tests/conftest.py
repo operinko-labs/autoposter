@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -14,6 +15,26 @@ TEST_DB_URL = os.environ.get(
 )
 
 EXAMPLE_CONFIG = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+
+
+@pytest.fixture(autouse=True)
+def no_outbound_network(monkeypatch):
+    """Fail loudly if a test reaches the real network.
+
+    Nothing in the suite does today, but that is avoidance rather than
+    enforcement: the IMDb GraphQL API and the Kometa GitHub dataset are one
+    forgotten ``MockTransport`` away, and IMDb's own response carries a
+    non-commercial-use disclaimer. ``MockTransport`` and ``ASGITransport``
+    are unaffected -- only the real connecting transport is blocked.
+    """
+
+    async def blocked(self, request):
+        raise RuntimeError(
+            "tests must not make real network calls; %s %s was attempted"
+            % (request.method, request.url)
+        )
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
 
 
 @pytest_asyncio.fixture

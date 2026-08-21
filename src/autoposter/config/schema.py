@@ -194,6 +194,10 @@ class CollectionsConfig(BaseModel):
     # created under the old label; they are left untouched, not renamed.
     ownership_label: str = "autoposter"
     libraries: list[str] = Field(default_factory=lambda: ["Movies", "TV Shows"])
+    # IMDb Popular / Top 250 / Lowest Rated list collections.
+    charts: bool = True
+    # Oscars winner list collections (movies only).
+    awards: bool = True
 
 
 class Config(BaseModel):

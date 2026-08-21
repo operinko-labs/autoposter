@@ -85,6 +85,10 @@ def _config(libraries):
     return SimpleNamespace(
         collections=SimpleNamespace(
             libraries=libraries, ownership_label=LABEL, apply_to_plex=True,
+            # Charts/awards are exercised in test_collection_sources.py; keeping
+            # them off here keeps this test scoped to the commit-boundary
+            # behaviour and out of real network calls.
+            charts=False, awards=False,
         )
     )
 

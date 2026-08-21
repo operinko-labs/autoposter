@@ -122,6 +122,39 @@ expected and normal, not a bug to fix.
 
 See `config/autoposter.example.yaml` for the full block.
 
+## IMDb chart and Oscars collections
+
+The same `collections:` block also controls two families of regular (list)
+collections, run by the same `python -m autoposter.collections` command
+alongside the Common Sense collections:
+
+- `charts` (default `true`) — `IMDb Popular`, `IMDb Top 250` and, for
+  movies only, `IMDb Lowest Rated`, sourced from IMDb's public chart API.
+  Shows get `IMDb Popular` and `IMDb Top 250` only — IMDb has no
+  lowest-rated TV chart.
+- `awards` (default `true`) — Oscars winner collections, movies only:
+  `Oscars Best Picture Winners`, `Oscars Best Director Winners`, and
+  `Oscars Winners <year>` for the five most recent ceremony years with
+  data, sourced from the community IMDb-Awards dataset.
+
+Unlike the Common Sense collections, these are regular collections with
+explicit, ordered membership — items are added, removed and reordered on
+every pass to match the source's own rank order. `apply_to_plex` still gates
+every write, the same dry-run-by-default posture as the rest of this block.
+
+**A source that fails to fetch leaves its collection untouched, never
+empty.** These collections use sync semantics — anything not re-selected is
+normally removed — so a failed IMDb or GitHub request is treated as "make no
+changes" rather than "remove everything". One dead chart also cannot block
+the others: each source is fetched independently, so an IMDb outage still
+lets the Oscars collections (or vice versa) update normally.
+
+IMDb's API response carries a non-commercial-use disclaimer. This deployment
+is a private, single-operator install, which is within it; nothing here
+redistributes the fetched data.
+
+See `config/autoposter.example.yaml` for the full block.
+
 ## Loading IMDb ratings
 
 `critic_rating` (IMDb) is populated from IMDb's bulk datasets, not a live API

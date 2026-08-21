@@ -43,6 +43,8 @@ collections:
   libraries: # Plex library names to reconcile
     - Movies
     - TV Shows
+  charts: true # IMDb Popular / Top 250 / Lowest Rated
+  awards: true # Oscars winner collections
 
 artwork:
   use_logo: true
