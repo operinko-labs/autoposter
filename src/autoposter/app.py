@@ -10,6 +10,7 @@ from plexapi.server import PlexServer
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
+from autoposter.api.routes import router as api_router
 from autoposter.config.schema import Config, Secrets
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
@@ -156,6 +157,7 @@ def create_app(
     app.state.tmdb_facts = None
     app.state.mdblist = None
     app.include_router(router)
+    app.include_router(api_router)
 
     @app.get("/metrics")
     async def metrics() -> Response:
