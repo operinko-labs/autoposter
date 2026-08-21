@@ -62,9 +62,9 @@ def test_draw_text_centered_marks_pixels_inside_the_box():
     font = ImageFont.truetype(str(INTER_MEDIUM), 55)
     draw_text_centered(layer, "WEB", font, (15, 1365, 320, 1470))
     region = layer.crop((15, 1365, 320, 1470))
-    assert any(px[3] > 0 for px in region.getdata())
+    assert region.getbbox() is not None, "nothing was drawn inside the box"
     outside = layer.crop((400, 1365, 700, 1470))
-    assert all(px[3] == 0 for px in outside.getdata())
+    assert outside.getbbox() is None, "pixels were drawn outside the box"
 
 
 def test_composite_uses_the_layer_alpha_as_a_mask():

@@ -4,7 +4,6 @@ import threading
 from pathlib import Path
 
 import pytest_asyncio
-from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 
@@ -189,12 +188,24 @@ async def test_login_prunes_expired_session_rows(client, session):
     assert len(rows) == 1
 
 
+# Enumerated from the OpenAPI schema rather than by walking `app.routes`
+# and matching `isinstance(route, APIRoute)`. That walk silently found zero
+# routes on FastAPI 0.141, which stopped flattening included routers onto
+# `app.routes` -- it appends one opaque `_IncludedRouter` instead, exposing
+# neither `.routes` nor the APIRoute objects nested inside it. Zero routes
+# makes this test vacuous, which is precisely the failure it exists to
+# prevent, so it is enumerated from the documented surface instead. That is
+# stable across both versions and unaffected by `docs_url=None`.
+METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+
+
 def _api_routes(app):
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or not route.path.startswith("/api"):
+    for path, operations in app.openapi().get("paths", {}).items():
+        if not path.startswith("/api"):
             continue
-        for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
-            yield method, route.path
+        for method in sorted(m.upper() for m in operations):
+            if method in METHODS:
+                yield method, path
 
 
 async def test_every_api_route_except_login_requires_a_session(app, client):
