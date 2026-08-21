@@ -22,6 +22,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # tests/test_attribution_present.py hard-fails (rather than skips) a
+  # missing frontend/dist only when this is set. Without it, that guard goes
+  # green-with-a-skip if the "Build the frontend" step is ever removed, and
+  # the TMDB/TheTVDB attribution requirement silently stops being enforced.
+  # tests/test_ci_path_filters.py::test_ci_sets_the_ci_environment_variable
+  # asserts this stays present.
+  CI: "true"
   PYTHON_VERSION: "3.13"
   IMAGE_NAME: autoposter
 

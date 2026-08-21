@@ -82,6 +82,26 @@ def test_a_verified_file_is_never_skipped(path):
     )
 
 
+def test_ci_sets_the_ci_environment_variable():
+    """A guard that only arms itself on a variable nothing sets is
+    decoration, not enforcement.
+
+    tests/test_attribution_present.py treats a missing frontend/dist as a
+    hard `pytest.fail` only when `os.environ["CI"]` is truthy; otherwise it
+    skips. If this workflow ever stops setting it -- or the runner's
+    behaviour is relied on instead -- that guard goes green-with-a-skip
+    rather than red the moment the "Build the frontend" step breaks, and the
+    TMDB/TheTVDB attribution requirement silently stops being enforced.
+    """
+    loaded = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    env = loaded.get("env") or {}
+    assert str(env.get("CI", "")).lower() in {"1", "true", "yes"}, (
+        "CI is not set to a truthy value in .forgejo/workflows/ci.yml's "
+        "env block; tests/test_attribution_present.py's hard-fail guard "
+        "would silently skip instead of failing on a missing frontend/dist"
+    )
+
+
 @pytest.mark.parametrize(
     "path",
     [
