@@ -64,11 +64,14 @@ describe("Dashboard", () => {
     render(<Dashboard />);
 
     // One card per state, labelled and carrying the server's number. The
-    // label lookup is what pins the value to the right state -- a grid that
-    // rendered every count against the wrong label would still contain "7".
+    // label lookup is what pins the value to the right state, and the value
+    // is read from `.stat-value` and compared exactly -- `toHaveTextContent`
+    // on the whole card is a substring match, so a card showing "412" would
+    // also satisfy the assertion for the state whose count is "2".
     for (const [state, count] of Object.entries(STATUS.jobs_by_state)) {
       const label = await screen.findByText(state);
-      expect(label.parentElement).toHaveTextContent(String(count));
+      const value = label.parentElement?.querySelector(".stat-value");
+      expect(value?.textContent).toBe(String(count));
     }
 
     expect(screen.getByText(/4 workers/)).toBeInTheDocument();
