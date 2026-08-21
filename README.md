@@ -27,22 +27,17 @@ Dashboard, Failures, Collections (read-only) and Settings views the phase 4a
 REST API can already answer; see `docs/superpowers/specs/2026-08-20-autoposter-design.md`
 section 6a for what's provisional and what's still deferred to a later phase.
 
-Building it locally requires **Node 26.7.0** — the exact patch, not a floor.
+Building it needs **Node 26.7.0** — the exact patch, not a floor — which the
+`web` service supplies, so nothing has to be installed on the host.
 `frontend/package.json`'s `engines.node` is the declaration; the Dockerfile
-stage and CI name the same patch, and `tests/test_toolchain_versions.py` fails
-if any of them drift apart. `frontend/.npmrc` sets `engine-strict=true`, so any
-other Node makes `npm ci` exit 1 instead of printing an `EBADENGINE` warning
-and installing anyway:
+stages and CI name the same patch, and `tests/test_toolchain_versions.py`
+fails if any of them drift apart. `frontend/.npmrc` sets `engine-strict=true`,
+so any other Node makes `npm ci` exit 1 instead of printing an `EBADENGINE`
+warning and installing anyway — which is precisely why the build runs in a
+container rather than against whatever Node a host happens to carry:
 
 ```bash
-cd frontend && npm ci && npm run build
-```
-
-On a host with a different Node, run that build in the pinned image instead --
-no local toolchain, same result:
-
-```bash
-docker run --rm -v "$PWD/frontend:/frontend" -w /frontend node:26.7.0-alpine sh -c "npm ci && npm run build"
+docker compose run --rm web npm run build
 ```
 
 This emits `frontend/dist/`, which the app serves automatically if present —
@@ -60,17 +55,37 @@ attempt fails closed rather than skipping auth. See `deploy/README.md`'s
 
 ## Development
 
+A working Docker installation is the only requirement. There is no host Python
+or Node toolchain to install, and so no version of either to keep in step with
+the image.
+
 ```bash
-docker compose up -d postgres
-pip install -e ".[dev]"
-pytest
+docker compose run --rm test pytest     # the suite
+docker compose run --rm web npm test    # the frontend suite
+docker compose up web api               # the app, with hot reload
 ```
 
-The image-parity tests require a **Q16-HDRI** ImageMagick build and skip
-without one, so a checkout with no ImageMagick still runs `pytest`. They carry
-`@pytest.mark.imagemagick`; CI deselects them from the main run and executes
+The SPA is then on `http://localhost:5173` and the API on
+`http://localhost:8081`; the dev server proxies `/api` and `/healthz` through
+to the API container. The API is published on 8081 rather than 8080 for the
+same reason PostgreSQL is published on 5433 — a port already spoken for on the
+development machine — and binds 8080 inside the network regardless.
+
+Running the app needs credentials, as production does: copy `.env.example` to
+`.env` and fill it in, or compose refuses to start it. `docker compose up api`
+then applies migrations first, exactly as the image's `CMD` does. The suite and
+the frontend need no credentials at all.
+
+The image-parity tests require a **Q16-HDRI** ImageMagick build and carry
+`@pytest.mark.imagemagick`. The `test` service derives from the same base as
+the runtime image, so they **run** there rather than skipping — five tests that
+a host checkout never executes. On a host without ImageMagick they skip, so a
+bare `pytest` still works; CI deselects them from the main run and executes
 them in a container that has such a build, where the same gate is a hard
 failure rather than a skip. See `deploy/README.md`.
+
+Never run `docker compose down -v`. The PostgreSQL volume is anonymous, so
+that discards the development database.
 
 ## Obtaining a Plex token
 
