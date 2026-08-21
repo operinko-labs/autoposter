@@ -31,17 +31,29 @@ def definition_hash(bucket: Bucket) -> str:
 
 
 def _has_label(collection, label: str) -> bool:
+    # ``labels`` is a cached_data_property plexapi never populates from
+    # ``section.collections()`` results -- reading it relies on an implicit
+    # reload gated on ``plexapi.autoreload``, which can be turned off. Force
+    # the reload explicitly rather than depend on that global setting.
+    # ``reload()``, never ``refresh()``: refresh() re-scans metadata on Plex.
+    collection.reload()
     return any(tag.tag == label for tag in (getattr(collection, "labels", None) or []))
 
 
 async def reconcile_content_ratings(
     session: AsyncSession,
     section,
+    library_name: str,
     library_type: str,
     label: str,
     dry_run: bool = True,
 ) -> list[str]:
     """Bring this library's Common Sense collections in line with its ratings.
+
+    ``library_name`` is the Plex section name (e.g. ``"Movies"``,
+    ``"Kids Movies"``) and is what ``ManagedCollection.library`` is keyed on --
+    two libraries of the same ``library_type`` must not collide. ``library_type``
+    (``"Movie"``/``"Show"``) only drives title/summary text and ``libtype``.
 
     Returns a description of every action taken -- or, under ``dry_run``,
     every action that would be taken.
@@ -54,7 +66,7 @@ async def reconcile_content_ratings(
         row.title: row
         for row in (
             await session.execute(
-                select(ManagedCollection).where(ManagedCollection.library == library_type)
+                select(ManagedCollection).where(ManagedCollection.library == library_name)
             )
         ).scalars()
     }
@@ -106,7 +118,7 @@ async def reconcile_content_ratings(
 
         if record is None:
             record = ManagedCollection(
-                library=library_type, title=bucket.title, kind="smart",
+                library=library_name, title=bucket.title, kind="smart",
                 plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
                 definition_hash=wanted,
             )

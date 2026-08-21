@@ -12,14 +12,11 @@ for Movies bucket 17, Shows bucket 14 and the Shows catch-all exactly.
 import json
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 
-TABLE_PATH = (
-    Path(__file__).resolve().parents[3] / "assets" / "collections" / "content_rating_cs.json"
-)
+from autoposter.assets import asset_path
 
 SUMMARY = "%ss that are rated %s according to the Common Sense Rating System."
-OTHER_SUMMARY = "%ss that are not rated according to the Common Sense Rating System."
+OTHER_SUMMARY = "%ss that are Unrated, Not Rated or any other uncommon Ratings."
 
 
 @dataclass(frozen=True)
@@ -35,7 +32,7 @@ class Bucket:
 @lru_cache(maxsize=1)
 def load_table() -> dict:
     """The static bucket/candidate table, generated from Kometa's defaults."""
-    with open(TABLE_PATH, encoding="utf-8") as handle:
+    with open(asset_path("collections", "content_rating_cs.json"), encoding="utf-8") as handle:
         return json.load(handle)
 
 

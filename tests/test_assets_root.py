@@ -32,6 +32,7 @@ def test_the_source_checkout_layout_is_the_fallback(monkeypatch):
     root = assets.assets_root()
     assert root.name == "assets"
     assert (root / "badges").is_dir()
+    assert (root / "collections").is_dir()
 
 
 def test_asset_path_joins_beneath_the_root(monkeypatch, tmp_path):

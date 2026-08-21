@@ -41,6 +41,18 @@ def test_titles_and_summaries_match_production_exactly():
     assert movies["17"].summary == (
         "Movies that are rated 17 according to the Common Sense Rating System."
     )
+    # Kometa's translations file, verbatim (docs/research/kometa-collections.md:410):
+    # "<<library_translationU>>s that are Unrated, Not Rated or any other
+    # uncommon Ratings." -- not the invented "not rated" text this used to
+    # write over the live 'Not Rated Movies'/'Not Rated Shows' summaries.
+    assert movies["other"].title == "Not Rated Movies"
+    assert movies["other"].summary == (
+        "Movies that are Unrated, Not Rated or any other uncommon Ratings."
+    )
+    assert shows["other"].title == "Not Rated Shows"
+    assert shows["other"].summary == (
+        "Shows that are Unrated, Not Rated or any other uncommon Ratings."
+    )
 
 
 def test_empty_buckets_are_still_returned():
@@ -70,3 +82,48 @@ def test_values_are_sorted_so_an_unchanged_library_produces_an_identical_filter(
     a = derive_buckets({"R", "TV-14", "17"}, "Movie")
     b = derive_buckets({"17", "TV-14", "R"}, "Movie")
     assert [x.values for x in a] == [x.values for x in b]
+
+
+def test_load_table_reads_from_the_configured_asset_root(monkeypatch, tmp_path):
+    """In the container the package is pip-installed into site-packages while
+    the table is copied to ``/app/assets``, so a path derived by walking up
+    from ``__file__`` resolves into the library root instead. This must go
+    through ``AUTOPOSTER_ASSETS_ROOT`` (via ``autoposter.assets``), not a
+    fixed relative walk."""
+    import importlib
+    import json
+    import sys
+
+    from autoposter import assets
+
+    collections_dir = tmp_path / "collections"
+    collections_dir.mkdir()
+    (collections_dir / "content_rating_cs.json").write_text(
+        json.dumps({"include": ["1"], "addons": {"1": []}}), encoding="utf-8"
+    )
+    monkeypatch.setenv(assets.ENV_VAR, str(tmp_path))
+    assets.assets_root.cache_clear()
+    sys.modules.pop("autoposter.collections.buckets", None)
+    try:
+        buckets = importlib.import_module("autoposter.collections.buckets")
+        assert buckets.load_table() == {"include": ["1"], "addons": {"1": []}}
+    finally:
+        assets.assets_root.cache_clear()
+
+
+def test_the_module_imports_cleanly_with_a_missing_asset_root(monkeypatch, tmp_path):
+    """``load_table()`` reads its table lazily behind ``lru_cache``, so a
+    missing asset root must not break import -- matching the badges modules'
+    behaviour in test_assets_root.py."""
+    import importlib
+    import sys
+
+    from autoposter import assets
+
+    monkeypatch.setenv(assets.ENV_VAR, str(tmp_path / "does-not-exist"))
+    assets.assets_root.cache_clear()
+    sys.modules.pop("autoposter.collections.buckets", None)
+    try:
+        importlib.import_module("autoposter.collections.buckets")  # must not raise
+    finally:
+        assets.assets_root.cache_clear()

@@ -58,3 +58,15 @@ def test_collection_delete_exists_but_we_never_call_it():
     pinned here so that if a later phase adds deletion, it is a deliberate
     change against a known API rather than an accident."""
     assert callable(Collection.delete)
+
+
+def test_collection_labels_is_lazy_and_must_be_reloaded_explicitly():
+    """``labels`` is a ``cached_data_property`` -- ``_loadData`` never sets
+    it, so a collection fetched via ``section.collections()`` only has it
+    populated by an implicit reload gated on ``plexapi.autoreload``. That
+    global can be turned off, so our ownership check must call
+    ``collection.reload()`` itself rather than rely on it."""
+    from plexapi.base import cached_data_property
+
+    assert isinstance(Collection.__dict__.get("labels"), cached_data_property)
+    assert callable(Collection.reload)
