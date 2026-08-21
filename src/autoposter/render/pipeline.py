@@ -328,17 +328,25 @@ async def render_artifact(
     # library costs zero outbound requests (spec section 5).
     if render.adopted and render.base_sha256:
         text_inputs, asset_hashes = await gather_fingerprint_inputs(config, item, art_kind)
-        candidate = adopted_fingerprint(
+        adopted_candidate = adopted_fingerprint(
             config, art_kind, render.base_sha256, text_inputs, asset_hashes
         )
-        # target.exists() offloaded, as elsewhere here, because assets_root can
-        # be an NFS mount. An adopted row whose file has since been deleted has
-        # to be re-rendered -- the row would otherwise claim art that is gone.
-        if candidate == render.fingerprint and await asyncio.to_thread(target.exists):
-            render.status = "rendered"
-            render.detail = "adopted"
-            await session.commit()
-            return render
+        # Re-hash rather than merely stat. Between the adoption run and the
+        # moment the old tools are actually stopped (step 3 of the cutover in
+        # deploy/README.md) they are still writing into the same asset tree, so
+        # a file replaced in that window would otherwise stay invisible: the
+        # row would claim art that no longer matches its hash. Offloaded, as
+        # elsewhere here, because assets_root can be an NFS mount. This is the
+        # one hash the adopted pass is meant to cost. _file_sha256 answers ""
+        # for a file that is gone, so a deleted asset fails the comparison and
+        # re-renders without needing a separate exists() check.
+        if adopted_candidate == render.fingerprint:
+            current_sha = await asyncio.to_thread(_file_sha256, target)
+            if current_sha == render.base_sha256:
+                render.status = "rendered"
+                render.detail = "adopted"
+                await session.commit()
+                return render
 
     primary_text, secondary_text = title_text_for(art_kind, item, config)
 
@@ -563,13 +571,56 @@ async def apply_metadata(
     return facts
 
 
-async def apply_badges(session, config, render, item, plex_item, facts) -> None:
+async def _already_in_plex(config, probe, plex_item, render, fingerprint) -> bool:
+    """Whether Plex is already serving exactly the badged image we would upload.
+
+    Only asked when the database has no ``badge_fingerprint`` for this render:
+    after adoption, after a database restore, or for anything this service has
+    never badged. In every other case the stored fingerprint already answers
+    the question for free, and asking Plex would be a request per item.
+
+    The answer comes from the artwork itself -- uploaded images carry their
+    fingerprint in EXIF ``ImageDescription`` (see ``plex/exif.py``) -- which
+    makes Plex, not our database, the source of truth about what is in Plex.
+    That is what makes adoption cheap on the badge side: at cutover the whole
+    library has no ``badge_fingerprint``, and without this every item would be
+    re-composed and re-uploaded to produce the bytes already there.
+
+    Best-effort by construction. Anything at all going wrong -- no probe
+    wired up, no Plex object, a transport error, a stranger's EXIF -- answers
+    False, and the caller does the normal upload. A wrong False costs one
+    redundant upload; there is no wrong True, because the fingerprint read
+    back has to equal the one just computed.
+
+    Deliberately not asked when ``upload_to_plex`` is off: with nothing to
+    skip there is nothing to save, and a dry run should not spend ~16,000
+    range requests learning that.
+    """
+    if not (config.badges.adopt_from_plex and config.badges.upload_to_plex):
+        return False
+    if probe is None or plex_item is None or render.badge_fingerprint is not None:
+        return False
+    try:
+        recorded = await probe(plex_item)
+    except Exception:
+        logger.debug("could not read artwork provenance from Plex", exc_info=True)
+        return False
+    return recorded is not None and recorded == fingerprint
+
+
+async def apply_badges(session, config, render, item, plex_item, facts, probe=None) -> None:
     """Badge one rendered artifact and upload it, if anything changed.
 
     The fingerprint gate is the point of this whole stage: an unchanged item
     costs one hash and no image work at all. It is also what stops uploads
     accumulating on the Plex server, which is what happens when every run
     uploads unconditionally.
+
+    ``probe`` is the optional provenance reader described in
+    ``_already_in_plex`` -- an async callable taking the ``plexapi`` object and
+    returning the fingerprint recorded in its current artwork. Optional so
+    every caller that only cares about composing (including every test
+    predating this) keeps working unchanged.
     """
     if not config.badges.enabled:
         return
@@ -605,6 +656,16 @@ async def apply_badges(session, config, render, item, plex_item, facts) -> None:
         render.fingerprint or "", render.art_kind, values, manifest_sha()
     )
     if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
+        return
+
+    if await _already_in_plex(config, probe, plex_item, render, fingerprint):
+        # The image Plex is serving stamped this exact fingerprint, so it is
+        # byte-for-byte what compose() would produce. Record what is already
+        # true and skip both the composite and the upload.
+        render.badge_fingerprint = fingerprint
+        render.upload_status = "uploaded"
+        render.uploaded_at = func.now()
+        await session.commit()
         return
 
     data = await asyncio.to_thread(
@@ -645,6 +706,7 @@ async def process_item(
     intent: RenderIntent,
     tmdb_facts=None,
     mdblist=None,
+    artwork_probe=None,
 ) -> list[Render]:
     """Resolve one intent and build every artifact it implies.
 
@@ -656,6 +718,9 @@ async def process_item(
     client, real or a stand-in when no API key is configured (see
     ``app._build_mdblist``), so an unset key degrades only the content
     rating rather than every metadata operation.
+
+    ``artwork_probe`` is passed straight to ``apply_badges``; see
+    ``_already_in_plex`` for what it is for and why it is optional.
 
     A failure anywhere in this step is caught and logged rather than
     propagated — a ratings-provider hiccup must not cost the item its
@@ -708,7 +773,10 @@ async def process_item(
                 )
             ).scalar_one_or_none() or GatheredFacts()
             for render in results:
-                await apply_badges(session, config, render, media_item, plex_item, facts)
+                await apply_badges(
+                    session, config, render, media_item, plex_item, facts,
+                    probe=artwork_probe,
+                )
         except Exception:
             # Same containment as the metadata-operations block above: the
             # artifact loop already wrote the base image to disk, and a

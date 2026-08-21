@@ -35,6 +35,7 @@ badges:
   upload_to_plex: false # dry run by default: compose and fingerprint, upload nothing
   lock_artwork: true # lock the Plex field after upload so the agent cannot reclaim it
   apply_overlay_label: false # add the literal Plex label "Overlay", as the previous tool did
+  adopt_from_plex: true # skip the upload when Plex is already serving this exact badged image
 
 collections:
   enabled: true # reconcile the Common Sense age-bucket collections

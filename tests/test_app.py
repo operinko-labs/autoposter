@@ -90,3 +90,51 @@ async def test_configured_mdblist_key_builds_the_real_client_without_warning(sec
     assert not any(
         "AUTOPOSTER_MDBLIST_APIKEY" in record.message for record in caplog.records
     )
+
+
+async def test_handle_intent_passes_the_artwork_probe_through_to_process_item():
+    """The badge stage's provenance read is only useful if it is actually
+    wired: app.py builds the partial, _handle_intent has to carry it."""
+    seen = {}
+
+    async def capture(*args, **kwargs):
+        seen.update(kwargs)
+
+    probe = object()
+    config = load_config(EXAMPLE)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("autoposter.app.process_item", capture)
+        await _handle_intent(
+            None, RenderIntent(kind="movie", title="Dune", tmdb_id=1),
+            config=config, http=None, plex=None, providers=[], artwork_probe=probe,
+        )
+
+    assert seen["artwork_probe"] is probe
+
+
+async def test_the_wired_artwork_probe_reads_provenance_for_one_plex_item(monkeypatch):
+    """The shape app.py builds -- functools.partial(artwork_provenance, http,
+    base_url=..., headers=...) -- must be callable with just the plexapi object."""
+    import functools
+
+    from autoposter.plex.artwork import artwork_provenance
+    from autoposter.plex.exif import format_provenance
+
+    calls = []
+
+    async def fake_probe_exif(http, url, headers):
+        calls.append((url, headers))
+        return {0x010E: format_provenance("fp-xyz")}
+
+    monkeypatch.setattr("autoposter.plex.artwork.probe_exif", fake_probe_exif)
+    probe = functools.partial(
+        artwork_provenance, None,
+        base_url="http://plex.local/", headers={"X-Plex-Token": "tok"},
+    )
+
+    result = await probe(type("Item", (), {"thumb": "/library/metadata/1/thumb/1"})())
+
+    assert result == "fp-xyz"
+    assert calls == [
+        ("http://plex.local/library/metadata/1/thumb/1", {"X-Plex-Token": "tok"})
+    ]

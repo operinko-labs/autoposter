@@ -8,13 +8,17 @@ the two can never drift apart -- the failure mode of a drift is re-rendering
 the whole library, which is the thing adoption exists to avoid.
 """
 
+import hashlib
 from pathlib import Path
 
 import httpx
 import pytest
+from plexapi.exceptions import NotFound as PlexNotFound
 
+from autoposter.adopt.walk import adopt_library
 from autoposter.config.loader import load_config
-from autoposter.plex.client import ResolvedItem
+from autoposter.intake.arr import RenderIntent
+from autoposter.plex.client import PlexClient, ResolvedItem
 from autoposter.providers.base import ArtCandidate
 from autoposter.render import naming
 from autoposter.render import pipeline as pipeline_module
@@ -25,6 +29,13 @@ from autoposter.render.pipeline import (
 from autoposter.render.textfit import FitResult
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+
+# The bytes an adopted asset holds on disk, and their hash. The short-circuit
+# re-hashes the file and compares, so an adopted row's base_sha256 has to be
+# the real hash of what is actually there -- a stand-in string would make
+# every one of these tests pass for the wrong reason.
+ADOPTED_BYTES = b"already-on-disk"
+ADOPTED_SHA = hashlib.sha256(ADOPTED_BYTES).hexdigest()
 
 
 def _config(tmp_path):
@@ -101,9 +112,9 @@ async def _adopt(session, config, resolved, art_kind, base_sha):
     return render, target
 
 
-def _write_asset(target: Path) -> None:
+def _write_asset(target: Path, content: bytes = ADOPTED_BYTES) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(b"already-on-disk")
+    target.write_bytes(content)
 
 
 # --- adopted_fingerprint is compute_fingerprint minus the source URL ---------
@@ -194,7 +205,7 @@ async def test_render_artifact_fingerprints_exactly_what_gather_returns(
 async def test_adopted_render_is_skipped_without_consulting_any_provider(session, tmp_path):
     config = _config(tmp_path)
     resolved = item()
-    render, target = await _adopt(session, config, resolved, "poster", "base-sha")
+    render, target = await _adopt(session, config, resolved, "poster", ADOPTED_SHA)
     _write_asset(target)
     provider = _RecordingProvider()
 
@@ -213,8 +224,31 @@ async def test_adopted_render_whose_asset_file_is_gone_is_re_rendered(
 ):
     config = _config(tmp_path)
     resolved = item()
-    await _adopt(session, config, resolved, "poster", "base-sha")
+    await _adopt(session, config, resolved, "poster", ADOPTED_SHA)
     # No _write_asset(): the adopted row points at a file that is not there.
+    provider = _RecordingProvider()
+    _stub_out_imagemagick(monkeypatch)
+
+    async with _fake_http() as http:
+        result = await render_artifact(session, config, http, resolved, "poster", [provider])
+
+    assert result.detail != "adopted"
+    assert provider.requests != []
+    assert result.status == "rendered"
+    assert result.adopted is False
+
+
+async def test_adopted_render_whose_file_changed_on_disk_is_re_rendered(
+    session, tmp_path, monkeypatch
+):
+    """The cutover window: the old tools keep writing into the same asset tree
+    until step 3 stops them, which is after the adoption run. A file replaced in
+    that window has to be noticed, and only re-hashing notices it -- the row's
+    fingerprint, its path and the file's existence are all still consistent."""
+    config = _config(tmp_path)
+    resolved = item()
+    _, target = await _adopt(session, config, resolved, "poster", ADOPTED_SHA)
+    _write_asset(target, b"posterizarr-rewrote-this-after-adoption")
     provider = _RecordingProvider()
     _stub_out_imagemagick(monkeypatch)
 
@@ -231,7 +265,7 @@ async def test_adopted_render_whose_text_changed_is_re_rendered_and_loses_adopte
     session, tmp_path, monkeypatch
 ):
     config = _config(tmp_path)
-    _, target = await _adopt(session, config, item(title="Dune"), "poster", "base-sha")
+    _, target = await _adopt(session, config, item(title="Dune"), "poster", ADOPTED_SHA)
     _write_asset(target)
     provider = _RecordingProvider()
     _stub_out_imagemagick(monkeypatch)
@@ -253,7 +287,7 @@ async def test_adopted_render_whose_text_changed_is_re_rendered_and_loses_adopte
 async def test_a_render_that_was_never_adopted_is_unaffected(session, tmp_path, monkeypatch):
     config = _config(tmp_path)
     resolved = item()
-    render, target = await _adopt(session, config, resolved, "poster", "base-sha")
+    render, target = await _adopt(session, config, resolved, "poster", ADOPTED_SHA)
     _write_asset(target)
     # Everything an adopted row has, except the flag itself.
     render.adopted = False
@@ -273,7 +307,7 @@ async def test_adopted_render_without_a_base_hash_is_not_skipped(
 ):
     config = _config(tmp_path)
     resolved = item()
-    render, target = await _adopt(session, config, resolved, "poster", "base-sha")
+    render, target = await _adopt(session, config, resolved, "poster", ADOPTED_SHA)
     _write_asset(target)
     # An adopted row that never got a hash cannot claim the file is unchanged --
     # even though its fingerprint is internally consistent with that null hash,
@@ -292,13 +326,110 @@ async def test_adopted_render_without_a_base_hash_is_not_skipped(
     assert provider.requests != []
 
 
+# --- the round trip this whole phase exists for ------------------------------
+#
+# Every test above builds its adopted row through _adopt(), a hand-rolled
+# stand-in for what walk.py does, and feeds render_artifact a hand-built
+# ResolvedItem. Both halves therefore share this file's assumptions. This one
+# closes the loop: adopt_library() builds the row from a Plex section, and
+# PlexClient.resolve() builds the item the render path would actually get, from
+# that same section. If those two ever describe the same item differently --
+# a different title, a different root folder -- the fingerprints disagree and
+# the entire library re-renders on cutover.
+
+
+class _AdoptAndResolveMovie:
+    """One fake movie satisfying both consumers at once.
+
+    ``adopt_library`` reads ``type``/``locations``/``guids``/``title``/``year``;
+    ``PlexClient.resolve`` reads ``media[0].parts[0].file`` and ``guids``.
+    Deliberately the *same object*, so the two paths cannot be handed subtly
+    different facts.
+    """
+
+    type = "movie"
+
+    def __init__(self, rating_key, title, year, file_path, guids):
+        self.ratingKey = rating_key
+        self.title = title
+        self.year = year
+        self.locations = [file_path]
+        self.guids = [type("Guid", (), {"id": g})() for g in guids]
+        self.media = [type("Media", (), {"parts": [type("Part", (), {"file": file_path})()]})()]
+        self.thumb = f"/library/metadata/{rating_key}/thumb/1"
+
+
+class _AdoptAndResolveSection:
+    def __init__(self, title, location, items):
+        self.title = title
+        self.locations = [location]
+        self._items = items
+
+    def all(self):
+        return self._items
+
+    def getGuid(self, guid):
+        for entry in self._items:
+            if any(g.id == guid for g in entry.guids):
+                return entry
+        raise PlexNotFound(f"Guid '{guid}' is not found in the library")
+
+
+class _AdoptAndResolveServer:
+    def __init__(self, sections):
+        self._sections = sections
+
+    @property
+    def library(self):
+        return self
+
+    def sections(self):
+        return self._sections
+
+
+async def test_a_row_written_by_the_walk_short_circuits_an_item_built_by_resolve(
+    session, tmp_path
+):
+    config = _config(tmp_path)
+    library_root = tmp_path / "Movies"
+    movie = _AdoptAndResolveMovie(
+        "12345", "Dune: Part Two", 2024,
+        str(library_root / "Dune (2024)" / "dune.mkv"),
+        ["tmdb://693134", "imdb://tt15239678"],
+    )
+    section = _AdoptAndResolveSection("Movies", str(library_root), [movie])
+    for art_kind in ("poster", "background"):
+        _write_asset(naming.asset_path(config, "Movies", "Dune (2024)", art_kind))
+
+    report = await adopt_library(session, config, section, dry_run=False)
+    assert report.renders == 2
+
+    client = PlexClient(server=_AdoptAndResolveServer([section]), excluded_libraries=[])
+    resolved = await client.resolve(
+        RenderIntent(
+            kind="movie", title="Dune: Part Two", year=2024,
+            tmdb_id=693134, tvdb_id=None, imdb_id="tt15239678",
+        )
+    )
+
+    provider = _RecordingProvider()
+    async with _fake_http() as http:
+        for art_kind in ("poster", "background"):
+            result = await render_artifact(
+                session, config, http, resolved, art_kind, [provider]
+            )
+            assert result.detail == "adopted"
+
+    assert provider.requests == []
+
+
 @pytest.mark.parametrize("art_kind", ["poster", "background"])
 async def test_the_short_circuit_holds_for_every_art_kind_a_movie_implies(
     session, tmp_path, art_kind
 ):
     config = _config(tmp_path)
     resolved = item()
-    _, target = await _adopt(session, config, resolved, art_kind, "base-sha")
+    _, target = await _adopt(session, config, resolved, art_kind, ADOPTED_SHA)
     _write_asset(target)
     provider = _RecordingProvider()
 

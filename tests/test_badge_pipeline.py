@@ -242,3 +242,156 @@ async def test_backgrounds_are_never_badged(session, config_with_badges):
     await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
     assert render.badge_fingerprint is None
     assert plex_item.uploads == 0
+
+
+# --- adopting what Plex is already serving -----------------------------------
+#
+# Uploaded artwork carries its own fingerprint in EXIF ImageDescription, so the
+# artwork -- not the database -- is the source of truth about what is in Plex.
+# At cutover every render has a NULL badge_fingerprint; without this the whole
+# library re-composes and re-uploads bytes that are already there.
+
+
+def _probe_returning(value, calls):
+    async def probe(plex_item):
+        calls.append(plex_item)
+        return value
+
+    return probe
+
+
+async def _fingerprint_of(session, config, item, render, plex_item):
+    """Badge once normally to learn the fingerprint, then reset the row to the
+    state adoption (or a database restore) leaves it in."""
+    await apply_badges(session, config, render, item, plex_item, Facts())
+    fingerprint = render.badge_fingerprint
+    render.badge_fingerprint = None
+    render.upload_status = "generate"  # the column default; NOT NULL
+    plex_item.uploads = 0
+    await session.commit()
+    return fingerprint
+
+
+async def test_matching_provenance_records_the_fingerprint_and_skips_the_upload(
+    session, config_with_badges
+):
+    item, render = await _render(session)
+    plex_item = FakePlexItem()
+    fingerprint = await _fingerprint_of(session, config_with_badges, item, render, plex_item)
+    calls = []
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, Facts(),
+        probe=_probe_returning(fingerprint, calls),
+    )
+
+    assert plex_item.uploads == 0
+    assert render.badge_fingerprint == fingerprint
+    assert render.upload_status == "uploaded"
+    assert calls == [plex_item]
+    await session.refresh(render)
+    assert render.uploaded_at is not None
+
+
+async def test_a_stale_fingerprint_in_plex_still_uploads(session, config_with_badges):
+    item, render = await _render(session)
+    plex_item = FakePlexItem()
+    await _fingerprint_of(session, config_with_badges, item, render, plex_item)
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, Facts(),
+        probe=_probe_returning("an-older-fingerprint", []),
+    )
+
+    assert plex_item.uploads == 1
+    assert render.upload_status == "uploaded"
+
+
+async def test_artwork_nobody_stamped_still_uploads(session, config_with_badges):
+    item, render = await _render(session)
+    plex_item = FakePlexItem()
+    await _fingerprint_of(session, config_with_badges, item, render, plex_item)
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, Facts(),
+        probe=_probe_returning(None, []),
+    )
+
+    assert plex_item.uploads == 1
+
+
+async def test_a_failing_probe_falls_through_to_the_normal_upload(
+    session, config_with_badges
+):
+    """Best-effort: reading provenance is an optimisation, never a gate."""
+    item, render = await _render(session)
+    plex_item = FakePlexItem()
+    await _fingerprint_of(session, config_with_badges, item, render, plex_item)
+
+    async def exploding(_plex_item):
+        raise RuntimeError("plex is having a moment")
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, Facts(), probe=exploding
+    )
+
+    assert plex_item.uploads == 1
+    assert render.upload_status == "uploaded"
+
+
+async def test_a_render_we_already_have_a_fingerprint_for_is_never_probed(
+    session, config_with_badges
+):
+    """The stored fingerprint already answers the question for free; asking
+    Plex anyway would be one range request per item, every pass."""
+    item, render = await _render(session)
+    plex_item = FakePlexItem()
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    calls = []
+
+    # A changed rating: the fingerprint moves, so this must re-upload without
+    # consulting Plex -- render.badge_fingerprint is not NULL.
+    class Changed(Facts):
+        critic_rating = 7.7
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, Changed(),
+        probe=_probe_returning("whatever", calls),
+    )
+
+    assert calls == []
+    assert plex_item.uploads == 2
+
+
+async def test_the_probe_is_not_consulted_when_the_config_disables_it(
+    session, config_with_badges
+):
+    config_with_badges.badges.adopt_from_plex = False
+    item, render = await _render(session)
+    plex_item = FakePlexItem()
+    fingerprint = await _fingerprint_of(session, config_with_badges, item, render, plex_item)
+    calls = []
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, Facts(),
+        probe=_probe_returning(fingerprint, calls),
+    )
+
+    assert calls == []
+    assert plex_item.uploads == 1
+
+
+async def test_a_dry_run_never_probes_plex(session, config_badges_dry_run):
+    """With upload_to_plex off there is no upload to skip, so spending ~16,000
+    range requests to learn that would be pure waste."""
+    item, render = await _render(session)
+    plex_item = FakePlexItem()
+    calls = []
+
+    await apply_badges(
+        session, config_badges_dry_run, render, item, plex_item, Facts(),
+        probe=_probe_returning("anything", calls),
+    )
+
+    assert calls == []
+    assert render.upload_status == "skipped"

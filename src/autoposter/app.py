@@ -16,6 +16,7 @@ from autoposter.facts.imdb import ImdbAutoRefresh
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.intake.routes import router
+from autoposter.plex.artwork import artwork_provenance
 from autoposter.plex.client import ItemNotFound
 from autoposter.plex.health import PlexHealth
 from autoposter.providers.cache import ProviderCache
@@ -76,10 +77,19 @@ def create_app(
         if reclaimed:
             logger.info("reclaimed %d stale job(s)", reclaimed)
 
+        # Reads our own EXIF provenance back off whatever artwork Plex is
+        # currently serving, so the badge stage can tell that the correct image
+        # is already there and skip the upload -- see pipeline._already_in_plex.
+        artwork_probe = functools.partial(
+            artwork_provenance, http,
+            base_url=config.plex.url,
+            headers={"X-Plex-Token": secrets.plex_token},
+        )
         handler = functools.partial(
             _handle_intent, config=config, http=http,
             plex=app.state.plex, providers=app.state.providers,
             tmdb_facts=app.state.tmdb_facts, mdblist=app.state.mdblist,
+            artwork_probe=artwork_probe,
         )
         imdb_refresh = ImdbAutoRefresh(
             session_factory, http,
@@ -194,12 +204,13 @@ def _build_mdblist(
 
 
 async def _handle_intent(
-    session, intent, *, config, http, plex, providers, tmdb_facts=None, mdblist=None
+    session, intent, *, config, http, plex, providers, tmdb_facts=None, mdblist=None,
+    artwork_probe=None,
 ):
     try:
         await process_item(
             session, config, http, plex, providers, intent,
-            tmdb_facts=tmdb_facts, mdblist=mdblist,
+            tmdb_facts=tmdb_facts, mdblist=mdblist, artwork_probe=artwork_probe,
         )
     except (ItemNotFound, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         # PlexHealth (see plex/health.py) gating run_worker's claiming is now

@@ -177,6 +177,17 @@ class BadgesConfig(BaseModel):
     # it is visible and filterable in Plex, so it is offered rather than
     # silently dropped.
     apply_overlay_label: bool = False
+    # Before uploading a render this service has no badge_fingerprint for --
+    # after adoption, after a database restore, or for anything never badged
+    # here -- read the provenance out of the artwork Plex is already serving
+    # and skip the upload if it is already the exact image we were about to
+    # send. Uploaded artwork carries its fingerprint in EXIF ImageDescription
+    # (see plex/exif.py), which makes the artwork, not the database, the
+    # source of truth about what is in Plex. On by default: at cutover this
+    # is the difference between ~16,000 needless uploads and none. Entirely
+    # best-effort -- any failure reading provenance falls through to the
+    # normal upload path.
+    adopt_from_plex: bool = True
 
 
 class CollectionsConfig(BaseModel):
