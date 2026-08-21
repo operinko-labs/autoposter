@@ -55,6 +55,35 @@ date — replacing Kometa's `mass_*_update`):
 
 See `config/autoposter.example.yaml` for the full block.
 
+## Badge overlays config
+
+The `badges:` block in `autoposter.yaml` controls the Phase 2b badge stage:
+compositing Kometa-parity resolution, audio, rating, content-rating, runtime
+and language badges onto the base artwork and uploading the result to Plex.
+
+- `enabled` (default `true`) — off means the badge stage does not run at all;
+  base artwork rendering is unaffected either way. Backgrounds are never
+  badged regardless of this setting — only posters, season posters and
+  episode title cards carry badges.
+- `upload_to_plex` (default `false`) — this is the first thing in the project
+  that writes images to the live Plex server, across the whole library
+  (~16,000 items). Left off, the stage still composes each badged image and
+  records its fingerprint, so an operator can inspect what would be uploaded
+  before flipping this on. Once enabled, every eligible item in the library
+  gets its badged artwork uploaded and locked, not just newly changed ones on
+  the first pass.
+- `lock_artwork` (default `true`) — locks the Plex poster/art field after
+  upload, the same way `plex/artwork.py` always has, so Plex's metadata agent
+  cannot reclaim the field and replace what was just uploaded.
+- `apply_overlay_label` (default `false`) — a deliberate behaviour change
+  from Kometa, which labels every overlaid item with the literal Plex label
+  `Overlay`. Badge state is tracked in Postgres (`renders.badge_fingerprint`,
+  `upload_status`), so the label is not needed for this project's own
+  purposes, but it is visible and filterable in Plex, so it is offered rather
+  than silently dropped.
+
+See `config/autoposter.example.yaml` for the full block.
+
 ## Loading IMDb ratings
 
 `critic_rating` (IMDb) is populated from IMDb's bulk datasets, not a live API

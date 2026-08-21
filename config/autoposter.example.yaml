@@ -30,6 +30,12 @@ operations:
   imdb_refresh_enabled: true # disable to only refresh via `python -m autoposter.facts.imdb`
   imdb_miss_refresh_minutes: 60 # rate limit for the miss-triggered refresh; 0 disables it
 
+badges:
+  enabled: true # composite badge overlays and upload them to Plex
+  upload_to_plex: false # dry run by default: compose and fingerprint, upload nothing
+  lock_artwork: true # lock the Plex field after upload so the agent cannot reclaim it
+  apply_overlay_label: false # add the literal Plex label "Overlay", as the previous tool did
+
 artwork:
   use_logo: true
   logo_language_order: [en, fi]

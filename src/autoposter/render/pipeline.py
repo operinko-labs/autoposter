@@ -10,11 +10,20 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.badges.compose import (
+    MANIFEST_SHA,
+    BadgeInputs,
+    badge_fingerprint,
+    badge_values,
+    compose as compose_badges,
+)
+from autoposter.badges.values import media_info_from_plex
 from autoposter.config.schema import Config
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
+from autoposter.plex.artwork import upload_artwork
 from autoposter.plex.client import ResolvedItem
 from autoposter.plex.writer import apply_facts
 from autoposter.providers import base as art
@@ -484,6 +493,63 @@ async def apply_metadata(
     return facts
 
 
+async def apply_badges(session, config, render, item, plex_item, facts) -> None:
+    """Badge one rendered artifact and upload it, if anything changed.
+
+    The fingerprint gate is the point of this whole stage: an unchanged item
+    costs one hash and no image work at all. It is also what stops uploads
+    accumulating on the Plex server, which is what happens when every run
+    uploads unconditionally.
+    """
+    if not config.badges.enabled:
+        return
+    # Backgrounds are never badged. The tool being replaced overlays posters,
+    # season posters and episode title cards only -- a fanart backdrop with a
+    # runtime badge stamped on it is not something it produces, and not
+    # something we should start producing.
+    if render.art_kind == "background":
+        return
+
+    media = media_info_from_plex(plex_item)
+    inputs = BadgeInputs(
+        media=media,
+        critic_rating=getattr(facts, "critic_rating", None),
+        audience_rating=getattr(facts, "audience_rating", None),
+        content_rating=getattr(facts, "content_rating", None),
+        video_format=None,
+    )
+    values = badge_values(render.art_kind, inputs)
+    fingerprint = badge_fingerprint(
+        render.base_sha256 or "", render.art_kind, values, MANIFEST_SHA
+    )
+    if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
+        return
+
+    data = await asyncio.to_thread(
+        compose_badges, Path(render.asset_path), render.art_kind, inputs
+    )
+    render.badge_fingerprint = fingerprint
+
+    if not config.badges.upload_to_plex:
+        render.upload_status = "skipped"
+        await session.flush()
+        return
+
+    try:
+        await asyncio.to_thread(
+            upload_artwork, plex_item, data, render.art_kind, config.badges.lock_artwork
+        )
+    except Exception:
+        render.upload_status = "failed"
+        await session.flush()
+        logger.warning("badge upload failed for %s", item.rating_key, exc_info=True)
+        return
+
+    render.upload_status = "uploaded"
+    render.uploaded_at = func.now()
+    await session.flush()
+
+
 async def process_item(
     session: AsyncSession,
     config: Config,
@@ -511,6 +577,8 @@ async def process_item(
     """
     item = await plex.resolve(intent)
 
+    media_item = None
+    plex_item = None
     if config.operations.enabled and tmdb_facts is not None:
         try:
             media_item = await _upsert_media_item(session, item)
@@ -536,4 +604,33 @@ async def process_item(
         results.append(
             await render_artifact(session, config, http, item, art_kind, providers)
         )
+
+    if config.badges.enabled:
+        try:
+            if media_item is None:
+                media_item = await _upsert_media_item(session, item)
+            if plex_item is None:
+                plex_item = await plex.fetch_item(item.rating_key)
+            # The persisted row, not the in-memory GatheredFacts from the
+            # metadata-operations block above: a partial gather this pass
+            # (e.g. only a new critic rating) must not blank out fields a
+            # previous pass already established, and badges must still get
+            # facts when operations.enabled is off entirely.
+            facts = (
+                await session.execute(
+                    select(ItemFacts).where(ItemFacts.item_id == media_item.id)
+                )
+            ).scalar_one_or_none() or GatheredFacts()
+            for render in results:
+                await apply_badges(session, config, render, media_item, plex_item, facts)
+        except Exception:
+            # Same containment as the metadata-operations block above: the
+            # artifact loop already wrote the base image to disk, and a
+            # badge failure must not cost the item that.
+            await session.rollback()
+            logger.warning(
+                "badge stage failed for %s; base artwork already on disk",
+                item.rating_key, exc_info=True,
+            )
+
     return results

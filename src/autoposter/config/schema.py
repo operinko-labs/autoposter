@@ -161,6 +161,24 @@ class OperationsConfig(BaseModel):
     imdb_miss_refresh_minutes: int = 60
 
 
+class BadgesConfig(BaseModel):
+    """Kometa-parity badge overlays, composited onto the base artwork."""
+
+    enabled: bool = True
+    # Dry run by default: compose and fingerprint, upload nothing. This is
+    # the first thing in this project that writes images to the live Plex
+    # server across ~16,000 items -- the operator should compose, inspect and
+    # only then enable it, the same posture operations.write_to_plex takes.
+    upload_to_plex: bool = False
+    # Lock the Plex field after upload so the agent cannot reclaim it.
+    lock_artwork: bool = True
+    # Add the literal Plex label "Overlay", as the previous tool did. Off by
+    # default: we track overlay state in Postgres so we do not need it, but
+    # it is visible and filterable in Plex, so it is offered rather than
+    # silently dropped.
+    apply_overlay_label: bool = False
+
+
 class Config(BaseModel):
     assets_root: Path
     manual_assets_root: Path
@@ -176,4 +194,5 @@ class Config(BaseModel):
     providers: ProvidersConfig
     artwork: ArtworkConfig
     operations: OperationsConfig = Field(default_factory=OperationsConfig)
+    badges: BadgesConfig = Field(default_factory=BadgesConfig)
     version: str = ""
