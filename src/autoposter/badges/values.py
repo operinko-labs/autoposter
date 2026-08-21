@@ -10,12 +10,19 @@ as every affected badge differing from the tool being replaced.
 import json
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from functools import lru_cache
 
-_ASSETS = Path(__file__).resolve().parents[3] / "assets" / "badges"
+from autoposter.assets import asset_path
 
-with open(_ASSETS / "languages.json", encoding="utf-8") as handle:
-    LANGUAGES: dict[str, dict] = json.load(handle)
+@lru_cache(maxsize=1)
+def _languages() -> dict[str, dict]:
+    """The language/flag table, loaded on first use.
+
+    Deliberately lazy: reading it at import time turned a missing asset into
+    an ImportError that took the whole application down at startup.
+    """
+    with open(asset_path("badges", "languages.json"), encoding="utf-8") as handle:
+        return json.load(handle)
 
 RESOLUTIONS = {"4k": "4k", "1080": "1080p", "720": "720p", "576": "576p", "480": "480p"}
 
@@ -246,6 +253,7 @@ def language_slots(info: MediaInfo, limit: int = 3) -> list[tuple[str, str]]:
     The flag is a country code, not a language code -- English shows the US
     flag -- so it comes from the mapping table rather than the language itself.
     """
-    known = [(code, LANGUAGES[code]) for code in info.audio_languages if code in LANGUAGES]
+    table = _languages()
+    known = [(code, table[code]) for code in info.audio_languages if code in table]
     known.sort(key=lambda pair: pair[1]["weight"], reverse=True)
     return [(entry["country"], entry["text"]) for _, entry in known[:limit]]
