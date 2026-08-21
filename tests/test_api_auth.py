@@ -1,9 +1,13 @@
 """Authentication for the Web UI's API."""
-from sqlalchemy import select, text
+import time
+
+from sqlalchemy import event, select, text
 
 from autoposter.api.auth import (
+    LoginRateLimiter,
     create_session,
     hash_password,
+    prune_expired,
     revoke,
     session_for_token,
     verify_password,
@@ -70,3 +74,68 @@ async def test_two_sessions_are_independent(session):
     await revoke(session, first)
     assert await session_for_token(session, first) is None
     assert await session_for_token(session, second) is not None
+
+
+async def test_token_lookup_filters_on_the_hash_in_sql(session):
+    """The unique index on token_hash has to do the work: loading every live
+    session and comparing in Python is O(sessions) on every authenticated
+    request, and that set grows with every login."""
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    engine = session.bind.sync_engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        token = await create_session(session, ttl_hours=1)
+        statements.clear()
+        assert await session_for_token(session, token) is not None
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    selects = [s for s in statements if "FROM sessions" in s]
+    assert selects, "no query against sessions was issued"
+    assert all("sessions.token_hash =" in s for s in selects), selects
+
+
+async def test_prune_expired_removes_only_expired_rows(session):
+    live = await create_session(session, ttl_hours=1)
+    expired = await create_session(session, ttl_hours=1)
+    expired_hash = (
+        await session.execute(select(Session.token_hash).order_by(Session.id.desc()).limit(1))
+    ).scalar_one()
+    await session.execute(
+        text("UPDATE sessions SET expires_at = now() - interval '1 hour' WHERE token_hash = :h"),
+        {"h": expired_hash},
+    )
+    await session.commit()
+
+    assert await prune_expired(session) == 1
+
+    remaining = (await session.execute(select(Session))).scalars().all()
+    assert len(remaining) == 1
+    assert await session_for_token(session, live) is not None
+    assert await session_for_token(session, expired) is None
+
+
+def test_the_rate_limiter_allows_up_to_its_limit_then_refuses():
+    limiter = LoginRateLimiter(max_attempts=2, window_seconds=60)
+    assert limiter.allow("1.2.3.4") is True
+    assert limiter.allow("1.2.3.4") is True
+    assert limiter.allow("1.2.3.4") is False
+
+
+def test_the_rate_limiter_counts_each_client_separately():
+    limiter = LoginRateLimiter(max_attempts=1, window_seconds=60)
+    assert limiter.allow("1.2.3.4") is True
+    assert limiter.allow("1.2.3.4") is False
+    assert limiter.allow("5.6.7.8") is True
+
+
+def test_the_rate_limiter_forgets_attempts_older_than_its_window():
+    limiter = LoginRateLimiter(max_attempts=1, window_seconds=0.01)
+    assert limiter.allow("1.2.3.4") is True
+    assert limiter.allow("1.2.3.4") is False
+    time.sleep(0.02)
+    assert limiter.allow("1.2.3.4") is True

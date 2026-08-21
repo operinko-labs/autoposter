@@ -53,7 +53,7 @@ async def test_status_on_an_empty_database_returns_zeroed_counts(client, auth_he
     assert response.status_code == 200
     body = response.json()
     assert body["jobs_by_state"] == {
-        "pending": 0, "running": 0, "done": 0, "failed": 0, "parked": 0,
+        "pending": 0, "running": 0, "done": 0, "failed": 0, "parked": 0, "dismissed": 0,
     }
     assert body["processed_last_24h"] == 0
     assert body["scheduled_jobs"] == []
@@ -79,6 +79,21 @@ async def test_status_counts_queued_running_and_parked_jobs_separately(
     assert body["jobs_by_state"]["parked"] == 3
     assert body["jobs_by_state"]["done"] == 0
     assert body["jobs_by_state"]["failed"] == 0
+
+
+async def test_status_reports_dismissed_jobs_in_the_same_shape(client, auth_headers, session):
+    """"dismissed" is a state /api/jobs/{id}/dismiss writes, so leaving it out
+    of JOB_STATES made the response grow an extra key only once a dismissed
+    row existed -- a shape the UI cannot rely on."""
+    session.add(Job(kind="render", payload={}, state="dismissed"))
+    await session.commit()
+
+    response = await client.get("/api/status", headers=auth_headers)
+    body = response.json()
+    assert body["jobs_by_state"]["dismissed"] == 1
+    assert set(body["jobs_by_state"]) == {
+        "pending", "running", "done", "failed", "parked", "dismissed",
+    }
 
 
 async def test_status_processed_24h_window_excludes_older_rows(client, auth_headers, session):

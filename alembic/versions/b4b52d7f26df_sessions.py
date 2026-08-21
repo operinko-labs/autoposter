@@ -26,7 +26,6 @@ def upgrade() -> None:
     sa.Column('token_hash', sa.String(length=64), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('last_seen_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_sessions_token_hash'), 'sessions', ['token_hash'], unique=True)

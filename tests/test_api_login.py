@@ -1,14 +1,19 @@
 """The login endpoint and the /api router."""
+import re
+import threading
 from pathlib import Path
 
 import pytest_asyncio
+from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 
-from autoposter.api.auth import hash_password
+from autoposter.api import routes as routes_module
+from autoposter.api.auth import LoginRateLimiter, hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
+from autoposter.db.models import Session as SessionModel
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -24,9 +29,12 @@ def _secrets(admin_password_hash: str = "") -> Secrets:
 
 
 @pytest_asyncio.fixture
-async def client(session_factory):
-    secrets = _secrets(hash_password(PASSWORD))
-    app = create_app(load_config(EXAMPLE), session_factory, secrets)
+async def app(session_factory):
+    return create_app(load_config(EXAMPLE), session_factory, _secrets(hash_password(PASSWORD)))
+
+
+@pytest_asyncio.fixture
+async def client(app):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -111,6 +119,102 @@ async def test_logout_revokes_the_token(client):
 async def test_logout_requires_a_token(client):
     response = await client.post("/api/logout")
     assert response.status_code == 401
+
+
+async def test_the_password_check_never_runs_on_the_event_loop(client, monkeypatch):
+    """bcrypt at cost 12 is 250-300 ms of pure CPU, and this endpoint needs no
+    credentials to reach. Running it inline would freeze the loop that also
+    carries the worker pool, the scheduler and the Plex probe, at a few
+    requests a second."""
+    threads = []
+    real = routes_module.verify_password
+
+    def recording(plain, hashed):
+        threads.append(threading.current_thread())
+        return real(plain, hashed)
+
+    monkeypatch.setattr(routes_module, "verify_password", recording)
+
+    response = await client.post("/api/login", json={"password": PASSWORD})
+    assert response.status_code == 200
+    assert threads, "verify_password was never called"
+    assert all(thread is not threading.main_thread() for thread in threads)
+
+
+async def test_login_attempts_are_rate_limited_per_client(app, client):
+    """Defence in depth per pod: without it, anyone who can reach the port can
+    spend the whole process's CPU on bcrypt."""
+    app.state.login_rate_limiter = LoginRateLimiter(max_attempts=2, window_seconds=60)
+
+    first = await client.post("/api/login", json={"password": "nope"})
+    second = await client.post("/api/login", json={"password": "nope"})
+    third = await client.post("/api/login", json={"password": PASSWORD})
+
+    assert [first.status_code, second.status_code] == [401, 401]
+    assert third.status_code == 429
+    assert "token" not in third.json()
+
+
+async def test_the_missing_admin_hash_warning_is_logged_once_not_per_attempt(
+    session_factory, caplog
+):
+    """An unauthenticated caller must not be able to flood the log by
+    repeatedly posting to /api/login."""
+    with caplog.at_level("WARNING"):
+        app = create_app(load_config(EXAMPLE), session_factory, _secrets(""))
+        at_startup = [
+            r for r in caplog.records if "AUTOPOSTER_ADMIN_PASSWORD_HASH" in r.getMessage()
+        ]
+        assert len(at_startup) == 1
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            for _ in range(3):
+                assert (await c.post("/api/login", json={"password": "x"})).status_code == 401
+
+    after = [r for r in caplog.records if "AUTOPOSTER_ADMIN_PASSWORD_HASH" in r.getMessage()]
+    assert len(after) == 1
+
+
+async def test_login_prunes_expired_session_rows(client, session):
+    """Nothing else deletes them, so the table would grow with every login for
+    the life of the deployment."""
+    await client.post("/api/login", json={"password": PASSWORD})
+    await session.execute(text("UPDATE sessions SET expires_at = now() - interval '1 hour'"))
+    await session.commit()
+
+    await client.post("/api/login", json={"password": PASSWORD})
+
+    rows = (await session.execute(select(SessionModel))).scalars().all()
+    assert len(rows) == 1
+
+
+def _api_routes(app):
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or not route.path.startswith("/api"):
+            continue
+        for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
+            yield method, route.path
+
+
+async def test_every_api_route_except_login_requires_a_session(app, client):
+    """Structural, not per-route: every route does carry
+    Depends(require_session) today, but that is a habit and so is each
+    hand-written 401 test. A route added later without it would ship open with
+    a green suite -- this enumerates whatever the router actually mounts."""
+    checked = []
+    for method, path in _api_routes(app):
+        if path == "/api/login":
+            continue
+        url = re.sub(r"\{[^}]+\}", "1", path)
+        response = await client.request(method, url)
+        assert response.status_code == 401, "%s %s answered %d without a token" % (
+            method, path, response.status_code,
+        )
+        checked.append((method, path))
+    # Sanity: the loop above must actually have found the router, not an
+    # empty app.
+    assert len(checked) >= 11
 
 
 async def test_healthz_is_reachable_without_a_token(client):

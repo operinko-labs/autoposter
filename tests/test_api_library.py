@@ -140,7 +140,12 @@ async def test_items_search_matches_a_substring_case_insensitively(client, auth_
 
 
 async def test_items_search_treats_percent_as_a_literal_character(client, auth_headers, session):
-    session.add_all([_item("rk1", "100% Wolf"), _item("rk2", "Inception")])
+    # "The 1000 Club" is the discriminating row: an unescaped "100%" becomes
+    # ILIKE '%100%%', whose trailing wildcard matches it too. Without it the
+    # test passes with or without the escaping.
+    session.add_all([
+        _item("rk1", "100% Wolf"), _item("rk2", "Inception"), _item("rk3", "The 1000 Club"),
+    ])
     await session.commit()
 
     response = await client.get("/api/items", headers=auth_headers, params={"search": "100%"})
@@ -246,4 +251,8 @@ async def test_collections_lists_what_is_managed(client, auth_headers, session):
     assert row["library"] == "Movies"
     assert row["title"] == "Best Picture Winners"
     assert row["kind"] == "smart"
-    assert row["has_poster_hash"] is True
+    # No has_poster_hash: it reported bool(definition_hash), which is NOT NULL
+    # with no default and so true for every row, and describes the hash of the
+    # collection's filter and summary rather than any poster. A field that
+    # always says yes is worse than an absent one.
+    assert "has_poster_hash" not in row

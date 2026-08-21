@@ -387,6 +387,11 @@ class Config(BaseModel):
     settle_seconds: int = 30
     magick_binary: str = "magick"
     skip_tba: bool = True
+    # /docs, /redoc and /openapi.json cannot be put behind the session
+    # dependency (FastAPI mounts them itself), and they enumerate every
+    # endpoint and its shape to anyone who can reach the port. Off unless a
+    # deployment deliberately turns them on.
+    api_docs_enabled: bool = False
     plex: PlexConfig
     providers: ProvidersConfig
     artwork: ArtworkConfig

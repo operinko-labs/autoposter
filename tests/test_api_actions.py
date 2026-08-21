@@ -15,18 +15,26 @@ from autoposter.db.models import Job, MediaItem
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
 
-# A recognisable secret value used by the redaction test -- chosen to be
-# unlikely to appear anywhere else in the response by accident.
+# Recognisable secret values used by the redaction test -- chosen to be
+# unlikely to appear anywhere else in the response by accident. Every one of
+# them is distinct: seeding "x" everywhere left only tmdb_token genuinely
+# asserted on, since "x" appears in any response by chance.
 SECRET_TMDB_TOKEN = "sekrit-tmdb-token-should-never-leak-9f31c2"
+SECRET_PLEX_TOKEN = "sekrit-plex-token-should-never-leak-4b7ade"
+SECRET_WEBHOOK_SECRET = "sekrit-webhook-secret-should-never-leak-c05e18"
+# The hash the app actually holds. bcrypt is salted, so hashing PASSWORD
+# again in the assertion would produce a different string that could never
+# appear in a response whether the endpoint leaked or not.
+ADMIN_PASSWORD_HASH = hash_password(PASSWORD)
 
 
 @pytest_asyncio.fixture
 async def client(session_factory):
     secrets = Secrets(
         database_url="postgresql+asyncpg://unused",
-        plex_token="x", tmdb_token=SECRET_TMDB_TOKEN, tvdb_apikey="x",
-        fanart_apikey="x", webhook_secret="x",
-        admin_password_hash=hash_password(PASSWORD),
+        plex_token=SECRET_PLEX_TOKEN, tmdb_token=SECRET_TMDB_TOKEN, tvdb_apikey="x",
+        fanart_apikey="x", webhook_secret=SECRET_WEBHOOK_SECRET,
+        admin_password_hash=ADMIN_PASSWORD_HASH,
     )
     app = create_app(load_config(EXAMPLE), session_factory, secrets)
     transport = ASGITransport(app=app)
@@ -77,6 +85,26 @@ async def test_parked_jobs_lists_them_with_their_reasons(client, auth_headers, s
     assert jobs[0]["attempts"] == 5
 
 
+async def test_parked_jobs_pagination_reaches_past_the_first_page(client, auth_headers, session):
+    """Without an offset, anything past the first ``limit`` parked jobs is
+    unreachable -- and a backlog is exactly when this endpoint matters."""
+    session.add_all([_parked_job(last_error=f"reason {i}") for i in range(3)])
+    await session.commit()
+
+    first_page = await client.get(
+        "/api/jobs/parked", headers=auth_headers, params={"limit": 2, "offset": 0}
+    )
+    second_page = await client.get(
+        "/api/jobs/parked", headers=auth_headers, params={"limit": 2, "offset": 2}
+    )
+
+    first_ids = [job["id"] for job in first_page.json()["jobs"]]
+    second_ids = [job["id"] for job in second_page.json()["jobs"]]
+    assert len(first_ids) == 2
+    assert len(second_ids) == 1
+    assert not set(first_ids) & set(second_ids)
+
+
 async def test_parked_jobs_excludes_other_states(client, auth_headers, session):
     session.add_all([
         Job(kind="process_item", payload={}, state="pending"),
@@ -111,6 +139,33 @@ async def test_retry_makes_a_parked_job_claimable_again(client, auth_headers, se
     row = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     assert row.state == "pending"
     assert row.attempts == 0
+
+
+async def test_retrying_a_job_whose_item_is_already_queued_is_409_not_500(
+    client, auth_headers, session
+):
+    """uq_jobs_pending_dedupe allows one pending job per dedupe key. An item
+    parks after repeated failures, a webhook then queues a fresh pending job
+    for the same item, and Retry collides with the index. Every production
+    job carries a dedupe_key -- the other tests here leave it None, which is
+    why this went unnoticed."""
+    dedupe_key = "movie:tmdb:603"
+    session.add_all([
+        _parked_job(dedupe_key=dedupe_key),
+        Job(kind="process_item", payload={}, state="pending", dedupe_key=dedupe_key),
+    ])
+    await session.commit()
+    parked_id = (
+        await session.execute(select(Job.id).where(Job.state == "parked"))
+    ).scalar_one()
+
+    response = await client.post(f"/api/jobs/{parked_id}/retry", headers=auth_headers)
+    assert response.status_code == 409
+    assert "already queued" in response.json()["detail"]
+
+    session.expire_all()  # read the row back from the database, not the map
+    row = (await session.execute(select(Job).where(Job.id == parked_id))).scalar_one()
+    assert row.state == "parked"
 
 
 async def test_retrying_an_unknown_job_is_404(client, auth_headers):
@@ -249,12 +304,15 @@ async def test_config_returns_the_configuration_shape(client, auth_headers):
 
 
 async def test_config_never_leaks_a_secret_value(client, auth_headers):
-    """Seeds a recognisable secret and asserts it appears nowhere in the
+    """Seeds recognisable secrets and asserts none appears anywhere in the
     serialised response body, rather than checking specific fields -- a
     field-by-field assertion would silently miss a key added later."""
     response = await client.get("/api/config", headers=auth_headers)
     assert response.status_code == 200
     assert SECRET_TMDB_TOKEN not in response.text
-    # Also nowhere in the login password's hash, in case a future change
-    # starts threading the admin hash through some other field.
-    assert hash_password(PASSWORD) not in response.text
+    assert SECRET_PLEX_TOKEN not in response.text
+    assert SECRET_WEBHOOK_SECRET not in response.text
+    # The admin hash the app is actually holding, not a fresh hash of the
+    # same password: bcrypt is salted, so a fresh one could never appear in
+    # any response and would assert nothing.
+    assert ADMIN_PASSWORD_HASH not in response.text

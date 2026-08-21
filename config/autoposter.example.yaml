@@ -8,6 +8,9 @@ workers: 5
 settle_seconds: 30
 magick_binary: magick
 skip_tba: true
+# Serves /docs, /redoc and /openapi.json. They cannot be authenticated and
+# enumerate every endpoint, so they stay off outside development.
+api_docs_enabled: false
 
 plex:
   url: https://plex.vaderrp.com

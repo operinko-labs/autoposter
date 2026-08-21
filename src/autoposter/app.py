@@ -10,6 +10,7 @@ from plexapi.server import PlexServer
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
+from autoposter.api.auth import LoginRateLimiter
 from autoposter.api.routes import router as api_router
 from autoposter.config.schema import Config, Secrets
 from autoposter.facts import imdb as imdb_module
@@ -148,10 +149,31 @@ def create_app(
             imdb_module.configure_miss_refresh(http, 0)
             await http.aclose()
 
-    app = FastAPI(title="autoposter", lifespan=lifespan)
+    # The interactive docs enumerate every endpoint and its request shape to
+    # anyone who can reach the port, and FastAPI serves them outside the
+    # router, so they cannot carry require_session. Off by default; passing
+    # openapi_url=None is what actually removes /docs and /redoc too.
+    docs = config.api_docs_enabled
+    app = FastAPI(
+        title="autoposter",
+        lifespan=lifespan,
+        openapi_url="/openapi.json" if docs else None,
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+    )
     app.state.config = config
     app.state.session_factory = session_factory
     app.state.secrets = secrets
+    # Per process, so every worker pod limits its own callers -- see
+    # LoginRateLimiter.
+    app.state.login_rate_limiter = LoginRateLimiter()
+    if not secrets.admin_password_hash:
+        # Once, here, rather than per attempt in the login handler: an
+        # unauthenticated caller could otherwise flood the log at will.
+        logger.warning(
+            "AUTOPOSTER_ADMIN_PASSWORD_HASH is not set; this deployment has no "
+            "admin password configured, so every login attempt will fail"
+        )
     app.state.plex = None
     app.state.providers = []
     app.state.tmdb_facts = None

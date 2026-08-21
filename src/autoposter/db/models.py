@@ -125,7 +125,7 @@ class Job(Base):
     kind: Mapped[str] = mapped_column(String(32))
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     dedupe_key: Mapped[str | None] = mapped_column(String(255))
-    # pending | running | done | failed | parked
+    # pending | running | done | failed | parked | dismissed
     state: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -317,9 +317,6 @@ class Session(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    last_seen_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
 
 
 class ScheduledRun(Base):

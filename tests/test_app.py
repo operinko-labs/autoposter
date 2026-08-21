@@ -3,8 +3,9 @@ from pathlib import Path
 import httpx
 import pytest
 import requests
+from httpx import ASGITransport, AsyncClient
 
-from autoposter.app import _build_mdblist, _build_providers, _handle_intent
+from autoposter.app import _build_mdblist, _build_providers, _handle_intent, create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
@@ -38,6 +39,33 @@ async def test_unknown_provider_is_warned_about_and_skipped(secrets, caplog):
 
     assert [type(p) for p in providers] == [TMDBClient, FanartClient]
     assert any("Plex" in record.message for record in caplog.records)
+
+
+async def _get(app, path):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.get(path)
+
+
+async def test_the_api_docs_are_off_by_default(secrets):
+    """/docs, /redoc and /openapi.json enumerate every endpoint to anyone who
+    can reach the port, and FastAPI serves them outside the router, so they
+    cannot carry require_session."""
+    config = load_config(EXAMPLE)
+    assert config.api_docs_enabled is False
+    app = create_app(config, session_factory=None, secrets=secrets)
+
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert (await _get(app, path)).status_code == 404, path
+
+
+async def test_the_api_docs_can_be_switched_on_deliberately(secrets):
+    config = load_config(EXAMPLE)
+    config.api_docs_enabled = True
+    app = create_app(config, session_factory=None, secrets=secrets)
+
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert (await _get(app, path)).status_code == 200, path
 
 
 async def test_handle_intent_tags_plex_connection_errors_with_resolve_max_attempts(monkeypatch):

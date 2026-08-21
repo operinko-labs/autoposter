@@ -2,20 +2,16 @@
 import hashlib
 import hmac
 import secrets as secrets_module
+import time
 from datetime import timedelta
 
 import bcrypt
 from fastapi import Depends, Header, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 
 from autoposter.db.models import Session
-
-# Verified on every failed-password path so that whether the deployment has
-# a configured admin hash cannot be inferred from response timing -- see
-# verify_password's caller in the login endpoint.
-_DUMMY_HASH = bcrypt.hashpw(b"dummy", bcrypt.gensalt()).decode("ascii")
 
 
 def hash_password(plain: str) -> str:
@@ -57,17 +53,40 @@ async def create_session(session: AsyncSession, ttl_hours: float) -> str:
 
 async def session_for_token(session: AsyncSession, token: str) -> Session | None:
     """Resolve a plaintext token to its session row, or None if it does not
-    exist, is expired, or was revoked."""
+    exist, is expired, or was revoked.
+
+    The hash is matched in SQL so the unique index on ``token_hash`` does the
+    work -- loading every live session and comparing in Python costs
+    O(sessions) on every authenticated request. The constant-time comparison
+    is kept on the single row that comes back: what is compared there is a
+    SHA-256 of the presented token against a stored SHA-256, so an attacker
+    who could time it learns nothing they did not already supply.
+    """
     token_hash = _token_hash(token)
-    rows = (
-        (await session.execute(select(Session).where(Session.expires_at > func.now())))
-        .scalars()
-        .all()
-    )
-    for row in rows:
-        if hmac.compare_digest(row.token_hash, token_hash):
-            return row
-    return None
+    row = (
+        await session.execute(
+            select(Session).where(
+                Session.token_hash == token_hash, Session.expires_at > func.now()
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None or not hmac.compare_digest(row.token_hash, token_hash):
+        return None
+    return row
+
+
+async def prune_expired(session: AsyncSession) -> int:
+    """Delete every session row that has already expired, returning how many.
+
+    Nothing else removes them: an expired row is ignored by
+    ``session_for_token`` but stays in the table forever, so the table grows
+    with every login for the life of the deployment. Called from the login
+    endpoint, which is the only rare, non-hot request that touches this
+    table.
+    """
+    result = await session.execute(delete(Session).where(Session.expires_at <= func.now()))
+    await session.commit()
+    return result.rowcount or 0
 
 
 async def revoke(session: AsyncSession, token: str) -> None:
@@ -94,3 +113,39 @@ async def require_session(
 
 
 RequireSession = Depends(require_session)
+
+
+class LoginRateLimiter:
+    """A fixed window of login attempts per client IP, held in memory.
+
+    Defence in depth for one pod, not a distributed limiter: an attacker who
+    can reach the port would otherwise be able to spend the whole process's
+    CPU on bcrypt (~250 ms a call at cost 12) simply by asking. Deliberately
+    in-process -- a shared store would mean a new dependency and a new
+    failure mode for something whose only job is to keep one process from
+    being trivially exhausted.
+    """
+
+    def __init__(self, max_attempts: int = 10, window_seconds: float = 60.0) -> None:
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self._hits: dict[str, list[float]] = {}
+
+    def allow(self, client: str) -> bool:
+        """Record an attempt by ``client`` and say whether it may proceed."""
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        # Every client's stale entries are dropped, not just this one's: the
+        # table is keyed by remote address and would otherwise grow without
+        # bound under a distributed flood.
+        for key, hits in list(self._hits.items()):
+            fresh = [hit for hit in hits if hit > cutoff]
+            if fresh:
+                self._hits[key] = fresh
+            else:
+                del self._hits[key]
+        hits = self._hits.setdefault(client, [])
+        if len(hits) >= self.max_attempts:
+            return False
+        hits.append(now)
+        return True

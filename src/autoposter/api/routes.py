@@ -1,4 +1,5 @@
 """The /api router: login, logout and everything behind require_session."""
+import asyncio
 import logging
 from dataclasses import asdict
 from datetime import timedelta
@@ -6,10 +7,12 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from autoposter.api.auth import (
     create_session,
     hash_password,
+    prune_expired,
     require_session,
     revoke,
     session_for_token,
@@ -33,7 +36,7 @@ logger = logging.getLogger(__name__)
 # jobs.state values (see db/models.py's Job docstring); always reported even
 # when zero, so an empty database returns zeroed counts rather than an
 # incomplete dict.
-JOB_STATES = ("pending", "running", "done", "failed", "parked")
+JOB_STATES = ("pending", "running", "done", "failed", "parked", "dismissed")
 
 DEFAULT_EVENTS_LIMIT = 50
 MAX_EVENTS_LIMIT = 200
@@ -60,10 +63,24 @@ router = APIRouter(prefix="/api")
 # again.
 SESSION_TTL_HOURS = 24
 
-# Verified on every login attempt where no admin password is configured, so
-# that response timing cannot reveal whether AUTOPOSTER_ADMIN_PASSWORD_HASH
-# is set -- see verify_password's docstring in api/auth.py.
-_DUMMY_HASH = hash_password("no admin password is configured")
+_dummy_hash_cache: str | None = None
+
+
+def _dummy_hash() -> str:
+    """The hash verified on every login attempt where no admin password is
+    configured, so that response timing cannot reveal whether
+    AUTOPOSTER_ADMIN_PASSWORD_HASH is set -- see verify_password's docstring
+    in api/auth.py.
+
+    Computed on first use rather than at import: bcrypt at cost 12 is a
+    quarter of a second, which a module-level constant would spend on every
+    import of this module, including in deployments that do have a password
+    configured and will never need it.
+    """
+    global _dummy_hash_cache
+    if _dummy_hash_cache is None:
+        _dummy_hash_cache = hash_password("no admin password is configured")
+    return _dummy_hash_cache
 
 
 class LoginRequest(BaseModel):
@@ -72,22 +89,32 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 async def login(body: LoginRequest, request: Request) -> dict:
+    # Rate limit before anything expensive: this endpoint needs no
+    # credentials to reach, and bcrypt at cost 12 is ~250 ms of CPU per
+    # attempt -- a handful of requests a second would otherwise be enough to
+    # starve the worker pool, the scheduler and the Plex probe that share
+    # this loop.
+    client = request.client.host if request.client else "unknown"
+    if not request.app.state.login_rate_limiter.allow(client):
+        raise HTTPException(status_code=429, detail="too many login attempts")
+
     secrets = request.app.state.secrets
     admin_hash = secrets.admin_password_hash
-    if not admin_hash:
-        logger.warning(
-            "AUTOPOSTER_ADMIN_PASSWORD_HASH is not set; this deployment has no "
-            "admin password configured, so every login attempt will fail"
-        )
     # Always run the bcrypt check, even with no admin password configured --
     # short-circuiting here would let response timing reveal whether the
-    # deployment is configured.
-    valid = verify_password(body.password, admin_hash or _DUMMY_HASH)
+    # deployment is configured. In a thread, because it is pure CPU and the
+    # event loop also carries the workers, the scheduler and /healthz.
+    valid = await asyncio.to_thread(
+        verify_password, body.password, admin_hash or _dummy_hash()
+    )
     if not admin_hash or not valid:
         raise HTTPException(status_code=401, detail="invalid credentials")
 
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
+        # Nothing else deletes expired rows, and login is the only rare
+        # request that touches this table -- see prune_expired.
+        await prune_expired(session)
         token = await create_session(session, ttl_hours=SESSION_TTL_HOURS)
         row = await session_for_token(session, token)
     return {"token": token, "expires_at": row.expires_at}
@@ -346,8 +373,6 @@ async def list_collections(
                 "library": row.library,
                 "title": row.title,
                 "kind": row.kind,
-                # definition_hash is the only hash managed_collections records.
-                "has_poster_hash": bool(row.definition_hash),
             }
             for row in rows
         ]
@@ -358,9 +383,11 @@ async def list_collections(
 async def parked_jobs(
     request: Request,
     limit: int = DEFAULT_JOBS_LIMIT,
+    offset: int = 0,
     _: SessionModel = Depends(require_session),
 ) -> dict:
     capped_limit = min(max(limit, 1), MAX_JOBS_LIMIT)
+    capped_offset = max(offset, 0)
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         rows = (
@@ -368,8 +395,12 @@ async def parked_jobs(
                 await session.execute(
                     select(Job)
                     .where(Job.state == "parked")
-                    .order_by(Job.updated_at.desc())
+                    # id breaks ties: jobs parked in the same batch share an
+                    # updated_at to the microsecond, and without a total
+                    # order a paged read can repeat or skip rows.
+                    .order_by(Job.updated_at.desc(), Job.id.desc())
                     .limit(capped_limit)
+                    .offset(capped_offset)
                 )
             )
             .scalars()
@@ -397,7 +428,14 @@ async def retry_job(
     """Reset a parked job to pending and clear its attempt count, so the
     worker pool picks it up again. Acting on a job that is not currently
     parked -- unknown, already dismissed, or in any other state -- is a 404
-    rather than a no-op or a 500."""
+    rather than a no-op or a 500.
+
+    A parked job whose item has since been queued again by some other path
+    (a webhook, the drift sweep) collides with uq_jobs_pending_dedupe, the
+    partial unique index that allows one pending job per dedupe key. There
+    is nothing to retry in that case -- the work is already queued -- so it
+    is a 409 saying so, not the IntegrityError a 500 would come from.
+    """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         job = (
@@ -410,7 +448,14 @@ async def retry_job(
         job.claimed_by = None
         job.claimed_at = None
         job.run_after = func.now()
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="a job for this item is already queued",
+            ) from None
     return {"id": job.id, "state": job.state}
 
 
