@@ -108,19 +108,23 @@ async def _raw_asgi_get(
         return {"type": "http.request", "body": b"", "more_body": False}
 
     status = 500
-    headers: dict[bytes, bytes] = {}
+    # Not `headers`: that is the request-headers parameter above, and rebinding
+    # it worked only because `extra` is computed before this point. Moving that
+    # comprehension down would have silently dropped the caller's auth header
+    # and turned the artwork traversal test into a 401 that proves nothing.
+    response_headers: dict[bytes, bytes] = {}
     body = bytearray()
 
     async def send(message):
         nonlocal status
         if message["type"] == "http.response.start":
             status = message["status"]
-            headers.update(dict(message["headers"]))
+            response_headers.update(dict(message["headers"]))
         elif message["type"] == "http.response.body":
             body.extend(message.get("body", b""))
 
     await app(scope, receive, send)
-    return status, headers, bytes(body)
+    return status, response_headers, bytes(body)
 
 
 async def test_root_serves_the_index(client_with_spa):

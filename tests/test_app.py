@@ -68,6 +68,74 @@ async def test_the_api_docs_can_be_switched_on_deliberately(secrets):
         assert (await _get(app, path)).status_code == 200, path
 
 
+@pytest.fixture
+def stubbed_background_services(monkeypatch):
+    """Everything the lifespan's ``run_background`` branch starts, replaced.
+
+    Entering the real lifespan otherwise starts the queue workers, the
+    scheduler, the IMDb refresh loop and a Plex liveness check -- the last of
+    which conftest's network guard fails outright. None of that is the wiring
+    under test, so each is a stand-in that parks on the stop event and is
+    cancelled on the way out. What is left running is the part that matters:
+    the client construction and its publication on ``app.state``.
+    """
+
+    class _FakeHealth:
+        healthy = True
+
+        def __init__(self, **kwargs):
+            pass
+
+        async def check_liveness(self) -> bool:
+            return True
+
+        async def run(self, stop_event) -> None:
+            await stop_event.wait()
+
+    class _FakeLoop:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run(self, stop_event) -> None:
+            await stop_event.wait()
+
+    async def _fake_run_workers(count, session_factory, handler, stop_event, is_healthy=None):
+        await stop_event.wait()
+
+    monkeypatch.setattr("autoposter.app.PlexHealth", _FakeHealth)
+    monkeypatch.setattr("autoposter.app.ImdbAutoRefresh", _FakeLoop)
+    monkeypatch.setattr("autoposter.app.Scheduler", _FakeLoop)
+    monkeypatch.setattr("autoposter.app.run_workers", _fake_run_workers)
+
+
+async def test_the_lifespan_publishes_its_http_client_for_request_handlers(
+    session_factory, secrets, stubbed_background_services
+):
+    """``app.state.http = http`` is production-only wiring.
+
+    Only ``main.build()`` passes ``run_background=True``, and nothing else in
+    the suite enters a lifespan at all, so deleting that one line leaves every
+    test green while every deployed instance answers 503 from the live artwork
+    endpoint forever. Exactly the shape of the SPA mount in ``build()`` that
+    tests/test_main.py exists to pin.
+
+    Closed-ness after the exit is what proves it is the *shared* client rather
+    than a second one made for handlers: the ``finally`` closes only the one
+    the providers were built with.
+    """
+    app = create_app(load_config(EXAMPLE), session_factory, secrets, run_background=True)
+    assert app.state.http is None, "create_app alone must not build a client"
+
+    async with app.router.lifespan_context(app):
+        http = app.state.http
+        assert isinstance(http, httpx.AsyncClient), (
+            f"the lifespan did not publish an httpx client on app.state.http ({http!r})"
+        )
+        assert not http.is_closed
+
+    assert http.is_closed, "app.state.http was not the client the lifespan owns and closes"
+
+
 async def test_handle_intent_tags_plex_connection_errors_with_resolve_max_attempts(monkeypatch):
     # Finding 1: a Plex outage surfaces as a requests connection/timeout error
     # (see _LazyPlexServer._connect in main.py), not ItemNotFound, so

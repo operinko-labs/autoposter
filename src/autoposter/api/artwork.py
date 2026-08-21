@@ -33,6 +33,7 @@ from autoposter.api.auth import require_session
 from autoposter.db.models import MediaItem, Render
 from autoposter.db.models import Session as SessionModel
 from autoposter.plex.artwork import PLEX_ART_FIELDS, fetch_artwork
+from autoposter.render.pipeline import ART_KINDS_FOR
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,16 @@ CONTENT_TYPES = {
     ".webp": "image/webp",
 }
 FALLBACK_CONTENT_TYPE = "application/octet-stream"
+# On every response that carries bytes. The content-type whitelists above are
+# the whole defence -- there is no security-headers middleware in this project
+# -- and these are the first endpoints serving image bytes from our own origin,
+# one of them remote-controlled, so a browser must not be allowed to sniff its
+# way to a different interpretation of the body.
+NOSNIFF = {"X-Content-Type-Options": "nosniff"}
+# Behind a session, so no shared cache may keep a copy, and always revalidated
+# so a re-render is picked up immediately -- the revalidation is what the ETag
+# below makes cheap (a 304 with no body and no file read).
+CACHE_CONTROL = "private, max-age=0, must-revalidate"
 # What a Content-Type coming back from Plex is allowed to become on our own
 # response. Plex's header is remote input, and echoing it verbatim would let
 # whatever is at that URL choose how a browser interprets the body; anything
@@ -87,6 +98,25 @@ def _read_asset(asset_path: str, assets_root: Path) -> bytes:
     return resolved.read_bytes()
 
 
+def _if_none_match(header: str | None, etag: str) -> bool:
+    """Does the client's ``If-None-Match`` name the entity we would serve?
+
+    The weak comparison RFC 9110 requires for this header: ``W/"x"`` and
+    ``"x"`` match each other, and ``*`` matches anything we have.
+    """
+    if not header:
+        return False
+    for candidate in header.split(","):
+        candidate = candidate.strip()
+        if candidate == "*":
+            return True
+        if candidate.startswith("W/"):
+            candidate = candidate[2:].strip()
+        if candidate == etag:
+            return True
+    return False
+
+
 @router.get("/items/{item_id}/artwork/{art_kind}")
 async def base_artwork(
     item_id: int,
@@ -103,6 +133,11 @@ async def base_artwork(
     row is created before anything is written to disk, so ``no_art``,
     ``truncated``, ``skipped`` and ``failed`` rows all legitimately name a
     file that was never produced.
+
+    The library browser's grid calls this once per tile, so a matching
+    ``If-None-Match`` answers 304 before the file is opened at all. The ETag is
+    ``renders.base_sha256`` -- the digest of the very bytes served, already on
+    the row -- so it changes exactly when a re-render changes the image.
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -113,6 +148,15 @@ async def base_artwork(
         ).scalar_one_or_none()
     if render is None:
         raise HTTPException(status_code=404, detail="artwork not found")
+
+    headers = dict(NOSNIFF)
+    if render.base_sha256:
+        # Nullable: a row can exist before anything is rendered into it. No
+        # digest, no ETag -- an invented one would be a lie about the bytes.
+        headers["ETag"] = f'"{render.base_sha256}"'
+        headers["Cache-Control"] = CACHE_CONTROL
+        if _if_none_match(request.headers.get("if-none-match"), headers["ETag"]):
+            return Response(status_code=304, headers=headers)
 
     assets_root = Path(request.app.state.config.assets_root)
     try:
@@ -129,7 +173,9 @@ async def base_artwork(
 
     suffix = Path(render.asset_path).suffix.lower()
     return Response(
-        content=content, media_type=CONTENT_TYPES.get(suffix, FALLBACK_CONTENT_TYPE)
+        content=content,
+        media_type=CONTENT_TYPES.get(suffix, FALLBACK_CONTENT_TYPE),
+        headers=headers,
     )
 
 
@@ -161,17 +207,44 @@ async def live_artwork(
 
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        rating_key = (
-            await session.execute(select(MediaItem.rating_key).where(MediaItem.id == item_id))
-        ).scalar_one_or_none()
-    if rating_key is None:
+        row = (
+            await session.execute(
+                select(MediaItem.rating_key, MediaItem.kind).where(MediaItem.id == item_id)
+            )
+        ).one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="item not found")
+    rating_key, kind = row
+
+    # The kind has to be checked against the item, not only against the field
+    # map: plexapi exposes `.art` on an Episode, so /title-card-item/background
+    # would otherwise answer 200 with the *show's* backdrop while the base
+    # endpoint 404s the same request for want of a render row. The two are read
+    # side by side, so they have to agree on what exists.
+    if art_kind not in ART_KINDS_FOR.get(kind, ()):
+        raise HTTPException(
+            status_code=404, detail=f"a {kind} has no {art_kind}"
+        )
 
     plex = request.app.state.plex
     http = request.app.state.http
     if plex is None or http is None:
         # No Plex connection in this process -- the background services that
         # own it are not running. Not the caller's fault and not permanent.
+        #
+        # Logged because the body reads as "Plex is down" while the cause is
+        # local wiring: app.state.plex comes from main.build() and
+        # app.state.http from the lifespan's run_background branch, so an
+        # operator seeing this and finding nothing in the log would go looking
+        # at their Plex server instead of at this process.
+        missing = " and ".join(
+            name for name, value in (("plex", plex), ("http", http)) if value is None
+        )
+        logger.warning(
+            "cannot serve live artwork for item %d: app.state.%s unset, so this "
+            "process has no Plex connection",
+            item_id, missing,
+        )
         raise HTTPException(status_code=503, detail="this instance is not connected to Plex")
 
     try:
@@ -201,6 +274,17 @@ async def live_artwork(
         raise HTTPException(
             status_code=503, detail=f"Plex could not be reached ({type(exc).__name__})"
         ) from None
+    except (requests.RequestException, PlexApiException) as exc:
+        # Not only httpx: fetch_artwork starts by reading .thumb/.art off the
+        # plexapi object, and on a partial object plexapi answers a None-valued
+        # attribute with a blocking _reload() GET -- through `requests`, and
+        # exactly on the "this item has no artwork of that kind" path that is
+        # meant to answer 404. A Plex that drops between the two calls would
+        # otherwise leave this raising out of the handler as a 500.
+        logger.warning("could not read artwork metadata from Plex for item %d: %s", item_id, exc)
+        raise HTTPException(
+            status_code=503, detail=f"Plex could not be reached ({type(exc).__name__})"
+        ) from None
 
     if fetched is None:
         raise HTTPException(status_code=404, detail="Plex has no artwork for this item")
@@ -210,4 +294,5 @@ async def live_artwork(
     return Response(
         content=content,
         media_type=media_type if media_type in ALLOWED_UPSTREAM_TYPES else FALLBACK_CONTENT_TYPE,
+        headers=dict(NOSNIFF),
     )

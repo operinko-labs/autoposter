@@ -34,6 +34,13 @@ PLEX_ART_FIELDS = {
 # may be a LAN hop or a tunnel. Long enough for a poster on a slow one; short
 # enough that a caller waiting on a dead Plex is told so rather than left
 # holding a spinner for the client default.
+#
+# It bounds *this* request only. A caller that also resolves the item through
+# plexapi first (api/artwork.py's live endpoint does) pays that leg's timeout as
+# well, and plexapi's is its own: PlexServer is constructed without a `timeout`
+# argument in main.py and app.py, so it uses plexapi.TIMEOUT, 30s. Worst case
+# against a Plex that accepts connections and then says nothing is therefore
+# ~45s, not 15s.
 ARTWORK_FETCH_TIMEOUT = 15.0
 
 
@@ -92,9 +99,11 @@ async def fetch_artwork(
 ) -> tuple[bytes, str] | None:
     """The bytes Plex is currently serving for ``plex_item``, and their type.
 
-    ``None`` when Plex has no artwork of that kind -- either the field is empty
-    or the URL it names 404s, which is the same answer to the caller and a
-    different one from "Plex could not be asked".
+    ``None`` when Plex has no artwork of that kind -- either the field is empty,
+    the URL it names 404s, or the body that comes back is empty, all of which
+    are the same answer to the caller and a different one from "Plex could not
+    be asked". An empty body in particular must not become a 200 with zero
+    bytes: the UI draws that as a broken image rather than as "nothing here".
 
     Deliberately *not* defensive, unlike ``artwork_provenance``: this answers a
     person who opened a page, so a transport failure has to reach them as
@@ -110,6 +119,8 @@ async def fetch_artwork(
     if response.status_code == 404:
         return None
     response.raise_for_status()
+    if not response.content:
+        return None
     return response.content, response.headers.get("content-type", "")
 
 

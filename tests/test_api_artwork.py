@@ -14,6 +14,7 @@ fail stay three distinguishable statuses -- 404 for "Plex has nothing" against
 ``httpx.MockTransport``; conftest's ``no_outbound_network`` fails the test if
 one ever escapes.
 """
+import threading
 from pathlib import Path
 
 import httpx
@@ -21,10 +22,11 @@ import pytest
 import pytest_asyncio
 import requests
 from httpx import ASGITransport, AsyncClient
+from plexapi.exceptions import BadRequest as PlexBadRequest
 from plexapi.exceptions import NotFound as PlexNotFound
-from sqlalchemy import select
 from test_spa_serving import _raw_asgi_get
 
+from autoposter.api import artwork as artwork_module
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
@@ -83,18 +85,26 @@ async def auth_headers(client):
     return {"Authorization": f"Bearer {response.json()['token']}"}
 
 
-async def _item_with_render(session, asset_path: str, art_kind: str = "poster") -> int:
-    """One media item and one render row for it; returns the item id."""
-    session.add(MediaItem(rating_key="rk1", library="Movies", kind="movie", title="A"))
+async def _item_with_render(
+    session, asset_path: str, art_kind: str = "poster", base_sha256: str | None = None
+) -> int:
+    """One media item and one render row for it; returns the item id.
+
+    The id comes off the flushed object rather than from a re-query: a
+    ``select(MediaItem).one()`` raised MultipleResultsFound the moment a test
+    called this twice.
+    """
+    item = MediaItem(rating_key="rk1", library="Movies", kind="movie", title="A")
+    session.add(item)
     await session.flush()
-    item_id = (await session.execute(select(MediaItem))).scalars().one().id
     session.add(
         Render(
-            item_id=item_id, art_kind=art_kind, status="rendered", asset_path=asset_path
+            item_id=item.id, art_kind=art_kind, status="rendered",
+            asset_path=asset_path, base_sha256=base_sha256,
         )
     )
     await session.commit()
-    return item_id
+    return item.id
 
 
 async def test_serves_the_base_image_for_a_render(client, auth_headers, session, assets_root):
@@ -235,6 +245,135 @@ async def test_a_path_shaped_art_kind_is_404_not_a_file_read(
     assert SECRET not in body.decode("utf-8", "replace")
 
 
+async def test_the_asset_read_never_runs_on_the_event_loop(
+    client, auth_headers, session, assets_root, monkeypatch
+):
+    """assets_root can be an NFS mount, and the realpath walk, the stat and
+    the read are all blocking. This loop also carries the queue workers, the
+    scheduler and the Plex liveness probe, so a read done on it stalls all
+    three -- and nothing about the response would show it, which is how a
+    later "simplification" to FileResponse(resolved) or a bare read_bytes()
+    would pass every other test in this file."""
+    asset = assets_root / "poster.jpg"
+    asset.write_bytes(IMAGE_BYTES)
+    item_id = await _item_with_render(session, str(asset))
+    real_read = artwork_module._read_asset
+    read_on = []
+
+    def recording(*args, **kwargs):
+        read_on.append(threading.current_thread())
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(artwork_module, "_read_asset", recording)
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.content == IMAGE_BYTES
+    # Against the thread this test body runs on -- the one hosting the event
+    # loop -- rather than against main_thread(), so this holds whichever
+    # thread the loop happens to be on.
+    assert read_on, "the recording stand-in was never called"
+    assert read_on[0] is not threading.current_thread(), (
+        f"the asset was read on the event loop thread ({read_on[0]!r})"
+    )
+
+
+async def test_the_base_image_carries_nosniff(client, auth_headers, session, assets_root):
+    """The suffix whitelist is the entire defence for this body: there is no
+    security-headers middleware anywhere in src/, and this is the first
+    endpoint in the project serving file bytes from our own origin."""
+    asset = assets_root / "poster.jpg"
+    asset.write_bytes(IMAGE_BYTES)
+    item_id = await _item_with_render(session, str(asset))
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster", headers=auth_headers)
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_the_base_image_carries_its_digest_as_a_private_etag(
+    client, auth_headers, session, assets_root
+):
+    """The grid asks for one of these per tile. base_sha256 is the digest of
+    the bytes being served and is already on the row, so it is a strong ETag
+    for free -- and it changes exactly when a re-render changes the image."""
+    asset = assets_root / "poster.jpg"
+    asset.write_bytes(IMAGE_BYTES)
+    item_id = await _item_with_render(session, str(asset), base_sha256="a" * 64)
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.headers["etag"] == '"%s"' % ("a" * 64)
+    # Private: these bytes sit behind a session, so no shared cache may hold
+    # them for the next caller.
+    assert "private" in response.headers["cache-control"]
+
+
+@pytest.mark.parametrize("sent", ['"{etag}"', 'W/"{etag}"', '"other", "{etag}"', "*"])
+async def test_a_matching_if_none_match_is_304_and_reads_no_file(
+    client, auth_headers, session, assets_root, monkeypatch, sent
+):
+    """The point of the ETag: the tile that is already in the browser's cache
+    costs a row lookup and nothing else. The file read is stubbed with a
+    failure, so a 304 answered *after* reading the file cannot pass here."""
+    digest = "b" * 64
+    asset = assets_root / "poster.jpg"
+    asset.write_bytes(IMAGE_BYTES)
+    item_id = await _item_with_render(session, str(asset), base_sha256=digest)
+
+    def must_not_read(*args, **kwargs):
+        raise AssertionError("the asset was read despite a matching If-None-Match")
+
+    monkeypatch.setattr(artwork_module, "_read_asset", must_not_read)
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/poster",
+        headers={**auth_headers, "If-None-Match": sent.format(etag=digest)},
+    )
+
+    assert response.status_code == 304
+    assert response.content == b""
+    assert response.headers["etag"] == f'"{digest}"'
+
+
+async def test_a_stale_if_none_match_serves_the_current_bytes(
+    client, auth_headers, session, assets_root
+):
+    """A re-render changes base_sha256, so the browser's copy has to lose."""
+    asset = assets_root / "poster.jpg"
+    asset.write_bytes(IMAGE_BYTES)
+    item_id = await _item_with_render(session, str(asset), base_sha256="c" * 64)
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/poster",
+        headers={**auth_headers, "If-None-Match": '"%s"' % ("d" * 64)},
+    )
+
+    assert response.status_code == 200
+    assert response.content == IMAGE_BYTES
+
+
+async def test_a_row_with_no_digest_yet_carries_no_etag(
+    client, auth_headers, session, assets_root
+):
+    """base_sha256 is nullable -- a row exists before anything is rendered
+    into it. Inventing an ETag there would be a claim about bytes we have not
+    hashed, and a client holding it would never see the first real render."""
+    asset = assets_root / "poster.jpg"
+    asset.write_bytes(IMAGE_BYTES)
+    item_id = await _item_with_render(session, str(asset), base_sha256=None)
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/poster",
+        headers={**auth_headers, "If-None-Match": "*"},
+    )
+
+    assert response.status_code == 200
+    assert "etag" not in response.headers
+
+
 async def test_artwork_requires_a_session(client, session, assets_root):
     asset = assets_root / "poster.jpg"
     asset.write_bytes(IMAGE_BYTES)
@@ -265,6 +404,37 @@ class _FakePlexItem:
 
     def refresh(self):
         self.refreshed = True
+
+
+class _UnreachablePlexItem:
+    """A partial plexapi object whose attribute read fails.
+
+    Not artificial: ``PlexPartialObject.__getattribute__`` issues a blocking
+    ``_reload()`` GET when the attribute's value is ``None`` -- exactly the
+    "this item has no artwork of that kind" case -- and that GET goes through
+    ``requests``, so it raises classes no httpx handler catches.
+    """
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    @property
+    def thumb(self):
+        raise self._exc
+
+
+class _ThreadRecordingPlexItem:
+    """Records which thread ``.thumb`` was read on. See _UnreachablePlexItem
+    for why that read is not free."""
+
+    def __init__(self, thumb):
+        self._thumb = thumb
+        self.read_on = []
+
+    @property
+    def thumb(self):
+        self.read_on.append(threading.current_thread())
+        return self._thumb
 
 
 class _FakePlexClient:
@@ -308,9 +478,13 @@ async def wire_plex(app):
         await http.aclose()
 
 
-async def _media_item(session, rating_key: str = "rk-live") -> int:
-    """One media item, no render row: the live endpoint reads Plex, not disk."""
-    item = MediaItem(rating_key=rating_key, library="Movies", kind="movie", title="A")
+async def _media_item(session, rating_key: str = "rk-live", kind: str = "movie") -> int:
+    """One media item, no render row: the live endpoint reads Plex, not disk.
+
+    ``kind`` decides which art kinds the item can have at all (ART_KINDS_FOR),
+    so a title card needs an episode and a background needs a movie or show.
+    """
+    item = MediaItem(rating_key=rating_key, library="Movies", kind=kind, title="A")
     session.add(item)
     await session.commit()
     return item.id
@@ -370,18 +544,46 @@ async def test_a_background_reads_plex_art_and_a_title_card_reads_plex_thumb(
 ):
     """Mirrors upload_artwork's split. Reading ``.thumb`` for a background --
     or ``.art`` for a title card -- answers with a real image that is the wrong
-    one, which is exactly the kind of wrong this page exists to reveal."""
+    one, which is exactly the kind of wrong this page exists to reveal.
+
+    Two items, because the two art kinds belong to two item kinds: a movie has
+    a background, an episode has a title card, and asking for either on the
+    other is now a 404 (see the ART_KINDS_FOR test below)."""
     seen = []
     wire_plex(
         item=_FakePlexItem(thumb="/thumb/path", art="/art/path"),
         handler=_serves(LIVE_BYTES, seen=seen),
     )
-    item_id = await _media_item(session)
+    movie_id = await _media_item(session, rating_key="rk-movie", kind="movie")
+    episode_id = await _media_item(session, rating_key="rk-episode", kind="episode")
 
-    await client.get(f"/api/items/{item_id}/artwork/background/live", headers=auth_headers)
-    await client.get(f"/api/items/{item_id}/artwork/title_card/live", headers=auth_headers)
+    await client.get(f"/api/items/{movie_id}/artwork/background/live", headers=auth_headers)
+    await client.get(f"/api/items/{episode_id}/artwork/title_card/live", headers=auth_headers)
 
     assert [request.url.path for request in seen] == ["/art/path", "/thumb/path"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "art_kind"),
+    [("episode", "background"), ("movie", "title_card"), ("season", "poster")],
+)
+async def test_an_art_kind_the_item_cannot_have_is_404_without_asking_plex(
+    client, auth_headers, session, wire_plex, kind, art_kind
+):
+    """The two endpoints are read side by side and have to agree on what
+    exists. plexapi exposes ``.art`` on an Episode, so this would otherwise
+    answer 200 with the *show's* backdrop while the base endpoint 404s the
+    same request for want of a render row. ART_KINDS_FOR (render/pipeline.py)
+    is the mapping both ends of the pipeline already use."""
+    plex = wire_plex(item=_FakePlexItem(thumb="/thumb/path", art="/art/path"))
+    item_id = await _media_item(session, kind=kind)
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/{art_kind}/live", headers=auth_headers
+    )
+
+    assert response.status_code == 404
+    assert plex.fetched == []
 
 
 async def test_the_outbound_request_carries_its_own_timeout(
@@ -558,17 +760,102 @@ async def test_the_plex_object_is_never_refreshed(client, auth_headers, session,
     assert item.refreshed is False
 
 
-async def test_live_artwork_is_503_when_this_instance_has_no_plex_connection(
-    client, auth_headers, session
+@pytest.mark.parametrize(
+    "error",
+    [
+        requests.exceptions.ConnectionError("connection reset by peer"),
+        PlexBadRequest("(500) internal_server_error"),
+    ],
+)
+async def test_a_plex_that_drops_while_the_artwork_field_is_read_is_503(
+    client, auth_headers, session, wire_plex, error
 ):
-    """create_app leaves app.state.plex/http None; main.build() and the lifespan
-    fill them in. Without them there is nothing to ask, which is a 503 rather
-    than an AttributeError 500."""
+    """The second leg is not httpx-only.
+
+    fetch_artwork begins by reading ``.thumb``/``.art`` off the plexapi object,
+    and ``PlexPartialObject.__getattribute__`` answers a ``None``-valued
+    attribute with a blocking ``_reload()`` GET -- through ``requests``, and
+    precisely on the path that is meant to end in "no artwork of that kind".
+    A Plex that dies between resolving the item and reading the field raises a
+    class no httpx handler catches, and the endpoint's own contract forbids the
+    500 that produced.
+    """
+    # No handler: the failure must happen before any image request goes out.
+    wire_plex(item=_UnreachablePlexItem(error))
     item_id = await _media_item(session)
 
     response = await client.get(f"/api/items/{item_id}/artwork/poster/live", headers=auth_headers)
 
     assert response.status_code == 503
+    assert type(error).__name__ in response.json()["detail"]
+
+
+async def test_the_plex_attribute_read_never_runs_on_the_event_loop(
+    client, auth_headers, session, wire_plex
+):
+    """Same reason as the asset read: that attribute can become a blocking
+    HTTP GET to Plex, and this loop also carries the workers, the scheduler
+    and the liveness probe."""
+    item = _ThreadRecordingPlexItem("/thumb/path")
+    wire_plex(item=item, handler=_serves(LIVE_BYTES))
+    item_id = await _media_item(session)
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster/live", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert item.read_on, "the artwork field was never read"
+    assert item.read_on[0] is not threading.current_thread(), (
+        f"Plex's artwork field was read on the event loop thread ({item.read_on[0]!r})"
+    )
+
+
+async def test_an_empty_body_from_plex_is_404_not_a_zero_byte_200(
+    client, auth_headers, session, wire_plex
+):
+    """The UI draws a zero-byte 200 as a broken image. "Nothing there" is
+    already a status this endpoint has, and it is the honest one."""
+    wire_plex(item=_FakePlexItem(thumb="/thumb/path"), handler=_serves(b""))
+    item_id = await _media_item(session)
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster/live", headers=auth_headers)
+
+    assert response.status_code == 404
+
+
+async def test_the_live_bytes_carry_nosniff(client, auth_headers, session, wire_plex):
+    """These bytes are remote-controlled and served from our own origin under
+    a session, so the content-type whitelist must not be sniffable around."""
+    wire_plex(item=_FakePlexItem(thumb="/thumb/path"), handler=_serves(LIVE_BYTES))
+    item_id = await _media_item(session)
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster/live", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_live_artwork_is_503_when_this_instance_has_no_plex_connection(
+    client, auth_headers, session, caplog
+):
+    """create_app leaves app.state.plex/http None; main.build() and the lifespan
+    fill them in. Without them there is nothing to ask, which is a 503 rather
+    than an AttributeError 500.
+
+    And it has to be logged. This is the only 503 here whose cause is local
+    wiring rather than Plex, while its body reads exactly like the other two --
+    an operator seeing "not connected to Plex" with nothing in the log goes and
+    looks at their Plex server.
+    """
+    item_id = await _media_item(session)
+
+    with caplog.at_level("WARNING"):
+        response = await client.get(
+            f"/api/items/{item_id}/artwork/poster/live", headers=auth_headers
+        )
+
+    assert response.status_code == 503
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("plex and http" in message for message in warnings), warnings
 
 
 async def test_live_artwork_requires_a_session(client, session, wire_plex):
