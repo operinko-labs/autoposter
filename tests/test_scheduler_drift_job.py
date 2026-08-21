@@ -135,7 +135,10 @@ async def test_make_drift_job_wraps_sweep_stale_facts(session):
     item = await _make_item(session, title="Stale Movie")
     await _make_facts(session, item.id, age_days=10)
 
-    job = make_drift_job(SimpleNamespace())
+    config = SimpleNamespace(
+        scheduler=SimpleNamespace(drift_days=7, drift_max_age_days=7, drift_batch_size=500)
+    )
+    job = make_drift_job(config)
     summary = await job.run(session)
 
     assert job.name == "ratings_drift_sweep"

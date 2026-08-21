@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import httpx
 import requests
 from fastapi import FastAPI
+from plexapi.server import PlexServer
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
@@ -24,6 +25,8 @@ from autoposter.providers.tvdb import TVDBClient
 from autoposter.queue.jobs import reclaim_stale
 from autoposter.queue.worker import run_workers
 from autoposter.render.pipeline import process_item
+from autoposter.scheduler.core import Scheduler
+from autoposter.scheduler.jobs import make_cleanup_job, make_collections_job, make_drift_job
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +90,27 @@ def create_app(
         # process-wide since gather_facts()'s signature carries no http client.
         imdb_module.configure_miss_refresh(http, config.operations.imdb_miss_refresh_minutes)
         health_task = asyncio.create_task(health.run(stop_event))
+        # ImdbAutoRefresh deliberately keeps its own loop rather than joining
+        # the scheduler below: its trigger is remote dataset staleness plus a
+        # miss-triggered cooldown path (see facts/imdb.py), not a fixed
+        # interval, so folding it in would mean losing that or bending the
+        # scheduler around one job.
         imdb_task = asyncio.create_task(imdb_refresh.run(stop_event))
+
+        scheduler_jobs = []
+        if config.scheduler.enabled:
+            if config.collections.enabled:
+                server_factory = functools.partial(
+                    PlexServer, config.plex.url, secrets.plex_token
+                )
+                scheduler_jobs.append(make_collections_job(config, server_factory, http))
+            scheduler_jobs.append(make_drift_job(config))
+            scheduler_jobs.append(make_cleanup_job(config))
+        scheduler = Scheduler(
+            session_factory, scheduler_jobs, poll_seconds=config.scheduler.poll_seconds
+        )
+        scheduler_task = asyncio.create_task(scheduler.run(stop_event))
+
         task = asyncio.create_task(
             run_workers(
                 config.workers, session_factory, handler, stop_event,
@@ -102,7 +125,10 @@ def create_app(
             task.cancel()
             health_task.cancel()
             imdb_task.cancel()
-            await asyncio.gather(task, health_task, imdb_task, return_exceptions=True)
+            scheduler_task.cancel()
+            await asyncio.gather(
+                task, health_task, imdb_task, scheduler_task, return_exceptions=True
+            )
             imdb_module.configure_miss_refresh(http, 0)
             await http.aclose()
 

@@ -40,6 +40,7 @@ def _config(assets_root, backup_root, apply=False):
         assets_root=str(assets_root),
         backup_root=str(backup_root),
         cleanup=SimpleNamespace(apply=apply),
+        scheduler=SimpleNamespace(cleanup_days=7),
     )
 
 

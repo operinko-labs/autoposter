@@ -27,11 +27,6 @@ from autoposter.scheduler.core import Job
 
 logger = logging.getLogger(__name__)
 
-# How config.scheduler eventually makes this configurable is a later task;
-# once a day is a reasonable default cadence for a pass that mostly finds
-# nothing left to do once a library has already been reconciled.
-COLLECTIONS_INTERVAL_SECONDS = 24 * 3600
-
 
 def make_collections_job(
     config: Config, server_factory: Callable[[], object], http: httpx.AsyncClient
@@ -58,18 +53,9 @@ def make_collections_job(
 
     return Job(
         name="collections_reconcile",
-        interval_seconds=COLLECTIONS_INTERVAL_SECONDS,
+        interval_seconds=config.scheduler.collections_hours * 3600,
         run=run,
     )
-
-
-# How config.scheduler eventually makes these configurable together is a
-# later task. Weekly at 500 items a pass is deliberately slow -- ratings
-# drift is not urgent, and this exists only to make sure every item is
-# revisited eventually, not to catch a change quickly.
-DRIFT_INTERVAL_SECONDS = 7 * 24 * 3600
-DRIFT_MAX_AGE_DAYS = 7.0
-DRIFT_BATCH_SIZE = 500
 
 
 async def sweep_stale_facts(session: AsyncSession, max_age_days: float, batch_size: int) -> int:
@@ -128,28 +114,21 @@ async def sweep_stale_facts(session: AsyncSession, max_age_days: float, batch_si
 def make_drift_job(config: Config) -> Job:
     """Build the scheduled ratings-drift sweep job.
 
-    ``config`` is accepted for the same signature shape as
-    ``make_collections_job`` and for a future enable/config toggle; nothing
-    here reads from it yet.
+    Weekly by default -- ratings drift is not urgent, and this exists only to
+    make sure every item is eventually revisited, not to catch a change
+    quickly.
     """
 
     async def run(session: AsyncSession) -> str:
-        count = await sweep_stale_facts(session, DRIFT_MAX_AGE_DAYS, DRIFT_BATCH_SIZE)
-        return (
-            f"enqueued {count} item(s) with facts older than "
-            f"{DRIFT_MAX_AGE_DAYS:g} days"
-        )
+        max_age_days = config.scheduler.drift_max_age_days
+        count = await sweep_stale_facts(session, max_age_days, config.scheduler.drift_batch_size)
+        return f"enqueued {count} item(s) with facts older than {max_age_days:g} days"
 
     return Job(
         name="ratings_drift_sweep",
-        interval_seconds=DRIFT_INTERVAL_SECONDS,
+        interval_seconds=config.scheduler.drift_days * 24 * 3600,
         run=run,
     )
-
-
-# How config.scheduler eventually makes this configurable is a later task;
-# once a day matches the collections reconcile's cadence.
-CLEANUP_INTERVAL_SECONDS = 24 * 3600
 
 
 async def find_orphaned_assets(session: AsyncSession, assets_root: Path) -> list[Path]:
@@ -229,6 +208,6 @@ def make_cleanup_job(config: Config) -> Job:
 
     return Job(
         name="asset_cleanup",
-        interval_seconds=CLEANUP_INTERVAL_SECONDS,
+        interval_seconds=config.scheduler.cleanup_days * 24 * 3600,
         run=run,
     )

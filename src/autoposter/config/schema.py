@@ -209,6 +209,30 @@ class CleanupConfig(BaseModel):
     apply: bool = False
 
 
+class SchedulerConfig(BaseModel):
+    """Cadences for the periodic passes in ``scheduler/jobs.py``: the
+    collections reconcile, the ratings-drift sweep and the asset cleanup.
+
+    There is deliberately no ``cleanup_apply`` field here even though it
+    controls a scheduled job: ``CleanupConfig.apply`` above already means
+    exactly that (dry run by default, moves rather than deletes) and
+    ``make_cleanup_job`` reads it directly, so this section only owns *when*
+    the cleanup pass runs, not whether it writes -- repeating it here would
+    give the same behaviour two names.
+    """
+
+    enabled: bool = True
+    poll_seconds: int = 60
+    collections_hours: int = 24
+    drift_days: int = 7
+    # The safety valve: a sweep enqueues at most this many stale items, so a
+    # library of ~16,000 items is worked through gradually rather than all at
+    # once.
+    drift_batch_size: int = 500
+    drift_max_age_days: float = 7
+    cleanup_days: int = 7
+
+
 class Config(BaseModel):
     assets_root: Path
     manual_assets_root: Path
@@ -227,4 +251,5 @@ class Config(BaseModel):
     badges: BadgesConfig = Field(default_factory=BadgesConfig)
     collections: CollectionsConfig = Field(default_factory=CollectionsConfig)
     cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     version: str = ""

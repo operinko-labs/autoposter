@@ -49,6 +49,17 @@ cleanup:
   charts: true # IMDb Popular / Top 250 / Lowest Rated
   awards: true # Oscars winner collections
 
+scheduler:
+  enabled: true # run the periodic passes (collections reconcile, drift sweep, asset cleanup)
+  poll_seconds: 60 # how often to check whether anything is due
+  collections_hours: 24 # collections reconcile cadence
+  drift_days: 7 # ratings drift sweep cadence
+  drift_max_age_days: 7 # re-check an item whose facts are older than this
+  drift_batch_size: 500 # items enqueued per sweep; the safety valve against enqueuing everything at once
+  cleanup_days: 7 # orphaned asset cleanup cadence
+  # cleanup_apply is not a setting here -- see cleanup.apply above, which
+  # already governs whether the cleanup pass writes (dry run by default)
+
 artwork:
   use_logo: true
   logo_language_order: [en, fi]

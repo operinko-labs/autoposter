@@ -88,8 +88,9 @@ See `config/autoposter.example.yaml` for the full block.
 
 The `collections:` block in `autoposter.yaml` controls the Phase 3a Common
 Sense age-bucket smart collections, replacing Kometa's. These are Plex-native
-smart collections — Plex evaluates the filter live, so reconciliation is
-manual in this phase, run by hand with:
+smart collections — Plex evaluates the filter live. Reconciliation runs on
+its own cadence via the periodic scheduler (see "Periodic scheduler" below),
+and can also be run by hand at any time:
 
 ```
 python -m autoposter.collections
@@ -152,6 +153,56 @@ lets the Oscars collections (or vice versa) update normally.
 IMDb's API response carries a non-commercial-use disclaimer. This deployment
 is a private, single-operator install, which is within it; nothing here
 redistributes the fetched data.
+
+See `config/autoposter.example.yaml` for the full block.
+
+## Periodic scheduler
+
+The `scheduler:` block in `autoposter.yaml` controls three periodic passes,
+each run by a single background task (the same `run(stop_event)` shape as
+the Plex health probe) started from the app lifespan. Their schedule lives in
+the database, not process memory: `scheduled_runs` records each job's last
+start/finish time and outcome (`last_status`, `last_detail`), so a restart
+does not re-run everything, and two replicas coordinate through
+`FOR UPDATE SKIP LOCKED` rather than both firing the same pass at once. Query
+it directly to check what last happened and when:
+
+```sql
+SELECT name, last_started_at, last_finished_at, last_status, last_detail
+  FROM scheduled_runs;
+```
+
+- `enabled` (default `true`) — master switch for all three passes. Off means
+  none of them run at all, including as a dry run.
+- `poll_seconds` (default `60`) — how often the scheduler checks whether
+  anything is due; not the interval of any individual job.
+- `collections_hours` (default `24`) — cadence for the Common Sense
+  collections reconcile (see above). Only registered at all when
+  `collections.enabled` is `true`, so a deployment with collections off does
+  not run a pass that immediately returns.
+- `drift_days` (default `7`) — cadence for the ratings-drift sweep. Ratings
+  change without any file event, so nothing else re-triggers an item; this
+  sweep re-enqueues the same `process_item` job the webhook intake path uses
+  for anything whose gathered facts are older than `drift_max_age_days`
+  (default `7`).
+- `drift_batch_size` (default `500`) — the safety valve on that sweep.
+  Enqueuing every stale item at once across a ~16,000-item library would
+  swamp the worker pool and hammer every provider, so each run only takes the
+  oldest `drift_batch_size` candidates and leaves the rest for the next
+  run — a sweep works through a backlog gradually over successive runs
+  rather than all at once.
+- `cleanup_days` (default `7`) — cadence for the orphaned-asset cleanup: a
+  walk of `assets_root` moving any directory no `renders` row references to
+  `backup_root`. **Whether it writes is not a `scheduler` setting** — see
+  `cleanup.apply` above, which already defaults to `false` (dry run: report
+  what would move) because this pass moves the operator's files.
+
+The IMDb dataset refresh (`operations.imdb_refresh_hours`) deliberately does
+**not** run on this scheduler — it keeps its own separate background loop.
+Its trigger is remote dataset staleness plus a miss-triggered cooldown path
+(see "Loading IMDb ratings" below), not a fixed interval, so folding it into
+this scheduler would mean either losing that behaviour or bending the
+scheduler around one job.
 
 See `config/autoposter.example.yaml` for the full block.
 

@@ -106,7 +106,8 @@ def _config(libraries=("Movies", "TV Shows"), enabled=True, apply_to_plex=True):
             # them off here keeps this test scoped to the job wiring and out of
             # real network calls.
             charts=False, awards=False,
-        )
+        ),
+        scheduler=SimpleNamespace(collections_hours=24),
     )
 
 
