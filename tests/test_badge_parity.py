@@ -21,6 +21,13 @@ from autoposter.badges.values import MediaInfo
 
 ORACLE = Path("tests/fixtures/oracle")
 
+# `after < before` alone is not load-bearing: the box comes from the same
+# BadgeSpec the composer draws with, so a badge drawn at the wrong-but-still-
+# overlapping position would still register as an improvement. The measured
+# ratios are 0.00 to 0.14, so this bound has generous headroom over correct
+# output while a misplaced badge cannot clear it.
+MAX_RESIDUAL = 0.25
+
 
 def _as_array(image: Image.Image) -> np.ndarray:
     return np.asarray(image.convert("RGB"), dtype=np.int16)
@@ -53,8 +60,9 @@ def test_each_poster_badge_moves_towards_production_output(badge):
                        spec.v_align, spec.v_offset, spec.padding)
     before = _region_error(bare, oracle, box)
     after = _region_error(ours, oracle, box)
-    assert after < before, (
-        "badging made region %r worse: %.1f -> %.1f" % (badge, before, after)
+    assert after < before * MAX_RESIDUAL, (
+        "badge %r: residual error %.1f is not below %.0f%% of the bare %.1f"
+        % (badge, after, MAX_RESIDUAL * 100, before)
     )
 
 
@@ -88,8 +96,9 @@ def test_each_episode_badge_moves_towards_production_output(badge):
                        spec.v_align, spec.v_offset, spec.padding)
     before = _region_error(bare, oracle, box)
     after = _region_error(ours, oracle, box)
-    assert after < before, (
-        "badging made region %r worse: %.1f -> %.1f" % (badge, before, after)
+    assert after < before * MAX_RESIDUAL, (
+        "badge %r: residual error %.1f is not below %.0f%% of the bare %.1f"
+        % (badge, after, MAX_RESIDUAL * 100, before)
     )
 
 

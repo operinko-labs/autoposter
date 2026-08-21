@@ -8,6 +8,7 @@ as every affected badge differing from the tool being replaced.
 """
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,6 +94,11 @@ class MediaInfo:
     hdr_flags: frozenset[str]
     season_number: int | None
     episode_number: int | None
+    # The media file's path. Kometa derives both the video_format badge and the
+    # HDR10+ resolution variant from it by regex, so it is a badge input in its
+    # own right, not just diagnostics. Defaulted because every construction
+    # site predating the video_format badge passes the other eight positionally.
+    file_path: str | None = None
 
 
 def media_info_from_plex(item) -> MediaInfo:
@@ -113,7 +119,10 @@ def media_info_from_plex(item) -> MediaInfo:
 
     languages: list[str] = []
     flags: set[str] = set()
+    file_path: str | None = None
     for part in getattr(media, "parts", []) or []:
+        if file_path is None:
+            file_path = getattr(part, "file", None)
         for stream in getattr(part, "streams", []) or []:
             if stream.streamType == 1:
                 if getattr(stream, "DOVIPresent", None):
@@ -128,6 +137,9 @@ def media_info_from_plex(item) -> MediaInfo:
                 if code and code not in languages:
                     languages.append(code)
 
+    if file_path and _HDR10_PLUS.search(file_path):
+        flags.add("plus")
+
     return MediaInfo(
         video_resolution=getattr(media, "videoResolution", None),
         audio_codec=getattr(media, "audioCodec", None),
@@ -137,20 +149,33 @@ def media_info_from_plex(item) -> MediaInfo:
         hdr_flags=frozenset(flags),
         season_number=getattr(item, "seasonNumber", None),
         episode_number=getattr(item, "episodeNumber", None),
+        file_path=file_path,
     )
+
+
+# Kometa reads HDR10+ off the file path, not off Plex's stream metadata --
+# `resolution.yml` gates the `plus` and `dvhdrplus` variants on
+# `filepath.regex: (?i)\bhdr10(\+|p(lus)?\b)`. It has to: Plex's video stream
+# exposes `colorTrc` and the Dolby Vision fields but carries no HDR10+ marker
+# at all (plexapi 4.18.2 `VideoStream` has no such attribute), so the file name
+# is the only signal available. HDR10+ streams are backwards-compatible HDR10
+# and report `smpte2084` too, hence `plus` outranking `hdr` below.
+_HDR10_PLUS = re.compile(r"(?i)\bhdr10(\+|p(lus)?\b)")
 
 
 # Only these suffix combinations are vendored. Dolby Vision over an HLG base
 # layer is a real (if uncommon) stream, but there is no `dvhlg` asset for any
 # resolution, so naively concatenating every flag names a file that does not
-# exist. Most specific match wins; DV outranks HLG when both are present.
+# exist. Most specific match wins; DV outranks HLG when both are present, and
+# `plus` outranks `hdr` because an HDR10+ stream always also reports plain
+# HDR10 -- checking `hdr` first would make every `*plus.png` unreachable.
 _HDR_SUFFIXES: tuple[tuple[frozenset[str], str], ...] = (
-    (frozenset({"dv", "hdr", "plus"}), "dvhdrplus"),
+    (frozenset({"dv", "plus"}), "dvhdrplus"),
     (frozenset({"dv", "hdr"}), "dvhdr"),
+    (frozenset({"plus"}), "plus"),
     (frozenset({"dv"}), "dv"),
     (frozenset({"hdr"}), "hdr"),
     (frozenset({"hlg"}), "hlg"),
-    (frozenset({"plus"}), "plus"),
 )
 
 
@@ -178,6 +203,41 @@ def resolution_image(info: MediaInfo) -> str | None:
 def audio_codec_image(info: MediaInfo) -> str | None:
     """Filename stem under ``images/audio_codec/standard/``."""
     return AUDIO_CODECS.get((info.audio_codec or "").lower())
+
+
+# Kometa's `video_format.yml`, transcribed verbatim: each overlay filters on
+# `filepath.regex` and displays its own key as the badge text (`text_<<key>>`
+# defaults to `<<overlay_name>>`, no case transform). All eight share
+# `group: quality`, so only the highest-weighted match is drawn -- this tuple is
+# in descending weight order (REMUX 60, BLU-RAY 50, WEB 40, HDTV 30, DVD 20,
+# SDTV 10, TELESYNC 9, CAM 8), which is also why `bluray` must be tested before
+# `dvd`: an "HD-DVD" path matches both and Kometa awards it to BLU-RAY.
+_VIDEO_FORMATS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("REMUX", re.compile(r"(?i)\bremux\b")),
+    ("BLU-RAY", re.compile(r"(?i)\b(blu[ ._-]?ray|bd|br|hd[ ._-]?dvd)\b")),
+    ("WEB", re.compile(r"(?i)web[ ._-]?(dl|rip)")),
+    ("HDTV", re.compile(r"(?i)\bhd[ ._-]?tv\b")),
+    ("DVD", re.compile(r"(?i)\bdvd\b")),
+    ("SDTV", re.compile(r"(?i)\bsd[ ._-]?tv\b")),
+    ("TELESYNC", re.compile(r"(?i)\b(TS|HDTS|TELESYNC)\b")),
+    ("CAM", re.compile(r"(?i)\b(HQ|HD)?CAM\b")),
+)
+
+
+def video_format_text(info: MediaInfo) -> str | None:
+    """The video_format badge string, e.g. ``"WEB"``, or ``None`` to suppress.
+
+    ``None`` for a path that matches nothing is Kometa's
+    ``ignore_blank_results: true`` -- no overlay in the group runs, so no badge
+    is drawn. An item with no file path at all (a show or a season, which have
+    no media of their own) likewise gets no badge.
+    """
+    if not info.file_path:
+        return None
+    for label, pattern in _VIDEO_FORMATS:
+        if pattern.search(info.file_path):
+            return label
+    return None
 
 
 def language_slots(info: MediaInfo, limit: int = 3) -> list[tuple[str, str]]:

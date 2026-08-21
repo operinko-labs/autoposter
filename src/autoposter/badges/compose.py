@@ -97,14 +97,20 @@ def badge_values(art_kind: str, inputs: BadgeInputs) -> dict[str, str]:
 
 
 def badge_fingerprint(
-    base_sha256: str, art_kind: str, values: dict[str, str], asset_manifest_sha: str
+    base_fingerprint: str, art_kind: str, values: dict[str, str], asset_manifest_sha: str
 ) -> str:
     """Hash everything that affects the badged image.
+
+    ``base_fingerprint`` is the *render* fingerprint -- the hash covering
+    everything that shapes the composited base, title text and fonts included --
+    not the sha of the downloaded source bytes. A re-render that leaves the
+    source unchanged (an episode title arriving to replace "TBA", say) still
+    produces a different base, and the badged upload has to follow it.
 
     Deliberately separate from the base ``fingerprint``: a rating changing must
     re-badge and re-upload without re-fetching or re-compositing the base.
     """
-    parts = [base_sha256, art_kind, asset_manifest_sha]
+    parts = [base_fingerprint, art_kind, asset_manifest_sha]
     parts += ["%s=%s" % (k, values[k]) for k in sorted(values)]
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 

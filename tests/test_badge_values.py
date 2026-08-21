@@ -7,11 +7,13 @@ see docs/research/kometa-overlays.md section 3.3.
 import pytest
 
 from autoposter.badges.values import (
+    MediaInfo,
     audience_text,
     commonsense_text,
     critic_text,
     episode_text,
     runtime_text,
+    video_format_text,
 )
 
 
@@ -88,3 +90,40 @@ def test_ratings_are_suppressed_when_zero(fn):
     """Plex reports 0.0 for 'no rating', and a badge reading 0.0 or 0% is
     wrong rather than merely ugly."""
     assert fn(0.0) is None
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("/m/Dune (2021)/Dune.2021.BluRay.REMUX.2160p.mkv", "REMUX"),
+        ("/m/Heat (1995)/Heat.1995.Blu-Ray.1080p.mkv", "BLU-RAY"),
+        ("/m/Heat (1995)/Heat.1995.BD.1080p.mkv", "BLU-RAY"),
+        ("/m/Heat (1995)/Heat.1995.HD-DVD.1080p.mkv", "BLU-RAY"),
+        ("/m/Show/S01E01 - WEBDL-1080p.mkv", "WEB"),
+        ("/m/Show/S01E01.WEBRip.720p.mkv", "WEB"),
+        ("/m/Show/S01E01.HDTV.720p.mkv", "HDTV"),
+        ("/m/Show/S01E01.HD-TV.720p.mkv", "HDTV"),
+        ("/m/Old (1974)/Old.1974.DVD.480p.mkv", "DVD"),
+        ("/m/Show/S01E01.SDTV.mkv", "SDTV"),
+        ("/m/Cam (2018)/Cam.2018.TELESYNC.mkv", "TELESYNC"),
+        ("/m/Cam (2018)/Cam.2018.HDCAM.mkv", "CAM"),
+        ("/m/Show/S01E01.mkv", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_video_format_text_reproduces_kometas_filepath_regexes(path, expected):
+    """Straight from `video_format.yml`: eight `filepath.regex` filters, the
+    overlay key displayed verbatim, and `ignore_blank_results: true` meaning a
+    path matching nothing draws no badge at all."""
+    info = MediaInfo(None, None, None, None, (), frozenset(), None, None, path)
+    assert video_format_text(info) == expected
+
+
+def test_video_format_prefers_the_higher_weighted_overlay():
+    """All eight share `group: quality`, so only one is ever drawn -- the one
+    with the highest weight. A remux of a Blu-ray matches both patterns and
+    Kometa awards it to REMUX (60) over BLU-RAY (50)."""
+    info = MediaInfo(None, None, None, None, (), frozenset(), None, None,
+                     "/m/Dune (2021)/Dune.2021.BluRay.REMUX.2160p.mkv")
+    assert video_format_text(info) == "REMUX"

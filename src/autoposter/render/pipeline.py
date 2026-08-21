@@ -17,7 +17,7 @@ from autoposter.badges.compose import (
     badge_values,
     compose as compose_badges,
 )
-from autoposter.badges.values import media_info_from_plex
+from autoposter.badges.values import media_info_from_plex, video_format_text
 from autoposter.config.schema import Config
 from autoposter.db.models import ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
@@ -509,18 +509,30 @@ async def apply_badges(session, config, render, item, plex_item, facts) -> None:
     # something we should start producing.
     if render.art_kind == "background":
         return
+    # `asset_path` is written when the row is created, before any file exists,
+    # so a render that never produced one -- no_art, truncated, skipped,
+    # failed -- would send Image.open() at a path that is not there.
+    if render.status != "rendered":
+        return
 
-    media = media_info_from_plex(plex_item)
+    # media_info_from_plex() calls item.reload() when `.media` is absent, which
+    # is a blocking `requests` GET -- and plexapi Show and Season objects never
+    # carry `.media`, so that is not a rare path. On the event loop it stalls
+    # the liveness probe and every other worker.
+    media = await asyncio.to_thread(media_info_from_plex, plex_item)
     inputs = BadgeInputs(
         media=media,
         critic_rating=getattr(facts, "critic_rating", None),
         audience_rating=getattr(facts, "audience_rating", None),
         content_rating=getattr(facts, "content_rating", None),
-        video_format=None,
+        video_format=video_format_text(media),
     )
     values = badge_values(render.art_kind, inputs)
+    # render.fingerprint, not render.base_sha256: the badged image is composed
+    # from the *base we rendered*, so the gate has to track what went into that
+    # base -- see badge_fingerprint's docstring.
     fingerprint = badge_fingerprint(
-        render.base_sha256 or "", render.art_kind, values, MANIFEST_SHA
+        render.fingerprint or "", render.art_kind, values, MANIFEST_SHA
     )
     if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
         return
@@ -547,7 +559,11 @@ async def apply_badges(session, config, render, item, plex_item, facts) -> None:
 
     render.upload_status = "uploaded"
     render.uploaded_at = func.now()
-    await session.flush()
+    # Commit, not flush: the badge stage's own error handler rolls back, and a
+    # flushed-but-uncommitted fingerprint for an upload that already reached
+    # Plex would be discarded, re-uploading the identical image next pass.
+    # Preventing exactly that accumulation is the point of this stage.
+    await session.commit()
 
 
 async def process_item(

@@ -23,8 +23,9 @@ class FakeStream:
 
 
 class FakePart:
-    def __init__(self, streams):
+    def __init__(self, streams, file=None):
         self.streams = streams
+        self.file = file
 
 
 class FakeMedia:
@@ -180,3 +181,50 @@ def test_every_audio_codec_image_name_exists_on_disk():
         info = MediaInfo(None, codec, None, None, (), frozenset(), None, None)
         stem = audio_codec_image(info)
         assert (root / ("%s.png" % stem)).exists(), "%s -> %s.png missing" % (codec, stem)
+
+
+def _item_with_path(path, video_kw=None):
+    video = FakeStream(1, codec="hevc", **(video_kw or {"colorTrc": "smpte2084"}))
+    media = FakeMedia([FakePart([video], file=path)], videoResolution="1080",
+                      audioCodec="eac3", audioChannels=6)
+    return FakeItem([media], duration=4845912)
+
+
+def test_media_info_carries_the_file_path():
+    """The video_format badge and the HDR10+ resolution variant are both
+    filepath regexes in Kometa, so the path is a badge input, not diagnostics."""
+    info = media_info_from_plex(_item_with_path("/m/Show/S01E01.WEBDL-1080p.mkv"))
+    assert info.file_path == "/m/Show/S01E01.WEBDL-1080p.mkv"
+
+
+def test_hdr10_plus_is_detected_from_the_file_path():
+    """Plex's video stream carries no HDR10+ marker -- plexapi 4.18.2
+    `VideoStream` has colorTrc and the DOVI fields and nothing else -- so
+    Kometa reads it off the path, and so do we. Without this the vendored
+    `*plus.png` assets are unreachable."""
+    info = media_info_from_plex(_item_with_path("/m/Dune (2021)/Dune.2021.HDR10+.2160p.mkv"))
+    assert "plus" in info.hdr_flags
+    assert resolution_image(info) == "1080pplus"
+
+
+def test_hdr10_plus_outranks_plain_hdr():
+    """An HDR10+ stream is backwards-compatible and reports smpte2084 too, so
+    the `hdr` flag is always set alongside `plus`. Matching `hdr` first would
+    leave every `*plus.png` unreachable, which is the bug this guards."""
+    info = media_info_from_plex(_item_with_path("/m/X/X.HDR10Plus.2160p.mkv"))
+    assert info.hdr_flags >= {"hdr", "plus"}
+    assert resolution_image(info) == "1080pplus"
+
+
+def test_dolby_vision_over_hdr10_plus_names_the_dvhdrplus_asset():
+    info = media_info_from_plex(
+        _item_with_path("/m/X/X.DV.HDR10+.2160p.mkv",
+                        {"colorTrc": "smpte2084", "DOVIPresent": True})
+    )
+    assert resolution_image(info) == "1080pdvhdrplus"
+
+
+def test_a_path_without_an_hdr10_plus_marker_gets_no_plus_flag():
+    info = media_info_from_plex(_item_with_path("/m/X/X.HDR10.2160p.mkv"))
+    assert "plus" not in info.hdr_flags
+    assert resolution_image(info) == "1080phdr"
