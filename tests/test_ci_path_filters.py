@@ -128,15 +128,20 @@ def test_ci_sets_the_ci_environment_variable():
     )
 
 
-def _run_scripts() -> list[str]:
-    """Every `run:` script in the workflow, across all jobs."""
+def _steps() -> list[dict]:
+    """Every step in the workflow, across all jobs."""
     loaded = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     return [
-        step["run"]
+        step
         for job in (loaded.get("jobs") or {}).values()
         for step in (job.get("steps") or [])
-        if isinstance(step.get("run"), str)
+        if isinstance(step, dict)
     ]
+
+
+def _run_scripts() -> list[str]:
+    """Every `run:` script in the workflow, across all jobs."""
+    return [step["run"] for step in _steps() if isinstance(step.get("run"), str)]
 
 
 def test_ci_actually_executes_the_imagemagick_gated_tests():
@@ -173,6 +178,73 @@ def test_ci_actually_executes_the_imagemagick_gated_tests():
             "the step running the ImageMagick-gated tests does not pass "
             "CI=true, so tests/conftest.py's guard would skip instead of "
             "failing if ImageMagick went missing from it"
+        )
+
+
+def test_ci_actually_runs_the_frontend_suite():
+    """The vitest suite must be executed by CI, not merely present in the tree.
+
+    Its neighbours are all self-enforcing and this step was not. "Build the
+    frontend" cannot be deleted quietly, because
+    tests/test_attribution_present.py hard-fails on a missing `frontend/dist`
+    once `CI` is set; the ImageMagick step has the guard above. Delete "Test
+    the frontend" and roughly thirty tests stop running with everything still
+    green -- including `frontend/src/main.test.tsx`, the one that catches a
+    bundle containing none of the application, which is a failure this branch
+    actually shipped.
+
+    Asserted against the `run:` script rather than the step's name, so
+    renaming the step is fine and removing the command is not.
+    """
+    running = [
+        step
+        for step in _steps()
+        if isinstance(step.get("run"), str)
+        and re.search(r"\bnpm\s+(?:run\s+)?test\b", step["run"])
+    ]
+    assert running, (
+        "no CI step runs `npm test`, so the frontend suite -- including "
+        "main.test.tsx, which is what proves the bundle contains the "
+        "application at all -- is never executed"
+    )
+    for step in running:
+        working_directory = str(step.get("working-directory", ""))
+        assert "frontend" in working_directory or "frontend" in step["run"], (
+            "a CI step runs `npm test` but not in frontend/, so it would "
+            f"resolve no package.json and pass vacuously: {step}"
+        )
+
+
+def test_the_image_job_builds_the_default_target():
+    """tests/test_dev_environment.py's stage-ordering test rests on this.
+
+    `test_the_runtime_stage_is_the_last_one` is only meaningful while the image
+    job builds the Dockerfile's *last* stage. Pass `target: dev` to
+    docker/build-push-action and the development image -- pytest, ruff and an
+    editable install included -- is what gets verified and pushed to Harbor as
+    production, with that test still green and every check in the image job
+    still passing, because the dev image is a superset of the runtime one.
+
+    The premise is asserted here rather than there because it is a property of
+    the workflow, which this module already parses.
+    """
+    build_steps = [
+        step
+        for step in _steps()
+        if str(step.get("uses", "")).startswith("docker/build-push-action")
+    ]
+    assert build_steps, (
+        "no docker/build-push-action step found in .forgejo/workflows/ci.yml; "
+        "tests/test_dev_environment.py::test_the_runtime_stage_is_the_last_one "
+        "assumes one exists and passes no target"
+    )
+    for step in build_steps:
+        with_block = step.get("with") or {}
+        assert "target" not in with_block, (
+            f"the image build passes target={with_block['target']!r}, so it no "
+            "longer builds the Dockerfile's last stage. "
+            "tests/test_dev_environment.py::test_the_runtime_stage_is_the_last_one "
+            "would stay green while a development image shipped as production"
         )
 
 
