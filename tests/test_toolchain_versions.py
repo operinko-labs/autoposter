@@ -313,7 +313,15 @@ def test_postgres_is_one_exact_version_everywhere():
     naming a tag inline.
     """
     workflow_text = WORKFLOW.read_text(encoding="utf-8")
-    inline = re.findall(r"\bpostgres:(?!\$\{\{)([\w.+-]+)", workflow_text)
+    # `\bpostgres:` alone is too loose: `\b` matches between the `-` and `p` in
+    # `ci-postgres`, so the connection URL
+    # `...@ci-postgres:5432/autoposter_magick` reads as an inline image tag
+    # `5432`. A real image reference is the bare word `postgres` (nothing
+    # word-like or a hyphen just before it) and is never immediately followed
+    # by a `/`, which is exactly what a host:port has next. Excluding both
+    # keeps a literal `postgres:18-alpine` caught while leaving the
+    # `ci-postgres:5432` URL alone.
+    inline = re.findall(r"(?<![\w-])postgres:(?!\$\{\{)([\w.+-]+)(?!/)", workflow_text)
     assert not inline, (
         f"the workflow names a postgres tag inline ({inline}); use "
         "postgres:${{ env.POSTGRES_VERSION }}-alpine so there is one version to "
