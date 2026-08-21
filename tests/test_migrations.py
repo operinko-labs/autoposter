@@ -72,3 +72,69 @@ async def test_alembic_head_matches_models():
             await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}"')
         finally:
             await maint.close()
+
+
+async def test_migrations_apply_to_a_populated_renders_table():
+    """A deployed instance already has rows in ``renders``.
+
+    ``ADD COLUMN ... NOT NULL`` without a ``server_default`` fails outright
+    against a non-empty table, so a migration that passes on a fresh database
+    can still break every existing deployment. This walks to the revision
+    before the badge columns, puts a row in, and then upgrades.
+    """
+    if not await _postgres_reachable():
+        pytest.skip("postgres is not reachable")
+
+    before_badges = "716a0d6b8941"
+
+    maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+    try:
+        await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}_data"')
+        await maint.execute(f'CREATE DATABASE "{SCRATCH_DB_NAME}_data"')
+    finally:
+        await maint.close()
+
+    url = SCRATCH_DB_URL.replace(SCRATCH_DB_NAME, SCRATCH_DB_NAME + "_data")
+    env = dict(os.environ, AUTOPOSTER_DATABASE_URL=url)
+
+    def alembic(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        )
+
+    try:
+        step = alembic("upgrade", before_badges)
+        assert step.returncode == 0, step.stdout + step.stderr
+
+        conn = await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql"), timeout=5)
+        try:
+            item_id = await conn.fetchval(
+                "INSERT INTO media_items (kind, rating_key, title, library) "
+                "VALUES ('movie', '999', 'Populated', 'Movies') RETURNING id"
+            )
+            await conn.execute(
+                "INSERT INTO renders (item_id, art_kind, asset_path, source_mode, status) "
+                "VALUES ($1, 'poster', '/x.jpg', 'generate', 'rendered')",
+                item_id,
+            )
+        finally:
+            await conn.close()
+
+        head = alembic("upgrade", "head")
+        assert head.returncode == 0, (
+            "migrating a populated renders table failed:\n" + head.stdout + head.stderr
+        )
+
+        conn = await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql"), timeout=5)
+        try:
+            status = await conn.fetchval("SELECT upload_status FROM renders LIMIT 1")
+        finally:
+            await conn.close()
+        assert status == "pending", "existing rows must be backfilled, got %r" % status
+    finally:
+        maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+        try:
+            await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}_data"')
+        finally:
+            await maint.close()

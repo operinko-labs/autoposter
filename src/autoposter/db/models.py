@@ -74,7 +74,12 @@ class Render(Base):
     badge_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # pending | uploaded | skipped | failed
-    upload_status: Mapped[str] = mapped_column(String(24), default="pending")
+    # server_default, not just default: `default` is Python-side only, so
+    # ADD COLUMN NOT NULL would fail against the populated renders table a
+    # deployed instance already has.
+    upload_status: Mapped[str] = mapped_column(
+        String(24), default="pending", server_default="pending"
+    )
     asset_path: Mapped[str] = mapped_column(Text)
     # pending | rendered | truncated | no_art | failed
     status: Mapped[str] = mapped_column(String(24), default="pending")
