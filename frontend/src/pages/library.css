@@ -1,0 +1,111 @@
+.library-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.library-filters label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.library-filters select {
+  font-family: inherit;
+  font-size: 14px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+}
+
+.library-filters select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tile-grid {
+  display: grid;
+  /* Tracks rather than a fixed count: the sidebar is fixed-width, so the grid
+   * is what has to absorb the window. 150px is a legible poster thumbnail. */
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 16px;
+}
+
+.tile {
+  display: block;
+  color: var(--text);
+  text-decoration: none;
+  min-width: 0;
+}
+
+.tile:hover {
+  color: var(--text-strong);
+  text-decoration: none;
+}
+
+.tile-art {
+  display: block;
+  width: 100%;
+  /* Reserved before the bytes arrive, so filling a tile does not reflow the
+   * rows below it -- which would otherwise move the grid under the pointer as
+   * each lazily-loaded image lands. */
+  aspect-ratio: 2 / 3;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  /* Title cards are 16:9 and season posters 2:3; cropping keeps every tile the
+   * same shape rather than letting one library's aspect ratio set the grid. */
+  object-fit: cover;
+}
+
+.tile:hover .tile-art {
+  border-color: var(--accent);
+}
+
+.tile-art-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: center;
+  overflow: hidden;
+}
+
+.tile-title {
+  margin-top: 8px;
+  /* Titles run long and a wrapped one would make its row taller than the rest.
+   * -webkit-line-clamp is the only cross-browser way to cap this at two lines
+   * and is supported everywhere the app targets. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.tile-sub {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.library-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 24px;
+}

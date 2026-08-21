@@ -90,6 +90,15 @@ export interface ItemsResponse {
   items: ItemSummary[];
 }
 
+/** GET /api/items/filters. Distinct values, each already sorted by the server,
+ * so the library browser's controls offer values that exist across the whole
+ * library rather than only those on the page being shown. */
+export interface ItemFiltersResponse {
+  libraries: string[];
+  kinds: string[];
+  statuses: string[];
+}
+
 export interface LoginResponse {
   token: string;
   expires_at: string;

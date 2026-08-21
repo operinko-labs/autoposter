@@ -83,6 +83,42 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   return (await response.json()) as T;
 }
 
+/** Image bytes rather than JSON, for the artwork endpoints.
+ *
+ * This exists because `<img src="/api/items/3/artwork/poster">` cannot work:
+ * `require_session` in src/autoposter/api/auth.py accepts the session only as
+ * an `Authorization: Bearer` header, and a browser sends no such header for an
+ * image it loads itself. There is no cookie to fall back on. So the bytes are
+ * fetched here, with the header, and handed to the <img> as an object URL.
+ *
+ * `null`, not a throw, for a 404: an item whose art has not been rendered yet
+ * legitimately has no file, and that is the common case in a library still
+ * being worked through -- not an error a caller should have to distinguish
+ * from a real one.
+ */
+export async function apiFetchImage(path: string): Promise<Blob | null> {
+  const headers = new Headers();
+  if (token !== null) headers.set("Authorization", `Bearer ${token}`);
+
+  const response = await fetch(path, { headers });
+
+  if (response.status === 401) {
+    // Same contract as apiFetch: the session is dead, so drop it and let the
+    // one subscriber route to the login form.
+    setToken(null);
+    onUnauthorized?.();
+    throw new ApiError(401, "not authenticated");
+  }
+
+  if (response.status === 404) return null;
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessage(response));
+  }
+
+  return await response.blob();
+}
+
 async function errorMessage(response: Response): Promise<string> {
   try {
     const body = await response.json();

@@ -8,6 +8,8 @@ import "./shell.css";
  * runtime in a cluster-internal deployment. */
 const ICONS: Record<string, string> = {
   dashboard: "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z",
+  library:
+    "M4 2h16a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm2 2v2h2V4H6zm10 0v2h2V4h-2zM6 8v8h12V8H6zm0 10v2h2v-2H6zm10 0v2h2v-2h-2z",
   collections:
     "M4 6H2v14a2 2 0 0 0 2 2h14v-2H4V6zm16-4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z",
   failures:
@@ -18,6 +20,7 @@ const ICONS: Record<string, string> = {
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: "dashboard", end: true },
+  { to: "/library", label: "Library", icon: "library", end: false },
   { to: "/collections", label: "Collections", icon: "collections", end: false },
   { to: "/failures", label: "Failures", icon: "failures", end: false },
   { to: "/settings", label: "Settings", icon: "settings", end: false },

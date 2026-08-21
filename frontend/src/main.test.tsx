@@ -100,6 +100,7 @@ it("mounts the routed shell when a session already exists", async () => {
   const root = await mountMain();
 
   expect(screen.getByRole("link", { name: "Dashboard" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Library" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Failures" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
