@@ -69,7 +69,9 @@ def _app_with_spa(session_factory, dist):
     return app
 
 
-async def _raw_asgi_get(app, raw_path: str) -> tuple[int, dict[bytes, bytes], bytes]:
+async def _raw_asgi_get(
+    app, raw_path: str, headers: dict[str, str] | None = None
+) -> tuple[int, dict[bytes, bytes], bytes]:
     """GET `raw_path` verbatim, with no client-side normalisation.
 
     httpx canonicalises dot segments as it builds the URL --
@@ -77,7 +79,16 @@ async def _raw_asgi_get(app, raw_path: str) -> tuple[int, dict[bytes, bytes], by
     anything asserting on traversal has to bypass it or it is only testing
     httpx. This speaks ASGI directly instead: the scope carries the path
     exactly as an attacker's client would put it on the wire.
+
+    ``headers`` is for callers whose target sits behind the session
+    dependency (tests/test_api_artwork.py): without a token those would 401
+    before the handler ever ran, and a traversal test that stops at the auth
+    layer proves nothing about what the handler would have done with the path.
     """
+    extra = [
+        (name.lower().encode("utf-8"), value.encode("utf-8"))
+        for name, value in (headers or {}).items()
+    ]
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -88,7 +99,7 @@ async def _raw_asgi_get(app, raw_path: str) -> tuple[int, dict[bytes, bytes], by
         "raw_path": raw_path.encode("utf-8"),
         "query_string": b"",
         "root_path": "",
-        "headers": [(b"host", b"test")],
+        "headers": [(b"host", b"test"), *extra],
         "client": ("127.0.0.1", 12345),
         "server": ("test", 80),
     }

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from autoposter.api.artwork import router as artwork_router
 from autoposter.api.auth import (
     create_session,
     hash_password,
@@ -58,6 +59,11 @@ def _escape_like(value: str) -> str:
 
 
 router = APIRouter(prefix="/api")
+
+# Image bytes live in their own module: they are the only endpoints here that
+# touch the filesystem, and the containment rules that go with that do not
+# belong scattered through the JSON handlers.
+router.include_router(artwork_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
