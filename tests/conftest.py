@@ -82,6 +82,19 @@ def config_badges_disabled():
     return cfg
 
 
+@pytest.fixture
+def config_factory():
+    """A config with the given attribute overrides applied to the example config."""
+
+    def make(**overrides):
+        cfg = load_config(EXAMPLE_CONFIG)
+        for key, value in overrides.items():
+            setattr(cfg, key, value)
+        return cfg
+
+    return make
+
+
 def session_factory_for(session):
     """Adapt the function-scoped test session to ProviderCache's factory API."""
     from contextlib import asynccontextmanager
