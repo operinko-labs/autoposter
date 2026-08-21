@@ -12,11 +12,17 @@ and download a release for the item -- across the whole batch this call
 registers. Every payload built here pins it to ``False``.
 """
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.arr.client import ArrClient, ArrKind
 from autoposter.arr.paths import map_path
+from autoposter.db.models import MediaItem
+from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import parse_guids
+from autoposter.queue.jobs import enqueue
 
 logger = logging.getLogger(__name__)
 
@@ -163,3 +169,66 @@ async def sync_section(
         skipped_no_id=skipped_no_id, skipped_no_path=skipped_no_path,
         failed=failed, titles=titles,
     )
+
+
+def _as_int(value: str | None) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+async def enqueue_unknown_items(
+    session: AsyncSession, section, kind: str, batch_size: int = 500
+) -> int:
+    """Enqueue every Plex item in ``section`` this service has never recorded.
+
+    Independent of Radarr/Sonarr: an item with no ``media_items`` row was
+    never picked up by a webhook, so this is what makes the library
+    self-correct without waiting for one. Capped at ``batch_size`` for the
+    same reason the ratings-drift sweep is -- on a first run against a fresh
+    database every item is unknown, and enqueuing the whole library at once
+    would swamp the worker pool and every provider. Successive runs work
+    through the rest.
+
+    The comparison against ``media_items`` is one query -- an anti-join over
+    every rating key in the section -- not one query per item. Dedupe is left
+    to ``enqueue``'s own ``dedupe_key`` convention, so a second run before the
+    first pass's jobs have drained does not queue anything twice.
+    """
+    items = section.all()
+    if not items:
+        return 0
+
+    rating_keys = [str(item.ratingKey) for item in items]
+    known = set(
+        (
+            await session.execute(
+                select(MediaItem.rating_key).where(MediaItem.rating_key.in_(rating_keys))
+            )
+        ).scalars()
+    )
+
+    enqueued = 0
+    for item in items:
+        if enqueued >= batch_size:
+            break
+        if str(item.ratingKey) in known:
+            continue
+
+        guids = parse_guids([g.id for g in getattr(item, "guids", None) or []])
+        intent = RenderIntent(
+            kind=kind,
+            title=item.title,
+            tmdb_id=_as_int(guids.get("tmdb")),
+            tvdb_id=_as_int(guids.get("tvdb")),
+            imdb_id=guids.get("imdb"),
+            year=getattr(item, "year", None),
+        )
+        job_id = await enqueue(
+            session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key,
+        )
+        if job_id is not None:
+            enqueued += 1
+
+    return enqueued
