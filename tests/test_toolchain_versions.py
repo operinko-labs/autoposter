@@ -9,7 +9,7 @@ is one file disagreeing with another about which version is meant. CI ran the
 whole suite on Python 3.13 for two phases while the image shipped 3.14, so
 nothing verified the interpreter production actually runs.
 
-Five files declare the toolchain, and they have to agree:
+Six files declare the toolchain, and they have to agree:
 
 - ``Dockerfile`` -- the Python and Node that actually ship.
 - ``.forgejo/workflows/ci.yml`` -- the Python the suite is proven on, the Node
@@ -17,6 +17,7 @@ Five files declare the toolchain, and they have to agree:
   migration check run against.
 - ``pyproject.toml`` -- which Pythons an install is permitted on.
 - ``frontend/package.json`` -- which Node ``npm ci`` expects.
+- ``frontend/.npmrc`` -- whether ``npm ci`` enforces that or merely mentions it.
 - ``docker-compose.yml`` -- the developer database, which must be the same
   PostgreSQL as CI's.
 
@@ -209,10 +210,11 @@ def test_package_json_pins_node_exactly():
     """``engines`` is the third declaration of the same fact, and a range there
     re-opens what the other two just closed.
 
-    Note what this does and does not buy: npm's ``engine-strict`` is off by
-    default, so a mismatch is an ``EBADENGINE`` warning rather than a refusal.
-    The value of pinning it is that it states one version instead of a range,
-    and that this test then holds it to the one the image builds with.
+    On its own this would buy less than it looks: npm's ``engine-strict`` is
+    off by default, so a mismatch is an ``EBADENGINE`` warning rather than a
+    refusal. ``frontend/.npmrc`` is what closes that, and
+    ``test_npm_refuses_the_wrong_node_rather_than_warning`` below holds it
+    there -- the pair is what makes this line enforceable rather than advisory.
     """
     image = _dockerfile_version("node")
     declared = json.loads(PACKAGE_JSON.read_text(encoding="utf-8"))["engines"]["node"]
@@ -238,6 +240,55 @@ def test_the_lockfile_mirrors_the_declared_engines():
     )
 
 
+def test_npm_refuses_the_wrong_node_rather_than_warning():
+    """Without this the pin above is a note, not a rule.
+
+    ``engine-strict`` defaults to false, so ``npm ci`` under a different Node
+    prints ``EBADENGINE`` and then installs anyway -- node:24-alpine warned and
+    resolved all 116 packages regardless. ``frontend/.npmrc`` turns that into
+    exit 1, so every install of this frontend happens on the one Node the image
+    builds with instead of merely being told about it.
+    """
+    npmrc = REPO / "frontend" / ".npmrc"
+    assert npmrc.is_file(), (
+        "frontend/.npmrc is missing, so npm's engine-strict is back to its "
+        "default of false and engines.node is only a warning again"
+    )
+    settings = [
+        line.split("#", 1)[0].split(";", 1)[0].strip()
+        for line in npmrc.read_text(encoding="utf-8").splitlines()
+    ]
+    assert "engine-strict=true" in [s.replace(" ", "") for s in settings if s], (
+        "frontend/.npmrc does not set engine-strict=true; engines.node is then "
+        "advisory and a mismatched Node installs with a warning"
+    )
+
+
+def test_the_image_build_reads_the_npmrc():
+    """The frontend stage copies the manifests by name, so a file added beside
+    them is invisible to the install unless it is named too.
+
+    The later ``COPY frontend/ ./`` does pick it up, but that runs *after*
+    ``npm ci`` -- leaving the one build that actually ships the bundle as the
+    single place the rule would not apply, which is exactly backwards.
+    """
+    lines = DOCKERFILE.read_text(encoding="utf-8").splitlines()
+    copied = next(
+        (i for i, line in enumerate(lines) if re.match(r"COPY.*frontend/\.npmrc", line)),
+        None,
+    )
+    installed = next(
+        (i for i, line in enumerate(lines) if re.match(r"RUN\s+npm ci", line)),
+        None,
+    )
+    assert installed is not None, "the Dockerfile no longer runs `npm ci` at all"
+    assert copied is not None and copied < installed, (
+        "the Dockerfile runs `npm ci` without having copied frontend/.npmrc "
+        "into the frontend stage first, so the image build installs with "
+        "engine-strict off while everywhere else has it on"
+    )
+
+
 def test_postgres_is_one_exact_version_everywhere():
     """CI and the developer database have to be the same PostgreSQL.
 
@@ -256,8 +307,7 @@ def test_postgres_is_one_exact_version_everywhere():
         "change and Renovate has one place to update"
     )
     assert "postgres:${{ env.POSTGRES_VERSION }}-alpine" in workflow_text, (
-        "no postgres image is started in the workflow at all; this guard proves "
-        "nothing as written"
+        "no postgres image is started in the workflow at all; this guard proves nothing as written"
     )
 
     version = _workflow_env("POSTGRES_VERSION")
@@ -266,9 +316,9 @@ def test_postgres_is_one_exact_version_everywhere():
         "patch so CI, the migration check and the developer database are one server"
     )
 
-    compose_image = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"][
-        "postgres"
-    ]["image"]
+    compose_image = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["postgres"][
+        "image"
+    ]
     assert compose_image == f"postgres:{version}-alpine", (
         f"docker-compose.yml runs {compose_image} while CI runs "
         f"postgres:{version}-alpine; develop and verify against one server"

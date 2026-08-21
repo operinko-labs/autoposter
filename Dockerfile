@@ -7,12 +7,16 @@
 FROM node:26.7.0-alpine AS frontend
 WORKDIR /frontend
 # The manifests alone first: a change to src/ then reuses this layer instead of
-# re-installing every dependency.
-COPY frontend/package.json frontend/package-lock.json ./
+# re-installing every dependency. .npmrc belongs in this copy rather than the
+# one below it: npm reads the .npmrc in the directory it installs from, so
+# arriving with `COPY frontend/ ./` after `npm ci` would be too late, and the
+# engine-strict rule would hold everywhere except the one build that ships.
+COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
 # `npm ci`, never `npm install`. It installs exactly what package-lock.json
 # pins and fails outright on a mismatch, where `npm install` would quietly
 # resolve something newer and rewrite the lockfile -- the skew that broke this
-# repository three times over.
+# repository three times over. .npmrc's engine-strict makes engines.node just
+# as absolute: a base image on any other patch fails here instead of warning.
 RUN npm ci
 COPY frontend/ ./
 # `npm run build` is `tsc --noEmit && vite build`, so a type error fails the

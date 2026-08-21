@@ -30,10 +30,19 @@ section 6a for what's provisional and what's still deferred to a later phase.
 Building it locally requires **Node 26.7.0** — the exact patch, not a floor.
 `frontend/package.json`'s `engines.node` is the declaration; the Dockerfile
 stage and CI name the same patch, and `tests/test_toolchain_versions.py` fails
-if any of them drift apart:
+if any of them drift apart. `frontend/.npmrc` sets `engine-strict=true`, so any
+other Node makes `npm ci` exit 1 instead of printing an `EBADENGINE` warning
+and installing anyway:
 
 ```bash
 cd frontend && npm ci && npm run build
+```
+
+On a host with a different Node, run that build in the pinned image instead --
+no local toolchain, same result:
+
+```bash
+docker run --rm -v "$PWD/frontend:/frontend" -w /frontend node:26.7.0-alpine sh -c "npm ci && npm run build"
 ```
 
 This emits `frontend/dist/`, which the app serves automatically if present —
