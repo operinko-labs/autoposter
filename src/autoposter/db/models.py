@@ -42,6 +42,11 @@ class MediaItem(Base):
     episode_number: Mapped[int | None] = mapped_column(Integer)
     root_folder: Mapped[str | None] = mapped_column(Text)
     file_path: Mapped[str | None] = mapped_column(Text)
+    # When the ratings-drift sweep last *tried* this item, as opposed to
+    # ItemFacts.fetched_at, which records only when a gather succeeded. An
+    # item that can never be resolved would otherwise stay permanently at the
+    # front of every sweep and starve everything behind it.
+    facts_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

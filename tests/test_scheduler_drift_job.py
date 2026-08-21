@@ -131,6 +131,54 @@ async def test_episodes_are_not_enqueued(session):
     assert await _titles(session) == ["A Show"]
 
 
+async def test_a_permanently_failing_item_does_not_starve_the_others(session):
+    """An item that can never be resolved -- no external ids, gone from Plex,
+    a provider that keeps erroring -- never gets a ``fetched_at``, so ordering
+    on ``fetched_at`` alone puts it at the front of every sweep for ever.
+    ``drift_batch_size`` of those and nothing else is ever revisited again,
+    which is exactly what the sweep exists to prevent.
+    """
+    await _make_item(session, title="Stuck", tmdb_id=1)
+    other = await _make_item(session, title="Other", tmdb_id=2)
+    await _make_facts(session, other.id, age_days=10)
+
+    assert await sweep_stale_facts(session, max_age_days=7, batch_size=1) == 1
+    assert await _titles(session) == ["Stuck"]
+
+    # "Stuck" is still the most stale by fetched_at -- it still has none --
+    # but it has just been attempted, so the next sweep must move on.
+    assert await sweep_stale_facts(session, max_age_days=7, batch_size=1) == 1
+    assert await _titles(session) == ["Stuck", "Other"]
+
+
+async def test_an_attempted_item_comes_round_again_behind_the_others(session):
+    """Deprioritised, not dropped. Once everything else has been attempted
+    too, the failing item is retried like anything else -- the sweep still
+    eventually revisits every item, which is the whole point of it."""
+    stuck = await _make_item(session, title="Stuck", tmdb_id=1)
+    other = await _make_item(session, title="Other", tmdb_id=2)
+    await _make_facts(session, other.id, age_days=10)
+
+    await sweep_stale_facts(session, max_age_days=7, batch_size=1)
+    await sweep_stale_facts(session, max_age_days=7, batch_size=1)
+    assert await _titles(session) == ["Stuck", "Other"]
+
+    # Both have been attempted now; let the queue drain and age "Stuck"'s
+    # attempt so it is once again the least-recently-touched of the two.
+    await session.execute(text("UPDATE jobs SET state = 'done'"))
+    await session.execute(
+        text(
+            "UPDATE media_items SET facts_attempted_at = now() - interval '30 days'"
+            " WHERE id = :id"
+        ),
+        {"id": stuck.id},
+    )
+    await session.commit()
+
+    assert await sweep_stale_facts(session, max_age_days=7, batch_size=1) == 1
+    assert await _titles(session) == ["Stuck", "Other", "Stuck"]
+
+
 async def test_make_drift_job_wraps_sweep_stale_facts(session):
     item = await _make_item(session, title="Stale Movie")
     await _make_facts(session, item.id, age_days=10)

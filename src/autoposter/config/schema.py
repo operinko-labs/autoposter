@@ -207,6 +207,17 @@ class CleanupConfig(BaseModel):
     # collections.apply_to_plex: report what would move, change nothing until
     # the operator opts in.
     apply: bool = False
+    # Sanity caps on the result of a sweep. If assets_root is repointed, a
+    # volume is remounted, library_folders is toggled (which changes the whole
+    # naming scheme) or renders is only partly restored, then *every*
+    # directory looks orphaned and the non-empty-renders guard still passes.
+    # Past either cap the pass refuses and reports the numbers instead of
+    # relocating the library. 500 sits far above real weekly churn on a
+    # ~16,000-item library (dozens of directories) yet far below any plausible
+    # "the tree moved" figure; the share cap catches the same failure on a
+    # small tree, where no useful absolute cap would ever fire.
+    max_orphans: int = 500
+    max_orphan_share: float = 0.25
 
 
 class SchedulerConfig(BaseModel):

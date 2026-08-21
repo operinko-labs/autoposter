@@ -197,6 +197,46 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   `cleanup.apply` above, which already defaults to `false` (dry run: report
   what would move) because this pass moves the operator's files.
 
+### Orphaned-asset cleanup: what it can and cannot find
+
+The cleanup works at **directory** granularity: it moves an asset *folder*
+whose files no `renders` row references. That has one consequence worth
+knowing before you enable it.
+
+**With `library_folders: false` the cleanup finds nothing at all.** That
+setting puts every asset directly in `assets_root` as a flat pile of files
+rather than one folder per item, so there are no per-item directories to
+find orphaned, and `assets_root` itself is deliberately never a candidate
+(treating it as its own orphan would move the entire tree in one go). The
+pass will run on its cadence, report `0 of 0`, and change nothing. This is
+not a misconfiguration to fix — it is simply that the feature is inert in
+that layout, so do not read a clean cleanup report as evidence that nothing
+is orphaned. If you want the cleanup to do anything, run with
+`library_folders: true`.
+
+Two safety caps bound what one pass can do, because several ordinary
+operational events make *every* directory look orphaned at once — repointing
+`assets_root`, remounting the volume somewhere else, toggling
+`library_folders` (which changes the whole naming scheme), or restoring only
+part of the database:
+
+- `cleanup.max_orphans` (default `500`) — refuse the pass if more than this
+  many directories look orphaned.
+- `cleanup.max_orphan_share` (default `0.25`) — refuse the pass if more than
+  this share of the scanned tree does, which catches the same failure on a
+  library too small for the absolute cap to fire. Only applied once the tree
+  has at least 20 directories, below which a share means nothing.
+
+A refusal is recorded in `scheduled_runs.last_detail` with the real numbers
+(`refused: 11900 of 12000 asset directory(ies) look orphaned …`). If that
+count is genuinely correct, raise the cap deliberately for one run rather
+than leaving it raised.
+
+Nothing is ever deleted: orphans move to `backup_root` keeping their path
+relative to `assets_root`. If a destination already exists there from an
+earlier pass, the new copy lands beside it with a `.1`, `.2` … suffix rather
+than being moved *inside* it.
+
 The IMDb dataset refresh (`operations.imdb_refresh_hours`) deliberately does
 **not** run on this scheduler — it keeps its own separate background loop.
 Its trigger is remote dataset staleness plus a miss-triggered cooldown path

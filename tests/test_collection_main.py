@@ -13,9 +13,10 @@ libraries from being tried.
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from sqlalchemy import select
 
-from autoposter.collections.service import reconcile_libraries
+from autoposter.collections.service import reconcile_libraries, summary_has_failure
 from autoposter.db.models import ManagedCollection
 
 LABEL = "autoposter"
@@ -119,3 +120,79 @@ async def test_a_failure_on_the_second_library_does_not_roll_back_the_first(
             "by a failure on the second -- or a bare commit() at the end of the "
             "loop would never run at all"
         )
+
+
+async def test_a_failed_library_is_visible_to_a_caller_watching_the_exit_code(session):
+    """``reconcile_libraries`` contains a failure rather than raising, so the
+    summary string is the only place the outcome survives. The one-shot CLI
+    turns that into an exit code -- without it ``python -m
+    autoposter.collections`` exits 0 after a library failed and a cron
+    wrapper watching the exit code never sees it."""
+    server = BreaksOnSecondLibrary({"Movies": FakeSection({"R", "17"})})
+
+    async with httpx.AsyncClient() as http:
+        failed = await reconcile_libraries(session, server, _config(["Movies", "TV Shows"]), http)
+        clean = await reconcile_libraries(session, server, _config(["Movies"]), http)
+
+    assert summary_has_failure(failed) is True
+    assert summary_has_failure(clean) is False
+
+
+async def test_the_cli_exits_non_zero_when_a_library_failed(monkeypatch):
+    """The exit code itself, not just the predicate behind it."""
+    import autoposter.collections.__main__ as cli
+
+    async def fake_reconcile(session, server, config, http):
+        return "Movies: 3 action(s); TV Shows: failed (simulated)"
+
+    _stub_cli_dependencies(monkeypatch, cli, fake_reconcile)
+
+    with pytest.raises(SystemExit) as exit_info:
+        await cli.main()
+    assert exit_info.value.code == 1
+
+
+async def test_the_cli_exits_zero_when_every_library_succeeded(monkeypatch):
+    import autoposter.collections.__main__ as cli
+
+    async def fake_reconcile(session, server, config, http):
+        return "Movies: 3 action(s); TV Shows: 0 action(s)"
+
+    _stub_cli_dependencies(monkeypatch, cli, fake_reconcile)
+
+    await cli.main()  # must not raise SystemExit
+
+
+def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile):
+    """Replace everything ``main()`` touches outside its own logic: config
+    loading, the Plex connection, the engine and the reconcile itself. What
+    is under test here is only what ``main()`` does with the summary."""
+
+    class _NullSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _NullEngine:
+        async def dispose(self):
+            pass
+
+    monkeypatch.setattr(
+        cli, "load_config",
+        lambda path: SimpleNamespace(
+            collections=SimpleNamespace(enabled=True),
+            plex=SimpleNamespace(url="http://plex.invalid"),
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "Secrets",
+        SimpleNamespace(
+            from_env=lambda: SimpleNamespace(plex_token="t", database_url="postgresql://x")
+        ),
+    )
+    monkeypatch.setattr(cli, "PlexServer", lambda url, token: object())
+    monkeypatch.setattr(cli, "make_engine", lambda url: _NullEngine())
+    monkeypatch.setattr(cli, "make_session_factory", lambda engine: _NullSession)
+    monkeypatch.setattr(cli, "reconcile_libraries", fake_reconcile)

@@ -26,6 +26,22 @@ logger = logging.getLogger(__name__)
 
 LIBRARY_TYPES = {"movie": "Movie", "show": "Show"}
 
+# How a failed library is written into the summary. Kept as a constant because
+# ``summary_has_failure`` reads it back out: the one-shot CLI must exit
+# non-zero when any library failed, and a cron wrapper watching the exit code
+# is the only thing that will ever notice.
+FAILURE_MARKER = ": failed ("
+
+
+def summary_has_failure(summary: str) -> bool:
+    """True when a ``reconcile_libraries`` summary reports any failed library.
+
+    Failures are contained per library rather than raised -- one bad library
+    must not stop the rest -- so the return value is the only place the
+    outcome survives. Callers that need an exit code ask here.
+    """
+    return FAILURE_MARKER in summary
+
 
 async def reconcile_libraries(
     session: AsyncSession, server, config: Config, http: httpx.AsyncClient
@@ -66,6 +82,6 @@ async def reconcile_libraries(
         except Exception as error:
             await session.rollback()
             logger.exception("failed reconciling %r", name)
-            summaries.append("%s: failed (%s)" % (name, error))
+            summaries.append("%s%s%s)" % (name, FAILURE_MARKER, error))
 
     return "; ".join(summaries)

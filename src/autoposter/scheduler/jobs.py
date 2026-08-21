@@ -7,15 +7,16 @@ apart, and the copy nobody watches (the scheduled one) is the one that would
 drift silently.
 """
 import asyncio
+import itertools
 import logging
 import os
 import shutil
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import httpx
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections.service import reconcile_libraries
@@ -75,17 +76,38 @@ async def sweep_stale_facts(session: AsyncSession, max_age_days: float, batch_si
     would swamp the worker pool and hammer every provider -- so only the
     oldest ``batch_size`` candidates are taken, leaving the rest for the
     next run.
+
+    Ordering is by the *attempt*, not by ``fetched_at`` alone.
+    ``gather_facts`` stamps ``fetched_at`` only when it succeeds, so an item
+    that cannot be resolved at all -- no external ids, gone from Plex, a
+    provider that keeps erroring -- would keep its NULL or ancient timestamp
+    and sort to the front of every sweep forever. Once ``batch_size`` such
+    items exist, nothing else is ever revisited and the sweep stops doing the
+    one thing it is for. So every selected item's ``facts_attempted_at`` is
+    stamped here, whether or not the attempt later succeeds, and the sort key
+    is the later of the two timestamps: a failing item goes to the back of
+    the queue like anything else, and simply comes round again in time.
     """
     cutoff = func.now() - func.make_interval(0, 0, 0, 0, 0, 0, max_age_days * 86400)
+    # GREATEST ignores NULLs, so an item that has neither been fetched nor
+    # attempted still sorts first -- as the most stale of all.
+    last_touched = func.greatest(ItemFacts.fetched_at, MediaItem.facts_attempted_at)
     stmt = (
         select(MediaItem)
         .outerjoin(ItemFacts, ItemFacts.item_id == MediaItem.id)
         .where(MediaItem.kind.in_(("movie", "show")))
         .where(or_(ItemFacts.fetched_at.is_(None), ItemFacts.fetched_at < cutoff))
-        .order_by(ItemFacts.fetched_at.asc().nulls_first())
+        .order_by(last_touched.asc().nulls_first())
         .limit(batch_size)
     )
     items = (await session.execute(stmt)).scalars().all()
+
+    if items:
+        await session.execute(
+            update(MediaItem)
+            .where(MediaItem.id.in_([item.id for item in items]))
+            .values(facts_attempted_at=func.now())
+        )
 
     enqueued = 0
     for item in items:
@@ -131,7 +153,34 @@ def make_drift_job(config: Config) -> Job:
     )
 
 
-async def find_orphaned_assets(session: AsyncSession, assets_root: Path) -> list[Path]:
+@dataclass(frozen=True)
+class OrphanScan:
+    """What one sweep of ``assets_root`` found.
+
+    ``scanned`` is every directory holding at least one file -- the pool
+    ``orphaned`` was chosen from. The caller needs both to judge whether the
+    result is plausible: "40 of 12,000" is routine churn, "11,900 of 12,000"
+    means the database and the filesystem disagree about where assets live.
+    """
+
+    orphaned: list[Path]
+    scanned: int
+
+
+@dataclass(frozen=True)
+class MoveOutcome:
+    """Counts from one ``move_to_backup`` batch.
+
+    ``failed`` is reported rather than raised: a single unmovable directory
+    must not throw away the record of the ones already moved, which is what
+    letting ``shutil.Error`` escape mid-loop used to do.
+    """
+
+    moved: int
+    failed: int
+
+
+async def find_orphaned_assets(session: AsyncSession, assets_root: Path) -> OrphanScan:
     """Return every asset directory under ``assets_root`` no ``renders`` row references.
 
     Matches on the directory, not individual files: an item's asset folder
@@ -139,40 +188,135 @@ async def find_orphaned_assets(session: AsyncSession, assets_root: Path) -> list
     directory is orphaned only when no render's ``asset_path`` is beneath it
     at all -- one surviving artifact is enough to keep the whole folder.
 
-    The walk runs off the event loop: it can touch tens of thousands of
-    files, which would stall the worker pool and the Plex liveness probe.
+    Orphan-hood is decided by set membership, not by comparing every
+    directory against every render path. Every ancestor of every recorded
+    ``asset_path`` goes into one ``kept`` set, and a directory is orphaned
+    exactly when it is not in that set: linear in (directories + render
+    paths) rather than the product of the two. The product form was ~2.5e8
+    ``is_relative_to`` calls for this library -- minutes of wall time.
+
+    *All* of it -- the walk, the resolving and the matching -- runs off the
+    event loop through one ``asyncio.to_thread``. The worker pool and the
+    Plex liveness probe share that loop, and a stall long enough to make the
+    probe miss its beat gets the pod killed.
+
+    Both sides are ``resolve()``d inside that thread, so an ``asset_path``
+    recorded through a symlink or with a ``..`` segment still matches the
+    directory the walk reports rather than looking orphaned.
+
+    ``assets_root`` itself is never a candidate, even when it directly
+    contains files: it is not an orphan of itself, and treating it as one
+    would make ``relative_to`` yield ``Path('.')`` and move the entire asset
+    tree in a single ``shutil.move``.
     """
     rows = (await session.execute(select(Render.asset_path))).all()
-    render_paths = [Path(path) for (path,) in rows]
+    recorded = [path for (path,) in rows]
 
-    def _walk() -> list[Path]:
-        found = []
-        for dirpath, _dirnames, filenames in os.walk(assets_root):
-            if filenames:
-                found.append(Path(dirpath))
-        return found
+    def _scan() -> OrphanScan:
+        root = assets_root.resolve()
+        kept: set[Path] = set()
+        for raw in recorded:
+            kept.update(Path(raw).resolve().parents)
 
-    asset_dirs = await asyncio.to_thread(_walk)
+        orphaned: list[Path] = []
+        scanned = 0
+        for dirpath, _dirnames, filenames in os.walk(root):
+            if not filenames:
+                continue
+            directory = Path(dirpath).resolve()
+            if directory == root:
+                continue
+            scanned += 1
+            if directory not in kept:
+                orphaned.append(directory)
+        return OrphanScan(orphaned=orphaned, scanned=scanned)
 
-    return [
-        directory
-        for directory in asset_dirs
-        if not any(render_path.is_relative_to(directory) for render_path in render_paths)
-    ]
+    return await asyncio.to_thread(_scan)
 
 
-def move_to_backup(paths: list[Path], assets_root: Path, backup_root: Path) -> int:
+def _free_destination(destination: Path) -> Path:
+    """Return ``destination`` if nothing is there, else the same name with a
+    numeric suffix.
+
+    ``shutil.move`` onto an existing *directory* moves the source *inside*
+    it, so a second cleanup pass over a re-created folder would silently
+    produce ``backup/Movies/X/X``; a third raises ``shutil.Error``. A
+    distinct destination keeps each pass's copy separate and inspectable.
+    """
+    if not destination.exists():
+        return destination
+    for suffix in itertools.count(1):
+        candidate = destination.with_name(f"{destination.name}.{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def move_to_backup(paths: list[Path], assets_root: Path, backup_root: Path) -> MoveOutcome:
     """Move each directory in ``paths`` to ``backup_root``, preserving its path
     relative to ``assets_root``. Never deletes anything -- ``shutil.move`` is a
-    rename (or copy-then-source-removal on the same call, not this module's)."""
+    rename (or copy-then-source-removal on the same call, not this module's).
+
+    A directory that cannot be moved is logged and counted, not raised: the
+    remaining orphans are still attempted and the caller still learns how
+    many moved.
+    """
+    root = assets_root.resolve()
     moved = 0
+    failed = 0
     for path in paths:
-        relative = path.relative_to(assets_root)
-        destination = backup_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(path), str(destination))
-        moved += 1
-    return moved
+        try:
+            resolved = path.resolve()
+            if resolved == root or root not in resolved.parents:
+                # Belt and braces against the worst outcome this module has:
+                # ``assets_root.relative_to(assets_root)`` is ``Path('.')``,
+                # ``backup_root / '.'`` is ``backup_root``, and that one move
+                # relocates the entire asset tree.
+                raise ValueError(f"{path} is not a directory inside {root}")
+            relative = resolved.relative_to(root)
+            destination = _free_destination(backup_root / relative)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(path), str(destination))
+        except (OSError, ValueError, shutil.Error):
+            failed += 1
+            logger.warning("cleanup: could not move %s to backup", path, exc_info=True)
+        else:
+            moved += 1
+    return MoveOutcome(moved=moved, failed=failed)
+
+
+# The share check needs a large enough sample to mean anything: "2 of 3
+# directories are orphaned" is a normal small tree, not evidence of a
+# misconfiguration. Below this many directories only the absolute cap applies.
+SHARE_CHECK_MIN_DIRS = 20
+
+
+def _implausible_orphan_count(orphaned: int, scanned: int, cleanup) -> str | None:
+    """Return a refusal summary if this many orphans cannot be believed.
+
+    Two caps, either of which trips. The absolute one catches a large tree
+    that has gone wrong; the share one catches a small tree, where any
+    absolute cap set high enough to be useful on the large tree would never
+    fire. Both report the real numbers, because the operator's next question
+    is always "how far off is it".
+    """
+    if orphaned and orphaned > cleanup.max_orphans:
+        return (
+            f"refused: {orphaned} of {scanned} asset directory(ies) look orphaned, "
+            f"more than the safety cap of {cleanup.max_orphans}; this usually means "
+            "assets_root, the mount or library_folders changed, or renders was "
+            "only partly restored -- change nothing"
+        )
+    share = orphaned / scanned if scanned else 0.0
+    if scanned >= SHARE_CHECK_MIN_DIRS and share > cleanup.max_orphan_share:
+        return (
+            f"refused: {orphaned} of {scanned} asset directory(ies) look orphaned "
+            f"({share:.0%}), more than the safety cap of "
+            f"{cleanup.max_orphan_share:.0%}; this usually means assets_root, the "
+            "mount or library_folders changed, or renders was only partly "
+            "restored -- change nothing"
+        )
+    return None
 
 
 def make_cleanup_job(config: Config) -> Job:
@@ -183,6 +327,17 @@ def make_cleanup_job(config: Config) -> Job:
     a scheduled pass would then move the entire asset tree to the backup
     directory in one go. That check happens here, before
     ``find_orphaned_assets`` is ever called.
+
+    An empty table is only the loudest version of that failure, though. Rows
+    can exist and still describe a *different* tree than the one on disk --
+    ``assets_root`` repointed, a volume remounted elsewhere, ``library_folders``
+    toggled (which changes the whole naming scheme), a partial database
+    restore. Every directory then looks orphaned and the empty-table guard
+    passes happily. So the result is sanity-checked too: past
+    ``cleanup.max_orphans`` directories, or past ``cleanup.max_orphan_share``
+    of the tree, "almost everything is garbage" is read as "something is
+    wrong" and the pass refuses with the actual numbers rather than treating
+    it as a work order.
 
     Dry run by default (``config.cleanup.apply``), the same posture as
     ``badges.upload_to_plex`` and ``collections.apply_to_plex``.
@@ -197,14 +352,25 @@ def make_cleanup_job(config: Config) -> Job:
             )
 
         assets_root = Path(config.assets_root)
-        orphaned = await find_orphaned_assets(session, assets_root)
+        scan = await find_orphaned_assets(session, assets_root)
+        orphaned, scanned = scan.orphaned, scan.scanned
+
+        refusal = _implausible_orphan_count(len(orphaned), scanned, config.cleanup)
+        if refusal is not None:
+            return refusal
 
         if not config.cleanup.apply:
-            return f"dry run: {len(orphaned)} orphaned directory(ies) would move to backup"
+            return (
+                f"dry run: {len(orphaned)} of {scanned} asset directory(ies) "
+                "would move to backup"
+            )
 
         backup_root = Path(config.backup_root)
-        moved = await asyncio.to_thread(move_to_backup, orphaned, assets_root, backup_root)
-        return f"moved {moved} orphaned directory(ies) to backup"
+        outcome = await asyncio.to_thread(move_to_backup, orphaned, assets_root, backup_root)
+        summary = f"moved {outcome.moved} of {len(orphaned)} orphaned directory(ies) to backup"
+        if outcome.failed:
+            summary += f"; {outcome.failed} could not be moved (see the log)"
+        return summary
 
     return Job(
         name="asset_cleanup",

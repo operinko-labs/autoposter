@@ -48,6 +48,8 @@ collections:
 
 cleanup:
   apply: false # dry run by default: report what would move, change nothing
+  max_orphans: 500 # refuse the pass if more than this many directories look orphaned
+  max_orphan_share: 0.25 # ...or more than this share of the tree; "almost everything is garbage" means something is wrong
 
 scheduler:
   enabled: true # run the periodic passes (collections reconcile, drift sweep, asset cleanup)

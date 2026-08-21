@@ -21,7 +21,7 @@ from pathlib import Path
 import httpx
 from plexapi.server import PlexServer
 
-from autoposter.collections.service import reconcile_libraries
+from autoposter.collections.service import reconcile_libraries, summary_has_failure
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
@@ -49,6 +49,12 @@ async def main() -> None:
             logger.info(summary)
     finally:
         await engine.dispose()
+
+    # reconcile_libraries contains a failing library rather than raising, so
+    # without this the process exits 0 after a library failed and a cron
+    # wrapper watching the exit code never sees it.
+    if summary_has_failure(summary):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

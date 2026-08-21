@@ -12,7 +12,10 @@ import yaml
 
 from autoposter.config.schema import Config
 
-EXAMPLE = Path("config/autoposter.example.yaml")
+# Resolved from this file, not the working directory, so the suite does not
+# depend on where pytest was invoked from -- every other test file does the
+# same.
+EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
 
 def _model_for(field):
