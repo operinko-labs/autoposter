@@ -307,6 +307,39 @@ async def list_items(
     }
 
 
+@router.get("/items/filters")
+async def item_filters(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Distinct values for the library browser's filter controls, each sorted.
+
+    Computed with `DISTINCT` in SQL rather than fetched and reduced in
+    Python -- the items table runs to ~15,000 rows.
+
+    "statuses" reports `Render.status` (pending|rendered|truncated|no_art|
+    failed), not `Render.upload_status`. That is what list_items()'s own
+    `status` query parameter already filters on, and what a user picking an
+    item filter means by "status" -- whether the art rendered, not whether
+    it made it to Plex.
+
+    Must stay registered before /items/{item_id}: FastAPI matches routes in
+    registration order, and "filters" would otherwise be parsed as an
+    item_id and fail validation.
+    """
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        libraries = (
+            await session.execute(select(MediaItem.library).distinct().order_by(MediaItem.library))
+        ).scalars().all()
+        kinds = (
+            await session.execute(select(MediaItem.kind).distinct().order_by(MediaItem.kind))
+        ).scalars().all()
+        statuses = (
+            await session.execute(select(Render.status).distinct().order_by(Render.status))
+        ).scalars().all()
+    return {"libraries": libraries, "kinds": kinds, "statuses": statuses}
+
+
 @router.get("/items/{item_id}")
 async def item_detail(
     item_id: int, request: Request, _: SessionModel = Depends(require_session)
