@@ -234,6 +234,36 @@ class ImdbDatasetState(Base):
     )
 
 
+class ManagedCollection(Base):
+    """A collection this service owns.
+
+    Ownership is the whole point of this table. The Movies library holds 305
+    collections and only a small fraction are ours -- the rest are Plex's own
+    franchise collections, another tool's, or hand-made by the operator.
+    Nothing outside this table is ever modified.
+    """
+
+    __tablename__ = "managed_collections"
+    __table_args__ = (
+        UniqueConstraint("library", "title", name="uq_managed_collection_library_title"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    library: Mapped[str] = mapped_column(String(128), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    # smart | manual
+    kind: Mapped[str] = mapped_column(String(16), default="smart")
+    plex_rating_key: Mapped[str | None] = mapped_column(String(32))
+    # Hash of the desired filter and summary, so an unchanged pass writes nothing.
+    definition_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ImdbMissRefreshState(Base):
     """Rate-limit state for the miss-triggered refresh (see ``facts/imdb.py``).
 
