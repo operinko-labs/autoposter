@@ -115,7 +115,10 @@ class FakeSection:
 
 def _config(*, charts=True, awards=True, apply_to_plex=True):
     return SimpleNamespace(
-        collections=SimpleNamespace(charts=charts, awards=awards, apply_to_plex=apply_to_plex)
+        collections=SimpleNamespace(
+            charts=charts, awards=awards, apply_to_plex=apply_to_plex,
+            adopt=False, adopt_from=["Kometa"], adopt_removes_prior_label=False,
+        )
     )
 
 

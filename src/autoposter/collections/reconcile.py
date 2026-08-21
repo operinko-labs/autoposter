@@ -40,6 +40,68 @@ def has_label(collection, label: str) -> bool:
     return any(tag.tag == label for tag in (getattr(collection, "labels", None) or []))
 
 
+def prior_tool_label(collection, adopt_from: list[str]) -> str | None:
+    """Return the first label ``collection`` carries that belongs to a tool
+    being replaced, or ``None`` if it carries none of them.
+
+    Called only after ``has_label`` has already forced a ``reload()`` on this
+    same object, so this reads ``labels`` directly rather than reloading
+    again per candidate -- a collection with no label at all (the operator's
+    hand-made ones) must never match here.
+    """
+    tags = {tag.tag for tag in (getattr(collection, "labels", None) or [])}
+    for candidate in adopt_from:
+        if candidate in tags:
+            return candidate
+    return None
+
+
+def claim_ownership(collection, label: str, prior: str, remove_prior: bool) -> None:
+    """Claim a prior tool's collection by adding our ownership label.
+
+    The prior label is kept by default -- keeping both is reversible, a run
+    that strips labels is not -- and removed only when ``remove_prior`` is set.
+    """
+    collection.addLabel(label)
+    if remove_prior:
+        collection.removeLabel(prior)
+
+
+def resolve_collision(
+    collection,
+    label: str,
+    adopt: bool,
+    adopt_from: list[str],
+    remove_prior: bool,
+    dry_run: bool,
+) -> tuple[bool, str | None]:
+    """Decide what to do with an existing collection at a title collision.
+
+    Shared by both reconcilers so the ownership rule cannot drift between
+    them. Returns ``(ok, message)``: ``ok`` is ``True`` when the caller
+    should proceed to reconcile the collection normally -- it already
+    carries our label, or was just claimed -- and ``False`` for a true
+    conflict or an eligible adoption still held back by ``dry_run``.
+    ``message`` is the action to report, or ``None`` when there is nothing
+    to say (the collection was already ours).
+    """
+    if has_label(collection, label):
+        return True, None
+
+    prior = prior_tool_label(collection, adopt_from) if adopt else None
+    if prior is None:
+        return False, (
+            "conflict: %r exists without the %r label; leaving it untouched"
+            % (collection.title, label)
+        )
+
+    if dry_run:
+        return False, "would adopt %r (currently labelled %r)" % (collection.title, prior)
+
+    claim_ownership(collection, label, prior, remove_prior)
+    return True, "claimed %r (was labelled %r)" % (collection.title, prior)
+
+
 async def reconcile_content_ratings(
     session: AsyncSession,
     section,
@@ -47,6 +109,9 @@ async def reconcile_content_ratings(
     library_type: str,
     label: str,
     dry_run: bool = True,
+    adopt: bool = False,
+    adopt_from: list[str] | None = None,
+    adopt_removes_prior_label: bool = False,
 ) -> list[str]:
     """Bring this library's Common Sense collections in line with its ratings.
 
@@ -81,12 +146,14 @@ async def reconcile_content_ratings(
         wanted = definition_hash(bucket)
         collection = existing.get(bucket.title)
 
-        if collection is not None and not has_label(collection, label):
-            actions.append(
-                "conflict: %r exists without the %r label; leaving it untouched"
-                % (bucket.title, label)
+        if collection is not None:
+            ok, message = resolve_collision(
+                collection, label, adopt, adopt_from or [], adopt_removes_prior_label, dry_run,
             )
-            continue
+            if message:
+                actions.append(message)
+            if not ok:
+                continue
 
         record = stored.get(bucket.title)
         if collection is not None and record is not None and record.definition_hash == wanted:

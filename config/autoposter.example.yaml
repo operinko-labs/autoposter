@@ -46,6 +46,10 @@ collections:
     - TV Shows
   charts: true # IMDb Popular / Top 250 / Lowest Rated
   awards: true # Oscars winner collections
+  adopt: false # claim collections created by a tool being replaced; a Plex write, off by default
+  adopt_from: # labels belonging to tools being replaced
+    - Kometa
+  adopt_removes_prior_label: false # strip the prior label once claimed; keeping it is reversible, this isn't
 
 cleanup:
   apply: false # dry run by default: report what would move, change nothing

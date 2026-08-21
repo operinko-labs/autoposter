@@ -116,6 +116,10 @@ async def build_all(
     if not charts and not awards:
         return actions
 
+    adopt = config.collections.adopt
+    adopt_from = config.collections.adopt_from
+    adopt_removes_prior_label = config.collections.adopt_removes_prior_label
+
     index: dict[str, object] | None = None
 
     def imdb_index() -> dict[str, object]:
@@ -134,6 +138,8 @@ async def build_all(
                 session, section, library, title, items, label,
                 summary=CHART_SUMMARIES[title] % library_word,
                 dry_run=dry_run, existing=existing,
+                adopt=adopt, adopt_from=adopt_from,
+                adopt_removes_prior_label=adopt_removes_prior_label,
             )
 
     if awards:
@@ -145,6 +151,8 @@ async def build_all(
             actions += await reconcile_list_collection(
                 session, section, library, title, items, label,
                 summary=summary, dry_run=dry_run, existing=existing,
+                adopt=adopt, adopt_from=adopt_from,
+                adopt_removes_prior_label=adopt_removes_prior_label,
             )
 
         for year in (recent_years(event) if event else []):
@@ -153,6 +161,8 @@ async def build_all(
                 session, section, library, "Oscars Winners %s" % year, items, label,
                 summary=YEAR_SUMMARY % year, sort=YEAR_SORT,
                 dry_run=dry_run, existing=existing,
+                adopt=adopt, adopt_from=adopt_from,
+                adopt_removes_prior_label=adopt_removes_prior_label,
             )
 
     return actions

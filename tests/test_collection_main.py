@@ -95,6 +95,7 @@ def _config(libraries):
             # them off here keeps this test scoped to the commit-boundary
             # behaviour and out of real network calls.
             charts=False, awards=False,
+            adopt=False, adopt_from=["Kometa"], adopt_removes_prior_label=False,
         )
     )
 
