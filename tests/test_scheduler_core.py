@@ -166,3 +166,154 @@ async def test_an_empty_job_list_is_harmless(session_factory):
     await asyncio.sleep(0.05)
     stop.set()
     await asyncio.wait_for(task, timeout=2)
+
+
+class _RecordingNotifier:
+    """Fake notifier: records calls, optionally reads the committed row.
+
+    ``done`` is set at the end of ``send``, so a test awaiting it (with a
+    timeout) proves the fire-and-forget task ran to completion rather than
+    being dropped or garbage-collected mid-flight.
+    """
+
+    def __init__(self, session_factory=None, error=None):
+        self._session_factory = session_factory
+        self._error = error
+        self.calls = []
+        self.observed = []
+        self.done = asyncio.Event()
+
+    async def send(self, event: str, summary: str, detail: dict) -> bool:
+        if self._session_factory is not None:
+            async with self._session_factory() as session:
+                row = (
+                    await session.execute(select(ScheduledRun))
+                ).scalar_one_or_none()
+            self.observed.append(
+                None
+                if row is None
+                else (row.last_status, row.last_finished_at is not None, row.last_detail)
+            )
+        self.calls.append((event, summary, detail))
+        self.done.set()
+        if self._error is not None:
+            raise self._error
+        return True
+
+
+async def test_a_completed_job_notifies_with_the_job_name_and_ok_status(session_factory):
+    async def body(session):
+        return "did the thing"
+
+    notifier = _RecordingNotifier()
+    stop = asyncio.Event()
+    scheduler = Scheduler(
+        session_factory, [_job(run=body)], poll_seconds=0.01, notifier=notifier
+    )
+    task = asyncio.create_task(scheduler.run(stop))
+    await asyncio.wait_for(notifier.done.wait(), timeout=5)
+    stop.set()
+    await task
+
+    event, summary, detail = notifier.calls[0]
+    assert event == "scheduled_run_completed"
+    assert detail == {"job": "demo", "status": "ok", "detail": "did the thing"}
+    assert "demo" in summary
+
+
+async def test_a_failed_job_notifies_with_failed_status(session_factory):
+    async def body(session):
+        raise RuntimeError("job exploded")
+
+    notifier = _RecordingNotifier()
+    stop = asyncio.Event()
+    scheduler = Scheduler(
+        session_factory, [_job(run=body)], poll_seconds=0.01, notifier=notifier
+    )
+    task = asyncio.create_task(scheduler.run(stop))
+    await asyncio.wait_for(notifier.done.wait(), timeout=5)
+    stop.set()
+    await task
+
+    event, _summary, detail = notifier.calls[0]
+    assert event == "scheduled_run_completed"
+    assert detail["job"] == "demo"
+    assert detail["status"] == "failed"
+    assert "job exploded" in detail["detail"]
+
+
+async def test_notification_failure_does_not_mark_the_run_failed(session_factory):
+    """A notification describes work that already finished; its failure must
+    never fail that work. A send that raises outright -- worse than the real
+    Notifier ever behaves, since its contract is to return False -- leaves
+    the recorded run untouched and the scheduler alive."""
+    notifier = _RecordingNotifier(error=RuntimeError("webhook exploded"))
+    stop = asyncio.Event()
+    scheduler = Scheduler(session_factory, [_job()], poll_seconds=0.01, notifier=notifier)
+    task = asyncio.create_task(scheduler.run(stop))
+    await asyncio.wait_for(notifier.done.wait(), timeout=5)
+    assert not task.done(), "the scheduler died with the notification"
+    stop.set()
+    await task
+
+    async with session_factory() as session:
+        row = (await session.execute(select(ScheduledRun))).scalar_one()
+    assert row.last_status == "ok"
+    assert row.last_finished_at is not None
+
+
+async def test_the_notification_fires_after_the_run_is_committed(session_factory):
+    """The notifier reads the database at send time: the row must already
+    show the finished run, so a notification can never describe a run the
+    database does not yet have."""
+
+    async def body(session):
+        return "did the thing"
+
+    notifier = _RecordingNotifier(session_factory=session_factory)
+    stop = asyncio.Event()
+    scheduler = Scheduler(
+        session_factory, [_job(run=body)], poll_seconds=0.01, notifier=notifier
+    )
+    task = asyncio.create_task(scheduler.run(stop))
+    await asyncio.wait_for(notifier.done.wait(), timeout=5)
+    stop.set()
+    await task
+
+    assert notifier.observed == [("ok", True, "did the thing")]
+
+
+async def test_the_scheduler_holds_the_notification_task_until_it_finishes(
+    session_factory,
+):
+    """asyncio.create_task holds only a weak reference: a fire-and-forget
+    task nothing else references can be garbage-collected mid-flight. The
+    scheduler must keep a strong reference while the send is in flight and
+    release it when the send completes."""
+    release = asyncio.Event()
+
+    class _ParkedNotifier:
+        def __init__(self):
+            self.done = asyncio.Event()
+
+        async def send(self, event, summary, detail):
+            await release.wait()
+            self.done.set()
+            return True
+
+    notifier = _ParkedNotifier()
+    stop = asyncio.Event()
+    scheduler = Scheduler(session_factory, [_job()], poll_seconds=0.01, notifier=notifier)
+    task = asyncio.create_task(scheduler.run(stop))
+
+    async def parked():
+        while not scheduler._notify_tasks:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(parked(), timeout=5)
+    assert len(scheduler._notify_tasks) == 1
+    release.set()
+    await asyncio.wait_for(notifier.done.wait(), timeout=5)
+    stop.set()
+    await task
+    assert not scheduler._notify_tasks, "the done-callback must drop the reference"

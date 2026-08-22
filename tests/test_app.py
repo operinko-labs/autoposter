@@ -10,6 +10,7 @@ from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.intake.arr import RenderIntent
+from autoposter.notify.dispatch import Notifier, NullNotifier
 from autoposter.providers.fanart import FanartClient
 from autoposter.providers.tmdb import TMDBClient
 from autoposter.queue.jobs import MAX_ATTEMPTS
@@ -234,3 +235,66 @@ async def test_the_wired_artwork_probe_reads_provenance_for_one_plex_item(monkey
     assert calls == [
         ("http://plex.local/library/metadata/1/thumb/1", {"X-Plex-Token": "tok"})
     ]
+
+
+async def test_the_lifespan_wires_a_notifier_from_config(
+    session_factory, secrets, stubbed_background_services
+):
+    """``app.state.notifier = build_notifier(...)`` is production-only wiring,
+    the same shape as ``app.state.http`` above: nothing else in the suite
+    enters a lifespan, so deleting that line would leave every test green
+    while no deployed instance ever sent a notification. Before the lifespan
+    (and in every no-lifespan test app) the state carries a ``NullNotifier``,
+    never ``None``, so callers send unconditionally."""
+    config = load_config(EXAMPLE)
+    config.notifications.enabled = True
+    config.notifications.url = "http://hooks.internal/notify"
+    app = create_app(config, session_factory, secrets, run_background=True)
+    assert isinstance(app.state.notifier, NullNotifier), (
+        "create_app alone must install a NullNotifier stand-in, never None"
+    )
+
+    async with app.router.lifespan_context(app):
+        notifier = app.state.notifier
+        assert isinstance(notifier, Notifier), (
+            f"the lifespan did not build the real notifier ({notifier!r})"
+        )
+        assert notifier._http is app.state.http, (
+            "the notifier must borrow the lifespan's shared http client"
+        )
+
+
+async def test_without_the_lifespan_the_notifier_is_a_null_stand_in(secrets):
+    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
+    assert isinstance(app.state.notifier, NullNotifier)
+
+
+async def test_the_lifespan_hands_the_notifier_to_the_scheduler(
+    session_factory, secrets, stubbed_background_services, monkeypatch
+):
+    """The scheduler's run-completed hook only fires if the lifespan actually
+    passes the notifier it built -- pinned here because the stubbed Scheduler
+    otherwise swallows its arguments and the wiring could silently drop."""
+    created = []
+
+    class _RecordingScheduler:
+        def __init__(self, *args, **kwargs):
+            created.append(kwargs)
+
+        async def run(self, stop_event):
+            await stop_event.wait()
+
+    monkeypatch.setattr("autoposter.app.Scheduler", _RecordingScheduler)
+    config = load_config(EXAMPLE)
+    config.notifications.enabled = True
+    config.notifications.url = "http://hooks.internal/notify"
+    app = create_app(config, session_factory, secrets, run_background=True)
+
+    async with app.router.lifespan_context(app):
+        wired = app.state.notifier
+
+    assert len(created) == 1
+    assert isinstance(wired, Notifier)
+    assert created[0].get("notifier") is wired, (
+        "the lifespan built a notifier but did not hand it to the scheduler"
+    )

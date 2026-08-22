@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.db.models import ScheduledRun
+from autoposter.notify.dispatch import NullNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +87,21 @@ async def claim_due(session: AsyncSession, job: Job) -> bool:
 class Scheduler:
     """Runs jobs on their intervals until the stop event is set."""
 
-    def __init__(self, session_factory, jobs: list[Job], poll_seconds: float = 60):
+    def __init__(
+        self, session_factory, jobs: list[Job], poll_seconds: float = 60, notifier=None
+    ):
         self._session_factory = session_factory
         self._jobs = jobs
         self._poll_seconds = poll_seconds
+        # A NullNotifier stand-in (never None) when the caller has no
+        # notifier -- the app._build_mdblist precedent -- so _maybe_run
+        # notifies unconditionally.
+        self._notifier = notifier if notifier is not None else NullNotifier()
+        # Strong references to in-flight notification tasks: asyncio holds
+        # only a weak reference to a created task, so a fire-and-forget send
+        # nothing else references could be garbage-collected mid-flight. The
+        # done-callback drops each reference on completion.
+        self._notify_tasks: set[asyncio.Task] = set()
 
     async def run(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -140,3 +152,35 @@ class Scheduler:
                 await session.commit()
         except Exception:
             logger.warning("scheduler: could not record %s result", job.name, exc_info=True)
+            return
+        # After the commit above, never before: the notification must not
+        # describe a run the database does not yet show. And on a task of its
+        # own, not awaited: one send's worst case is ~31.5s on the default
+        # retry config (see notify/dispatch.py), while this loop runs every
+        # job sequentially -- an awaited send would stall every job behind it
+        # and the poll cadence. The truncated detail matches what the row
+        # recorded. send's boolean is deliberately ignored: the Notifier does
+        # its own outcome logging, and a disabled notifier's vacuous True
+        # must not be reported as a delivery.
+        self._start_notification(job.name, status, detail[:2000])
+
+    def _start_notification(self, name: str, status: str, detail: str) -> None:
+        task = asyncio.create_task(
+            self._notifier.send(
+                "scheduled_run_completed",
+                f"scheduled run {name} finished: {status}",
+                {"job": name, "status": status, "detail": detail},
+            )
+        )
+        self._notify_tasks.add(task)
+        task.add_done_callback(self._notification_done)
+
+    def _notification_done(self, task: asyncio.Task) -> None:
+        self._notify_tasks.discard(task)
+        # Notifier.send never raises by contract, but an exception a task
+        # holds unretrieved becomes a GC-time warning; retrieve and log it
+        # here so a misbehaving notifier is named, not leaked.
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning(
+                "notification task failed", exc_info=task.exception()
+            )

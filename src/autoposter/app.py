@@ -18,6 +18,7 @@ from autoposter.facts.imdb import ImdbAutoRefresh
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.intake.routes import router
+from autoposter.notify.dispatch import NullNotifier, build_notifier
 from autoposter.plex.artwork import artwork_provenance
 from autoposter.plex.client import ItemNotFound
 from autoposter.plex.health import PlexHealth
@@ -69,6 +70,12 @@ def create_app(
         app.state.mdblist = _build_mdblist(
             secrets, http, cache=cache, cache_ttl_seconds=config.providers.cache_ttl_seconds
         )
+        # The real sender when the config can send, otherwise a NullNotifier
+        # (never None) -- see notify/dispatch.build_notifier. Published for
+        # the full-pass endpoint's fire-and-forget hook; also handed to the
+        # scheduler below for its run-completed hook.
+        notifier = build_notifier(config.notifications, http, session_factory)
+        app.state.notifier = notifier
 
         health = PlexHealth(
             url=config.plex.url,
@@ -128,7 +135,8 @@ def create_app(
             if config.arr_sync.enabled:
                 scheduler_jobs.append(make_arr_sync_job(config, server_factory, http, secrets))
         scheduler = Scheduler(
-            session_factory, scheduler_jobs, poll_seconds=config.scheduler.poll_seconds
+            session_factory, scheduler_jobs,
+            poll_seconds=config.scheduler.poll_seconds, notifier=notifier,
         )
         scheduler_task = asyncio.create_task(scheduler.run(stop_event))
 
@@ -186,6 +194,11 @@ def create_app(
     app.state.providers = []
     app.state.tmdb_facts = None
     app.state.mdblist = None
+    # A NullNotifier, never None: the full-pass endpoint fires its hook
+    # unconditionally, so test apps and no-lifespan instances must still hold
+    # something with a send(). The lifespan replaces it with build_notifier's
+    # result.
+    app.state.notifier = NullNotifier()
     app.include_router(router)
     app.include_router(api_router)
 

@@ -51,6 +51,28 @@ MAX_JOBS_LIMIT = 200
 # Never the real value -- see get_config()'s docstring.
 _REDACTED = "***REDACTED***"
 
+# Strong references to in-flight notification tasks: asyncio holds only a
+# weak reference to a created task, so a fire-and-forget send nothing else
+# references could be garbage-collected mid-flight. The done-callback drops
+# each reference on completion. Module-level because the request that started
+# the send has already answered by the time the send finishes.
+_notification_tasks: set = set()
+
+
+def _notify_in_background(send_coroutine) -> None:
+    """Fire one ``Notifier.send`` without awaiting it.
+
+    A response must never wait on the webhook -- one send's worst case is
+    ~31.5s on the default retry config (see notify/dispatch.py), against
+    endpoints that answer in seconds. ``send`` never raises and does its own
+    outcome logging, so the task's result is deliberately dropped; in
+    particular a disabled notifier's vacuous ``True`` is never reported as a
+    delivery.
+    """
+    task = asyncio.create_task(send_coroutine)
+    _notification_tasks.add(task)
+    task.add_done_callback(_notification_tasks.discard)
+
 
 def _escape_like(value: str) -> str:
     """Escape ``%``, ``_`` and the escape character itself, so a search term
@@ -603,7 +625,18 @@ async def run_full_pass(
             entries.append((asdict(intent), intent.dedupe_key))
         queued = await enqueue_batch(session, "process_item", entries)
     total = len(entries)
-    return {"total": total, "queued": queued, "skipped": total - queued}
+    skipped = total - queued
+    # After enqueue_batch's commit, so the notification never describes jobs
+    # the database does not yet show -- and fire-and-forget, so the response
+    # does not wait on the webhook.
+    _notify_in_background(
+        request.app.state.notifier.send(
+            "full_pass_enqueued",
+            f"full pass enqueued: {queued} queued, {skipped} skipped, {total} total",
+            {"total": total, "queued": queued, "skipped": skipped},
+        )
+    )
+    return {"total": total, "queued": queued, "skipped": skipped}
 
 
 @router.get("/config")

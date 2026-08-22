@@ -1,4 +1,5 @@
 """POST /api/full-pass: enqueue the entire library for processing."""
+import asyncio
 import time
 from pathlib import Path
 
@@ -17,13 +18,17 @@ PASSWORD = "correct horse battery staple"
 
 
 @pytest_asyncio.fixture
-async def client(session_factory):
+async def app(session_factory):
     secrets = Secrets(
         database_url="postgresql+asyncpg://unused",
         plex_token="x", tmdb_token="x", tvdb_apikey="x", fanart_apikey="x",
         webhook_secret="x", admin_password_hash=hash_password(PASSWORD),
     )
-    app = create_app(load_config(EXAMPLE), session_factory, secrets)
+    return create_app(load_config(EXAMPLE), session_factory, secrets)
+
+
+@pytest_asyncio.fixture
+async def client(app):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -175,3 +180,44 @@ async def test_a_library_sized_pass_answers_inside_one_request(
     assert response.json() == {"total": 15_000, "queued": 15_000, "skipped": 0}
     print(f"\nfull pass over 15,000 items answered in {elapsed:.2f}s")
     assert elapsed < 10.0, f"full pass took {elapsed:.2f}s for 15,000 items"
+
+
+async def test_the_response_does_not_wait_on_the_webhook(
+    app, client, auth_headers, session
+):
+    """The notification is fire-and-forget. A webhook taking its worst-case
+    duration (31.5s on default retry config -- notify/dispatch.py) must not
+    hold the response open; the fake's 2-second sleep stands in for that.
+    The response must come back with the send still in flight, and the send
+    must still run to completion afterwards carrying the real counts."""
+
+    class _SlowNotifier:
+        def __init__(self):
+            self.calls = []
+            self.done = asyncio.Event()
+
+        async def send(self, event, summary, detail):
+            await asyncio.sleep(2)
+            self.calls.append((event, summary, detail))
+            self.done.set()
+            return True
+
+    notifier = _SlowNotifier()
+    app.state.notifier = notifier
+    session.add_all(_one_of_each_kind())
+    await session.commit()
+
+    started = time.perf_counter()
+    response = await client.post("/api/full-pass", headers=auth_headers)
+    elapsed = time.perf_counter() - started
+
+    assert response.json() == {"total": 4, "queued": 4, "skipped": 0}
+    assert not notifier.done.is_set(), (
+        "the endpoint waited for the webhook before answering"
+    )
+    assert elapsed < 2.0, f"response took {elapsed:.2f}s -- it waited on the webhook"
+
+    await asyncio.wait_for(notifier.done.wait(), timeout=10)
+    event, _summary, detail = notifier.calls[0]
+    assert event == "full_pass_enqueued"
+    assert detail == {"total": 4, "queued": 4, "skipped": 0}
