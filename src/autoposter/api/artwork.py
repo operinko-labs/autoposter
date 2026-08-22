@@ -291,8 +291,11 @@ async def live_artwork(
 
     content, upstream_type = fetched
     media_type = upstream_type.split(";")[0].strip().lower()
+    # This endpoint's whole meaning is "right now", and no validator is sent,
+    # so make that explicit rather than leaving heuristic caching to decide.
+    headers = dict(NOSNIFF, **{"Cache-Control": "no-store"})
     return Response(
         content=content,
         media_type=media_type if media_type in ALLOWED_UPSTREAM_TYPES else FALLBACK_CONTENT_TYPE,
-        headers=dict(NOSNIFF),
+        headers=headers,
     )

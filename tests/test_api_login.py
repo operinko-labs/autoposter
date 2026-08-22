@@ -225,7 +225,7 @@ async def test_every_api_route_except_login_requires_a_session(app, client):
         checked.append((method, path))
     # Sanity: the loop above must actually have found the router, not an
     # empty app.
-    assert len(checked) >= 11
+    assert len(checked) >= 15
 
 
 async def test_healthz_is_reachable_without_a_token(client):

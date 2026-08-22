@@ -514,6 +514,9 @@ async def test_serves_what_plex_is_currently_showing(client, auth_headers, sessi
     assert response.status_code == 200
     assert response.content == LIVE_BYTES
     assert response.headers["content-type"] == "image/webp"
+    # "Live" means right now: no validator is sent, so no-store keeps a
+    # browser's heuristic caching from answering with a stale image.
+    assert response.headers["cache-control"] == "no-store"
     # Plex's own thumb path under the configured base, with the token in a
     # header rather than the query string.
     assert str(seen[0].url) == f"{PLEX_URL}/library/metadata/42/thumb/1700000000"

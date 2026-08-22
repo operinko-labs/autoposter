@@ -41,7 +41,10 @@ type ArtworkState =
  * on. So `apiFetchImage` fetches with the header and this turns the blob into
  * a URL the <img> can use.
  */
-function useArtwork(path: string): ArtworkState {
+function useArtwork(path: string): {
+  state: ArtworkState;
+  onImageError: () => void;
+} {
   const [state, setState] = useState<ArtworkState>({ status: "loading" });
 
   useEffect(() => {
@@ -77,12 +80,28 @@ function useArtwork(path: string): ArtworkState {
     };
   }, [path]);
 
-  return state;
+  /** Corrupt or truncated bytes decode to nothing, and an <img> left pointing
+   * at them paints the browser's broken-image icon -- the exact thing the
+   * panes' blank state exists to avoid (the server 404s an *empty* Plex body,
+   * but cannot vouch that non-empty bytes decode). Lives here rather than in
+   * the panes because this hook owns the object URL and the state: only it
+   * can revoke the one and move the other out of "image". */
+  function onImageError() {
+    if (state.status !== "image") return;
+    URL.revokeObjectURL(state.url);
+    setState({
+      status: "error",
+      code: 0,
+      message: "The image data could not be decoded.",
+    });
+  }
+
+  return { state, onImageError };
 }
 
 /** The image this project rendered and holds on disk. */
 function BasePane({ itemId, artKind }: { itemId: number; artKind: string }) {
-  const state = useArtwork(`/api/items/${itemId}/artwork/${artKind}`);
+  const { state, onImageError } = useArtwork(`/api/items/${itemId}/artwork/${artKind}`);
 
   return (
     <figure className="art-pane" data-ratio={ratioFor(artKind)}>
@@ -90,7 +109,7 @@ function BasePane({ itemId, artKind }: { itemId: number; artKind: string }) {
         Base image <span className="muted">on disk, before badges</span>
       </figcaption>
       {state.status === "image" ? (
-        <img className="art-image" src={state.url} alt="" />
+        <img className="art-image" src={state.url} alt="" onError={onImageError} />
       ) : (
         // Deliberately not an <img> with a src that cannot load: that renders
         // the browser's broken-image icon, which says nothing about why.
@@ -121,7 +140,7 @@ function BasePane({ itemId, artKind }: { itemId: number; artKind: string }) {
  * missing upload while their Plex server is down.
  */
 function LivePane({ itemId, artKind }: { itemId: number; artKind: string }) {
-  const state = useArtwork(`/api/items/${itemId}/artwork/${artKind}/live`);
+  const { state, onImageError } = useArtwork(`/api/items/${itemId}/artwork/${artKind}/live`);
 
   return (
     <figure className="art-pane" data-ratio={ratioFor(artKind)}>
@@ -129,7 +148,7 @@ function LivePane({ itemId, artKind }: { itemId: number; artKind: string }) {
         Live in Plex <span className="muted">badged, as uploaded</span>
       </figcaption>
       {state.status === "image" ? (
-        <img className="art-image" src={state.url} alt="" />
+        <img className="art-image" src={state.url} alt="" onError={onImageError} />
       ) : (
         <div className="art-blank">
           <p className="art-note">

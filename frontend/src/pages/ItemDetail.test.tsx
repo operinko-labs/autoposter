@@ -227,6 +227,33 @@ describe("ItemDetail", () => {
     expect(await bytesShownBy(pane("Base image"))).toBe("base-image-bytes");
   });
 
+  it("falls back to the note, not a broken image, when the bytes will not decode", async () => {
+    // The server 404s an empty Plex body, but non-empty corrupt bytes reach
+    // the <img> as a blob that fails to decode. Left alone that paints the
+    // browser's broken-image icon -- the one thing these panes promise never
+    // to show.
+    stubFetch(movieRoutes());
+    await renderItem();
+
+    for (const [caption, note] of [
+      ["Base image", "The base image could not be loaded."],
+      ["Live in Plex", "The live image could not be loaded."],
+    ] as const) {
+      const box = pane(caption);
+      const image = box.querySelector("img");
+      expect(image).not.toBeNull();
+      const source = image!.getAttribute("src");
+
+      fireEvent.error(image!);
+
+      expect(box.querySelector("img")).toBeNull();
+      expect(noteIn(box)).toBe(note);
+      // Revoked, not merely dropped: an undecodable blob is still decoded
+      // bytes held by the document until someone lets go of it.
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith(source);
+    }
+  });
+
   it("says nothing has been rendered when the base image 404s", async () => {
     stubFetch(
       movieRoutes({
