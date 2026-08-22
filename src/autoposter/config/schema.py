@@ -1,6 +1,7 @@
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -376,6 +377,29 @@ class ArrSyncConfig(BaseModel):
     batch_size: int = 500
 
 
+class NotificationsConfig(BaseModel):
+    """Outbound run-completion webhooks: one POST to ``url`` per event.
+
+    The two payload shapes live in ``notify/payload.py``. ``mode`` is a
+    ``Literal`` on purpose -- an unknown mode must fail validation at config
+    load, not fall back to some shape at send time. ``url`` is config, not a
+    secret, but may embed a token in its path (Uptime-Kuma-style), so it is
+    never logged in full -- host only.
+    """
+
+    enabled: bool = False
+    url: str = ""
+    # "apprise-json" (default): the body Apprise's json:// scheme POSTs --
+    # what any Apprise-trained consumer or a `body.type === "success"` gate
+    # expects. "autoposter-v1": this service's own versioned shape, carrying
+    # the full detail dict.
+    mode: Literal["apprise-json", "autoposter-v1"] = "apprise-json"
+    # Per-attempt HTTP timeout and the number of attempts before giving up.
+    # Notification failure never fails the work it reports on.
+    timeout_seconds: int = 10
+    retry_count: int = 3
+
+
 class Config(BaseModel):
     assets_root: Path
     manual_assets_root: Path
@@ -404,4 +428,5 @@ class Config(BaseModel):
     radarr: RadarrConfig = Field(default_factory=RadarrConfig)
     sonarr: SonarrConfig = Field(default_factory=SonarrConfig)
     arr_sync: ArrSyncConfig = Field(default_factory=ArrSyncConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     version: str = ""

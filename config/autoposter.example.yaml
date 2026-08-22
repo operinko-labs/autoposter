@@ -106,6 +106,21 @@ arr_sync:
   hours: 24 # Radarr/Sonarr registration cadence
   batch_size: 500 # safety-net items enqueued per pass; same safety valve as scheduler.drift_batch_size
 
+notifications:
+  enabled: false # POST run-completion webhooks to `url`; off until pointed somewhere
+  url: "" # e.g. http://n8n.n8n-prod.svc.cluster.local:5678/webhook/autoposter -- may embed a token, never logged in full
+  # Payload shape (see src/autoposter/notify/payload.py for both contracts):
+  #   apprise-json (default): the body Apprise's json:// scheme POSTs --
+  #     {"version": "1.0", "title": ..., "message": ..., "attachments": [],
+  #      "type": "success" | "failure"} -- what an Apprise-trained consumer
+  #     or a `body.type === "success"` gate expects.
+  #   autoposter-v1: this service's own versioned shape --
+  #     {"schema": "autoposter/v1", "event": ..., "at": <ISO 8601 UTC>,
+  #      "summary": ..., "detail": {...}} -- carries the full detail dict.
+  mode: apprise-json
+  timeout_seconds: 10 # per-attempt HTTP timeout
+  retry_count: 3 # attempts before giving up; notification failure never fails the run it reports on
+
 artwork:
   use_logo: true
   logo_language_order: [en, fi]
