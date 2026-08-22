@@ -23,8 +23,12 @@ to the tool it replaces, verified against the production asset tree.
 
 A React SPA (`frontend/`) is built and served by the same container, behind
 the app's own routes — no separate server or deployment. It covers the
-Dashboard, Failures, Collections (read-only) and Settings views the phase 4a
-REST API can already answer; see `docs/superpowers/specs/2026-08-20-autoposter-design.md`
+Dashboard, Failures, Collections (read-only) and Settings views, plus a
+library browser — an art grid with library/kind/status filters — and a
+per-item detail page showing the rendered base image beside what Plex is
+currently serving, with the facts and render history that produced it and a
+re-run action. Artwork comes from the app's own API, behind the same session
+as everything else; see `docs/superpowers/specs/2026-08-20-autoposter-design.md`
 section 6a for what's provisional and what's still deferred to a later phase.
 
 Building it needs **Node 26.7.0** — the exact patch, not a floor — which the

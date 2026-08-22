@@ -261,7 +261,7 @@ pick the variant matching the active theme.
 Treat this as an acceptance criterion for the UI phase, not a documentation
 task.
 
-## 6a. Decisions carried out of phases 1-4b
+## 6a. Decisions carried out of phases 1-4c
 
 Recorded here so they are not rediscovered as open questions.
 
@@ -362,27 +362,106 @@ argument for pointing at an executable description rather than copying a
 version string into prose.
 
 **The dashboard polls; it does not use a WebSocket.** This section calls for
-one, but no such endpoint exists yet, and adding it is a phase 4c server
-task, not a frontend one. The dashboard instead polls `/api/status` and
-`/api/events` every 5 seconds. `frontend/src/api/client.ts` is written so a
-later socket swap touches one module rather than every page.
+one, but no such endpoint exists — phase 4b deferred it as a server task, and
+phase 4c shipped without it too (see the remaining-scope entry below). The
+dashboard instead polls `/api/status` and `/api/events` every 5 seconds.
+`frontend/src/api/client.ts` is written so a later socket swap touches one
+module rather than every page.
 
 **`GET /api/collections` does not return member counts.** It returns `id`,
 `library`, `title` and `kind` only — the phase 4a endpoint was never built to
 carry counts, diff results or a "diff now" affordance. Phase 4b's Collections
 page is therefore a plain name/library/kind list, not the richer view this
 section describes; member counts, diff status and diff actions all need a
-new or extended endpoint and are phase 4c work.
+new or extended endpoint, and phase 4c did not build one — they remain owed
+(see the remaining-scope entry below).
 
-**Phase 4c inherits: image serving, item detail, the library browser, config
+**Phase 4c inherited: image serving, item detail, the library browser, config
 write plus hot-reload, collection member counts and actions, and the
-WebSocket.** None of these were cut for being low-value — each is blocked on
-a server endpoint that does not exist today, and phase 4b deliberately did
-not design one inside a frontend task. `GET /api/items/{id}` returns
-fingerprints and upload status but no artwork URL, so "base vs. badged
-side-by-side" cannot be drawn without an image-serving endpoint first; `GET
-/api/config` is read-only and redacted, so an editor needs a write endpoint
-with schema validation before it can exist at all.
+WebSocket.** None of these were cut for being low-value — each was blocked on
+a server endpoint that did not exist at the end of phase 4b, which
+deliberately did not design one inside a frontend task. `GET /api/items/{id}`
+returned fingerprints and upload status but no artwork URL, so "base vs.
+badged side-by-side" could not be drawn without an image-serving endpoint
+first; `GET /api/config` is read-only and redacted, so an editor needs a
+write endpoint with schema validation before it can exist at all.
+
+**Of that list, phase 4c delivered the artwork endpoints, the library browser
+and the item detail page.** Three endpoints, all behind the session:
+`GET /api/items/{id}/artwork/{art_kind}` serves the base image bytes from
+`renders.asset_path`, with `renders.base_sha256` as the ETag so a matching
+`If-None-Match` is a bodyless 304 that opens no file — the browser grid
+revalidates every tile on every visit, and that is what keeps it cheap.
+`GET /api/items/{id}/artwork/{art_kind}/live` serves what Plex is currently
+showing (next entry). `GET /api/items/filters` computes the browser's
+distinct library/kind/status values in SQL, and must stay registered before
+`/items/{item_id}` or FastAPI parses "filters" as an item id — a test guards
+the ordering. On top of them: the Library page (art grid, filters, SQL-side
+pagination, images deferred by an `IntersectionObserver`, a 404 tile
+degrading to a title card because an unrendered item is normal, not an
+error) and the item detail page at `/items/{id}` (base and live artwork side
+by side, facts, render history, truncated fingerprints with the full value
+on hover, a re-run button posting to `/reprocess`).
+
+**"Badged" on the detail page means "what Plex is serving", by decision.**
+The badged image is never persisted: `badges/compose.py`'s `compose()`
+returns WebP bytes in memory that are uploaded straight to Plex, so the
+side-by-side could either recompose on demand or proxy Plex. It proxies,
+because the question the view answers is "is the right image live?", not
+"what would we generate?" — a mismatch between generated and live is already
+visible in `renders.badge_fingerprint`/`upload_status` without re-rendering,
+and recomposition would put badge-complexity CPU behind a casually opened
+page. The consequence: Plex having no artwork (404) and Plex being
+unreachable (503) are deliberately distinct statuses, and the UI states each
+in words rather than showing a broken image — collapsed into one
+"unavailable", a user would hunt a missing upload while their Plex server
+was down. The proxy reuses the provenance fetch path (`_artwork_url` in
+`plex/artwork.py`) and the lifespan's shared `app.state.http` client — a
+test pins that wiring. `PLEX_ART_FIELDS` there maps art kind to Plex field
+(`background` → `art`, everything else → `thumb`), the exact inverse of
+`upload_artwork`'s split; reading `.art` for a title card would answer with
+the show's backdrop — a real image, plausibly rendered, and the wrong one.
+
+**The base-artwork endpoint does not treat the database as a trust
+boundary.** `renders.asset_path` is a full filesystem path read from a row,
+so the obvious `FileResponse(render.asset_path)` is an arbitrary-file-read
+primitive one poisoned row or repointed `assets_root` away. Every path is
+`realpath`-resolved on both sides and must land inside `assets_root`, so a
+planted symlink is judged by its target, not its name; `art_kind` selects a
+row and is never joined onto a path; the content type comes from the file's
+suffix, never from the client; every byte-carrying response sends
+`X-Content-Type-Options: nosniff`. Traversal tests must drive the raw ASGI
+callable (`tests/test_spa_serving.py`'s harness) — httpx resolves `..`
+before the request leaves the client, so an `AsyncClient` traversal test
+passes against a vulnerable implementation and proves nothing.
+
+**`<img src="/api/...">` cannot work in this UI — not now, not in a later
+phase.** The session is an `Authorization: Bearer` header and nothing else;
+there is no cookie, so the browser's own image loads arrive unauthenticated
+and 401. All artwork goes through `apiFetchImage` in
+`frontend/src/api/client.ts`, which fetches the bytes with the header and
+hands the page an object URL. Every future view that shows an image inherits
+this: a plain `src` pointing at the API renders as a broken image with
+nothing failing loudly.
+
+**The `.refresh()` ban is now enforced project-wide, not by review.**
+`tests/test_plex_writer.py::test_no_refresh_calls_project_wide` walks the
+AST of everything under `src/` and fails on any `.refresh()` attribute call
+(SQLAlchemy's bare `session.refresh` excluded); `reload()` remains the
+permitted alternative. The live-artwork endpoint made the guard worth
+having: it reads Plex objects on a request path, where a `.refresh()` would
+have Plex re-pull from its agents and overwrite the very artwork the page
+exists to check.
+
+**What section 6 still owes after phase 4c.** Collection member counts and
+actions (last diff result, "diff now"), the config editor with hot-reload
+and impact preview, the provider-candidate picker, clear-manual-override,
+and the WebSocket that would replace the dashboard's 5-second polling — all
+still blocked on server endpoints that do not exist. Deferred within 4c
+itself: the detail page compares one art kind per item (a movie's
+`background` appears in its render history but is not drawn beside the
+poster), and `GET /api/items` accepts a `search` parameter that the UI does
+not yet expose as a search box.
 
 ## 7. Error handling
 
