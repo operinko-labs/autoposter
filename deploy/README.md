@@ -18,6 +18,12 @@ paths:
 These correspond to `assets_root`, `manual_assets_root` and `backup_root` in
 `autoposter.yaml`.
 
+The config file itself is read from the path in `AUTOPOSTER_CONFIG`, which
+the image sets to `/config/autoposter.yaml` — so mount `autoposter.yaml`
+(e.g. from a ConfigMap) at `/config/autoposter.yaml`. Mounting it anywhere
+else without also setting the variable means the app fails at startup
+looking for a file that is not there.
+
 ## Secrets
 
 Secrets come from an ExternalSecret providing the `AUTOPOSTER_*` environment
@@ -72,10 +78,15 @@ in again. Sessions are rows in the `sessions` table, not signed cookies, so
 `POST /api/logout` can revoke one immediately rather than waiting for it to
 expire.
 
-`/healthz` and `/metrics` are the only routes not behind this session check —
-they stay open so Kubernetes probes and Prometheus scraping keep working
-without credentials. Every other route, including everything under `/api`
-except `/api/login`, requires a valid session.
+Everything under `/api` except `/api/login` requires a valid session. The
+routes outside `/api` are authenticated differently or deliberately open:
+`/healthz` and `/metrics` stay open so Kubernetes probes and Prometheus
+scraping keep working without credentials; `/webhook/radarr` and
+`/webhook/sonarr` are authenticated by the `X-Autoposter-Token` header, not
+a session (see "Radarr / Sonarr webhooks" below); and the SPA's static
+pages are public by design — they are just the login page and the built
+bundle, and every piece of data they show comes through the
+session-protected `/api` routes.
 
 ## Metadata operations config
 
@@ -167,6 +178,10 @@ python -m autoposter.collections
   they are not renamed or migrated, just no longer recognised as ours.
 - `libraries` (default `[Movies, TV Shows]`) — Plex library names to
   reconcile.
+- `separators` (default `true`) — manage the blank `Ratings Collections`
+  divider as part of this family: a permanently-empty collection whose sort
+  title makes it act as a visual separator in Plex's alphabetised collection
+  list.
 
 **No collection is ever deleted by this service**, including ones that are
 empty or whose filter currently matches nothing in the library — that is
@@ -247,8 +262,10 @@ See `config/autoposter.example.yaml` for the full block.
 
 ## Periodic scheduler
 
-The `scheduler:` block in `autoposter.yaml` controls three periodic passes,
-each run by a single background task (the same `run(stop_event)` shape as
+The `scheduler:` block in `autoposter.yaml` controls four periodic passes —
+the Common Sense collections reconcile, the ratings-drift sweep, the
+orphaned-asset cleanup, and the Radarr/Sonarr sync with its safety net (see
+"Radarr and Sonarr sync" below) — each run by a single background task (the same `run(stop_event)` shape as
 the Plex health probe) started from the app lifespan. Their schedule lives in
 the database, not process memory: `scheduled_runs` records each job's last
 start/finish time and outcome (`last_status`, `last_detail`), so a restart
@@ -261,8 +278,11 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   FROM scheduled_runs;
 ```
 
-- `enabled` (default `true`) — master switch for all three passes. Off means
-  none of them run at all, including as a dry run.
+- `enabled` (default `true`) — master switch for all four passes. Off means
+  none of them run at all, including as a dry run — **including the
+  Radarr/Sonarr sync and its safety net**: an operator turning the scheduler
+  off to silence the collections or cleanup passes also stops the Arr sync,
+  and a missed webhook then never converges.
 - `poll_seconds` (default `60`) — how often the scheduler checks whether
   anything is due; not the interval of any individual job.
 - `collections_hours` (default `24`) — cadence for the Common Sense
@@ -716,6 +736,10 @@ Every pass over a Plex library (movie or show) does two independent things:
 pass — the same safety valve as `scheduler.drift_batch_size`, for the same
 reason: a first run against a fresh database can find every item unknown.
 
+This whole pass runs on the periodic scheduler, so it is honoured only while
+`scheduler.enabled` is `true` — turning the scheduler off stops the Arr sync
+and its safety net too (see "Periodic scheduler" above).
+
 ### Expected steady-state outcome for this library
 
 Audited against the live services: Radarr holds 1,982 movies and Sonarr
@@ -743,6 +767,9 @@ four categories:
 
 
 ## Radarr / Sonarr webhooks
+
+The app listens on port `8080` — point the Kubernetes Service, the probes
+(`/healthz`) and these webhook URLs at it.
 
 Configure Radarr and Sonarr with a webhook notification pointing at this
 service's webhook URL (`/webhook/radarr` and `/webhook/sonarr` respectively),
