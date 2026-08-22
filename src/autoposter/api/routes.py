@@ -4,6 +4,7 @@ import logging
 from dataclasses import asdict
 from datetime import timedelta
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -71,7 +72,17 @@ def _notify_in_background(send_coroutine) -> None:
     """
     task = asyncio.create_task(send_coroutine)
     _notification_tasks.add(task)
-    task.add_done_callback(_notification_tasks.discard)
+    task.add_done_callback(_notification_done)
+
+
+def _notification_done(task: asyncio.Task) -> None:
+    _notification_tasks.discard(task)
+    # Notifier.send never raises by contract, but an exception a task holds
+    # unretrieved becomes a GC-time warning; retrieve and log it here so a
+    # misbehaving injected notifier is named, not leaked -- the mirror of
+    # Scheduler._notification_done (scheduler/core.py).
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("notification task failed", exc_info=task.exception())
 
 
 def _escape_like(value: str) -> str:
@@ -650,9 +661,22 @@ async def get_config(
     replaced with the same marker regardless of whether it is set, so the
     response cannot even reveal a secret's length or prefix, let alone its
     value.
+
+    ``notifications.url`` lives in ``Config``, not ``Secrets``, so the
+    wholesale redaction above never touches it -- but it may embed a token
+    in its path (Uptime-Kuma style), and every payload that reaches the
+    operator over HTTP carries the host only (the ``_record_failure``
+    stance in notify/dispatch.py). It is reduced to its host here; the full
+    URL stays in the config file the operator already owns.
     """
     config = request.app.state.config
     secrets = request.app.state.secrets
     body = config.model_dump(mode="json")
+    if body["notifications"]["url"]:
+        try:
+            host = httpx.URL(body["notifications"]["url"]).host or ""
+        except Exception:  # a malformed URL must not break the endpoint
+            host = ""
+        body["notifications"]["url"] = host
     body["secrets"] = {field: _REDACTED for field in secrets.model_dump()}
     return body

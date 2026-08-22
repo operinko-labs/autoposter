@@ -395,9 +395,11 @@ class NotificationsConfig(BaseModel):
     # the full detail dict.
     mode: Literal["apprise-json", "autoposter-v1"] = "apprise-json"
     # Per-attempt HTTP timeout and the number of attempts before giving up.
-    # Notification failure never fails the work it reports on.
-    timeout_seconds: int = 10
-    retry_count: int = 3
+    # Notification failure never fails the work it reports on. Bounded at
+    # load: retry_count of 0 would build a notifier that attempts nothing
+    # and reports every send as failed.
+    timeout_seconds: int = Field(10, gt=0)
+    retry_count: int = Field(3, ge=1)
 
 
 class Config(BaseModel):

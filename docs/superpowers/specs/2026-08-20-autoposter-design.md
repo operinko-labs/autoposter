@@ -499,7 +499,7 @@ the full-pass endpoint answers in ~1-2s and must not triple on a down
 webhook. Both hooks therefore `asyncio.create_task` the send after their
 commit and never await it, holding a strong reference until the
 done-callback drops it (asyncio keeps only weak references to tasks), with
-the scheduler's callback also retrieving and logging any exception so a
+both callbacks also retrieving and logging any exception so a
 misbehaving injected notifier surfaces as one warning rather than a GC-time
 "exception never retrieved".
 

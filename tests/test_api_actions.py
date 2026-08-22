@@ -316,3 +316,34 @@ async def test_config_never_leaks_a_secret_value(client, auth_headers):
     # same password: bcrypt is salted, so a fresh one could never appear in
     # any response and would assert nothing.
     assert ADMIN_PASSWORD_HASH not in response.text
+
+
+NOTIFY_URL_TOKEN = "sekrit-webhook-path-token-should-never-leak-7d20aa"
+NOTIFY_URL = f"http://hooks.example.test/notify/{NOTIFY_URL_TOKEN}"
+
+
+async def test_config_reduces_the_notification_url_to_its_host(session_factory):
+    """``notifications.url`` lives in Config, not Secrets, so the wholesale
+    Secrets redaction never touches it -- but it may embed a token in its
+    path (Uptime-Kuma style). The same stance as the events_log rows
+    (``Notifier._record_failure``): payloads that reach the operator over
+    HTTP carry the host only. The full URL stays in the operator's own
+    config file."""
+    config = load_config(EXAMPLE)
+    config.notifications.url = NOTIFY_URL
+    secrets = Secrets(
+        database_url="postgresql+asyncpg://unused",
+        plex_token="x", tmdb_token="x", tvdb_apikey="x",
+        fanart_apikey="x", webhook_secret="x",
+        admin_password_hash=ADMIN_PASSWORD_HASH,
+    )
+    app = create_app(config, session_factory, secrets)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        login = await c.post("/api/login", json={"password": PASSWORD})
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        response = await c.get("/api/config", headers=headers)
+
+    assert response.status_code == 200
+    assert NOTIFY_URL_TOKEN not in response.text
+    assert response.json()["notifications"]["url"] == "hooks.example.test"

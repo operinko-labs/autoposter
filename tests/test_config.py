@@ -80,6 +80,35 @@ def test_missing_secret_names_the_variable(monkeypatch):
         Secrets.from_env()
 
 
+def test_notifications_retry_count_of_zero_is_rejected_at_load(tmp_path):
+    """A notifier built from ``retry_count: 0`` would attempt nothing and
+    report every send as failed; that has to fail config validation, not
+    ship."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        EXAMPLE.read_text(encoding="utf-8").replace(
+            "retry_count: 3", "retry_count: 0", 1
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="retry_count"):
+        load_config(bad)
+
+
+def test_notifications_timeout_of_zero_is_rejected_at_load(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        EXAMPLE.read_text(encoding="utf-8").replace(
+            "timeout_seconds: 10 # per-attempt HTTP timeout",
+            "timeout_seconds: 0 # per-attempt HTTP timeout",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        load_config(bad)
+
+
 def test_imdb_refresh_defaults_from_the_example_config():
     operations = load_config(EXAMPLE).operations
     assert operations.imdb_refresh_hours == 6

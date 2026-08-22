@@ -15,8 +15,10 @@ This test needs no real database, no real Plex server and no
 ``spa_dist`` is stubbed out, so the only thing exercised is the wiring itself.
 """
 
+import logging
 from pathlib import Path
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -26,6 +28,12 @@ from autoposter.config.schema import Secrets
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 INDEX_MARKER = "<!-- build() test index -->"
+
+# A URL shaped like the two secret-bearing URLs this process actually
+# requests: the notifications webhook (token in the path, Uptime-Kuma style)
+# and fanart.tv (api_key in the query string).
+URL_TOKEN = "tok-should-never-reach-the-log-83f5d1"
+TOKEN_URL = f"http://hooks.example.test/notify/{URL_TOKEN}"
 
 
 def _secrets() -> Secrets:
@@ -99,3 +107,31 @@ async def test_build_wires_the_spa_into_the_returned_app():
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert INDEX_MARKER in response.text
+
+
+async def test_build_keeps_httpx_request_urls_out_of_the_log(caplog):
+    """httpx logs every request at INFO with the FULL url -- which in this
+    process may carry the notifications webhook token in its path
+    (config/schema.py's NotificationsConfig documents the host-only
+    guarantee) or fanart.tv's api_key in its query string. ``build()``'s
+    logging setup must therefore cap the ``httpx`` logger at WARNING;
+    deleting that line from ``build()`` must turn this red."""
+    main_module.build()
+
+    # The property: build() itself capped the httpx logger. Asserted on the
+    # logger's own level, not getEffectiveLevel(): under pytest the root
+    # logger already has handlers, so build()'s basicConfig is a no-op and
+    # the root sits at WARNING -- an effective-level assertion would pass
+    # with the suppression line deleted.
+    assert logging.getLogger("httpx").level >= logging.WARNING
+
+    # The behaviour: a request made at the app's INFO default leaves no URL
+    # in the log, success included -- httpx logs its per-request line on a
+    # 200, not just on failures.
+    transport = httpx.MockTransport(lambda request: httpx.Response(200))
+    with caplog.at_level(logging.INFO):
+        async with httpx.AsyncClient(transport=transport) as client:
+            response = await client.post(TOKEN_URL, json={})
+    assert response.status_code == 200  # the request really happened
+    assert URL_TOKEN not in caplog.text
+    assert TOKEN_URL not in caplog.text

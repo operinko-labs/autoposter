@@ -837,7 +837,8 @@ A notification describes work that already finished, so its failure never
 fails that work: no retry-forever, no parked jobs, no crashed scheduler.
 Each send makes up to `retry_count` attempts, each bounded by
 `timeout_seconds`, with backoff of 0.5s, 1s, 2s, ... between them. Transport
-errors and 5xx responses retry; a 4xx does not -- a wrong path or revoked
+errors and 5xx responses retry; any other status does not (a 4xx, or a 3xx
+-- redirects are not followed) -- a wrong path or revoked
 token cannot be fixed by asking again. Worst case for one send on the
 defaults: `3 x 10s + 0.5s + 1s = 31.5s`, and that time is spent on a
 background task -- neither the scheduler loop nor the `/api/full-pass`

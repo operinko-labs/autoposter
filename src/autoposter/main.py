@@ -53,6 +53,13 @@ class _LazyPlexServer:
 
 def build() -> FastAPI:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # httpx logs one INFO line per request carrying the FULL url, and two of
+    # this process's URLs embed secrets: the notifications webhook may carry
+    # a token in its path (Uptime-Kuma style -- the host-only guarantee in
+    # config/schema.py's NotificationsConfig), and fanart.tv's key travels
+    # as an api_key query parameter (providers/fanart.py). Neither may reach
+    # the pod logs, so httpx speaks only at WARNING and above.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     config = load_config(CONFIG_PATH)
     secrets = Secrets.from_env()
 
