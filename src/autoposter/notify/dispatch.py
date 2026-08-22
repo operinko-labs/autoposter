@@ -96,9 +96,11 @@ class Notifier:
         try:
             return await self._send(event, summary, detail)
         except Exception:
-            # Unexpected -- _send already contains transport failures. The
-            # work this notification describes is done; do not fail it.
-            logger.warning("notification %r failed unexpectedly", event, exc_info=True)
+            # Unexpected -- _send already contains transport failures, so
+            # reaching here means a bug in OUR code: error, not warning, so it
+            # outranks webhook noise in log filtering. The work this
+            # notification describes is done; do not fail it.
+            logger.error("notification %r failed unexpectedly", event, exc_info=True)
             return False
 
     async def _send(self, event: str, summary: str, detail: dict) -> bool:
@@ -115,6 +117,10 @@ class Notifier:
                 )
             except httpx.HTTPError as exc:
                 # Transport-level: the next attempt may find the host back.
+                # Leak-safety of logging/storing str(exc) rests on the shared
+                # client having no event hooks and this method never calling
+                # raise_for_status() -- HTTPStatusError's message embeds the
+                # full URL, token and all.
                 failure = f"{type(exc).__name__}: {exc}"
                 continue
             if response.is_success:
@@ -132,7 +138,16 @@ class Notifier:
             attempts,
             failure,
         )
-        await self._record_failure(event, summary, attempts, failure)
+        try:
+            await self._record_failure(event, summary, attempts, failure)
+        except Exception:
+            # The events-log write is best-effort bookkeeping: if the DB is
+            # down too, keep the invariant of exactly one WARNING per failed
+            # send -- this secondary problem gets a secondary (info) line.
+            logger.info(
+                "could not record notification failure in events_log",
+                exc_info=True,
+            )
         return False
 
     async def _record_failure(

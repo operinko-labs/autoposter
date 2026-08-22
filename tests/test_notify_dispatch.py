@@ -186,6 +186,53 @@ async def test_exhausted_retries_fail_quietly_log_the_host_and_write_the_events_
     assert HOOK_TOKEN not in stored
 
 
+async def test_a_bug_before_the_transport_is_contained_by_the_outer_wrapper(
+    make_client, caplog
+):
+    """Drives the OUTER never-raises wrapper in ``send``: ``detail=None``
+    makes ``build_payload`` raise before ``_send``'s transport handling can
+    contain anything, so only ``send``'s own try/except stands between the
+    bug and the caller."""
+
+    def throw(request):
+        raise AssertionError("a payload that cannot build must never be POSTed")
+
+    notifier = build_notifier(_config(), make_client(throw), _refuse_db)
+
+    with caplog.at_level(logging.DEBUG):
+        ok = await notifier.send("scheduled_run_completed", "s", None)
+
+    assert ok is False
+    # Our bug outranks webhook noise: exactly one record, at ERROR.
+    records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+
+
+async def test_a_db_failure_while_recording_still_yields_exactly_one_warning(
+    make_client, sleeps, caplog
+):
+    """If the events-log write fails too (DB down), the failed send still
+    logs exactly one WARNING; the recording failure is a secondary info
+    line, not a second warning."""
+
+    def handler(request):
+        raise httpx.ConnectError("connection refused")
+
+    def broken_db():
+        raise RuntimeError("database is down")
+
+    notifier = build_notifier(_config(), make_client(handler), broken_db)
+
+    with caplog.at_level(logging.DEBUG):
+        ok = await notifier.send("scheduled_run_completed", "s", {"status": "failed"})
+
+    assert ok is False
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert HOOK_HOST in warnings[0].getMessage()
+
+
 async def test_a_disabled_config_yields_a_noop_that_never_sends(make_client):
     def throw(request):
         raise AssertionError("a disabled notifier must never make a request")

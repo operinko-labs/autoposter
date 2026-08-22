@@ -154,7 +154,7 @@ class EventLog(Base):
     __tablename__ = "events_log"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    source: Mapped[str] = mapped_column(String(32))  # radarr|sonarr|tautulli|manual
+    source: Mapped[str] = mapped_column(String(32))  # radarr|sonarr|manual|notifier
     event_type: Mapped[str | None] = mapped_column(String(64))
     payload: Mapped[dict] = mapped_column(JSONB)
     outcome: Mapped[str | None] = mapped_column(Text)
