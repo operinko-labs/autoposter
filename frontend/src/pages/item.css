@@ -40,6 +40,15 @@
   object-fit: contain;
 }
 
+/* Backgrounds and title cards are 16:9, not a poster's 2:3 -- without this an
+ * episode's title card letterboxes at a third of a tall poster box. The
+ * attribute comes from ratioFor in ItemDetail.tsx, and both panes share the
+ * item's art kind, so they keep the same shape as each other. */
+.art-pane[data-ratio="wide"] .art-image,
+.art-pane[data-ratio="wide"] .art-blank {
+  aspect-ratio: 16 / 9;
+}
+
 .art-blank {
   display: flex;
   flex-direction: column;

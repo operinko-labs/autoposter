@@ -33,6 +33,9 @@ from autoposter.render.textfit import fit_point_size, prepare_text
 
 logger = logging.getLogger(__name__)
 
+# Mirrored in frontend/src/artKind.ts, which shows each kind's first entry as
+# the item's primary art. A kind added here must be added there too, or its
+# pages fall back to `poster` and 404.
 ART_KINDS_FOR = {
     "movie": ["poster", "background"],
     "show": ["poster", "background"],

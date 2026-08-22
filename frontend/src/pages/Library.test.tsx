@@ -286,9 +286,15 @@ describe("Library", () => {
   });
 
   it("reports a failed listing instead of an endless spinner", async () => {
+    // Only the listing fails. Failing every fetch would let a component that
+    // surfaced only a filters error, with the grid spinning forever, pass.
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => json({ detail: "database is down" }, 500)),
+      vi.fn(async (path: string) => {
+        if (path === "/api/items/filters") return json(FILTERS);
+        if (path.startsWith("/api/items?")) return json({ detail: "database is down" }, 500);
+        throw new Error(`the page requested an unexpected path: ${path}`);
+      }),
     );
 
     render(
@@ -298,5 +304,56 @@ describe("Library", () => {
     );
 
     expect(await screen.findByText("database is down")).toBeInTheDocument();
+  });
+
+  it("keeps reporting a filters failure after the listing succeeds", async () => {
+    // The two effects race on mount, and the items effect clears its own error
+    // on success -- a shared error state would let that success erase the
+    // filters failure, leaving three inexplicably empty dropdowns.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => {
+        if (path === "/api/items/filters") return json({ detail: "filters are down" }, 500);
+        if (path.startsWith("/api/items?")) return json(ITEMS);
+        throw new Error(`the page requested an unexpected path: ${path}`);
+      }),
+    );
+
+    render(
+      <MemoryRouter>
+        <Library />
+      </MemoryRouter>,
+    );
+
+    // The listing itself succeeded: the grid is here...
+    await screen.findByRole("link", { name: /Ghostbusters/ });
+    // ...and the filters failure is still on screen, not erased by it.
+    expect(
+      await screen.findByText("Filters are unavailable: filters are down"),
+    ).toBeInTheDocument();
+  });
+
+  it("disables the pager buttons at the edges of the result", async () => {
+    // Everything fits on one page, so neither button has anywhere to go.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => {
+        if (path === "/api/items/filters") return json(FILTERS);
+        if (path.startsWith("/api/items?")) {
+          return json({ total: 2, items: ITEMS.items });
+        }
+        throw new Error(`the page requested an unexpected path: ${path}`);
+      }),
+    );
+
+    render(
+      <MemoryRouter>
+        <Library />
+      </MemoryRouter>,
+    );
+    await screen.findByRole("link", { name: /Ghostbusters/ });
+
+    expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   });
 });

@@ -7,25 +7,16 @@ import type {
   ItemRender,
   ReprocessResponse,
 } from "../api/types";
+import { artKindFor } from "../artKind";
 import { formatTime } from "../format";
 import "./item.css";
 
-/** Which art kind an item of each kind has, from ART_KINDS_FOR in
- * src/autoposter/render/pipeline.py. Mirrored from the library browser rather
- * than hard-coded: a season has no `poster` row and an episode has no
- * `background`, so a fixed "poster" would 404 both panes for every show item.
- *
- * Movies and shows have a second art kind (`background`) which this page does
- * not show; the render table below lists its row like any other. */
-const ART_KIND: Record<string, string> = {
-  movie: "poster",
-  show: "poster",
-  season: "season_poster",
-  episode: "title_card",
-};
-
-function artKindFor(kind: string): string {
-  return ART_KIND[kind] ?? "poster";
+/** The shape of the pane box, matched by art kind in item.css: posters are
+ * 2:3, backgrounds and title cards 16:9. Without this an episode's panes
+ * letterbox a 16:9 title card at a third of a tall poster box -- on a page
+ * whose whole point is comparing the two images by eye. */
+function ratioFor(artKind: string): "poster" | "wide" {
+  return artKind === "poster" || artKind === "season_poster" ? "poster" : "wide";
 }
 
 /** A fingerprint is a 64-character hex digest. Shown whole it pushes every
@@ -94,7 +85,7 @@ function BasePane({ itemId, artKind }: { itemId: number; artKind: string }) {
   const state = useArtwork(`/api/items/${itemId}/artwork/${artKind}`);
 
   return (
-    <figure className="art-pane">
+    <figure className="art-pane" data-ratio={ratioFor(artKind)}>
       <figcaption>
         Base image <span className="muted">on disk, before badges</span>
       </figcaption>
@@ -133,7 +124,7 @@ function LivePane({ itemId, artKind }: { itemId: number; artKind: string }) {
   const state = useArtwork(`/api/items/${itemId}/artwork/${artKind}/live`);
 
   return (
-    <figure className="art-pane">
+    <figure className="art-pane" data-ratio={ratioFor(artKind)}>
       <figcaption>
         Live in Plex <span className="muted">badged, as uploaded</span>
       </figcaption>
@@ -244,6 +235,9 @@ export function ItemDetail() {
     let cancelled = false;
     setItem(null);
     setOutcome(null);
+    // Cleared here, not only on success: navigating from a failed item to a
+    // good one must not show the previous item's error while loading.
+    setError(null);
     apiFetch<ItemDetailResponse>(`/api/items/${itemId}`)
       .then((response) => {
         if (cancelled) return;

@@ -32,6 +32,12 @@
   border-color: var(--accent);
 }
 
+/* The filters-endpoint failure note, sitting beside the controls it explains. */
+.library-filters .page-error {
+  align-self: center;
+  margin: 0;
+}
+
 .tile-grid {
   display: grid;
   /* Tracks rather than a fixed count: the sidebar is fixed-width, so the grid

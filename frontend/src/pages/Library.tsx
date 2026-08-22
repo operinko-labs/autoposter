@@ -1,28 +1,15 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Link } from "react-router-dom";
 
-import { apiFetch, apiFetchImage } from "../api/client";
+import { ApiError, apiFetch, apiFetchImage } from "../api/client";
 import type { ItemFiltersResponse, ItemSummary, ItemsResponse } from "../api/types";
+import { artKindFor } from "../artKind";
 import "./library.css";
 
 /** One screen of tiles. The endpoint caps `limit` at 200 (MAX_ITEMS_LIMIT in
  * src/autoposter/api/routes.py); 48 is a few rows on a wide monitor and keeps
  * the artwork requests behind a page bounded. */
 const PAGE_SIZE = 48;
-
-/** Which art kind a tile shows, from ART_KINDS_FOR in
- * src/autoposter/render/pipeline.py. Seasons and episodes have no `poster` row
- * at all, so asking for one would 404 every tile in a show library. */
-const ART_KIND: Record<string, string> = {
-  movie: "poster",
-  show: "poster",
-  season: "season_poster",
-  episode: "title_card",
-};
-
-function artKindFor(kind: string): string {
-  return ART_KIND[kind] ?? "poster";
-}
 
 /** One tile's image, or the title in place of it.
  *
@@ -78,13 +65,22 @@ function Artwork({
         objectUrl = URL.createObjectURL(blob);
         setSource(objectUrl);
       })
-      .catch(() => {
+      .catch((caught: unknown) => {
         // A 401 has already sent the user to the login form; anything else is
-        // one absent image, which the title card below covers.
+        // one absent image, which the title card below covers -- but leave a
+        // trace, because this catch is chained after the success handler and
+        // would otherwise also swallow a bug thrown inside it.
+        if (!(caught instanceof ApiError && caught.status === 401)) {
+          console.warn(`artwork for item ${itemId} failed`, caught);
+        }
       });
 
     return () => {
       cancelled = true;
+      // A stale image must not survive into the next fetch. Unreachable while
+      // the parent keys tiles by item id, but the invariant should not depend
+      // on the parent's keying choice.
+      setSource(null);
       // Object URLs are held by the document until revoked, so a browsed-away
       // page would otherwise keep every image it ever showed in memory.
       if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
@@ -101,7 +97,20 @@ function Artwork({
     );
   }
 
-  return <img className="tile-art" src={source} alt="" loading="lazy" />;
+  return (
+    <img
+      className="tile-art"
+      src={source}
+      alt=""
+      loading="lazy"
+      // Corrupt or truncated bytes would otherwise paint the browser's
+      // broken-image icon; fall back to the same title card a 404 gets.
+      onError={() => {
+        URL.revokeObjectURL(source);
+        setSource(null);
+      }}
+    />
+  );
 }
 
 export function Library() {
@@ -112,6 +121,11 @@ export function Library() {
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState<ItemsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Held apart from `error` on purpose: the items effect clears `error` on
+  // every success, and both effects fire concurrently on mount -- a shared
+  // state would let a later listing success erase the filters failure,
+  // leaving three inexplicably empty dropdowns.
+  const [filtersError, setFiltersError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,7 +134,7 @@ export function Library() {
         if (!cancelled) setFilters(response);
       })
       .catch((caught: Error) => {
-        if (!cancelled) setError(caught.message);
+        if (!cancelled) setFiltersError(caught.message);
       });
     return () => {
       cancelled = true;
@@ -213,6 +227,9 @@ export function Library() {
             ))}
           </select>
         </label>
+        {filtersError !== null && (
+          <span className="page-error">Filters are unavailable: {filtersError}</span>
+        )}
       </div>
 
       {page === null ? (

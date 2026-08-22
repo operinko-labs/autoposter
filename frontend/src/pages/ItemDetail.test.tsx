@@ -264,6 +264,29 @@ describe("ItemDetail", () => {
     expect(await bytesShownBy(pane("Base image"))).toBe("title-card-bytes");
   });
 
+  it("shapes the pane box for the art kind: 2:3 for a poster, 16:9 for a title card", async () => {
+    // The box's aspect ratio comes from item.css keyed on this attribute; a
+    // pane that hard-coded a poster's 2:3 would letterbox every episode's
+    // 16:9 title card at a third of a tall grey box, in both panes, on a page
+    // whose whole point is comparing the two images by eye.
+    stubFetch(movieRoutes());
+    const view = await renderItem();
+
+    expect(pane("Base image")).toHaveAttribute("data-ratio", "poster");
+    expect(pane("Live in Plex")).toHaveAttribute("data-ratio", "poster");
+
+    view.unmount();
+    stubFetch({
+      "/api/items/9": () => json(EPISODE),
+      "/api/items/9/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/9/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
+    });
+    await renderItem(9);
+
+    expect(pane("Base image")).toHaveAttribute("data-ratio", "wide");
+    expect(pane("Live in Plex")).toHaveAttribute("data-ratio", "wide");
+  });
+
   it("shows the facts and the render history, fingerprints truncated", async () => {
     stubFetch(movieRoutes());
 
@@ -347,6 +370,27 @@ describe("ItemDetail", () => {
         "Already queued — nothing new was added.",
       ),
     );
+  });
+
+  it("reports a failed re-run instead of claiming anything was queued", async () => {
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/reprocess": () => json({ detail: "the queue is unavailable" }, 500),
+      }),
+    );
+
+    await renderItem();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-run" }));
+
+    await waitFor(() =>
+      expect(document.querySelector(".page-error")?.textContent).toBe(
+        "the queue is unavailable",
+      ),
+    );
+    // An error, not an outcome: a page showing both would be saying the
+    // re-run failed and was queued at once.
+    expect(document.querySelector(".item-outcome")).toBeNull();
   });
 
   it("is what /items/:itemId reaches in the real router", async () => {
