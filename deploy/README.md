@@ -754,6 +754,113 @@ Enable these triggers:
 - **Radarr:** On Import Complete, On Rename, On Movie Add
 - **Sonarr:** On Import Complete, On Rename, On Series Add
 
+## Outbound notifications config
+
+The `notifications:` block in `autoposter.yaml` controls the Phase 5a
+run-completion webhook: one POST to a configured URL when a run boundary is
+crossed, replacing the notification capability Posterizarr's Apprise config
+provided. Two events exist in v1, both hooked where completion is already
+recorded:
+
+- `scheduled_run_completed` -- a named scheduler job (collections reconcile,
+  ratings-drift sweep, asset cleanup, Arr sync) finished, successfully or
+  not. Fires only after the `scheduled_runs` row is committed, so a
+  notification can never describe a run the database does not yet show.
+- `full_pass_enqueued` -- `POST /api/full-pass` enqueued its batch, carrying
+  the real `{total, queued, skipped}` counts, after their commit.
+
+Settings:
+
+- `enabled` (default `false`) -- off means no sender is built at all; every
+  hook still runs, against a no-op notifier.
+- `url` (default empty) -- where the POST goes. Operator-sensitive even
+  though it is config rather than a secret: it may embed a token in its path
+  (as Uptime-Kuma-style push URLs do), so the full URL is never logged or
+  stored -- log lines and events rows name only the host. `enabled: true`
+  with an empty URL is a named misconfiguration: one warning at startup and
+  a no-op notifier, not one warning per event.
+- `mode` (default `apprise-json`) -- the payload shape, below. An unknown
+  mode fails config validation at load time; there is no runtime fallback.
+- `timeout_seconds` (default `10`) -- per-attempt HTTP timeout.
+- `retry_count` (default `3`) -- total attempts per notification, not
+  retries after the first.
+
+### The two payload shapes
+
+`apprise-json` (the default) is the body Apprise's `json://` scheme POSTs,
+so anything already built to consume Apprise webhooks works unchanged
+(verified against Apprise's `custom_json.py`; see
+`src/autoposter/notify/payload.py` for the provenance):
+
+```json
+{
+  "version": "1.0",
+  "title": "autoposter: scheduled_run_completed",
+  "message": "scheduled run ratings_drift_sweep finished: ok",
+  "attachments": [],
+  "type": "success"
+}
+```
+
+`type` is `failure` when the event's detail carries `status: failed`
+(a scheduler job that raised); anything else -- including events with no
+failure semantics at all, such as `full_pass_enqueued` -- is `success`, so a
+consumer gating on `type === "success"` behaves meaningfully. `attachments`
+is always present and always `[]` (Apprise sends the key even with nothing
+attached; this service never attaches files).
+
+`autoposter-v1` is this service's own versioned contract, for consumers that
+want the structured detail the Apprise shape has no field for:
+
+```json
+{
+  "schema": "autoposter/v1",
+  "event": "scheduled_run_completed",
+  "at": "2026-08-22T12:35:25.808755+00:00",
+  "summary": "scheduled run ratings_drift_sweep finished: ok",
+  "detail": {
+    "job": "ratings_drift_sweep",
+    "status": "ok",
+    "detail": "enqueued 0 item(s) with facts older than 7 days"
+  }
+}
+```
+
+`at` is the payload build time, ISO 8601 UTC with an explicit offset.
+`detail` for `scheduled_run_completed` is `{job, status, detail}` with
+`status` exactly `ok` or `failed`; for `full_pass_enqueued` it is
+`{total, queued, skipped}`.
+
+### Retry, timeout, and what failure looks like
+
+A notification describes work that already finished, so its failure never
+fails that work: no retry-forever, no parked jobs, no crashed scheduler.
+Each send makes up to `retry_count` attempts, each bounded by
+`timeout_seconds`, with backoff of 0.5s, 1s, 2s, ... between them. Transport
+errors and 5xx responses retry; a 4xx does not -- a wrong path or revoked
+token cannot be fixed by asking again. Worst case for one send on the
+defaults: `3 x 10s + 0.5s + 1s = 31.5s`, and that time is spent on a
+background task -- neither the scheduler loop nor the `/api/full-pass`
+response ever waits on the webhook.
+
+A send that exhausts its attempts logs exactly one warning (naming the
+host, the attempt count and the last error) and writes an `events_log` row
+with `source: notifier`, so the failure is visible in the Web UI's activity
+feed and via `GET /api/events` -- not only in the pod logs. Success logs at
+debug only and writes no row.
+
+### Pointing automation at it
+
+The n8n flow that used to fire Kometa on Posterizarr's webhook is retired at
+cutover together with the Kometa CronJob -- its live path was a bare
+trigger that never read the POST body, and its sole purpose was to run the
+tool this service replaces. New automation (a rebuilt n8n flow, a catcher,
+anything Apprise-shaped) points at this webhook instead; wiring the real
+cluster n8n to it is a cutover-day step. The shapes above are not
+hand-written examples: they are bodies captured from a live rehearsal of
+this exact wiring (real compose stack, real scheduled runs, real
+authenticated full pass, local catcher).
+
 ## Recovering parked jobs
 
 A job moves to `state='parked'` once it has been retried

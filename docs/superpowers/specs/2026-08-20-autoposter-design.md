@@ -261,7 +261,7 @@ pick the variant matching the active theme.
 Treat this as an acceptance criterion for the UI phase, not a documentation
 task.
 
-## 6a. Decisions carried out of phases 1-4c
+## 6a. Decisions carried out of phases 1-5a
 
 Recorded here so they are not rediscovered as open questions.
 
@@ -462,6 +462,68 @@ itself: the detail page compares one art kind per item (a movie's
 `background` appears in its render history but is not drawn beside the
 poster), and `GET /api/items` accepts a `search` parameter that the UI does
 not yet expose as a search box.
+
+**Outbound notifications (phase 5a): one dispatcher, two events, two payload
+shapes.** The `notifications:` block points one URL at anything; `Notifier`
+POSTs on two run boundaries, each hooked after the commit that records what
+it describes: `scheduled_run_completed` (any named scheduler job, carrying
+`{job, status, detail}` with `status` exactly `ok` or `failed`) and
+`full_pass_enqueued` (`POST /api/full-pass`, carrying the real
+`{total, queued, skipped}`). Two modes: `apprise-json` (default) is the body
+Apprise's `json://` scheme POSTs, field set verified against the plugin
+source rather than memory — `attachments` is always present as `[]`, and
+`type` is `failure` iff the detail carries `status: failed`, so a consumer
+gating on `type === "success"` behaves meaningfully; `autoposter-v1` is the
+versioned native shape (`schema`/`event`/`at`/`summary`/`detail`) for
+consumers that want the structured detail the Apprise shape cannot carry.
+Deliberately not in v1: per-item events, queue-drained detection, Discord
+formatting — the dispatcher's event-name + payload-builder split makes each
+additive later.
+
+**The n8n flow this replaces was a bare trigger, and cutover retires it.**
+Its live path never read the POST body (the only body-reading node was
+orphaned) and its sole purpose was to fire Kometa, the tool this service
+replaces — so the cutover checklist retires the flow together with the
+`kometa` CronJob rather than keeping it fed, and the rehearsal against the
+real cluster n8n is a cutover-day step, not something this phase claims to
+have done. The shipped wiring was rehearsed end-to-end instead against a
+local catcher on a live compose stack: real scheduled runs and a real
+authenticated full pass, both payload modes captured verbatim.
+
+**Notification sends are fire-and-forget, by arithmetic.** One exhausted
+send is bounded at `retry_count × timeout_seconds` plus backoff — 31.5s on
+the defaults — while the scheduler runs every job inline on a 60s poll
+cadence, so an awaited send would stall every job behind it and a few
+failing notifications in one pass would push the pass past the cadence;
+the full-pass endpoint answers in ~1-2s and must not triple on a down
+webhook. Both hooks therefore `asyncio.create_task` the send after their
+commit and never await it, holding a strong reference until the
+done-callback drops it (asyncio keeps only weak references to tasks), with
+the scheduler's callback also retrieving and logging any exception so a
+misbehaving injected notifier surfaces as one warning rather than a GC-time
+"exception never retrieved".
+
+**Shutdown does not drain in-flight notifications, by decision.** The
+lifespan's shutdown cancels its own long-lived tasks and closes the shared
+HTTP client without awaiting notification tasks still in flight, so a send
+caught mid-flight hits the closed client and dies. That loss is absorbed,
+not propagated: `Notifier.send` never raises, so the failure surfaces as
+its single log line and nothing else — shutdown never blocks on a webhook
+(worst case would be 31.5s per in-flight send), and the run the lost
+notification described is already committed and visible in
+`scheduled_runs`. An unstated stance until review flagged it; written down
+here as accepted loss for a best-effort channel.
+
+**Exactly one WARNING per failed send, including when degraded twice
+over.** A send that exhausts its bounded retries logs one warning naming
+the host only — the URL may embed a token in its path, Uptime-Kuma style,
+so no log line or stored row ever carries it — and writes an `events_log`
+row (`source: notifier`) the UI's activity feed shows. If that bookkeeping
+write itself fails (webhook down *and* database down — precisely when an
+operator is reading logs), the secondary failure is contained at info
+rather than doubling the warning. The only other level in play is ERROR,
+reserved for the outer wrapper's unexpected-bug path; success is debug
+only and writes no row.
 
 ## 7. Error handling
 

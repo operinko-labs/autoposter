@@ -57,6 +57,17 @@ to a bcrypt hash (never the plaintext) to allow logins — unset, every login
 attempt fails closed rather than skipping auth. See `deploy/README.md`'s
 "Web UI authentication" section for how to generate the hash.
 
+## Notifications
+
+A configured URL receives a POST when a run completes — a scheduled pass
+finishing, or a full pass being enqueued — in either Apprise's `json://`
+body shape (the default, so anything built for Apprise webhooks works
+unchanged) or this service's own versioned `autoposter/v1` shape. Delivery
+is best-effort by design: bounded retries, and a failed notification never
+fails the run it reports on — it logs one warning and lands in the events
+feed instead. See `deploy/README.md`'s "Outbound notifications config" for
+the config block and both payload contracts.
+
 ## Development
 
 A working Docker installation is the only requirement. There is no host Python
