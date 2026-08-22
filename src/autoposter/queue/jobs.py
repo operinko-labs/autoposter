@@ -60,6 +60,42 @@ async def enqueue(
     return job_id
 
 
+# Rows per INSERT statement in enqueue_batch. At 3 bind parameters per row
+# this stays far below asyncpg's limit while keeping a 15,000-item library at
+# ~15 round trips instead of 15,000.
+BATCH_ROWS = 1000
+
+
+async def enqueue_batch(
+    session: AsyncSession, kind: str, entries: list[tuple[dict, str]]
+) -> int:
+    """Add many jobs in a few set-based statements; return how many were inserted.
+
+    Same coalescing contract as ``enqueue()`` -- the ON CONFLICT clause below
+    must mirror the one there, so an entry whose ``dedupe_key`` already has a
+    pending job inserts nothing and is simply not counted. Duplicate keys
+    *within* ``entries`` collapse the same way: ON CONFLICT DO NOTHING skips a
+    row that conflicts with one inserted earlier in the same statement.
+
+    Set-based on purpose: this backs the full-pass trigger, and one awaited
+    ``enqueue()`` (a commit each) per item would hold the calling request open
+    for the whole library. ``run_after`` is left to its server default,
+    ``now()`` on the database clock, matching ``enqueue()``.
+    """
+    inserted = 0
+    for start in range(0, len(entries), BATCH_ROWS):
+        batch = entries[start : start + BATCH_ROWS]
+        stmt = insert(Job).values(
+            [{"kind": kind, "payload": payload, "dedupe_key": key} for payload, key in batch]
+        ).on_conflict_do_nothing(
+            index_elements=["dedupe_key"], index_where=text("state = 'pending'")
+        )
+        result = await session.execute(stmt)
+        inserted += result.rowcount
+    await session.commit()
+    return inserted
+
+
 async def claim(session: AsyncSession, worker_id: str) -> Job | None:
     """Atomically take the next due job. Concurrent callers never collide."""
     result = await session.execute(_CLAIM_SQL, {"worker": worker_id})

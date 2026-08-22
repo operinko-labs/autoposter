@@ -30,7 +30,7 @@ from autoposter.db.models import (
 )
 from autoposter.db.models import Session as SessionModel
 from autoposter.intake.arr import RenderIntent
-from autoposter.queue.jobs import enqueue
+from autoposter.queue.jobs import enqueue, enqueue_batch
 
 logger = logging.getLogger(__name__)
 
@@ -545,6 +545,65 @@ async def reprocess_item(
             session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key
         )
     return {"queued": job_id is not None, "job_id": job_id}
+
+
+@router.post("/full-pass")
+async def run_full_pass(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Enqueue a process_item job for every known item -- the "run the whole
+    tool now" button. Cheap to trigger casually: unchanged items short-circuit
+    on their render fingerprints.
+
+    Named full-pass, not sweep: "sweep" in this codebase is the scheduled
+    ratings-drift sweep (scheduler/jobs.py), which is stale-only, batched and
+    movie/show-only, and this is none of those things.
+
+    Every kind, not just movies and shows. Seasons and episodes are their own
+    media_items rows, and process_item builds only ART_KINDS_FOR[intent.kind]
+    for the one intent it is given (render/pipeline.py) -- there is no cascade
+    from a show to its seasons -- so a movie/show-only pass would never touch
+    a season poster or a title card. This mirrors the fan-out parse_sonarr
+    already performs on the webhook path (intake/arr.py).
+
+    Deduped in the database, not here: enqueue_batch carries the same ON
+    CONFLICT clause as enqueue(), so triggering again while jobs from the
+    last pass are still pending inserts nothing for those items -- and the
+    response reports that honestly via ``skipped`` rather than claiming to
+    have queued everything again.
+    """
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(
+                    MediaItem.kind,
+                    MediaItem.title,
+                    MediaItem.tmdb_id,
+                    MediaItem.tvdb_id,
+                    MediaItem.imdb_id,
+                    MediaItem.year,
+                    MediaItem.season_number,
+                    MediaItem.episode_number,
+                )
+            )
+        ).all()
+        entries = []
+        for row in rows:
+            intent = RenderIntent(
+                kind=row.kind,
+                title=row.title,
+                tmdb_id=row.tmdb_id,
+                tvdb_id=row.tvdb_id,
+                imdb_id=row.imdb_id,
+                year=row.year,
+                season_number=row.season_number,
+                episode_number=row.episode_number,
+            )
+            entries.append((asdict(intent), intent.dedupe_key))
+        queued = await enqueue_batch(session, "process_item", entries)
+    total = len(entries)
+    return {"total": total, "queued": queued, "skipped": total - queued}
 
 
 @router.get("/config")

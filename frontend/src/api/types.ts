@@ -143,6 +143,16 @@ export interface ReprocessResponse {
   job_id: number | null;
 }
 
+/** POST /api/full-pass. `queued` is how many jobs were actually inserted;
+ * `skipped` counts items whose identical job was already pending, so a second
+ * trigger during a pending pass reports mostly-skipped rather than pretending
+ * to queue the library again. */
+export interface FullPassResponse {
+  total: number;
+  queued: number;
+  skipped: number;
+}
+
 export interface LoginResponse {
   token: string;
   expires_at: string;

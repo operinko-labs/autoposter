@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
@@ -37,14 +37,18 @@ const EVENTS = {
   ],
 };
 
-function stubFetch() {
-  const fetchMock = vi.fn(
-    async (path: string) =>
-      new Response(
-        JSON.stringify(path.startsWith("/api/events") ? EVENTS : STATUS),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-  );
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function stubFetch(fullPass?: (path: string, init?: RequestInit) => Promise<Response>) {
+  const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+    if (path === "/api/full-pass" && fullPass) return fullPass(path, init);
+    return json(path.startsWith("/api/events") ? EVENTS : STATUS);
+  });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -104,6 +108,53 @@ describe("Dashboard", () => {
       await vi.advanceTimersByTimeAsync(30000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("runs a full pass and shows the server's outcome, not an optimistic one", async () => {
+    // Everything already pending: an optimistic UI would claim the library
+    // was queued, but the truthful outcome is zero queued. The exact string
+    // is asserted so a substring like "12" alone cannot satisfy it.
+    const fetchMock = stubFetch(async () => json({ total: 12, queued: 0, skipped: 12 }));
+
+    render(<Dashboard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run full pass" }));
+
+    expect(
+      await screen.findByText("Full pass: 0 queued, 12 already queued (12 items).")
+    ).toBeInTheDocument();
+
+    const passCall = fetchMock.mock.calls.find(([path]) => path === "/api/full-pass");
+    expect(passCall).toBeDefined();
+    expect((passCall![1] as RequestInit).method).toBe("POST");
+  });
+
+  it("disables the button while the pass request is in flight", async () => {
+    let resolvePass!: (response: Response) => void;
+    stubFetch(() => new Promise<Response>((resolve) => (resolvePass = resolve)));
+
+    render(<Dashboard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run full pass" }));
+
+    const running = await screen.findByRole("button", { name: "Running…" });
+    expect(running).toBeDisabled();
+
+    await act(async () => {
+      resolvePass(json({ total: 3, queued: 3, skipped: 0 }));
+    });
+
+    const button = await screen.findByRole("button", { name: "Run full pass" });
+    expect(button).toBeEnabled();
+    expect(screen.getByText("Full pass: 3 queued, 0 already queued (3 items).")).toBeInTheDocument();
+  });
+
+  it("surfaces a failed pass through the error display and claims no outcome", async () => {
+    stubFetch(async () => json({ detail: "the queue is unreachable" }, 500));
+
+    render(<Dashboard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run full pass" }));
+
+    expect(await screen.findByText("the queue is unreachable")).toBeInTheDocument();
+    expect(screen.queryByText(/Full pass:/)).not.toBeInTheDocument();
   });
 
   it("shows the failure rather than an endless spinner", async () => {

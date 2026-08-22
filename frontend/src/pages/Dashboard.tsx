@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "../api/client";
-import { JOB_STATES, type EventsResponse, type Status } from "../api/types";
+import { JOB_STATES, type EventsResponse, type FullPassResponse, type Status } from "../api/types";
 import { formatTime } from "../format";
 import "./dashboard.css";
 
@@ -13,6 +13,34 @@ export function Dashboard() {
   const [status, setStatus] = useState<Status | null>(null);
   const [events, setEvents] = useState<EventsResponse["events"]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [passBusy, setPassBusy] = useState(false);
+  const [passOutcome, setPassOutcome] = useState<FullPassResponse | null>(null);
+
+  // A ref rather than the polling effect's `cancelled` local because the
+  // full-pass response lands in a click handler that local cannot reach --
+  // the same reasoning as the Failures page.
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+
+  async function runFullPass() {
+    setPassBusy(true);
+    setError(null);
+    try {
+      // What is shown afterwards is the server's own count of what it
+      // queued and what was already pending -- never an optimistic claim.
+      const outcome = await apiFetch<FullPassResponse>("/api/full-pass", { method: "POST" });
+      if (live.current) setPassOutcome(outcome);
+    } catch (caught) {
+      if (live.current) setError((caught as Error).message);
+    } finally {
+      if (live.current) setPassBusy(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -60,13 +88,25 @@ export function Dashboard() {
     <>
       <div className="page-header">
         <h1>Dashboard</h1>
-        <span className="muted">
-          {status.workers} worker{status.workers === 1 ? "" : "s"} · {status.processed_last_24h}{" "}
-          processed in 24h
-        </span>
+        <div className="header-actions">
+          <span className="muted">
+            {status.workers} worker{status.workers === 1 ? "" : "s"} · {status.processed_last_24h}{" "}
+            processed in 24h
+          </span>
+          <button type="button" disabled={passBusy} onClick={() => void runFullPass()}>
+            {passBusy ? "Running…" : "Run full pass"}
+          </button>
+        </div>
       </div>
 
       {error !== null && <p className="page-error">{error}</p>}
+
+      {passOutcome !== null && (
+        <p className="muted">
+          Full pass: {passOutcome.queued} queued, {passOutcome.skipped} already queued (
+          {passOutcome.total} item{passOutcome.total === 1 ? "" : "s"}).
+        </p>
+      )}
 
       <div className="stat-grid">
         {JOB_STATES.map((state) => (
