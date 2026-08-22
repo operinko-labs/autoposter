@@ -44,7 +44,7 @@ env:
   # renovate: datasource=docker depName=node versioning=docker
   NODE_VERSION: "26.7.0"
   # renovate: datasource=docker depName=postgres versioning=docker
-  POSTGRES_VERSION: "18.1"
+  POSTGRES_VERSION: "18.6"
   IMAGE_NAME: autoposter
 
 jobs:
