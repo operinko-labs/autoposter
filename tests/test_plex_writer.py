@@ -1,6 +1,6 @@
+import ast
 from datetime import date
 from pathlib import Path
-import re
 
 import pytest
 
@@ -263,28 +263,62 @@ async def test_apply_restores_item_genres_snapshot_after_addgenre():
     assert len(current_tags) > 0, "Genres should not be left empty"
 
 
-def test_no_refresh_calls_in_plex_writer():
-    """Calling item.refresh() tells the Plex server to re-pull metadata from
-    its agents, which can overwrite artwork and locked fields this tool owns.
-    This test ensures no file in src/autoposter/plex/ ever calls .refresh() on
-    any object, preventing accidental metadata rollback as a recovery action."""
-    plex_dir = Path(__file__).parent.parent / "src" / "autoposter" / "plex"
-    assert plex_dir.is_dir(), f"Plex directory not found at {plex_dir}"
+def test_no_refresh_calls_project_wide():
+    """``.refresh()`` on a Plex object is forbidden everywhere in ``src/``.
 
-    for py_file in plex_dir.glob("*.py"):
-        content = py_file.read_text()
-        # Check for .refresh( pattern. Use negative lookbehind to exclude
-        # session.refresh (SQLAlchemy), which is not in this directory anyway.
-        # The pattern looks for .refresh( to catch method calls.
-        if re.search(r"\.refresh\(", content):
-            # Filter out session.refresh specifically (not in this directory
-            # but be defensive), and any other sqlalchemy patterns.
-            for line_num, line in enumerate(content.split("\n"), 1):
-                if re.search(r"\.refresh\(", line) and not re.search(
-                    r"session\.refresh\(", line
-                ):
-                    pytest.fail(
-                        f"{py_file.name}:{line_num} calls .refresh() - "
-                        "Plex metadata refresh reverts locked fields and artwork; "
-                        "it is not an acceptable recovery action"
-                    )
+    It tells the Plex server to re-pull metadata from its agents, which can
+    overwrite artwork and locked fields this tool owns. ``reload()`` -- a
+    plain re-read of existing metadata -- is the permitted alternative.
+
+    An AST walk rather than a text search: ``api/artwork.py`` has a comment
+    reading "never .refresh(), which would have Plex re-pull", and a regex
+    would fail on the very comment documenting the rule. Parsing sees calls
+    only -- not comments, not docstrings -- and gives the line number for
+    free. Chained receivers (``plex.fetchItem(x).refresh()``) still match,
+    since the callee is an ``ast.Attribute`` regardless of receiver shape.
+    What static scanning cannot see is ``getattr(item, "refresh")()`` alias
+    evasion -- which is why the behavioural guard in test_api_artwork.py
+    (``refreshed is False`` on the fake item) must stay alongside this test.
+
+    ``session.refresh(...)`` is SQLAlchemy's and is excluded, but only for a
+    receiver that is the bare name ``session``: a future
+    ``self.session.refresh(obj)`` or ``db_session.refresh(obj)`` would fail
+    this test. That is the guard being conservative, not a real violation --
+    rename the receiver or widen the exclusion deliberately if it happens.
+
+    ``facts/imdb.py`` needs no exemption: its module-level
+    ``async def refresh(...)`` is always called as a bare name
+    (``await refresh(session, ...)``), which parses as ``ast.Name``, not
+    ``ast.Attribute``; and ``self._maybe_refresh()`` is a different
+    attribute. Neither matches this walk's filter.
+    """
+    src_root = Path(__file__).parent.parent / "src" / "autoposter"
+    assert src_root.is_dir(), f"source tree not found at {src_root}"
+
+    scanned, offenders = [], []
+    for path in sorted(src_root.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(src_root).as_posix()
+        scanned.append(relative)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+            if not isinstance(node, ast.Call):
+                continue
+            called = node.func
+            if not isinstance(called, ast.Attribute) or called.attr != "refresh":
+                continue
+            if isinstance(called.value, ast.Name) and called.value.id == "session":
+                continue
+            offenders.append(f"src/autoposter/{relative}:{node.lineno}")
+
+    # The walk has to be shown to have found the tree before "no offenders"
+    # means anything: a scan of nothing passes. These three are the modules
+    # that hold live Plex objects, which is the whole point of the rule.
+    for anchor in ("collections/lists.py", "plex/client.py", "api/artwork.py"):
+        assert anchor in scanned, f"{anchor} was not scanned; the walk found {len(scanned)} files"
+
+    assert not offenders, (
+        "%s calls .refresh() on an object; a Plex metadata refresh reverts "
+        "locked fields and the artwork this project uploaded, and is never an "
+        "acceptable recovery action" % ", ".join(offenders)
+    )

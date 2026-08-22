@@ -4,10 +4,8 @@ These use sync semantics: members not re-selected are removed. That makes an
 empty desired-set catastrophic, which is why several tests here are about
 doing nothing.
 """
-import ast
 import inspect
 from itertools import permutations
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -243,56 +241,10 @@ def test_enforce_order_sees_items_added_since_the_last_read():
 
 
 def test_order_enforcement_reloads_and_never_refreshes():
-    """``.refresh()`` on a Plex object is forbidden project-wide.
-
-    It asks Plex to re-pull metadata from its agents, which reverts locked
-    fields and overwrites the artwork this project uploaded. ``.reload()`` --
-    which order enforcement does need, see the test above -- is a plain read
-    and is fine.
-
-    This used to read ``inspect.getsource(lists)`` while claiming to be
-    project-wide: one module out of the whole tree, covering neither ``plex/``
-    nor ``api/``, and every dispatch in this project has cited it as if it
-    covered everything. So it walks ``src/`` instead.
-
-    An AST walk rather than a text search: ``api/artwork.py`` has a comment
-    reading "never .refresh(), which would have Plex re-pull", and a regex
-    would fail on the very comment documenting the rule. Parsing sees calls
-    only -- not comments, not docstrings -- and gives the line number for
-    free. ``session.refresh(...)`` is SQLAlchemy's, and is excluded by name.
-    """
+    """Order enforcement needs ``.reload()`` (see the test above); the
+    project-wide ban on ``.refresh()`` is enforced by the AST walk in
+    tests/test_plex_writer.py::test_no_refresh_calls_project_wide."""
     assert ".reload()" in inspect.getsource(lists)
-
-    src_root = Path(__file__).parent.parent / "src" / "autoposter"
-    assert src_root.is_dir(), f"source tree not found at {src_root}"
-
-    scanned, offenders = [], []
-    for path in sorted(src_root.rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        relative = path.relative_to(src_root).as_posix()
-        scanned.append(relative)
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
-            if not isinstance(node, ast.Call):
-                continue
-            called = node.func
-            if not isinstance(called, ast.Attribute) or called.attr != "refresh":
-                continue
-            if isinstance(called.value, ast.Name) and called.value.id == "session":
-                continue
-            offenders.append(f"src/autoposter/{relative}:{node.lineno}")
-
-    # The walk has to be shown to have found the tree before "no offenders"
-    # means anything: a scan of nothing passes. These three are the modules
-    # that hold live Plex objects, which is the whole point of the rule.
-    for anchor in ("collections/lists.py", "plex/client.py", "api/artwork.py"):
-        assert anchor in scanned, f"{anchor} was not scanned; the walk found {len(scanned)} files"
-
-    assert not offenders, (
-        "%s calls .refresh() on an object; a Plex metadata refresh reverts "
-        "locked fields and the artwork this project uploaded, and is never an "
-        "acceptable recovery action" % ", ".join(offenders)
-    )
 
 
 async def test_a_second_identical_pass_short_circuits_on_the_stored_hash(session):
