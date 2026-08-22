@@ -199,3 +199,20 @@ Attribution appears **in the UI itself**, on the Settings page
 This was tracked as an acceptance criterion of the UI phase in the spec, not
 as a follow-up — `tests/test_attribution_present.py` asserts against the
 built bundle so the requirement can't regress silently.
+
+---
+
+## Acknowledgments
+
+- [Posterizarr](https://github.com/fscorrupt/Posterizarr) — the poster
+  pipeline this project replaces; its textless-artwork-plus-ImageMagick
+  compositing is what Phase 1 reproduces byte-for-byte.
+- [Kometa](https://github.com/Kometa-Team/Kometa) — the overlay and collection
+  manager this project replaces; the badge images in `assets/badges/` are
+  carried over from it under its MIT license (see
+  `assets/badges/PROVENANCE.md`).
+- [python-plexapi](https://github.com/pkkid/python-plexapi) — the Plex client
+  library this project is built on.
+- [MDBList](https://mdblist.com) — ratings API used for content ratings.
+
+TMDB, TheTVDB, Fanart.tv and IMDb are credited in Attribution above.
