@@ -119,3 +119,44 @@ def test_flat_layout_when_library_folders_is_false(config):
         "/assets/Severance_Season02.jpg"
     )
     assert asset_path(config, "Movies", "Heat (1995)", "poster") == Path("/assets/Heat (1995).jpg")
+
+
+# Characters Plex allows in titles but at least one target filesystem forbids
+# (":" and the rest are illegal on Windows/SMB; "/" is illegal everywhere).
+_FILESYSTEM_FORBIDDEN = set(':/?*"<>|')
+
+
+def test_illegal_title_characters_cannot_reach_the_asset_path(config):
+    """Phase 5b, roadmap row 15: a Plex title may carry characters no
+    filesystem accepts. Asset paths are built from the item's *on-disk*
+    folder name (``derive_root_folder``) plus fixed file names -- the title
+    is never a path input (``asset_path`` has no title parameter, and
+    ``plex/client.py`` raises rather than falling back to the title when no
+    media path is inside a library root) -- so a title like this one must
+    leave the path exactly as the disk dictates, with no illegal characters
+    in any segment below the assets root.
+    """
+    # The title Plex holds; it never enters the functions under test.
+    _plex_title = 'Alien: Romulus? "Uncut" <4K> *HDR* | Part 1/2'
+
+    root_folder = derive_root_folder(
+        "/mnt/Media/Movies",
+        "/mnt/Media/Movies/Alien Romulus (2024)/Alien.Romulus.2024.mkv",
+        is_directory=False,
+    )
+    path = asset_path(config, "Movies", root_folder, "poster")
+
+    assert path == Path("/assets/Movies/Alien Romulus (2024)/poster.jpg")
+    for segment in path.parts[1:]:  # skip the "/" root part
+        assert not (set(segment) & _FILESYSTEM_FORBIDDEN), segment
+
+
+def test_flat_layout_paths_are_also_free_of_illegal_characters(config):
+    """The flat layout concatenates the root folder verbatim
+    (``naming.py:79-82``); it is fed by the same on-disk name, so it holds
+    the same invariant."""
+    config.library_folders = False
+    path = asset_path(config, "Movies", "Alien Romulus (2024)", "background")
+    assert path == Path("/assets/Alien Romulus (2024)_background.jpg")
+    for segment in path.parts[1:]:
+        assert not (set(segment) & _FILESYSTEM_FORBIDDEN), segment

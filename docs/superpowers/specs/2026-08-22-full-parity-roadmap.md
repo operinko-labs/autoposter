@@ -87,25 +87,27 @@ Appendix A; the completeness pass and counts are in the footer. Rows marked
 **(verify)** carry an inventory "unknown" forward as a named verification task instead
 of resolving it by assumption. Config impact: **exercised** = the user's real config
 exercises it today; **parity-only** = present in the tools but disabled/unused;
-**spec §6** = owed by the autoposter design spec itself.
+**spec §6** = owed by the autoposter design spec itself. Rows carrying
+**answered 5b:** were verified in phase 5b; the file:line evidence behind each
+one-liner is in `.superpowers/sdd/p5b-task-1-report.md`.
 
 | # | Gap | What it is | Difficulty | Config impact | Depends on |
 |---|---|---|---|---|---|
-| 1 | Smart vs dumb CS collections (verify) | Confirm whether `buckets.py` creates Plex-native smart collections or reconciled dumb ones | S — read code + one Plex call | exercised | — |
-| 2 | `collection_order: custom` applied (verify) | Confirm `reconcile.py` actually applies builder ordering to Plex | S — read code | exercised (charts) | — |
-| 3 | Metadata lock semantics (verify) | Confirm whether `plex/writer.py` locks fields the way Kometa's lock/unlock sources do | S — read code | exercised | — |
+| 1 | Smart vs dumb CS collections (verify) | Confirm whether `buckets.py` creates Plex-native smart collections or reconciled dumb ones. **answered 5b:** Plex-native smart — created with `smart=True` and live `contentRating` filters (`reconcile.py:364-374`); no membership is ever maintained | S — read code + one Plex call | exercised | — |
+| 2 | `collection_order: custom` applied (verify) | Confirm `reconcile.py` actually applies builder ordering to Plex. **answered 5b:** yes — created with `sortUpdate("custom")` (`lists.py:145-148`) and source order enforced every pass by `_enforce_order`/`moveItem` (`lists.py:30-59,170`); Oscar year collections deliberately use `release` (`sources.py:82-84`) | S — read code | exercised (charts) | — |
+| 3 | Metadata lock semantics (verify) | Confirm whether `plex/writer.py` locks fields the way Kometa's lock/unlock sources do. **answered 5b:** yes — every written field carries `{field}.locked=1` in the same edit (`writer.py:101-104`), genres via `genres.locked=1` and `addGenre/removeGenre(locked=True)` (`writer.py:87,147,156`); unchanged fields are never touched, matching Kometa's lock-on-edit default | S — read code | exercised | — |
 | 4 | Collection poster render path (verify) | Styled text-composite (Posterizarr `CollectionTitlePosterPart`) vs hosted-image-only; is `AddCollectionTitle` honoured? | S — read code + compare output | **exercised** (fonts configured) | — |
-| 5 | `collection_mode` / `sort_title` on creation (verify) | Confirm created collections get display mode and sort-title prefixes the defaults set | S — inspect created collections | exercised (indirect) | — |
+| 5 | `collection_mode` / `sort_title` on creation (verify) | Confirm created collections get display mode and sort-title prefixes the defaults set. **answered 5b:** no on creation — `collection_mode` is set nowhere in the codebase, and a sort title only on the separator (`reconcile.py:254`); adopted Kometa collections keep theirs, but a newly created one (e.g. each year's new Oscars collection) gets neither → follow-up row 104 | S — inspect created collections | exercised (indirect) | — |
 | 6 | Download-only mode (verify) | Posterizarr `ImageProcessing: false` — fetch/move art with no compositing; does any autoposter mode match? | S — likely a per-kind switch | parity-only | — |
 | 7 | Show-vs-movie overlay override (verify) | `showoverlayfile` — a different fade for show posters than movie posters | S — schema question | parity-only | — |
-| 8 | `AddEPTitleText`/`AddEPText` toggles (verify) | Title-card text lines independently toggleable, or rendered unconditionally? | S — read `render/` | exercised (at defaults) | — |
+| 8 | `AddEPTitleText`/`AddEPText` toggles (verify) | Title-card text lines independently toggleable, or rendered unconditionally? **answered 5b:** two independent blocks with their own `add_text` (`schema.py:117-123`, `pipeline.py:100-119,471-475`), except disabling the title line also suppresses the episode line; the user runs both on (posterizarr config `AddEPTitleText`/`AddEPText` both true), so the asymmetry is not exercised | S — read `render/` | exercised (at defaults) | — |
 | 9 | `UseBGLogo` / `TextlessPosterBypass` (verify) | Logo-on-backgrounds and with-text-fallback-despite-textless behaviours | S — read code | parity-only | — |
 | 10 | TVDB subscriber PIN (verify) | `apikey#pin` key format support in the TVDB client | S — read client | parity-only | — |
 | 11 | Season/title-card fallback chain (verify) | `ShowFallback`, `UseBackgroundAsTitleCard`, `BackgroundFallback` — what does autoposter do when no season/episode art exists? | S — read ladder code | parity-only | — |
 | 12 | `FollowSymlink` semantics (verify) | Whether security-driven symlink resolution conflicts with opt-in symlinked asset trees | S — read `naming.py`/adoption | parity-only | — |
-| 13 | `SkipTBA` regex + delete-on-match (verify) | Whether skip words are regex-capable and whether a matching existing card is deleted | S — read code | exercised | — |
+| 13 | `SkipTBA` regex + delete-on-match (verify) | Whether skip words are regex-capable and whether a matching existing card is deleted. **answered 5b:** literal case-insensitive whole-title match, not regex (`pipeline.py:137-141`); an existing card is left in place — the skip returns before any compose/upload and nothing deletes it (`pipeline.py:320-323`); user config: `SkipTBA=true` (covered), `SkipJapTitle=false` (not exercised) | S — read code | exercised | — |
 | 14 | Multiple movie/show versions (verify) | Posterizarr covers all versions (theatrical/director's cut); confirm autoposter's per-item model does | S–M — may reveal a real gap | exercised (implicit) | — |
-| 15 | `name_mapping` / illegal characters (verify) | Confirm `render/naming.py` handles characters Plex titles allow but filesystems don't | S — read + test | exercised (implicit) | — |
+| 15 | `name_mapping` / illegal characters (verify) | Confirm `render/naming.py` handles characters Plex titles allow but filesystems don't. **answered 5b:** titles never enter paths — asset paths come from the item's on-disk folder name (`naming.py:17-36,67-82`), and resolution raises rather than falling back to the title (`plex/client.py:203-214`); guarded by two tests in `tests/test_naming.py`; the user's Kometa config sets no `name_mapping` | S — read + test | exercised (implicit) | — |
 | 16 | Render throughput without a text-size cache (verify) | Posterizarr caches ImageMagick text measurements; confirm fingerprint gating keeps a full re-render tolerable without one | S — measure a forced sweep | exercised (implicit) | full-pass trigger |
 | 17 | Tracearr payload/API harvest (verify) | Capture real webhook payloads and REST responses from the user's live instance before writing any schema — payload shapes are **unverified** until then | S — harvest, in the project's oracle style | new integration | live Tracearr deploy |
 | 18 | **Outbound job/run webhook (n8n)** | POST a completion notification to a configured URL when a run/sweep finishes — the `kometa-trigger` chain's lifeline. The exercised Posterizarr path (`AppriseUrl`) is in fact a plain webhook POST to n8n | S — one POST with retry | **exercised — cutover-critical** | — |
@@ -194,6 +196,7 @@ exercises it today; **parity-only** = present in the tools but disabled/unused;
 | 101 | Plex search DSL | `plex_search` + the full search/sort attribute matrix — a query language against Plex (~60 attributes, modifiers, and/or nesting, limits, sorts) | **XL — multi-week even fully parallelised** | parity-only (exercised only indirectly via CS defaults) | 9a model |
 | 102 | Dynamic collections engine | One collection per distinct value: enumeration per type, include/exclude/addons, key-name/title overrides and formats, lifecycle (create, delete-below-minimum), sync | **XL** — only the CS content-rating instance exists | exercised (CS buckets are one instance of it) | 95; 9a for some types |
 | 103 | Action Center + asset-quality tracking | Track *why* each chosen asset is imperfect (language rank, provider rank, truncated text, text-fallback, missing), a review queue with resolve/replace/delete and bulk ops | **XL — the largest net-new subsystem**; nothing models "succeeded but suboptimal" | parity-only (but the biggest Posterizarr UI feature) | 73 |
+| 104 | Sort-title prefix / `collection_mode` on the create paths | Row 5 follow-up (5b): the create paths (`reconcile.py:364-368`, `lists.py:145-150`) set neither Kometa's `!<section>_` sort-title prefixes nor a display mode, so a collection created fresh (each year's new Oscars collection, a new age bucket) sorts by bare title while its adopted siblings keep Kometa's prefix | S — copy the family's sort-title scheme into the create paths | exercised (indirect) | — |
 
 ---
 
@@ -749,7 +752,8 @@ builders → row 63); the counts below are of *inventory rows*, not gap rows.
 | **Total** | **201** | **143** | **58** |
 
 The 143 placed inventory rows collapse into the 103 numbered rows of Part 1 (17
-verification + 86 implementation). One row changed disposition after the inventories
+verification + 86 implementation). Row 104 is not an inventory row: it was added
+by phase 5b's verification sweep as the scoped follow-up to row 5. One row changed disposition after the inventories
 were written: Tautulli (3 inventory rows) moved from "planned/missing" to superseded
 by the user's Tracearr decision, and 2 Tracearr rows moved from account-flagged-out to
 in-scope for the same reason; both movements are counted in the table above as placed
