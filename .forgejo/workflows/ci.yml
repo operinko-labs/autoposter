@@ -178,6 +178,7 @@ jobs:
           cid=$(docker create --network ci-db -w /usr/src \
             -e CI=true \
             -e AUTOPOSTER_TEST_DATABASE_URL=postgresql+asyncpg://autoposter:autoposter@ci-postgres:5432/autoposter_magick \
+            -e AUTOPOSTER_MAINTENANCE_DATABASE_URL=postgresql://autoposter:autoposter@ci-postgres:5432/postgres \
             python:${{ env.PYTHON_VERSION }}-alpine sh -euc '
               apk add --no-cache imagemagick imagemagick-jpeg imagemagick-webp \
                 imagemagick-svg font-dejavu
