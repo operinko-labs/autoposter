@@ -2,6 +2,8 @@
 import asyncio
 import logging
 import os
+from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import asdict
 
 import httpx
@@ -776,6 +778,131 @@ async def run_full_pass(
     return {"total": total, "queued": queued, "skipped": skipped}
 
 
+def _host_only(url: str) -> str:
+    """A notification URL reduced to its host.
+
+    ``notifications.url`` may embed a token in its path (Uptime-Kuma style),
+    and every payload that reaches the operator over HTTP carries the host
+    only -- the ``_record_failure`` stance in notify/dispatch.py.
+    """
+    try:
+        return httpx.URL(url).host or ""
+    except Exception:  # a malformed URL must not break the endpoint
+        return ""
+
+
+# Config paths whose served value is *not* the stored value, mapped to the
+# reduction ``GET /api/config`` applies. Derived rather than duplicated below,
+# because three things have to agree about this set and any drift between them
+# corrupts a stored setting: the redaction itself, the ``redacted_paths`` the
+# response advertises, and the keep-sentinel resolution on the write path.
+_REDACTORS: dict[str, Callable[[str], str]] = {"notifications.url": _host_only}
+REDACTED_PATHS: tuple[str, ...] = tuple(_REDACTORS)
+
+# What an editor sends at a ``REDACTED_PATHS`` path to mean "leave the stored
+# override exactly as it is".
+#
+# This exists because a page that was served a *truncated* value cannot send
+# that value back: doing so would store the truncation as the override and
+# destroy the real setting (a push token silently gone), while leaving the
+# path out would drop the override instead. Neither is expressible from
+# redacted data, so the editor says "keep" and the server -- which still has
+# the stored value -- resolves it. Spelled exactly once, here, and published
+# by the GET as ``keep_sentinel`` so no client carries a copy of it.
+KEEP_SENTINEL = "***KEEP***"
+
+_MISSING = object()
+
+
+def _read_path(document: dict, path: str) -> object:
+    """The value ``path`` names in ``document``, or ``_MISSING``."""
+    current: object = document
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return _MISSING
+        current = current[part]
+    return current
+
+
+def _set_path(document: dict, path: str, value: object) -> None:
+    """Write ``value`` at ``path``, creating the intermediate mappings."""
+    parts = path.split(".")
+    current = document
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[parts[-1]] = value
+
+
+def _sentinel_occurrences(value: object, path: str = "") -> list[tuple[str, bool]]:
+    """Every place ``KEEP_SENTINEL`` appears in a document.
+
+    ``(dotted path, replaceable)``, where ``replaceable`` is true only when the
+    sentinel *is* the whole value at that path -- the one shape a stored
+    override can be substituted into. A sentinel buried inside a list is
+    reported at the list's own path with false, so it is rejected outright
+    rather than half-resolved into a list the operator never asked for.
+    """
+    if isinstance(value, str):
+        return [(path, True)] if value == KEEP_SENTINEL else []
+    if isinstance(value, dict):
+        found: list[tuple[str, bool]] = []
+        for key, child in value.items():
+            where = f"{path}.{key}" if path else str(key)
+            found.extend(_sentinel_occurrences(child, where))
+        return found
+    if isinstance(value, list):
+        buried = any(_sentinel_occurrences(item, path) for item in value)
+        return [(path, False)] if buried else []
+    return []
+
+
+async def _resolve_keep_sentinels(request: Request, document: dict) -> dict:
+    """``document`` with every keep sentinel replaced by the stored override.
+
+    Returns the document unchanged when it carries no sentinel, which is the
+    ordinary case. The sentinel is resolved *before* validation and before
+    persistence, so it never reaches either as a literal -- a config whose
+    ``notifications.url`` is the string ``***KEEP***`` is not a config anyone
+    asked for, and storing one would be exactly the corruption this guards.
+
+    Two ways to get a 422, both labelled with the path:
+
+    - the sentinel anywhere but as the whole value at a ``REDACTED_PATHS``
+      path, which is meaningless -- nothing there was redacted, so the client
+      was never denied the real value and has no reason to ask for it back;
+    - the sentinel at a redacted path with no stored override, where there is
+      no value to keep. Answering it with the mounted file's value would turn
+      "keep what is stored" into "freeze today's file value as an override".
+    """
+    occurrences = _sentinel_occurrences(document)
+    if not occurrences:
+        return document
+
+    async with request.app.state.session_factory() as session:
+        stored = await load_overrides_document(session)
+
+    resolved = deepcopy(document)
+    errors: list[dict] = []
+    for path, replaceable in occurrences:
+        if not replaceable or path not in REDACTED_PATHS:
+            errors.append(
+                _error(path, "the keep marker is only accepted as the whole value of a redacted setting")
+            )
+            continue
+        value = _read_path(stored, path)
+        if value is _MISSING:
+            errors.append(_error(path, "there is no stored override here to keep"))
+            continue
+        _set_path(resolved, path, value)
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
+    return resolved
+
+
 @router.get("/config")
 async def get_config(
     request: Request, _: SessionModel = Depends(require_session)
@@ -790,28 +917,29 @@ async def get_config(
 
     ``notifications.url`` lives in ``Config``, not ``Secrets``, so the
     wholesale redaction above never touches it -- but it may embed a token
-    in its path (Uptime-Kuma style), and every payload that reaches the
-    operator over HTTP carries the host only (the ``_record_failure``
-    stance in notify/dispatch.py). It is reduced to its host here; the full
-    URL stays in the config file the operator already owns.
+    in its path (Uptime-Kuma style), so it is reduced to its host by
+    ``_REDACTORS``; the full URL stays in the config file the operator
+    already owns.
 
-    Carries two things the editor needs beyond the values themselves.
+    Carries four things the editor needs beyond the values themselves.
     ``overridden_paths`` is the provenance: which of these values come from
     the database overrides rather than the mounted YAML, so the UI can mark
     them and offer "revert to base". ``frozen_paths`` maps each restart-only
     path to the reason a live swap cannot reach it (see config/live.py) --
     sent as data so the editor can flag a field without duplicating this
-    project's startup wiring in TypeScript.
+    project's startup wiring in TypeScript. ``redacted_paths`` and
+    ``keep_sentinel`` are the other half of the same honesty: they name the
+    values this response is *not* telling the truth about, and give the
+    editor the one token it can send back for them without either destroying
+    the stored value or dropping it (see ``KEEP_SENTINEL``).
     """
     config = request.app.state.config
     secrets = request.app.state.secrets
     body = config.model_dump(mode="json")
-    if body["notifications"]["url"]:
-        try:
-            host = httpx.URL(body["notifications"]["url"]).host or ""
-        except Exception:  # a malformed URL must not break the endpoint
-            host = ""
-        body["notifications"]["url"] = host
+    for path, redact in _REDACTORS.items():
+        value = _read_path(body, path)
+        if isinstance(value, str) and value:
+            _set_path(body, path, redact(value))
     body["secrets"] = {field: _REDACTED for field in secrets.model_dump()}
     async with request.app.state.session_factory() as session:
         try:
@@ -826,6 +954,8 @@ async def get_config(
             ) from exc
     body["overridden_paths"] = sorted(document_paths(document))
     body["frozen_paths"] = dict(FROZEN_SECTIONS)
+    body["redacted_paths"] = list(REDACTED_PATHS)
+    body["keep_sentinel"] = KEEP_SENTINEL
     return body
 
 
@@ -893,8 +1023,13 @@ def _render_affecting(before: Config, after: Config) -> bool:
     return after.version != before.version or after.skip_tba != before.skip_tba
 
 
-async def _validated_generation(request: Request, document: dict) -> Config:
-    """Build the config generation ``document`` describes, or raise 422.
+async def _validated_generation(request: Request, document: dict) -> tuple[dict, Config]:
+    """The document to store and the generation it describes, or a 422.
+
+    Returns the *resolved* document, not the one that arrived: keep sentinels
+    are substituted here (``_resolve_keep_sentinels``) and every caller
+    persists what comes back, so the sentinel cannot reach the database or
+    pydantic as a literal by any route.
 
     Nothing here persists, swaps or enqueues anything: every failure mode is
     reached before the first write, which is what "never half-apply" means in
@@ -908,6 +1043,11 @@ async def _validated_generation(request: Request, document: dict) -> Config:
     entirely; the document is always sent whole, so an absent key is
     unambiguous. Both halves are pinned by tests.
     """
+    # First, so that everything below -- the unknown-key walk, the merge and
+    # pydantic -- sees real values rather than a marker they would each
+    # misjudge in their own way.
+    document = await _resolve_keep_sentinels(request, document)
+
     unknown = unknown_key_paths(document)
     if unknown:
         # Ahead of pydantic on purpose: pydantic ignores unknown keys, so
@@ -924,7 +1064,7 @@ async def _validated_generation(request: Request, document: dict) -> Config:
     except ValueError as exc:  # a `secrets` key anywhere in the document
         raise HTTPException(status_code=422, detail=[_error("secrets", str(exc))]) from exc
     try:
-        return build_config(merged)
+        return document, build_config(merged)
     except ValidationError as exc:
         raise HTTPException(
             status_code=422,
@@ -990,8 +1130,8 @@ async def put_config_overrides(
     An invalid document changes nothing at all -- no row, no swap, no event --
     and comes back as a 422 listing ``{path, message}`` per problem.
     """
-    after = await _validated_generation(request, body.document)
-    return await _persist_and_swap(request, body.document, after)
+    document, after = await _validated_generation(request, body.document)
+    return await _persist_and_swap(request, document, after)
 
 
 @router.post("/config/preview")
@@ -1010,7 +1150,7 @@ async def preview_config_overrides(
     null, it is an over-estimate by construction -- render it with a "~".
     """
     before = request.app.state.config
-    after = await _validated_generation(request, body.document)
+    _, after = await _validated_generation(request, body.document)
     impact = None
     if _render_affecting(before, after):
         async with request.app.state.session_factory() as session:
@@ -1038,9 +1178,9 @@ async def apply_config_overrides(
     An edit that cannot change a rendered image queues nothing, for the reason
     the preview reports null impact for it.
     """
-    after = await _validated_generation(request, body.document)
+    document, after = await _validated_generation(request, body.document)
     before = request.app.state.config
-    saved = await _persist_and_swap(request, body.document, after)
+    saved = await _persist_and_swap(request, document, after)
 
     entries: list[tuple[dict, str]] = []
     if _render_affecting(before, after):

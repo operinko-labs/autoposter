@@ -29,6 +29,16 @@ export const TVDB_NOTICE =
  * a value, so the renderer shows it as a badge rather than the raw string. */
 const REDACTED_MARKER = "***REDACTED***";
 
+/** What a field whose served value is redacted says about itself.
+ *
+ * The value in the box is the server's redacted rendering, not the stored
+ * setting -- `notifications.url` arrives as a bare host with its push token
+ * stripped. Leaving it alone keeps the stored value (the document carries the
+ * server's keep sentinel for it); typing replaces the stored value outright.
+ * The operator has to be told which of those they are about to do. */
+export const REDACTED_EDIT_NOTE =
+  "The stored value is hidden and kept as it is. Typing here replaces it.";
+
 /** snake_case -> "Snake case". Derived, never looked up: the config schema
  * grows every phase, and a label table would drift. */
 function labelFor(key: string): string {
@@ -43,7 +53,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Keys the enriched GET adds that are provenance, not configuration.
  * Rendering them as sections would offer the operator an edit the API is
  * bound to reject. */
-const PROVENANCE_KEYS = ["overridden_paths", "frozen_paths"];
+const PROVENANCE_KEYS = [
+  "overridden_paths",
+  "frozen_paths",
+  "redacted_paths",
+  "keep_sentinel",
+];
 
 // --- the overrides document -------------------------------------------------
 //
@@ -108,16 +123,49 @@ function withoutPath(
     : { ...document, [head]: pruned };
 }
 
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+/** The redacted paths this response is usable for, and the marker to send for
+ * them -- both, or neither.
+ *
+ * A response naming redacted paths but carrying no marker cannot be seeded
+ * either way (see `documentFromConfig`), so it is treated as a response that
+ * redacted nothing, which is exactly how this page behaved before the marker
+ * existed. */
+function keepContract(config: ConfigResponse): { paths: string[]; sentinel: string } {
+  const sentinel = config.keep_sentinel;
+  if (typeof sentinel !== "string" || sentinel === "") {
+    return { paths: [], sentinel: "" };
+  }
+  return { paths: stringList(config.redacted_paths), sentinel };
+}
+
 /** The document as the server currently holds it, rebuilt from the paths it
  * says are overridden and the values it is serving for them (an override
  * wins the merge, so the served value *is* the stored one). Without this, a
- * save of one field would drop every override the operator saved earlier. */
+ * save of one field would drop every override the operator saved earlier.
+ *
+ * Except at a redacted path, where the served value is *not* the stored one.
+ * `notifications.url` arrives as a bare host, so seeding it would re-submit
+ * that host as the override and destroy the push token on the next unrelated
+ * save -- and skipping it would drop the override instead. Neither is
+ * recoverable from what this page was given, so the server's keep sentinel
+ * goes in and the server, which still has the stored value, resolves it. */
 function documentFromConfig(config: ConfigResponse): OverridesDocument {
   const paths = config.overridden_paths;
   if (!Array.isArray(paths)) return {};
+  const keep = keepContract(config);
   let document: OverridesDocument = {};
   for (const path of paths) {
     if (typeof path !== "string") continue;
+    if (keep.paths.includes(path)) {
+      document = withPath(document, path, keep.sentinel);
+      continue;
+    }
     const value = readPath(config, path);
     if (value === undefined) continue;
     document = withPath(document, path, value);
@@ -168,6 +216,10 @@ interface Editor {
   document: OverridesDocument;
   overridden: string[];
   frozen: Record<string, string>;
+  /** Paths whose served value is the server's redacted rendering rather than
+   * the stored setting, and the marker that means "keep what is stored". */
+  redacted: string[];
+  sentinel: string;
   errors: Record<string, string>;
   setValue: (path: string, value: unknown) => void;
   clear: (path: string) => void;
@@ -271,11 +323,13 @@ function Field({
   base,
   current,
   editor,
+  title,
 }: {
   path: string;
   base: unknown;
   current: unknown;
   editor: Editor | null;
+  title?: string;
 }) {
   const readOnly = (
     <>
@@ -293,6 +347,7 @@ function Field({
       <input
         type="checkbox"
         aria-label={path}
+        title={title}
         checked={current === true}
         onChange={(event) => editor.setValue(path, event.target.checked)}
       />
@@ -303,6 +358,7 @@ function Field({
       <input
         type="number"
         aria-label={path}
+        title={title}
         value={typeof current === "number" ? String(current) : ""}
         onChange={(event) => {
           const raw = event.target.value;
@@ -317,6 +373,7 @@ function Field({
       <input
         type="text"
         aria-label={path}
+        title={title}
         value={typeof current === "string" ? current : ""}
         onChange={(event) => editor.setValue(path, event.target.value)}
       />
@@ -346,7 +403,13 @@ function ConfigRow({
   editor: Editor | null;
 }) {
   const edited = editor !== null && hasPath(editor.document, path);
-  const current = edited && editor !== null ? readPath(editor.document, path) : value;
+  const pending = edited && editor !== null ? readPath(editor.document, path) : value;
+  const isRedacted = editor !== null && editor.redacted.includes(path);
+  // The sentinel is a state, not a value: it says "the stored setting stays as
+  // it is", so the field shows the server's redacted rendering of that setting
+  // rather than the marker. Typing replaces the marker with what was typed,
+  // and from then on the typed value is what shows.
+  const current = isRedacted && pending === editor.sentinel ? value : pending;
   const restart =
     edited && editor !== null ? frozenReason(editor.frozen, path) : undefined;
   const error = editor?.errors[path];
@@ -355,7 +418,13 @@ function ConfigRow({
     <div className="config-row">
       <span className="config-key">{labelFor(name)}</span>
       <span className="config-value">
-        <Field path={path} base={value} current={current} editor={editor} />
+        <Field
+          path={path}
+          base={value}
+          current={current}
+          editor={editor}
+          title={isRedacted ? REDACTED_EDIT_NOTE : undefined}
+        />
         {editor !== null && editor.overridden.includes(path) && (
           <>
             <span className="config-pill overridden">overridden</span>
@@ -506,6 +575,7 @@ export function Settings() {
     };
   }, [adopt]);
 
+  const keep = config === null ? { paths: [], sentinel: "" } : keepContract(config);
   const editor: Editor = {
     document: pendingDocument,
     overridden: Array.isArray(config?.overridden_paths)
@@ -513,6 +583,8 @@ export function Settings() {
           (path): path is string => typeof path === "string",
         )
       : [],
+    redacted: keep.paths,
+    sentinel: keep.sentinel,
     frozen: isPlainObject(config?.frozen_paths)
       ? Object.fromEntries(
           Object.entries(config.frozen_paths).map(([key, reason]) => [

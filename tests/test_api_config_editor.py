@@ -13,6 +13,7 @@ says which one broke.
    file's is expressed by leaving the key out of the document; writing null
    asks for a null value and is rejected like any other bad value.
 """
+import json
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.api.auth import hash_password
+from autoposter.api.routes import KEEP_SENTINEL
 from autoposter.app import create_app
 from autoposter.config.loader import build_config
 from autoposter.config.schema import Secrets
@@ -580,3 +582,165 @@ async def test_a_rejected_apply_neither_saves_nor_queues(client, auth_headers, s
     assert response.status_code == 422
     assert (await session.execute(select(ConfigOverride))).scalars().all() == []
     assert (await session.execute(select(Job))).scalars().all() == []
+
+
+# --- redacted values and the keep sentinel ---
+#
+# `GET /api/config` serves `notifications.url` as its bare host. An editor
+# that seeds its overrides document from the *served* values -- which is the
+# only thing the page has -- would re-submit that host as the override on the
+# operator's next unrelated save, and the stored URL (token and all) would be
+# gone with nothing failing. Omitting the path instead would silently drop the
+# override. The sentinel is the third option: the page says "keep", and the
+# server, which still holds the stored value, resolves it.
+
+
+def _seed_document(body: dict) -> dict:
+    """The overrides document `Settings.tsx::documentFromConfig` builds.
+
+    Mirrored here rather than imagined, because the corruption this section
+    guards against is a property of that seeding meeting this response. Kept
+    in step with the TypeScript by hand -- there is one rule and it is two
+    lines long: an overridden path contributes its served value, unless the
+    response says the value was redacted, in which case it contributes the
+    sentinel.
+    """
+    redacted = body.get("redacted_paths", [])
+    sentinel = body.get("keep_sentinel")
+    document: dict = {}
+    for path in body["overridden_paths"]:
+        if path in redacted and isinstance(sentinel, str):
+            value = sentinel
+        else:
+            value = body
+            for part in path.split("."):
+                value = value[part]
+        target = document
+        parts = path.split(".")
+        for part in parts[:-1]:
+            target = target.setdefault(part, {})
+        target[parts[-1]] = value
+    return document
+
+
+WEBHOOK_URL = "https://kuma.example.com/api/push/s3cr3tPushToken?status=up"
+
+
+async def test_an_unrelated_save_does_not_destroy_a_redacted_override(
+    client, auth_headers, session, app
+):
+    """The corruption repro, end to end and with no mocking.
+
+    Store a notifications URL, read the config back the way the page does,
+    build the page's seed document from that response, change one unrelated
+    field, and save. The stored URL must come back byte-identical. Without
+    the sentinel this stores `kuma.example.com` -- a valid string for a
+    `str`-typed field, so nothing anywhere reports a problem -- and the push
+    token is unrecoverable from the service.
+    """
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"notifications": {"enabled": True, "url": WEBHOOK_URL}}},
+    )
+    assert app.state.config.notifications.url == WEBHOOK_URL
+
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    assert body["notifications"]["url"] == "kuma.example.com", "the redaction stopped"
+
+    document = _seed_document(body)
+    document["workers"] = 9
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": document}
+    )
+    assert response.status_code == 200, response.json()
+
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored["notifications"]["url"] == WEBHOOK_URL, (
+        "the editor's redacted view of the URL was stored as the override; the "
+        "push token is gone and the webhook now posts to a host with no path"
+    )
+    assert app.state.config.notifications.url == WEBHOOK_URL
+    assert app.state.config.workers == 9, "the edit the operator actually made"
+
+
+async def test_the_sentinel_never_reaches_storage_or_the_running_config(
+    client, auth_headers, session, app
+):
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"notifications": {"url": WEBHOOK_URL}}},
+    )
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"notifications": {"url": KEEP_SENTINEL}}},
+    )
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert KEEP_SENTINEL not in json.dumps(stored)
+    assert app.state.config.notifications.url == WEBHOOK_URL
+
+
+async def test_get_config_advertises_what_it_redacted_and_the_marker_to_send_back(
+    client, auth_headers
+):
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    assert body["redacted_paths"] == ["notifications.url"]
+    assert body["keep_sentinel"] == KEEP_SENTINEL
+    assert body["keep_sentinel"], "a client with no marker cannot keep anything"
+
+
+async def test_the_sentinel_at_a_path_that_was_never_redacted_is_a_422(
+    client, auth_headers, session
+):
+    """Nothing was withheld at `plex.url`, so there is nothing to ask back for
+    -- and resolving it would mean guessing which stored value was meant."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"plex": {"url": KEEP_SENTINEL}}},
+    )
+    assert response.status_code == 422
+    assert [e["path"] for e in response.json()["detail"]] == ["plex.url"]
+    assert (await session.execute(select(ConfigOverride))).scalars().all() == []
+
+
+async def test_the_sentinel_inside_a_list_is_a_422_at_the_lists_own_path(
+    client, auth_headers
+):
+    """A list is merged whole, so a sentinel in one slot has no stored scalar
+    to resolve against; half-resolving it would store the marker."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"plex": {"excluded_libraries": ["Photos", KEEP_SENTINEL]}}},
+    )
+    assert response.status_code == 422
+    assert [e["path"] for e in response.json()["detail"]] == ["plex.excluded_libraries"]
+
+
+async def test_the_sentinel_with_no_stored_override_is_a_422(client, auth_headers, session):
+    """"Keep what is stored" when nothing is stored. Answering it with the
+    mounted file's value would quietly turn today's file value into an
+    override and freeze it against every future change to the YAML."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"notifications": {"url": KEEP_SENTINEL}}},
+    )
+    assert response.status_code == 422
+    assert [e["path"] for e in response.json()["detail"]] == ["notifications.url"]
+    assert (await session.execute(select(ConfigOverride))).scalars().all() == []
+
+
+async def test_the_sentinel_resolves_on_preview_and_apply_too(client, auth_headers, session):
+    """The three write-path endpoints share one validator; a sentinel that
+    worked only on PUT would make Preview lie about the save it previews."""
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"notifications": {"url": WEBHOOK_URL}}},
+    )
+    document = {"notifications": {"url": KEEP_SENTINEL}, "scheduler": {"drift_days": 3}}
+
+    preview = await client.post("/api/config/preview", headers=auth_headers, json={"document": document})
+    assert preview.status_code == 200, preview.json()
+
+    applied = await client.post("/api/config/apply", headers=auth_headers, json={"document": document})
+    assert applied.status_code == 200, applied.json()
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored["notifications"]["url"] == WEBHOOK_URL

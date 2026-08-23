@@ -10,7 +10,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
-import { Settings, TMDB_NOTICE } from "./Settings";
+import { REDACTED_EDIT_NOTE, Settings, TMDB_NOTICE } from "./Settings";
 
 const REDACTED = "***REDACTED***";
 
@@ -464,5 +464,174 @@ describe("Settings editor", () => {
     await save();
 
     expect(putDocument(fetchMock)).toEqual({ document: { badges: { enabled: false } } });
+  });
+
+  it("clearing a number input takes the field back out of the document", async () => {
+    const fetchMock = stubApi();
+    await renderSettings();
+
+    const field = screen.getByLabelText("workers");
+    fireEvent.change(field, { target: { value: "9" } });
+    expect(screen.getByRole("heading", { name: "Pending changes" })).toBeInTheDocument();
+
+    // An empty number input is not "workers = 0" and it is not "workers =
+    // null" either -- the operator emptied a box mid-edit. The field goes back
+    // to the served value and the document stops carrying it, so there is
+    // nothing pending to save.
+    fireEvent.change(field, { target: { value: "" } });
+    expect(screen.queryByRole("heading", { name: "Pending changes" })).toBeNull();
+    expect(screen.getByLabelText("workers")).toHaveValue(5);
+
+    fireEvent.change(field, { target: { value: "9" } });
+    await save();
+    expect(putDocument(fetchMock)).toEqual({ document: { workers: 9 } });
+  });
+
+  it("marks a field under a frozen prefix, not only a frozen path itself", async () => {
+    // `frozen_paths` keys are prefixes: `plex` freezes everything beneath it.
+    // A page that only matched the key exactly would tell an operator that
+    // `plex.url` applies live, which it does not.
+    stubApi({
+      config: {
+        ...EDITOR_CONFIG,
+        frozen_paths: {
+          ...EDITOR_CONFIG.frozen_paths,
+          plex: "the Plex client is built once at startup",
+        },
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("plex.url"), {
+      target: { value: "http://plex:32401" },
+    });
+
+    const marker = within(rowOf(screen.getByLabelText("plex.url"))).getByText(
+      "restart to apply",
+    );
+    expect(marker).toHaveAttribute("title", "the Plex client is built once at startup");
+  });
+
+  it("surfaces a save that failed for a reason that is not a field error", async () => {
+    stubApi({ put: json({ detail: "the database is unreachable" }, 500) });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await save();
+
+    const panel = screen
+      .getByRole("heading", { name: "Pending changes" })
+      .closest("section") as HTMLElement;
+    expect(within(panel).getByText("the database is unreachable")).toBeInTheDocument();
+    // A failed save is not a save, and it must not throw the edit away either:
+    // the document is still pending and still saveable.
+    expect(screen.queryByText(/Saved/)).toBeNull();
+    expect(within(panel).getByText(/"workers": 9/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+});
+
+/** A value the server serves in a redacted form is the one thing this page
+ * cannot round-trip. Seeding the document with what was served would store the
+ * redaction -- `notifications.url` would become a bare host and its push token
+ * would be gone -- and leaving the path out would drop the override instead.
+ * The server names such paths and hands over a marker meaning "keep what is
+ * stored"; these tests pin that the page uses it. */
+const KEEP = "***KEEP***";
+
+const REDACTED_CONFIG = {
+  ...EDITOR_CONFIG,
+  notifications: { enabled: true, url: "kuma.example.com" },
+  overridden_paths: ["notifications.enabled", "notifications.url"],
+  redacted_paths: ["notifications.url"],
+  keep_sentinel: KEEP,
+};
+
+describe("Settings editor, redacted values", () => {
+  it("seeds a redacted override with the server's keep marker, not with what it was served", async () => {
+    const fetchMock = stubApi({ config: REDACTED_CONFIG });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await save();
+
+    const body = putDocument(fetchMock);
+    expect(body).toEqual({
+      document: {
+        workers: 9,
+        notifications: { enabled: true, url: KEEP },
+      },
+    });
+    // The exact failure: the served host submitted back as the override.
+    expect(JSON.stringify(body)).not.toContain("kuma.example.com");
+  });
+
+  it("shows the served redaction in the field and says what typing into it does", async () => {
+    stubApi({ config: REDACTED_CONFIG });
+    await renderSettings();
+
+    const field = screen.getByLabelText("notifications.url");
+    // The marker is a state, not a value -- an operator must never be shown
+    // "***KEEP***" as the current setting.
+    expect(field).toHaveValue("kuma.example.com");
+    expect(field).toHaveAttribute("title", REDACTED_EDIT_NOTE);
+  });
+
+  it("shows the keep marker in the pending document, never the truncated value", async () => {
+    stubApi({ config: REDACTED_CONFIG });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+
+    const pre = document.querySelector(".config-document") as HTMLElement;
+    expect(pre.textContent).toContain(KEEP);
+    expect(pre.textContent).not.toContain("kuma.example.com");
+  });
+
+  it("replaces the keep marker with what is typed into the field", async () => {
+    const fetchMock = stubApi({ config: REDACTED_CONFIG });
+    await renderSettings();
+
+    const url = "https://kuma.example.com/api/push/newToken";
+    fireEvent.change(screen.getByLabelText("notifications.url"), {
+      target: { value: url },
+    });
+    expect(screen.getByLabelText("notifications.url")).toHaveValue(url);
+    await save();
+
+    const body = putDocument(fetchMock);
+    expect(body).toEqual({
+      document: { notifications: { enabled: true, url } },
+    });
+    expect(JSON.stringify(body)).not.toContain(KEEP);
+  });
+
+  it("falls back to the served value when the server names no marker", async () => {
+    // A response that lists redacted paths but no marker cannot be seeded
+    // either way, so the page behaves as it did before the marker existed
+    // rather than inventing one.
+    const fetchMock = stubApi({
+      config: { ...REDACTED_CONFIG, keep_sentinel: undefined },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await save();
+
+    expect(putDocument(fetchMock)).toEqual({
+      document: {
+        workers: 9,
+        notifications: { enabled: true, url: "kuma.example.com" },
+      },
+    });
+  });
+
+  it("does not render the redaction contract as configuration", async () => {
+    stubApi({ config: REDACTED_CONFIG });
+    await renderSettings();
+
+    expect(screen.queryByLabelText("keep_sentinel")).toBeNull();
+    expect(screen.queryByText("Redacted paths")).toBeNull();
+    expect(screen.queryByText("Keep sentinel")).toBeNull();
   });
 });
