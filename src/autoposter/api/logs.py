@@ -82,6 +82,15 @@ class LogBuffer(logging.Handler):
             loop = self._loop
             has_subscribers = bool(self._subscribers)
         if loop is not None and has_subscribers:
+            # A subscriber arriving between the append above and the scheduled
+            # fanout sees this entry twice: once in its backlog, once from the
+            # queue. One duplicated line at connect time, accepted -- closing
+            # the window would mean holding the lock across the loop hop.
+            #
+            # Outside the try/handleError guard above deliberately: a closed
+            # loop here means the lifespan failed to detach this handler
+            # before shutting the loop down, which should surface, not be
+            # swallowed as a formatting error.
             loop.call_soon_threadsafe(self._fanout, entry)
 
     def _fanout(self, entry: dict) -> None:
