@@ -72,13 +72,15 @@ def dist(tmp_path) -> Path:
 def _stub_build_dependencies(monkeypatch, dist):
     """Replace everything `build()` needs besides the SPA wiring under test.
 
-    `load_config` reads a real file, `Secrets.from_env` reads real
-    environment variables, `make_engine` opens a real database connection
-    pool, and `PlexClient` wraps a (lazily-connecting) real Plex server --
-    none of that is what this test is about, so all four are stubbed with
-    lightweight stand-ins.
+    `effective_config` reads a real file *and* the overrides row in a real
+    database, `Secrets.from_env` reads real environment variables,
+    `make_engine` opens a real database connection pool, and `PlexClient`
+    wraps a (lazily-connecting) real Plex server -- none of that is what this
+    test is about, so all four are stubbed with lightweight stand-ins.
     """
-    monkeypatch.setattr(main_module, "load_config", lambda path: load_config(EXAMPLE))
+    monkeypatch.setattr(
+        main_module, "effective_config", lambda database_url: load_config(EXAMPLE)
+    )
     monkeypatch.setattr(main_module, "Secrets", _FakeSecrets)
     monkeypatch.setattr(main_module, "make_engine", lambda url: object())
     monkeypatch.setattr(

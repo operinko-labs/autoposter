@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from autoposter.config.loader import load_config
+from autoposter.config.loader import build_config, load_config, read_config_document
 from autoposter.config.schema import Secrets
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -177,6 +177,18 @@ def test_changing_an_artwork_setting_does_change_the_version(tmp_path):
     changed = _variant(tmp_path, "artwork.yaml", "output_quality: 92%", "output_quality: 88%")
     assert changed.artwork.output_quality == "88%"
     assert changed.version != load_config(EXAMPLE).version
+
+
+def test_load_config_and_build_config_are_one_construction_path():
+    """The overrides layer builds its ``Config`` from a merged dict rather
+    than from the file, so validation and the ``version`` derivation must live
+    in a piece both callers share -- not be duplicated into the new path,
+    where it could drift and silently start versioning merged configs
+    differently from file-only ones."""
+    from_file = load_config(EXAMPLE)
+    from_document = build_config(read_config_document(EXAMPLE))
+    assert from_document.model_dump(mode="json") == from_file.model_dump(mode="json")
+    assert from_document.version == from_file.version
 
 
 def test_changing_an_asset_root_does_change_the_version(tmp_path):

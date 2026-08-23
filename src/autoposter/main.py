@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -8,8 +9,9 @@ from plexapi.server import PlexServer
 
 from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.app import create_app
-from autoposter.config.loader import load_config
-from autoposter.config.schema import Secrets
+from autoposter.config.holder import ConfigHolder
+from autoposter.config.overrides import load_effective_config
+from autoposter.config.schema import Config, Secrets
 from autoposter.db.base import make_engine, make_session_factory
 from autoposter.plex.client import PlexClient
 
@@ -51,6 +53,32 @@ class _LazyPlexServer:
         return getattr(self._connect(), name)
 
 
+def effective_config(database_url: str) -> Config:
+    """The YAML config with the database overrides merged over it.
+
+    ``build()`` is called by uvicorn before the server's event loop exists, so
+    the overrides read runs in its own ``asyncio.run`` -- and therefore on its
+    own engine, disposed before that loop closes. Handing the application's
+    engine to a loop that is about to be thrown away would leave a dead
+    asyncpg connection in its pool for the first request to find.
+
+    The table is assumed to exist: every entry point runs behind
+    ``alembic upgrade head`` (see docker-compose.yml's ``api`` command and the
+    deployment's init step), which is already what the rest of the code
+    assumes.
+    """
+
+    async def read() -> Config:
+        engine = make_engine(database_url)
+        try:
+            async with make_session_factory(engine)() as session:
+                return await load_effective_config(CONFIG_PATH, session)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
 def build() -> FastAPI:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     # httpx logs one INFO line per request carrying the FULL url, and two of
@@ -60,12 +88,17 @@ def build() -> FastAPI:
     # as an api_key query parameter (providers/fanart.py). Neither may reach
     # the pod logs, so httpx speaks only at WARNING and above.
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    config = load_config(CONFIG_PATH)
     secrets = Secrets.from_env()
+    config = effective_config(secrets.database_url)
 
     engine = make_engine(secrets.database_url)
     session_factory = make_session_factory(engine)
     app = create_app(config, session_factory, secrets, run_background=True)
+    # The generation the running process is on. ``app.state.config`` stays the
+    # same object and is rebound on every swap, so the per-request readers that
+    # already exist need no changes; consumers that want liveness read the
+    # holder instead.
+    app.state.config_holder = ConfigHolder(config)
 
     app.state.plex = PlexClient(
         server=_LazyPlexServer(config.plex.url, secrets.plex_token),

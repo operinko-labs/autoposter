@@ -19,7 +19,7 @@ from pathlib import Path
 from plexapi.server import PlexServer
 
 from autoposter.adopt.walk import adopt_library
-from autoposter.config.loader import load_config
+from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
 
@@ -41,16 +41,22 @@ async def fetch_section(server, name: str):
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    config = load_config(CONFIG_PATH)
-    dry_run = not config.adopt.apply
-
     secrets = Secrets.from_env()
-    server = await asyncio.to_thread(PlexServer, config.plex.url, secrets.plex_token)
 
+    # The database comes first now: the effective config is the YAML with the
+    # UI's overrides merged over it, and reading those needs a session.
+    # Nothing here needed the config to build the engine -- the database URL
+    # is a secret, not a config setting.
     engine = make_engine(secrets.database_url)
     session_factory = make_session_factory(engine)
     try:
         async with session_factory() as session:
+            config = await load_effective_config(CONFIG_PATH, session)
+            dry_run = not config.adopt.apply
+            server = await asyncio.to_thread(
+                PlexServer, config.plex.url, secrets.plex_token
+            )
+
             total_items = total_renders = total_missing = total_skipped = 0
             total_by_config = 0
             for name in config.adopt.libraries:

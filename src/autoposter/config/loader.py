@@ -49,16 +49,39 @@ def render_version(config: Config) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def load_config(path: Path) -> Config:
-    """Load and validate the YAML config.
+def read_config_document(path: Path) -> dict:
+    """The YAML file as a plain dict, unvalidated.
 
-    ``version`` is derived from the render-affecting settings only, after
-    validation -- see ``render_version`` for why it is not a hash of the file.
+    Split out from ``load_config`` so the database overrides layer
+    (``config/overrides.py``) can merge into the same starting document
+    instead of re-reading and re-parsing the file its own way.
     """
     raw_bytes = Path(path).read_bytes()
     data = yaml.safe_load(raw_bytes.decode("utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"config at {path} must be a YAML mapping")
+    return data
+
+
+def build_config(data: dict) -> Config:
+    """Validate a config document and derive its ``version``.
+
+    The one construction path: both ``load_config`` and the overrides-aware
+    ``load_effective_config`` end here, so a merged config is validated and
+    versioned exactly like a file-only one. ``version`` is derived from the
+    render-affecting settings only, after validation -- see ``render_version``
+    for why it is not a hash of the file.
+    """
     config = Config(**data)
     config.version = render_version(config)
     return config
+
+
+def load_config(path: Path) -> Config:
+    """Load and validate the YAML config.
+
+    Stays synchronous: tests, fixtures and the config-only code paths call it
+    without a database. The overrides-aware variant is
+    ``config.overrides.load_effective_config``.
+    """
+    return build_config(read_config_document(path))

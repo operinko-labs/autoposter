@@ -6,8 +6,9 @@ library is the one worth reading carefully before anything is written.
 
 There is no ``session_scope`` or ``build_server`` helper in this codebase.
 This mirrors the shape ``main.py`` and ``facts/imdb.py``'s own one-shot entry
-point (``_run_cli``) actually use: ``load_config`` takes a path (read from
-``AUTOPOSTER_CONFIG``, same as ``main.py``), the session comes from
+point (``_run_cli``) actually use: the config is loaded from a path (read from
+``AUTOPOSTER_CONFIG``, same as ``main.py``) with the database overrides merged
+over it by ``load_effective_config``, the session comes from
 ``make_engine``/``make_session_factory`` used directly, and the Plex
 connection is a plain ``plexapi.server.PlexServer`` -- there is no need for
 ``main.py``'s lazy-connect wrapper here, since this process does nothing
@@ -22,7 +23,7 @@ import httpx
 from plexapi.server import PlexServer
 
 from autoposter.collections.service import reconcile_libraries, summary_has_failure
-from autoposter.config.loader import load_config
+from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
 
@@ -33,19 +34,25 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    config = load_config(CONFIG_PATH)
-    if not config.collections.enabled:
-        logger.info("collections are disabled in config")
-        return
-
     secrets = Secrets.from_env()
-    server = PlexServer(config.plex.url, secrets.plex_token)
 
+    # The database comes first now: the config the operator is actually
+    # running is the YAML with the UI's overrides merged over it, and reading
+    # those needs a session. Nothing here needed the config to build the
+    # engine -- the database URL is a secret, not a config setting -- so this
+    # is the same work in a different order.
     engine = make_engine(secrets.database_url)
     session_factory = make_session_factory(engine)
     try:
-        async with session_factory() as session, httpx.AsyncClient() as http:
-            summary = await reconcile_libraries(session, server, config, http)
+        async with session_factory() as session:
+            config = await load_effective_config(CONFIG_PATH, session)
+            if not config.collections.enabled:
+                logger.info("collections are disabled in config")
+                return
+
+            server = PlexServer(config.plex.url, secrets.plex_token)
+            async with httpx.AsyncClient() as http:
+                summary = await reconcile_libraries(session, server, config, http)
             logger.info(summary)
     finally:
         await engine.dispose()

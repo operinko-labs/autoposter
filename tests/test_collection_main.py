@@ -237,13 +237,13 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile):
         async def dispose(self):
             pass
 
-    monkeypatch.setattr(
-        cli, "load_config",
-        lambda path: SimpleNamespace(
+    async def fake_load_effective_config(path, session):
+        return SimpleNamespace(
             collections=SimpleNamespace(enabled=True),
             plex=SimpleNamespace(url="http://plex.invalid"),
-        ),
-    )
+        )
+
+    monkeypatch.setattr(cli, "load_effective_config", fake_load_effective_config)
     monkeypatch.setattr(
         cli, "Secrets",
         SimpleNamespace(
