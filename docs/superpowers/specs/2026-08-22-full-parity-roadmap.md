@@ -55,7 +55,7 @@ endpoints + two UI pages; phases 2 and 3: the largest shipped units, multi-week 
 | — | **Cutover: retire Posterizarr and Kometa** | — | After 5a + 5b + full-pass trigger |
 | 6a | Collections UI, search, compare, override actions — **delivered** (rows 22–24; collection stats, diff-now, per-job run-now) | ≈ 4c | Spec §6 debts |
 | 6b | WebSocket (dashboard + live log tail) — **delivered** (as NDJSON streams; row 72) | small | Spec §6 debt |
-| 6c | Config editor with hot-reload and impact preview | large (≈ phase 2) | Spec §6 debt |
+| 6c | Config editor with hot-reload and impact preview — **delivered** (rows 94, 54; DB-overrides layer, generation-swap reload, side-effect-free preview) | large (≈ phase 2) | Spec §6 debt |
 | 6d | Provider-candidate picker and logo browser | ≈ 4c | Spec §6 debt; feeds 11 |
 | 6e | Manual mode and testing mode | ≈ 4c | |
 | 7a | Render and selection long tail | small–medium | Many S items, no dependencies |
@@ -147,7 +147,7 @@ one-liner is in the `.superpowers/sdd/p5b-task-{1,2,3}-report.md` and
 | 51 | API-key auth for read endpoints | Key-based access (`X-API-Key`) beyond the webhook secret, for widgets/scripts | S | parity-only | — |
 | 52 | Storage stats + homepage endpoints | `/api/assets/stats`-style per-library counts/sizes for gethomepage.dev widgets | S — SQL + a walk | parity-only | 51 |
 | 53 | Per-run stats rollup + charts | Per-run posters/seasons/BG/TC/errors counts persisted; duration/success charts in the UI | S–M — events exist, rollup doesn't | parity-only | — |
-| 54 | Schedule editing UI | Edit APScheduler cadences from the UI (read-only today) | S–M | parity-only | 6c helps |
+| 54 | Schedule editing UI | answered 6c: cadences are editable via the config editor and take effect LIVE without a restart — `Job.interval_seconds` resolves through the ConfigHolder per poll, so a saved `scheduler.*_hours/_days` override applies at the next scheduler tick (`poll_seconds` itself stays restart-flagged) | S–M | parity-only | 6c helps |
 | 55 | Overlay/font file management UI | List/upload overlay PNGs and fonts from the UI | S–M | parity-only | — |
 | 56 | Trivial Plex builders | `plex_id`/`plex_rating_key`, `plex_pilots`, generic `plex_all` at any level | S — once the engine exists | parity-only | 8a |
 | 57 | `text_file` builder | IDs from a local plain-text file | S | parity-only | 8a |
@@ -187,7 +187,7 @@ one-liner is in the `.superpowers/sdd/p5b-task-{1,2,3}-report.md` and
 | 91 | `plex_collectionless` | Items in no other collection — needs a full collection-membership map | S–M | parity-only | 8a |
 | 92 | Per-library config override matrix | Any global block overridable per library (autoposter has it only where the user's config needed it) | M — schema surgery | parity-only | — |
 | 93 | Defaults-pack equivalents | Config presets reproducing Kometa's default families in scope: charts (basic/tmdb), genre, studio, streaming, resolution, aspect, year, decade, country, region, continent, franchise, universe/based (via MDBList), seasonal (via row 70), content-rating regionals | M–L — presets on top of engines | parity-only | 8a, 9a, 10a |
-| 94 | Config editor with hot-reload + impact preview | Write endpoint with schema validation, hot-reload on save, config-version fingerprint staleness, "this would re-render ~2,400 items" preview with apply-now/later | L — validation + preview machinery | spec §6 | — |
+| 94 | Config editor with hot-reload + impact preview | answered 6c: delivered as a DB-overrides layer (user-decided; the ConfigMap stays git-owned, the app owns deltas, the mounted file is never written) with full-depth schema validation (never half-applied), a generation-swap hot-reload covering everything read per-use plus live scheduler cadences (frozen startup captures get honest "restart to apply" flags), a side-effect-free fingerprint-recompute preview, and apply-now (enqueues exactly the affected items) vs save-only. One honest correction: `config.version` hashes the whole artwork section, so any artwork edit re-renders the whole library — per-art-kind granularity needs a per-kind version (row 111) | L — validation + preview machinery | spec §6 | — |
 | 95 | Builder engine core | Generic builder abstraction: registry, per-collection config schema, ID-list output with ordering, sync/append, limit, dry-run — everything rows 56–64, 79–83 plug into | L — the gate for all list work | parity-only (three builders exercised today are hardcoded) | — |
 | 96 | Filters subsystem | Post-builder filtering on ~60 attributes with `.not/.regex/.gt/…` modifiers, applicable to any definition | L — shares its predicate model with 9b | parity-only | 95 |
 | 97 | Custom overlay mechanics | User-supplied overlay images (file/url), templated text overlays with `<<variables>>` and modifiers, configurable positioning/backdrops, generic queue engine, general cross-overlay suppression | L — generalising what `badges/` hardcodes | parity-only | — |
@@ -204,6 +204,10 @@ one-liner is in the `.superpowers/sdd/p5b-task-{1,2,3}-report.md` and
 | 108 | `.row-actions` has no CSS | Pre-existing, surfaced in 6a review: `Failures.tsx` renders its retry/dismiss buttons in a `.row-actions` div no stylesheet defines, so they are unstyled | S — a few CSS lines | — | — |
 | 109 | Search+filter composition assertion | 6a follow-up (final review): Library composes `search` with library/kind/status in one URLSearchParams and the code is correct, but no test pins the composition, so a dep-list regression in the listing effect would go unseen | S — one test | — | — |
 | 110 | Dashboard broadcaster hardening | 6b follow-up (final review): (a) `StatusBroadcaster.subscribe` never restarts a loop whose task died with `_task` still set (only a spurious external cancel can cause it; viewers would get heartbeats but no data) — `if self._task is None or self._task.done():` closes it; (b) a poll query that hangs without raising is unbounded — wrap `_build_snapshot` in `asyncio.timeout` | S — two guarded lines + tests | — | — |
+| 111 | Per-art-kind render version | 6c follow-up: `render_version` hashes the whole `artwork:` section, so editing one kind's text setting invalidates every fingerprint and a full-library re-render is the honest answer. A per-art-kind version (hash only that kind's settings + the shared roots) would confine invalidation — and the impact preview's counts — to the kinds an edit actually touches. Changes the fingerprint contract: touches `compute_fingerprint` callers, `adopt/`, and stored fingerprints (one-time global invalidation on upgrade, or a dual-read migration) | M — contract change, own phase | — | — |
+| 112 | Reject or compute `version` in overrides | 6c follow-up: `version` is a derived field but a plain schema member, so the editor renders it editable and an override on it is silently inert (re-derived at every load) and self-perpetuates via the seed. Server-side: reject `version` in an overrides document the way `secrets` is rejected (or mark computed paths in the GET contract for the UI to skip) | S | — | — |
+| 113 | Cross-replica config-swap propagation | 6c follow-up: a saved override swaps generations in the serving process only; sibling replicas keep the old config until restart (they load the persisted overrides at boot, so nothing diverges durably). If multi-replica ever matters: replicas poll `config_overrides.updated_at` (or NOTIFY) and re-load. Single-operator single-replica today — deliberately deferred | S–M | — | — |
+| 114 | One default-config-path spelling | 6c follow-up: `DEFAULT_CONFIG_PATH` now lives in `config/loader.py` but the two CLIs (`collections/__main__.py`, `adopt/__main__.py`) still spell `/config/autoposter.yaml` out; point them at the constant | S | — | — |
 | 115 | Reconcile failure must not report `ok` | Live-pass finding (2026-08-23): both libraries failed at the separator summary edit, yet `scheduled_runs.last_status` stayed `ok` and the Collections page showed a green pill — `reconcile_libraries` contains per-library failures in its summary string and never raises, and the scheduler marks `failed` only on an exception. The collections job should raise (recording `failed` + the summary as detail) at least when EVERY library failed; a partial failure policy needs deciding | S — a few lines + tests; the status vocabulary is pinned to ok/failed | — | — |
 
 ---
@@ -320,6 +324,16 @@ half-apply (spec §7 already promises this).
 **Testable when shipped:** editing a badge colour previews the affected-item count,
 applying re-renders exactly those items, and a syntactically invalid save changes
 nothing.
+**Delivered (6c):** as a DB-overrides layer over the git-owned ConfigMap (user-decided;
+the mounted file is never written), with a ConfigHolder generation swap — every
+per-use-read setting hot-reloads, scheduler cadences resolve live per poll, and the
+genuinely-frozen startup captures carry "restart to apply" flags. All three risks
+closed as prescribed: one-deref-per-job handoff, a read-only fingerprint-recompute
+preview (mutation-proven side-effect-free), and full-depth validate-before-anything
+saves. Two acceptance substitutions, both honest: badge colours are not configurable
+yet (row 97), so the previewed edit is an artwork text setting; and "exactly those
+items" is the whole fingerprinted library for any artwork edit, because
+`config.version` hashes the artwork section whole — per-kind confinement is row 111.
 
 #### 6d — Provider-candidate picker and logo browser
 

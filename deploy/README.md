@@ -24,6 +24,43 @@ the image sets to `/config/autoposter.yaml` — so mount `autoposter.yaml`
 else without also setting the variable means the app fails at startup
 looking for a file that is not there.
 
+## Config overrides (the Settings editor)
+
+The Settings page can edit configuration. Edits do NOT touch the mounted
+file — they live in the database, in the single-row `config_overrides`
+table, as a partial document deep-merged OVER the file at every load. The
+precedence is therefore: **database override, else ConfigMap value**. The
+ConfigMap stays the git-owned base; the app owns only the deltas an
+operator has explicitly saved, so a Flux sync and a UI edit can never fight
+over the same file.
+
+Practical consequences:
+
+- A saved change to anything the app reads per-use (all of `artwork:`,
+  badge/collection/operation behaviour, `settle_seconds`, scheduler
+  cadences) takes effect immediately in the serving pod — no restart. The
+  editor marks the rest ("restart to apply"): worker count, provider
+  clients, notification wiring, Plex connection settings, `poll_seconds`,
+  `api_docs_enabled`, and whether a scheduled job is registered at all.
+  A restart also brings any other replica up to date; a running sibling
+  replica keeps its old configuration until then.
+- An invalid save changes nothing — the merged result is validated whole
+  before anything is persisted or applied, and errors come back
+  field-labelled.
+- "Revert to base" in the editor removes the key from the override
+  document; the ConfigMap value shows through again on the next load/swap.
+- To inspect or clear the overrides by hand:
+  `SELECT document FROM config_overrides;` /
+  `DELETE FROM config_overrides;` (the next boot then runs on the file
+  alone). The events feed records every save as
+  `config / overrides_updated` with the version movement, never the
+  contents.
+- Editing `artwork:` settings (or repointing a root) from the UI carries
+  the same weight the cutover note below gives the file: `config.version`
+  is derived from the render-affecting settings as a whole, so ANY artwork
+  edit re-renders the library. The editor's preview says exactly how many
+  renders that is before you commit to it.
+
 ## Secrets
 
 Secrets come from an ExternalSecret providing the `AUTOPOSTER_*` environment
