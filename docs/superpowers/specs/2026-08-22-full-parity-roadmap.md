@@ -53,7 +53,7 @@ endpoints + two UI pages; phases 2 and 3: the largest shipped units, multi-week 
 | 5b | Cutover verification sweep | small | **Blocks cutover confidence** |
 | 5c | Tracearr webhook intake | small | Harvest-first; needs the live instance |
 | — | **Cutover: retire Posterizarr and Kometa** | — | After 5a + 5b + full-pass trigger |
-| 6a | Collections UI, search, compare, override actions | ≈ 4c | Spec §6 debts |
+| 6a | Collections UI, search, compare, override actions — **delivered** (rows 22–24; collection stats, diff-now, per-job run-now) | ≈ 4c | Spec §6 debts |
 | 6b | WebSocket (dashboard + live log tail) | small | Spec §6 debt |
 | 6c | Config editor with hot-reload and impact preview | large (≈ phase 2) | Spec §6 debt |
 | 6d | Provider-candidate picker and logo browser | ≈ 4c | Spec §6 debt; feeds 11 |
@@ -115,9 +115,9 @@ one-liner is in the `.superpowers/sdd/p5b-task-{1,2,3}-report.md` and
 | 19 | Notification event taxonomy | run_start / run_end / error / changes / delete payloads; per-collection changes webhooks (Kometa `changes_webhooks`) | S–M — the contract design is the work | parity-only | 18 |
 | 20 | Discord / Apprise formatting | Discord-shaped payloads and Apprise-endpoint support as additional notification targets | S | parity-only | 18, 19 |
 | 21 | Tracearr webhook intake | Accept Tracearr's outbound custom webhooks as a trigger source (the role Tautulli's agent held); route into the existing intake/normalize path | S–M — new route + payload mapping | replaces a retired trigger | 17 |
-| 22 | Search box | `GET /api/items` already accepts `search`; the UI never exposes it | S — one input + wire-up | spec §6 | — |
-| 23 | Multi-art-kind compare | Item detail draws one art kind; a movie's background never appears beside its poster | S — UI only, endpoints exist | spec §6 | — |
-| 24 | Clear-manual-override action | Designed in spec §6, no endpoint or button exists | S | spec §6 | — |
+| 22 | Search box | answered 6a: debounced search input on the Library page, wired to the existing escaped-ilike `search` param, offset reset on change | S — one input + wire-up | spec §6 | — |
+| 23 | Multi-art-kind compare | answered 6a: item detail renders one labelled base+live pane pair per art kind in `renders` (a movie's poster and background side by side) | S — UI only, endpoints exist | spec §6 | — |
+| 24 | Clear-manual-override action | answered 6a: `POST /api/items/{id}/renders/{art_kind}/clear-override` renames the override file to `.disabled`, clears fingerprints, enqueues a re-render; button on `provider: manual` rows | S | spec §6 | — |
 | 25 | `sync_mode: append` | Builders currently only sync (diff-to-source); append mode keeps manual additions | S — reconciler flag | parity-only | — |
 | 26 | `limit` per collection | Cap builder results | S | parity-only | — |
 | 27 | Collection dry-run preview | Show what a diff would do without applying (Kometa `test`) | S — reuse diff, skip apply | parity-only | — |
