@@ -31,16 +31,21 @@ class FakeMedia:
 
 
 class FakeSection:
-    def __init__(self, title, location, items):
+    def __init__(self, title, location, items, section_type="movie"):
         self.title = title
         self.locations = [location]
+        self.type = section_type
         self._items = items
+        # Which guids this section was asked about: the resolver must not ask a
+        # movie library about a show-shaped intent at all.
+        self.getguid_calls = []
 
     def getGuid(self, guid):
         # Mirrors plexapi: an EXTERNAL id (tvdb://, tmdb://, imdb://) is matched
         # against the item's `guids` list, not its primary `.guid`, and a miss
         # raises NotFound. Modelling this as `search(guid=...)` previously hid a
         # bug where nothing resolved against a real server.
+        self.getguid_calls.append(guid)
         for item in self._items:
             if any(g.id == guid for g in item.guids):
                 return item
@@ -48,6 +53,13 @@ class FakeSection:
 
 
 class FakeItem:
+    """A movie, season or episode.
+
+    Deliberately has no ``season``/``episode`` methods: a real plexapi ``Movie``
+    has none either, and ``'Movie' object has no attribute 'episode'`` is the
+    exact production crash this file guards. Shows are ``FakeShow`` below.
+    """
+
     def __init__(
         self, rating_key, title, year, file_path, guids, item_type="movie",
         parent_rating_key=None,
@@ -60,6 +72,27 @@ class FakeItem:
         self.media = [FakeMedia(file_path)] if file_path else []
         self.thumb = f"/library/metadata/{rating_key}/thumb/1"
         self.parentRatingKey = parent_rating_key
+
+    def add_episode(self, number, episode_item):
+        if not hasattr(self, "_episodes"):
+            self._episodes = {}
+        self._episodes[number] = episode_item
+
+    def _episode(self, number):
+        try:
+            return self._episodes[number]
+        except (AttributeError, KeyError):
+            raise PlexNotFound(f"episode {number} not found")
+
+
+class FakeShow(FakeItem):
+    """A show — the only kind of item that navigates down to seasons/episodes."""
+
+    def __init__(self, rating_key, title, year, file_path, guids, parent_rating_key=None):
+        super().__init__(
+            rating_key, title, year, file_path, guids,
+            item_type="show", parent_rating_key=parent_rating_key,
+        )
         self._seasons = {}
 
     def add_season(self, number, season_item):
@@ -73,17 +106,6 @@ class FakeItem:
 
     def episode(self, season=None, episode=None):
         return self.season(season=season)._episode(episode)
-
-    def add_episode(self, number, episode_item):
-        if not hasattr(self, "_episodes"):
-            self._episodes = {}
-        self._episodes[number] = episode_item
-
-    def _episode(self, number):
-        try:
-            return self._episodes[number]
-        except (AttributeError, KeyError):
-            raise PlexNotFound(f"episode {number} not found")
 
 
 class FakeServer:
@@ -113,7 +135,7 @@ def server():
         ["tmdb://693134", "imdb://tt15239678"],
     )
     movies = FakeSection("Movies", "/mnt/Media/Movies", [movie])
-    excluded = FakeSection("Photos", "/mnt/Media/Photos", [])
+    excluded = FakeSection("Photos", "/mnt/Media/Photos", [], section_type="photo")
     return FakeServer([movies, excluded])
 
 
@@ -190,11 +212,9 @@ async def test_resolve_raises_item_not_found_when_path_matches_no_location():
 
 
 async def test_resolve_finds_a_show_by_series_directory():
-    show = FakeItem(
-        "555", "Severance", 2022, None, ["tvdb://371980"], item_type="show",
-    )
+    show = FakeShow("555", "Severance", 2022, None, ["tvdb://371980"])
     show.locations = ["/mnt/Media/Shows/Severance (2022)"]
-    shows = FakeSection("Shows", "/mnt/Media/Shows", [show])
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
     server = FakeServer([shows])
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(kind="show", title="Severance", tvdb_id=371980)
@@ -206,14 +226,14 @@ async def test_resolve_finds_a_show_by_series_directory():
     assert item.file_path is None
 
 
-def _show_with_season_and_episode():
+def _show_with_season_and_episode(guids=("tvdb://371980",)):
     """A show with one scanned season and one scanned episode inside it.
 
     Mirrors the real ``plexapi`` shape: the season carries its own rating key
     and title, its ``parentRatingKey`` is the show; the episode carries its
     own rating key and title, its ``parentRatingKey`` is the season.
     """
-    show = FakeItem("555", "Severance", 2022, None, ["tvdb://371980"], item_type="show")
+    show = FakeShow("555", "Severance", 2022, None, list(guids))
     show.locations = ["/mnt/Media/Shows/Severance (2022)"]
     season = FakeItem(
         "556", "Season 2", None, None, [], item_type="season", parent_rating_key="555",
@@ -228,7 +248,7 @@ def _show_with_season_and_episode():
 
 async def test_resolve_a_season_intent_returns_the_seasons_own_identity():
     show = _show_with_season_and_episode()
-    shows = FakeSection("Shows", "/mnt/Media/Shows", [show])
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
     server = FakeServer([shows])
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(kind="season", title="Severance", tvdb_id=371980, season_number=2)
@@ -243,7 +263,7 @@ async def test_resolve_a_season_intent_returns_the_seasons_own_identity():
 
 async def test_resolve_an_episode_intent_returns_the_episodes_own_identity():
     show = _show_with_season_and_episode()
-    shows = FakeSection("Shows", "/mnt/Media/Shows", [show])
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
     server = FakeServer([shows])
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
@@ -260,7 +280,7 @@ async def test_resolve_an_episode_intent_returns_the_episodes_own_identity():
 
 async def test_resolve_a_season_plex_has_not_scanned_yet_raises_item_not_found():
     show = _show_with_season_and_episode()
-    shows = FakeSection("Shows", "/mnt/Media/Shows", [show])
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
     server = FakeServer([shows])
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(kind="season", title="Severance", tvdb_id=371980, season_number=9)
@@ -271,7 +291,7 @@ async def test_resolve_a_season_plex_has_not_scanned_yet_raises_item_not_found()
 
 async def test_resolve_an_episode_plex_has_not_scanned_yet_raises_item_not_found():
     show = _show_with_season_and_episode()
-    shows = FakeSection("Shows", "/mnt/Media/Shows", [show])
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
     server = FakeServer([shows])
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
@@ -290,7 +310,7 @@ async def test_resolved_season_and_episode_feed_the_right_text_into_title_text_f
     # buggy — it just always received the wrong item.
     config = load_config(EXAMPLE_CONFIG)
     show = _show_with_season_and_episode()
-    shows = FakeSection("Shows", "/mnt/Media/Shows", [show])
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
     server = FakeServer([shows])
     client = PlexClient(server=server, excluded_libraries=[])
 
@@ -309,3 +329,94 @@ async def test_resolved_season_and_episode_feed_the_right_text_into_title_text_f
 
     assert season_primary == "Season 2"
     assert episode_primary == "Who Is Alive?"
+
+
+async def test_an_episode_intent_never_queries_a_movie_library():
+    """The section walk is constrained by the intent's kind.
+
+    A show/season/episode intent can only ever match in a show library, so a
+    movie library must not even be asked: production had a Movies section
+    answer an episode intent for ``tmdb://64677`` with the movie that happens
+    to carry the same TMDB id, and the resolver then crashed navigating into
+    it. Asking only the libraries that can honestly answer is the first line
+    of defence; the item-type check below is the second.
+    """
+    show = _show_with_season_and_episode(guids=["tmdb://64677"])
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+    colliding_movie = FakeItem(
+        "999", "The Colliding Movie", 2011,
+        "/mnt/Media/Movies/The Colliding Movie (2011)/movie.mkv",
+        ["tmdb://64677"],
+    )
+    # Movies first, as in production: it answered before the show library was
+    # ever reached.
+    movies = FakeSection("Movies", "/mnt/Media/Movies", [colliding_movie])
+    server = FakeServer([movies, shows])
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="episode", title="Severance", tmdb_id=64677,
+        season_number=2, episode_number=3,
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "557"
+    assert movies.getguid_calls == []
+    assert shows.getguid_calls == ["tmdb://64677"]
+
+
+async def test_an_episode_intent_refuses_a_movie_matched_by_a_colliding_guid():
+    """A GUID match of the wrong type reads as "no Plex item", never as a hit.
+
+    TMDB numbers movies and TV series in separate namespaces, so the same id
+    names a different title in each — collisions are routine, not exotic. In
+    production an episode intent carrying ``tmdb://64677`` (the show's id)
+    matched the movie whose TMDB id is also 64677, and ``item.episode(...)``
+    on it raised ``'Movie' object has no attribute 'episode'``, burning the
+    job's generic-failure retries until it parked.
+
+    The movie is in a show-type section here so that the check under test is
+    the item-type one rather than the section filter: ``getGuid`` resolves the
+    id through the library's *agent* and re-searches, so what it hands back is
+    not something the caller can infer from the section alone.
+    """
+    colliding_movie = FakeItem(
+        "999", "The Colliding Movie", 2011,
+        "/mnt/Media/Shows/The Colliding Movie (2011)/movie.mkv",
+        ["tmdb://64677"],
+    )
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [colliding_movie], section_type="show")
+    server = FakeServer([shows])
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="episode", title="Severance", tmdb_id=64677,
+        season_number=2, episode_number=3,
+    )
+
+    with pytest.raises(ItemNotFound) as exc_info:
+        await client.resolve(intent)
+
+    assert "no Plex item for episode" in str(exc_info.value)
+
+
+async def test_a_movie_intent_refuses_a_show_matched_by_a_colliding_guid():
+    """The same refusal in the other direction.
+
+    Nothing crashes here — a movie intent never navigates — which is what
+    makes it worth pinning: accepting the show would have resolved the movie
+    intent to a show's rating key and written a movie's artwork onto it. The
+    message assertion is load-bearing: without the type check the show is
+    accepted and merely rejected later for having no media parts, i.e. the
+    wrong item blamed for the wrong reason.
+    """
+    show = FakeShow("555", "Severance", 2022, None, ["tmdb://64677"])
+    show.locations = ["/mnt/Media/Movies/Severance (2022)"]
+    movies = FakeSection("Movies", "/mnt/Media/Movies", [show])
+    server = FakeServer([movies])
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(kind="movie", title="The Colliding Movie", tmdb_id=64677)
+
+    with pytest.raises(ItemNotFound) as exc_info:
+        await client.resolve(intent)
+
+    assert "no Plex item for movie" in str(exc_info.value)

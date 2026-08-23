@@ -22,9 +22,9 @@ depend on — which is the failure the fakes cannot catch.
 
 import inspect
 
-from plexapi.library import LibrarySection
+from plexapi.library import LibrarySection, MovieSection, ShowSection
 from plexapi.server import PlexServer
-from plexapi.video import Episode, Season, Show
+from plexapi.video import Episode, Movie, Season, Show
 
 
 def test_library_is_an_attribute_not_a_method():
@@ -94,6 +94,22 @@ def test_attributes_the_resolver_reads_are_exposed_by_plexapi():
 
     assert _provides(LibrarySection, "title")
     assert _provides(LibrarySection, "locations")
+
+
+def test_the_type_strings_the_resolver_filters_on():
+    """``_search_sync`` searches only sections whose ``type`` matches the intent
+    and refuses a GUID match whose own ``type`` is wrong — both by comparing
+    against the literal strings ``"movie"`` and ``"show"``. The fakes assert the
+    same literals, so if plexapi renamed either the suite would stay green while
+    a real server resolved nothing.
+    """
+    assert MovieSection.TYPE == "movie"
+    assert ShowSection.TYPE == "show"
+    assert Movie.TYPE == "movie"
+    assert Show.TYPE == "show"
+    assert _provides(LibrarySection, "type")
+    assert _provides(Movie, "type")
+    assert _provides(Show, "type")
 
 
 def test_notfound_is_the_exception_getguid_raises():

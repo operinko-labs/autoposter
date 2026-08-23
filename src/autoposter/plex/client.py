@@ -98,10 +98,18 @@ class PlexClient:
         self._server = server
         self._excluded = set(excluded_libraries)
 
-    def _sections(self):
+    def _sections(self, wanted_type: str):
+        """The non-excluded library sections of one Plex type ("movie"/"show").
+
+        Constraining the walk by type is what keeps a movie library from
+        answering a show-shaped intent — see the GUID-namespace note in
+        `_search_sync`.
+        """
         # plexapi exposes `library` as a property and `sections` as a method.
         return [
-            s for s in self._server.library.sections() if s.title not in self._excluded
+            s
+            for s in self._server.library.sections()
+            if s.title not in self._excluded and s.type == wanted_type
         ]
 
     def _search_sync(self, intent: RenderIntent) -> _RawMatch | None:
@@ -113,7 +121,12 @@ class PlexClient:
         if intent.imdb_id:
             wanted.append(f"imdb://{intent.imdb_id}")
 
-        for section in self._sections():
+        # A movie intent can only be a movie; show/season/episode intents all
+        # resolve by matching the *show*, so all three need a show library.
+        # Mirrors resolve()'s own movie/else split below.
+        wanted_type = "movie" if intent.kind == "movie" else "show"
+
+        for section in self._sections(wanted_type):
             for guid in wanted:
                 # `search(guid=...)` matches only an item's PRIMARY guid, which under
                 # the Plex Movie/TV agents is a `plex://` URI — external ids live in
@@ -125,6 +138,17 @@ class PlexClient:
                 except PlexNotFound:
                     continue
                 if item is not None:
+                    if item.type != wanted_type:
+                        # A GUID number is only unique *within* one agent's
+                        # namespace: TMDB numbers movies and TV separately, so
+                        # the same id names a different title in each. In
+                        # production an episode intent for tmdb://64677 (the
+                        # show's id) matched the movie whose TMDB id is also
+                        # 64677, and `item.episode(...)` on it raised
+                        # "'Movie' object has no attribute 'episode'" — burning
+                        # the job's retries. A wrong-type match is not a match:
+                        # keep looking rather than navigating into it.
+                        continue
 
                     # The GUID search always matches the show (or movie). A season/
                     # episode intent must navigate down from there to the item it

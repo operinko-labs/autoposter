@@ -360,6 +360,10 @@ class _AdoptAndResolveMovie:
 
 
 class _AdoptAndResolveSection:
+    # ``PlexClient.resolve`` only searches sections whose type can hold the
+    # intent's kind, so a movie library must say so.
+    type = "movie"
+
     def __init__(self, title, location, items):
         self.title = title
         self.locations = [location]
