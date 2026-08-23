@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApiError, apiFetch, apiFetchImage } from "../api/client";
 import type {
+  ClearOverrideResponse,
   ItemDetailResponse,
   ItemRender,
   ReprocessResponse,
@@ -204,7 +205,63 @@ function Facts({ facts }: { facts: ItemDetailResponse["facts"] }) {
   );
 }
 
-function Renders({ renders }: { renders: ItemRender[] }) {
+/** What the last clear-override attempt did, and which row it was about.
+ *
+ * Keyed by art kind rather than shown page-wide: a movie has two render rows,
+ * and "no manual override for this art kind" floating above the table says
+ * nothing about which kind the server meant. */
+interface ClearNote {
+  artKind: string;
+  failed: boolean;
+  message: string;
+}
+
+/** The provider that supplied a row's artwork, plus the control that takes a
+ * manual one out of play.
+ *
+ * `provider === "manual"` is the database's ONLY trace of an override file --
+ * the pipeline stamps it on every pass that finds one -- so it is the whole
+ * test for whether there is anything to clear. */
+function Provider({
+  render,
+  busy,
+  onClear,
+}: {
+  render: ItemRender;
+  busy: boolean;
+  onClear: (artKind: string) => void;
+}) {
+  if (render.provider === null || render.provider === "") {
+    return <span className="muted">—</span>;
+  }
+  if (render.provider !== "manual") return <>{render.provider}</>;
+
+  return (
+    <>
+      {render.provider}{" "}
+      <button
+        type="button"
+        className="clear-override"
+        disabled={busy}
+        onClick={() => onClear(render.art_kind)}
+      >
+        Clear override
+      </button>
+    </>
+  );
+}
+
+function Renders({
+  renders,
+  clearing,
+  note,
+  onClear,
+}: {
+  renders: ItemRender[];
+  clearing: string | null;
+  note: ClearNote | null;
+  onClear: (artKind: string) => void;
+}) {
   if (renders.length === 0) {
     return <p className="empty">This item has never been rendered.</p>;
   }
@@ -215,6 +272,7 @@ function Renders({ renders }: { renders: ItemRender[] }) {
         <tr>
           <th>Art</th>
           <th>Status</th>
+          <th>Provider</th>
           <th>Fingerprint</th>
           <th>Badge fingerprint</th>
           <th>Upload</th>
@@ -224,19 +282,40 @@ function Renders({ renders }: { renders: ItemRender[] }) {
       </thead>
       <tbody>
         {renders.map((render) => (
-          <tr key={render.art_kind}>
-            <td>{render.art_kind}</td>
-            <td>{render.status}</td>
-            <td>
-              <Fingerprint value={render.fingerprint} />
-            </td>
-            <td>
-              <Fingerprint value={render.badge_fingerprint} />
-            </td>
-            <td>{render.upload_status}</td>
-            <td className="muted">{formatTime(render.rendered_at)}</td>
-            <td className="muted">{formatTime(render.uploaded_at)}</td>
-          </tr>
+          <Fragment key={render.art_kind}>
+            <tr>
+              <td>{render.art_kind}</td>
+              <td>{render.status}</td>
+              <td>
+                <Provider
+                  render={render}
+                  // Every button, not only this one: the endpoint moves a file
+                  // and is not idempotent, so two clears in flight at once is
+                  // not a state worth being able to reach.
+                  busy={clearing !== null}
+                  onClear={onClear}
+                />
+              </td>
+              <td>
+                <Fingerprint value={render.fingerprint} />
+              </td>
+              <td>
+                <Fingerprint value={render.badge_fingerprint} />
+              </td>
+              <td>{render.upload_status}</td>
+              <td className="muted">{formatTime(render.rendered_at)}</td>
+              <td className="muted">{formatTime(render.uploaded_at)}</td>
+            </tr>
+            {note !== null && note.artKind === render.art_kind && (
+              <tr>
+                <td colSpan={8}>
+                  <p className={note.failed ? "render-error" : "render-note"}>
+                    {note.message}
+                  </p>
+                </td>
+              </tr>
+            )}
+          </Fragment>
         ))}
       </tbody>
     </table>
@@ -249,11 +328,15 @@ export function ItemDetail() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<string | null>(null);
+  /** The art kind whose clear-override call is in flight, or null. */
+  const [clearing, setClearing] = useState<string | null>(null);
+  const [clearNote, setClearNote] = useState<ClearNote | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setItem(null);
     setOutcome(null);
+    setClearNote(null);
     // Cleared here, not only on success: navigating from a failed item to a
     // good one must not show the previous item's error while loading.
     setError(null);
@@ -297,6 +380,45 @@ export function ItemDetail() {
     }
   }
 
+  /** Takes one hand-placed override out of play.
+   *
+   * The endpoint renames the file to `<name>.disabled` and clears the row's
+   * fingerprints, so the table on screen is stale the moment it returns --
+   * hence the re-read rather than a local edit. It is deliberately NOT
+   * idempotent: a second call 409s on a file that is no longer where it was,
+   * which is why the button is disabled for the duration.
+   */
+  async function clearOverride(artKind: string) {
+    setClearing(artKind);
+    setClearNote(null);
+    try {
+      const response = await apiFetch<ClearOverrideResponse>(
+        `/api/items/${itemId}/renders/${artKind}/clear-override`,
+        { method: "POST" },
+      );
+      // Re-read before reporting: the fingerprints the table is showing were
+      // just nulled server-side.
+      setItem(await apiFetch<ItemDetailResponse>(`/api/items/${itemId}`));
+      setClearNote({
+        artKind,
+        failed: false,
+        // "disabled", never "deleted" -- the file is renamed, and an operator
+        // told their own artwork was deleted would not think to rename it back.
+        message: response.queued
+          ? "The override file was disabled (renamed to .disabled on the mount) and a re-render was queued."
+          : "The override file was disabled (renamed to .disabled on the mount). A re-render was already pending, so nothing new was added.",
+      });
+    } catch (caught) {
+      // Shown verbatim: a 409 says there was no override to clear, and a 503
+      // carries the OS error, whose absolute path on the mount is the only
+      // thing that says which file to go and look at. This page is behind
+      // require_session.
+      setClearNote({ artKind, failed: true, message: (caught as Error).message });
+    } finally {
+      setClearing(null);
+    }
+  }
+
   if (item === null) {
     return (
       <>
@@ -312,7 +434,15 @@ export function ItemDetail() {
     );
   }
 
-  const artKind = artKindFor(item.kind);
+  /** Every art kind this item has a render row for, ordered by name so the
+   * pairs do not move around between visits (the API's row order is not
+   * promised). An item nothing has rendered yet has no rows to read, so it
+   * falls back to the kind's primary art -- the panes are still worth showing,
+   * because the live one says what Plex is serving regardless. */
+  const artKinds =
+    item.renders.length === 0
+      ? [artKindFor(item.kind)]
+      : [...item.renders].map((render) => render.art_kind).sort();
 
   return (
     <>
@@ -331,10 +461,19 @@ export function ItemDetail() {
       {error !== null && <p className="page-error">{error}</p>}
       {outcome !== null && <p className="item-outcome">{outcome}</p>}
 
-      <div className="art-panes">
-        <BasePane itemId={item.id} artKind={artKind} />
-        <LivePane itemId={item.id} artKind={artKind} />
-      </div>
+      {/* One pair per art kind, each labelled: a movie has a poster AND a
+        * background, and the page used to show only the poster -- so half of
+        * what it exists to compare was unreachable. The label is required
+        * because the two pairs' captions are otherwise identical. */}
+      {artKinds.map((kind) => (
+        <section className="art-kind-panes" key={kind}>
+          <h2 className="art-kind-label">{kind}</h2>
+          <div className="art-panes">
+            <BasePane itemId={item.id} artKind={kind} />
+            <LivePane itemId={item.id} artKind={kind} />
+          </div>
+        </section>
+      ))}
 
       <div className="panel item-panel">
         <h2>Facts</h2>
@@ -343,7 +482,12 @@ export function ItemDetail() {
 
       <div className="panel item-panel">
         <h2>Renders</h2>
-        <Renders renders={item.renders} />
+        <Renders
+          renders={item.renders}
+          clearing={clearing}
+          note={clearNote}
+          onClear={(artKind) => void clearOverride(artKind)}
+        />
       </div>
     </>
   );

@@ -7,6 +7,17 @@
   color: var(--ok);
 }
 
+/* The art kind above its own pair of panes. Without it two pairs on one page
+ * carry identical captions and nothing says which is the background. */
+.art-kind-label {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
 .art-panes {
   display: grid;
   /* Two columns while there is room for two legible posters, one below the
@@ -42,8 +53,9 @@
 
 /* Backgrounds and title cards are 16:9, not a poster's 2:3 -- without this an
  * episode's title card letterboxes at a third of a tall poster box. The
- * attribute comes from ratioFor in ItemDetail.tsx, and both panes share the
- * item's art kind, so they keep the same shape as each other. */
+ * attribute comes from ratioFor in ItemDetail.tsx, and both panes of a pair
+ * share that pair's art kind, so they keep the same shape as each other even
+ * when a poster pair and a background pair are on screen together. */
 .art-pane[data-ratio="wide"] .art-image,
 .art-pane[data-ratio="wide"] .art-blank {
   aspect-ratio: 16 / 9;
@@ -97,4 +109,29 @@
 .fingerprint {
   /* The whole digest is on the title attribute; this is the visible prefix. */
   cursor: help;
+}
+
+.clear-override {
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+/* The outcome of a clear, in a row of its own directly under the render row it
+ * is about. A page-level banner could not say which of an item's art kinds the
+ * server was talking about. */
+.render-note,
+.render-error {
+  margin: 0;
+  /* Against the table's blanket nowrap: a 503 detail is an OS error carrying an
+   * absolute path on the mount, which must wrap rather than widen the table. */
+  white-space: normal;
+  font-size: 13px;
+}
+
+.render-note {
+  color: var(--ok);
+}
+
+.render-error {
+  color: var(--error);
 }

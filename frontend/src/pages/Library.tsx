@@ -12,6 +12,14 @@ import "./library.css";
  * the artwork requests behind a page bounded. */
 const PAGE_SIZE = 48;
 
+/** How long the search box stays quiet after the last keystroke.
+ *
+ * The listing is an offset/limit query over ~15,000 rows with an ilike on the
+ * title, so a request per keystroke is both wasted work and a stream of
+ * responses that can land out of order. 300ms is below the threshold at which
+ * a search feels laggy and above a fast typist's inter-key interval. */
+const SEARCH_DEBOUNCE_MS = 300;
+
 /** One tile's image, or the title in place of it.
  *
  * Two things are unusual here and both come from the same fact: the artwork
@@ -119,6 +127,10 @@ export function Library() {
   const [library, setLibrary] = useState("");
   const [kind, setKind] = useState("");
   const [status, setStatus] = useState("");
+  /** What is in the box, which is not what has been asked for: `searchQuery`
+   * lags it by the debounce and is the only one the request reads. */
+  const [search, setSearch] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState<ItemsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -142,6 +154,23 @@ export function Library() {
     };
   }, []);
 
+  /** The box lands in the query one debounce after the last keystroke.
+   *
+   * The offset is reset here rather than in the input's onChange, for the
+   * reason `choose()` resets it -- a search narrowing 15,000 items to nine
+   * would otherwise be read at offset 48, which the endpoint answers with an
+   * empty list rather than an error, so a matching search reads as "nothing
+   * matched". Doing it here rather than per keystroke also keeps the first
+   * character of a search from firing an extra unfiltered listing for page 1.
+   */
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchQuery(search);
+      setOffset(0);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   useEffect(() => {
     let cancelled = false;
     // Only the requested page is fetched. The library runs to ~15,000 items,
@@ -153,6 +182,9 @@ export function Library() {
     if (library !== "") query.set("library", library);
     if (kind !== "") query.set("kind", kind);
     if (status !== "") query.set("status", status);
+    // Only when non-empty: `search=` with nothing after it is still a filter
+    // the endpoint would evaluate.
+    if (searchQuery !== "") query.set("search", searchQuery);
 
     apiFetch<ItemsResponse>(`/api/items?${query.toString()}`)
       .then((response) => {
@@ -166,7 +198,7 @@ export function Library() {
     return () => {
       cancelled = true;
     };
-  }, [library, kind, status, offset]);
+  }, [library, kind, status, searchQuery, offset]);
 
   /** Every filter resets the offset. Keeping it would land the user on page 9
    * of a filtered result that has two, which the endpoint answers with an
@@ -195,6 +227,18 @@ export function Library() {
       {error !== null && <p className="page-error">{error}</p>}
 
       <div className="library-filters">
+        <label>
+          Search
+          {/* type="search" rather than "text": it is what a screen reader
+            * announces as a search field and what gives the browser's own
+            * clear affordance. The server matches the title only. */}
+          <input
+            type="search"
+            value={search}
+            placeholder="Title"
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
         <label>
           Library
           <select value={library} onChange={choose(setLibrary)}>

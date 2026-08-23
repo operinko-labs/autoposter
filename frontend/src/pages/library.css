@@ -15,7 +15,8 @@
   letter-spacing: 0.05em;
 }
 
-.library-filters select {
+.library-filters select,
+.library-filters input[type="search"] {
   font-family: inherit;
   font-size: 14px;
   text-transform: none;
@@ -27,7 +28,8 @@
   padding: 7px 10px;
 }
 
-.library-filters select:focus {
+.library-filters select:focus,
+.library-filters input[type="search"]:focus {
   outline: none;
   border-color: var(--accent);
 }

@@ -50,6 +50,10 @@ const ARTWORK: Record<string, string> = {
 
 const ARTWORK_PATH = /^\/api\/items\/(\d+)\/artwork\/([a-z_]+)$/;
 
+/** Must equal SEARCH_DEBOUNCE_MS in Library.tsx. Held here as a number the
+ * tests do arithmetic on -- one tick short of it must still be silent. */
+const SEARCH_DEBOUNCE_MS = 300;
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -306,6 +310,111 @@ describe("Library", () => {
         "/api/items?limit=48&offset=0&library=Documentaries",
       ]),
     );
+  });
+
+  it("waits out the debounce, then searches from offset 0 rather than the current page", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = stubFetch();
+      render(
+        <MemoryRouter>
+          <Library />
+        </MemoryRouter>,
+      );
+      // Fake timers do not touch microtasks, so the mount fetches still settle.
+      await act(async () => {});
+
+      const listings = () =>
+        pathsMatching(fetchMock, (path) => path.startsWith("/api/items?"));
+
+      expect(listings()).toEqual(["/api/items?limit=48&offset=0"]);
+
+      // Move off the first page BEFORE typing. Without this a search that kept
+      // the offset would be indistinguishable from one that reset it, because
+      // the offset was already 0.
+      fireEvent.click(screen.getByRole("button", { name: "Next" }));
+      await act(async () => {});
+      expect(listings()).toEqual([
+        "/api/items?limit=48&offset=0",
+        "/api/items?limit=48&offset=48",
+      ]);
+
+      const box = screen.getByLabelText("Search");
+      fireEvent.change(box, { target: { value: "gho" } });
+      await act(async () => {});
+      fireEvent.change(box, { target: { value: "ghost" } });
+      await act(async () => {});
+
+      // Nothing has been asked for yet. A page that queried per keystroke would
+      // already have issued two listings against a 15,000-row table.
+      expect(listings()).toHaveLength(2);
+
+      // One tick short: still silent. This is what makes the delay a real
+      // debounce rather than a timer that happens to be somewhere in the code.
+      await act(async () => {
+        vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS - 1);
+      });
+      expect(listings()).toHaveLength(2);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+      });
+      await act(async () => {});
+
+      // Exactly one listing for two keystrokes, carrying the final word, and
+      // from offset 0 -- page 2 of a search that has one page is answered with
+      // an empty list, which reads as "nothing matched".
+      expect(listings()).toEqual([
+        "/api/items?limit=48&offset=0",
+        "/api/items?limit=48&offset=48",
+        "/api/items?limit=48&offset=0&search=ghost",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends no search param at all once the box is emptied", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = stubFetch();
+      render(
+        <MemoryRouter>
+          <Library />
+        </MemoryRouter>,
+      );
+      await act(async () => {});
+
+      const listings = () =>
+        pathsMatching(fetchMock, (path) => path.startsWith("/api/items?"));
+
+      const box = screen.getByLabelText("Search");
+      fireEvent.change(box, { target: { value: "ghost" } });
+      await act(async () => {
+        vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+      });
+      await act(async () => {});
+      expect(listings()).toEqual([
+        "/api/items?limit=48&offset=0",
+        "/api/items?limit=48&offset=0&search=ghost",
+      ]);
+
+      fireEvent.change(box, { target: { value: "" } });
+      await act(async () => {
+        vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+      });
+      await act(async () => {});
+
+      // `search=` with nothing after it is not the same request as no search:
+      // it is a filter the backend would still evaluate.
+      expect(listings()).toEqual([
+        "/api/items?limit=48&offset=0",
+        "/api/items?limit=48&offset=0&search=ghost",
+        "/api/items?limit=48&offset=0",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows the title rather than a broken image when the artwork 404s", async () => {

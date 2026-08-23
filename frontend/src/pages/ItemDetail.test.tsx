@@ -44,7 +44,20 @@ const MOVIE = {
       adopted: false,
       rendered_at: "2026-08-01T09:15:00Z",
       uploaded_at: "2026-08-02T18:40:00Z",
+      provider: null,
     },
+  ],
+};
+
+/** The same movie with both of its art kinds rendered, one of them from a
+ * hand-placed override file. Listed poster-first on purpose: the panes are
+ * specified as ordered by art kind, so a page that simply followed the array
+ * would show them the other way round and redden the ordering assertion. */
+const MOVIE_BOTH_KINDS = {
+  ...MOVIE,
+  renders: [
+    { ...MOVIE.renders[0], art_kind: "poster", provider: "manual" },
+    { ...MOVIE.renders[0], art_kind: "background", provider: "tmdb" },
   ],
 };
 
@@ -75,7 +88,7 @@ function imageBytes(body: string): Response {
   });
 }
 
-type RouteMap = Record<string, () => Response>;
+type RouteMap = Record<string, () => Response | Promise<Response>>;
 
 /** Only the paths a test names are answered; anything else throws, naming the
  * path. So a component that asked for the wrong art kind fails loudly rather
@@ -106,6 +119,19 @@ function movieRoutes(overrides: RouteMap = {}): RouteMap {
   };
 }
 
+/** The two-art-kind movie's routes. Every pane's bytes differ, so a page that
+ * pointed two panes at one endpoint cannot pass by accident. */
+function bothKindRoutes(overrides: RouteMap = {}): RouteMap {
+  return {
+    "/api/items/3": () => json(MOVIE_BOTH_KINDS),
+    "/api/items/3/artwork/poster": () => imageBytes("base-poster-bytes"),
+    "/api/items/3/artwork/poster/live": () => imageBytes("live-poster-bytes"),
+    "/api/items/3/artwork/background": () => imageBytes("base-background-bytes"),
+    "/api/items/3/artwork/background/live": () => imageBytes("live-background-bytes"),
+    ...overrides,
+  };
+}
+
 /** Object URL -> the blob it was made from, so a pane can be proved to show
  * the bytes its own endpoint returned rather than the other pane's. */
 const objectUrls = new Map<string, Blob>();
@@ -123,20 +149,40 @@ async function renderItem(id = 3) {
   // The panes exist only once the item itself has loaded, so waiting for a
   // caption waits for the first fetch. React then flushes passive effects
   // after the commit, so the panes' own requests are still in flight.
-  await screen.findByText(/Base image/);
+  // findAll rather than find: an item with two art kinds has two base panes,
+  // and findBy throws on more than one match.
+  await screen.findAllByText(/Base image/);
   await act(async () => {});
   return view;
+}
+
+/** One <section> per art kind, in the order the page laid them out. */
+function kindSections(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(".art-kind-panes")];
 }
 
 /** The <figure> whose caption starts with `caption`. By caption rather than by
  * position, so a page that swapped the two panes over would not quietly keep
  * passing. */
-function pane(caption: string): HTMLElement {
-  const found = [...document.querySelectorAll("figcaption")].find((node) =>
+function pane(caption: string, within: ParentNode = document): HTMLElement {
+  const found = [...within.querySelectorAll("figcaption")].find((node) =>
     (node.textContent ?? "").startsWith(caption),
   );
   if (found === undefined) throw new Error(`no pane captioned "${caption}"`);
   return found.closest("figure") as HTMLElement;
+}
+
+function renderRows(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(".render-table tbody tr")];
+}
+
+/** The row whose first cell is this art kind. */
+function renderRow(artKind: string): HTMLElement {
+  const found = renderRows().find(
+    (row) => row.querySelector("td")?.textContent === artKind,
+  );
+  if (found === undefined) throw new Error(`no render row for "${artKind}"`);
+  return found;
 }
 
 function noteIn(element: HTMLElement): string {
@@ -339,6 +385,9 @@ describe("ItemDetail", () => {
     expect([...row!.querySelectorAll("td")].map((cell) => cell.textContent)).toEqual([
       "poster",
       "rendered",
+      // A null provider is a row nothing has rendered a source for yet, not
+      // the string "null".
+      "—",
       `${FINGERPRINT.slice(0, 12)}…`,
       `${BADGE_FINGERPRINT.slice(0, 12)}…`,
       "uploaded",
@@ -418,6 +467,227 @@ describe("ItemDetail", () => {
     // An error, not an outcome: a page showing both would be saying the
     // re-run failed and was queued at once.
     expect(document.querySelector(".item-outcome")).toBeNull();
+  });
+
+  it("shows a labelled base+live pair for every art kind the item has rendered", async () => {
+    // A movie has both a poster and a background. Showing only the poster hid
+    // half of what this page exists to compare, and there was no way to see a
+    // background at all.
+    stubFetch(bothKindRoutes());
+
+    await renderItem();
+
+    const sections = kindSections();
+    expect(
+      sections.map((section) => section.querySelector(".art-kind-label")?.textContent),
+    ).toEqual(["background", "poster"]);
+
+    // Each pane resolved back to the bytes its own endpoint returned, so a
+    // page that pointed both pairs at one art kind fails here.
+    expect(await bytesShownBy(pane("Base image", sections[0]))).toBe(
+      "base-background-bytes",
+    );
+    expect(await bytesShownBy(pane("Live in Plex", sections[0]))).toBe(
+      "live-background-bytes",
+    );
+    expect(await bytesShownBy(pane("Base image", sections[1]))).toBe("base-poster-bytes");
+    expect(await bytesShownBy(pane("Live in Plex", sections[1]))).toBe(
+      "live-poster-bytes",
+    );
+
+    // Per pair, not per page: a 16:9 background and a 2:3 poster on one screen
+    // is exactly the case a single shared ratio gets wrong.
+    expect(pane("Base image", sections[0])).toHaveAttribute("data-ratio", "wide");
+    expect(pane("Live in Plex", sections[0])).toHaveAttribute("data-ratio", "wide");
+    expect(pane("Base image", sections[1])).toHaveAttribute("data-ratio", "poster");
+    expect(pane("Live in Plex", sections[1])).toHaveAttribute("data-ratio", "poster");
+  });
+
+  it("falls back to the item's own art kind when nothing has been rendered", async () => {
+    // EPISODE has an empty renders array, so there is no art kind to take from
+    // it -- and a page that showed no panes at all would leave the operator
+    // unable to see whether Plex is serving something this project never made.
+    stubFetch({
+      "/api/items/9": () => json(EPISODE),
+      "/api/items/9/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/9/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
+    });
+
+    await renderItem(9);
+
+    const sections = kindSections();
+    expect(
+      sections.map((section) => section.querySelector(".art-kind-label")?.textContent),
+    ).toEqual(["title_card"]);
+    expect(await bytesShownBy(pane("Base image", sections[0]))).toBe("title-card-bytes");
+  });
+
+  it("offers Clear override only on a render row whose provider is manual", async () => {
+    stubFetch(bothKindRoutes());
+
+    await renderItem();
+
+    // Both providers are shown; only one of them is an override.
+    expect(renderRow("poster").querySelectorAll("td")[2].textContent).toContain("manual");
+    expect(renderRow("background").querySelectorAll("td")[2].textContent).toBe("tmdb");
+
+    const buttons = screen.getAllByRole("button", { name: "Clear override" });
+    expect(buttons).toHaveLength(1);
+    // In the manual row, not merely somewhere on the page: a button rendered
+    // once per table would still satisfy a bare count.
+    expect(renderRow("poster").contains(buttons[0])).toBe(true);
+    expect(renderRow("background").querySelector("button")).toBeNull();
+  });
+
+  it("clears an override, re-fetches the item and reports the queued re-render", async () => {
+    let detailCalls = 0;
+    const fetchMock = stubFetch(
+      bothKindRoutes({
+        "/api/items/3": () => {
+          detailCalls += 1;
+          return json(MOVIE_BOTH_KINDS);
+        },
+        "/api/items/3/renders/poster/clear-override": () =>
+          json({ status: "cleared", queued: true }),
+      }),
+    );
+
+    await renderItem();
+    expect(detailCalls).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear override" }));
+
+    await waitFor(() => expect(document.querySelector(".render-note")).not.toBeNull());
+
+    const post = fetchMock.mock.calls.find(
+      (call) => call[0] === "/api/items/3/renders/poster/clear-override",
+    );
+    expect(post).toBeDefined();
+    expect(post![1]?.method).toBe("POST");
+
+    // The row's fingerprints are cleared server-side, so the table on screen is
+    // stale until the item is read again.
+    expect(detailCalls).toBe(2);
+
+    const note = document.querySelector(".render-note")!.textContent ?? "";
+    // The endpoint renames the file to .disabled. Telling an operator their own
+    // artwork was deleted would be false, and restoring it is a rename back.
+    expect(note).toContain("disabled");
+    expect(note).not.toContain("deleted");
+    // What the server said happened, not what the click hoped for.
+    expect(note).toContain("queued");
+
+    // Inline against the row it belongs to, not a page-level banner: with two
+    // render rows a floating message says nothing about which one it means.
+    expect(
+      document.querySelector(".render-note")!.closest("tr")!.previousElementSibling,
+    ).toBe(renderRow("poster"));
+  });
+
+  it("says nothing new was queued when the server says nothing was", async () => {
+    stubFetch(
+      bothKindRoutes({
+        "/api/items/3/renders/poster/clear-override": () =>
+          json({ status: "cleared", queued: false }),
+      }),
+    );
+
+    await renderItem();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear override" }));
+
+    await waitFor(() => expect(document.querySelector(".render-note")).not.toBeNull());
+    const note = document.querySelector(".render-note")!.textContent ?? "";
+    expect(note).toContain("disabled");
+    // The reprocess enqueue de-duplicates, so "queued a re-render" would be the
+    // opposite of what the response reported.
+    expect(note).not.toMatch(/queued a re-render/);
+  });
+
+  it("surfaces a 409 beside the row instead of claiming the override was cleared", async () => {
+    let detailCalls = 0;
+    stubFetch(
+      bothKindRoutes({
+        "/api/items/3": () => {
+          detailCalls += 1;
+          return json(MOVIE_BOTH_KINDS);
+        },
+        "/api/items/3/renders/poster/clear-override": () =>
+          json({ detail: "no manual override for this art kind" }, 409),
+      }),
+    );
+
+    await renderItem();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear override" }));
+
+    await waitFor(() =>
+      expect(document.querySelector(".render-error")?.textContent).toBe(
+        "no manual override for this art kind",
+      ),
+    );
+    // An error, not a success note: a page showing both would be saying the
+    // clear failed and worked at once.
+    expect(document.querySelector(".render-note")).toBeNull();
+    // Nothing changed on the server, so nothing needed re-reading.
+    expect(detailCalls).toBe(1);
+    expect(
+      document.querySelector(".render-error")!.closest("tr")!.previousElementSibling,
+    ).toBe(renderRow("poster"));
+  });
+
+  it("surfaces the 503 rename failure verbatim, mount path and all", async () => {
+    // The detail is the OS error, which names the absolute path on the mount.
+    // Behind auth, that is the only thing that tells an operator which file to
+    // go and look at -- a generic "could not clear" would strand them.
+    const detail =
+      "[Errno 30] Read-only file system: '/manualassets/Movies/Ghostbusters (1984)/poster.png'";
+    stubFetch(
+      bothKindRoutes({
+        "/api/items/3/renders/poster/clear-override": () => json({ detail }, 503),
+      }),
+    );
+
+    await renderItem();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear override" }));
+
+    await waitFor(() =>
+      expect(document.querySelector(".render-error")?.textContent).toBe(detail),
+    );
+  });
+
+  it("disables Clear override while its own request is in flight", async () => {
+    // The endpoint is deliberately non-idempotent: a second click during the
+    // first call 409s on a file that has already been renamed, which would
+    // report a failure for a clear that actually succeeded.
+    let release!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    stubFetch(
+      bothKindRoutes({
+        "/api/items/3/renders/poster/clear-override": () => pending,
+      }),
+    );
+
+    await renderItem();
+
+    expect(screen.getByRole("button", { name: "Clear override" })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear override" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Clear override" })).toBeDisabled(),
+    );
+
+    await act(async () => {
+      release(json({ status: "cleared", queued: true }));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Clear override" })).not.toBeDisabled(),
+    );
   });
 
   it("is what /items/:itemId reaches in the real router", async () => {

@@ -165,6 +165,22 @@ export interface ReprocessResponse {
   job_id: number | null;
 }
 
+/** POST /api/items/{id}/renders/{art_kind}/clear-override.
+ *
+ * `status` is always "cleared" -- the endpoint raises rather than reporting a
+ * failure in the body. `queued` is whether a re-render was enqueued, which the
+ * reprocess de-duplication can make false.
+ *
+ * The override file is RENAMED to `<name>.disabled`, not deleted: it is the
+ * operator's own artwork and restoring it is a rename back on the mount. Say
+ * so; "deleted" would be false. The endpoint is also not idempotent -- a
+ * second call 409s, because the file it would move is no longer there.
+ */
+export interface ClearOverrideResponse {
+  status: string;
+  queued: boolean;
+}
+
 /** POST /api/full-pass. `queued` is how many jobs were actually inserted;
  * `skipped` counts items whose identical job was already pending, so a second
  * trigger during a pending pass reports mostly-skipped rather than pretending
