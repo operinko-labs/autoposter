@@ -23,6 +23,7 @@
   --error: #f05050;
   --radius: 4px;
   --sidebar-width: 210px;
+  --sidebar-width-collapsed: 56px;
 
   /* No webfont. Fetching Roboto from Google Fonts would put a runtime
    * network dependency into a cluster-internal deployment, and vendoring it

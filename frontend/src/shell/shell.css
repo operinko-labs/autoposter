@@ -10,14 +10,74 @@
   width: var(--sidebar-width);
   background: var(--bg-elevated);
   border-right: 1px solid var(--border);
+  /* .app-main is flex: 1, so shrinking this column hands the difference
+   * straight to the page -- collapsing actually reclaims the width. */
+  transition: flex-basis 120ms ease, width 120ms ease;
+}
+
+.sidebar.collapsed {
+  flex: 0 0 var(--sidebar-width-collapsed);
+  width: var(--sidebar-width-collapsed);
+}
+
+/* Kept in the accessibility tree, out of sight: the collapsed rail shows only
+ * icons, but every control keeps its name for a screen reader. */
+.sidebar-hidden-label,
+.sidebar.collapsed .sidebar-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .sidebar-brand {
-  padding: 18px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 16px;
   color: var(--text-strong);
   font-size: 16px;
   letter-spacing: 0.04em;
   border-bottom: 1px solid var(--border);
+}
+
+.sidebar.collapsed .sidebar-brand {
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 4px;
+}
+
+.sidebar-brand-mark {
+  display: none;
+}
+
+.sidebar.collapsed .sidebar-brand-name {
+  display: none;
+}
+
+.sidebar.collapsed .sidebar-brand-mark {
+  display: block;
+}
+
+.sidebar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  background: transparent;
+  border-color: transparent;
+  line-height: 0;
+}
+
+.sidebar-toggle svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
 .sidebar-nav {
@@ -58,9 +118,32 @@
   flex: 0 0 16px;
 }
 
+.sidebar.collapsed .sidebar-link {
+  justify-content: center;
+  gap: 0;
+  padding: 9px 0;
+}
+
 .sidebar-logout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 12px;
   background: transparent;
+}
+
+.sidebar-logout svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  flex: 0 0 16px;
+}
+
+.sidebar.collapsed .sidebar-logout {
+  justify-content: center;
+  gap: 0;
+  margin: 12px 8px;
+  padding: 6px 0;
 }
 
 .app-main {

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 
 import { useSession } from "../auth/SessionContext";
@@ -17,6 +18,10 @@ const ICONS: Record<string, string> = {
   logs: "M3 4h18v2H3V4zm0 4h12v2H3V8zm0 4h18v2H3v-2zm0 4h12v2H3v-2zm0 4h18v2H3v-2z",
   settings:
     "M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.62l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.58.24-1.12.55-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.86a.5.5 0 0 0 .12.62l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.62l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.39 1.04.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.62l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z",
+  logout:
+    "M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.59L17 17l5-5-5-5zM4 5h8V3H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8v-2H4V5z",
+  collapse: "M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12l4.6-4.6z",
+  expand: "M8.6 7.4 10 6l6 6-6 6-1.4-1.4 4.6-4.6-4.6-4.6z",
 };
 
 const NAV = [
@@ -28,19 +33,102 @@ const NAV = [
   { to: "/settings", label: "Settings", icon: "settings", end: false },
 ];
 
+const STORAGE_KEY = "autoposter.sidebar";
+
+/** Below this the sidebar alone eats most of a phone screen, so it starts as
+ * the icon rail. Matches the 768px tablet breakpoint the pages use. */
+const NARROW = "(max-width: 767px)";
+
+/** localStorage rather than the sessionStorage `api/client.ts` uses for the
+ * token: a layout preference is not a credential, and it should survive the
+ * tab closing. The guarding is the same -- storage access throws outright
+ * under some privacy settings, and a blocked read must degrade to "no
+ * preference stored", never to a blank sidebar. */
+function readStored(): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (raw === "collapsed") return true;
+    if (raw === "expanded") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(collapsed: boolean): void {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, collapsed ? "collapsed" : "expanded");
+  } catch {
+    // Blocked; the choice still holds for the life of the page.
+  }
+}
+
+function isNarrow(): boolean {
+  return window.matchMedia?.(NARROW).matches ?? false;
+}
+
 export function Sidebar() {
   const { logout } = useSession();
 
-  return (
-    <nav className="sidebar">
-      <div className="sidebar-brand">Autoposter</div>
+  // Read once, at mount. A stored choice is the user's; without one the
+  // viewport decides.
+  const [explicit, setExplicit] = useState(() => readStored() !== null);
+  const [collapsed, setCollapsed] = useState(() => readStored() ?? isNarrow());
 
-      <ul className="sidebar-nav">
+  useEffect(() => {
+    // Only while the user has not chosen: rotating a tablet should move the
+    // sidebar with the viewport, but an explicit toggle outranks the
+    // viewport and must not be undone by a resize.
+    if (explicit) return;
+    const query = window.matchMedia?.(NARROW);
+    if (!query) return;
+    const onChange = (event: MediaQueryListEvent) => setCollapsed(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, [explicit]);
+
+  const toggle = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    setExplicit(true);
+    writeStored(next);
+  };
+
+  const toggleLabel = collapsed ? "Expand sidebar" : "Collapse sidebar";
+
+  return (
+    <nav className={collapsed ? "sidebar collapsed" : "sidebar"}>
+      <div className="sidebar-brand">
+        <span className="sidebar-brand-name">Autoposter</span>
+        <span className="sidebar-brand-mark" aria-hidden="true">
+          A
+        </span>
+        <button
+          className="sidebar-toggle"
+          type="button"
+          onClick={toggle}
+          aria-expanded={!collapsed}
+          aria-controls="sidebar-nav"
+          title={toggleLabel}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d={collapsed ? ICONS.expand : ICONS.collapse} />
+          </svg>
+          <span className="sidebar-hidden-label">{toggleLabel}</span>
+        </button>
+      </div>
+
+      <ul className="sidebar-nav" id="sidebar-nav">
         {NAV.map((item) => (
           <li key={item.to}>
+            {/* The label stays in the DOM when collapsed -- CSS clips it out
+                of sight rather than removing it, so the link keeps its
+                accessible name for a screen reader. `title` gives the same
+                name to a sighted user as a tooltip. */}
             <NavLink
               to={item.to}
               end={item.end}
+              title={item.label}
               className={({ isActive }) =>
                 isActive ? "sidebar-link active" : "sidebar-link"
               }
@@ -48,14 +136,22 @@ export function Sidebar() {
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d={ICONS[item.icon]} />
               </svg>
-              {item.label}
+              <span className="sidebar-label">{item.label}</span>
             </NavLink>
           </li>
         ))}
       </ul>
 
-      <button className="sidebar-logout" type="button" onClick={() => void logout()}>
-        Sign out
+      <button
+        className="sidebar-logout"
+        type="button"
+        onClick={() => void logout()}
+        title="Sign out"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d={ICONS.logout} />
+        </svg>
+        <span className="sidebar-label">Sign out</span>
       </button>
     </nav>
   );
