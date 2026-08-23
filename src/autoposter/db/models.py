@@ -277,6 +277,16 @@ class ManagedCollection(Base):
     # definition is unchanged. An operator pins a different poster with a
     # local file, not by leaving this NULL.
     poster_sha256: Mapped[str | None] = mapped_column(String(64))
+    # What the last reconcile pass saw. NULL means "no pass has stamped this
+    # row yet" -- true for every row that predates these columns, and
+    # permanently true for smart and separator rows: Plex evaluates a smart
+    # filter live, so there is no membership we could count, and a separator
+    # has no members at all. Only list collections
+    # (``collections/lists.py``) stamp here.
+    member_count: Mapped[int | None] = mapped_column(Integer)
+    last_added: Mapped[int | None] = mapped_column(Integer)
+    last_removed: Mapped[int | None] = mapped_column(Integer)
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

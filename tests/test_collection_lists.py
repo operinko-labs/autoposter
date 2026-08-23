@@ -5,6 +5,7 @@ empty desired-set catastrophic, which is why several tests here are about
 doing nothing.
 """
 import inspect
+import re
 from itertools import permutations
 
 import pytest
@@ -364,3 +365,116 @@ async def test_the_collection_is_recorded_as_managed(session):
     assert row.library == "Movies"
     assert row.title == "IMDb Top 250"
     assert row.kind == "manual"
+
+
+async def _stats(session):
+    """The reconcile stats as the database holds them.
+
+    Read as columns rather than through the ORM instance on purpose:
+    ``last_reconciled_at`` is assigned ``func.now()``, so the mapped attribute
+    holds a SQL expression until a refresh replaces it, and refreshing it
+    through attribute access would need a greenlet context these tests do not
+    have.
+    """
+    return (
+        await session.execute(
+            select(
+                ManagedCollection.member_count,
+                ManagedCollection.last_added,
+                ManagedCollection.last_removed,
+                ManagedCollection.last_reconciled_at,
+            )
+        )
+    ).one()
+
+
+async def test_the_create_path_stamps_the_reconcile_stats(session):
+    """A brand-new collection added every one of its members, so the create
+    path's delta is the whole list."""
+    section = FakeSection()
+    await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=False,
+    )
+    member_count, added, removed, reconciled_at = await _stats(session)
+    assert member_count == 2
+    assert added == 2
+    assert removed == 0
+    assert reconciled_at is not None
+
+
+async def test_the_update_path_stamps_the_delta_the_action_string_reports(session):
+    """The stamped delta and the summary line an operator reads must be the
+    same numbers. Two independent counts would drift silently, so this asserts
+    the columns against the numbers parsed back out of the action string."""
+    section = FakeSection()
+    await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=False,
+    )
+
+    actions = await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("c")], LABEL, dry_run=False,
+    )
+
+    update_line = next(a for a in actions if a.startswith("updated "))
+    reported = re.search(r"\+(\d+) -(\d+)", update_line)
+    assert reported, update_line
+    member_count, added, removed, reconciled_at = await _stats(session)
+    assert (added, removed) == (int(reported.group(1)), int(reported.group(2)))
+    assert (added, removed) == (1, 1)
+    assert member_count == 2
+    assert reconciled_at is not None
+
+
+async def test_the_unchanged_hash_path_refreshes_the_stats_and_zeroes_the_delta(session):
+    """The short-circuit still confirmed membership is as desired, so the row
+    is a fresh observation: the count is re-affirmed and the delta is zero.
+
+    The first pass stamps ``last_added=2``, so a short-circuit that skipped
+    the stamp would leave that stale 2 behind -- which is what this asserts
+    against."""
+    section = FakeSection()
+    items = [FakeItem("a"), FakeItem("b")]
+    await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250", items, LABEL, dry_run=False,
+    )
+    assert (await _stats(session))[1] == 2, "precondition: the create path stamped 2 adds"
+
+    actions = await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=False,
+    )
+
+    assert actions == [], "precondition: this pass must be the short-circuit"
+    member_count, added, removed, reconciled_at = await _stats(session)
+    assert member_count == 2
+    assert added == 0
+    assert removed == 0
+    assert reconciled_at is not None
+
+
+async def test_a_dry_run_stamps_nothing(session):
+    """Dry-run is write-free, and that has to hold on both paths a dry run can
+    reach with a row already present: the unchanged short-circuit and the
+    would-update branch."""
+    section = FakeSection()
+    await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=False,
+    )
+    before = await _stats(session)
+    assert before[:3] == (2, 2, 0), "precondition: the create path stamped 2/2/0"
+
+    await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=True,
+    )
+    assert await _stats(session) == before, "the short-circuit stamped under dry-run"
+
+    await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("b"), FakeItem("c")], LABEL, dry_run=True,
+    )
+    assert await _stats(session) == before, "the would-update branch stamped under dry-run"

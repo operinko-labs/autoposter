@@ -12,7 +12,7 @@ import hashlib
 import logging
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections.posters import apply_poster, posters_enabled
@@ -123,6 +123,18 @@ async def reconcile_list_collection(
     definition_current = (
         collection is not None and record is not None and record.definition_hash == wanted
     )
+    # An unchanged hash still means the pass confirmed membership is as
+    # desired, so the row records the observation with a zero delta. Stamped
+    # ahead of the short-circuit rather than inside it so the poster-refresh
+    # fall-through below -- an unchanged membership whose ``poster_sha256`` is
+    # still NULL -- records its pass too, since that branch skips the write
+    # block further down entirely.
+    if definition_current and not dry_run:
+        record.member_count = len(items)
+        record.last_added = 0
+        record.last_removed = 0
+        record.last_reconciled_at = func.now()
+
     # An unchanged membership is not on its own a reason to stop: a row whose
     # ``poster_sha256`` is still NULL -- one that predates posters being
     # enabled, or whose fetch failed on the pass that created it -- would
@@ -136,6 +148,9 @@ async def reconcile_list_collection(
         return [claim_action] if claim_action else []
 
     actions: list[str] = [claim_action] if claim_action else []
+    # The delta the row records, set by whichever write path runs below. A
+    # create adds every item and removes none; an update counts its own diff.
+    added_count = removed_count = 0
 
     if not definition_current:
         if dry_run:
@@ -148,6 +163,7 @@ async def reconcile_list_collection(
             collection.sortUpdate(sort)
             if summary:
                 collection.editSummary(summary)
+            added_count = len(items)
             actions.append("created %r with %d item(s)" % (title, len(items)))
         else:
             # The summary is part of the members hash, so a corrected summary
@@ -168,9 +184,11 @@ async def reconcile_list_collection(
             if removing:
                 collection.removeItems(removing)
             moves = _enforce_order(collection, items)
+            added_count, removed_count = len(adding), len(removing)
             if adding or removing or moves:
                 actions.append(
-                    "updated %r: +%d -%d, %d move(s)" % (title, len(adding), len(removing), moves)
+                    "updated %r: +%d -%d, %d move(s)"
+                    % (title, added_count, removed_count, moves)
                 )
 
         if not dry_run:
@@ -184,6 +202,10 @@ async def reconcile_list_collection(
             else:
                 record.definition_hash = wanted
                 record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+            record.member_count = len(items)
+            record.last_added = added_count
+            record.last_removed = removed_count
+            record.last_reconciled_at = func.now()
 
     if posters_on and collection is not None and record is not None:
         message = await apply_poster(

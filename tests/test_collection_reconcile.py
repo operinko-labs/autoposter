@@ -236,3 +236,25 @@ async def test_a_database_row_with_no_matching_plex_collection_is_recreated(sess
     assert len(rows) == 1
     assert rows[0].id == row.id
     assert rows[0].definition_hash != "stale"
+
+
+async def test_smart_collection_rows_never_get_reconcile_stats(session):
+    """A smart collection has no membership we could count: Plex evaluates the
+    filter live, so nothing here ever reads back a member list. The reconcile
+    stat columns exist for list collections only and must stay NULL on these
+    rows -- a zero would read as "this collection is empty", which is a
+    different and wrong claim."""
+    section = FakeSection({"17", "PG"})
+
+    await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False
+    )
+
+    rows = (await session.execute(select(ManagedCollection))).scalars().all()
+    assert rows, "precondition: the pass created smart rows"
+    for row in rows:
+        assert row.kind == "smart"
+        assert row.member_count is None
+        assert row.last_added is None
+        assert row.last_removed is None
+        assert row.last_reconciled_at is None
