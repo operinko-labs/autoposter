@@ -60,6 +60,18 @@
   padding: 0 16px;
 }
 
+.scheduled-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.row-error {
+  color: var(--error);
+  font-size: 12px;
+}
+
 .pill {
   display: inline-block;
   border-radius: 10px;

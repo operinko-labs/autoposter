@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
@@ -22,6 +22,18 @@ const STATUS = {
       last_finished_at: "2026-01-02T03:09:05Z",
       last_status: "ok",
       last_detail: "nothing to do",
+      interval_seconds: 900,
+    },
+    // Registration is config-conditional: this row survives from a
+    // deployment that ran the job, but the running scheduler knows no
+    // interval for it, so it is not registered here.
+    {
+      name: "arr_sync",
+      last_started_at: null,
+      last_finished_at: null,
+      last_status: null,
+      last_detail: null,
+      interval_seconds: null,
     },
   ],
 };
@@ -44,13 +56,27 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function stubFetch(fullPass?: (path: string, init?: RequestInit) => Promise<Response>) {
+type Handler = (path: string, init?: RequestInit) => Promise<Response>;
+
+function stubFetch(fullPass?: Handler, run?: Handler) {
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     if (path === "/api/full-pass" && fullPass) return fullPass(path, init);
+    if (path.startsWith("/api/scheduled-runs/")) {
+      return run ? run(path, init) : json({ status: "requested", poll_seconds: 60 });
+    }
     return json(path.startsWith("/api/events") ? EVENTS : STATUS);
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+/** The scheduled-runs row for `name`, scoped so a second row's identically
+ * labelled button cannot satisfy an assertion about this one. */
+async function jobRow(name: string) {
+  const cell = await screen.findByText(name);
+  const row = cell.closest("tr");
+  expect(row).not.toBeNull();
+  return within(row!);
 }
 
 beforeEach(() => {
@@ -155,6 +181,72 @@ describe("Dashboard", () => {
 
     expect(await screen.findByText("the queue is unreachable")).toBeInTheDocument();
     expect(screen.queryByText(/Full pass:/)).not.toBeInTheDocument();
+  });
+
+  it("requests a run for one job and quotes the poll interval", async () => {
+    const fetchMock = stubFetch(undefined, async () =>
+      json({ status: "requested", poll_seconds: 30 })
+    );
+
+    render(<Dashboard />);
+    const row = await jobRow("library_scan");
+    fireEvent.click(row.getByRole("button", { name: "Run now" }));
+
+    // The endpoint only marks the row due -- nothing has started, and the
+    // note must not imply it has. It also nulls last_started_at server-side,
+    // so the row is briefly "never started"; that is what this note covers.
+    expect(await row.findByText("requested — picks up within 30s")).toBeInTheDocument();
+
+    const call = fetchMock.mock.calls.find(([path]) => path.startsWith("/api/scheduled-runs/"));
+    expect(call?.[0]).toBe("/api/scheduled-runs/library_scan/run");
+    expect((call?.[1] as RequestInit).method).toBe("POST");
+  });
+
+  it("disables Run now for a job this deployment did not register", async () => {
+    stubFetch();
+
+    render(<Dashboard />);
+
+    const registered = await jobRow("library_scan");
+    expect(registered.getByRole("button", { name: "Run now" })).toBeEnabled();
+
+    // A null interval means the scheduler has no such job. Marking the row
+    // due would leave a permanently-due row nothing ever claims.
+    const absent = await jobRow("arr_sync");
+    const button = absent.getByRole("button", { name: "Run now" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", "not scheduled in this deployment's config");
+  });
+
+  it("disables the button while the run request is in flight", async () => {
+    let resolveRun!: (response: Response) => void;
+    stubFetch(undefined, () => new Promise<Response>((resolve) => (resolveRun = resolve)));
+
+    render(<Dashboard />);
+    const row = await jobRow("library_scan");
+    fireEvent.click(row.getByRole("button", { name: "Run now" }));
+
+    // Not idempotent against an in-flight run: a second press queues a
+    // second copy of the pass.
+    const busy = await row.findByRole("button", { name: "Requesting…" });
+    expect(busy).toBeDisabled();
+
+    await act(async () => {
+      resolveRun(json({ status: "requested", poll_seconds: 60 }));
+    });
+
+    expect(await row.findByRole("button", { name: "Run now" })).toBeEnabled();
+  });
+
+  it("surfaces a failed run request in the row it belongs to", async () => {
+    stubFetch(undefined, async () => json({ detail: "unknown scheduled job" }, 404));
+
+    render(<Dashboard />);
+    const row = await jobRow("library_scan");
+    fireEvent.click(row.getByRole("button", { name: "Run now" }));
+
+    expect(await row.findByText("unknown scheduled job")).toBeInTheDocument();
+    expect(screen.queryByText(/picks up within/)).not.toBeInTheDocument();
   });
 
   it("shows the failure rather than an endless spinner", async () => {

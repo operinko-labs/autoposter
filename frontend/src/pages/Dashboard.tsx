@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "../api/client";
-import { JOB_STATES, type EventsResponse, type FullPassResponse, type Status } from "../api/types";
+import {
+  JOB_STATES,
+  type EventsResponse,
+  type FullPassResponse,
+  type ScheduledRunRequestResponse,
+  type Status,
+} from "../api/types";
 import { formatTime } from "../format";
+import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
 import "./dashboard.css";
 
 /** Polling, not a WebSocket: no socket endpoint exists yet, and adding one is
@@ -15,6 +22,11 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [passBusy, setPassBusy] = useState(false);
   const [passOutcome, setPassOutcome] = useState<FullPassResponse | null>(null);
+  // Keyed by job name rather than page-level: several rows have their own
+  // button, and an error or a note belongs to the row that produced it.
+  const [runBusy, setRunBusy] = useState<string | null>(null);
+  const [runNotes, setRunNotes] = useState<Record<string, number>>({});
+  const [runErrors, setRunErrors] = useState<Record<string, string>>({});
 
   // A ref rather than the polling effect's `cancelled` local because the
   // full-pass response lands in a click handler that local cannot reach --
@@ -39,6 +51,32 @@ export function Dashboard() {
       if (live.current) setError((caught as Error).message);
     } finally {
       if (live.current) setPassBusy(false);
+    }
+  }
+
+  /** Mark one periodic job due. The endpoint neither starts nor waits, and it
+   * is NOT idempotent against a run already in flight -- pressing twice
+   * queues a second copy of the pass on the next poll. The button is disabled
+   * for the duration of the request for that reason, and nothing here fires
+   * it automatically. The polling effect below picks up whatever the
+   * scheduler does next, so there is no extra re-read to do. */
+  async function runNow(name: string) {
+    setRunBusy(name);
+    setRunErrors((previous) => {
+      const next = { ...previous };
+      delete next[name];
+      return next;
+    });
+    try {
+      const outcome = await apiFetch<ScheduledRunRequestResponse>(
+        `/api/scheduled-runs/${name}/run`,
+        { method: "POST" }
+      );
+      if (live.current) setRunNotes((previous) => ({ ...previous, [name]: outcome.poll_seconds }));
+    } catch (caught) {
+      if (live.current) setRunErrors((previous) => ({ ...previous, [name]: (caught as Error).message }));
+    } finally {
+      if (live.current) setRunBusy(null);
     }
   }
 
@@ -129,6 +167,7 @@ export function Dashboard() {
                   <th>Job</th>
                   <th>Last run</th>
                   <th>Result</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -143,6 +182,26 @@ export function Dashboard() {
                         <span className={`pill pill-${job.last_status}`} title={job.last_detail ?? ""}>
                           {job.last_status}
                         </span>
+                      )}
+                    </td>
+                    <td className="scheduled-actions">
+                      <button
+                        type="button"
+                        // A null interval means the running scheduler has no
+                        // such job: this row survives from a configuration
+                        // that registered it. Marking it due would leave a
+                        // permanently-due row nothing ever claims.
+                        disabled={job.interval_seconds === null || runBusy === job.name}
+                        title={job.interval_seconds === null ? NOT_SCHEDULED_TITLE : undefined}
+                        onClick={() => void runNow(job.name)}
+                      >
+                        {runBusy === job.name ? "Requesting…" : "Run now"}
+                      </button>
+                      {runNotes[job.name] !== undefined && (
+                        <span className="muted">{requestedNote(runNotes[job.name])}</span>
+                      )}
+                      {runErrors[job.name] !== undefined && (
+                        <span className="row-error">{runErrors[job.name]}</span>
                       )}
                     </td>
                   </tr>
