@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -343,6 +344,107 @@ async def _get_or_create_render(
     ).scalar_one()
 
 
+@dataclass(frozen=True)
+class ComposeResult:
+    """The outcome of styling one base image.
+
+    ``truncated`` is Posterizarr's no-artifact outcome rather than an error:
+    text that will not fit at the minimum point size means no file is produced
+    at all, and ``detail`` says which text failed to fit in which box.
+    """
+
+    output: Path
+    truncated: bool
+    detail: str | None = None
+
+
+async def compose_styled(
+    config: Config,
+    art_kind: str,
+    working: Path,
+    *,
+    primary_text: str | None,
+    secondary_text: str | None,
+    draw_text: bool,
+    logo_path: Path | None = None,
+) -> ComposeResult:
+    """Style ``working`` in place -- stamp, base canvas, optional logo, text.
+
+    Lifted out of ``render_artifact`` unchanged so a caller holding a base
+    image can get exactly the pipeline's styled bytes and nothing else: no
+    fingerprints, no publishing, no database. The caller owns ``working`` and
+    is handed it back as ``ComposeResult.output``.
+
+    ``draw_text`` is not inferred from ``logo_path``. The pipeline suppresses
+    the title for a poster that composites a logo *and* for one that found no
+    logo with ``logo_text_fallback`` off, and only the caller knows which.
+
+    Each ImageMagick invocation keeps its own ``asyncio.to_thread`` hop, as it
+    had inside the pipeline -- so this is awaited directly from an event loop,
+    not wrapped in a thread again.
+    """
+    settings = art_config_for(config, art_kind)
+    overlay = (
+        str(Path(config.overlays_root) / settings.overlay_file)
+        if settings.add_overlay
+        else None
+    )
+    await asyncio.to_thread(
+        compositor.run,
+        compositor.build_stamp_argv(config.magick_binary, str(working)),
+    )
+    await asyncio.to_thread(
+        compositor.run,
+        compositor.build_base_argv(
+            config.magick_binary, str(working), _CANVAS[art_kind], overlay,
+            config.artwork.output_quality, settings.add_border,
+            settings.border_color, settings.border_width,
+        ),
+    )
+    if logo_path is not None:
+        await asyncio.to_thread(
+            compositor.run,
+            compositor.build_logo_argv(
+                config.magick_binary, str(working), str(logo_path),
+                settings.text, config.artwork.output_quality,
+            ),
+        )
+    blocks = []
+    if draw_text:
+        blocks.append((settings.text, primary_text))
+    if art_kind == "title_card":
+        blocks.append((settings.episode_text, secondary_text))
+    for style, text in blocks:
+        if style is None or not text:
+            continue
+        prepared = prepare_text(text, style)
+        font_path = str(Path(config.fonts_root) / style.font)
+        fit = await asyncio.to_thread(
+            fit_point_size, config.magick_binary, font_path, style, prepared
+        )
+        if fit.truncated:
+            # Posterizarr writes no file when text cannot fit at the minimum
+            # point size. Emitting one here would produce artwork the current
+            # system never would.
+            return ComposeResult(
+                output=working,
+                truncated=True,
+                detail=(
+                    f"{text!r} does not fit in "
+                    f"{style.max_width}x{style.max_height} at "
+                    f"{style.min_point_size}pt"
+                ),
+            )
+        await asyncio.to_thread(
+            compositor.run,
+            compositor.build_text_argv(
+                config.magick_binary, str(working), style, font_path,
+                fit.point_size, prepared, config.artwork.output_quality,
+            ),
+        )
+    return ComposeResult(output=working, truncated=False)
+
+
 async def render_artifact(
     session: AsyncSession,
     config: Config,
@@ -502,65 +604,18 @@ async def render_artifact(
                 _publish, working, target, config.backup_root, config.assets_root
             )
         else:
-            overlay = (
-                str(Path(config.overlays_root) / settings.overlay_file)
-                if settings.add_overlay
-                else None
+            styled = await compose_styled(
+                config, art_kind, working,
+                primary_text=primary_text, secondary_text=secondary_text,
+                draw_text=draw_text, logo_path=logo_path,
             )
+            if styled.truncated:
+                render.status = "truncated"
+                render.detail = styled.detail
+                await session.commit()
+                return render
             await asyncio.to_thread(
-                compositor.run,
-                compositor.build_stamp_argv(config.magick_binary, str(working)),
-            )
-            await asyncio.to_thread(
-                compositor.run,
-                compositor.build_base_argv(
-                    config.magick_binary, str(working), _CANVAS[art_kind], overlay,
-                    config.artwork.output_quality, settings.add_border,
-                    settings.border_color, settings.border_width,
-                ),
-            )
-            if logo_path is not None:
-                await asyncio.to_thread(
-                    compositor.run,
-                    compositor.build_logo_argv(
-                        config.magick_binary, str(working), str(logo_path),
-                        settings.text, config.artwork.output_quality,
-                    ),
-                )
-            blocks = []
-            if draw_text:
-                blocks.append((settings.text, primary_text))
-            if art_kind == "title_card":
-                blocks.append((settings.episode_text, secondary_text))
-            for style, text in blocks:
-                if style is None or not text:
-                    continue
-                prepared = prepare_text(text, style)
-                font_path = str(Path(config.fonts_root) / style.font)
-                fit = await asyncio.to_thread(
-                    fit_point_size, config.magick_binary, font_path, style, prepared
-                )
-                if fit.truncated:
-                    # Posterizarr writes no file when text cannot fit at the minimum
-                    # point size. Emitting one here would produce artwork the current
-                    # system never would.
-                    render.status = "truncated"
-                    render.detail = (
-                        f"{text!r} does not fit in "
-                        f"{style.max_width}x{style.max_height} at "
-                        f"{style.min_point_size}pt"
-                    )
-                    await session.commit()
-                    return render
-                await asyncio.to_thread(
-                    compositor.run,
-                    compositor.build_text_argv(
-                        config.magick_binary, str(working), style, font_path,
-                        fit.point_size, prepared, config.artwork.output_quality,
-                    ),
-                )
-            await asyncio.to_thread(
-                _publish, working, target, config.backup_root, config.assets_root
+                _publish, styled.output, target, config.backup_root, config.assets_root
             )
 
     render.provider = provider_name
