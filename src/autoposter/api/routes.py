@@ -317,9 +317,9 @@ async def list_items(
         render_status_by_item: dict[int, dict[str, str]] = {item_id: {} for item_id in item_ids}
         if item_ids:
             render_rows = await session.execute(
-                select(Render.item_id, Render.art_kind, Render.status).where(
-                    Render.item_id.in_(item_ids)
-                )
+                select(Render.item_id, Render.art_kind, Render.status)
+                .where(Render.item_id.in_(item_ids))
+                .order_by(Render.art_kind)
             )
             for item_id, art_kind, render_status in render_rows:
                 render_status_by_item[item_id][art_kind] = render_status

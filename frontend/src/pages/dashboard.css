@@ -90,3 +90,18 @@
   background: color-mix(in srgb, var(--warn) 22%, transparent);
   color: var(--warn);
 }
+
+.pill-rendered {
+  background: color-mix(in srgb, var(--ok) 22%, transparent);
+  color: var(--ok);
+}
+
+.pill-no_art {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--warn);
+}
+
+.pill-truncated {
+  background: color-mix(in srgb, var(--error) 22%, transparent);
+  color: var(--error);
+}

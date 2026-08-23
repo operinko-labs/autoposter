@@ -181,6 +181,21 @@ async def test_items_render_status_summary_is_included(client, auth_headers, ses
     assert row["render_status"] == {"poster": "rendered"}
 
 
+async def test_items_render_status_keys_arrive_in_sorted_art_kind_order(client, auth_headers, session):
+    # Insert in the opposite of sorted order ("poster" before "background")
+    # so a query without an ORDER BY has no reason to return them sorted.
+    session.add(_item("rk1", "A"))
+    await session.flush()
+    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+    session.add(Render(item_id=item_id, art_kind="poster", status="rendered", asset_path="/x/a.jpg"))
+    session.add(Render(item_id=item_id, art_kind="background", status="rendered", asset_path="/x/b.jpg"))
+    await session.commit()
+
+    response = await client.get("/api/items", headers=auth_headers)
+    row = response.json()["items"][0]
+    assert list(row["render_status"].keys()) == ["background", "poster"]
+
+
 # --- /api/items/{item_id} ---
 
 

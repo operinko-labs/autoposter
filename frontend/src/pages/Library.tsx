@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { ApiError, apiFetch, apiFetchImage } from "../api/client";
 import type { ItemFiltersResponse, ItemSummary, ItemsResponse } from "../api/types";
 import { artKindFor } from "../artKind";
+import "./dashboard.css";
 import "./library.css";
 
 /** One screen of tiles. The endpoint caps `limit` at 200 (MAX_ITEMS_LIMIT in
@@ -242,6 +243,7 @@ export function Library() {
         <div className="tile-grid">
           {items.map((item) => {
             const artKind = artKindFor(item.kind);
+            const renderStatusEntries = Object.entries(item.render_status);
             return (
               <Link key={item.id} to={`/items/${item.id}`} className="tile">
                 <Artwork itemId={item.id} artKind={artKind} title={item.title} />
@@ -253,9 +255,9 @@ export function Library() {
                   * a no_art filter whenever the match was on the other kind.
                   * The chip equal to the active filter is highlighted -- it is
                   * the reason this tile is in the result at all. */}
-                {Object.entries(item.render_status).length > 0 && (
+                {renderStatusEntries.length > 0 && (
                   <div className="tile-chips">
-                    {Object.entries(item.render_status).map(([kind, kindStatus]) => (
+                    {renderStatusEntries.map(([kind, kindStatus]) => (
                       <span
                         key={kind}
                         className={`pill tile-chip pill-${kindStatus}${
