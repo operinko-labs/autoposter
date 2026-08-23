@@ -158,6 +158,31 @@ def _apply_genre_edits(item, additions: list[str], removals: list[str]) -> None:
             item.genres = original_genres
 
 
+def _item_label(item) -> str:
+    """`movie 'Heat' (1995)`, `show 'Dark' (2017)`, `episode 'Pilot' (Dark
+    S01E01)` -- the operator reading a live log needs to know WHICH item was
+    written, not just its type. Every attribute is optional because the
+    plexapi object shapes differ per type (and the tests use bare fakes);
+    whatever is missing is simply left out.
+    """
+    kind = getattr(item, "type", None) or "?"
+    title = getattr(item, "title", None)
+    if title is None:
+        return kind
+    label = "%s %r" % (kind, title)
+    if kind == "episode":
+        show = getattr(item, "grandparentTitle", None)
+        season = getattr(item, "parentIndex", None)
+        episode = getattr(item, "index", None)
+        if show is not None and season is not None and episode is not None:
+            return "%s (%s S%02dE%02d)" % (label, show, int(season), int(episode))
+        return label
+    year = getattr(item, "year", None)
+    if year is not None:
+        return "%s (%s)" % (label, year)
+    return label
+
+
 async def apply_facts(item, facts: GatheredFacts) -> dict[str, object]:
     """Write the changed fields in one HTTP call.
 
@@ -181,5 +206,5 @@ async def apply_facts(item, facts: GatheredFacts) -> dict[str, object]:
         item.saveEdits()
 
     await asyncio.to_thread(_write)
-    logger.info("plex: wrote %d field(s) to %s", len(edits), getattr(item, "type", "?"))
+    logger.info("plex: wrote %d field(s) to %s", len(edits), _item_label(item))
     return edits

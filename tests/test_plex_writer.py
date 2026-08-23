@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from autoposter.facts.models import GatheredFacts
-from autoposter.plex.writer import WRITABLE_BY_KIND, apply_facts, plan_edits
+from autoposter.plex.writer import WRITABLE_BY_KIND, _item_label, apply_facts, plan_edits
 
 
 class FakeItem:
@@ -143,6 +143,36 @@ async def test_apply_uses_a_single_batched_call():
     written = await apply_facts(item, GatheredFacts(critic_rating=4.9, content_rating="17"))
     assert item.batched and item.saved
     assert written["rating.value"] == pytest.approx(4.9)
+
+
+def test_item_label_names_a_movie_with_its_year():
+    item = FakeItem()
+    item.title, item.year = "Heat", 1995
+    assert _item_label(item) == "movie 'Heat' (1995)"
+
+
+def test_item_label_places_an_episode_in_its_show():
+    item = FakeItem(kind="episode")
+    item.title, item.grandparentTitle = "Pilot", "Dark"
+    item.parentIndex, item.index = 1, 1
+    assert _item_label(item) == "episode 'Pilot' (Dark S01E01)"
+
+
+def test_item_label_degrades_to_the_bare_type_when_nothing_else_exists():
+    # The log line must never be the thing that raises -- an object with no
+    # title (or none of the episode coordinates) still gets a usable label.
+    assert _item_label(FakeItem(kind="show")) == "show"
+    partial = FakeItem(kind="episode")
+    partial.title = "Pilot"
+    assert _item_label(partial) == "episode 'Pilot'"
+
+
+async def test_apply_logs_which_item_was_written(caplog):
+    item = FakeItem()
+    item.title, item.year = "Heat", 1995
+    with caplog.at_level("INFO", logger="autoposter.plex.writer"):
+        await apply_facts(item, GatheredFacts(critic_rating=4.9))
+    assert "movie 'Heat' (1995)" in caplog.text
 
 
 async def test_apply_does_nothing_when_there_is_nothing_to_write():
