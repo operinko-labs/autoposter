@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from pathlib import Path
 
 import httpx
@@ -12,7 +13,8 @@ from autoposter.providers.base import ArtCandidate
 from autoposter.render import naming
 from autoposter.render import pipeline as pipeline_module
 from autoposter.render.pipeline import (
-    ART_KINDS_FOR, _should_skip_title, compute_fingerprint, manual_override_path,
+    ART_KINDS_FOR, _should_skip_title, compute_fingerprint, find_logo_override,
+    gather_fingerprint_inputs, logo_override_path, manual_override_path,
     render_artifact, title_text_for,
 )
 from autoposter.render.textfit import FitResult
@@ -408,8 +410,10 @@ class _LogoAwareProvider:
 
     def __init__(self, logo_url: str | None = None):
         self._logo_url = logo_url
+        self.requests = []
 
     async def fetch(self, request):
+        self.requests.append(request)
         if request.art_kind == "poster":
             return [ArtCandidate("TMDB", "https://img/poster.jpg", None, 2000, 3000, 5.0)]
         if request.art_kind == "logo" and self._logo_url is not None:
@@ -507,6 +511,157 @@ async def test_poster_falls_back_to_text_when_no_logo_and_fallback_enabled(
     async with _fake_http() as http:
         render = await render_artifact(
             session, config, http, item(), "poster", [_LogoAwareProvider(logo_url=None)],
+        )
+
+    assert render.status == "rendered"
+    assert logo_calls == []
+    flat = [token for call in calls for token in call]
+    assert any(str(token).startswith("caption:") for token in flat)
+
+
+# --- the picked-logo override -----------------------------------------------
+#
+# A logo has no art kind downstream -- no render row, no naming path, no
+# ART_KINDS_FOR entry -- so the picker's choice is carried by a file beside the
+# poster's own override, and the only thing that makes it stick is that the
+# render path consults it before the provider ladder and folds its sha into the
+# poster's fingerprint. Both halves are pinned here: without the first, a picked
+# logo is never used; without the second, it is used once and then every later
+# pass reports "unchanged" and the poster keeps whatever it already had.
+
+
+def _plant_logo(config, resolved, content: bytes = b"the operator's own logo") -> Path:
+    path = logo_override_path(config, resolved, ".png")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+def test_the_logo_override_lives_beside_the_poster_under_library_folders(tmp_path):
+    config = _logo_test_config(tmp_path)
+    assert config.library_folders is True
+
+    assert logo_override_path(config, item(), ".png") == (
+        Path(config.manual_assets_root) / "Movies" / "Dune (2024)" / "logo.png"
+    )
+
+
+def test_the_flat_layout_prefixes_the_logo_with_the_item_folder(tmp_path):
+    """``library_folders: false`` is one flat directory, so ``logo.png`` on its
+    own would be one file shared by the whole library."""
+    config = _logo_test_config(tmp_path)
+    config.library_folders = False
+
+    assert logo_override_path(config, item(), ".png") == (
+        Path(config.manual_assets_root) / "Dune (2024)_logo.png"
+    )
+
+
+def test_no_override_file_means_no_override(tmp_path):
+    config = _logo_test_config(tmp_path)
+    assert find_logo_override(config, item()) is None
+
+
+def test_the_override_is_found_under_any_of_the_artwork_suffixes(tmp_path):
+    config = _logo_test_config(tmp_path)
+    path = logo_override_path(config, item(), ".webp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"a webp logo")
+
+    assert find_logo_override(config, item()) == path
+
+
+async def test_a_picked_logo_is_used_and_no_provider_is_asked_for_one(
+    session, tmp_path, monkeypatch
+):
+    """The consult comes first. A provider ladder run for the logo would both
+    cost an outbound request the operator's choice made pointless and -- since
+    the ladder's pick would then be staged -- overwrite that choice."""
+    config = _logo_test_config(tmp_path)
+    resolved = item()
+    logo = _plant_logo(config, resolved)
+    calls, logo_calls = _stub_out_imagemagick(monkeypatch)
+    provider = _LogoAwareProvider(logo_url="https://img/ladder-logo.png")
+
+    async with _fake_http() as http:
+        render = await render_artifact(session, config, http, resolved, "poster", [provider])
+
+    assert render.status == "rendered"
+    assert len(logo_calls) == 1
+    assert [request.art_kind for request in provider.requests] == ["poster"]
+    # Composited from a staged copy in the render's tmpdir, never from the
+    # manual mount itself -- ImageMagick must not read the operator's file.
+    staged = logo_calls[0][0][2]
+    assert Path(staged).name == "logo.png"
+    assert Path(staged).parent != logo.parent
+    flat = [token for call in calls for token in call]
+    assert not any(str(token).startswith("caption:") for token in flat)
+
+
+async def test_the_poster_fingerprint_carries_the_override_logos_own_sha(
+    session, tmp_path, monkeypatch
+):
+    """Through ``gather_fingerprint_inputs``, the single definition of what a
+    fingerprint is made of -- so the adoption walk and the short-circuit that
+    reads it cannot drift from what the render actually did."""
+    config = _logo_test_config(tmp_path)
+    resolved = item()
+    logo = _plant_logo(config, resolved)
+    _stub_out_imagemagick(monkeypatch)
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, resolved, "poster",
+            [_LogoAwareProvider(logo_url="https://img/ladder-logo.png")],
+        )
+
+    logo_sha = hashlib.sha256(logo.read_bytes()).hexdigest()
+    text_inputs, asset_hashes = await gather_fingerprint_inputs(
+        config, resolved, "poster", draw_text=False, logo_sha=logo_sha,
+    )
+    assert render.fingerprint == compute_fingerprint(
+        config.version, "poster", render.source_url, render.base_sha256,
+        text_inputs, asset_hashes,
+    )
+
+
+async def test_replacing_the_override_logo_re_renders_the_poster(
+    session, tmp_path, monkeypatch
+):
+    """The whole point of hashing the file rather than naming it: an operator
+    picking a different logo changes no file name, and a fingerprint that
+    stopped at the name would report "unchanged" for ever."""
+    config = _logo_test_config(tmp_path)
+    resolved = item()
+    logo = _plant_logo(config, resolved, b"logo one")
+    _stub_out_imagemagick(monkeypatch)
+
+    async with _fake_http() as http:
+        first = (await render_artifact(
+            session, config, http, resolved, "poster", [_LogoAwareProvider()],
+        )).fingerprint
+        logo.write_bytes(b"logo two")
+        second = await render_artifact(
+            session, config, http, resolved, "poster", [_LogoAwareProvider()],
+        )
+
+    assert second.fingerprint != first
+    assert second.detail != "unchanged"
+
+
+async def test_use_logo_false_ignores_the_override_file(session, tmp_path, monkeypatch):
+    """Config wins, absolutely. ``use_logo: false`` is an operator saying this
+    deployment does not composite logos; a file on a mount does not overrule
+    it, and the poster gets its title text as it would have without one."""
+    config = _logo_test_config(tmp_path)
+    config.artwork.use_logo = False
+    resolved = item()
+    _plant_logo(config, resolved)
+    calls, logo_calls = _stub_out_imagemagick(monkeypatch)
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, resolved, "poster", [_LogoAwareProvider()],
         )
 
     assert render.status == "rendered"

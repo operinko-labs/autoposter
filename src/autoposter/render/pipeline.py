@@ -120,18 +120,66 @@ def title_text_for(
     return item.title, None
 
 
+def manual_override_target(config: Config, item: ResolvedItem, art_kind: str) -> Path:
+    """The mirror path an override for this artifact would occupy.
+
+    Split out from ``manual_override_path`` so the picker can *write* exactly
+    the path the pipeline *stats*: two spellings of the same mirror would
+    eventually disagree, and the failure mode is a picked image that is written
+    successfully and then never looked at again.
+    """
+    return naming.asset_path(
+        config.model_copy(update={"assets_root": config.manual_assets_root}),
+        item.library, item.root_folder, art_kind,
+        item.season_number, item.episode_number,
+    )
+
+
 def manual_override_path(config: Config, item: ResolvedItem, art_kind: str) -> Path | None:
     """A hand-placed asset wins over anything fetched from a provider.
 
     Synchronous by design (see the offloaded call site in ``render_artifact``):
     plain tests call this directly without an event loop to hop off of.
     """
-    relative = naming.asset_path(
-        config.model_copy(update={"assets_root": config.manual_assets_root}),
-        item.library, item.root_folder, art_kind,
-        item.season_number, item.episode_number,
-    )
+    relative = manual_override_target(config, item, art_kind)
     return relative if relative.exists() else None
+
+
+# A picked logo keeps whatever container it arrived in -- a logo is composited
+# over the poster and needs its alpha channel, which rules out the .jpg the
+# poster mirror is fixed to. Ordered by preference, so a leftover from an
+# earlier pick in another format does not shadow the newest one at .png.
+LOGO_OVERRIDE_SUFFIXES = (".png", ".webp", ".jpg", ".jpeg")
+
+
+def logo_override_path(config: Config, item: ResolvedItem, suffix: str) -> Path:
+    """Where a picked clearlogo for one item is filed.
+
+    Deliberately not a case in ``naming._file_name``: that function answers for
+    the four kinds that have a render row, an ART_KINDS_FOR entry and a fixed
+    ``.jpg`` extension, and a logo has none of the four. It is filed *beside*
+    the poster's own manual override instead -- same directory under
+    ``library_folders``, same ``<root_folder>`` prefix in the flat layout -- so
+    everything one item can be overridden with sits together.
+    """
+    manual = config.model_copy(update={"assets_root": config.manual_assets_root})
+    poster = naming.asset_path(manual, item.library, item.root_folder, "poster")
+    if config.library_folders:
+        return poster.with_name(f"logo{suffix}")
+    return poster.with_name(f"{item.root_folder}_logo{suffix}")
+
+
+def find_logo_override(config: Config, item: ResolvedItem) -> Path | None:
+    """The picked logo for this item, in whichever format it was picked in.
+
+    Synchronous for the same reason ``manual_override_path`` is: plain tests
+    call it without an event loop, and the render path hops off its own.
+    """
+    for suffix in LOGO_OVERRIDE_SUFFIXES:
+        path = logo_override_path(config, item, suffix)
+        if path.exists():
+            return path
+    return None
 
 
 def _should_skip_title(config: Config, item: ResolvedItem, art_kind: str) -> bool:
@@ -396,26 +444,37 @@ async def render_artifact(
         logo_sha = ""
         suppress_text = False
         if art_kind == "poster" and config.artwork.use_logo and settings.text is not None:
-            logo_selection = await select_artwork(
-                providers,
-                config.artwork.logo_language_order,
-                art.ArtRequest(
-                    art_kind=art.LOGO,
-                    is_movie=item.kind == "movie",
-                    tmdb_id=item.tmdb_id,
-                    tvdb_id=item.tvdb_id,
-                    imdb_id=item.imdb_id,
-                    season_number=item.season_number,
-                    episode_number=item.episode_number,
-                ),
-            )
-            if logo_selection.candidate is not None:
-                logo_candidate = logo_selection.candidate
-                suffix = Path(httpx.URL(logo_candidate.url).path).suffix or ".png"
-                logo_path = Path(tmpdir) / f"logo{suffix}"
-                logo_sha = await _download(http, logo_candidate.url, logo_path)
-            elif not config.artwork.logo_text_fallback:
-                suppress_text = True
+            # An operator's picked logo comes first, and stops the ladder from
+            # running at all: a selection made here would be staged over the
+            # choice, and the request it costs is one the choice made pointless.
+            # Nested inside the use_logo guard on purpose -- `use_logo: false`
+            # is a deployment saying it does not composite logos, and a file on
+            # a mount does not overrule the config.
+            picked_logo = await asyncio.to_thread(find_logo_override, config, item)
+            if picked_logo is not None:
+                logo_path = Path(tmpdir) / f"logo{picked_logo.suffix}"
+                logo_sha = await asyncio.to_thread(_stage_override, picked_logo, logo_path)
+            else:
+                logo_selection = await select_artwork(
+                    providers,
+                    config.artwork.logo_language_order,
+                    art.ArtRequest(
+                        art_kind=art.LOGO,
+                        is_movie=item.kind == "movie",
+                        tmdb_id=item.tmdb_id,
+                        tvdb_id=item.tvdb_id,
+                        imdb_id=item.imdb_id,
+                        season_number=item.season_number,
+                        episode_number=item.episode_number,
+                    ),
+                )
+                if logo_selection.candidate is not None:
+                    logo_candidate = logo_selection.candidate
+                    suffix = Path(httpx.URL(logo_candidate.url).path).suffix or ".png"
+                    logo_path = Path(tmpdir) / f"logo{suffix}"
+                    logo_sha = await _download(http, logo_candidate.url, logo_path)
+                elif not config.artwork.logo_text_fallback:
+                    suppress_text = True
 
         draw_text = not (art_kind == "poster" and (logo_path is not None or suppress_text))
 

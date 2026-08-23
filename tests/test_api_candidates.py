@@ -58,6 +58,24 @@ class _FakeProvider:
         return list(self._candidates)
 
 
+class _WideFakeProvider(_FakeProvider):
+    """A client that *does* take ``all_languages`` -- TMDB's shape.
+
+    TMDB is the only client that narrows its own response to the configured
+    languages, and the only one with the keyword to stop. The endpoint detects
+    it from the signature, so this fake exists to exercise the branch the plain
+    ``_FakeProvider`` above deliberately does not.
+    """
+
+    def __init__(self, name: str, candidates=None):
+        super().__init__(name, candidates)
+        self.all_languages: list[bool] = []
+
+    async def fetch(self, request, *, all_languages: bool = False):
+        self.all_languages.append(all_languages)
+        return await super().fetch(request)
+
+
 @pytest_asyncio.fixture
 async def app(session_factory):
     return create_app(load_config(EXAMPLE), session_factory, _secrets())
@@ -284,6 +302,34 @@ async def test_the_art_request_mirrors_what_the_render_path_builds(
     assert art_request.season_number == 2
     assert art_request.episode_number == 5
     assert art_request.season_id is None
+
+
+async def test_a_client_that_takes_all_languages_is_asked_for_all_of_them(
+    client, auth_headers, session, app
+):
+    """The whole point of the browse: TMDB's ``fetch`` narrows to
+    ``include_image_language`` by default, so asking it the render path's
+    question returns the render path's shortlist and the picker shows a grid
+    with the images an operator went looking for already filtered out.
+
+    The keyword goes only to the clients that have it -- the narrow fake beside
+    it would ``TypeError`` -- and both still answer.
+    """
+    wide = _WideFakeProvider("TMDB", [
+        ArtCandidate("TMDB", f"{TMDB_ORIGINAL}/en.jpg", "en", 1000, 1500, 9.0),
+    ])
+    narrow = _FakeProvider("Fanart", [
+        ArtCandidate("Fanart", "https://assets.fanart.tv/x.jpg", "en", 1000, 1500, 8.0),
+    ])
+    app.state.providers = [wide, narrow]
+    item_id = await _item(session)
+
+    response = await client.get(f"/api/items/{item_id}/candidates/poster", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert wide.all_languages == [True]
+    assert len(narrow.requests) == 1
+    assert [c["provider"] for c in response.json()["candidates"]] == ["TMDB", "Fanart"]
 
 
 async def test_a_movie_request_is_flagged_is_movie(client, auth_headers, session, app):
