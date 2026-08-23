@@ -152,6 +152,53 @@ export interface ItemRender {
    * trace of a manual override file, so it is what the clear-override control
    * keys off. Null on a row nothing has rendered yet. */
   provider: string | null;
+  /** The provider URL the base image came from, so the candidate browser can
+   * mark which of that provider's many images is the one in use. Under a
+   * manual override this is the override file's own path, not a URL. */
+  source_url: string | null;
+  /** Whether the base image carried no burned-in text. Null under a manual
+   * override, where there was no candidate to ask. */
+  textless: boolean | null;
+}
+
+/** One artwork option from one provider, as GET
+ * /api/items/{id}/candidates/{art_kind} returns it.
+ *
+ * `thumb_url` is a grid-sized variant where the provider serves one (TMDB does,
+ * by URL prefix) and the image itself otherwise. Both URLs are public and
+ * unauthenticated, unlike this project's own image endpoints -- they are the
+ * one case where a plain `<img src>` is correct instead of `apiFetchImage`.
+ *
+ * `includes_text` is TVDB's explicit flag and null everywhere else; `language`
+ * is null for an image the provider tagged with no language at all. */
+export interface ArtCandidate {
+  provider: string;
+  url: string;
+  thumb_url: string;
+  language: string | null;
+  width: number | null;
+  height: number | null;
+  score: number;
+  includes_text: boolean | null;
+}
+
+/** GET /api/items/{id}/candidates/{art_kind}.
+ *
+ * Ordered by the same ranking the render path uses, with candidates in no
+ * configured language last rather than dropped -- the ladder discards those,
+ * a browser must still offer them.
+ *
+ * `errors` carries one entry per provider that failed, keyed by provider name;
+ * the value is the exception's type name, deliberately not its message. A
+ * failing provider costs its own rows only, so a non-empty `errors` with a
+ * non-empty `candidates` is the normal partial result, not an error state.
+ *
+ * `current` is the render row's base image, for marking the in-use candidate.
+ * Always null for `logo`, which has no render row of its own. */
+export interface CandidatesResponse {
+  candidates: ArtCandidate[];
+  errors: Record<string, string>;
+  current: { source_url: string | null; provider: string | null } | null;
 }
 
 /** The facts the badges are drawn from. `originally_available` is a date, not

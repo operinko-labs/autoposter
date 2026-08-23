@@ -137,6 +137,98 @@ async def test_tmdb_client_skips_title_card_without_episode_number():
     assert await client.fetch(request) == []
 
 
+class _RecordingCache:
+    """A ProviderCache stand-in that records the keys asked for.
+
+    Always a miss, so every fetch reaches the transport and then writes back --
+    which is what makes the recorded key the real one the cache would use.
+    """
+
+    def __init__(self):
+        self.keys: list[str] = []
+
+    async def get(self, key: str):
+        self.keys.append(key)
+        return None
+
+    async def set(self, key: str, value: dict, ttl_seconds: int) -> None:
+        pass
+
+
+def _recording_tmdb(language_order: list[str], cache=None):
+    """A TMDB client whose transport records the URL it was asked for."""
+    seen: list[httpx.URL] = []
+
+    async def handler(request):
+        seen.append(request.url)
+        return httpx.Response(200, json={"posters": []})
+
+    client = TMDBClient(
+        token="t",
+        language_order=language_order,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        cache=cache,
+    )
+    return client, seen
+
+
+# The cache key the render path's TMDB poster request has always produced, for
+# ["xx", "en"] against /movie/550/images. Hard-coded rather than recomputed from
+# the client's own params: recomputing would follow any change to them and pin
+# nothing. A changed digest here means every cached provider response in every
+# deployment was just orphaned -- which is fine for the deliberately-wider
+# browse variant and not fine for the default.
+RENDER_PATH_POSTER_CACHE_KEY = (
+    "904c42080c0e7467156877871638ea5a4a51088929a34d0cd0f925036d5f3e64"
+)
+
+
+async def test_tmdb_narrows_by_language_by_default():
+    client, seen = _recording_tmdb(["xx", "en"])
+
+    await client.fetch(ArtRequest(art_kind=POSTER, is_movie=True, tmdb_id=550))
+
+    assert seen[0].params["include_image_language"] == "null,en"
+
+
+async def test_tmdb_all_languages_drops_the_language_filter_entirely():
+    """TMDB has no "every language" token -- omitting include_image_language is
+    how the endpoint returns the whole set, which is what a browse wants."""
+    client, seen = _recording_tmdb(["xx", "en"])
+
+    await client.fetch(
+        ArtRequest(art_kind=POSTER, is_movie=True, tmdb_id=550), all_languages=True
+    )
+
+    assert "include_image_language" not in seen[0].params
+    assert str(seen[0]) == "https://api.themoviedb.org/3/movie/550/images"
+
+
+async def test_the_default_tmdb_cache_key_is_unchanged_by_the_browse_variant():
+    """The render path's cache entries must survive this feature. A different
+    key for the default call would silently re-fetch every image list in every
+    deployment on the next pass."""
+    cache = _RecordingCache()
+    client, _seen = _recording_tmdb(["xx", "en"], cache=cache)
+
+    await client.fetch(ArtRequest(art_kind=POSTER, is_movie=True, tmdb_id=550))
+
+    assert cache.keys == [RENDER_PATH_POSTER_CACHE_KEY]
+
+
+async def test_the_browse_variant_gets_its_own_cache_key():
+    """A wider response cached under the narrow key would poison the render
+    path with images in languages the config excluded."""
+    cache = _RecordingCache()
+    client, _seen = _recording_tmdb(["xx", "en"], cache=cache)
+
+    await client.fetch(
+        ArtRequest(art_kind=POSTER, is_movie=True, tmdb_id=550), all_languages=True
+    )
+
+    assert cache.keys != [RENDER_PATH_POSTER_CACHE_KEY]
+
+
 def _tvdb_client(handler) -> TVDBClient:
     return TVDBClient("key", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
 

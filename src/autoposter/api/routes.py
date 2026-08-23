@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from autoposter.api.artwork import router as artwork_router
+from autoposter.api.candidates import router as candidates_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.logs import router as logs_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
@@ -131,6 +132,10 @@ router.include_router(logs_router)
 
 # The dashboard's push stream, and the per-process broadcaster behind it.
 router.include_router(dashboard_stream_router)
+
+# The cross-provider candidate browser: the only handler that talks to the
+# provider clients, and the only one that fans out over all of them at once.
+router.include_router(candidates_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
@@ -400,6 +405,14 @@ async def item_detail(
                 # supplied this artwork -- pipeline.py stamps
                 # provider="manual" on that branch.
                 "provider": render.provider,
+                # Which image of that provider's many, and whether it carried
+                # burned-in text. The candidate browser marks the in-use base
+                # against its own list, which `provider` alone cannot identify.
+                # Under a manual override these are the override's own path
+                # and a null textlessness -- see the "manual" branch in
+                # render/pipeline.py, which has no candidate to describe.
+                "source_url": render.source_url,
+                "textless": render.textless,
                 "rendered_at": render.rendered_at,
                 "uploaded_at": render.uploaded_at,
             }

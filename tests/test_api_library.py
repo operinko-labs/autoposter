@@ -262,6 +262,31 @@ async def test_item_detail_echoes_the_render_provider(client, auth_headers, sess
     assert by_kind["background"]["provider"] == "TMDB"
 
 
+async def test_item_detail_exposes_the_source_url_and_textlessness(
+    client, auth_headers, session
+):
+    """Both are on the model and neither was served. The candidate picker needs
+    them to mark which of a provider's images is the one currently in use --
+    ``provider`` alone cannot, since a provider offers many."""
+    session.add(_item("rk1", "A"))
+    await session.flush()
+    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+    session.add(
+        Render(
+            item_id=item_id, art_kind="poster", status="rendered", asset_path="/x/a.jpg",
+            provider="TMDB", source_url="https://image.tmdb.org/t/p/original/in-use.jpg",
+            textless=True,
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/api/items/{item_id}", headers=auth_headers)
+
+    render = response.json()["renders"][0]
+    assert render["source_url"] == "https://image.tmdb.org/t/p/original/in-use.jpg"
+    assert render["textless"] is True
+
+
 async def test_item_detail_404s_for_an_unknown_id(client, auth_headers):
     response = await client.get("/api/items/999999", headers=auth_headers)
     assert response.status_code == 404

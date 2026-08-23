@@ -74,7 +74,13 @@ class TMDBClient:
         self._cache = cache
         self._cache_ttl_seconds = cache_ttl_seconds
 
-    def _params(self) -> dict:
+    def _params(self, all_languages: bool = False) -> dict:
+        # TMDB has no "every language" token: include_image_language *adds* to
+        # the object's own language, and omitting it altogether is how /images
+        # returns the complete set. So the wide variant is an absent parameter,
+        # not a wider value.
+        if all_languages:
+            return {}
         # "null" is the literal token TMDB uses for images with no language tag.
         codes = ["null" if code == "xx" else code for code in self._language_order]
         return {"include_image_language": ",".join(codes)}
@@ -91,7 +97,19 @@ class TMDBClient:
             return f"/tv/{request.tmdb_id}/season/{request.season_number}/images"
         return f"/tv/{request.tmdb_id}/images"
 
-    async def fetch(self, request: ArtRequest) -> list[ArtCandidate]:
+    async def fetch(
+        self, request: ArtRequest, *, all_languages: bool = False
+    ) -> list[ArtCandidate]:
+        """Candidates for one request. ``all_languages`` widens the response.
+
+        Only the candidate browser passes it: the render path wants the ladder's
+        own languages and nothing else, and the default must keep producing the
+        exact request -- and therefore the exact cache key -- it always has, or
+        every cached image list in every deployment is orphaned at once. The
+        wide variant lands on its own key, which is the point: one extra
+        upstream call per item per TTL, and no chance of a browse response
+        being served back to a render.
+        """
         if request.tmdb_id is None:
             return []
         if request.art_kind == TITLE_CARD and (
@@ -102,7 +120,7 @@ class TMDBClient:
             return []
         path = self._path(request)
         url = f"{BASE_URL}{path}"
-        params = self._params()
+        params = self._params(all_languages)
         payload = await fetch_json(
             method="GET",
             url=url,
