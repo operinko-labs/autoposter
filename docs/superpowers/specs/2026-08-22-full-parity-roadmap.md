@@ -203,6 +203,7 @@ one-liner is in the `.superpowers/sdd/p5b-task-{1,2,3}-report.md` and
 | 107 | SCHEDULED_JOB_NAMES agreement guard | 6a follow-up (final review): the run-now allowlist in `api/routes.py` spells the four job names by hand because importing the factories would pull plexapi/httpx into the route module; nothing ties the two lists together, so a fifth job added in `scheduler/jobs.py` silently cannot be hand-triggered. A regex-grep test over `scheduler/jobs.py`'s `name="…"` literals (or a shared constants module) closes it | S — one test | — | — |
 | 108 | `.row-actions` has no CSS | Pre-existing, surfaced in 6a review: `Failures.tsx` renders its retry/dismiss buttons in a `.row-actions` div no stylesheet defines, so they are unstyled | S — a few CSS lines | — | — |
 | 109 | Search+filter composition assertion | 6a follow-up (final review): Library composes `search` with library/kind/status in one URLSearchParams and the code is correct, but no test pins the composition, so a dep-list regression in the listing effect would go unseen | S — one test | — | — |
+| 110 | Dashboard broadcaster hardening | 6b follow-up (final review): (a) `StatusBroadcaster.subscribe` never restarts a loop whose task died with `_task` still set (only a spurious external cancel can cause it; viewers would get heartbeats but no data) — `if self._task is None or self._task.done():` closes it; (b) a poll query that hangs without raising is unbounded — wrap `_build_snapshot` in `asyncio.timeout` | S — two guarded lines + tests | — | — |
 
 ---
 

@@ -95,6 +95,10 @@ export function Dashboard() {
 
     async function connect() {
       try {
+        // Deliberately NOT setError(null) here, unlike Logs.tsx's connect:
+        // this page's error state is shared with the run-now and full-pass
+        // handlers, and a reconnect must not erase an action failure the
+        // operator has not seen. The first snapshot clears it instead.
         setConnected(true);
         await apiFetchNdjson(
           "/api/dashboard/stream",
