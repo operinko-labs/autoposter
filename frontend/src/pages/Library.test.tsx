@@ -26,7 +26,10 @@ const ITEMS = {
       library: "Movies",
       kind: "movie",
       rating_key: "101",
-      render_status: { poster: "rendered" },
+      // Two kinds with different statuses on purpose: the status filter
+      // matches ANY render row, so a tile must caption every kind rather
+      // than letting the poster's status stand for the whole item.
+      render_status: { poster: "rendered", background: "no_art" },
     },
     {
       id: 7,
@@ -185,6 +188,59 @@ describe("Library", () => {
     const blob = objectUrls.get(image!.getAttribute("src") ?? "");
     expect(blob).toBeDefined();
     expect(await blob!.text()).toBe("jpeg-bytes-for-ghostbusters");
+  });
+
+  it("captions each tile with one chip per art kind, not a single status", async () => {
+    stubFetch();
+
+    await renderLibrary();
+
+    // Exact text per chip, in the order the API sent the kinds. A substring
+    // match would let "poster: rendered" alone pass while the background's
+    // no_art -- the very status a filter may have matched on -- went unshown.
+    const chips = [...tileFor("Ghostbusters").querySelectorAll(".tile-chip")].map(
+      (chip) => chip.textContent,
+    );
+    expect(chips).toEqual(["poster: rendered", "background: no_art"]);
+
+    // The old single-status caption is gone: the subtitle is the library
+    // alone, with no status folded into it.
+    expect(tileFor("Ghostbusters").querySelector(".tile-sub")!.textContent).toBe(
+      "Movies",
+    );
+
+    // A kind absent from render_status gets no chip at all -- Arcane has an
+    // empty render_status, so its tile carries none.
+    expect(tileFor("Arcane").querySelectorAll(".tile-chip")).toHaveLength(0);
+    expect(tileFor("Arcane").querySelector(".tile-sub")!.textContent).toBe(
+      "TV Shows",
+    );
+  });
+
+  it("highlights the chip matching the active status filter", async () => {
+    stubFetch();
+
+    await renderLibrary();
+
+    // No filter selected: nothing is highlighted.
+    expect(tileFor("Ghostbusters").querySelector(".tile-chip-match")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Status"), {
+      target: { value: "no_art" },
+    });
+
+    // The filter matches ANY kind's row, so the highlighted chip is what
+    // tells the user why a tile whose poster reads "rendered" is in a
+    // no_art result at all.
+    await waitFor(() => {
+      const match = tileFor("Ghostbusters").querySelector(".tile-chip-match");
+      expect(match).not.toBeNull();
+      expect(match!.textContent).toBe("background: no_art");
+    });
+    // Only the matching chip is emphasised.
+    expect(
+      tileFor("Ghostbusters").querySelectorAll(".tile-chip-match"),
+    ).toHaveLength(1);
   });
 
   it("populates the filter controls from /api/items/filters", async () => {

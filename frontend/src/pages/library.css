@@ -108,6 +108,33 @@
   text-overflow: ellipsis;
 }
 
+/* One chip per art kind under each tile. The pill status colours come from
+ * dashboard.css (`.pill-failed` and friends); what is overridden here is only
+ * the size -- the grid shows hundreds of tiles, so the chips have to stay a
+ * single quiet line under most posters. */
+.tile-chips {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tile-chip {
+  font-size: 10px;
+  padding: 0 6px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+/* The chip whose status equals the active status filter: the filter matches
+ * ANY of the item's render rows, so this chip is why the tile is in the
+ * result -- without the emphasis, a poster reading "rendered" inside a no_art
+ * filter looks like a bug (and used to be reported as one). */
+.tile-chip-match {
+  color: var(--text-strong);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 .library-pager {
   display: flex;
   align-items: center;

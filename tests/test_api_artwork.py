@@ -86,9 +86,14 @@ async def auth_headers(client):
 
 
 async def _item_with_render(
-    session, asset_path: str, art_kind: str = "poster", base_sha256: str | None = None
+    session, asset_path: str, art_kind: str = "poster", base_sha256: str | None = "9" * 64
 ) -> int:
     """One media item and one render row for it; returns the item id.
+
+    ``base_sha256`` defaults to a digest because that is the shape of every
+    row whose file the pipeline actually produced -- the endpoint refuses to
+    serve a NULL-digest row, so a default of None would make every test here
+    exercise nothing but that refusal.
 
     The id comes off the flushed object rather than from a re-query: a
     ``select(MediaItem).one()`` raised MultipleResultsFound the moment a test
@@ -355,23 +360,53 @@ async def test_a_stale_if_none_match_serves_the_current_bytes(
     assert response.content == IMAGE_BYTES
 
 
-async def test_a_row_with_no_digest_yet_carries_no_etag(
-    client, auth_headers, session, assets_root
+async def test_a_row_with_no_digest_is_404_even_when_a_file_sits_at_its_path(
+    client, auth_headers, session, assets_root, monkeypatch
 ):
-    """base_sha256 is nullable -- a row exists before anything is rendered
-    into it. Inventing an ETag there would be a claim about bytes we have not
-    hashed, and a client holding it would never see the first real render."""
+    """A NULL base_sha256 means the pipeline never rendered or adopted bytes
+    into this row -- and that is a refusal to serve, not merely "no ETag".
+
+    On a cutover library, a Kometa-era file can occupy the exact path a
+    no_art row names (naming.asset_path reproduces that layout by design), so
+    "the file exists" proves nothing about it being ours. Serving it showed
+    badged art on tiles whose status honestly said no_art. The file must not
+    even be read, and the body must be indistinguishable from every other
+    miss so the response does not reveal that a foreign file exists there.
+    """
     asset = assets_root / "poster.jpg"
     asset.write_bytes(IMAGE_BYTES)
     item_id = await _item_with_render(session, str(asset), base_sha256=None)
 
-    response = await client.get(
-        f"/api/items/{item_id}/artwork/poster",
-        headers={**auth_headers, "If-None-Match": "*"},
-    )
+    def must_not_read(*args, **kwargs):
+        raise AssertionError("an unvalidated file was read off disk")
+
+    monkeypatch.setattr(artwork_module, "_read_asset", must_not_read)
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster", headers=auth_headers)
+
+    assert response.status_code == 404
+    assert IMAGE_BYTES not in response.content
+    assert "etag" not in response.headers
+    # Byte-for-byte the same body an absent row answers with.
+    missing = await client.get("/api/items/999999/artwork/poster", headers=auth_headers)
+    assert response.content == missing.content
+
+
+async def test_a_row_with_a_digest_still_serves_its_file(
+    client, auth_headers, session, assets_root
+):
+    """The regression guard for adopted libraries: adoption hashes the file
+    already on disk into base_sha256 (adopt/walk.py), so an adopted row is
+    exactly "digest set, file present" -- the NULL-digest refusal above must
+    not blank it."""
+    asset = assets_root / "poster.jpg"
+    asset.write_bytes(IMAGE_BYTES)
+    item_id = await _item_with_render(session, str(asset), base_sha256="9" * 64)
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster", headers=auth_headers)
 
     assert response.status_code == 200
-    assert "etag" not in response.headers
+    assert response.content == IMAGE_BYTES
 
 
 async def test_artwork_requires_a_session(client, session, assets_root):

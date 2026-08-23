@@ -246,9 +246,27 @@ export function Library() {
               <Link key={item.id} to={`/items/${item.id}`} className="tile">
                 <Artwork itemId={item.id} artKind={artKind} title={item.title} />
                 <div className="tile-title">{item.title}</div>
-                <div className="tile-sub muted">
-                  {item.library} · {item.render_status[artKind] ?? "not rendered"}
-                </div>
+                <div className="tile-sub muted">{item.library}</div>
+                {/* One chip per art kind the API reported, never a single
+                  * status: the status filter matches ANY of the item's render
+                  * rows, so a lone caption ("rendered") actively contradicted
+                  * a no_art filter whenever the match was on the other kind.
+                  * The chip equal to the active filter is highlighted -- it is
+                  * the reason this tile is in the result at all. */}
+                {Object.entries(item.render_status).length > 0 && (
+                  <div className="tile-chips">
+                    {Object.entries(item.render_status).map(([kind, kindStatus]) => (
+                      <span
+                        key={kind}
+                        className={`pill tile-chip pill-${kindStatus}${
+                          status !== "" && kindStatus === status ? " tile-chip-match" : ""
+                        }`}
+                      >
+                        {kind}: {kindStatus}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </Link>
             );
           })}

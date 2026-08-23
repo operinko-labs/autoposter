@@ -134,10 +134,19 @@ async def base_artwork(
     ``truncated``, ``skipped`` and ``failed`` rows all legitimately name a
     file that was never produced.
 
+    Also 404 when ``base_sha256`` is NULL, *even if a file sits at the path*.
+    A NULL digest means this project never rendered or adopted bytes into the
+    row -- every path that produces a file also stamps the digest (see
+    ``render/pipeline.py`` and ``adopt/walk.py``) -- while on a cutover
+    library a Kometa-era file can occupy the exact path a ``no_art`` row
+    names, ``naming.asset_path`` reproducing that layout by design. Serving
+    it showed foreign badged art on tiles whose status honestly said no_art.
+
     The library browser's grid calls this once per tile, so a matching
     ``If-None-Match`` answers 304 before the file is opened at all. The ETag is
     ``renders.base_sha256`` -- the digest of the very bytes served, already on
-    the row -- so it changes exactly when a re-render changes the image.
+    the row -- so it changes exactly when a re-render changes the image, and
+    it exists on every response, since a row without one is refused above.
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -148,15 +157,21 @@ async def base_artwork(
         ).scalar_one_or_none()
     if render is None:
         raise HTTPException(status_code=404, detail="artwork not found")
+    if not render.base_sha256:
+        # Nullable: a row can exist before anything is rendered into it, and
+        # NULL means exactly "no bytes were ever produced or validated here".
+        # That is a refusal to serve, not merely a missing ETag: whatever
+        # happens to sit at asset_path is not a file this project made, so
+        # reading it would present foreign bytes as our render. Same detail
+        # as the other misses, so the response does not reveal whether such
+        # a file exists.
+        raise HTTPException(status_code=404, detail="artwork not found")
 
     headers = dict(NOSNIFF)
-    if render.base_sha256:
-        # Nullable: a row can exist before anything is rendered into it. No
-        # digest, no ETag -- an invented one would be a lie about the bytes.
-        headers["ETag"] = f'"{render.base_sha256}"'
-        headers["Cache-Control"] = CACHE_CONTROL
-        if _if_none_match(request.headers.get("if-none-match"), headers["ETag"]):
-            return Response(status_code=304, headers=headers)
+    headers["ETag"] = f'"{render.base_sha256}"'
+    headers["Cache-Control"] = CACHE_CONTROL
+    if _if_none_match(request.headers.get("if-none-match"), headers["ETag"]):
+        return Response(status_code=304, headers=headers)
 
     assets_root = Path(request.app.state.config.assets_root)
     try:
