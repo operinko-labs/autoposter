@@ -451,9 +451,14 @@ function CandidatePanel({
         },
       );
       // Re-read before reporting: the row's provider has just become "manual"
-      // and its fingerprints were nulled server-side, so the table on screen is
-      // stale the moment this returns.
-      await onPicked();
+      // and its fingerprints were nulled server-side, so both the item (the
+      // Renders table) and this panel's own candidates (the is-current tile
+      // and the replaces-override warning) are stale the moment this returns.
+      const [, refreshed] = await Promise.all([
+        onPicked(),
+        apiFetch<CandidatesResponse>(`/api/items/${itemId}/candidates/${artKind}`),
+      ]);
+      setState({ status: "ready", response: refreshed });
       setNote(
         response.queued
           ? "Picked. The image was written to the mount and a re-render was queued."
@@ -761,7 +766,13 @@ export function ItemDetail() {
             )}
           </div>
           {browsing !== null && browsing.section === kind && (
+            // Keyed on the art kind being browsed, not left to the implicit
+            // single child: without it, switching from posters to logos (or
+            // back) reuses the same instance, and a prior pick's note or
+            // failure message -- state private to that instance -- reappears
+            // under the new tiles before anything has been clicked here.
             <CandidatePanel
+              key={browsing.artKind}
               itemId={item.id}
               artKind={browsing.artKind}
               onPicked={reloadItem}

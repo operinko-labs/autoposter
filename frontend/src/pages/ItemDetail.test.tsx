@@ -1125,4 +1125,115 @@ describe("ItemDetail candidate picker", () => {
     expect(source("background").textContent).not.toContain("/t/p/original");
     expect(source("background").textContent).toContain("textless");
   });
+
+  it("clears a prior pick's note when the browsed art kind changes", async () => {
+    // A successful pick leaves a note in this instance's own state. Switching
+    // from posters to logos must not carry it over -- the tiles underneath
+    // are a different art kind's candidates entirely, and the note would read
+    // as though it were about them.
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/candidates/poster": () => json(CANDIDATES),
+        "/api/items/3/candidates/logo": () => json({ ...CANDIDATES, current: null }),
+        "/api/items/3/candidates/poster/pick": () =>
+          json({ status: "picked", queued: true }),
+      }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+
+    fireEvent.click(within(tiles()[0]).getByRole("button", { name: "Pick" }));
+    await waitFor(() =>
+      expect(document.querySelector(".candidate-note")).not.toBeNull(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Browse logos" }));
+    await waitFor(() => expect(tiles().length).toBeGreaterThan(0));
+
+    expect(document.querySelector(".candidate-note")).toBeNull();
+    expect(document.querySelector(".candidate-error")).toBeNull();
+  });
+
+  it("marks the newly-picked tile as current without reopening the panel", async () => {
+    // onPicked only re-reads the item; the panel's own `current` came from the
+    // candidates response fetched when it opened, and a pick does not
+    // otherwise touch it. Left alone, the is-current highlight and the
+    // replaces-override warning would keep describing the pre-pick state
+    // until the panel is closed and reopened.
+    let candidateCalls = 0;
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/candidates/poster": () => {
+          candidateCalls += 1;
+          return candidateCalls === 1
+            ? json(CANDIDATES)
+            : json({ ...CANDIDATES, current: { source_url: TMDB_URL, provider: "tmdb" } });
+        },
+        "/api/items/3/candidates/poster/pick": () =>
+          json({ status: "picked", queued: true }),
+      }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+
+    // Before the pick: the tvdb tile (index 1) is the one in use.
+    expect(tiles()[1].classList.contains("is-current")).toBe(true);
+    expect(tiles()[0].classList.contains("is-current")).toBe(false);
+
+    fireEvent.click(within(tiles()[0]).getByRole("button", { name: "Pick" }));
+    await waitFor(() =>
+      expect(document.querySelector(".candidate-note")).not.toBeNull(),
+    );
+
+    // After the pick: the tmdb tile (index 0) is current -- read from a
+    // second candidates fetch, not the panel's stale first one.
+    expect(candidateCalls).toBe(2);
+    expect(tiles()[0].classList.contains("is-current")).toBe(true);
+    expect(tiles()[1].classList.contains("is-current")).toBe(false);
+  });
+
+  it("closes the panel when Browse candidates is clicked a second time", async () => {
+    stubFetch(movieRoutes({ "/api/items/3/candidates/poster": () => json(CANDIDATES) }));
+
+    await renderItem();
+    await openPanel("Browse candidates");
+    expect(document.querySelector(".candidate-panel")).not.toBeNull();
+
+    // The same button is the way back out.
+    fireEvent.click(screen.getByRole("button", { name: "Browse candidates" }));
+
+    expect(document.querySelector(".candidate-panel")).toBeNull();
+  });
+
+  it("closes one section's panel when another section's browse is opened", async () => {
+    stubFetch(
+      bothKindRoutes({
+        "/api/items/3/candidates/poster": () => json(CANDIDATES),
+        "/api/items/3/candidates/background": () => json(CANDIDATES),
+      }),
+    );
+
+    await renderItem();
+
+    // Sections are ordered background first, poster second.
+    const sections = kindSections();
+    fireEvent.click(
+      within(sections[0]).getByRole("button", { name: "Browse candidates" }),
+    );
+    await waitFor(() => expect(tiles().length).toBeGreaterThan(0));
+    expect(candidatePanel().closest(".art-kind-panes")).toBe(sections[0]);
+
+    fireEvent.click(
+      within(sections[1]).getByRole("button", { name: "Browse candidates" }),
+    );
+    await waitFor(() =>
+      expect(candidatePanel().closest(".art-kind-panes")).toBe(sections[1]),
+    );
+
+    // Only one panel exists at a time -- the first section's did not stay
+    // open alongside the second's.
+    expect(document.querySelectorAll(".candidate-panel")).toHaveLength(1);
+  });
 });
