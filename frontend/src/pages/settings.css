@@ -49,13 +49,74 @@
   max-width: 70ch;
 }
 
-.config-dump {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px 14px;
+.config-note {
   margin: 0;
-  max-height: 460px;
-  overflow: auto;
-  white-space: pre;
+  font-size: 13px;
+}
+
+.config-section {
+  margin-top: 16px;
+}
+
+.config-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.config-node > .config-row:last-child {
+  border-bottom: none;
+}
+
+.config-key {
+  flex: 0 0 220px;
+  color: var(--text-muted);
+}
+
+.config-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.config-subsection {
+  margin-top: 10px;
+  padding-left: 16px;
+  border-left: 2px solid var(--border);
+}
+
+.config-subsection h3 {
+  margin: 6px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.config-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.config-pill {
+  display: inline-block;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.config-pill.on {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.config-pill.off {
+  color: var(--text-muted);
+}
+
+.config-pill.redacted {
+  color: var(--text-muted);
+  background: var(--surface);
 }

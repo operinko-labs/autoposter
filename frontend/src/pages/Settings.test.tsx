@@ -14,10 +14,17 @@ import { Settings, TMDB_NOTICE } from "./Settings";
 
 const REDACTED = "***REDACTED***";
 
+/** Deliberately includes shapes the renderer must handle generically: nested
+ * objects two levels deep, a scalar list, booleans in both states, an empty
+ * string, and (in the unknown-key test below) a section the component has
+ * never seen. */
 const CONFIG = {
-  plex: { url: "http://plex:32400", token: REDACTED },
-  tmdb: { api_key: REDACTED },
-  badges: { enabled: true },
+  workers: 5,
+  plex: { url: "http://plex:32400", excluded_libraries: ["Muskarit", "Photos"] },
+  badges: { enabled: true, upload_to_plex: false },
+  notifications: { enabled: false, url: "" },
+  artwork: { use_logo: true, poster: { text: { font: "Comfortaa-Medium.ttf" } } },
+  secrets: { plex_token: REDACTED, tmdb_api_key: REDACTED },
 };
 
 function stubConfig(body: unknown = CONFIG) {
@@ -87,13 +94,63 @@ describe("Settings attribution", () => {
 });
 
 describe("Settings configuration", () => {
-  it("renders the redaction marker rather than anything key-shaped", async () => {
+  it("renders titled sections with rows, not a JSON dump", async () => {
     stubConfig();
     await renderSettings();
 
-    const dump = await screen.findByText(/plex/);
-    expect(dump.textContent).toContain(REDACTED);
-    expect(dump.textContent).toContain("http://plex:32400");
+    // Top-level objects become titled panels...
+    expect(screen.getByRole("heading", { name: "Plex" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Badges" })).toBeInTheDocument();
+    // ...nested objects become subsections, recursively (artwork -> poster ->
+    // text), with snake_case keys turned into words.
+    expect(screen.getByRole("heading", { name: "Poster" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Text" })).toBeInTheDocument();
+    expect(screen.getByText("Excluded libraries")).toBeInTheDocument();
+    // A short scalar list renders comma-joined in its value cell.
+    expect(screen.getByText("Muskarit, Photos")).toBeInTheDocument();
+    // Plain scalars render as values.
+    expect(screen.getByText("http://plex:32400")).toBeInTheDocument();
+    expect(screen.getByText("Comfortaa-Medium.ttf")).toBeInTheDocument();
+    // And the raw JSON <pre> dump is gone.
+    expect(document.querySelector("pre")).toBeNull();
+    expect(document.body.textContent).not.toContain("{");
+  });
+
+  it("renders redactions as a badge, never the marker string", async () => {
+    stubConfig();
+    await renderSettings();
+
+    // Both secrets render the badge...
+    expect(screen.getAllByText("redacted")).toHaveLength(2);
+    // ...and the literal marker never reaches the page as a value.
+    expect(document.body.textContent).not.toContain(REDACTED);
+  });
+
+  it("renders booleans as on/off and an empty string as (not set)", async () => {
+    stubConfig();
+    await renderSettings();
+
+    // badges.enabled=true, artwork.use_logo=true -> "on";
+    // badges.upload_to_plex=false, notifications.enabled=false -> "off".
+    expect(screen.getAllByText("on")).toHaveLength(2);
+    expect(screen.getAllByText("off")).toHaveLength(2);
+    expect(screen.getByText("(not set)")).toBeInTheDocument();
+  });
+
+  it("renders a section it has never seen, without a frontend change", async () => {
+    // The renderer must be driven by the response's shape, not a hard-coded
+    // field list -- the config schema grows every phase. This key exists
+    // nowhere in the component.
+    stubConfig({
+      frobnicator: { warp_factor: 9, reticulate_splines: true },
+    });
+    await renderSettings();
+
+    expect(
+      screen.getByRole("heading", { name: "Frobnicator" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Warp factor")).toBeInTheDocument();
+    expect(screen.getByText("9")).toBeInTheDocument();
   });
 
   it("surfaces a failed config read instead of loading forever", async () => {
