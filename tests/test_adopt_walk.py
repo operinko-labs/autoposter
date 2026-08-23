@@ -410,6 +410,99 @@ async def test_a_disabled_art_kind_is_not_counted_as_a_missing_asset(session, tm
     assert report.renders == 1
 
 
+async def test_an_unnumbered_episode_is_counted_and_does_not_abort_the_walk(session, tmp_path):
+    """A single ``index: None`` episode must not kill the library walk.
+
+    Plex's TV agent returns ``index: None`` for year-grouped specials -- 74 of
+    12,694 episodes on the production server. ``naming._file_name`` raises
+    ``ValueError: title_card requires episode_number`` for those, and before the
+    guard that exception propagated out of ``_adopt_item`` and ended the entire
+    run, ~12,000 items in.
+    """
+    config = _config(tmp_path)
+    library_root = tmp_path / "TV Shows"
+    good = FakeEpisode("30", "Pilot", season_number=1, episode_number=1)
+    unnumbered = FakeEpisode("31", "Episode 05-28", season_number=1, episode_number=None)
+    season = FakeSeason("20", "Season 1", season_number=1, episodes=[unnumbered, good])
+    show = FakeShow("10", "Breaking Bad", str(library_root / "Breaking Bad (2008)"), [season])
+    section = FakeSection("TV Shows", [str(library_root)], [show])
+
+    show_poster = naming.asset_path(config, "TV Shows", "Breaking Bad (2008)", "poster")
+    season_poster = naming.asset_path(
+        config, "TV Shows", "Breaking Bad (2008)", "season_poster", season_number=1
+    )
+    title_card = naming.asset_path(
+        config, "TV Shows", "Breaking Bad (2008)", "title_card", season_number=1, episode_number=1
+    )
+    _write(show_poster, b"show-poster")
+    _write(season_poster, b"season-poster")
+    _write(title_card, b"title-card")
+
+    report = await adopt_library(session, config, section, dry_run=False)
+
+    # The walk reached the end: all four items were visited, the unnumbered one
+    # included -- it gets a media_items row like anything else.
+    assert report.items == 4
+    assert report.unnumbered == 1
+    # Everything else still adopted: the numbered sibling's title card, the
+    # season poster and the show poster. The unnumbered episode is *not* a
+    # missing asset (only the show background is) and *not* skipped_by_config.
+    assert report.renders == 3
+    assert report.by_kind == {"poster": 1, "season_poster": 1, "title_card": 1}
+    assert report.missing_assets == 1
+    assert report.skipped_by_config == 0
+
+    rating_keys = {
+        m.rating_key for m in (await session.execute(select(MediaItem))).scalars().all()
+    }
+    assert rating_keys == {"10", "20", "30", "31"}
+    # The unnumbered episode has no render row -- there was no file to name.
+    unnumbered_row = (
+        await session.execute(select(MediaItem).where(MediaItem.rating_key == "31"))
+    ).scalar_one()
+    assert (
+        await session.execute(select(Render).where(Render.item_id == unnumbered_row.id))
+    ).scalars().all() == []
+
+
+async def test_an_unnumbered_season_is_counted_and_takes_its_episodes_with_it(session, tmp_path):
+    """``season_poster`` needs ``season_number``; its episodes inherit the gap.
+
+    ``_resolved_episode`` takes ``season_number`` from ``episode.parentIndex``,
+    so an unnumbered season yields episodes that also fail the ``title_card
+    requires season_number`` branch of ``naming._file_name`` -- a second raise
+    site the same guard has to cover.
+    """
+    config = _config(tmp_path)
+    library_root = tmp_path / "TV Shows"
+    episode = FakeEpisode("31", "Episode 05-28", season_number=None, episode_number=None)
+    orphan_season = FakeSeason("21", "Specials", season_number=None, episodes=[episode])
+    good_season = FakeSeason(
+        "20", "Season 1", season_number=1,
+        episodes=[FakeEpisode("30", "Pilot", season_number=1, episode_number=1)],
+    )
+    show = FakeShow(
+        "10", "Breaking Bad", str(library_root / "Breaking Bad (2008)"),
+        [orphan_season, good_season],
+    )
+    section = FakeSection("TV Shows", [str(library_root)], [show])
+
+    show_poster = naming.asset_path(config, "TV Shows", "Breaking Bad (2008)", "poster")
+    title_card = naming.asset_path(
+        config, "TV Shows", "Breaking Bad (2008)", "title_card", season_number=1, episode_number=1
+    )
+    _write(show_poster, b"show-poster")
+    _write(title_card, b"title-card")
+
+    report = await adopt_library(session, config, section, dry_run=False)
+
+    assert report.items == 5  # show, two seasons, two episodes
+    # The unnumbered season's season_poster and its episode's title_card.
+    assert report.unnumbered == 2
+    assert report.renders == 2
+    assert report.by_kind == {"poster": 1, "title_card": 1}
+
+
 async def test_a_tba_titled_episode_title_card_is_not_counted_as_a_missing_asset(
     session, tmp_path
 ):

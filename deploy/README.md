@@ -522,6 +522,14 @@ Run the cutover in this order:
    `enabled: false` (e.g. `artwork.background`), or a title card whose episode
    title matches a `skip_tba` word. They are excluded from `missing_assets`
    deliberately, so that number stays a number worth acting on.
+
+   `unnumbered` is a third separate count: items Plex gave no season or
+   episode number for, so there is no file name their artwork could have. The
+   usual cause is a year-grouped special (`index: null`, filed under a
+   `parentIndex` like 2024) — a Plex agent quirk, not a fault in the asset
+   tree. Each one is also logged individually with its title and rating key.
+   They are skipped and the walk continues; a handful is normal, a large count
+   means those items need re-matching in Plex.
 2. **Set `adopt.apply: true` and run it again.** This time it writes the
    `media_items`/`renders` rows. The numbers in the report should be
    unchanged from the dry run; if they differ, something in the library or
