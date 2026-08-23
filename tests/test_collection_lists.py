@@ -8,6 +8,7 @@ import inspect
 import re
 from itertools import permutations
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -478,3 +479,59 @@ async def test_a_dry_run_stamps_nothing(session):
         [FakeItem("a"), FakeItem("b"), FakeItem("c")], LABEL, dry_run=True,
     )
     assert await _stats(session) == before, "the would-update branch stamped under dry-run"
+
+
+async def test_the_poster_refresh_fall_through_still_refreshes_the_stats(
+    session, config_factory, tmp_path
+):
+    """There are two ways out of an unchanged-hash pass, and both must stamp.
+
+    When ``posters_on`` is true and ``poster_sha256`` is still NULL the
+    function does not take the short-circuit return -- it falls through to
+    refresh the poster -- and that path also skips the write block further
+    down, because ``definition_current`` is true. So the stamp has to sit
+    ABOVE the short-circuit ``if``, not inside its body. This test is what
+    stops a later refactor from tidying it inside: a list collection whose
+    membership is correct but whose poster hash is missing would then record
+    nothing at all, and an operator would be looking at a row that claims the
+    collection has not been reconciled since the pass before.
+
+    The poster fetch is answered with a 404 on purpose. ``apply_poster``
+    reports a failure rather than raising, and leaves ``poster_sha256`` NULL,
+    so the fall-through is exercised without this test needing to care about
+    uploading.
+    """
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    config.collections.posters = False
+    section = FakeSection()
+    items = [FakeItem("a"), FakeItem("b")]
+
+    async def missing(request):
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(missing)) as http:
+        await reconcile_list_collection(
+            session, section, "Movies", "IMDb Top 250", items, LABEL, dry_run=False,
+            kind="chart", key="IMDb Top 250", http=http, config=config,
+        )
+        assert (await _stats(session))[1] == 2, "precondition: the create path stamped 2 adds"
+
+        config.collections.posters = True
+        actions = await reconcile_list_collection(
+            session, section, "Movies", "IMDb Top 250", items, LABEL, dry_run=False,
+            kind="chart", key="IMDb Top 250", http=http, config=config,
+        )
+
+    # Precondition, not the assertion under test: reaching apply_poster is
+    # what proves this pass took the fall-through rather than the plain
+    # short-circuit return, which a different test already covers.
+    assert any("poster" in a for a in actions), actions
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is None, "precondition: the poster hash stayed NULL"
+
+    member_count, added, removed, reconciled_at = await _stats(session)
+    assert member_count == 2
+    assert added == 0, "the fall-through left the create pass's stale delta behind"
+    assert removed == 0
+    assert reconciled_at is not None

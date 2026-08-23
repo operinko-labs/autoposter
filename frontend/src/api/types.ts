@@ -28,6 +28,12 @@ export interface ScheduledRun {
   last_finished_at: string | null;
   last_status: string | null;
   last_detail: string | null;
+  /** The job's cadence, merged in from the running scheduler rather than read
+   * from the database. Null when this deployment did not register the job --
+   * registration is config-conditional -- so the next run is unknowable and
+   * must not be computed. The server sends no next-run time: the client adds
+   * this to `last_started_at` itself. */
+  interval_seconds: number | null;
 }
 
 export interface Status {
@@ -63,12 +69,24 @@ export interface ParkedJobsResponse {
   jobs: ParkedJob[];
 }
 
-/** GET /api/collections. Member counts are not exposed yet -- see phase 4c. */
+/** GET /api/collections.
+ *
+ * The four reconcile stats are nullable and null on every row no pass has
+ * stamped -- which is every row predating the migration that added them, and
+ * every smart row permanently: Plex evaluates a smart collection's filter
+ * live, so there is no member count for us to have. Null and 0 are different
+ * states. `last_added: 0` means a pass ran and found nothing to change;
+ * `last_added: null` means no pass has reported. Render them differently.
+ */
 export interface CollectionSummary {
   id: number;
   library: string;
   title: string;
   kind: string;
+  member_count: number | null;
+  last_added: number | null;
+  last_removed: number | null;
+  last_reconciled_at: string | null;
 }
 
 export interface CollectionsResponse {
@@ -110,6 +128,10 @@ export interface ItemRender {
   adopted: boolean;
   rendered_at: string | null;
   uploaded_at: string | null;
+  /** Which source supplied the artwork. `"manual"` is the database's only
+   * trace of a manual override file, so it is what the clear-override control
+   * keys off. Null on a row nothing has rendered yet. */
+  provider: string | null;
 }
 
 /** The facts the badges are drawn from. `originally_available` is a date, not
@@ -170,6 +192,15 @@ export function isLogLine(value: unknown): value is LogLine {
     typeof (value as LogLine).message === "string" &&
     typeof (value as LogLine).level === "string"
   );
+}
+
+/** POST /api/scheduled-runs/{name}/run. "requested", never "started": the
+ * endpoint only marks the job due, so the run begins on one of the
+ * scheduler's next polls. `poll_seconds` is that poll interval, which is what
+ * the UI should quote as the upper bound on the wait. */
+export interface ScheduledRunRequestResponse {
+  status: string;
+  poll_seconds: number;
 }
 
 export interface LoginResponse {

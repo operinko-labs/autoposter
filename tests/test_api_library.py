@@ -1,4 +1,5 @@
 """GET /api/items, GET /api/items/{item_id} and GET /api/collections."""
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest_asyncio
@@ -236,6 +237,31 @@ async def test_item_detail_includes_facts_and_renders(client, auth_headers, sess
     assert render["adopted"] is True
 
 
+async def test_item_detail_echoes_the_render_provider(client, auth_headers, session):
+    """``provider`` is the only trace a manual override leaves in the database
+    (render/pipeline.py stamps ``provider="manual"``), so the detail page needs
+    it to know whether there is an override to offer clearing."""
+    session.add(_item("rk1", "A"))
+    await session.flush()
+    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+    session.add_all([
+        Render(
+            item_id=item_id, art_kind="poster", status="rendered",
+            asset_path="/x/a.jpg", provider="manual",
+        ),
+        Render(
+            item_id=item_id, art_kind="background", status="rendered",
+            asset_path="/x/b.jpg", provider="TMDB",
+        ),
+    ])
+    await session.commit()
+
+    response = await client.get(f"/api/items/{item_id}", headers=auth_headers)
+    by_kind = {r["art_kind"]: r for r in response.json()["renders"]}
+    assert by_kind["poster"]["provider"] == "manual"
+    assert by_kind["background"]["provider"] == "TMDB"
+
+
 async def test_item_detail_404s_for_an_unknown_id(client, auth_headers):
     response = await client.get("/api/items/999999", headers=auth_headers)
     assert response.status_code == 404
@@ -271,3 +297,48 @@ async def test_collections_lists_what_is_managed(client, auth_headers, session):
     # collection's filter and summary rather than any poster. A field that
     # always says yes is worse than an absent one.
     assert "has_poster_hash" not in row
+
+
+async def test_collections_echo_the_reconcile_stats(client, auth_headers, session):
+    """The four columns the reconcile pass stamps, passed straight through.
+    A zero delta is a real observation -- a pass that confirmed membership was
+    already correct -- so it must arrive as 0, not be flattened into null."""
+    session.add(
+        ManagedCollection(
+            library="Movies", title="IMDb Top 250", kind="manual",
+            definition_hash="somehash",
+            member_count=250, last_added=0, last_removed=0,
+            last_reconciled_at=datetime(2026, 8, 23, 9, 30, tzinfo=UTC),
+        )
+    )
+    await session.commit()
+
+    response = await client.get("/api/collections", headers=auth_headers)
+    row = response.json()["collections"][0]
+    assert row["member_count"] == 250
+    assert row["last_added"] == 0
+    assert row["last_removed"] == 0
+    assert row["last_reconciled_at"].startswith("2026-08-23T09:30")
+
+
+async def test_a_collection_no_pass_has_stamped_reports_nulls(
+    client, auth_headers, session
+):
+    """Every row predating the stats migration, and every smart row forever
+    (Plex evaluates the filter live, so there is no member count to have),
+    reads null. Never zero: "no members" and "never counted" are different
+    claims and only one of them is true here."""
+    session.add(
+        ManagedCollection(
+            library="Movies", title="Age 17+ Movies", kind="smart",
+            definition_hash="somehash",
+        )
+    )
+    await session.commit()
+
+    response = await client.get("/api/collections", headers=auth_headers)
+    row = response.json()["collections"][0]
+    assert row["member_count"] is None
+    assert row["last_added"] is None
+    assert row["last_removed"] is None
+    assert row["last_reconciled_at"] is None

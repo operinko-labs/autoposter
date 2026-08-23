@@ -8,6 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from autoposter.api.artwork import router as artwork_router
@@ -40,6 +41,18 @@ logger = logging.getLogger(__name__)
 # when zero, so an empty database returns zeroed counts rather than an
 # incomplete dict.
 JOB_STATES = ("pending", "running", "done", "failed", "parked", "dismissed")
+
+# The names of the four periodic jobs, from the Job(name=...) literals in
+# scheduler/jobs.py (:63, :157, :291, :517). Spelled out rather than imported
+# from the job factories: importing those would pull plexapi and the arr/http
+# client machinery into this module, which no request handler here needs. A
+# name added there and not here can simply not be triggered by hand.
+SCHEDULED_JOB_NAMES = frozenset({
+    "collections_reconcile",
+    "ratings_drift_sweep",
+    "arr_sync",
+    "asset_cleanup",
+})
 
 DEFAULT_EVENTS_LIMIT = 50
 MAX_EVENTS_LIMIT = 200
@@ -214,6 +227,13 @@ async def status(
             .all()
         )
 
+    # Cadence is not in the database -- it lives on the in-memory scheduler
+    # Job dataclass, published by create_app (empty) and filled by the
+    # lifespan with whatever it actually registered. Merging by name here
+    # means a row left behind by a job the current configuration no longer
+    # registers reports a null interval rather than a stale one. The frontend
+    # computes the next run from this plus last_started_at.
+    intervals = request.app.state.scheduler_intervals
     return {
         "jobs_by_state": jobs_by_state,
         "workers": request.app.state.config.workers,
@@ -225,6 +245,7 @@ async def status(
                 "last_finished_at": row.last_finished_at,
                 "last_status": row.last_status,
                 "last_detail": row.last_detail,
+                "interval_seconds": intervals.get(row.name),
             }
             for row in scheduled_rows
         ],
@@ -424,6 +445,10 @@ async def item_detail(
                 "badge_fingerprint": render.badge_fingerprint,
                 "upload_status": render.upload_status,
                 "adopted": render.adopted,
+                # The only trace in the database that a manual override
+                # supplied this artwork -- pipeline.py stamps
+                # provider="manual" on that branch.
+                "provider": render.provider,
                 "rendered_at": render.rendered_at,
                 "uploaded_at": render.uploaded_at,
             }
@@ -450,6 +475,16 @@ async def list_collections(
                 "library": row.library,
                 "title": row.title,
                 "kind": row.kind,
+                # Straight through, nulls included. NULL means no pass has
+                # stamped this row -- permanently so for a smart collection,
+                # whose filter Plex evaluates live, so there is no member
+                # count to have. A zero delta is a different thing entirely:
+                # a pass that ran and found nothing to change. Rendering
+                # either as the other would be a false claim.
+                "member_count": row.member_count,
+                "last_added": row.last_added,
+                "last_removed": row.last_removed,
+                "last_reconciled_at": row.last_reconciled_at,
             }
             for row in rows
         ]
@@ -583,6 +618,50 @@ async def reprocess_item(
             session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key
         )
     return {"queued": job_id is not None, "job_id": job_id}
+
+
+@router.post("/scheduled-runs/{name}/run")
+async def run_scheduled_job_now(
+    name: str, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Make one periodic job due, so the next scheduler poll picks it up.
+
+    Nothing is run here and nothing is waited on. ``claim_due``
+    (scheduler/core.py) treats ``last_started_at IS NULL`` as due
+    unconditionally, so nulling that column is the whole mechanism -- which
+    also means the request cannot start a second copy of a pass that is
+    already running, and does not care whether this replica is the one that
+    happens to claim it. The response carries the scheduler's poll interval
+    so the UI can say when it will be picked up rather than pretending the
+    work is done.
+
+    An INSERT ... ON CONFLICT rather than a read-then-write: the row may not
+    exist yet -- the scheduler creates it on its first claim -- and an
+    inserted row has a NULL ``last_started_at`` by construction. Only that
+    one column is set on the conflict arm; ``last_status`` and
+    ``last_detail`` are the previous run's history and stay.
+
+    A name outside the allowlist is a 404: the column is free text, so
+    without it any string at all would seed a row no scheduler will ever run,
+    and the operator would be left with a job in the dashboard that never
+    starts.
+    """
+    if name not in SCHEDULED_JOB_NAMES:
+        raise HTTPException(status_code=404, detail="unknown scheduled job")
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        await session.execute(
+            insert(ScheduledRun)
+            .values(name=name)
+            .on_conflict_do_update(
+                index_elements=["name"], set_={"last_started_at": None}
+            )
+        )
+        await session.commit()
+    return {
+        "status": "requested",
+        "poll_seconds": request.app.state.config.scheduler.poll_seconds,
+    }
 
 
 @router.post("/full-pass")

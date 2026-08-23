@@ -16,14 +16,21 @@ PASSWORD = "correct horse battery staple"
 
 
 @pytest_asyncio.fixture
-async def client(session_factory):
+async def app(session_factory):
+    """Exposed separately from ``client`` so a test can reach
+    ``app.state.scheduler_intervals`` -- the lifespan that normally fills it
+    does not run under ASGITransport."""
     secrets = Secrets(
         database_url="postgresql+asyncpg://unused",
         plex_token="x", tmdb_token="x", tvdb_apikey="x",
         fanart_apikey="x", webhook_secret="x",
         admin_password_hash=hash_password(PASSWORD),
     )
-    app = create_app(load_config(EXAMPLE), session_factory, secrets)
+    return create_app(load_config(EXAMPLE), session_factory, secrets)
+
+
+@pytest_asyncio.fixture
+async def client(app):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -129,6 +136,40 @@ async def test_status_reports_scheduled_job_last_run_and_status(client, auth_hea
     assert scheduled[0]["name"] == "drift"
     assert scheduled[0]["last_status"] == "ok"
     assert scheduled[0]["last_detail"] == "123 items checked"
+
+
+async def test_status_reports_the_interval_of_a_registered_scheduler_job(
+    app, client, auth_headers, session
+):
+    """The interval lives only on the in-memory scheduler ``Job`` dataclass,
+    never in the database, so ``/api/status`` merges it in by name. The
+    frontend computes the next run from this plus ``last_started_at``."""
+    session.add(ScheduledRun(name="collections_reconcile"))
+    await session.commit()
+    app.state.scheduler_intervals = {"collections_reconcile": 86400}
+
+    response = await client.get("/api/status", headers=auth_headers)
+    scheduled = response.json()["scheduled_jobs"]
+    assert scheduled[0]["interval_seconds"] == 86400
+
+
+async def test_status_reports_a_null_interval_for_a_job_the_scheduler_never_registered(
+    app, client, auth_headers, session
+):
+    """Registration is config-conditional (app.py:128-136) and the scheduler
+    may be disabled entirely, so a ``scheduled_runs`` row left behind by an
+    earlier configuration has no interval. That is null, not a guess -- and
+    the field is present either way so the UI has one shape to render."""
+    session.add(ScheduledRun(name="arr_sync"))
+    await session.commit()
+    assert app.state.scheduler_intervals == {}, (
+        "precondition: create_app publishes an empty mapping unconditionally"
+    )
+
+    response = await client.get("/api/status", headers=auth_headers)
+    row = response.json()["scheduled_jobs"][0]
+    assert "interval_seconds" in row
+    assert row["interval_seconds"] is None
 
 
 async def test_status_reports_worker_count(client, auth_headers):

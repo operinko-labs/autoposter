@@ -140,6 +140,14 @@ def create_app(
             scheduler_jobs.append(make_cleanup_job(config))
             if config.arr_sync.enabled:
                 scheduler_jobs.append(make_arr_sync_job(config, server_factory, http, secrets))
+        # Published for GET /api/status, which has no other way to reach the
+        # cadence: it is a field on the in-memory Job dataclass and is never
+        # written to scheduled_runs. Built from the jobs actually registered
+        # just above, so a job this configuration skipped is simply absent
+        # and reports a null interval rather than a cadence nothing honours.
+        app.state.scheduler_intervals = {
+            job.name: job.interval_seconds for job in scheduler_jobs
+        }
         scheduler = Scheduler(
             session_factory, scheduler_jobs,
             poll_seconds=config.scheduler.poll_seconds, notifier=notifier,
@@ -210,6 +218,12 @@ def create_app(
     # something with a send(). The lifespan replaces it with build_notifier's
     # result.
     app.state.notifier = NullNotifier()
+    # {job name: interval_seconds} for the jobs the scheduler registered.
+    # Empty here and unconditionally set, never left unbound: an app without
+    # the background lifespan -- every test app, and any replica running with
+    # the scheduler disabled -- still serves /api/status, and that handler
+    # reads this. Filled by the lifespan's background branch.
+    app.state.scheduler_intervals = {}
     app.include_router(router)
     app.include_router(api_router)
 
