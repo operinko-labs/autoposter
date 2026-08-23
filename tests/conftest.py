@@ -121,6 +121,10 @@ def no_outbound_network(monkeypatch):
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
 
 
+# Per-process on purpose -- and a trap if pytest-xdist ever arrives: each
+# worker process would run its own first-test drop_all against the one shared
+# database, mid-run, under everyone else. The database is not
+# concurrency-safe for parallel suites; keep runs serial.
 _SCHEMA_READY = False
 
 

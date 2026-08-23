@@ -91,9 +91,14 @@ jobs:
       - name: Start PostgreSQL
         run: |
           # The rm covers a re-run attempt, which reuses the run id and so
-          # could find attempt 1's container if its cleanup never ran.
+          # could find attempt 1's container if its cleanup never ran. The
+          # network needs the same tolerance: attempt 1's network survives a
+          # cancelled cleanup too, so remove it before creating, and tolerate
+          # the removal failing (it may still be attached to attempt 1's
+          # not-yet-reaped container).
           docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
-          docker network create "$PG_NETWORK" >/dev/null
+          docker network rm "$PG_NETWORK" >/dev/null 2>&1 || true
+          docker network create "$PG_NETWORK" >/dev/null 2>&1 || true
           # Succeeds when the job is a container; harmlessly fails when it is
           # not, in which case the published port below is the route instead.
           docker network connect "$PG_NETWORK" "$(hostname)" >/dev/null 2>&1 || true
@@ -105,7 +110,12 @@ jobs:
             -e POSTGRES_PASSWORD=autoposter \
             -e POSTGRES_DB=autoposter \
             postgres:${{ env.POSTGRES_VERSION }}-alpine
-          echo "PG_HOST_PORT=$(docker port "$PG_CONTAINER" 5432/tcp | head -n1 | cut -d: -f2)" >> "$GITHUB_ENV"
+          PG_HOST_PORT="$(docker port "$PG_CONTAINER" 5432/tcp | head -n1 | cut -d: -f2)"
+          # An empty value here would silently fall back to 5432 in
+          # wait_for_postgres.py -- wrong by construction under an ephemeral
+          # publish, and a confusing 180s timeout on a host-mode runner.
+          test -n "$PG_HOST_PORT"
+          echo "PG_HOST_PORT=$PG_HOST_PORT" >> "$GITHUB_ENV"
 
       # Waiting on `pg_isready` inside the container was the previous attempt's
       # mistake: it probes the unix socket, while the suite connects over TCP
@@ -188,10 +198,11 @@ jobs:
       # tests/test_ci_path_filters.py asserts both that flag and this step.
       - name: Test the ImageMagick-gated poster parity
         run: |
-          # A private database. The run above drops and recreates every table
-          # in `autoposter`; sharing it with a second suite is what produced a
-          # StaleDataError when this was tried. Separate `psql` invocations
-          # because CREATE DATABASE cannot run inside a transaction block.
+          # A private database. The run above rebuilds the schema in
+          # `autoposter` and truncates between tests; sharing it with a second
+          # suite is what produced a StaleDataError when this was tried.
+          # Separate `psql` invocations because CREATE DATABASE cannot run
+          # inside a transaction block.
           docker exec "$PG_CONTAINER" psql -U autoposter -d postgres \
             -c 'DROP DATABASE IF EXISTS autoposter_magick'
           docker exec "$PG_CONTAINER" psql -U autoposter -d postgres \
