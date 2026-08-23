@@ -15,6 +15,7 @@ is fakes, so nothing reaches a network by any route.
 """
 import hashlib
 import io
+import os
 from pathlib import Path
 
 import httpx
@@ -240,6 +241,22 @@ async def test_a_logo_pick_is_404_for_a_season_or_episode(
 
     assert response.status_code == 404
     assert transport.requests == []
+
+
+async def test_an_item_with_no_root_folder_is_409(
+    client, auth_headers, session, manual_root, transport
+):
+    """``root_folder`` is nullable, and the whole mirror layout is rooted at
+    it -- checked before any provider is asked, so nothing is fetched, written
+    or queued for an item this endpoint has nowhere to write."""
+    item_id = await _item(session, root_folder=None)
+
+    response = await _pick(client, item_id, "poster", auth_headers)
+
+    assert response.status_code == 409
+    assert transport.requests == []
+    assert list(manual_root.rglob("*")) == []
+    assert (await session.execute(select(Job))).scalars().all() == []
 
 
 # --- the security invariant -------------------------------------------------
@@ -522,6 +539,72 @@ async def test_the_502_names_the_provider_and_never_the_url(
     assert "TMDB" in detail
     assert "image.tmdb.org" not in detail
     assert "offered.png" not in detail
+
+
+async def test_a_stream_beyond_the_size_cap_is_502_and_writes_nothing(
+    client, auth_headers, session, manual_root, transport
+):
+    """The stream is now reachable from an authenticated request rather than
+    only from a provider client, so it needs its own ceiling: a body that
+    never stops arriving must not fill the container's tmpdir."""
+    from autoposter.api.candidates import PICK_MAX_BYTES
+
+    transport._response_for = _ok(b"\x00" * (PICK_MAX_BYTES + 1), "image/png")
+    item_id = await _item(session)
+
+    response = await _pick(client, item_id, "poster", auth_headers)
+
+    assert response.status_code == 502
+    assert list(manual_root.rglob("*")) == []
+
+
+async def test_a_decompression_bomb_is_refused_not_500ed(
+    client, auth_headers, session, manual_root, monkeypatch
+):
+    """``Image.DecompressionBombError`` subclasses ``Exception`` directly, not
+    ``OSError`` or ``ValueError``, so it escapes the transcode's except clause
+    unless named explicitly -- and an uncaught exception here would 500 an
+    authenticated operator request instead of refusing the image."""
+    import autoposter.api.candidates as candidates_module
+
+    def explode(*args, **kwargs):
+        raise Image.DecompressionBombError("image too large")
+
+    monkeypatch.setattr(candidates_module.Image, "open", explode)
+    item_id = await _item(session)
+
+    response = await _pick(client, item_id, "poster", auth_headers)
+
+    assert response.status_code == 502
+    assert list(manual_root.rglob("*")) == []
+
+
+async def test_a_failed_mount_write_is_503_and_leaks_no_path(
+    client, auth_headers, session, manual_root, monkeypatch
+):
+    """A read-only mount, simulated the same way clear-override's test does.
+    The detail is sanitized: ``os.replace``'s ``OSError`` carries the
+    destination's full filesystem path, and this is the one response in this
+    file that would otherwise leak the server's directory layout."""
+    item_id = await _item(session)
+
+    def refuse(src, dst):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(os, "replace", refuse)
+
+    response = await _pick(client, item_id, "poster", auth_headers)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "could not write to the override mount"
+    assert not _mirror(manual_root).exists()
+    render = (
+        await session.execute(select(Render).where(Render.item_id == item_id))
+    ).scalar_one()
+    await session.refresh(render)
+    assert render.fingerprint == "f" * 64
+    assert render.badge_fingerprint == "b" * 64
+    assert (await session.execute(select(Job))).scalars().all() == []
 
 
 # --- logos ------------------------------------------------------------------

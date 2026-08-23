@@ -252,6 +252,14 @@ class PickBody(BaseModel):
     url: str
 
 
+# Larger than any real poster: the biggest legitimate art this endpoint will
+# ever be asked to fetch is a few MiB. This request is now reachable from an
+# authenticated operator rather than only from the ladder's own trusted
+# providers, so the stream needs its own ceiling rather than trusting the
+# other end to behave.
+PICK_MAX_BYTES = 50 * 1024 * 1024
+
+
 class DownloadRefused(Exception):
     """The picked image did not arrive as something usable as artwork."""
 
@@ -270,6 +278,8 @@ async def _download_artwork(http: httpx.AsyncClient, url: str, destination: Path
         with destination.open("wb") as handle:
             async for chunk in response.aiter_bytes():
                 size += len(chunk)
+                if size > PICK_MAX_BYTES:
+                    raise DownloadRefused("image exceeded the size cap")
                 handle.write(chunk)
     if size == 0:
         raise DownloadRefused("empty body")
@@ -296,7 +306,7 @@ def _prepare_jpeg(source: Path, destination: Path) -> None:
             image.convert("RGB").save(
                 destination, format="JPEG", quality=PICK_JPEG_QUALITY
             )
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
         raise DownloadRefused(f"undecodable image ({type(exc).__name__})") from exc
 
 
@@ -312,7 +322,7 @@ def _verify_image(source: Path) -> None:
     try:
         with Image.open(source) as image:
             image.verify()
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
         raise DownloadRefused(f"undecodable image ({type(exc).__name__})") from exc
 
 
@@ -446,7 +456,9 @@ async def pick_candidate(
             await asyncio.to_thread(_install, staged, target)
         except OSError as exc:
             logger.warning("could not write the picked image to %s: %s", target, exc)
-            raise HTTPException(status_code=503, detail=str(exc)) from None
+            raise HTTPException(
+                status_code=503, detail="could not write to the override mount"
+            ) from None
 
     # Deferred to here rather than imported at module scope: api/routes.py
     # imports this module's router, so the other direction is a cycle.
