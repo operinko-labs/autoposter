@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   apiFetch,
+  apiFetchNdjson,
   getToken,
   setToken,
   setUnauthorizedHandler,
@@ -134,5 +135,109 @@ describe("apiFetch", () => {
 
     const headers = fetchMock.mock.calls[0][1].headers as Headers;
     expect(headers.get("Content-Type")).toBe("application/json");
+  });
+});
+
+/** A `ReadableStreamDefaultReader` stand-in whose `read()` the test drives by
+ * hand: each call returns a promise the test resolves or rejects on its own
+ * schedule, which is what it takes to land a chunk boundary mid-line or make
+ * a pending read reject the way an aborted real fetch body does. */
+function controllableReader() {
+  let settle: {
+    resolve: (result: ReadableStreamReadResult<Uint8Array>) => void;
+    reject: (reason: unknown) => void;
+  } | null = null;
+
+  const reader = {
+    read: () =>
+      new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+        settle = { resolve, reject };
+      }),
+    releaseLock: vi.fn(),
+  };
+
+  const encoder = new TextEncoder();
+  return {
+    reader,
+    push(chunk: string) {
+      settle!.resolve({ done: false, value: encoder.encode(chunk) });
+    },
+    end() {
+      settle!.resolve({ done: true, value: undefined });
+    },
+    fail(reason: unknown) {
+      settle!.reject(reason);
+    },
+  };
+}
+
+/** Lets a suspended `await reader.read()` inside apiFetchNdjson resume and
+ * run synchronously up to its next await, so the next push()/end()/fail()
+ * lands on the read the loop is actually waiting on. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 3; i++) await Promise.resolve();
+}
+
+describe("apiFetchNdjson", () => {
+  it("joins a line split across chunks and still delivers adjacent whole lines", async () => {
+    const { reader, push, end } = controllableReader();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        body: { getReader: () => reader },
+      }),
+    );
+    const onValue = vi.fn();
+
+    const promise = apiFetchNdjson("/api/logs/stream", onValue, new AbortController().signal);
+    await flush();
+
+    push('{"a":1');
+    await flush();
+    expect(onValue).not.toHaveBeenCalled(); // the line is not complete yet
+
+    push('}\n{"b":2}\n{"c":3}\n');
+    await flush();
+    end();
+    await promise;
+
+    expect(onValue.mock.calls).toEqual([[{ a: 1 }], [{ b: 2 }], [{ c: 3 }]]);
+  });
+
+  it("clears the session, notifies, and throws ApiError(401) on a 401", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 401, ok: false }));
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setToken("expired");
+
+    await expect(
+      apiFetchNdjson("/api/logs/stream", vi.fn(), new AbortController().signal),
+    ).rejects.toMatchObject({ name: "ApiError", status: 401 });
+
+    expect(getToken()).toBeNull();
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+  });
+
+  it("resolves, rather than rejects, when the pending read is aborted", async () => {
+    const { reader, fail } = controllableReader();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        body: { getReader: () => reader },
+      }),
+    );
+    const controller = new AbortController();
+
+    const promise = apiFetchNdjson("/api/logs/stream", vi.fn(), controller.signal);
+    await flush();
+
+    controller.abort();
+    fail(new DOMException("aborted", "AbortError"));
+
+    await expect(promise).resolves.toBeUndefined();
   });
 });
