@@ -9,3 +9,11 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
+
+/* The one flexible column in the row: Kind, Members and Last diff are all
+ * short and rigid, so a squeezed table took every pixel out of the title and
+ * broke it to one word per line. A floor rather than a fixed width -- past it
+ * the table overflows into .table-scroll, which is the intended answer. */
+.cell-title {
+  min-width: 9rem;
+}

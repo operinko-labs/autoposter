@@ -89,6 +89,11 @@ button {
   border-radius: var(--radius);
   padding: 6px 14px;
   cursor: pointer;
+  /* Every label in this application is two or three words. Left to wrap,
+   * "Run full pass" and "Re-run" broke across lines the moment their row got
+   * narrow, which reads as a broken control rather than a tight one. The
+   * containers wrap instead. */
+  white-space: nowrap;
 }
 
 button:hover:not(:disabled) {

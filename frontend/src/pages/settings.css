@@ -89,6 +89,11 @@
 .config-value input[type="text"],
 .config-value input[type="number"] {
   min-width: 0;
+  /* The widths below are ch-based ideals, not demands: inside the providers
+   * list editor a 32ch input overhung the panel's right edge on a phone.
+   * (box-sizing is border-box globally, from theme.css, so this counts the
+   * padding and border in.) */
+  max-width: 100%;
   padding: 2px 6px;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -183,4 +188,26 @@
 
 .config-restart {
   color: var(--warn);
+}
+
+/* A 220px label beside its value leaves under half a phone screen for the
+ * widget, so both halves crush. Below this the row stacks: label over value,
+ * each with the full width of the panel. */
+@media (max-width: 640px) {
+  .config-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .config-key {
+    flex: 0 0 auto;
+  }
+
+  /* The list editor lays its rows out inline; kept inside the panel they
+   * wrap instead of running past its edge. */
+  .config-list-edit,
+  .config-list-item {
+    max-width: 100%;
+  }
 }

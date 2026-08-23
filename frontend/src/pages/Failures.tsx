@@ -72,46 +72,53 @@ export function Failures() {
         ) : jobs.length === 0 ? (
           <p className="empty">Nothing parked. </p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Job</th>
-                <th>Attempts</th>
-                <th>Parked</th>
-                <th>Reason</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((job) => (
-                <tr key={job.id}>
-                  <td>
-                    {job.kind}
-                    <span className="muted mono"> #{job.id}</span>
-                  </td>
-                  <td>{job.attempts}</td>
-                  <td className="muted">{formatTime(job.updated_at)}</td>
-                  <td className="mono">{job.reason ?? "—"}</td>
-                  <td className="row-actions">
-                    <button
-                      type="button"
-                      disabled={busyId === job.id}
-                      onClick={() => void act(job, "retry")}
-                    >
-                      Retry
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busyId === job.id}
-                      onClick={() => void act(job, "dismiss")}
-                    >
-                      Dismiss
-                    </button>
-                  </td>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Job</th>
+                  <th>Attempts</th>
+                  <th>Parked</th>
+                  <th>Reason</th>
+                  <th />
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {jobs.map((job) => (
+                  <tr key={job.id}>
+                    <td>
+                      {job.kind}
+                      <span className="muted mono"> #{job.id}</span>
+                    </td>
+                    <td>{job.attempts}</td>
+                    <td className="muted cell-time">{formatTime(job.updated_at)}</td>
+                    {/* A parked reason is an unbounded provider error string.
+                        Unwrapped it widened the table past the viewport and
+                        took the buttons beside it off screen with it. */}
+                    <td className="mono cell-wrap">{job.reason ?? "—"}</td>
+                    <td>
+                      <div className="row-actions">
+                        <button
+                          type="button"
+                          disabled={busyId === job.id}
+                          onClick={() => void act(job, "retry")}
+                        >
+                          Retry
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyId === job.id}
+                          onClick={() => void act(job, "dismiss")}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </>

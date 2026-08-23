@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
+import { formatTime } from "../format";
 import { Dashboard } from "./Dashboard";
 
 const STATUS = {
@@ -165,6 +166,26 @@ describe("Dashboard", () => {
     expect(screen.getByText("plex")).toBeInTheDocument();
     expect(screen.getByText("library.new")).toBeInTheDocument();
     expect(screen.getByText("queued")).toBeInTheDocument();
+  });
+
+  it("keeps its timestamps on one line and both tables inside their own scroller", async () => {
+    // At 500px the localized timestamp broke into five lines and crushed the
+    // Run now button beside it. jsdom lays nothing out, so the assertion is
+    // that the hooks are on the right nodes; the widths were checked in a
+    // browser.
+    stubFetch();
+
+    render(<Dashboard />);
+
+    const scheduled = await jobRow("collections_reconcile");
+    const stamp = scheduled.getByText(formatTime(STATUS.scheduled_jobs[0].last_finished_at));
+    expect(stamp).toHaveClass("cell-time");
+
+    const tables = [...document.querySelectorAll("table")];
+    expect(tables).toHaveLength(2);
+    for (const table of tables) {
+      expect(table.parentElement).toHaveClass("table-scroll");
+    }
   });
 
   it("updates a count in place from a later snapshot, fetching nothing else", async () => {

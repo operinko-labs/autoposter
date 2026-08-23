@@ -135,6 +135,20 @@ describe("Collections", () => {
     expect(diff).toHaveAttribute("title", formatTime("2026-03-04T05:06:07Z"));
   });
 
+  it("gives the title cell a width to hold and the table its own scroller", async () => {
+    // The title was the only flexible column against Library/Kind/Members/Last
+    // diff, so at 500px it collapsed to one word per line. The floor is CSS;
+    // what jsdom can pin is that it is applied to the title cell and not, say,
+    // to the library cell beside it.
+    stubFetch();
+
+    render(<Collections />);
+
+    const title = await screen.findByText("Marvel Chronological");
+    expect(title).toHaveClass("cell-title");
+    expect(title.closest("table")?.parentElement).toHaveClass("table-scroll");
+  });
+
   it("renders null stats as — and zero stats as 0, which are different states", async () => {
     stubFetch();
 

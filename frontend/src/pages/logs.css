@@ -64,3 +64,38 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Below this the desktop grid cannot hold. Its 14rem logger column alone is
+ * more than half a phone screen, and with the message column beside it the
+ * viewport scrolled sideways -- landing in dead space past the last line, so
+ * the page read as empty while the header still claimed N lines.
+ *
+ * The line becomes two rows instead: the metadata (time, level, logger) on
+ * one, the message full-width underneath. The logger keeps the truncation it
+ * already had, which is what lets it take a flexible column here. */
+@media (max-width: 640px) {
+  .log-line {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    gap: 0 0.6rem;
+    padding: 0.25rem;
+  }
+
+  .log-message {
+    grid-column: 1 / -1;
+  }
+
+  .log-controls {
+    /* Level, filter and the count do not fit on one 500px row; without this
+     * they squeeze each other rather than stacking. */
+    flex-wrap: wrap;
+  }
+
+  /* The reservation above the viewport is the page padding, the header and
+   * the controls. The controls take two rows here rather than one, so the
+   * desktop's 14rem no longer covers them; the floor keeps the viewport
+   * usable on a short landscape screen, where the page may scroll instead. */
+  .log-viewport {
+    height: calc(100vh - 17rem);
+    min-height: 12rem;
+  }
+}

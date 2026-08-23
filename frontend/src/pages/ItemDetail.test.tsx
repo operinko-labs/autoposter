@@ -486,6 +486,10 @@ describe("ItemDetail", () => {
         node.getAttribute("title"),
       ),
     ).toEqual([FINGERPRINT, BADGE_FINGERPRINT]);
+
+    // Nine nowrapped columns cannot fit a phone, so the table carries its own
+    // horizontal scrollbar rather than widening the page around it.
+    expect(row!.closest("table")?.parentElement).toHaveClass("table-scroll");
   });
 
   it("re-runs by posting to /reprocess and reports the job the server queued", async () => {

@@ -100,8 +100,12 @@ export function Sidebar() {
   return (
     <nav className={collapsed ? "sidebar collapsed" : "sidebar"}>
       <div className="sidebar-brand">
-        <span className="sidebar-brand-name">Autoposter</span>
+        {/* Mark first, then the wordmark: that is the order in
+            docs/logo-lockup.svg, and it is what makes the collapsed rail --
+            which keeps only the mark -- read as the same lockup with its
+            right-hand half removed. */}
         <img className="sidebar-brand-mark" src={logoMark} alt="Autoposter" width={24} height={24} />
+        <span className="sidebar-brand-name">Autoposter</span>
         <button
           className="sidebar-toggle"
           type="button"

@@ -76,6 +76,25 @@ describe("Failures", () => {
     expect(fetchMock.mock.calls[1][0]).toBe("/api/jobs/41/dismiss");
   });
 
+  it("wraps the reason, contains the table, and keeps the actions grouped", async () => {
+    // The 500px sweep: an unwrapped reason widened the table past the content
+    // column, and Retry/Dismiss went off screen with it. jsdom computes no
+    // layout, so what is assertable here is that the three hooks the CSS
+    // hangs off are on the right nodes -- the widths themselves were checked
+    // in a browser.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ jobs: [PARKED] })));
+
+    render(<Failures />);
+    const reason = await screen.findByText("TMDB returned 503");
+
+    expect(reason).toHaveClass("cell-wrap");
+    expect(reason.closest("table")?.parentElement).toHaveClass("table-scroll");
+
+    const actions = screen.getByRole("button", { name: "Retry" }).parentElement;
+    expect(actions).toHaveClass("row-actions");
+    expect(actions).toContainElement(screen.getByRole("button", { name: "Dismiss" }));
+  });
+
   it("keeps the row and reports the error when the action fails", async () => {
     const fetchMock = vi
       .fn()

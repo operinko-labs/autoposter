@@ -10,6 +10,17 @@
   width: var(--sidebar-width);
   background: var(--bg-elevated);
   border-right: 1px solid var(--border);
+  /* Pinned to the viewport: the document is what scrolls (.app-shell only
+   * sets a min-height, so a long page grows it and body scrolls), and an
+   * unpinned rail scrolled its own icons off the top of a long Library or
+   * Logs page -- navigation was then unreachable without scrolling back up.
+   * The explicit height is what gives the sticky box something to stick at;
+   * without it the flex stretch would make it as tall as the page. */
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  /* Its own scrollbar, so a short viewport can still reach Sign out. */
+  overflow-y: auto;
   /* .app-main is flex: 1, so shrinking this column hands the difference
    * straight to the page -- collapsing actually reclaims the width. */
   transition: flex-basis 120ms ease, width 120ms ease;
@@ -52,9 +63,12 @@
   padding: 12px 4px;
 }
 
-/* Weighted to match the wordmark in docs/logo-lockup.svg, which the mark
- * below reads as a collapsed half of. */
+/* Weighted to match the wordmark in docs/logo-lockup.svg, whose left-hand
+ * half is the mark that precedes it. Grows so that the mark and the wordmark
+ * stay together on the left and the toggle keeps the right edge -- with the
+ * mark leading, `space-between` alone would push the three apart. */
 .sidebar-brand-name {
+  flex: 1;
   font-weight: 600;
 }
 
@@ -178,4 +192,39 @@
   color: var(--text-muted);
   padding: 24px;
   text-align: center;
+}
+
+/* Wide content scrolls inside its own container; the content column never
+ * scrolls sideways. Every table on a page is wrapped in one of these -- at a
+ * phone width no table here fits, and a table that widens .app-main pushes
+ * the row's own controls off the screen entirely. Failures did exactly that:
+ * one unwrapped error string put Retry and Dismiss out of reach. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+/* A timestamp reads as one unit or not at all. Allowed to wrap, the localized
+ * "Aug 23, 2026, 07:41" breaks into four or five lines and crushes whatever
+ * shares the row with it; the width it needs is handed to .table-scroll
+ * instead. */
+.cell-time {
+  white-space: nowrap;
+}
+
+/* The opposite case: a cell whose value is long and arbitrary (an error
+ * string, a path) wraps inside its column rather than widening the table. */
+.cell-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Per-row controls. Beside each other while the row has width for them, on a
+ * second line when the cell they share has taken it -- at a phone width the
+ * actions sit under the reason rather than beside it, which keeps them
+ * reachable instead of merely present. */
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }

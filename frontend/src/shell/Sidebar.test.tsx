@@ -89,6 +89,25 @@ describe("Sidebar", () => {
     expect(screen.getByRole("img", { name: "Autoposter" })).toBeInTheDocument();
   });
 
+  it("leads with the mark, then the wordmark, then the toggle", () => {
+    stubMatchMedia(false);
+
+    renderSidebar();
+
+    // DOM order, not CSS order: the lockup in docs/logo-lockup.svg puts the
+    // mark first, and the collapsed rail keeps the mark alone -- so the
+    // expanded header has to read as that same lockup, not as its mirror.
+    // `compareDocumentPosition` rather than an index into children, because
+    // the assertion is about the order of these three and not about how many
+    // nodes the header happens to contain.
+    const mark = screen.getByRole("img", { name: "Autoposter" });
+    const wordmark = screen.getByText("Autoposter", { selector: ".sidebar-brand-name" });
+    const toggle = screen.getByRole("button", { name: "Collapse sidebar" });
+
+    expect(mark.compareDocumentPosition(wordmark)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(wordmark.compareDocumentPosition(toggle)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it("starts collapsed below 768px", () => {
     stubMatchMedia(true);
 

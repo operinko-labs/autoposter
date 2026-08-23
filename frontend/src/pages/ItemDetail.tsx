@@ -313,62 +313,67 @@ function Renders({
   }
 
   return (
-    <table className="render-table">
-      <thead>
-        <tr>
-          <th>Art</th>
-          <th>Status</th>
-          <th>Provider</th>
-          <th>Source</th>
-          <th>Fingerprint</th>
-          <th>Badge fingerprint</th>
-          <th>Upload</th>
-          <th>Rendered</th>
-          <th>Uploaded</th>
-        </tr>
-      </thead>
-      <tbody>
-        {renders.map((render) => (
-          <Fragment key={render.art_kind}>
-            <tr>
-              <td>{render.art_kind}</td>
-              <td>{render.status}</td>
-              <td>
-                <Provider
-                  render={render}
-                  // Every button, not only this one: the endpoint moves a file
-                  // and is not idempotent, so two clears in flight at once is
-                  // not a state worth being able to reach.
-                  busy={clearing !== null}
-                  onClear={onClear}
-                />
-              </td>
-              <td>
-                <Source render={render} />
-              </td>
-              <td>
-                <Fingerprint value={render.fingerprint} />
-              </td>
-              <td>
-                <Fingerprint value={render.badge_fingerprint} />
-              </td>
-              <td>{render.upload_status}</td>
-              <td className="muted">{formatTime(render.rendered_at)}</td>
-              <td className="muted">{formatTime(render.uploaded_at)}</td>
-            </tr>
-            {note !== null && note.artKind === render.art_kind && (
+    /* Nine columns, every cell nowrapped: this table is wider than a phone
+     * viewport by construction. It gets its own horizontal scrollbar so the
+     * page around it stays put. */
+    <div className="table-scroll">
+      <table className="render-table">
+        <thead>
+          <tr>
+            <th>Art</th>
+            <th>Status</th>
+            <th>Provider</th>
+            <th>Source</th>
+            <th>Fingerprint</th>
+            <th>Badge fingerprint</th>
+            <th>Upload</th>
+            <th>Rendered</th>
+            <th>Uploaded</th>
+          </tr>
+        </thead>
+        <tbody>
+          {renders.map((render) => (
+            <Fragment key={render.art_kind}>
               <tr>
-                <td colSpan={9}>
-                  <p className={note.failed ? "render-error" : "render-note"}>
-                    {note.message}
-                  </p>
+                <td>{render.art_kind}</td>
+                <td>{render.status}</td>
+                <td>
+                  <Provider
+                    render={render}
+                    // Every button, not only this one: the endpoint moves a file
+                    // and is not idempotent, so two clears in flight at once is
+                    // not a state worth being able to reach.
+                    busy={clearing !== null}
+                    onClear={onClear}
+                  />
                 </td>
+                <td>
+                  <Source render={render} />
+                </td>
+                <td>
+                  <Fingerprint value={render.fingerprint} />
+                </td>
+                <td>
+                  <Fingerprint value={render.badge_fingerprint} />
+                </td>
+                <td>{render.upload_status}</td>
+                <td className="muted cell-time">{formatTime(render.rendered_at)}</td>
+                <td className="muted cell-time">{formatTime(render.uploaded_at)}</td>
               </tr>
-            )}
-          </Fragment>
-        ))}
-      </tbody>
-    </table>
+              {note !== null && note.artKind === render.art_kind && (
+                <tr>
+                  <td colSpan={9}>
+                    <p className={note.failed ? "render-error" : "render-note"}>
+                      {note.message}
+                    </p>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

@@ -183,53 +183,60 @@ export function Dashboard() {
           {status.scheduled_jobs.length === 0 ? (
             <p className="empty">Nothing scheduled.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Job</th>
-                  <th>Last run</th>
-                  <th>Result</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {status.scheduled_jobs.map((job) => (
-                  <tr key={job.name}>
-                    <td>{job.name}</td>
-                    <td className="muted">{formatTime(job.last_finished_at)}</td>
-                    <td>
-                      {job.last_status === null ? (
-                        <span className="muted">never</span>
-                      ) : (
-                        <span className={`pill pill-${job.last_status}`} title={job.last_detail ?? ""}>
-                          {job.last_status}
-                        </span>
-                      )}
-                    </td>
-                    <td className="scheduled-actions">
-                      <button
-                        type="button"
-                        // A null interval means the running scheduler has no
-                        // such job: this row survives from a configuration
-                        // that registered it. Marking it due would leave a
-                        // permanently-due row nothing ever claims.
-                        disabled={job.interval_seconds === null || runBusy === job.name}
-                        title={job.interval_seconds === null ? NOT_SCHEDULED_TITLE : undefined}
-                        onClick={() => void runNow(job.name)}
-                      >
-                        {runBusy === job.name ? "Requesting…" : "Run now"}
-                      </button>
-                      {runNotes[job.name] !== undefined && (
-                        <span className="muted">{requestedNote(runNotes[job.name])}</span>
-                      )}
-                      {runErrors[job.name] !== undefined && (
-                        <span className="row-error">{runErrors[job.name]}</span>
-                      )}
-                    </td>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Job</th>
+                    <th>Last run</th>
+                    <th>Result</th>
+                    <th />
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {status.scheduled_jobs.map((job) => (
+                    <tr key={job.name}>
+                      <td>{job.name}</td>
+                      {/* Left to wrap, the timestamp took four lines and left
+                          Run now beside it a sliver wide. */}
+                      <td className="muted cell-time">{formatTime(job.last_finished_at)}</td>
+                      <td>
+                        {job.last_status === null ? (
+                          <span className="muted">never</span>
+                        ) : (
+                          <span
+                            className={`pill pill-${job.last_status}`}
+                            title={job.last_detail ?? ""}
+                          >
+                            {job.last_status}
+                          </span>
+                        )}
+                      </td>
+                      <td className="scheduled-actions">
+                        <button
+                          type="button"
+                          // A null interval means the running scheduler has no
+                          // such job: this row survives from a configuration
+                          // that registered it. Marking it due would leave a
+                          // permanently-due row nothing ever claims.
+                          disabled={job.interval_seconds === null || runBusy === job.name}
+                          title={job.interval_seconds === null ? NOT_SCHEDULED_TITLE : undefined}
+                          onClick={() => void runNow(job.name)}
+                        >
+                          {runBusy === job.name ? "Requesting…" : "Run now"}
+                        </button>
+                        {runNotes[job.name] !== undefined && (
+                          <span className="muted">{requestedNote(runNotes[job.name])}</span>
+                        )}
+                        {runErrors[job.name] !== undefined && (
+                          <span className="row-error">{runErrors[job.name]}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
 
@@ -238,28 +245,30 @@ export function Dashboard() {
           {events.length === 0 ? (
             <p className="empty">No events yet.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>When</th>
-                  <th>Source</th>
-                  <th>Event</th>
-                  <th>Outcome</th>
-                </tr>
-              </thead>
-              <tbody>
-                {events.map((event, index) => (
-                  <tr key={`${event.received_at}-${index}`}>
-                    <td className="muted">{formatTime(event.received_at)}</td>
-                    <td>{event.source}</td>
-                    <td>{event.event_type}</td>
-                    <td>
-                      <span className={`pill pill-${event.outcome}`}>{event.outcome}</span>
-                    </td>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Source</th>
+                    <th>Event</th>
+                    <th>Outcome</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {events.map((event, index) => (
+                    <tr key={`${event.received_at}-${index}`}>
+                      <td className="muted cell-time">{formatTime(event.received_at)}</td>
+                      <td>{event.source}</td>
+                      <td>{event.event_type}</td>
+                      <td>
+                        <span className={`pill pill-${event.outcome}`}>{event.outcome}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
       </div>

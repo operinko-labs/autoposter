@@ -236,37 +236,41 @@ export function Collections() {
         ) : collections.length === 0 ? (
           <p className="empty">No managed collections yet.</p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Library</th>
-                <th>Kind</th>
-                <th>Members</th>
-                <th>Last diff</th>
-              </tr>
-            </thead>
-            <tbody>
-              {collections.map((collection) => {
-                const diff = diffLabel(collection);
-                return (
-                  <tr key={collection.id}>
-                    <td>{collection.title}</td>
-                    <td className="muted">{collection.library}</td>
-                    <td>{collection.kind}</td>
-                    <td>{collection.member_count ?? "—"}</td>
-                    <td>
-                      {diff === null ? (
-                        "—"
-                      ) : (
-                        <span title={formatTime(collection.last_reconciled_at)}>{diff}</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Title</th>
+                  <th>Library</th>
+                  <th>Kind</th>
+                  <th>Members</th>
+                  <th>Last diff</th>
+                </tr>
+              </thead>
+              <tbody>
+                {collections.map((collection) => {
+                  const diff = diffLabel(collection);
+                  return (
+                    <tr key={collection.id}>
+                      {/* Against four rigid columns the title was the only one
+                          that could give, so it collapsed to a word a line. */}
+                      <td className="cell-title">{collection.title}</td>
+                      <td className="muted">{collection.library}</td>
+                      <td>{collection.kind}</td>
+                      <td>{collection.member_count ?? "—"}</td>
+                      <td>
+                        {diff === null ? (
+                          "—"
+                        ) : (
+                          <span title={formatTime(collection.last_reconciled_at)}>{diff}</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </>
