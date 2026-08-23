@@ -3,6 +3,7 @@ from datetime import datetime, date
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -332,6 +333,14 @@ class ConfigOverride(Base):
     """
 
     __tablename__ = "config_overrides"
+    # "A single row, pinned to id=1" enforced rather than merely documented.
+    # Every reader selects id=1 and the writer upserts id=1, so a second row
+    # would not be read by anything -- it would sit in the table looking like
+    # configuration that is in force while having no effect whatsoever, which
+    # is the most expensive kind of wrong a config store can be.
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_config_overrides_single_row"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     document: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

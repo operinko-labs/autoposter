@@ -15,6 +15,7 @@ from autoposter.api.dashboard_stream import StatusBroadcaster
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
 from autoposter.config.holder import ConfigHolder
+from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.schema import Config, Secrets
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
@@ -217,6 +218,12 @@ def create_app(
     # object the holder now holds. The two are never allowed to diverge.
     app.state.config_holder = ConfigHolder(config)
     app.state.config = config
+    # The *file* the config was loaded from, which the config editor needs and
+    # a loaded Config cannot tell it: an override is a delta over that
+    # document, so reverting one means re-reading it. Published here so every
+    # application has it; a test whose app was built from a different file
+    # rebinds this to that file.
+    app.state.config_path = DEFAULT_CONFIG_PATH
     app.state.session_factory = session_factory
     app.state.secrets = secrets
     # Per process, so every worker pod limits its own callers -- see

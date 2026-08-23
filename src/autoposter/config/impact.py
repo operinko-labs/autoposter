@@ -1,0 +1,281 @@
+"""How much of the library a config edit would re-render, computed offline.
+
+The editor's whole promise is that an operator can see "this change would
+re-render ~N items" *before* committing to it. That answer is a pure read: it
+walks the stored ``renders`` rows, recomputes each one's fingerprint under a
+candidate ``Config``, and counts the ones that no longer match. Nothing is
+written, nothing is enqueued, no provider is contacted and no image is touched
+-- the preview endpoint hands this function a session it never flushes.
+
+**The approximation, stated plainly.** Two of the inputs to a real
+fingerprint are facts only the render itself knows: whether a clearlogo
+replaced the title text, and which logo it was. ``gather_fingerprint_inputs``
+takes them as ``draw_text``/``logo_sha`` and defaults them to the adoption
+case -- ``draw_text=True, logo_sha=""`` (render/pipeline.py:161-163) -- and
+this module uses exactly those defaults, because it has no more information
+than the adoption walk does. The consequence is honest and one-directional: a
+poster whose real render composited a logo will not match the recomputed
+value, so it is reported as affected *whatever the edit was*. That is an
+overcount, never an undercount, of the text and version changes the operator
+is actually asking about. The UI must therefore say "~N", not "N".
+"""
+import asyncio
+import hashlib
+from dataclasses import dataclass
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from autoposter.config.schema import Config
+from autoposter.db.models import MediaItem, Render
+from autoposter.intake.arr import RenderIntent
+from autoposter.plex.client import ResolvedItem
+from autoposter.render.pipeline import (
+    _should_skip_title,
+    art_config_for,
+    compute_fingerprint,
+    title_text_for,
+)
+
+# The art kinds ArtworkConfig actually carries a section for. A renders row
+# holding anything else -- a kind removed from ART_KINDS_FOR, a hand-written
+# row -- is skipped rather than crashing the preview on getattr.
+_ART_KINDS = frozenset({"poster", "season_poster", "background", "title_card"})
+
+
+@dataclass(frozen=True)
+class Impact:
+    """What a candidate config would cost, in rows.
+
+    ``of_total`` is the comparable population, not every row in the table: it
+    counts the rows this walk actually examined. Rows excluded from both
+    numbers are the ones whose answer would be noise -- a render for an art
+    kind the candidate config disables, a title card the candidate config's
+    ``skip_words`` skip, and a row with no stored fingerprint at all (which is
+    going to be rendered whatever the operator does here, so attributing it to
+    this edit would be a lie).
+    """
+
+    affected: int
+    by_art_kind: dict[str, int]
+    of_total: int
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """One examined render row: its item, and whether the edit reaches it."""
+
+    art_kind: str
+    affected: bool
+    kind: str
+    title: str
+    tmdb_id: int | None
+    tvdb_id: int | None
+    imdb_id: str | None
+    year: int | None
+    season_number: int | None
+    episode_number: int | None
+
+
+def _file_sha256(path: Path) -> str:
+    """SHA-256 of a file's bytes, or ``""`` if it does not exist.
+
+    Deliberately the same sentinel as ``render.pipeline._file_sha256``: a
+    fingerprint computed here has to agree digit for digit with one the
+    pipeline computes, and a missing font must therefore contribute the same
+    empty string on both sides.
+    """
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return ""
+
+
+async def _cached_sha(cache: dict[str, str], path: Path) -> str:
+    """``_file_sha256`` memoised across the whole walk.
+
+    A 16,000-item library has at most a handful of distinct overlay and font
+    files between all of its rows, and re-reading each of them once per row is
+    the difference between a preview that answers in a moment and one that
+    reads tens of thousands of files off a possibly-NFS mount. Offloaded on a
+    miss for the same reason every other read of those roots is.
+    """
+    key = str(path)
+    if key not in cache:
+        cache[key] = await asyncio.to_thread(_file_sha256, path)
+    return cache[key]
+
+
+async def _fingerprint_inputs(
+    config: Config, item: ResolvedItem, art_kind: str, cache: dict[str, str]
+) -> tuple[list[str], list[str]]:
+    """``gather_fingerprint_inputs`` at its adoption defaults, with a hash cache.
+
+    Assembled here rather than called through, for the cache above: the
+    pipeline's version reads every file every time, which is exactly right for
+    a single render and exactly wrong for a walk over the whole library.
+
+    Two implementations of one hash are the divergence risk this project's
+    pipeline docstring warns about, so ``title_text_for`` is the real one and
+    ``tests/test_config_impact.py`` pins the two against each other on real
+    fixtures -- if the pipeline's assembly changes and this one does not, that
+    test goes red rather than the preview quietly reporting nonsense.
+    """
+    settings = art_config_for(config, art_kind)
+    primary_text, secondary_text = title_text_for(art_kind, item, config)
+    text_inputs = [t for t in (primary_text, secondary_text) if t]
+
+    overlay_hash = (
+        await _cached_sha(cache, Path(config.overlays_root) / settings.overlay_file)
+        if settings.add_overlay
+        else ""
+    )
+    font_hashes = []
+    if settings.text is not None and primary_text:
+        font_hashes.append(
+            await _cached_sha(cache, Path(config.fonts_root) / settings.text.font)
+        )
+    if art_kind == "title_card" and settings.episode_text is not None and secondary_text:
+        font_hashes.append(
+            await _cached_sha(cache, Path(config.fonts_root) / settings.episode_text.font)
+        )
+    # The trailing "" is logo_sha: see this module's docstring, and
+    # render/pipeline.py:161-163 for where that default comes from.
+    return text_inputs, [overlay_hash, *font_hashes, ""]
+
+
+async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
+    """Every render row this config has an opinion about, and its verdict.
+
+    Read-only by construction: explicit columns rather than ORM entities, so
+    nothing enters the session's identity map and there is nothing for a later
+    autoflush to write back.
+    """
+    rows = (
+        await session.execute(
+            select(
+                Render.art_kind,
+                Render.source_url,
+                Render.base_sha256,
+                Render.fingerprint,
+                MediaItem.library,
+                MediaItem.kind,
+                MediaItem.title,
+                MediaItem.year,
+                MediaItem.root_folder,
+                MediaItem.season_number,
+                MediaItem.episode_number,
+                MediaItem.tmdb_id,
+                MediaItem.tvdb_id,
+                MediaItem.imdb_id,
+            )
+            .join(MediaItem, Render.item_id == MediaItem.id)
+            .where(Render.fingerprint.is_not(None))
+            .order_by(Render.id)
+        )
+    ).all()
+
+    cache: dict[str, str] = {}
+    candidates: list[_Candidate] = []
+    for row in rows:
+        art_kind = row.art_kind
+        if art_kind not in _ART_KINDS:
+            continue
+        settings = art_config_for(config, art_kind)
+        # The same two short-circuits render_artifact takes before it
+        # fingerprints anything (render/pipeline.py:314-324). Without them a
+        # disabled art kind or a TBA title card counts as work the run would
+        # never actually do.
+        if not settings.enabled:
+            continue
+        item = ResolvedItem(
+            rating_key="",
+            library=row.library,
+            kind=row.kind,
+            title=row.title,
+            year=row.year,
+            season_number=row.season_number,
+            episode_number=row.episode_number,
+            root_folder=row.root_folder or "",
+            file_path=None,
+            art_url=None,
+            tmdb_id=row.tmdb_id,
+            tvdb_id=row.tvdb_id,
+            imdb_id=row.imdb_id,
+        )
+        if _should_skip_title(config, item, art_kind):
+            continue
+
+        text_inputs, asset_hashes = await _fingerprint_inputs(config, item, art_kind, cache)
+        # source_url and base_sha256 come off the stored row rather than being
+        # guessed: they are facts about the image already on disk, and an
+        # adopted row's null source_url reproduces adopted_fingerprint's
+        # dropped-URL comparison exactly.
+        candidate = compute_fingerprint(
+            config.version, art_kind, row.source_url, row.base_sha256,
+            text_inputs, asset_hashes,
+        )
+        candidates.append(
+            _Candidate(
+                art_kind=art_kind,
+                affected=candidate != row.fingerprint,
+                kind=row.kind,
+                title=row.title,
+                tmdb_id=row.tmdb_id,
+                tvdb_id=row.tvdb_id,
+                imdb_id=row.imdb_id,
+                year=row.year,
+                season_number=row.season_number,
+                episode_number=row.episode_number,
+            )
+        )
+    return candidates
+
+
+async def count_affected(session: AsyncSession, new_config: Config) -> Impact:
+    """How many stored renders ``new_config`` would invalidate.
+
+    See the module docstring for the one approximation this makes and which
+    way it errs. Purely a read: the session is never flushed and no row is
+    loaded into it.
+    """
+    candidates = await _walk(session, new_config)
+    by_art_kind: dict[str, int] = {}
+    affected = 0
+    for candidate in candidates:
+        if not candidate.affected:
+            continue
+        affected += 1
+        by_art_kind[candidate.art_kind] = by_art_kind.get(candidate.art_kind, 0) + 1
+    return Impact(affected=affected, by_art_kind=by_art_kind, of_total=len(candidates))
+
+
+async def affected_items(session: AsyncSession, new_config: Config) -> list[RenderIntent]:
+    """The distinct items behind ``count_affected``'s number, as render intents.
+
+    Distinct, because one item carries several renders (a movie has a poster
+    and a background) and ``process_item`` rebuilds every art kind for the
+    intent it is given -- enqueueing per render row would queue the same work
+    twice and have the queue's dedupe silently absorb it.
+    """
+    seen: set[str] = set()
+    intents: list[RenderIntent] = []
+    for candidate in await _walk(session, new_config):
+        if not candidate.affected:
+            continue
+        intent = RenderIntent(
+            kind=candidate.kind,
+            title=candidate.title,
+            tmdb_id=candidate.tmdb_id,
+            tvdb_id=candidate.tvdb_id,
+            imdb_id=candidate.imdb_id,
+            year=candidate.year,
+            season_number=candidate.season_number,
+            episode_number=candidate.episode_number,
+        )
+        if intent.dedupe_key in seen:
+            continue
+        seen.add(intent.dedupe_key)
+        intents.append(intent)
+    return intents

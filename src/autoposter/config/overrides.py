@@ -7,7 +7,9 @@ over the file every time a ``Config`` is built. The file keeps owning the
 defaults; the database owns the deltas.
 """
 from pathlib import Path
+from typing import get_args
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +68,73 @@ def _merge(base: dict, overrides: dict) -> dict:
     return merged
 
 
+def _model_for(annotation) -> type[BaseModel] | None:
+    """The pydantic model behind a field annotation, if there is one.
+
+    Unwraps unions so ``text: TextStyle | None`` is recognised as a nested
+    model rather than an opaque scalar -- ``artwork.poster.text.font_size``
+    (which does not exist) has to be reportable at full depth, and a walk that
+    stopped at optional sub-models would wave through every typo beneath one.
+    """
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    for arg in get_args(annotation):
+        model = _model_for(arg)
+        if model is not None:
+            return model
+    return None
+
+
+def unknown_key_paths(document: dict, model: type[BaseModel] = Config, path: str = "") -> list[str]:
+    """Dotted paths in ``document`` that no field of the config schema matches.
+
+    Pydantic ignores unknown keys, so without this a typo'd override is stored,
+    merged, validated and applied -- and does nothing, silently, with the
+    default still in force. That is the exact failure
+    ``tests/test_example_config_matches_schema.py`` exists to catch in the
+    YAML file; this is the same check for the write path, at full depth rather
+    than one level.
+
+    The schema is *not* switched to ``extra="forbid"`` to get this. The file
+    loader validates the same model, and a deployment whose mounted YAML has
+    picked up a stray key would then fail to boot rather than ignoring it --
+    a much worse failure than the one being fixed, and not this endpoint's
+    call to make.
+
+    A dict under a field that is not a nested model is left alone: that is a
+    type error, and pydantic's own message for it is better than anything this
+    walk could say.
+    """
+    unknown: list[str] = []
+    for key, value in document.items():
+        where = f"{path}.{key}" if path else str(key)
+        field = model.model_fields.get(key)
+        if field is None:
+            unknown.append(where)
+            continue
+        nested = _model_for(field.annotation)
+        if nested is not None and isinstance(value, dict):
+            unknown.extend(unknown_key_paths(value, nested, where))
+    return unknown
+
+
+def document_paths(document: dict, path: str = "") -> list[str]:
+    """Every dotted leaf path the overrides document sets.
+
+    What the editor renders as "overridden" beside a value. A nested mapping
+    is walked rather than reported, because ``artwork`` being present says
+    nothing; ``artwork.title_card.season_label`` is the claim an operator made.
+    """
+    paths: list[str] = []
+    for key, value in document.items():
+        where = f"{path}.{key}" if path else str(key)
+        if isinstance(value, dict) and value:
+            paths.extend(document_paths(value, where))
+        else:
+            paths.append(where)
+    return paths
+
+
 async def load_overrides_document(session: AsyncSession) -> dict:
     """The stored overrides document, or ``{}`` when there is no row.
 
@@ -78,6 +147,17 @@ async def load_overrides_document(session: AsyncSession) -> dict:
     )
     if row is None or not row.document:
         return {}
+    if not isinstance(row.document, dict):
+        # Only ``PUT /api/config/overrides`` ever writes this column and it
+        # only ever writes an object, so this is unreachable through the
+        # application -- but JSONB will hold a list or a bare scalar quite
+        # happily if someone edits the row by hand, and the merge would then
+        # fail with an AttributeError from three frames down. Say what is
+        # actually wrong instead.
+        raise ValueError(
+            "the config_overrides document must be a JSON object, not "
+            f"{type(row.document).__name__}"
+        )
     return row.document
 
 

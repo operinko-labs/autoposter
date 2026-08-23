@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from autoposter import main as main_module
 from autoposter.adopt import __main__ as adopt_main
@@ -259,3 +261,33 @@ def test_secrets_still_come_from_the_environment(monkeypatch):
     for name, value in SECRET_ENV.items():
         monkeypatch.setenv(name, value)
     assert Secrets.from_env().plex_token == "token"
+
+
+# --- the store's own invariants ----------------------------------------------
+
+
+async def test_a_second_overrides_row_is_refused_by_the_database(session):
+    """One row, pinned to id=1, enforced rather than merely documented.
+
+    Every reader selects id=1 and the writer upserts id=1, so a second row
+    would sit in the table looking like configuration that is in force while
+    having no effect at all -- the most expensive kind of wrong a config store
+    can be.
+    """
+    await _store(session, {"workers": 2})
+    session.add(ConfigOverride(id=2, document={"workers": 3}))
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+async def test_a_non_dict_document_fails_with_a_clear_error(session):
+    """Unreachable through the API, which only ever writes an object -- but
+    JSONB will hold a list quite happily if the row is edited by hand, and the
+    merge would otherwise fail with an AttributeError three frames down."""
+    await session.execute(
+        text("INSERT INTO config_overrides (id, document) VALUES (1, '[1, 2, 3]'::jsonb)")
+    )
+    await session.commit()
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        await load_overrides_document(session)

@@ -1,10 +1,18 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import yaml
 
 from autoposter.config.schema import Config
+
+# Where the YAML lives, for the code that needs the *file* rather than the
+# loaded object: the config editor merges its overrides onto that document, so
+# it has to know which document. Defined here, next to the reader, because
+# three entry points (`main`, and both CLIs) already spell this out
+# individually and a fourth copy in the API layer would be one too many.
+DEFAULT_CONFIG_PATH = Path(os.environ.get("AUTOPOSTER_CONFIG", "/config/autoposter.yaml"))
 
 
 def render_version(config: Config) -> str:

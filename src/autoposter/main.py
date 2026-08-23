@@ -1,7 +1,5 @@
 import asyncio
 import logging
-import os
-from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -9,12 +7,16 @@ from plexapi.server import PlexServer
 
 from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.app import create_app
+from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Config, Secrets
 from autoposter.db.base import make_engine, make_session_factory
 from autoposter.plex.client import PlexClient
 
-CONFIG_PATH = Path(os.environ.get("AUTOPOSTER_CONFIG", "/config/autoposter.yaml"))
+# One definition, shared with create_app (which publishes it as
+# app.state.config_path for the config editor). Kept under this name because
+# the suite monkeypatches main.CONFIG_PATH to point at the example config.
+CONFIG_PATH = DEFAULT_CONFIG_PATH
 
 logger = logging.getLogger(__name__)
 

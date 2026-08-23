@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
@@ -24,7 +24,20 @@ from autoposter.api.auth import (
     session_for_token,
     verify_password,
 )
+from autoposter.config.impact import affected_items, count_affected
+from autoposter.config.live import FROZEN_SECTIONS, frozen_reason, swap_config
+from autoposter.config.loader import build_config, read_config_document
+from autoposter.config.overrides import (
+    OVERRIDES_ROW_ID,
+    document_paths,
+    load_overrides_document,
+    merge_overrides,
+    unknown_key_paths,
+)
+from autoposter.config.schema import Config
 from autoposter.db.models import (
+    ConfigOverride,
+    EventLog,
     ItemFacts,
     Job,
     ManagedCollection,
@@ -781,6 +794,14 @@ async def get_config(
     operator over HTTP carries the host only (the ``_record_failure``
     stance in notify/dispatch.py). It is reduced to its host here; the full
     URL stays in the config file the operator already owns.
+
+    Carries two things the editor needs beyond the values themselves.
+    ``overridden_paths`` is the provenance: which of these values come from
+    the database overrides rather than the mounted YAML, so the UI can mark
+    them and offer "revert to base". ``frozen_paths`` maps each restart-only
+    path to the reason a live swap cannot reach it (see config/live.py) --
+    sent as data so the editor can flag a field without duplicating this
+    project's startup wiring in TypeScript.
     """
     config = request.app.state.config
     secrets = request.app.state.secrets
@@ -792,4 +813,228 @@ async def get_config(
             host = ""
         body["notifications"]["url"] = host
     body["secrets"] = {field: _REDACTED for field in secrets.model_dump()}
+    async with request.app.state.session_factory() as session:
+        document = await load_overrides_document(session)
+    body["overridden_paths"] = sorted(document_paths(document))
+    body["frozen_paths"] = dict(FROZEN_SECTIONS)
     return body
+
+
+class OverridesBody(BaseModel):
+    """The whole overrides document, always sent whole.
+
+    Not a patch: the document *is* the operator's complete set of deltas, and
+    "revert this field to the file's value" is expressed by the key being
+    absent from it. A patch shape would need an out-of-band way to say
+    "delete", and the obvious candidate -- sending ``null`` -- already means
+    something else (see ``_validated_generation``).
+    """
+
+    document: dict = Field(default_factory=dict)
+
+
+def _error(path: str, message: str) -> dict:
+    return {"path": path, "message": message}
+
+
+def _dotted(loc: tuple) -> str:
+    """A pydantic error location as a dotted config path."""
+    return ".".join(str(part) for part in loc)
+
+
+def _changed_paths(before: dict, after: dict, prefix: str = "") -> list[str]:
+    """Dotted paths whose value differs between two config dumps.
+
+    Both directions: a key the candidate config no longer overrides has still
+    changed, because reverting to the file's value is a change like any other.
+    """
+    changed: list[str] = []
+    for key in set(before) | set(after):
+        where = f"{prefix}.{key}" if prefix else str(key)
+        old, new = before.get(key), after.get(key)
+        if isinstance(old, dict) and isinstance(new, dict):
+            changed.extend(_changed_paths(old, new, where))
+        elif old != new:
+            changed.append(where)
+    return changed
+
+
+def _restart_required(before: Config, after: Config) -> list[str]:
+    """Which of the changed paths a generation swap does not reach."""
+    changed = _changed_paths(before.model_dump(mode="json"), after.model_dump(mode="json"))
+    return sorted(path for path in changed if frozen_reason(path) is not None)
+
+
+def _render_affecting(before: Config, after: Config) -> bool:
+    """Whether an impact count could possibly differ from "nothing".
+
+    The cheap short-circuit the preview needs, and it has to be exact in one
+    direction: the impact walk approximates two render-time facts it cannot
+    know (config/impact.py's docstring), so running it against an edit that
+    changes nothing about rendering would report a non-zero count made
+    entirely of that approximation. An operator retuning ``scheduler`` cadences
+    must see "no re-renders", not "~40 items".
+
+    Enumerated rather than guessed. The walk reads exactly two things off the
+    config: ``version`` -- which by construction covers ``artwork``, the asset
+    roots and ``library_folders`` (config/loader.py's ``render_version``) --
+    and ``skip_tba``, which gates title cards and is deliberately *not* in the
+    version. Nothing else it touches can move without one of those moving.
+    """
+    return after.version != before.version or after.skip_tba != before.skip_tba
+
+
+async def _validated_generation(request: Request, document: dict) -> Config:
+    """Build the config generation ``document`` describes, or raise 422.
+
+    Nothing here persists, swaps or enqueues anything: every failure mode is
+    reached before the first write, which is what "never half-apply" means in
+    practice. The callers below rely on that ordering, and a test reorders it
+    to prove they do.
+
+    ``null`` is a value, not an eraser. Writing ``{"workers": null}`` asks for
+    a config whose ``workers`` is null, which fails validation and comes back
+    as a 422 -- it does not "unset" the override. Reverting a setting to the
+    mounted file's value is expressed by leaving the key out of the document
+    entirely; the document is always sent whole, so an absent key is
+    unambiguous. Both halves are pinned by tests.
+    """
+    unknown = unknown_key_paths(document)
+    if unknown:
+        # Ahead of pydantic on purpose: pydantic ignores unknown keys, so
+        # without this a typo is stored, merged, validated clean and silently
+        # does nothing for as long as the operator believes it took effect.
+        raise HTTPException(
+            status_code=422,
+            detail=[_error(path, "unknown setting") for path in sorted(unknown)],
+        )
+
+    base = read_config_document(request.app.state.config_path)
+    try:
+        merged = merge_overrides(base, document)
+    except ValueError as exc:  # a `secrets` key anywhere in the document
+        raise HTTPException(status_code=422, detail=[_error("secrets", str(exc))]) from exc
+    try:
+        return build_config(merged)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=[_error(_dotted(e["loc"]), e["msg"]) for e in exc.errors()],
+        ) from exc
+
+
+async def _persist_and_swap(request: Request, document: dict, after: Config) -> dict:
+    """Store the document, swap the running generation, log the event.
+
+    Only ever called with an ``after`` that ``_validated_generation`` already
+    built, so by the time anything is written the config is known to be whole.
+    ``swap_config`` is three assignments and a dict refresh with no I/O, so it
+    cannot fail after the row is committed either.
+    """
+    before = request.app.state.config
+    async with request.app.state.session_factory() as session:
+        stmt = insert(ConfigOverride).values(id=OVERRIDES_ROW_ID, document=document)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["id"], set_={"document": document, "updated_at": func.now()}
+        )
+        await session.execute(stmt)
+        session.add(
+            EventLog(
+                source="config",
+                event_type="overrides_updated",
+                # Versions, never the document. The overrides carry no secrets
+                # (merge_overrides refuses a `secrets` key outright), but an
+                # audit row is read casually and copied into tickets, and the
+                # settings an operator changes are not this table's business.
+                payload={"version_before": before.version, "version_after": after.version},
+                outcome=f"version {before.version} -> {after.version}",
+            )
+        )
+        await session.commit()
+
+    restart_required = _restart_required(before, after)
+    swap_config(request.app, after)
+    return {
+        "version_before": before.version,
+        "version_after": after.version,
+        "restart_required": restart_required,
+    }
+
+
+@router.put("/config/overrides")
+async def put_config_overrides(
+    body: OverridesBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Save the overrides document and hot-swap the running configuration.
+
+    This is also the "regenerate later" arm: nothing is enqueued, and the
+    scheduled drift sweep and the full-pass button both pick the new
+    fingerprints up on their own. ``POST /api/config/apply`` is this plus an
+    immediate enqueue.
+
+    An invalid document changes nothing at all -- no row, no swap, no event --
+    and comes back as a 422 listing ``{path, message}`` per problem.
+    """
+    after = await _validated_generation(request, body.document)
+    return await _persist_and_swap(request, body.document, after)
+
+
+@router.post("/config/preview")
+async def preview_config_overrides(
+    body: OverridesBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """What saving this document would do, without doing any of it.
+
+    Validates exactly as the save does (same 422 shape, same never-half-apply
+    ordering -- there is simply nothing after the validation to half-apply),
+    then counts the stored renders the candidate config would invalidate.
+
+    ``impact`` is null when the edit cannot change a rendered image: the count
+    is an approximation (config/impact.py) and reporting its noise for a
+    scheduler tweak would be worse than reporting nothing. When it is not
+    null, it is an over-estimate by construction -- render it with a "~".
+    """
+    before = request.app.state.config
+    after = await _validated_generation(request, body.document)
+    impact = None
+    if _render_affecting(before, after):
+        async with request.app.state.session_factory() as session:
+            impact = asdict(await count_affected(session, after))
+    return {
+        "version_before": before.version,
+        "version_after": after.version,
+        "restart_required": _restart_required(before, after),
+        "impact": impact,
+    }
+
+
+@router.post("/config/apply")
+async def apply_config_overrides(
+    body: OverridesBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Save, swap, and re-render the affected items now.
+
+    The apply-now arm of the same save: identical validation and persistence
+    (``_persist_and_swap``), then one ``process_item`` job per *item* behind
+    the affected renders. Enqueued through ``enqueue_batch``, so the same
+    pending-dedupe arbiter the full-pass button uses applies -- an item with a
+    pass already queued is reported as ``skipped`` rather than queued twice.
+
+    An edit that cannot change a rendered image queues nothing, for the reason
+    the preview reports null impact for it.
+    """
+    after = await _validated_generation(request, body.document)
+    before = request.app.state.config
+    saved = await _persist_and_swap(request, body.document, after)
+
+    entries: list[tuple[dict, str]] = []
+    if _render_affecting(before, after):
+        async with request.app.state.session_factory() as session:
+            entries = [
+                (asdict(intent), intent.dedupe_key)
+                for intent in await affected_items(session, after)
+            ]
+            queued = await enqueue_batch(session, "process_item", entries)
+    else:
+        queued = 0
+    return {**saved, "queued": queued, "skipped": len(entries) - queued}
