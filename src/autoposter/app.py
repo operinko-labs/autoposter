@@ -14,6 +14,7 @@ from autoposter.api.auth import LoginRateLimiter
 from autoposter.api.dashboard_stream import StatusBroadcaster
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
+from autoposter.config.holder import ConfigHolder
 from autoposter.config.schema import Config, Secrets
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
@@ -110,8 +111,13 @@ def create_app(
             base_url=config.plex.url,
             headers={"X-Plex-Token": secrets.plex_token},
         )
+        # config_holder, never the Config: this partial lives for the life of
+        # the process, so a closured instance would pin every worker to the
+        # generation that was current at boot. Handing it the holder makes
+        # everything process_item reads per item -- badges.*, artwork.*, the
+        # asset roots, operations.* -- live in one move. See _handle_intent.
         handler = functools.partial(
-            _handle_intent, config=config, http=http,
+            _handle_intent, config_holder=app.state.config_holder, http=http,
             plex=app.state.plex, providers=app.state.providers,
             tmdb_facts=app.state.tmdb_facts, mdblist=app.state.mdblist,
             artwork_probe=artwork_probe,
@@ -132,15 +138,25 @@ def create_app(
         # scheduler around one job.
         imdb_task = asyncio.create_task(imdb_refresh.run(stop_event))
 
+        # The job *set* is decided once, here, from the boot config: a swap
+        # cannot register or drop a job, which is what puts scheduler.enabled
+        # and the two per-job enabled flags in FROZEN_SECTIONS. Everything
+        # inside a registered job -- its cadence included -- comes off the
+        # holder per use and is live.
+        holder = app.state.config_holder
         scheduler_jobs = []
         if config.scheduler.enabled:
             server_factory = functools.partial(PlexServer, config.plex.url, secrets.plex_token)
             if config.collections.enabled:
-                scheduler_jobs.append(make_collections_job(config, server_factory, http))
-            scheduler_jobs.append(make_drift_job(config))
-            scheduler_jobs.append(make_cleanup_job(config))
+                scheduler_jobs.append(make_collections_job(holder, server_factory, http))
+            scheduler_jobs.append(make_drift_job(holder))
+            scheduler_jobs.append(make_cleanup_job(holder))
             if config.arr_sync.enabled:
-                scheduler_jobs.append(make_arr_sync_job(config, server_factory, http, secrets))
+                scheduler_jobs.append(make_arr_sync_job(holder, server_factory, http, secrets))
+        # Published so config.live.swap_config can recompute the cadences
+        # below without rebuilding the jobs -- it has no other way to reach
+        # them, and rebuilding would silently change the job set.
+        app.state.scheduler_jobs = scheduler_jobs
         # Published for GET /api/status, which has no other way to reach the
         # cadence: it is a field on the in-memory Job dataclass and is never
         # written to scheduled_runs. Built from the jobs actually registered
@@ -152,7 +168,7 @@ def create_app(
         # replacing it here would leave the stream reporting null intervals
         # forever while /api/status reported the real ones.
         app.state.scheduler_intervals.update(
-            {job.name: job.interval_seconds for job in scheduler_jobs}
+            {job.name: job.current_interval() for job in scheduler_jobs}
         )
         scheduler = Scheduler(
             session_factory, scheduler_jobs,
@@ -194,6 +210,12 @@ def create_app(
         docs_url="/docs" if docs else None,
         redoc_url="/redoc" if docs else None,
     )
+    # The generation box, built here rather than in main.build() so that every
+    # application -- the deployed one and every test's -- has one. Consumers
+    # that want liveness are handed this; the per-request readers keep reading
+    # app.state.config, which config.live.swap_config rebinds to the same
+    # object the holder now holds. The two are never allowed to diverge.
+    app.state.config_holder = ConfigHolder(config)
     app.state.config = config
     app.state.session_factory = session_factory
     app.state.secrets = secrets
@@ -230,6 +252,10 @@ def create_app(
     # the scheduler disabled -- still serves /api/status, and that handler
     # reads this. Filled by the lifespan's background branch.
     app.state.scheduler_intervals = {}
+    # The Job objects behind that mapping, so a swap can recompute the
+    # cadences. Empty and unconditionally set for the same reason as above:
+    # swap_config must work on an app whose lifespan never ran.
+    app.state.scheduler_jobs = []
     # Created here so /api/dashboard/stream always has one to subscribe to --
     # the log_buffer precedent above. No lifespan work: the poll loop is
     # subscriber-driven and its task is created from subscribe(), which runs
@@ -237,7 +263,7 @@ def create_app(
     # mapping itself so the lifespan's later fill (in place, see above) is
     # visible to it.
     app.state.dashboard_broadcaster = StatusBroadcaster(
-        session_factory, config, app.state.scheduler_intervals
+        session_factory, app.state.config_holder, app.state.scheduler_intervals
     )
     app.include_router(router)
     app.include_router(api_router)
@@ -294,9 +320,14 @@ def _build_mdblist(
 
 
 async def _handle_intent(
-    session, intent, *, config, http, plex, providers, tmdb_facts=None, mdblist=None,
+    session, intent, *, config_holder, http, plex, providers, tmdb_facts=None, mdblist=None,
     artwork_probe=None,
 ):
+    # Dereferenced once per job, at the top: process_item takes a config per
+    # call already, so one read here is all it takes for a config swap to be
+    # visible to the very next item a worker picks up. One read rather than
+    # several also means a single job never straddles two generations.
+    config = config_holder.current
     try:
         await process_item(
             session, config, http, plex, providers, intent,

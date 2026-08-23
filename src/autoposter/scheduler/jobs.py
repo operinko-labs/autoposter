@@ -27,7 +27,8 @@ from autoposter.arr.sync import (
     sync_section,
 )
 from autoposter.collections.service import reconcile_libraries
-from autoposter.config.schema import Config, RadarrConfig, Secrets, SonarrConfig
+from autoposter.config.holder import ConfigHolder
+from autoposter.config.schema import RadarrConfig, Secrets, SonarrConfig
 from autoposter.db.models import ItemFacts, MediaItem, Render
 from autoposter.intake.arr import RenderIntent
 from autoposter.queue.jobs import enqueue
@@ -37,9 +38,17 @@ logger = logging.getLogger(__name__)
 
 
 def make_collections_job(
-    config: Config, server_factory: Callable[[], object], http: httpx.AsyncClient
+    holder: ConfigHolder, server_factory: Callable[[], object], http: httpx.AsyncClient
 ) -> Job:
     """Build the scheduled collections-reconcile job.
+
+    The config is taken from ``holder`` per run and per cadence check, never
+    closured: an operator who edits a collections setting or this job's
+    cadence sees it honoured on the next pass rather than at the next
+    restart. The one thing a swap cannot change is whether this job exists at
+    all -- that is decided when the job set is registered, which is why
+    ``collections.enabled`` is in ``config/live.py``'s ``FROZEN_SECTIONS``
+    even though the guard below still reads it live.
 
     ``server_factory`` is a zero-argument callable returning a connected
     ``PlexServer``. Connecting is a blocking call, so it runs through
@@ -54,6 +63,7 @@ def make_collections_job(
     """
 
     async def run(session: AsyncSession) -> str:
+        config = holder.current
         if not config.collections.enabled:
             return "skipped: collections disabled"
         server = await asyncio.to_thread(server_factory)
@@ -61,7 +71,7 @@ def make_collections_job(
 
     return Job(
         name="collections_reconcile",
-        interval_seconds=config.scheduler.collections_hours * 3600,
+        interval_seconds=lambda: holder.current.scheduler.collections_hours * 3600,
         run=run,
     )
 
@@ -140,22 +150,24 @@ async def sweep_stale_facts(session: AsyncSession, max_age_days: float, batch_si
     return enqueued
 
 
-def make_drift_job(config: Config) -> Job:
+def make_drift_job(holder: ConfigHolder) -> Job:
     """Build the scheduled ratings-drift sweep job.
 
     Weekly by default -- ratings drift is not urgent, and this exists only to
     make sure every item is eventually revisited, not to catch a change
-    quickly.
+    quickly. Both the cadence and the sweep's own settings come off the holder
+    per use, so an edit to either is live.
     """
 
     async def run(session: AsyncSession) -> str:
-        max_age_days = config.scheduler.drift_max_age_days
-        count = await sweep_stale_facts(session, max_age_days, config.scheduler.drift_batch_size)
+        scheduler = holder.current.scheduler
+        max_age_days = scheduler.drift_max_age_days
+        count = await sweep_stale_facts(session, max_age_days, scheduler.drift_batch_size)
         return f"enqueued {count} item(s) with facts older than {max_age_days:g} days"
 
     return Job(
         name="ratings_drift_sweep",
-        interval_seconds=config.scheduler.drift_days * 24 * 3600,
+        interval_seconds=lambda: holder.current.scheduler.drift_days * 24 * 3600,
         run=run,
     )
 
@@ -225,7 +237,10 @@ async def _sync_one_service(
 
 
 def make_arr_sync_job(
-    config: Config, server_factory: Callable[[], object], http: httpx.AsyncClient, secrets: Secrets
+    holder: ConfigHolder,
+    server_factory: Callable[[], object],
+    http: httpx.AsyncClient,
+    secrets: Secrets,
 ) -> Job:
     """Build the scheduled Radarr/Sonarr sync and safety-net job.
 
@@ -235,6 +250,11 @@ def make_arr_sync_job(
     ``arr_sync.enabled`` -- see ``enqueue_unknown_items``). Neither service
     being configured is a clean no-op, not an error: with both disabled this
     job only runs the safety net.
+
+    Config comes off ``holder`` per run and per cadence check, so every
+    setting this pass reads -- including ``arr_sync.hours`` -- is live.
+    ``secrets`` and ``server_factory`` are not: secrets are env-only and the
+    Plex connection details are frozen at startup.
 
     ``server_factory`` is a zero-argument callable returning a connected
     ``PlexServer``, the same contract ``make_collections_job`` uses, and for
@@ -247,6 +267,7 @@ def make_arr_sync_job(
     """
 
     async def run(session: AsyncSession) -> str:
+        config = holder.current
         if not config.arr_sync.enabled:
             return "skipped: arr_sync disabled"
         server = await asyncio.to_thread(server_factory)
@@ -289,7 +310,7 @@ def make_arr_sync_job(
 
     return Job(
         name="arr_sync",
-        interval_seconds=config.arr_sync.hours * 3600,
+        interval_seconds=lambda: holder.current.arr_sync.hours * 3600,
         run=run,
     )
 
@@ -460,7 +481,7 @@ def _implausible_orphan_count(orphaned: int, scanned: int, cleanup) -> str | Non
     return None
 
 
-def make_cleanup_job(config: Config) -> Job:
+def make_cleanup_job(holder: ConfigHolder) -> Job:
     """Build the scheduled orphaned-asset cleanup job.
 
     Refuses to do anything if ``renders`` has no rows at all: an empty table
@@ -481,10 +502,14 @@ def make_cleanup_job(config: Config) -> Job:
     it as a work order.
 
     Dry run by default (``config.cleanup.apply``), the same posture as
-    ``badges.upload_to_plex`` and ``collections.apply_to_plex``.
+    ``badges.upload_to_plex`` and ``collections.apply_to_plex``. Read off the
+    holder per run, so switching the dry run off takes effect on the next
+    pass -- as does an edit to ``assets_root``, the safety caps or the
+    cadence.
     """
 
     async def run(session: AsyncSession) -> str:
+        config = holder.current
         any_render = (await session.execute(select(Render.id).limit(1))).first()
         if any_render is None:
             return (
@@ -515,6 +540,6 @@ def make_cleanup_job(config: Config) -> Job:
 
     return Job(
         name="asset_cleanup",
-        interval_seconds=config.scheduler.cleanup_days * 24 * 3600,
+        interval_seconds=lambda: holder.current.scheduler.cleanup_days * 24 * 3600,
         run=run,
     )

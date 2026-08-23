@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -6,6 +7,8 @@ import requests
 from httpx import ASGITransport, AsyncClient
 
 from autoposter.app import _build_mdblist, _build_providers, _handle_intent, create_app
+from autoposter.config.holder import ConfigHolder
+from autoposter.config.live import swap_config
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
@@ -153,7 +156,7 @@ async def test_handle_intent_tags_plex_connection_errors_with_resolve_max_attemp
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=1)
     with pytest.raises(requests.exceptions.ConnectionError) as exc_info:
         await _handle_intent(
-            None, intent, config=config, http=None, plex=None, providers=[],
+            None, intent, config_holder=ConfigHolder(config), http=None, plex=None, providers=[],
         )
 
     assert exc_info.value.max_attempts == config.plex.resolve_max_attempts
@@ -203,7 +206,7 @@ async def test_handle_intent_passes_the_artwork_probe_through_to_process_item():
         mp.setattr("autoposter.app.process_item", capture)
         await _handle_intent(
             None, RenderIntent(kind="movie", title="Dune", tmdb_id=1),
-            config=config, http=None, plex=None, providers=[], artwork_probe=probe,
+            config_holder=ConfigHolder(config), http=None, plex=None, providers=[], artwork_probe=probe,
         )
 
     assert seen["artwork_probe"] is probe
@@ -327,3 +330,51 @@ async def test_the_lifespan_fills_the_dict_the_broadcaster_holds_rather_than_reb
             "would report null intervals forever"
         )
         assert held is app.state.scheduler_intervals
+
+
+async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_processes(
+    session_factory, secrets, stubbed_background_services, monkeypatch
+):
+    """The worker handler is a partial that lives as long as the process.
+
+    Driven through the partial the *lifespan* builds, not through a
+    ``_handle_intent`` call this test constructs: what is under test is the
+    wiring in app.py -- ``config_holder=`` rather than ``config=`` -- and a
+    test that built its own partial would pass with the closured instance
+    restored. ``process_item`` already takes a config per call, so the only
+    thing between a swap and the next item is that one keyword.
+    """
+    captured = {}
+
+    async def capture_workers(count, factory, handler, stop_event, is_healthy=None):
+        captured["handler"] = handler
+        await stop_event.wait()
+
+    seen = []
+
+    async def capture_process_item(session, config, *args, **kwargs):
+        seen.append(config)
+
+    monkeypatch.setattr("autoposter.app.run_workers", capture_workers)
+    monkeypatch.setattr("autoposter.app.process_item", capture_process_item)
+
+    config = load_config(EXAMPLE)
+    app = create_app(config, session_factory, secrets, run_background=True)
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=1)
+
+    async with app.router.lifespan_context(app):
+        # run_workers is started as a task, so let it reach its first await.
+        await asyncio.sleep(0)
+        handler = captured["handler"]
+        await handler(None, intent)
+
+        swapped = config.model_copy(update={"workers": config.workers + 7})
+        swap_config(app, swapped)
+        await handler(None, intent)
+
+    assert seen[0] is config, "the first job did not see the boot generation"
+    assert seen[1] is swapped, (
+        "the second job still saw the boot generation: the handler partial "
+        "closures a Config instance rather than the holder, so nothing a "
+        "worker does can ever pick up a swap"
+    )

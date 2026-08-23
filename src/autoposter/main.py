@@ -9,7 +9,6 @@ from plexapi.server import PlexServer
 
 from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.app import create_app
-from autoposter.config.holder import ConfigHolder
 from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Config, Secrets
 from autoposter.db.base import make_engine, make_session_factory
@@ -93,13 +92,10 @@ def build() -> FastAPI:
 
     engine = make_engine(secrets.database_url)
     session_factory = make_session_factory(engine)
+    # create_app publishes app.state.config_holder from this config -- the
+    # generation the process starts on. Building the holder there rather than
+    # here is what gives every test's application one too.
     app = create_app(config, session_factory, secrets, run_background=True)
-    # The generation the running process is on. ``app.state.config`` stays the
-    # same object and is rebound on every swap, so the per-request readers that
-    # already exist need no changes; consumers that want liveness read the
-    # holder instead.
-    app.state.config_holder = ConfigHolder(config)
-
     app.state.plex = PlexClient(
         server=_LazyPlexServer(config.plex.url, secrets.plex_token),
         excluded_libraries=config.plex.excluded_libraries,

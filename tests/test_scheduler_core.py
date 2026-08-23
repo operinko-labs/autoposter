@@ -1,11 +1,15 @@
 """Scheduler bookkeeping and claiming."""
 import asyncio
 import inspect
+from pathlib import Path
 
 from sqlalchemy import select, text
 
+from autoposter.config.holder import ConfigHolder
+from autoposter.config.loader import load_config
 from autoposter.db.models import ScheduledRun
 from autoposter.scheduler.core import Job, Scheduler, claim_due
+from autoposter.scheduler.jobs import make_drift_job
 
 
 def _job(name="demo", interval=3600, run=None):
@@ -317,3 +321,55 @@ async def test_the_scheduler_holds_the_notification_task_until_it_finishes(
     stop.set()
     await task
     assert not scheduler._notify_tasks, "the done-callback must drop the reference"
+
+
+EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+
+
+async def test_a_callable_cadence_is_resolved_on_every_claim(session):
+    """``Job.interval_seconds`` may be a zero-argument callable, and
+    ``claim_due`` must call it per poll rather than once. A cadence read at
+    factory time is the whole of the bug this guards."""
+    cadence = [3600.0]
+    job = Job(name="live", interval_seconds=lambda: cadence[0], run=None)
+
+    assert await claim_due(session, job) is True
+    await session.execute(
+        text("UPDATE scheduled_runs SET last_started_at = now() - interval '30 minutes'")
+    )
+    assert await claim_due(session, job) is False
+
+    cadence[0] = 60.0
+    assert await claim_due(session, job) is True
+
+
+async def test_swapping_the_config_changes_when_a_scheduled_job_is_next_due(session):
+    """The cadence edit an operator makes in the editor, end to end through
+    the real factory: a drift sweep on the example config's 7-day cadence is
+    not due 2 days after its last run, and becomes due the moment a swap makes
+    it a daily job -- with nothing rebuilt and no restart.
+    """
+    config = load_config(EXAMPLE)
+    assert config.scheduler.drift_days == 7, "precondition: the example cadence is weekly"
+    holder = ConfigHolder(config)
+    job = make_drift_job(holder)
+
+    assert await claim_due(session, job) is True
+    await session.execute(
+        text("UPDATE scheduled_runs SET last_started_at = now() - interval '2 days'")
+    )
+    assert await claim_due(session, job) is False, (
+        "precondition: 2 days into a 7-day cadence is not due"
+    )
+
+    holder.swap(
+        config.model_copy(
+            update={"scheduler": config.scheduler.model_copy(update={"drift_days": 1})}
+        )
+    )
+
+    assert await claim_due(session, job) is True, (
+        "the job kept the cadence it was built with: make_drift_job captured "
+        "config.scheduler.drift_days instead of dereferencing the holder, so a "
+        "cadence edit needs a restart"
+    )

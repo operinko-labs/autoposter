@@ -100,13 +100,16 @@ class StatusBroadcaster:
     def __init__(
         self,
         session_factory,
-        config,
+        config_holder,
         scheduler_intervals: dict,
         interval_seconds: float = POLL_SECONDS,
         events_limit: int = EVENTS_LIMIT,
     ):
         self._session_factory = session_factory
-        self._config = config
+        # The holder, not the Config it currently holds: a config swap must
+        # reach the live stream on its next poll, the same as it reaches
+        # /api/status through app.state.config's rebind. See _build_snapshot.
+        self._config_holder = config_holder
         # The live mapping create_app publishes, not a copy: the lifespan
         # fills it in place after this object is constructed (see app.py).
         self._scheduler_intervals = scheduler_intervals
@@ -165,10 +168,16 @@ class StatusBroadcaster:
             await asyncio.sleep(self._interval_seconds)
 
     async def _build_snapshot(self) -> dict:
+        # Deref per poll. The only config value in the snapshot is ``workers``,
+        # and that one is deliberately reported from the *current* generation
+        # even though the pool itself is sized once at startup and needs a
+        # restart to change (config/live.py's FROZEN_SECTIONS says so, and the
+        # editor renders that): the dashboard and /api/status must agree, and
+        # /api/status reads app.state.config, which the swap rebinds.
         async with self._session_factory() as session:
             return {
                 "status": await status_snapshot(
-                    session, self._config, self._scheduler_intervals
+                    session, self._config_holder.current, self._scheduler_intervals
                 ),
                 "events": await events_snapshot(session, self._events_limit),
             }

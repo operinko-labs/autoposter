@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from sqlalchemy import select, text
 
+from autoposter.config.holder import ConfigHolder
 from autoposter.db.models import ItemFacts, Job, MediaItem
 from autoposter.scheduler.jobs import make_drift_job, sweep_stale_facts
 
@@ -186,7 +187,7 @@ async def test_make_drift_job_wraps_sweep_stale_facts(session):
     config = SimpleNamespace(
         scheduler=SimpleNamespace(drift_days=7, drift_max_age_days=7, drift_batch_size=500)
     )
-    job = make_drift_job(config)
+    job = make_drift_job(ConfigHolder(config))
     summary = await job.run(session)
 
     assert job.name == "ratings_drift_sweep"

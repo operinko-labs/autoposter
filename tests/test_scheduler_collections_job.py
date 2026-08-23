@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 from plexapi.exceptions import NotFound
 
+from autoposter.config.holder import ConfigHolder
 from autoposter.scheduler.jobs import make_collections_job
 
 LABEL = "autoposter"
@@ -141,7 +142,7 @@ async def test_the_job_is_skipped_entirely_when_collections_are_disabled(session
 
     config = _config(enabled=False)
     async with httpx.AsyncClient() as http:
-        job = make_collections_job(config, server_factory, http)
+        job = make_collections_job(ConfigHolder(config), server_factory, http)
         summary = await job.run(session)
 
     assert not connected, "a disabled pass must never connect to Plex"
@@ -156,7 +157,7 @@ async def test_a_successful_pass_returns_a_summary_naming_each_library(session):
     config = _config(["Movies", "TV Shows"])
 
     async with httpx.AsyncClient() as http:
-        job = make_collections_job(config, lambda: server, http)
+        job = make_collections_job(ConfigHolder(config), lambda: server, http)
         summary = await job.run(session)
 
     assert "Movies: 2 action(s)" in summary
@@ -168,7 +169,7 @@ async def test_a_failure_reconciling_one_library_does_not_prevent_the_other(sess
     config = _config(["Movies", "TV Shows"])
 
     async with httpx.AsyncClient() as http:
-        job = make_collections_job(config, lambda: server, http)
+        job = make_collections_job(ConfigHolder(config), lambda: server, http)
         summary = await job.run(session)
 
     assert "Movies: 2 action(s)" in summary
@@ -185,7 +186,7 @@ async def test_the_plex_connection_runs_off_the_event_loop(session):
 
     config = _config(["Movies"])
     async with httpx.AsyncClient() as http:
-        job = make_collections_job(config, server_factory, http)
+        job = make_collections_job(ConfigHolder(config), server_factory, http)
         await job.run(session)
 
     assert connect_thread["thread"] is not None

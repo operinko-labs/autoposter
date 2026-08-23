@@ -33,9 +33,32 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Job:
+    """One periodic pass and how often it should run.
+
+    ``interval_seconds`` is either a number or a zero-argument callable
+    returning one. The callable form is what makes a cadence edit live: the
+    factories in ``scheduler/jobs.py`` build it as a deref of the config
+    holder, so ``current_interval`` below reads the *current* generation on
+    every poll rather than the one that was current when the job was built.
+
+    A union field plus this one resolver was chosen over giving ``Job`` a
+    holder reference and a ``current_interval`` method that reads a named
+    config path: the holder form would push config knowledge into the
+    scheduler core (which today knows nothing about ``Config``), would need a
+    holder even for the jobs tests construct by hand, and could not express a
+    cadence derived from a field -- ``collections_hours * 3600`` -- without a
+    second callable anyway. The callable keeps every existing ``Job(...)``
+    construction site and every test working unchanged.
+    """
+
     name: str
-    interval_seconds: float
+    interval_seconds: float | Callable[[], float]
     run: Callable[[AsyncSession], Awaitable[str]]
+
+    def current_interval(self) -> float:
+        """This job's cadence right now, in seconds."""
+        value = self.interval_seconds
+        return float(value() if callable(value) else value)
 
 
 async def claim_due(session: AsyncSession, job: Job) -> bool:
@@ -46,7 +69,10 @@ async def claim_due(session: AsyncSession, job: Job) -> bool:
     not currently locked by another replica's in-flight claim, so a row
     another replica holds is correctly treated as "not ours" rather than
     blocking until it is released. The due check itself runs entirely in
-    SQL against the database clock, never ``datetime.now()``.
+    SQL against the database clock, never ``datetime.now()``. The cadence is
+    resolved here, per poll, rather than read off a value captured when the
+    job was built -- that is what makes a cadence edit take effect without a
+    restart (see ``Job``).
 
     Known limitation: the claim is not a lease. ``last_started_at`` is
     stamped and committed immediately, and the row lock is released with that
@@ -79,7 +105,7 @@ async def claim_due(session: AsyncSession, job: Job) -> bool:
             RETURNING id
             """
         ),
-        {"name": job.name, "seconds": float(job.interval_seconds)},
+        {"name": job.name, "seconds": job.current_interval()},
     )
     return result.first() is not None
 

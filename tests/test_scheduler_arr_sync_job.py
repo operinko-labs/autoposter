@@ -13,6 +13,7 @@ import threading
 import httpx
 from sqlalchemy import select
 
+from autoposter.config.holder import ConfigHolder
 from autoposter.config.schema import ArrSyncConfig, PlexConfig, RadarrConfig, SonarrConfig
 from autoposter.db.models import Job as QueuedJob
 from autoposter.scheduler.jobs import make_arr_sync_job
@@ -155,7 +156,7 @@ async def test_the_job_is_skipped_entirely_when_arr_sync_is_disabled(session):
 
     config = _config(arr_sync=ArrSyncConfig(enabled=False))
     async with httpx.AsyncClient(transport=Unreachable()) as http:
-        job = make_arr_sync_job(config, server_factory, http, _secrets())
+        job = make_arr_sync_job(ConfigHolder(config), server_factory, http, _secrets())
         await job.run(session)
 
     assert not connected, "a disabled arr_sync pass must never connect to Plex"
@@ -173,7 +174,7 @@ async def test_both_services_unconfigured_is_a_clean_noop_but_the_safety_net_sti
     config = _config(radarr=RadarrConfig(enabled=False), sonarr=SonarrConfig(enabled=False))
 
     async with httpx.AsyncClient(transport=Unreachable()) as http:
-        job = make_arr_sync_job(config, lambda: server, http, _secrets())
+        job = make_arr_sync_job(ConfigHolder(config), lambda: server, http, _secrets())
         summary = await job.run(session)
 
     assert "Movies: enqueued 1 unknown item(s)" in summary
@@ -201,7 +202,7 @@ async def test_a_missing_quality_profile_for_one_service_does_not_prevent_the_ot
         ),
     })
     async with httpx.AsyncClient(transport=transport) as http:
-        job = make_arr_sync_job(config, lambda: server, http, _secrets())
+        job = make_arr_sync_job(ConfigHolder(config), lambda: server, http, _secrets())
         summary = await job.run(session)
 
     assert "radarr: failed" in summary
@@ -221,7 +222,7 @@ async def test_an_excluded_library_is_skipped_entirely(session):
     )
 
     async with httpx.AsyncClient(transport=Unreachable()) as http:
-        job = make_arr_sync_job(config, lambda: server, http, _secrets())
+        job = make_arr_sync_job(ConfigHolder(config), lambda: server, http, _secrets())
         summary = await job.run(session)
 
     assert summary == "no libraries to sync"
@@ -250,7 +251,7 @@ async def test_connecting_and_listing_both_run_off_the_event_loop(session):
         ),
     })
     async with httpx.AsyncClient(transport=transport) as http:
-        job = make_arr_sync_job(config, server_factory, http, _secrets())
+        job = make_arr_sync_job(ConfigHolder(config), server_factory, http, _secrets())
         summary = await job.run(session)
 
     assert "Movies radarr: checked 1, missing 1, added 1" in summary
@@ -280,7 +281,7 @@ async def test_a_section_is_listed_exactly_once_per_pass(session):
         ),
     })
     async with httpx.AsyncClient(transport=transport) as http:
-        job = make_arr_sync_job(config, lambda: FakeServer([section]), http, _secrets())
+        job = make_arr_sync_job(ConfigHolder(config), lambda: FakeServer([section]), http, _secrets())
         summary = await job.run(session)
 
     assert section.all_calls == 1
@@ -310,7 +311,7 @@ async def test_a_service_that_reports_nothing_is_refused_and_the_safety_net_stil
 
     transport = MultiplexTransport({"radarr.example": handler})
     async with httpx.AsyncClient(transport=transport) as http:
-        job = make_arr_sync_job(config, lambda: server, http, _secrets())
+        job = make_arr_sync_job(ConfigHolder(config), lambda: server, http, _secrets())
         summary = await job.run(session)
 
     assert "Movies radarr: refused" in summary

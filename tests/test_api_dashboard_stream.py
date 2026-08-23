@@ -25,6 +25,7 @@ from autoposter.api.dashboard_stream import (
     stream_dashboard,
 )
 from autoposter.app import create_app
+from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.db.models import EventLog, Job, ScheduledRun
@@ -86,7 +87,7 @@ async def auth_headers(client):
 @pytest_asyncio.fixture
 async def broadcaster(session_factory, config):
     """A broadcaster of this test's own, polling fast, always stopped."""
-    made = StatusBroadcaster(session_factory, config, {}, interval_seconds=FAST_POLL)
+    made = StatusBroadcaster(session_factory, ConfigHolder(config), {}, interval_seconds=FAST_POLL)
     yield made
     await stop(made)
 
@@ -260,7 +261,7 @@ async def test_a_failed_poll_does_not_end_the_loop(session_factory, config, capl
         return session_factory()
 
     broadcaster = StatusBroadcaster(
-        flaky_factory, config, {}, interval_seconds=FAST_POLL
+        flaky_factory, ConfigHolder(config), {}, interval_seconds=FAST_POLL
     )
     _, queue = broadcaster.subscribe()
     with caplog.at_level(logging.WARNING):
@@ -410,7 +411,7 @@ async def test_the_broadcaster_reads_scheduler_intervals_filled_after_constructi
     session.add(ScheduledRun(name="asset_cleanup"))
     await session.commit()
     broadcaster = StatusBroadcaster(
-        session_factory, config, intervals, interval_seconds=FAST_POLL
+        session_factory, ConfigHolder(config), intervals, interval_seconds=FAST_POLL
     )
     _, queue = broadcaster.subscribe()
     first = await asyncio.wait_for(queue.get(), timeout=10)
@@ -511,3 +512,31 @@ async def test_create_app_publishes_a_broadcaster_without_starting_one(app):
     create_app has no running loop, so nothing may be scheduled here."""
     assert isinstance(app.state.dashboard_broadcaster, StatusBroadcaster)
     assert app.state.dashboard_broadcaster._task is None
+
+
+async def test_the_broadcaster_reports_the_holder_s_current_config(session_factory, config):
+    """A config swap must reach the live stream on its next poll.
+
+    ``workers`` is the only config value in the snapshot, and it is reported
+    from the current generation deliberately: /api/status reads the rebound
+    ``app.state.config`` and the two payloads are rendered by the same SPA
+    code, so a broadcaster pinned to the boot Config would make the dashboard
+    disagree with itself. The pool is still the size it was started at -- that
+    is what config/live.py's FROZEN_SECTIONS entry for ``workers`` is for.
+    """
+    holder = ConfigHolder(config)
+    broadcaster = StatusBroadcaster(session_factory, holder, {}, interval_seconds=FAST_POLL)
+    _, queue = broadcaster.subscribe()
+
+    first = await asyncio.wait_for(queue.get(), timeout=10)
+    assert first["status"]["workers"] == config.workers
+
+    holder.swap(config.model_copy(update={"workers": config.workers + 7}))
+
+    changed = await asyncio.wait_for(queue.get(), timeout=10)
+    assert changed["status"]["workers"] == config.workers + 7, (
+        "the broadcaster holds a Config instance rather than the holder, so "
+        "the live stream reports the boot generation forever"
+    )
+
+    await stop(broadcaster)

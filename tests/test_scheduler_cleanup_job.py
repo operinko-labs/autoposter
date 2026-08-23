@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
+from autoposter.config.holder import ConfigHolder
 from autoposter.db.models import MediaItem, Render
 from autoposter.scheduler import jobs
 from autoposter.scheduler.jobs import find_orphaned_assets, make_cleanup_job, move_to_backup
@@ -105,7 +106,7 @@ async def test_dry_run_moves_nothing(session, tmp_path):
     await _make_render(session, kept / "poster.jpg")
 
     config = _config(assets_root, backup_root, apply=False)
-    job = make_cleanup_job(config)
+    job = make_cleanup_job(ConfigHolder(config))
     summary = await job.run(session)
 
     assert (orphan / "poster.jpg").exists()
@@ -126,7 +127,7 @@ async def test_apply_moves_the_file_and_preserves_the_relative_path(session, tmp
     await _make_render(session, kept / "poster.jpg")
 
     config = _config(assets_root, backup_root, apply=True)
-    job = make_cleanup_job(config)
+    job = make_cleanup_job(ConfigHolder(config))
     summary = await job.run(session)
 
     assert not orphan.exists()
@@ -148,7 +149,7 @@ async def test_nothing_moves_when_renders_is_empty(session, tmp_path):
     assert (await session.execute(select(Render))).first() is None
 
     config = _config(assets_root, backup_root, apply=True)
-    job = make_cleanup_job(config)
+    job = make_cleanup_job(ConfigHolder(config))
     summary = await job.run(session)
 
     assert (everything / "poster.jpg").exists()
@@ -269,7 +270,7 @@ async def test_assets_root_itself_is_never_a_candidate(session, tmp_path):
     assert assets_root.resolve() not in scan.orphaned
 
     config = _config(assets_root, tmp_path / "backup", apply=True)
-    await make_cleanup_job(config).run(session)
+    await make_cleanup_job(ConfigHolder(config)).run(session)
 
     assert stray.exists()
     assert (kept / "poster.jpg").exists()
@@ -292,7 +293,7 @@ async def test_an_implausible_orphan_share_refuses_the_whole_pass(session, tmp_p
     await _make_render(session, elsewhere / "poster.jpg")
 
     config = _config(assets_root, tmp_path / "backup", apply=True)
-    summary = await make_cleanup_job(config).run(session)
+    summary = await make_cleanup_job(ConfigHolder(config)).run(session)
 
     assert "refus" in summary.lower()
     assert "30" in summary, "the refusal must report the real numbers: %r" % summary
@@ -315,7 +316,7 @@ async def test_an_implausible_absolute_orphan_count_refuses_the_whole_pass(sessi
         await _make_render(session, directory / "poster.jpg")
 
     config = _config(assets_root, tmp_path / "backup", apply=True, max_orphans=3)
-    summary = await make_cleanup_job(config).run(session)
+    summary = await make_cleanup_job(ConfigHolder(config)).run(session)
 
     assert "refus" in summary.lower()
     assert "4" in summary and "3" in summary
@@ -323,7 +324,7 @@ async def test_an_implausible_absolute_orphan_count_refuses_the_whole_pass(sessi
 
     # One under the cap and the same tree is worked normally.
     config = _config(assets_root, tmp_path / "backup", apply=True, max_orphans=4)
-    summary = await make_cleanup_job(config).run(session)
+    summary = await make_cleanup_job(ConfigHolder(config)).run(session)
     assert "moved 4" in summary
 
 
