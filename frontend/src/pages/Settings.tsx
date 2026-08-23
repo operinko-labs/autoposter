@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 
 import { ApiError, apiFetch } from "../api/client";
 import type {
+  ConfigApplyResponse,
+  ConfigPreviewResponse,
   ConfigResponse,
   ConfigSaveResponse,
   OverridesDocument,
@@ -38,6 +40,33 @@ const REDACTED_MARKER = "***REDACTED***";
  * The operator has to be told which of those they are about to do. */
 export const REDACTED_EDIT_NOTE =
   "The stored value is hidden and kept as it is. Typing here replaces it.";
+
+/** Why the preview's number is "~N" and not "N", quoted from the module that
+ * computes it (`src/autoposter/config/impact.py`, its docstring) rather than
+ * paraphrased. The direction of the error is the load-bearing part: an
+ * operator who reads the count as exact will read a full-library number as a
+ * catastrophe, and one who reads it as merely "roughly" will not know which
+ * way to discount it. */
+export const IMPACT_CAVEAT =
+  "The consequence is honest and one-directional: a poster whose real render " +
+  "composited a logo will not match the recomputed value, so it is reported " +
+  "as affected whatever the edit was. That is an overcount, never an " +
+  "undercount, of the text and version changes the operator is actually " +
+  "asking about.";
+
+/** What the breakdown does and does not mean.
+ *
+ * `config.version` hashes the whole artwork section (config/loader.py's
+ * `render_version`), so *any* artwork edit invalidates every fingerprinted
+ * row -- the per-kind numbers are then the shape of the library, not a set of
+ * rows the edit selected. The only thing that makes the kinds differ is a
+ * gate: a disabled art kind, or `skip_tba` skipping title cards. Saying so is
+ * the difference between a breakdown and a misleading one. */
+const IMPACT_BREAKDOWN_NOTE =
+  "The render version covers the whole artwork section, so an artwork edit " +
+  "reaches every fingerprinted row. A kind counted below is not one the edit " +
+  "singled out, and a kind missing from it was excluded by a gate — disabled, " +
+  "or skipped by rule.";
 
 /** snake_case -> "Snake case". Derived, never looked up: the config schema
  * grows every phase, and a label table would drift. */
@@ -541,6 +570,54 @@ function ConfigSections({
   );
 }
 
+/** What the preview said this document would cost.
+ *
+ * `impact: null` is not "zero items": it is the server saying the edit cannot
+ * change a rendered image at all, so the walk was never run (routes.py's
+ * `_render_affecting`). Rendering it as a count of zero would invite the
+ * operator to compare it against a real one. */
+function ImpactReport({ impact }: { impact: ConfigPreviewResponse["impact"] }) {
+  if (impact === null) {
+    return (
+      <p className="config-impact none">
+        No re-renders — this change does not affect rendered artwork.
+      </p>
+    );
+  }
+
+  // Every examined row affected is what an artwork edit always looks like, so
+  // the copy says that outright rather than presenting the number as though
+  // the edit had picked rows out of the library.
+  const wholeLibrary = impact.of_total > 0 && impact.affected === impact.of_total;
+  const count = `~${impact.affected} of ${impact.of_total} items would re-render.`;
+  const kinds = Object.entries(impact.by_art_kind);
+
+  return (
+    <div className="config-impact">
+      <p className="config-impact-count" title={IMPACT_CAVEAT}>
+        {wholeLibrary
+          ? `Any artwork change re-renders the whole library — ${count}`
+          : count}
+      </p>
+      {kinds.length > 0 && (
+        <>
+          <ul className="config-impact-kinds">
+            {kinds.map(([kind, affected]) => (
+              <li key={kind}>{`${kind}: ${affected}`}</li>
+            ))}
+          </ul>
+          <p className="muted config-impact-note">{IMPACT_BREAKDOWN_NOTE}</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Which action is in flight, if any. One value rather than three booleans:
+ * the three are mutually exclusive and every button is disabled for all of
+ * them, so two of three booleans would only ever be a way to disagree. */
+type Action = "preview" | "save" | "apply";
+
 export function Settings() {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -551,8 +628,11 @@ export function Settings() {
   const [pendingDocument, setPendingDocument] = useState<OverridesDocument>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [result, setResult] = useState<ConfigSaveResponse | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<
+    ConfigSaveResponse | ConfigApplyResponse | null
+  >(null);
+  const [preview, setPreview] = useState<ConfigPreviewResponse | null>(null);
+  const [busy, setBusy] = useState<Action | null>(null);
 
   const adopt = useCallback((response: ConfigResponse) => {
     const stored = documentFromConfig(response);
@@ -594,27 +674,65 @@ export function Settings() {
         )
       : {},
     errors,
-    setValue: (path, value) =>
-      setPendingDocument((current) => withPath(current, path, value)),
+    // A preview answers a question about one exact document, so any further
+    // edit retires it. Showing a stale count next to a changed document is
+    // worse than showing none.
+    setValue: (path, value) => {
+      setPreview(null);
+      setPendingDocument((current) => withPath(current, path, value));
+    },
     // Clearing removes the key. It never writes null -- see the document
     // helpers above.
-    clear: (path) => setPendingDocument((current) => withoutPath(current, path)),
+    clear: (path) => {
+      setPreview(null);
+      setPendingDocument((current) => withoutPath(current, path));
+    },
   };
 
   const pending = JSON.stringify(pendingDocument, null, 2);
   const dirty = pending !== JSON.stringify(savedDocument, null, 2);
 
-  async function save() {
-    setSaving(true);
+  /** The three actions, which differ only in the request they send.
+   *
+   * They share one body -- `pendingDocument`, the same object the Save arm
+   * has always sent -- so the keep sentinel travels with a preview and an
+   * apply exactly as it does with a save. Rebuilding it per action is how the
+   * three would drift apart, and the one that drifted would be the one that
+   * destroyed a push token.
+   *
+   * They also share the error handling: all three answer with the same 422
+   * body, because the server validates all three through one function.
+   */
+  async function submit(action: Action) {
+    setBusy(action);
     setErrors({});
     setSaveError(null);
-    setResult(null);
+    if (action !== "preview") setResult(null);
+    const body = JSON.stringify({ document: pendingDocument });
     try {
-      const response = await apiFetch<ConfigSaveResponse>("/api/config/overrides", {
-        method: "PUT",
-        body: JSON.stringify({ document: pendingDocument }),
-      });
+      if (action === "preview") {
+        setPreview(
+          await apiFetch<ConfigPreviewResponse>("/api/config/preview", {
+            method: "POST",
+            body,
+          }),
+        );
+        return;
+      }
+      const response =
+        action === "apply"
+          ? await apiFetch<ConfigApplyResponse>("/api/config/apply", {
+              method: "POST",
+              body,
+            })
+          : await apiFetch<ConfigSaveResponse>("/api/config/overrides", {
+              method: "PUT",
+              body,
+            });
       setResult(response);
+      // The document is stored now, so the count that described storing it has
+      // nothing left to say.
+      setPreview(null);
       // Provenance is the server's to report: which paths are overridden now
       // is a fact about what it stored, not about what was typed here.
       adopt(await apiFetch<ConfigResponse>("/api/config"));
@@ -626,7 +744,7 @@ export function Settings() {
         setSaveError((caught as Error).message);
       }
     } finally {
-      setSaving(false);
+      setBusy(null);
     }
   }
 
@@ -692,6 +810,14 @@ export function Settings() {
             <p className="config-saved">
               {`Saved. Render version ${result.version_before} → ${result.version_after}.`}
             </p>
+            {/* Only an apply reports a queue, and it reports both halves: the
+                skipped items are ones the pending-dedupe arbiter found a job
+                already waiting for, not ones that failed. */}
+            {"queued" in result && (
+              <p className="config-queued">
+                {`Queued ${result.queued} items to re-render, ${result.skipped} already queued.`}
+              </p>
+            )}
             {result.restart_required.length > 0 && (
               <p className="config-restart">
                 {`Restart required to apply: ${result.restart_required.join(", ")}`}
@@ -719,9 +845,39 @@ export function Settings() {
                 {path === "" ? message : `${path}: ${message}`}
               </p>
             ))}
-          <button type="button" onClick={() => void save()} disabled={saving}>
-            Save
-          </button>
+          {preview !== null && <ImpactReport impact={preview.impact} />}
+          {/* The two commits differ in what happens to the artwork, not in
+              what gets stored, and that is the whole of the choice being
+              offered here. */}
+          <p className="muted config-actions-note">
+            Save only stores the change and leaves the artwork alone — the
+            drift sweep and the full pass pick the new fingerprints up in their
+            own time. Apply now stores it and queues the affected items
+            straight away.
+          </p>
+          <div className="config-actions">
+            <button
+              type="button"
+              onClick={() => void submit("preview")}
+              disabled={busy !== null}
+            >
+              Preview
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit("save")}
+              disabled={busy !== null}
+            >
+              Save only
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit("apply")}
+              disabled={busy !== null}
+            >
+              Apply now
+            </button>
+          </div>
         </section>
       )}
 

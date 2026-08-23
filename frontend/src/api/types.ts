@@ -263,3 +263,38 @@ export interface ConfigSaveResponse {
   version_after: string;
   restart_required: string[];
 }
+
+/** The rows a candidate config would invalidate, as
+ * `src/autoposter/config/impact.py` counts them.
+ *
+ * `of_total` is the population the walk *examined*, not the renders table: a
+ * row for an art kind the candidate disables, a title card its skip rules
+ * skip, and a row with no stored fingerprint are excluded from both numbers.
+ * `affected` is an over-estimate by construction -- see that module's
+ * docstring -- so it renders with a "~".
+ *
+ * `by_art_kind` is not evidence that an edit picked those kinds. `config.version`
+ * hashes the whole artwork section, so any artwork edit invalidates every
+ * fingerprinted row and the breakdown is simply the shape of the library. Only
+ * a gate (a disabled kind, `skip_tba`) can make the kinds differ.
+ */
+export interface ConfigImpact {
+  affected: number;
+  by_art_kind: Record<string, number>;
+  of_total: number;
+}
+
+/** POST /api/config/preview. Persists nothing, queues nothing, swaps nothing.
+ * `impact` is null when the edit cannot change a rendered image -- which is
+ * not "zero items", it is "the question does not apply". */
+export interface ConfigPreviewResponse extends ConfigSaveResponse {
+  impact: ConfigImpact | null;
+}
+
+/** POST /api/config/apply: the PUT's own response plus what it enqueued.
+ * `skipped` counts items whose identical job was already pending -- the same
+ * dedupe arbiter the full-pass button reports through, not a failure. */
+export interface ConfigApplyResponse extends ConfigSaveResponse {
+  queued: number;
+  skipped: number;
+}

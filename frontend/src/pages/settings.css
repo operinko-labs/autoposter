@@ -185,7 +185,48 @@
   font-size: 12px;
 }
 
+.config-impact {
+  margin: 0 0 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.config-impact p {
+  margin: 0;
+}
+
+.config-impact-count {
+  /* The caveat rides on this element's title attribute, so the cursor has to
+     say there is something to hover for. */
+  cursor: help;
+}
+
+.config-impact-kinds {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.config-impact-note {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.config-actions-note {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
+.config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .config-saved,
+.config-queued,
 .config-restart {
   margin: 8px 0 0;
   font-size: 13px;

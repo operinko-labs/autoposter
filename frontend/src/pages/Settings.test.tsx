@@ -10,7 +10,12 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
-import { REDACTED_EDIT_NOTE, Settings, TMDB_NOTICE } from "./Settings";
+import {
+  IMPACT_CAVEAT,
+  REDACTED_EDIT_NOTE,
+  Settings,
+  TMDB_NOTICE,
+} from "./Settings";
 
 const REDACTED = "***REDACTED***";
 
@@ -244,7 +249,7 @@ function putDocument(fetchMock: ReturnType<typeof stubApi>): unknown {
 
 async function save() {
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save only" }));
   });
 }
 
@@ -527,7 +532,7 @@ describe("Settings editor", () => {
     // the document is still pending and still saveable.
     expect(screen.queryByText(/Saved/)).toBeNull();
     expect(within(panel).getByText(/"workers": 9/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save only" })).toBeEnabled();
   });
 });
 
@@ -633,5 +638,407 @@ describe("Settings editor, redacted values", () => {
     expect(screen.queryByLabelText("keep_sentinel")).toBeNull();
     expect(screen.queryByText("Redacted paths")).toBeNull();
     expect(screen.queryByText("Keep sentinel")).toBeNull();
+  });
+});
+
+/** Preview and the two ways to commit.
+ *
+ * Routed by *path* as well as by method, unlike `stubApi`: preview, apply and
+ * save are three different endpoints and a stub that answered any non-GET
+ * with one body would pass against a page that posted the pending document
+ * to whichever of them it liked. An unstubbed call is an error rather than a
+ * default, which is what makes the endpoint-swap mutation go red instead of
+ * quietly succeeding against the other handler's stub.
+ */
+function stubEditor({
+  config = EDITOR_CONFIG as unknown,
+  responses = {},
+}: { config?: unknown; responses?: Record<string, Response> } = {}) {
+  const fetchMock = vi.fn((input: string, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "GET") return Promise.resolve(json(config));
+    const stubbed = responses[input];
+    if (stubbed === undefined) {
+      return Promise.reject(new Error(`unstubbed ${init?.method} ${input}`));
+    }
+    return Promise.resolve(stubbed.clone());
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** The one call the page made to `path`, with its method and parsed body. */
+function callTo(
+  fetchMock: ReturnType<typeof stubEditor>,
+  path: string,
+): { method: string; body: unknown } {
+  const calls = fetchMock.mock.calls.filter(([input]) => input === path);
+  expect(calls).toHaveLength(1);
+  return {
+    method: String(calls[0][1]?.method),
+    body: JSON.parse(String(calls[0][1]?.body)),
+  };
+}
+
+function previewBody(impact: unknown, versionAfter = "def456") {
+  return json({
+    version_before: "abc123",
+    version_after: versionAfter,
+    restart_required: [],
+    impact,
+  });
+}
+
+async function click(name: string) {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name }));
+  });
+}
+
+/** The pending panel, which is where every action and every result lives. */
+function pendingPanel(): HTMLElement {
+  return screen
+    .getByRole("heading", { name: "Pending changes" })
+    .closest("section") as HTMLElement;
+}
+
+describe("Settings preview", () => {
+  it("previews the pending document and reports the count with the breakdown", async () => {
+    // `affected` below the population is what a `skip_tba` edit looks like:
+    // it gates title cards without moving the render version, so it is the
+    // only edit that can discriminate between art kinds.
+    const fetchMock = stubEditor({
+      responses: {
+        "/api/config/preview": previewBody({
+          affected: 3,
+          by_art_kind: { poster: 2, title_card: 1 },
+          of_total: 9,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Preview");
+
+    const call = callTo(fetchMock, "/api/config/preview");
+    expect(call.method).toBe("POST");
+    expect(call.body).toEqual({
+      document: { artwork: { poster: { text: { min_point_size: 24 } } } },
+    });
+
+    // "~", never "3": the walk cannot know which renders composited a logo,
+    // so it overcounts by construction.
+    const panel = pendingPanel();
+    expect(within(panel).getByText(/~3 of 9 items would re-render/)).toBeInTheDocument();
+    expect(within(panel).getByText("poster: 2")).toBeInTheDocument();
+    expect(within(panel).getByText("title_card: 1")).toBeInTheDocument();
+  });
+
+  it("carries the API's own approximation caveat, verbatim, as the count's tooltip", async () => {
+    stubEditor({
+      responses: {
+        "/api/config/preview": previewBody({
+          affected: 3,
+          by_art_kind: { poster: 3 },
+          of_total: 9,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Preview");
+
+    expect(
+      within(pendingPanel()).getByText(/~3 of 9 items would re-render/),
+    ).toHaveAttribute("title", IMPACT_CAVEAT);
+    // The caveat is the docstring of src/autoposter/config/impact.py, not a
+    // paraphrase of it: the direction of the error is the whole point, and a
+    // reworded version is how "overcount, never an undercount" quietly
+    // becomes "roughly".
+    expect(IMPACT_CAVEAT).toBe(
+      "The consequence is honest and one-directional: a poster whose real " +
+        "render composited a logo will not match the recomputed value, so it " +
+        "is reported as affected whatever the edit was. That is an overcount, " +
+        "never an undercount, of the text and version changes the operator is " +
+        "actually asking about.",
+    );
+  });
+
+  it("says plainly that an artwork edit re-renders everything, rather than implying it picked rows", async () => {
+    // `config.version` hashes the whole artwork section, so any artwork edit
+    // invalidates every fingerprinted row and `affected` equals the whole
+    // examined population. A breakdown presented without this reads as though
+    // the edit selected those kinds; it did not.
+    stubEditor({
+      responses: {
+        "/api/config/preview": previewBody({
+          affected: 9,
+          by_art_kind: { poster: 5, title_card: 4 },
+          of_total: 9,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Preview");
+
+    const panel = pendingPanel();
+    expect(
+      within(panel).getByText(
+        /any artwork change re-renders the whole library — ~9 of 9 items/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders a null impact as no re-renders at all, with no count", async () => {
+    // A scheduler tweak cannot change a rendered image, and the server says so
+    // by sending null rather than a number made entirely of the approximation.
+    stubEditor({
+      responses: {
+        "/api/config/preview": previewBody(null, "abc123"),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await click("Preview");
+
+    const panel = pendingPanel();
+    expect(
+      within(panel).getByText(
+        "No re-renders — this change does not affect rendered artwork.",
+      ),
+    ).toBeInTheDocument();
+    // Nothing that reads as a count: no "~", no "of N items".
+    expect(panel.textContent).not.toContain("~");
+    expect(panel.textContent).not.toMatch(/would re-render/);
+  });
+
+  it("previews with the keep sentinel, exactly as a save does", async () => {
+    const fetchMock = stubEditor({
+      config: REDACTED_CONFIG,
+      responses: { "/api/config/preview": previewBody(null, "abc123") },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await click("Preview");
+
+    const body = callTo(fetchMock, "/api/config/preview").body;
+    expect(body).toEqual({
+      document: { workers: 9, notifications: { enabled: true, url: KEEP } },
+    });
+    expect(JSON.stringify(body)).not.toContain("kuma.example.com");
+  });
+
+  it("surfaces a failed preview inline and keeps the edit", async () => {
+    stubEditor({
+      responses: {
+        "/api/config/preview": json({ detail: "the database is unreachable" }, 500),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await click("Preview");
+
+    const panel = pendingPanel();
+    expect(within(panel).getByText("the database is unreachable")).toBeInTheDocument();
+    expect(within(panel).getByText(/"workers": 9/)).toBeInTheDocument();
+  });
+
+  it("lands a preview's 422 inline at the field its path names", async () => {
+    stubEditor({
+      responses: {
+        "/api/config/preview": json(
+          { detail: [{ path: "plex.url", message: "Input should be a valid URL" }] },
+          422,
+        ),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("plex.url"), {
+      target: { value: "not a url" },
+    });
+    await click("Preview");
+
+    expect(
+      within(rowOf(screen.getByLabelText("plex.url"))).getByText(
+        "Input should be a valid URL",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("Settings apply", () => {
+  it("applies through /api/config/apply and reports what it queued", async () => {
+    const fetchMock = stubEditor({
+      responses: {
+        "/api/config/apply": json({
+          version_before: "abc123",
+          version_after: "def456",
+          restart_required: [],
+          queued: 7,
+          skipped: 2,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Apply now");
+
+    const call = callTo(fetchMock, "/api/config/apply");
+    expect(call.method).toBe("POST");
+    expect(call.body).toEqual({
+      document: { artwork: { poster: { text: { min_point_size: 24 } } } },
+    });
+    // Apply is the save plus an enqueue, so both halves are reported.
+    expect(screen.getByText(/abc123 → def456/)).toBeInTheDocument();
+    expect(screen.getByText(/Queued 7 items to re-render/)).toBeInTheDocument();
+    // `skipped` is the pending-dedupe arbiter's count, not a failure.
+    expect(screen.getByText(/2 already queued/)).toBeInTheDocument();
+  });
+
+  it("applies with the keep sentinel, exactly as a save does", async () => {
+    const fetchMock = stubEditor({
+      config: REDACTED_CONFIG,
+      responses: {
+        "/api/config/apply": json({
+          version_before: "abc123",
+          version_after: "def456",
+          restart_required: [],
+          queued: 1,
+          skipped: 0,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await click("Apply now");
+
+    const body = callTo(fetchMock, "/api/config/apply").body;
+    expect(body).toEqual({
+      document: { workers: 9, notifications: { enabled: true, url: KEEP } },
+    });
+    expect(JSON.stringify(body)).not.toContain("kuma.example.com");
+  });
+
+  it("saves only through the PUT, queueing nothing", async () => {
+    const fetchMock = stubEditor({
+      responses: {
+        "/api/config/overrides": json({
+          version_before: "abc123",
+          version_after: "def456",
+          restart_required: [],
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await save();
+
+    const call = callTo(fetchMock, "/api/config/overrides");
+    expect(call.method).toBe("PUT");
+    expect(call.body).toEqual({
+      document: { artwork: { poster: { text: { min_point_size: 24 } } } },
+    });
+    // The regenerate-later arm: it must not have touched the apply endpoint,
+    // and it must not claim to have queued anything.
+    expect(
+      fetchMock.mock.calls.filter(([input]) => input === "/api/config/apply"),
+    ).toHaveLength(0);
+    expect(screen.queryByText(/Queued/)).toBeNull();
+  });
+
+  it("says what happens to the artwork after a save-only", async () => {
+    stubEditor({
+      responses: {
+        "/api/config/overrides": json({
+          version_before: "abc123",
+          version_after: "def456",
+          restart_required: [],
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+
+    // Save-only leaves stale fingerprints on disk on purpose; an operator who
+    // is not told that reads "Saved" as "done".
+    expect(
+      within(pendingPanel()).getByText(/drift sweep and the full pass pick/i),
+    ).toBeInTheDocument();
+  });
+
+  it("disables every action while one is in flight", async () => {
+    let release: (response: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_input: string, init?: RequestInit) => {
+        if ((init?.method ?? "GET") === "GET") {
+          return Promise.resolve(json(EDITOR_CONFIG));
+        }
+        return new Promise<Response>((resolve) => {
+          release = resolve;
+        });
+      }),
+    );
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    for (const name of ["Preview", "Save only", "Apply now"]) {
+      expect(screen.getByRole("button", { name })).toBeDisabled();
+    }
+
+    await act(async () => {
+      release(previewBody(null, "abc123"));
+    });
+    for (const name of ["Preview", "Save only", "Apply now"]) {
+      expect(screen.getByRole("button", { name })).toBeEnabled();
+    }
+  });
+
+  it("drops a preview that a further edit has made stale", async () => {
+    stubEditor({
+      responses: {
+        "/api/config/preview": previewBody({
+          affected: 9,
+          by_art_kind: { poster: 9 },
+          of_total: 9,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Preview");
+    expect(within(pendingPanel()).getByText(/~9 of 9 items/)).toBeInTheDocument();
+
+    // The count answered a question about a document that no longer exists.
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "25" },
+    });
+    expect(within(pendingPanel()).queryByText(/~9 of 9 items/)).toBeNull();
   });
 });
