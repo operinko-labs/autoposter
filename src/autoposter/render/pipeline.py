@@ -147,8 +147,9 @@ def manual_override_path(config: Config, item: ResolvedItem, art_kind: str) -> P
 
 # A picked logo keeps whatever container it arrived in -- a logo is composited
 # over the poster and needs its alpha channel, which rules out the .jpg the
-# poster mirror is fixed to. Ordered by preference, so a leftover from an
-# earlier pick in another format does not shadow the newest one at .png.
+# poster mirror is fixed to. The order is lookup precedence only: the pick
+# endpoint removes every other suffix when it installs a new one, so at most
+# one of these ever exists on disk at a time and shadowing cannot happen.
 LOGO_OVERRIDE_SUFFIXES = (".png", ".webp", ".jpg", ".jpeg")
 
 

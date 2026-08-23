@@ -298,6 +298,14 @@ def _prepare_jpeg(source: Path, destination: Path) -> None:
     try:
         with Image.open(source) as image:
             if image.format == "JPEG":
+                # load(), not verify(): Pillow's JPEG plugin has no verify()
+                # of its own, so it falls back to the base class's near-no-op
+                # and a truncated entropy-coded scan sails through. Every
+                # other branch below decodes the whole image via load() or
+                # convert(), so a JPEG that passed only a header parse and
+                # copied through untouched would reach the mirror with a
+                # truncated body the compositor chokes on later.
+                image.load()
                 destination.write_bytes(source.read_bytes())
                 return
             image.load()
@@ -324,6 +332,20 @@ def _verify_image(source: Path) -> None:
             image.verify()
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
         raise DownloadRefused(f"undecodable image ({type(exc).__name__})") from exc
+
+
+def _clear_stale_logo_overrides(config, item: ResolvedItem, kept_suffix: str) -> None:
+    """Remove every other logo suffix so the new pick cannot be shadowed.
+
+    ``find_logo_override`` returns the first existing suffix in
+    ``LOGO_OVERRIDE_SUFFIXES`` order, so a ``logo.png`` left over from an
+    earlier pick would keep winning over a newer ``logo.webp`` forever.
+    Missing files are fine -- there is usually nothing to remove.
+    """
+    for suffix in LOGO_OVERRIDE_SUFFIXES:
+        if suffix == kept_suffix:
+            continue
+        logo_override_path(config, item, suffix).unlink(missing_ok=True)
 
 
 def _install(source: Path, target: Path) -> None:
@@ -406,9 +428,16 @@ async def pick_candidate(
         # claim, and writing the claim itself into the log is how a log becomes
         # an injection surface. The response says nothing back about what was
         # asked for either -- an endpoint that echoes its input is a reflector.
+        try:
+            host = httpx.URL(body.url).host
+        except httpx.InvalidURL:
+            # A malformed claim (e.g. an unparsable IPv6 host) is still a
+            # refusal, not a 500 -- and the exception's own message embeds
+            # the input.
+            host = "invalid-url"
         logger.warning(
             "refused a pick of %s for item %d: %s offered no such image (host %s)",
-            art_kind, item_id, body.provider, httpx.URL(body.url).host,
+            art_kind, item_id, body.provider, host,
         )
         raise HTTPException(
             status_code=422, detail="that image is not one of this item's candidates"
@@ -454,6 +483,8 @@ async def pick_candidate(
             # Offloaded like every other touch of this mount: manual_assets_root
             # is typically NFS and a hung mount must not stall the event loop.
             await asyncio.to_thread(_install, staged, target)
+            if art_kind == art.LOGO:
+                await asyncio.to_thread(_clear_stale_logo_overrides, config, resolved, suffix)
         except OSError as exc:
             logger.warning("could not write the picked image to %s: %s", target, exc)
             raise HTTPException(

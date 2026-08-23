@@ -704,3 +704,80 @@ async def test_the_picked_logo_is_what_the_pipeline_will_hash(
     assert hashlib.sha256(logo.read_bytes()).hexdigest() == (
         hashlib.sha256(PNG_BYTES).hexdigest()
     )
+
+
+async def test_a_new_logo_suffix_replaces_the_old_one_instead_of_being_shadowed(
+    client, auth_headers, session, app, manual_root
+):
+    """``find_logo_override`` returns the FIRST existing suffix in
+    ``LOGO_OVERRIDE_SUFFIXES`` order (.png first). Picking a PNG logo and then
+    a WebP one must not leave the stale ``logo.png`` on the mount -- it would
+    keep winning over the operator's newer pick forever."""
+    from autoposter.config.loader import load_config
+    from autoposter.plex.client import ResolvedItem
+    from autoposter.render.pipeline import find_logo_override
+
+    item_id = await _item(session)
+
+    first = await _pick(client, item_id, "logo", auth_headers, url=OFFERED_LOGO_URL)
+    assert first.status_code == 200
+    assert _mirror(manual_root, "logo.png").exists()
+
+    webp_url = "https://assets.fanart.tv/logo/offered.webp"
+    app.state.providers = [
+        _offering("Fanart", "logo", [ArtCandidate("Fanart", webp_url, "en", 800, 300, 9.0)]),
+    ]
+    second = await _pick(client, item_id, "logo", auth_headers, provider="Fanart", url=webp_url)
+    assert second.status_code == 200
+
+    assert not _mirror(manual_root, "logo.png").exists()
+    assert _mirror(manual_root, "logo.webp").exists()
+
+    config = load_config(EXAMPLE).model_copy(update={"manual_assets_root": manual_root})
+    resolved = ResolvedItem(
+        rating_key="rk1", library=LIBRARY, kind="movie", title="A Movie", year=1999,
+        season_number=None, episode_number=None, root_folder=ROOT_FOLDER, file_path=None,
+        art_url=None, tmdb_id=TMDB_ID, tvdb_id=660, imdb_id="tt0137523",
+    )
+    assert find_logo_override(config, resolved) == _mirror(manual_root, "logo.webp")
+
+
+async def test_a_malformed_claimed_url_is_422_not_500(
+    client, auth_headers, session
+):
+    """The refusal path logs ``httpx.URL(body.url).host`` before rejecting an
+    unoffered claim. ``httpx.InvalidURL`` (e.g. an unparsable IPv6 host like
+    "http://[::g]") must not escape as a 500 -- and the caller's string must
+    not reach the response."""
+    item_id = await _item(session)
+    malformed = "http://[::g]"
+
+    response = await _pick(client, item_id, "poster", auth_headers, url=malformed)
+
+    assert response.status_code == 422
+    assert malformed not in response.text
+    assert "[" not in response.text
+
+
+async def test_a_truncated_jpeg_is_502_not_written_through(
+    client, auth_headers, session, manual_root, transport
+):
+    """Every non-JPEG branch of ``_prepare_jpeg`` fully decodes via
+    ``image.load()``/``convert()``; the JPEG branch only parsed a header
+    before this fix, so a real JPEG header glued to a truncated body would
+    pass through untouched and reach the mirror as a broken file.
+
+    Chopped off the end rather than the middle: cutting into the header
+    segments themselves fails ``Image.open`` outright, which every branch
+    already handles -- the gap this guards is a header that parses fine
+    followed by entropy-coded data that stops short."""
+    real_jpeg = _jpeg(size=(200, 200))
+    truncated = real_jpeg[:-50]
+    transport._response_for = _ok(truncated, "image/jpeg")
+    item_id = await _item(session)
+
+    response = await _pick(client, item_id, "poster", auth_headers)
+
+    assert response.status_code == 502
+    assert not _mirror(manual_root).exists()
+    assert list(manual_root.rglob("*")) == []
