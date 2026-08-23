@@ -731,9 +731,44 @@ describe("Settings preview", () => {
     // "~", never "3": the walk cannot know which renders composited a logo,
     // so it overcounts by construction.
     const panel = pendingPanel();
-    expect(within(panel).getByText(/~3 of 9 items would re-render/)).toBeInTheDocument();
+    expect(
+      within(panel).getByText(/~3 of 9 artwork renders are out of date/),
+    ).toBeInTheDocument();
     expect(within(panel).getByText("poster: 2")).toBeInTheDocument();
     expect(within(panel).getByText("title_card: 1")).toBeInTheDocument();
+  });
+
+  it("does not claim the gated breakdown's kinds are the shape of the library", async () => {
+    // `affected` below `of_total` only happens through a gate (a disabled
+    // kind, or `skip_tba`), and a gate is a real signal about what the edit
+    // touched -- unlike the whole-library case, where every kind is
+    // affected regardless of what the edit was.
+    stubEditor({
+      responses: {
+        "/api/config/preview": previewBody({
+          affected: 3,
+          by_art_kind: { poster: 2, title_card: 1 },
+          of_total: 9,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Preview");
+
+    const panel = pendingPanel();
+    // The gate half holds regardless of whether the edit was gated or not.
+    expect(
+      within(panel).getByText(
+        /a kind missing from the breakdown was excluded by a gate/i,
+      ),
+    ).toBeInTheDocument();
+    // The "singled out" sentence is only true in the whole-library case; a
+    // gated preview's kinds are a real signal, so it must not be there.
+    expect(panel.textContent).not.toMatch(/singled out/i);
   });
 
   it("carries the API's own approximation caveat, verbatim, as the count's tooltip", async () => {
@@ -754,7 +789,7 @@ describe("Settings preview", () => {
     await click("Preview");
 
     expect(
-      within(pendingPanel()).getByText(/~3 of 9 items would re-render/),
+      within(pendingPanel()).getByText(/~3 of 9 artwork renders are out of date/),
     ).toHaveAttribute("title", IMPACT_CAVEAT);
     // The caveat is the docstring of src/autoposter/config/impact.py, not a
     // paraphrase of it: the direction of the error is the whole point, and a
@@ -793,7 +828,19 @@ describe("Settings preview", () => {
     const panel = pendingPanel();
     expect(
       within(panel).getByText(
-        /any artwork change re-renders the whole library — ~9 of 9 items/i,
+        /any artwork change re-renders the whole library — ~9 of 9 artwork renders/i,
+      ),
+    ).toBeInTheDocument();
+    // In the whole-library case the breakdown really is just the shape of the
+    // library, so both halves of the note apply.
+    expect(
+      within(panel).getByText(
+        /a kind counted below is not one the edit singled out/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).getByText(
+        /a kind missing from the breakdown was excluded by a gate/i,
       ),
     ).toBeInTheDocument();
   });
@@ -817,9 +864,56 @@ describe("Settings preview", () => {
         "No re-renders — this change does not affect rendered artwork.",
       ),
     ).toBeInTheDocument();
-    // Nothing that reads as a count: no "~", no "of N items".
+    // Nothing that reads as a count: no "~", no "of N artwork renders".
     expect(panel.textContent).not.toContain("~");
-    expect(panel.textContent).not.toMatch(/would re-render/);
+    expect(panel.textContent).not.toMatch(/artwork renders/);
+  });
+
+  it("clears a stale save result when a fresh preview starts", async () => {
+    // A "Saved..." panel from an earlier commit sitting beside a preview for
+    // a different, later document reads as though that save already
+    // accounted for what the preview is about to show.
+    stubEditor({
+      responses: {
+        "/api/config/overrides": json({
+          version_before: "abc123",
+          version_after: "def456",
+          restart_required: [],
+        }),
+        "/api/config/preview": previewBody(null, "def456"),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await save();
+    expect(screen.getByText(/abc123 → def456/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "12" } });
+    await click("Preview");
+
+    expect(screen.queryByText(/abc123 → def456/)).toBeNull();
+  });
+
+  it("shows the restart list a preview response carries, before anything is committed", async () => {
+    stubEditor({
+      responses: {
+        "/api/config/preview": json({
+          version_before: "abc123",
+          version_after: "def456",
+          restart_required: ["workers"],
+          impact: null,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await click("Preview");
+
+    expect(
+      within(pendingPanel()).getByText(/Restart required to apply: workers/),
+    ).toBeInTheDocument();
   });
 
   it("previews with the keep sentinel, exactly as a save does", async () => {
@@ -966,6 +1060,51 @@ describe("Settings apply", () => {
     expect(screen.queryByText(/Queued/)).toBeNull();
   });
 
+  it("discards the preview once a save actually commits it", async () => {
+    // A successful save answers the question the preview was asking -- the
+    // document is stored now -- so a preview left standing would be a count
+    // that describes nothing.
+    stubEditor({
+      responses: {
+        "/api/config/preview": previewBody({
+          affected: 9,
+          by_art_kind: { poster: 9 },
+          of_total: 9,
+        }),
+        "/api/config/overrides": json({
+          version_before: "abc123",
+          version_after: "def456",
+          restart_required: [],
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Preview");
+    expect(
+      within(pendingPanel()).getByText(/~9 of 9 artwork renders/),
+    ).toBeInTheDocument();
+
+    await save();
+    // The GET this save triggers re-serves the unedited config, so the page
+    // goes clean and the pending panel -- and the preview inside it --
+    // disappears.
+    expect(screen.queryByRole("heading", { name: "Pending changes" })).toBeNull();
+
+    // Make the document dirty again without previewing it. If the preview
+    // had merely been hidden by the panel going away rather than actually
+    // discarded, its stale count would reappear here.
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    expect(
+      within(pendingPanel()).queryByText(/artwork renders/),
+    ).toBeNull();
+  });
+
   it("says what happens to the artwork after a save-only", async () => {
     stubEditor({
       responses: {
@@ -1033,12 +1172,14 @@ describe("Settings apply", () => {
       target: { value: "24" },
     });
     await click("Preview");
-    expect(within(pendingPanel()).getByText(/~9 of 9 items/)).toBeInTheDocument();
+    expect(
+      within(pendingPanel()).getByText(/~9 of 9 artwork renders/),
+    ).toBeInTheDocument();
 
     // The count answered a question about a document that no longer exists.
     fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
       target: { value: "25" },
     });
-    expect(within(pendingPanel()).queryByText(/~9 of 9 items/)).toBeNull();
+    expect(within(pendingPanel()).queryByText(/~9 of 9 artwork renders/)).toBeNull();
   });
 });

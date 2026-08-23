@@ -59,14 +59,19 @@ export const IMPACT_CAVEAT =
  * `config.version` hashes the whole artwork section (config/loader.py's
  * `render_version`), so *any* artwork edit invalidates every fingerprinted
  * row -- the per-kind numbers are then the shape of the library, not a set of
- * rows the edit selected. The only thing that makes the kinds differ is a
- * gate: a disabled art kind, or `skip_tba` skipping title cards. Saying so is
- * the difference between a breakdown and a misleading one. */
-const IMPACT_BREAKDOWN_NOTE =
+ * rows the edit selected. That is only true when the edit reached the whole
+ * examined population, though: in a gated preview (a disabled art kind, or
+ * `skip_tba` skipping title cards), the surviving kinds *are* a true signal
+ * about what the edit touched, and saying otherwise would be the misleading
+ * half. The other half -- that a kind missing from the breakdown was excluded
+ * by a gate -- holds either way. */
+const IMPACT_BREAKDOWN_WHOLE_LIBRARY_NOTE =
   "The render version covers the whole artwork section, so an artwork edit " +
   "reaches every fingerprinted row. A kind counted below is not one the edit " +
-  "singled out, and a kind missing from it was excluded by a gate — disabled, " +
-  "or skipped by rule.";
+  "singled out.";
+const IMPACT_BREAKDOWN_GATE_NOTE =
+  "A kind missing from the breakdown was excluded by a gate — disabled, or " +
+  "skipped by rule.";
 
 /** snake_case -> "Snake case". Derived, never looked up: the config schema
  * grows every phase, and a label table would drift. */
@@ -589,15 +594,15 @@ function ImpactReport({ impact }: { impact: ConfigPreviewResponse["impact"] }) {
   // the copy says that outright rather than presenting the number as though
   // the edit had picked rows out of the library.
   const wholeLibrary = impact.of_total > 0 && impact.affected === impact.of_total;
-  const count = `~${impact.affected} of ${impact.of_total} items would re-render.`;
+  const renders = `~${impact.affected} of ${impact.of_total} artwork renders`;
   const kinds = Object.entries(impact.by_art_kind);
 
   return (
     <div className="config-impact">
       <p className="config-impact-count" title={IMPACT_CAVEAT}>
         {wholeLibrary
-          ? `Any artwork change re-renders the whole library — ${count}`
-          : count}
+          ? `Any artwork change re-renders the whole library — ${renders}.`
+          : `${renders} are out of date.`}
       </p>
       {kinds.length > 0 && (
         <>
@@ -606,7 +611,11 @@ function ImpactReport({ impact }: { impact: ConfigPreviewResponse["impact"] }) {
               <li key={kind}>{`${kind}: ${affected}`}</li>
             ))}
           </ul>
-          <p className="muted config-impact-note">{IMPACT_BREAKDOWN_NOTE}</p>
+          <p className="muted config-impact-note">
+            {wholeLibrary
+              ? `${IMPACT_BREAKDOWN_WHOLE_LIBRARY_NOTE} ${IMPACT_BREAKDOWN_GATE_NOTE}`
+              : IMPACT_BREAKDOWN_GATE_NOTE}
+          </p>
         </>
       )}
     </div>
@@ -707,7 +716,11 @@ export function Settings() {
     setBusy(action);
     setErrors({});
     setSaveError(null);
-    if (action !== "preview") setResult(null);
+    // A fresh preview answers a question about the document as it stands now;
+    // a "Saved..." panel from an earlier commit sitting beside it would read
+    // as though that save already accounted for what the preview is about to
+    // show.
+    setResult(null);
     const body = JSON.stringify({ document: pendingDocument });
     try {
       if (action === "preview") {
@@ -845,7 +858,16 @@ export function Settings() {
                 {path === "" ? message : `${path}: ${message}`}
               </p>
             ))}
-          {preview !== null && <ImpactReport impact={preview.impact} />}
+          {preview !== null && (
+            <>
+              <ImpactReport impact={preview.impact} />
+              {preview.restart_required.length > 0 && (
+                <p className="config-restart">
+                  {`Restart required to apply: ${preview.restart_required.join(", ")}`}
+                </p>
+              )}
+            </>
+          )}
           {/* The two commits differ in what happens to the artwork, not in
               what gets stored, and that is the whole of the choice being
               offered here. */}
