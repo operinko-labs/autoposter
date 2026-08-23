@@ -293,8 +293,12 @@ class AdoptConfig(BaseModel):
 
 
 class SchedulerConfig(BaseModel):
-    """Cadences for the periodic passes in ``scheduler/jobs.py``: the
-    collections reconcile, the ratings-drift sweep and the asset cleanup.
+    """Cadences for three of the periodic passes in ``scheduler/jobs.py`` --
+    the collections reconcile, the ratings-drift sweep and the asset cleanup --
+    and the master switch for all four: the Radarr/Sonarr sync safety net is
+    also registered under ``enabled`` (its cadence lives in
+    ``ArrSyncConfig.hours``), so disabling the scheduler stops it too and
+    missed webhooks then never converge.
 
     There is deliberately no ``cleanup_apply`` field here even though it
     controls a scheduled job: ``CleanupConfig.apply`` above already means
