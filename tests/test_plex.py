@@ -63,6 +63,7 @@ class FakeItem:
     def __init__(
         self, rating_key, title, year, file_path, guids, item_type="movie",
         parent_rating_key=None, library_section_title=None, show=None,
+        index=None, parent_index=None,
     ):
         self.ratingKey = rating_key
         self.title = title
@@ -76,6 +77,11 @@ class FakeItem:
         # rating-key fetch has no section object and reads this instead.
         self.librarySectionTitle = library_section_title
         self._show = show
+        # A Season's own number (`index`), or an Episode's own number
+        # (`index`) plus its season's number (`parentIndex`) -- what the
+        # direct rating-key fetch checks a stale/renumbered key against.
+        self.index = index
+        self.parentIndex = parent_index
         if item_type in ("season", "episode"):
             # Only plexapi Season and Episode carry ``show()``. A Movie does
             # not, and this fake must never be more permissive than the
@@ -264,11 +270,11 @@ def _show_with_season_and_episode(guids=("tvdb://371980",), section_title="Shows
     show.locations = ["/mnt/Media/Shows/Severance (2022)"]
     season = FakeItem(
         "556", "Season 2", None, None, [], item_type="season", parent_rating_key="555",
-        library_section_title=section_title, show=show,
+        library_section_title=section_title, show=show, index=2,
     )
     episode = FakeItem(
         "557", "Who Is Alive?", None, None, [], item_type="episode", parent_rating_key="556",
-        library_section_title=section_title, show=show,
+        library_section_title=section_title, show=show, index=3, parent_index=2,
     )
     season.add_episode(3, episode)
     show.add_season(2, season)
@@ -639,6 +645,85 @@ async def test_a_rating_key_inside_an_excluded_library_resolves_nothing():
         await client.resolve(intent)
 
     assert shows.getguid_calls == []
+
+
+async def test_the_rating_key_shortcut_returns_exactly_what_the_guid_search_would_for_a_season():
+    """The equality pin above, repeated for a season intent.
+
+    A season's ``parent_rating_key`` comes from the container's own rating
+    key (the show, reached via ``item.show()``), not from
+    ``item.parentRatingKey`` the way an episode's does -- a different code
+    path in ``_fetch_by_rating_key_sync`` worth pinning on its own.
+    """
+    show = _show_with_season_and_episode()
+    shows, server = _show_library(show)
+    client = PlexClient(server=server, excluded_libraries=[])
+    fields = dict(kind="season", title="Severance", tvdb_id=371980, season_number=2)
+
+    by_guid = await client.resolve(RenderIntent(**fields))
+    by_key = await client.resolve(RenderIntent(**fields, rating_key="556"))
+
+    assert by_key == by_guid
+    assert shows.getguid_calls == ["tvdb://371980"]
+
+
+async def test_a_renumbered_rating_key_landing_on_the_wrong_episode_falls_back():
+    """A stale key can still name a REAL episode after a rebuild -- just the
+    wrong one: same type, same library, different season/episode numbers.
+
+    Accepting it would stamp the intent's season 2 / episode 3 numbers onto
+    whatever this impostor actually is. The identity check must refuse it and
+    fall back to the GUID search, which finds the real episode instead.
+    """
+    show = _show_with_season_and_episode()
+    impostor = FakeItem(
+        "557", "Some Other Episode", None, None, [], item_type="episode",
+        parent_rating_key="556", library_section_title="Shows", show=show,
+        index=9, parent_index=5,
+    )
+    section = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+    server = FakeServer([section], items_by_key={557: impostor})
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="episode", title="Severance", tvdb_id=371980,
+        season_number=2, episode_number=3, rating_key="557",
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.title == "Who Is Alive?"
+    assert item.rating_key == "557"
+    assert section.getguid_calls == ["tvdb://371980"]
+
+
+async def test_a_renumbered_rating_key_landing_on_the_wrong_movie_falls_back():
+    """Same story for a movie: the key still names a real movie, in the
+    right library, just not the one the intent means -- and its guids do not
+    overlap the intent's at all. Accepting it would write this movie's
+    identity onto the row the intent is meant to maintain.
+    """
+    impostor = FakeItem(
+        "12345", "Some Other Movie", 1999,
+        "/mnt/Media/Movies/Some Other Movie (1999)/movie.mkv",
+        ["tmdb://999999"], library_section_title="Movies",
+    )
+    real_movie = FakeItem(
+        "77777", "Dune: Part Two", 2024,
+        "/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv",
+        ["tmdb://693134", "imdb://tt15239678"],
+    )
+    movies = FakeSection("Movies", "/mnt/Media/Movies", [real_movie])
+    server = FakeServer([movies], items_by_key={12345: impostor})
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="movie", title="Dune: Part Two", tmdb_id=693134, rating_key="12345",
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "77777"
+    assert item.title == "Dune: Part Two"
+    assert movies.getguid_calls == ["tmdb://693134"]
 
 
 async def test_a_malformed_rating_key_falls_back_instead_of_raising():

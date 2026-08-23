@@ -131,8 +131,12 @@ class PlexClient:
 
         Returning None rather than raising is the whole contract here: a
         rating key is a *hint*. Plex renumbers on a library rebuild, so a
-        stored key can name nothing, or name something else entirely. Every
-        such case degrades to the GUID search rather than failing the job.
+        stored key can name nothing, or name something else entirely --
+        including a real item of the same type, in the same library, that is
+        simply not the one the intent means. That is why type+library is not
+        treated as identity: the season/episode numbers or external ids are
+        checked too. Every such case degrades to the GUID search rather than
+        failing the job.
 
         The result deliberately mirrors what the GUID search would have built
         for the same intent, field for field, so that a key going stale
@@ -165,6 +169,42 @@ class PlexClient:
         )
         if section is None:
             return None
+
+        # Type and library alone are not identity: a stale/renumbered key can
+        # land on a real, same-type item in the same library that is simply
+        # not the one the intent means. Accepting it would stamp the intent's
+        # season/episode numbers onto the wrong item, or write a wrong
+        # movie/show's identity onto an unrelated row. Any mismatch here
+        # falls back to the GUID search, same as every other refusal above.
+        if intent.kind == "season":
+            if getattr(item, "index", None) != intent.season_number:
+                return None
+        elif intent.kind == "episode":
+            if (
+                getattr(item, "parentIndex", None) != intent.season_number
+                or getattr(item, "index", None) != intent.episode_number
+            ):
+                return None
+        else:
+            # movie/show: identity comes from the external ids, built the
+            # same way `_search_sync`'s own `wanted` list is below.
+            wanted_ids = [
+                guid
+                for guid in (
+                    f"tmdb://{intent.tmdb_id}" if intent.tmdb_id else None,
+                    f"tvdb://{intent.tvdb_id}" if intent.tvdb_id else None,
+                    f"imdb://{intent.imdb_id}" if intent.imdb_id else None,
+                )
+                if guid is not None
+            ]
+            if wanted_ids:
+                item_guids = {g.id for g in getattr(item, "guids", [])}
+                if item_guids.isdisjoint(wanted_ids):
+                    return None
+            # else: a full-pass intent always carries whatever external ids
+            # the adopted row had, so no ids at all means there is nothing to
+            # check beyond the type+library match above, same as before this
+            # check existed.
 
         container = item
         parent_rating_key = None
