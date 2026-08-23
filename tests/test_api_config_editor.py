@@ -550,6 +550,14 @@ async def test_an_apply_saves_swaps_and_enqueues_the_affected_items(
         "process_item:episode:tmdb1399:s01e01",
         "process_item:movie:tmdb550",
     ]
+    # Each row's own Plex rating key rides along, the same way the full pass
+    # and reprocess carry it (api/routes.py) -- without it, an apply over
+    # adopted episode rows would enqueue jobs that resolve by episode-level
+    # external ids instead, exactly the incident fix/guid-type-collision fixed.
+    assert {job.dedupe_key: job.payload["rating_key"] for job in jobs} == {
+        "process_item:episode:tmdb1399:s01e01": "rk2",
+        "process_item:movie:tmdb550": "rk1",
+    }
 
 
 async def test_an_apply_respects_the_pending_dedupe(client, auth_headers, session, app):

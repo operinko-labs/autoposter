@@ -76,6 +76,7 @@ class _Candidate:
     year: int | None
     season_number: int | None
     episode_number: int | None
+    rating_key: str
 
 
 def _file_sha256(path: Path) -> str:
@@ -169,6 +170,7 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
                 MediaItem.tmdb_id,
                 MediaItem.tvdb_id,
                 MediaItem.imdb_id,
+                MediaItem.rating_key,
             )
             .join(MediaItem, Render.item_id == MediaItem.id)
             .where(Render.fingerprint.is_not(None))
@@ -228,6 +230,7 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
                 year=row.year,
                 season_number=row.season_number,
                 episode_number=row.episode_number,
+                rating_key=row.rating_key,
             )
         )
     return candidates
@@ -273,6 +276,7 @@ async def affected_items(session: AsyncSession, new_config: Config) -> list[Rend
             year=candidate.year,
             season_number=candidate.season_number,
             episode_number=candidate.episode_number,
+            rating_key=candidate.rating_key,
         )
         if intent.dedupe_key in seen:
             continue
