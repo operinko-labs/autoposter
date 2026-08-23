@@ -181,12 +181,14 @@
 
 .config-saved,
 .config-queued,
-.config-restart {
+.config-restart,
+.config-inert {
   margin: 8px 0 0;
   font-size: 13px;
 }
 
-.config-restart {
+.config-restart,
+.config-inert {
   color: var(--warn);
 }
 

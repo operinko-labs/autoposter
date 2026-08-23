@@ -390,6 +390,24 @@ async def test_a_live_path_needs_no_restart(client, auth_headers):
     assert response.json()["restart_required"] == []
 
 
+async def test_api_docs_enabled_is_reported_as_inert_not_restart_required(
+    client, auth_headers
+):
+    """``api_docs_enabled`` is frozen (FastAPI builds the docs routes into the
+    application object before the overrides are read), but unlike every other
+    frozen path a restart does not fix it either -- only editing the mounted
+    file does. Folding it into ``restart_required`` would tell the operator a
+    restart will apply a change it never can; it belongs in ``inert``
+    instead."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"api_docs_enabled": True}},
+    )
+    body = response.json()
+    assert "api_docs_enabled" not in body["restart_required"]
+    assert body["inert"] == ["api_docs_enabled"]
+
+
 async def test_a_save_writes_one_audit_event_carrying_no_settings(
     client, auth_headers, session, app
 ):
@@ -495,6 +513,18 @@ async def test_a_preview_rejects_an_invalid_document_the_same_way(client, auth_h
     )
     assert response.status_code == 422
     assert [e["path"] for e in response.json()["detail"]] == ["wrokers"]
+
+
+async def test_a_preview_of_api_docs_enabled_reports_it_as_inert_not_restart_required(
+    client, auth_headers
+):
+    response = await client.post(
+        "/api/config/preview", headers=auth_headers,
+        json={"document": {"api_docs_enabled": True}},
+    )
+    body = response.json()
+    assert "api_docs_enabled" not in body["restart_required"]
+    assert body["inert"] == ["api_docs_enabled"]
 
 
 # --- apply ---

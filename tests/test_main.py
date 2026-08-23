@@ -24,7 +24,9 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 import autoposter.main as main_module
+from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
+from autoposter.plex.client import PlexClient
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 INDEX_MARKER = "<!-- build() test index -->"
@@ -83,6 +85,11 @@ def _stub_build_dependencies(monkeypatch, dist):
     bridge exploding under `uvicorn --factory`. Pointing `CONFIG_PATH` at the
     example config keeps these tests off the network and off the database
     while still running the real load path.
+
+    `create_app` is spied on rather than replaced -- every other test here
+    needs the real one to actually build an app -- and the kwargs each call
+    received are yielded, so a test can check what `build()` passed it without
+    a stand-in that would let an argument silently vanish.
     """
     monkeypatch.setattr(main_module, "CONFIG_PATH", EXAMPLE)
     monkeypatch.setattr(main_module, "Secrets", _FakeSecrets)
@@ -90,6 +97,16 @@ def _stub_build_dependencies(monkeypatch, dist):
     # spa_dist() itself is not under test; only whether build() calls
     # mount_spa with its result.
     monkeypatch.setattr(main_module, "spa_dist", lambda: dist)
+
+    calls: list[dict] = []
+    real_create_app = main_module.create_app
+
+    def spying_create_app(*args, **kwargs):
+        calls.append(kwargs)
+        return real_create_app(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "create_app", spying_create_app)
+    yield calls
 
 
 async def test_build_can_be_called_from_inside_a_running_event_loop():
@@ -108,6 +125,30 @@ async def test_build_can_be_called_from_inside_a_running_event_loop():
     app = main_module.build()
 
     assert isinstance(app, FastAPI)
+
+
+async def test_build_passes_a_plex_factory_that_builds_a_real_plex_client(
+    _stub_build_dependencies,
+):
+    """``build()`` must hand ``create_app`` a ``plex_factory`` -- deleting the
+    keyword from `main.py`'s ``create_app(...)`` call leaves this suite green
+    everywhere else (no other test here drives the lifespan, and
+    `test_app.py`'s own plex_factory coverage, e.g.
+    `test_the_lifespan_builds_the_plex_client_from_the_effective_config`
+    around line 186, passes its own stand-in factory rather than exercising
+    `main.build()`'s) while every real deployment starts with
+    `app.state.plex is None`, turning the live-artwork endpoint into a
+    permanent 503.
+    """
+    calls = _stub_build_dependencies
+    main_module.build()
+
+    assert len(calls) == 1
+    plex_factory = calls[0].get("plex_factory")
+    assert plex_factory is not None, "build() did not pass plex_factory to create_app"
+
+    client = plex_factory(load_config(EXAMPLE))
+    assert isinstance(client, PlexClient)
 
 
 async def test_build_wires_the_spa_into_the_returned_app():

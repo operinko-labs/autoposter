@@ -89,9 +89,22 @@ FROZEN_SECTIONS: dict[str, str] = {
 # any client -- see app.py.
 LIVE_EXCEPTIONS: frozenset[str] = frozenset({"plex.resolve_max_attempts"})
 
+# The one entry in FROZEN_SECTIONS whose own reason says a restart does not
+# help either -- see the comment on api_docs_enabled above. The editor reports
+# these separately from "restart required" (routes.py's _inert_changes), so it
+# never promises an operator a restart will apply something only editing the
+# mounted file can.
+INERT_SECTIONS: frozenset[str] = frozenset({"api_docs_enabled"})
+
 
 def _covers(prefix: str, path: str) -> bool:
     return path == prefix or path.startswith(prefix + ".")
+
+
+def is_inert(path: str) -> bool:
+    """Whether nothing short of editing the mounted config file reaches
+    ``path`` -- not a swap, and not a restart either."""
+    return any(_covers(prefix, path) for prefix in INERT_SECTIONS)
 
 
 def frozen_reason(path: str) -> str | None:

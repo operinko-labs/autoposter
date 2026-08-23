@@ -791,6 +791,16 @@ export function Settings() {
                 {`Restart required to apply: ${result.restart_required.join(", ")}`}
               </p>
             )}
+            {/* Distinct from restart_required on purpose: these paths are
+                frozen into the running application object itself, so not even
+                a restart reaches them -- only editing the mounted config file
+                does. Folding them into "restart required" would promise an
+                operator a fix that restarting can never deliver. */}
+            {(result.inert ?? []).length > 0 && (
+              <p className="config-inert">
+                {`Has no effect until it changes in the deployed config file: ${(result.inert ?? []).join(", ")}`}
+              </p>
+            )}
           </>
         )}
       </section>
@@ -819,6 +829,11 @@ export function Settings() {
               {preview.restart_required.length > 0 && (
                 <p className="config-restart">
                   {`Restart required to apply: ${preview.restart_required.join(", ")}`}
+                </p>
+              )}
+              {(preview.inert ?? []).length > 0 && (
+                <p className="config-inert">
+                  {`Has no effect until it changes in the deployed config file: ${(preview.inert ?? []).join(", ")}`}
                 </p>
               )}
             </>

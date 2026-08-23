@@ -28,7 +28,7 @@ from autoposter.api.auth import (
     verify_password,
 )
 from autoposter.config.impact import affected_items, count_affected
-from autoposter.config.live import FROZEN_SECTIONS, frozen_reason, swap_config
+from autoposter.config.live import FROZEN_SECTIONS, frozen_reason, is_inert, swap_config
 from autoposter.config.loader import build_config, read_config_document
 from autoposter.config.overrides import (
     OVERRIDES_ROW_ID,
@@ -1012,9 +1012,24 @@ def _changed_paths(before: dict, after: dict, prefix: str = "") -> list[str]:
 
 
 def _restart_required(before: Config, after: Config) -> list[str]:
-    """Which of the changed paths a generation swap does not reach."""
+    """Which of the changed paths a generation swap does not reach, minus the
+    ones a restart does not reach either.
+
+    Those -- currently just ``api_docs_enabled`` -- are reported separately by
+    ``_inert_changes``, so this list stays a promise the editor can keep:
+    every path in it, restarting really does apply.
+    """
     changed = _changed_paths(before.model_dump(mode="json"), after.model_dump(mode="json"))
-    return sorted(path for path in changed if frozen_reason(path) is not None)
+    return sorted(
+        path for path in changed if frozen_reason(path) is not None and not is_inert(path)
+    )
+
+
+def _inert_changes(before: Config, after: Config) -> list[str]:
+    """Changed paths that no restart can apply either -- only editing the
+    mounted config file reaches them (``config.live.INERT_SECTIONS``)."""
+    changed = _changed_paths(before.model_dump(mode="json"), after.model_dump(mode="json"))
+    return sorted(path for path in changed if is_inert(path))
 
 
 def _render_affecting(before: Config, after: Config) -> bool:
@@ -1097,7 +1112,10 @@ async def _persist_and_swap(request: Request, document: dict, after: Config) -> 
     and ``swap_config``, requests keep being served by the old generation until
     restart, at which point ``load_effective_config`` reads the persisted
     overrides back off the database and starts on the new one -- correct by
-    design, not by luck.
+    design, not by luck. ``api_docs_enabled`` is the one exception: a restart
+    re-reads the database overrides but not the mounted file, so it lands back
+    exactly where the file left it -- which is why it is reported in ``inert``
+    below rather than ``restart_required``.
     """
     before = request.app.state.config
     async with request.app.state.session_factory() as session:
@@ -1121,11 +1139,13 @@ async def _persist_and_swap(request: Request, document: dict, after: Config) -> 
         await session.commit()
 
     restart_required = _restart_required(before, after)
+    inert = _inert_changes(before, after)
     swap_config(request.app, after)
     return {
         "version_before": before.version,
         "version_after": after.version,
         "restart_required": restart_required,
+        "inert": inert,
     }
 
 
@@ -1172,6 +1192,7 @@ async def preview_config_overrides(
         "version_before": before.version,
         "version_after": after.version,
         "restart_required": _restart_required(before, after),
+        "inert": _inert_changes(before, after),
         "impact": impact,
     }
 

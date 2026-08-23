@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 import httpx
@@ -26,7 +27,7 @@ from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.intake.routes import router
 from autoposter.notify.dispatch import NullNotifier, build_notifier
 from autoposter.plex.artwork import artwork_provenance
-from autoposter.plex.client import ItemNotFound
+from autoposter.plex.client import ItemNotFound, PlexClient
 from autoposter.plex.health import PlexHealth
 from autoposter.providers.cache import ProviderCache
 from autoposter.providers.fanart import FanartClient
@@ -48,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 def create_app(
     config: Config, session_factory, secrets: Secrets, run_background: bool = False,
-    plex_factory=None,
+    plex_factory: Callable[[Config], PlexClient] | None = None,
 ) -> FastAPI:
     """The application, built from ``config`` -- the *file* generation.
 

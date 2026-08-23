@@ -298,6 +298,33 @@ describe("Settings editor", () => {
     expect(screen.getByText(/Restart required to apply: workers/)).toBeInTheDocument();
   });
 
+  it("reports an inert change separately from the restart list, honestly", async () => {
+    // api_docs_enabled is frozen into the running application object before
+    // any override is read -- a restart cannot apply it either, only editing
+    // the mounted config file can. Folding it into "Restart required to
+    // apply" would promise the operator a fix that restarting can never
+    // deliver.
+    stubApi({
+      put: json({
+        version_before: "abc123",
+        version_after: "abc123",
+        restart_required: [],
+        inert: ["api_docs_enabled"],
+      }),
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await save();
+
+    expect(
+      screen.getByText(
+        "Has no effect until it changes in the deployed config file: api_docs_enabled",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Restart required to apply/)).toBeNull();
+  });
+
   it("lands a 422 inline at the field its path names", async () => {
     stubApi({
       put: json(
@@ -914,6 +941,32 @@ describe("Settings preview", () => {
     expect(
       within(pendingPanel()).getByText(/Restart required to apply: workers/),
     ).toBeInTheDocument();
+  });
+
+  it("shows the inert list a preview response carries, separately from restart_required", async () => {
+    stubEditor({
+      responses: {
+        "/api/config/preview": json({
+          version_before: "abc123",
+          version_after: "abc123",
+          restart_required: [],
+          inert: ["api_docs_enabled"],
+          impact: null,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await click("Preview");
+
+    const panel = pendingPanel();
+    expect(
+      within(panel).getByText(
+        "Has no effect until it changes in the deployed config file: api_docs_enabled",
+      ),
+    ).toBeInTheDocument();
+    expect(within(panel).queryByText(/Restart required to apply/)).toBeNull();
   });
 
   it("previews with the keep sentinel, exactly as a save does", async () => {
