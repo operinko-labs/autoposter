@@ -21,9 +21,8 @@ def upgrade() -> None:
     """Upgrade schema."""
     # Every reader of this table selects id = 1 and the only writer upserts
     # id = 1, so a second row would be configuration in name only: stored,
-    # visible, and never applied. Autogenerate does not diff CHECK
-    # constraints, so this is hand-written rather than generated -- see the
-    # matching __table_args__ on db.models.ConfigOverride. `alembic check`
+    # visible, and never applied. Hand-written rather than generated -- see
+    # the matching __table_args__ on db.models.ConfigOverride. `alembic check`
     # does compare named CHECK constraints, so tests/test_migrations.py goes
     # red if this and the model ever disagree.
     op.create_check_constraint(

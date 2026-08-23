@@ -814,7 +814,16 @@ async def get_config(
         body["notifications"]["url"] = host
     body["secrets"] = {field: _REDACTED for field in secrets.model_dump()}
     async with request.app.state.session_factory() as session:
-        document = await load_overrides_document(session)
+        try:
+            document = await load_overrides_document(session)
+        except ValueError as exc:
+            # A hand-edited config_overrides row whose document is not a JSON
+            # object -- see load_overrides_document's docstring. An operator
+            # needs to know what to fix, not a traceback.
+            raise HTTPException(
+                status_code=500,
+                detail="config overrides row is corrupt (not a JSON object); fix or delete it",
+            ) from exc
     body["overridden_paths"] = sorted(document_paths(document))
     body["frozen_paths"] = dict(FROZEN_SECTIONS)
     return body
@@ -909,7 +918,7 @@ async def _validated_generation(request: Request, document: dict) -> Config:
             detail=[_error(path, "unknown setting") for path in sorted(unknown)],
         )
 
-    base = read_config_document(request.app.state.config_path)
+    base = await asyncio.to_thread(read_config_document, request.app.state.config_path)
     try:
         merged = merge_overrides(base, document)
     except ValueError as exc:  # a `secrets` key anywhere in the document
@@ -930,6 +939,12 @@ async def _persist_and_swap(request: Request, document: dict, after: Config) -> 
     built, so by the time anything is written the config is known to be whole.
     ``swap_config`` is three assignments and a dict refresh with no I/O, so it
     cannot fail after the row is committed either.
+
+    Crash-consistent by construction: if the process dies between the commit
+    and ``swap_config``, requests keep being served by the old generation until
+    restart, at which point ``load_effective_config`` reads the persisted
+    overrides back off the database and starts on the new one -- correct by
+    design, not by luck.
     """
     before = request.app.state.config
     async with request.app.state.session_factory() as session:

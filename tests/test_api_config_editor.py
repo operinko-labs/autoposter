@@ -20,6 +20,7 @@ import pytest_asyncio
 import yaml
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
@@ -218,6 +219,25 @@ async def test_get_config_carries_the_frozen_paths_and_their_reasons(client, aut
 async def test_get_config_still_redacts(client, auth_headers):
     body = (await client.get("/api/config", headers=auth_headers)).json()
     assert set(body["secrets"].values()) == {"***REDACTED***"}
+
+
+async def test_get_config_reports_a_corrupt_overrides_row_as_500_with_detail(
+    client, auth_headers, session_factory
+):
+    """A config_overrides row hand-edited to hold a non-dict document -- the
+    case load_overrides_document's ValueError guards -- must not escape as a
+    bare 500. The operator needs to know what is wrong and how to fix it."""
+    async with session_factory() as session:
+        stmt = insert(ConfigOverride).values(id=1, document=["not", "a", "dict"])
+        stmt = stmt.on_conflict_do_update(index_elements=["id"], set_={"document": stmt.excluded.document})
+        await session.execute(stmt)
+        await session.commit()
+
+    response = await client.get("/api/config", headers=auth_headers)
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "config overrides row is corrupt (not a JSON object); fix or delete it"
+    )
 
 
 # --- rejection: nothing is half-applied ---
