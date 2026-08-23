@@ -17,6 +17,7 @@ from autoposter.api.artwork import router as artwork_router
 from autoposter.api.candidates import router as candidates_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.logs import router as logs_router
+from autoposter.api.manual import router as manual_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
 from autoposter.api.auth import (
     create_session,
@@ -136,6 +137,12 @@ router.include_router(dashboard_stream_router)
 # The cross-provider candidate browser: the only handler that talks to the
 # provider clients, and the only one that fans out over all of them at once.
 router.include_router(candidates_router)
+
+# Manual mode: the same install tail as the picker, from an operator-supplied
+# URL or mount path instead of a provider's candidate. Its own module because
+# the SSRF guard and the mount containment that make an arbitrary source safe
+# are the substance of it.
+router.include_router(manual_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.

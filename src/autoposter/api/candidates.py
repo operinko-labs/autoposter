@@ -39,6 +39,7 @@ from sqlalchemy import select
 from autoposter.api.auth import require_session
 from autoposter.db.models import EventLog, MediaItem, Render
 from autoposter.db.models import Session as SessionModel
+from autoposter.net.guard import FetchRefused, store_body
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers import base as art
 from autoposter.providers.ladder import rank_key
@@ -260,29 +261,29 @@ class PickBody(BaseModel):
 PICK_MAX_BYTES = 50 * 1024 * 1024
 
 
-class DownloadRefused(Exception):
-    """The picked image did not arrive as something usable as artwork."""
+# The name this module has raised since 6d. The class itself moved to
+# net/guard.py in 6e along with the body checks below, so the manual endpoints
+# get one implementation of them rather than a second copy that drifts;
+# ``BodyRefused`` (what ``store_body`` raises) is a subclass, so every existing
+# ``except DownloadRefused`` and ``raises(DownloadRefused)`` still means what
+# it did. The transcode helpers below raise it directly.
+DownloadRefused = FetchRefused
 
 
 async def _download_artwork(http: httpx.AsyncClient, url: str, destination: Path) -> None:
-    """``pipeline._download``'s streaming shape, plus the checks it lacks."""
+    """``pipeline._download``'s streaming shape, plus the checks it lacks.
+
+    ``follow_redirects=True`` and no address check, deliberately: the URL
+    reaching here has already been proven to be one a provider client just
+    offered (see ``pick_candidate``), which is this endpoint's whole defence.
+    An operator-supplied URL goes through ``net/guard.guarded_download``
+    instead, which turns the redirects off and validates every hop.
+    """
     async with http.stream("GET", url, follow_redirects=True) as response:
-        # Not raise_for_status(): its message embeds the request URL, and this
-        # exception's text reaches a log line.
-        if response.status_code >= 400:
-            raise DownloadRefused(f"status {response.status_code}")
-        media_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
-        if media_type not in PICK_CONTENT_TYPES:
-            raise DownloadRefused("content type outside the artwork allowlist")
-        size = 0
-        with destination.open("wb") as handle:
-            async for chunk in response.aiter_bytes():
-                size += len(chunk)
-                if size > PICK_MAX_BYTES:
-                    raise DownloadRefused("image exceeded the size cap")
-                handle.write(chunk)
-    if size == 0:
-        raise DownloadRefused("empty body")
+        await store_body(
+            response, destination,
+            max_bytes=PICK_MAX_BYTES, content_types=PICK_CONTENT_TYPES,
+        )
 
 
 def _prepare_jpeg(source: Path, destination: Path) -> None:

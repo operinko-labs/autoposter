@@ -65,6 +65,33 @@ def hosted_poster_url(kind: str, key: str) -> str | None:
     return None
 
 
+def _poster_candidates(config: Config, library: str, title: str) -> tuple[Path, ...]:
+    """Every path a local poster for this collection could occupy, in order.
+
+    One spelling of the layout, so the lookup below and the manual-poster
+    endpoint that *writes* one cannot disagree about where it lives -- the
+    failure mode of two spellings is a file written successfully and then
+    never looked at, which is what ``manual_override_target`` exists to
+    prevent on the item side.
+    """
+    root = Path(config.assets_root)
+    if config.library_folders:
+        folder = root / library / title
+        return tuple(folder / f"poster.{ext}" for ext in _LOCAL_EXTENSIONS)
+    return tuple(root / f"{title}.{ext}" for ext in _LOCAL_EXTENSIONS)
+
+
+def poster_override_target(config: Config, library: str, title: str) -> Path:
+    """Where an operator-supplied poster for this collection is written.
+
+    The first candidate, which is the ``jpg`` one -- and that ordering is
+    load-bearing rather than incidental: the endpoint transcodes to JPEG, and
+    because ``jpg`` is probed first a poster left behind in another format by
+    an earlier hand-placement cannot shadow the new file.
+    """
+    return _poster_candidates(config, library, title)[0]
+
+
 def local_poster_path(config: Config, library: str, title: str) -> Path | None:
     """The operator's own poster for this collection, if one exists.
 
@@ -75,13 +102,7 @@ def local_poster_path(config: Config, library: str, title: str) -> Path | None:
     worked in the tool being replaced: a file here overrides the hosted
     default, so it must never be silently skipped in favour of a download.
     """
-    root = Path(config.assets_root)
-    if config.library_folders:
-        folder = root / library / title
-        candidates = (folder / f"poster.{ext}" for ext in _LOCAL_EXTENSIONS)
-    else:
-        candidates = (root / f"{title}.{ext}" for ext in _LOCAL_EXTENSIONS)
-    for candidate in candidates:
+    for candidate in _poster_candidates(config, library, title):
         if candidate.is_file():
             return candidate
     return None
