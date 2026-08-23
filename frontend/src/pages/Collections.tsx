@@ -86,6 +86,7 @@ export function Collections() {
   const loadStatus = useCallback(async () => {
     const next = await apiFetch<Status>("/api/status");
     if (live.current) setStatus(next);
+    return next;
   }, []);
 
   useEffect(() => {
@@ -162,11 +163,6 @@ export function Collections() {
     setBusy(true);
     setError(null);
     setRequestedPoll(null);
-    // The finish time the watch has to see move, read before the request is
-    // made. Reading it after would risk capturing the requested pass's own
-    // finish on a fast scheduler and declaring completion of a run whose
-    // result is already on screen.
-    const finishedAt = reconcile?.last_finished_at ?? null;
     // Any watch from an earlier press is superseded here, so its interval is
     // torn down rather than left running alongside the new one.
     setWatch(null);
@@ -175,17 +171,24 @@ export function Collections() {
         `/api/scheduled-runs/${RECONCILE_JOB}/run`,
         { method: "POST" }
       );
+      // Re-read rather than patching the row locally: the server has just
+      // nulled last_started_at, and the status endpoint is the authority on
+      // what the scheduler now thinks. It also carries the finish time the
+      // watch has to see move. Reading `status` state instead would risk a
+      // baseline stale from page load -- an autonomous pass that landed
+      // while the tab sat open would have already moved it, and the watch
+      // would mistake that old movement for this request completing. The
+      // run-now endpoint only nulls `last_started_at`, so this read (made
+      // after the POST) still carries the correct pre-request finish time.
+      const fresh = await loadStatus();
       if (live.current) {
+        const job = fresh.scheduled_jobs.find((candidate) => candidate.name === RECONCILE_JOB);
         setRequestedPoll(outcome.poll_seconds);
         setWatch({
-          finishedAt,
+          finishedAt: job?.last_finished_at ?? null,
           ticks: Math.ceil(((outcome.poll_seconds + WATCH_GRACE_SECONDS) * 1000) / POLL_MS),
         });
       }
-      // Re-read rather than patching the row locally: the server has just
-      // nulled last_started_at, and the status endpoint is the authority on
-      // what the scheduler now thinks.
-      await loadStatus();
     } catch (caught) {
       if (live.current) setError((caught as Error).message);
     } finally {

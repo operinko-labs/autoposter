@@ -319,6 +319,49 @@ describe("Collections", () => {
     expect(fetchMock.mock.calls.length).toBe(settled);
   });
 
+  it("captures the completion baseline from the post-request status read, not the stale page-load state", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // Simulates a tab left open past interval_seconds: an autonomous pass
+    // finishes (T1 -> T2) while the page sits idle, so the page-load status
+    // is stale by the time Diff now is pressed. The post-POST status read
+    // (call 2) already carries T2 -- that has to be the watch's baseline, or
+    // the first tick (which still reports T2, since the requested pass has
+    // not landed yet) is mistaken for the requested pass completing.
+    let statusCall = 0;
+    const T1 = "2026-01-02T03:09:05Z";
+    const T2 = "2026-01-02T03:15:05Z";
+    const T3 = "2026-01-02T03:20:05Z";
+    const fetchMock = stubFetch({
+      status: () => {
+        statusCall += 1;
+        if (statusCall === 1) return status({ last_finished_at: T1 });
+        if (statusCall === 2) return status({ last_finished_at: T2 });
+        if (statusCall === 3) return status({ last_finished_at: T2 });
+        return status({ last_finished_at: T3 });
+      },
+    });
+
+    render(<Collections />);
+    fireEvent.click(await screen.findByRole("button", { name: "Diff now" }));
+    expect(await screen.findByText("requested — picks up within 60s")).toBeInTheDocument();
+
+    // First tick still reports T2 (the same autonomous finish the post-POST
+    // read already saw) -- the requested pass has not landed, so the watch
+    // must keep waiting rather than declaring completion.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByText("requested — picks up within 60s")).toBeInTheDocument();
+
+    // A later tick reports T3 -- the requested pass actually landing -- and
+    // only now should the watch complete.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.queryByText(/picks up within/)).not.toBeInTheDocument();
+    expect(callsTo(fetchMock, "/api/status")).toBe(4);
+  });
+
   it("gives up silently once the run's own poll interval plus ten minutes has passed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     // 30s poll + 600s == 630s of ticks. A reconcile slower than that is slow,
