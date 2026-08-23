@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections.posters import apply_poster, posters_enabled
-from autoposter.collections.reconcile import resolve_collision
+from autoposter.collections.reconcile import _edit_collection_summary, resolve_collision
 from autoposter.db.models import ManagedCollection
 
 logger = logging.getLogger(__name__)
@@ -162,7 +162,7 @@ async def reconcile_list_collection(
             collection.addLabel(label)
             collection.sortUpdate(sort)
             if summary:
-                collection.editSummary(summary)
+                _edit_collection_summary(collection, summary)
             added_count = len(items)
             actions.append("created %r with %d item(s)" % (title, len(items)))
         else:
@@ -171,7 +171,7 @@ async def reconcile_list_collection(
             # new hash gets stored while the old summary stays on the collection
             # forever, with every later pass short-circuiting on that hash.
             if summary and getattr(collection, "summary", None) != summary:
-                collection.editSummary(summary)
+                _edit_collection_summary(collection, summary)
                 actions.append("updated the summary of %r" % title)
 
             current = {str(i.ratingKey): i for i in collection.items()}

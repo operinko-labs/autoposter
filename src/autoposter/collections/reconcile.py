@@ -195,6 +195,41 @@ def _create_separator(section, libtype: str):
     return section.collection(SEPARATOR_TITLE)
 
 
+def _edit_collection_summary(collection, summary: str) -> None:
+    """Set a collection's summary through the item-level route, via a raw PUT.
+
+    ``Collection.editSummary`` cannot be used. In plexapi 4.18.2 it goes
+    through ``PlexPartialObject.edit`` (``base.py:725``), which for a
+    collection dispatches to ``section()._edit`` and issues
+    ``PUT /library/sections/{id}/all?type=18&id={ratingKey}&summary.value=...``.
+    Against Plex 1.43.3.10896-cb3ebc72d that route returns **404** (an HTML
+    not-found body) for every collection summary, so every summary edit in
+    this service failed -- the first live reconcile pass rolled back at the
+    separator and left ``managed_collections`` empty.
+
+    Bisected request by request against the live server: the same route with
+    ``summary.value`` for a movie (``type=1``) returns 200, and the same route
+    for a collection's ``title.value``/``titleSort.value`` returns 200 -- only
+    collection + summary is broken. ``PUT /library/metadata/{ratingKey}?``
+    ``summary.value=...&summary.locked=1`` returns 200. So the item-level
+    route is what is used here, with the same raw-query idiom
+    ``_create_separator`` above needs for its POST. ``editSortTitle`` is
+    deliberately left alone: its route is proven working.
+
+    A summary that already matches writes nothing, following this module's
+    rule that an unchanged pass issues no requests -- the Kometa-era
+    separators already carry the target text.
+    """
+    if getattr(collection, "summary", None) == summary:
+        return
+    server = collection._server
+    args = {"summary.value": summary, "summary.locked": 1}
+    server.query(
+        "/library/metadata/%s%s" % (collection.ratingKey, joinArgs(args)),
+        method=server._session.put,
+    )
+
+
 async def _reconcile_separator(
     session: AsyncSession,
     section,
@@ -250,7 +285,7 @@ async def _reconcile_separator(
             else:
                 actions.append("updated %r" % SEPARATOR_TITLE)
 
-            collection.editSummary(SEPARATOR_SUMMARY)
+            _edit_collection_summary(collection, SEPARATOR_SUMMARY)
             collection.editSortTitle(SEPARATOR_SORT_TITLE)
 
             if record is None:
@@ -374,7 +409,7 @@ async def reconcile_content_ratings(
                     )
                     actions.append("updated %r" % bucket.title)
 
-                collection.editSummary(bucket.summary)
+                _edit_collection_summary(collection, bucket.summary)
 
                 if record is None:
                     record = ManagedCollection(

@@ -3,9 +3,16 @@
 The fakes here mirror plexapi's real signatures, which are pinned separately
 in tests/test_plexapi_collection_contract.py.
 """
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+from plexapi.exceptions import NotFound
 from sqlalchemy import select
 
-from autoposter.collections.reconcile import reconcile_content_ratings
+from autoposter.collections.reconcile import (
+    _edit_collection_summary,
+    reconcile_content_ratings,
+)
 from autoposter.db.models import ManagedCollection
 
 LABEL = "autoposter"
@@ -20,15 +27,21 @@ class FakeCollection:
     """Mirrors plexapi's lazy ``labels``: empty until ``reload()`` is called,
     just like a real ``Collection`` fetched from ``section.collections()``."""
 
-    def __init__(self, title, labels=(), rating_key="1"):
+    def __init__(self, title, labels=(), rating_key="1", summary=None):
         self.title = title
         self.ratingKey = rating_key
+        self.summary = summary
         self._real_labels = [type("L", (), {"tag": t})() for t in labels]
         self._labels = []
         self.reloaded = False
         self.updated_filters = None
         self.summary_set = None
+        self.summary_queries = []
         self.labels_added = []
+        # Stands in for ``collection._server``: the summary is written with a
+        # raw item-level PUT, not ``editSummary``.
+        self._server = self
+        self._session = type("Sess", (), {"put": "PUT-SENTINEL"})()
 
     @property
     def labels(self):
@@ -42,7 +55,17 @@ class FakeCollection:
         self.updated_filters = filters
 
     def editSummary(self, summary, locked=True):
-        self.summary_set = summary
+        """Raises the way the live server does. plexapi routes this through
+        ``PUT /library/sections/{id}/all?type=18&...``, which 404s for every
+        collection summary -- see ``reconcile._edit_collection_summary``. Any
+        call site that stops going through the helper reds its test here."""
+        raise NotFound("(404) not_found; /library/sections/42/all?type=18")
+
+    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
+        """Stands in for ``server.query`` -- the item-level summary PUT."""
+        self.summary_queries.append({"key": key, "method": method})
+        self.summary_set = parse_qs(urlsplit(key).query)["summary.value"][0]
+        self.summary = self.summary_set
 
     def addLabel(self, labels, locked=True):
         self.labels_added.append(labels)
@@ -258,3 +281,49 @@ async def test_smart_collection_rows_never_get_reconcile_stats(session):
         assert row.last_added is None
         assert row.last_removed is None
         assert row.last_reconciled_at is None
+
+
+# --- The summary helper itself (_edit_collection_summary) ----------------
+#
+# plexapi's ``Collection.editSummary`` routes through the section
+# (``PUT /library/sections/{id}/all?type=18&...``), which returns 404 for
+# every collection summary on Plex 1.43.3.10896-cb3ebc72d. ``FakeCollection``
+# above raises ``NotFound`` from ``editSummary`` for that reason, so any call
+# site that reverts to it fails rather than silently passing.
+
+
+def test_the_summary_helper_writes_the_item_level_route():
+    collection = FakeCollection("Age 17+ Movies", rating_key="7318", summary="stale")
+
+    _edit_collection_summary(collection, "Movies rated for ages 17 and up.")
+
+    assert len(collection.summary_queries) == 1
+    call = collection.summary_queries[0]
+    assert call["method"] == "PUT-SENTINEL", "must be a PUT, not query's default GET"
+    key = call["key"]
+    assert key.startswith("/library/metadata/7318?"), key
+    args = parse_qs(urlsplit(key).query)
+    assert args["summary.value"] == ["Movies rated for ages 17 and up."]
+    assert args["summary.locked"] == ["1"]
+    assert "/library/sections/" not in key, "the section route is the broken one"
+
+
+def test_the_summary_helper_writes_nothing_when_the_summary_already_matches():
+    collection = FakeCollection("Age 17+ Movies", summary="Already correct.")
+
+    _edit_collection_summary(collection, "Already correct.")
+
+    assert collection.summary_queries == []
+
+
+def test_the_summary_helper_never_calls_plexapis_own_method():
+    """Belt and braces for the two tests above: ``editSummary`` is what the
+    live server rejects, so calling it must be impossible, not merely
+    unobserved."""
+    collection = FakeCollection("Age 17+ Movies", summary=None)
+
+    with pytest.raises(NotFound):
+        collection.editSummary("anything")
+
+    _edit_collection_summary(collection, "A new summary.")
+    assert collection.summary == "A new summary."

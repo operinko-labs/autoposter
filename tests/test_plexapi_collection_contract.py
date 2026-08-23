@@ -36,7 +36,6 @@ def test_library_section_methods_take_the_parameters_we_pass(name, required):
         ("updateFilters", ["libtype", "sort", "filters"]),
         ("addLabel", ["labels"]),
         ("removeLabel", ["labels"]),
-        ("editSummary", ["summary"]),
         ("editSortTitle", ["sortTitle"]),
         ("addItems", ["items"]),
         ("removeItems", ["items"]),
@@ -188,6 +187,44 @@ def test_join_args_url_encodes_a_dict_into_a_query_string():
     assert encoded.startswith("?")
     assert "smart=0" in encoded
     assert "uri=server%3A%2F%2Fabc%2Fcom.plexapp.plugins.library" in encoded
+
+
+# --- Why the collection summary is written by hand (reconcile._edit_collection_summary) ---
+#
+# ``Collection.editSummary`` is NOT in the parametrized pin above, and that is
+# deliberate: this service does not call it. It routes through the section,
+# and that route 404s for collection summaries on Plex 1.43.3.10896-cb3ebc72d.
+# These pin the routing (so an upgrade that fixed it would be noticed) and the
+# ``_session.put`` the replacement is issued through.
+
+
+def test_collection_edit_summary_still_routes_through_the_section():
+    """``editSummary`` -> ``editField`` -> ``PlexPartialObject._edit`` ->
+    ``self.section()._edit(...)``, i.e. a
+    ``PUT /library/sections/{id}/all?type=18&id={ratingKey}&summary.value=...``.
+    That request returns 404 for every collection summary on the target
+    server -- while the same route serves a movie's summary, and a
+    collection's ``title.value``, with a 200. Collection has no ``_edit`` of
+    its own, so the inherited one is what runs.
+
+    If a future plexapi stops routing this way, this test fails and
+    ``reconcile._edit_collection_summary`` should be re-evaluated against a
+    live server rather than assumed still necessary.
+    """
+    from plexapi.base import PlexPartialObject
+    from plexapi.mixins import EditFieldMixin
+
+    assert "editField(" in inspect.getsource(Collection.editSummary)
+    assert "self._edit(" in inspect.getsource(EditFieldMixin.editField)
+    assert [c for c in Collection.__mro__ if "_edit" in c.__dict__] == [PlexPartialObject]
+    assert "self.section()._edit(" in inspect.getsource(PlexPartialObject._edit)
+
+
+def test_plex_server_exposes_the_put_the_item_level_summary_write_uses():
+    """``server._session.put`` is the ``method`` handed to ``query`` for
+    ``PUT /library/metadata/{ratingKey}?summary.value=...`` -- the route that
+    does return 200."""
+    assert callable(requests.Session().put)
 
 
 def test_library_section_collection_fetches_by_title():

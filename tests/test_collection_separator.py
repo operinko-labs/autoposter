@@ -9,6 +9,7 @@ pinned separately in ``tests/test_plexapi_collection_contract.py``.
 """
 from urllib.parse import parse_qs, urlsplit
 
+from plexapi.exceptions import NotFound
 from sqlalchemy import select
 
 from autoposter.collections.reconcile import (
@@ -40,9 +41,14 @@ class FakeCollection:
         self._labels = []
         self.reloaded = False
         self.summary_set = None
+        self.summary_queries = []
         self.sort_title_set = None
         self.labels_added = []
         self.items_added = []
+        # Stands in for ``collection._server``: the summary is written with a
+        # raw item-level PUT, not ``editSummary``.
+        self._server = self
+        self._session = type("Sess", (), {"put": "PUT-SENTINEL"})()
 
     @property
     def labels(self):
@@ -53,8 +59,16 @@ class FakeCollection:
         self._labels = self._real_labels
 
     def editSummary(self, summary, locked=True):
-        self.summary_set = summary
-        self.summary = summary
+        """Raises the way the live server does -- the section route plexapi
+        takes 404s for collection summaries. See
+        ``reconcile._edit_collection_summary``."""
+        raise NotFound("(404) not_found; /library/sections/42/all?type=18")
+
+    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
+        """Stands in for ``server.query`` -- the item-level summary PUT."""
+        self.summary_queries.append({"key": key, "method": method})
+        self.summary_set = parse_qs(urlsplit(key).query)["summary.value"][0]
+        self.summary = self.summary_set
 
     def editSortTitle(self, sortTitle, locked=True):
         self.sort_title_set = sortTitle
@@ -175,6 +189,29 @@ async def test_a_drifted_summary_and_sort_title_are_corrected(session):
     assert theirs.sort_title_set == SEPARATOR_SORT_TITLE
     assert theirs.items_added == []
     assert any("updated" in a.lower() and SEPARATOR_TITLE in a for a in actions)
+    # The summary must go out on the item-level route: the section route
+    # plexapi's own ``editSummary`` takes 404s on the live server.
+    assert len(theirs.summary_queries) == 1
+    assert theirs.summary_queries[0]["key"].startswith("/library/metadata/1?")
+    assert theirs.summary_queries[0]["method"] == "PUT-SENTINEL"
+
+
+async def test_a_separator_already_carrying_the_target_summary_is_not_rewritten(session):
+    """The Kometa-era separators on the live server already have the exact
+    summary this service wants. The sort title still needs correcting, so the
+    update branch runs -- but the summary write must be skipped, per the
+    family's rule that an unchanged value issues no request."""
+    theirs = FakeCollection(
+        SEPARATOR_TITLE, labels=[LABEL], summary=SEPARATOR_SUMMARY, sort_title="wrong",
+    )
+    section = FakeSection({"R"}, existing=[theirs])
+
+    await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
+    )
+
+    assert theirs.summary_queries == []
+    assert theirs.sort_title_set == SEPARATOR_SORT_TITLE
 
 
 async def test_no_members_are_ever_added(session):

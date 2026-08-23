@@ -8,8 +8,10 @@ surface is all that is needed here too.
 """
 import threading
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
+from plexapi.exceptions import NotFound
 
 from autoposter.scheduler.jobs import make_collections_job
 
@@ -25,7 +27,12 @@ class FakeCollection:
     def __init__(self, title, rating_key="1"):
         self.title = title
         self.ratingKey = rating_key
+        self.summary = None
         self._labels = []
+        # Stands in for ``collection._server``: the summary is written with a
+        # raw item-level PUT, not ``editSummary``.
+        self._server = self
+        self._session = type("Sess", (), {"put": "PUT-SENTINEL"})()
 
     @property
     def labels(self):
@@ -38,7 +45,14 @@ class FakeCollection:
         pass
 
     def editSummary(self, summary, locked=True):
-        pass
+        """Raises the way the live server does -- the section route plexapi
+        takes 404s for collection summaries. See
+        ``reconcile._edit_collection_summary``."""
+        raise NotFound("(404) not_found; /library/sections/42/all?type=18")
+
+    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
+        """Stands in for ``server.query`` -- the item-level summary PUT."""
+        self.summary = parse_qs(urlsplit(key).query)["summary.value"][0]
 
     def addLabel(self, labels, locked=True):
         self._labels.append(type("L", (), {"tag": labels})())

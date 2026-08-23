@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 from PIL import Image
+from plexapi.exceptions import NotFound
 from sqlalchemy import select
 
 from autoposter.collections.lists import reconcile_list_collection
@@ -67,11 +68,16 @@ class RatingCollection:
         self._labels = []
         self.updated_filters = None
         self.summary_set = None
+        self.summary_queries = []
         self.sort_title_set = None
         self.labels_added = []
         self.items_added = []
         self.uploaded_bytes = []
         self.locks = 0
+        # Stands in for ``collection._server``: the summary is written with a
+        # raw item-level PUT, not ``editSummary``.
+        self._server = self
+        self._session = type("Sess", (), {"put": "PUT-SENTINEL"})()
 
     @property
     def labels(self):
@@ -84,8 +90,16 @@ class RatingCollection:
         self.updated_filters = filters
 
     def editSummary(self, summary, locked=True):
-        self.summary_set = summary
-        self.summary = summary
+        """Raises the way the live server does -- the section route plexapi
+        takes 404s for collection summaries. See
+        ``reconcile._edit_collection_summary``."""
+        raise NotFound("(404) not_found; /library/sections/42/all?type=18")
+
+    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
+        """Stands in for ``server.query`` -- the item-level summary PUT."""
+        self.summary_queries.append({"key": key, "method": method})
+        self.summary_set = parse_qs(urlsplit(key).query)["summary.value"][0]
+        self.summary = self.summary_set
 
     def editSortTitle(self, sortTitle, locked=True):
         self.sort_title_set = sortTitle
@@ -407,6 +421,10 @@ class ListCollection:
         self.summary = summary
         self.uploaded_bytes = []
         self.locks = 0
+        # Stands in for ``collection._server``: the summary is written with a
+        # raw item-level PUT, not ``editSummary``.
+        self._server = self
+        self._session = type("Sess", (), {"put": "PUT-SENTINEL"})()
 
     def reload(self):
         self._cache = list(self._live)
@@ -432,7 +450,14 @@ class ListCollection:
         pass
 
     def editSummary(self, summary, locked=True):
-        self.summary = summary
+        """Raises the way the live server does -- the section route plexapi
+        takes 404s for collection summaries. See
+        ``reconcile._edit_collection_summary``."""
+        raise NotFound("(404) not_found; /library/sections/42/all?type=18")
+
+    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
+        """Stands in for ``server.query`` -- the item-level summary PUT."""
+        self.summary = parse_qs(urlsplit(key).query)["summary.value"][0]
 
     def addLabel(self, labels, locked=True):
         self._labels.append(type("L", (), {"tag": labels})())
