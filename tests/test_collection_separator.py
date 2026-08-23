@@ -32,13 +32,18 @@ class FakeCollection:
     """Mirrors plexapi's lazy ``labels`` (empty until ``reload()``), plus
     the summary/sort-title fields and edit methods the separator uses."""
 
-    def __init__(self, title, labels=(), rating_key="1", summary="", sort_title=""):
+    def __init__(
+        self, title, labels=(), rating_key="1", summary="", sort_title="",
+        summary_locked=False,
+    ):
         self.title = title
         self.ratingKey = rating_key
         self.summary = summary
         self.titleSort = sort_title
         self._real_labels = [type("L", (), {"tag": t})() for t in labels]
         self._labels = []
+        self._real_fields = [type("F", (), {"name": "summary", "locked": summary_locked})()]
+        self._fields = []
         self.reloaded = False
         self.summary_set = None
         self.summary_queries = []
@@ -54,9 +59,14 @@ class FakeCollection:
     def labels(self):
         return self._labels
 
+    @property
+    def fields(self):
+        return self._fields
+
     def reload(self, **kw):
         self.reloaded = True
         self._labels = self._real_labels
+        self._fields = self._real_fields
 
     def editSummary(self, summary, locked=True):
         """Raises the way the live server does -- the section route plexapi
@@ -65,10 +75,13 @@ class FakeCollection:
         raise NotFound("(404) not_found; /library/sections/42/all?type=18")
 
     def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """Stands in for ``server.query`` -- the item-level summary PUT."""
+        """Stands in for ``server.query`` -- the item-level summary PUT.
+        Mirrors the real ``summary.locked=1`` argument by locking the fake
+        ``summary`` field, so a second pass reads it back as locked."""
         self.summary_queries.append({"key": key, "method": method})
         self.summary_set = parse_qs(urlsplit(key).query)["summary.value"][0]
         self.summary = self.summary_set
+        self._real_fields[0].locked = True
 
     def editSortTitle(self, sortTitle, locked=True):
         self.sort_title_set = sortTitle
@@ -198,11 +211,13 @@ async def test_a_drifted_summary_and_sort_title_are_corrected(session):
 
 async def test_a_separator_already_carrying_the_target_summary_is_not_rewritten(session):
     """The Kometa-era separators on the live server already have the exact
-    summary this service wants. The sort title still needs correcting, so the
-    update branch runs -- but the summary write must be skipped, per the
-    family's rule that an unchanged value issues no request."""
+    summary this service wants, and are already locked. The sort title still
+    needs correcting, so the update branch runs -- but the summary write must
+    be skipped, per the family's rule that an unchanged, already-locked value
+    issues no request."""
     theirs = FakeCollection(
         SEPARATOR_TITLE, labels=[LABEL], summary=SEPARATOR_SUMMARY, sort_title="wrong",
+        summary_locked=True,
     )
     section = FakeSection({"R"}, existing=[theirs])
 
@@ -211,6 +226,27 @@ async def test_a_separator_already_carrying_the_target_summary_is_not_rewritten(
     )
 
     assert theirs.summary_queries == []
+    assert theirs.sort_title_set == SEPARATOR_SORT_TITLE
+
+
+async def test_a_matching_but_unlocked_separator_summary_is_still_written(session):
+    """A separator whose text already matches but whose field is unlocked --
+    the Kometa-era separators' actual starting state -- must still get the
+    write, so the write also locks it. Skipping here would leave it unlocked
+    forever, and a later Plex metadata refresh could clear it."""
+    theirs = FakeCollection(
+        SEPARATOR_TITLE, labels=[LABEL], summary=SEPARATOR_SUMMARY, sort_title="wrong",
+        summary_locked=False,
+    )
+    section = FakeSection({"R"}, existing=[theirs])
+
+    await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
+    )
+
+    assert len(theirs.summary_queries) == 1
+    args = parse_qs(urlsplit(theirs.summary_queries[0]["key"]).query)
+    assert args["summary.locked"] == ["1"]
     assert theirs.sort_title_set == SEPARATOR_SORT_TITLE
 
 

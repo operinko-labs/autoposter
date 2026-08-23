@@ -217,10 +217,22 @@ def _edit_collection_summary(collection, summary: str) -> None:
     deliberately left alone: its route is proven working.
 
     A summary that already matches writes nothing, following this module's
-    rule that an unchanged pass issues no requests -- the Kometa-era
-    separators already carry the target text.
+    rule that an unchanged pass issues no requests -- but only when the
+    field is already locked. ``editSummary(locked=True)`` always locked the
+    field; skipping on text alone would leave a matching-but-unlocked
+    summary unlocked forever -- exactly the Kometa-era separators' starting
+    state, which a later Plex metadata refresh could then clear. ``fields``
+    is a ``cached_data_property`` populated the same lazy way ``labels`` is
+    (see ``load_labels``) -- callers reconciling an existing collection call
+    ``resolve_collision``, which reloads it first. Missing or empty
+    ``fields`` is treated as NOT locked, the same defensiveness ``has_label``
+    uses for ``labels``.
     """
-    if getattr(collection, "summary", None) == summary:
+    locked = any(
+        field.name == "summary" and field.locked
+        for field in (getattr(collection, "fields", None) or [])
+    )
+    if getattr(collection, "summary", None) == summary and locked:
         return
     server = collection._server
     args = {"summary.value": summary, "summary.locked": 1}

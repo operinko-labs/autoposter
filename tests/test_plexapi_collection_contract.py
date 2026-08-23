@@ -223,7 +223,13 @@ def test_collection_edit_summary_still_routes_through_the_section():
 def test_plex_server_exposes_the_put_the_item_level_summary_write_uses():
     """``server._session.put`` is the ``method`` handed to ``query`` for
     ``PUT /library/metadata/{ratingKey}?summary.value=...`` -- the route that
-    does return 200."""
+    does return 200. Pins the same source guarantee as
+    ``test_plex_server_exposes_the_requests_session_the_post_is_issued_through``
+    above: ``_session`` is a real ``requests.Session``, on which ``put`` is
+    just as available as ``post``."""
+    assert "session" in inspect.signature(PlexServer.__init__).parameters
+    source = inspect.getsource(PlexServer.__init__)
+    assert "self._session = session or requests.Session()" in source
     assert callable(requests.Session().put)
 
 

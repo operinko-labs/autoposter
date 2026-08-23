@@ -27,12 +27,14 @@ class FakeCollection:
     """Mirrors plexapi's lazy ``labels``: empty until ``reload()`` is called,
     just like a real ``Collection`` fetched from ``section.collections()``."""
 
-    def __init__(self, title, labels=(), rating_key="1", summary=None):
+    def __init__(self, title, labels=(), rating_key="1", summary=None, summary_locked=False):
         self.title = title
         self.ratingKey = rating_key
         self.summary = summary
         self._real_labels = [type("L", (), {"tag": t})() for t in labels]
         self._labels = []
+        self._real_fields = [type("F", (), {"name": "summary", "locked": summary_locked})()]
+        self._fields = []
         self.reloaded = False
         self.updated_filters = None
         self.summary_set = None
@@ -47,9 +49,14 @@ class FakeCollection:
     def labels(self):
         return self._labels
 
+    @property
+    def fields(self):
+        return self._fields
+
     def reload(self, **kw):
         self.reloaded = True
         self._labels = self._real_labels
+        self._fields = self._real_fields
 
     def updateFilters(self, libtype=None, limit=None, sort=None, filters=None, **kw):
         self.updated_filters = filters
@@ -62,10 +69,13 @@ class FakeCollection:
         raise NotFound("(404) not_found; /library/sections/42/all?type=18")
 
     def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """Stands in for ``server.query`` -- the item-level summary PUT."""
+        """Stands in for ``server.query`` -- the item-level summary PUT.
+        Mirrors the real ``summary.locked=1`` argument by locking the fake
+        ``summary`` field, so a second pass reads it back as locked."""
         self.summary_queries.append({"key": key, "method": method})
         self.summary_set = parse_qs(urlsplit(key).query)["summary.value"][0]
         self.summary = self.summary_set
+        self._real_fields[0].locked = True
 
     def addLabel(self, labels, locked=True):
         self.labels_added.append(labels)
@@ -309,11 +319,34 @@ def test_the_summary_helper_writes_the_item_level_route():
 
 
 def test_the_summary_helper_writes_nothing_when_the_summary_already_matches():
-    collection = FakeCollection("Age 17+ Movies", summary="Already correct.")
+    """The skip requires both the text to match and the field to already be
+    locked -- a matching-but-unlocked summary must still be written, see the
+    next test."""
+    collection = FakeCollection(
+        "Age 17+ Movies", summary="Already correct.", summary_locked=True,
+    )
+    collection.reload()
 
     _edit_collection_summary(collection, "Already correct.")
 
     assert collection.summary_queries == []
+
+
+def test_the_summary_helper_writes_when_the_matching_summary_is_unlocked():
+    """The Kometa-era separators' starting state: text already matches, but
+    the field was never locked. The write must still happen -- skipping here
+    would leave it unlocked forever, so a later Plex metadata refresh could
+    clear it."""
+    collection = FakeCollection(
+        "Age 17+ Movies", summary="Already correct.", summary_locked=False,
+    )
+    collection.reload()
+
+    _edit_collection_summary(collection, "Already correct.")
+
+    assert len(collection.summary_queries) == 1
+    args = parse_qs(urlsplit(collection.summary_queries[0]["key"]).query)
+    assert args["summary.locked"] == ["1"]
 
 
 def test_the_summary_helper_never_calls_plexapis_own_method():
