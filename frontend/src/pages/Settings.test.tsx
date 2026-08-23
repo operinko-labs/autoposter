@@ -6,7 +6,7 @@
  * that matched loosely would let a paraphrase through, and a paraphrase is
  * the thing the terms forbid.
  */
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
@@ -106,11 +106,18 @@ describe("Settings configuration", () => {
     expect(screen.getByRole("heading", { name: "Poster" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Text" })).toBeInTheDocument();
     expect(screen.getByText("Excluded libraries")).toBeInTheDocument();
-    // A short scalar list renders comma-joined in its value cell.
-    expect(screen.getByText("Muskarit, Photos")).toBeInTheDocument();
-    // Plain scalars render as values.
-    expect(screen.getByText("http://plex:32400")).toBeInTheDocument();
-    expect(screen.getByText("Comfortaa-Medium.ttf")).toBeInTheDocument();
+    // The values are editable fields now rather than text, so they are read
+    // off the widgets -- the row labels above are still plain text.
+    expect(screen.getByLabelText("plex.excluded_libraries[0]")).toHaveValue(
+      "Muskarit",
+    );
+    expect(screen.getByLabelText("plex.excluded_libraries[1]")).toHaveValue(
+      "Photos",
+    );
+    expect(screen.getByLabelText("plex.url")).toHaveValue("http://plex:32400");
+    expect(screen.getByLabelText("artwork.poster.text.font")).toHaveValue(
+      "Comfortaa-Medium.ttf",
+    );
     // And the raw JSON <pre> dump is gone.
     expect(document.querySelector("pre")).toBeNull();
     expect(document.body.textContent).not.toContain("{");
@@ -126,15 +133,26 @@ describe("Settings configuration", () => {
     expect(document.body.textContent).not.toContain(REDACTED);
   });
 
-  it("renders booleans as on/off and an empty string as (not set)", async () => {
+  it("renders booleans as toggles reflecting their state", async () => {
     stubConfig();
     await renderSettings();
 
-    // badges.enabled=true, artwork.use_logo=true -> "on";
-    // badges.upload_to_plex=false, notifications.enabled=false -> "off".
-    expect(screen.getAllByText("on")).toHaveLength(2);
-    expect(screen.getAllByText("off")).toHaveLength(2);
-    expect(screen.getByText("(not set)")).toBeInTheDocument();
+    // Was: on/off pills. The editor makes them toggles, so the state that
+    // used to be a word is now the checkbox's own checked-ness.
+    expect(screen.getByLabelText("badges.enabled")).toBeChecked();
+    expect(screen.getByLabelText("artwork.use_logo")).toBeChecked();
+    expect(screen.getByLabelText("badges.upload_to_plex")).not.toBeChecked();
+    expect(screen.getByLabelText("notifications.enabled")).not.toBeChecked();
+  });
+
+  it("renders an empty string as an empty text field, not as (not set)", async () => {
+    stubConfig();
+    await renderSettings();
+
+    // An empty string is a value the operator can type into; only a genuine
+    // null (which the API refuses as an override) stays a read-only marker.
+    expect(screen.getByLabelText("notifications.url")).toHaveValue("");
+    expect(screen.queryByText("(not set)")).toBeNull();
   });
 
   it("renders a section it has never seen, without a frontend change", async () => {
@@ -150,7 +168,10 @@ describe("Settings configuration", () => {
       screen.getByRole("heading", { name: "Frobnicator" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Warp factor")).toBeInTheDocument();
-    expect(screen.getByText("9")).toBeInTheDocument();
+    // ...and it is editable on the same shape-driven terms, with no entry in
+    // any widget table.
+    expect(screen.getByLabelText("frobnicator.warp_factor")).toHaveValue(9);
+    expect(screen.getByLabelText("frobnicator.reticulate_splines")).toBeChecked();
   });
 
   it("surfaces a failed config read instead of loading forever", async () => {
@@ -170,5 +191,278 @@ describe("Settings configuration", () => {
     // The attribution is static and must survive an API failure -- it is a
     // licence condition, not a view of server data.
     expect(screen.getByAltText("TMDB")).toBeInTheDocument();
+  });
+});
+
+/** The editor's own fixture: it carries the two provenance keys the enriched
+ * GET adds, one frozen prefix with the server's reason, and one field of each
+ * editable value type. */
+const EDITOR_CONFIG = {
+  version: "abc123",
+  workers: 5,
+  plex: { url: "http://plex:32400", excluded_libraries: ["Muskarit", "Photos"] },
+  badges: { enabled: true },
+  artwork: { poster: { text: { min_point_size: 20 } } },
+  secrets: { plex_token: REDACTED },
+  overridden_paths: [] as string[],
+  frozen_paths: { workers: "the worker pool is sized once, at startup" },
+};
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** Routes by method rather than by call order: a save is a PUT followed by a
+ * re-read GET, and a test that answered "first call, second call" would pass
+ * against a page that sent them in either order. `config` may be a list, in
+ * which case each GET takes the next one and the last repeats. */
+function stubApi({
+  config = EDITOR_CONFIG as unknown,
+  put = json({ version_before: "abc123", version_after: "abc123", restart_required: [] }),
+}: { config?: unknown | unknown[]; put?: Response } = {}) {
+  const configs = Array.isArray(config) ? [...config] : [config];
+  const fetchMock = vi.fn((_input: string, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "GET") {
+      return Promise.resolve(json(configs.length > 1 ? configs.shift() : configs[0]));
+    }
+    return Promise.resolve(put.clone());
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** The body of the one PUT the page sent. */
+function putDocument(fetchMock: ReturnType<typeof stubApi>): unknown {
+  const calls = fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT");
+  expect(calls).toHaveLength(1);
+  expect(calls[0][0]).toBe("/api/config/overrides");
+  return JSON.parse(String(calls[0][1]?.body));
+}
+
+async function save() {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  });
+}
+
+/** The row a field sits in, so an inline error can be asserted to be *at* the
+ * field rather than merely somewhere on a page that also shows the field. */
+function rowOf(field: HTMLElement): HTMLElement {
+  const row = field.closest(".config-row");
+  if (row === null) throw new Error("field is not inside a config row");
+  return row as HTMLElement;
+}
+
+describe("Settings editor", () => {
+  it("sends a document carrying only the touched path", async () => {
+    const fetchMock = stubApi();
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await save();
+
+    // The overrides document is a delta, not a round-trip of the running
+    // config: everything present in it is something the operator changed.
+    // A builder that sent the whole config would store `workers`, `plex` and
+    // the rest as overrides, freezing today's values against every future
+    // change to the mounted YAML.
+    expect(putDocument(fetchMock)).toEqual({
+      document: { artwork: { poster: { text: { min_point_size: 24 } } } },
+    });
+  });
+
+  it("reports the version move and the restart list the save returned", async () => {
+    stubApi({
+      put: json({
+        version_before: "abc123",
+        version_after: "def456",
+        restart_required: ["workers"],
+      }),
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await save();
+
+    expect(screen.getByText(/abc123 → def456/)).toBeInTheDocument();
+    expect(screen.getByText(/Restart required to apply: workers/)).toBeInTheDocument();
+  });
+
+  it("lands a 422 inline at the field its path names", async () => {
+    stubApi({
+      put: json(
+        { detail: [{ path: "plex.url", message: "Input should be a valid URL" }] },
+        422,
+      ),
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("plex.url"), {
+      target: { value: "not a url" },
+    });
+    await save();
+
+    expect(
+      within(rowOf(screen.getByLabelText("plex.url"))).getByText(
+        "Input should be a valid URL",
+      ),
+    ).toBeInTheDocument();
+    // A rejected save must not be reported as a save.
+    expect(screen.queryByText(/Saved/)).toBeNull();
+  });
+
+  it("maps FastAPI's own 422 shape to the same dotted path", async () => {
+    // A malformed body is rejected by the request validator before the
+    // handler runs, and that error has `loc`/`msg`, not `path`/`message`.
+    // Both shapes arrive at this page through the same endpoint.
+    stubApi({
+      put: json(
+        {
+          detail: [
+            {
+              loc: ["body", "document", "plex", "url"],
+              msg: "Input should be a valid URL",
+              type: "url_parsing",
+            },
+          ],
+        },
+        422,
+      ),
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("plex.url"), {
+      target: { value: "not a url" },
+    });
+    await save();
+
+    expect(
+      within(rowOf(screen.getByLabelText("plex.url"))).getByText(
+        "Input should be a valid URL",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("marks an edited frozen field as needing a restart, with the server's reason", async () => {
+    stubApi();
+    await renderSettings();
+
+    // Unedited, the marker would be noise: nothing is pending.
+    expect(screen.queryByText("restart to apply")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+
+    const marker = within(rowOf(screen.getByLabelText("workers"))).getByText(
+      "restart to apply",
+    );
+    expect(marker).toHaveAttribute("title", "the worker pool is sized once, at startup");
+    // A live path stays unmarked -- a page that marked everything would be
+    // telling the operator to restart for a change that already took effect.
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    expect(
+      within(rowOf(screen.getByLabelText("artwork.poster.text.min_point_size")))
+        .queryByText("restart to apply"),
+    ).toBeNull();
+  });
+
+  it("badges an overridden field and clears it by omission, never by null", async () => {
+    const overridden = { ...EDITOR_CONFIG, workers: 9, overridden_paths: ["workers"] };
+    const fetchMock = stubApi({ config: [overridden, EDITOR_CONFIG] });
+    await renderSettings();
+
+    const badge = within(rowOf(screen.getByLabelText("workers"))).getByText("overridden");
+    expect(badge).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear override for workers" }));
+    await save();
+
+    // Reverting to the mounted file's value is expressed by the key being
+    // absent. Writing null asks the API for a null-valued setting, which it
+    // rejects -- so a null here is a clear control that cannot clear.
+    const body = putDocument(fetchMock);
+    expect(body).toEqual({ document: {} });
+    expect(JSON.stringify(body)).not.toContain("null");
+
+    // The page re-reads after saving, so the provenance the server now
+    // reports is what shows.
+    expect(
+      within(rowOf(screen.getByLabelText("workers"))).queryByText("overridden"),
+    ).toBeNull();
+  });
+
+  it("never makes a secret editable", async () => {
+    stubApi();
+    await renderSettings();
+
+    const panel = screen.getByRole("heading", { name: "Secrets" }).closest("section");
+    expect(panel).not.toBeNull();
+    expect(within(panel as HTMLElement).queryAllByRole("textbox")).toHaveLength(0);
+    expect(within(panel as HTMLElement).getByText("redacted")).toBeInTheDocument();
+    expect(screen.queryByLabelText("secrets.plex_token")).toBeNull();
+  });
+
+  it("does not render the provenance keys as configuration", async () => {
+    stubApi();
+    await renderSettings();
+
+    // `overridden_paths` and `frozen_paths` are not settings; rendered as
+    // sections they would offer the operator an edit the API cannot accept.
+    expect(screen.queryByRole("heading", { name: "Frozen paths" })).toBeNull();
+    expect(screen.queryByText("Overridden paths")).toBeNull();
+    expect(document.body.textContent).not.toContain(
+      "the worker pool is sized once, at startup",
+    );
+    // `version` is a plain config field and keeps rendering.
+    expect(screen.getByLabelText("version")).toHaveValue("abc123");
+  });
+
+  it("picks the widget from the value's type", async () => {
+    stubApi();
+    await renderSettings();
+
+    expect(screen.getByLabelText("badges.enabled")).toHaveAttribute("type", "checkbox");
+    expect(screen.getByLabelText("workers")).toHaveAttribute("type", "number");
+    expect(screen.getByLabelText("plex.url")).toHaveAttribute("type", "text");
+    expect(screen.getByLabelText("plex.excluded_libraries[0]")).toHaveAttribute(
+      "type",
+      "text",
+    );
+  });
+
+  it("edits a string list as a whole list at its own path", async () => {
+    const fetchMock = stubApi();
+    await renderSettings();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to plex.excluded_libraries" }));
+    fireEvent.change(screen.getByLabelText("plex.excluded_libraries[2]"), {
+      target: { value: "Anime" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove plex.excluded_libraries[0]" }),
+    );
+    await save();
+
+    // A list is one value: the document carries the resulting list, not a
+    // per-index patch the API has no way to merge.
+    expect(putDocument(fetchMock)).toEqual({
+      document: { plex: { excluded_libraries: ["Photos", "Anime"] } },
+    });
+  });
+
+  it("toggles a boolean into the document", async () => {
+    const fetchMock = stubApi();
+    await renderSettings();
+
+    fireEvent.click(screen.getByLabelText("badges.enabled"));
+    await save();
+
+    expect(putDocument(fetchMock)).toEqual({ document: { badges: { enabled: false } } });
   });
 });

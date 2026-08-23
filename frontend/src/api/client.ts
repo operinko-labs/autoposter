@@ -52,11 +52,17 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
 
 export class ApiError extends Error {
   readonly status: number;
+  /** The `detail` body as the server sent it, kept alongside the flattened
+   * message because a 422 from the config editor is a *list* of per-field
+   * errors: the page has to place each one at the field its path names, and
+   * a single string cannot say which field it belongs to. */
+  readonly detail: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, detail: unknown = undefined) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -78,7 +84,8 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   }
 
   if (!response.ok) {
-    throw new ApiError(response.status, await errorMessage(response));
+    const { message, detail } = await errorBody(response);
+    throw new ApiError(response.status, message, detail);
   }
 
   if (response.status === 204) return undefined as T;
@@ -179,12 +186,26 @@ export async function apiFetchNdjson(
 }
 
 async function errorMessage(response: Response): Promise<string> {
+  return (await errorBody(response)).message;
+}
+
+async function errorBody(
+  response: Response,
+): Promise<{ message: string; detail: unknown }> {
+  const fallback = `request failed with ${response.status}`;
   try {
     const body = await response.json();
-    if (body && typeof body.detail === "string") return body.detail;
+    if (body && typeof body.detail === "string") {
+      return { message: body.detail, detail: body.detail };
+    }
+    if (body && body.detail !== undefined) {
+      // A structured detail (FastAPI's validation list, or the config
+      // editor's) has no single sentence in it; the caller unpacks it.
+      return { message: fallback, detail: body.detail };
+    }
   } catch {
     // A non-JSON error body (a proxy's HTML 502, say) is not worth surfacing
     // verbatim to the user.
   }
-  return `request failed with ${response.status}`;
+  return { message: fallback, detail: undefined };
 }

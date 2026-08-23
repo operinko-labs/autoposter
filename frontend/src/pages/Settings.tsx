@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { apiFetch } from "../api/client";
-import type { ConfigResponse } from "../api/types";
+import { ApiError, apiFetch } from "../api/client";
+import type {
+  ConfigResponse,
+  ConfigSaveResponse,
+  OverridesDocument,
+} from "../api/types";
 /** Imported rather than referenced as `/tmdb-logo.png` from `public/`. Vite
  * copies `public/` to the *root* of `dist/`, which `src/autoposter/api/spa.py`
  * does not serve -- it mounts `/assets` and answers everything else with
@@ -34,6 +38,139 @@ function labelFor(key: string): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Keys the enriched GET adds that are provenance, not configuration.
+ * Rendering them as sections would offer the operator an edit the API is
+ * bound to reject. */
+const PROVENANCE_KEYS = ["overridden_paths", "frozen_paths"];
+
+// --- the overrides document -------------------------------------------------
+//
+// The document is a *delta*: it holds only the fields the operator changed,
+// nested the way the config is. Two consequences drive every helper below.
+//
+//   - It is never built from the whole config. Round-tripping the config
+//     would store today's values as overrides, freezing them against every
+//     future change to the git-owned YAML.
+//   - Reverting a field is its key going *away*. `null` is a value the API
+//     validates like any other, and a null-valued setting is almost always
+//     invalid -- so a clear control that wrote null could not clear.
+
+function hasPath(document: OverridesDocument, path: string): boolean {
+  const [head, ...rest] = path.split(".");
+  if (!(head in document)) return false;
+  if (rest.length === 0) return true;
+  const child = document[head];
+  return isPlainObject(child) && hasPath(child, rest.join("."));
+}
+
+function readPath(source: Record<string, unknown>, path: string): unknown {
+  const [head, ...rest] = path.split(".");
+  const value = source[head];
+  if (rest.length === 0) return value;
+  return isPlainObject(value) ? readPath(value, rest.join(".")) : undefined;
+}
+
+function withPath(
+  document: OverridesDocument,
+  path: string,
+  value: unknown,
+): OverridesDocument {
+  const [head, ...rest] = path.split(".");
+  if (rest.length === 0) return { ...document, [head]: value };
+  const child = document[head];
+  return {
+    ...document,
+    [head]: withPath(isPlainObject(child) ? child : {}, rest.join("."), value),
+  };
+}
+
+function withoutPath(
+  document: OverridesDocument,
+  path: string,
+): OverridesDocument {
+  const [head, ...rest] = path.split(".");
+  if (!(head in document)) return document;
+  const dropHead = () => {
+    const kept = { ...document };
+    delete kept[head];
+    return kept;
+  };
+  if (rest.length === 0) return dropHead();
+  const child = document[head];
+  if (!isPlainObject(child)) return document;
+  const pruned = withoutPath(child, rest.join("."));
+  // An emptied branch is not a change; leaving `{}` behind would send a
+  // section the operator just cleared.
+  return Object.keys(pruned).length === 0
+    ? dropHead()
+    : { ...document, [head]: pruned };
+}
+
+/** The document as the server currently holds it, rebuilt from the paths it
+ * says are overridden and the values it is serving for them (an override
+ * wins the merge, so the served value *is* the stored one). Without this, a
+ * save of one field would drop every override the operator saved earlier. */
+function documentFromConfig(config: ConfigResponse): OverridesDocument {
+  const paths = config.overridden_paths;
+  if (!Array.isArray(paths)) return {};
+  let document: OverridesDocument = {};
+  for (const path of paths) {
+    if (typeof path !== "string") continue;
+    const value = readPath(config, path);
+    if (value === undefined) continue;
+    document = withPath(document, path, value);
+  }
+  return document;
+}
+
+/** The reason a restart is needed for `path`, or undefined if it is live.
+ * `frozen_paths` keys are prefixes: `notifications` freezes everything under
+ * it. */
+function frozenReason(
+  frozen: Record<string, string>,
+  path: string,
+): string | undefined {
+  for (const [prefix, reason] of Object.entries(frozen)) {
+    if (path === prefix || path.startsWith(`${prefix}.`)) return reason;
+  }
+  return undefined;
+}
+
+/** A 422's `detail` flattened to path -> message.
+ *
+ * Two shapes arrive at this page through one endpoint: the handler's own
+ * `{path, message}` entries, and FastAPI's `{loc, msg}` when the request
+ * validator rejects the body before the handler runs. `loc` is a segment
+ * list rooted at the request body, so the field's own path is what follows
+ * "document". */
+function fieldErrors(detail: unknown): Record<string, string> {
+  if (!Array.isArray(detail)) return {};
+  const errors: Record<string, string> = {};
+  for (const entry of detail) {
+    if (!isPlainObject(entry)) continue;
+    if (typeof entry.path === "string") {
+      errors[entry.path] = String(entry.message ?? "invalid value");
+    } else if (Array.isArray(entry.loc)) {
+      const segments = entry.loc.map(String);
+      const start = segments.indexOf("document");
+      const path = (start === -1 ? segments : segments.slice(start + 1)).join(".");
+      errors[path] = String(entry.msg ?? "invalid value");
+    }
+  }
+  return errors;
+}
+
+/** Everything a row needs to be editable. `null` in a row's place of this is
+ * how the secrets panel stays read-only. */
+interface Editor {
+  document: OverridesDocument;
+  overridden: string[];
+  frozen: Record<string, string>;
+  errors: Record<string, string>;
+  setValue: (path: string, value: unknown) => void;
+  clear: (path: string) => void;
 }
 
 function ScalarValue({ value }: { value: unknown }) {
@@ -79,32 +216,206 @@ function ListValue({ value }: { value: unknown[] }) {
   );
 }
 
+/** A string list, edited as a list rather than as a comma-joined string: the
+ * document carries the whole list at its own path, because that is the unit
+ * the API merges. */
+function StringListField({
+  path,
+  value,
+  onChange,
+}: {
+  path: string;
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  return (
+    <span className="config-list-edit">
+      {value.map((item, index) => (
+        <span className="config-list-item" key={index}>
+          <input
+            type="text"
+            aria-label={`${path}[${index}]`}
+            value={item}
+            onChange={(event) =>
+              onChange(value.map((v, i) => (i === index ? event.target.value : v)))
+            }
+          />
+          <button
+            type="button"
+            aria-label={`Remove ${path}[${index}]`}
+            onClick={() => onChange(value.filter((_, i) => i !== index))}
+          >
+            Remove
+          </button>
+        </span>
+      ))}
+      <button
+        type="button"
+        aria-label={`Add to ${path}`}
+        onClick={() => onChange([...value, ""])}
+      >
+        Add
+      </button>
+    </span>
+  );
+}
+
+/** The widget is chosen from the value the *server* serves, not from what is
+ * currently typed: picking off the pending value would swap a number input
+ * for a text one the moment the field was cleared, losing focus mid-edit.
+ * A type with no editor -- null, a list of objects, a redaction -- keeps the
+ * read-only rendering, which is also how a schema this page has never seen
+ * stays safe. */
+function Field({
+  path,
+  base,
+  current,
+  editor,
+}: {
+  path: string;
+  base: unknown;
+  current: unknown;
+  editor: Editor | null;
+}) {
+  const readOnly = (
+    <>
+      {Array.isArray(current) ? (
+        <ListValue value={current} />
+      ) : (
+        <ScalarValue value={current} />
+      )}
+    </>
+  );
+  if (editor === null || base === REDACTED_MARKER) return readOnly;
+
+  if (typeof base === "boolean") {
+    return (
+      <input
+        type="checkbox"
+        aria-label={path}
+        checked={current === true}
+        onChange={(event) => editor.setValue(path, event.target.checked)}
+      />
+    );
+  }
+  if (typeof base === "number") {
+    return (
+      <input
+        type="number"
+        aria-label={path}
+        value={typeof current === "number" ? String(current) : ""}
+        onChange={(event) => {
+          const raw = event.target.value;
+          if (raw === "") editor.clear(path);
+          else editor.setValue(path, Number(raw));
+        }}
+      />
+    );
+  }
+  if (typeof base === "string") {
+    return (
+      <input
+        type="text"
+        aria-label={path}
+        value={typeof current === "string" ? current : ""}
+        onChange={(event) => editor.setValue(path, event.target.value)}
+      />
+    );
+  }
+  if (Array.isArray(base) && base.every((item) => typeof item === "string")) {
+    return (
+      <StringListField
+        path={path}
+        value={(Array.isArray(current) ? current : []).map(String)}
+        onChange={(next) => editor.setValue(path, next)}
+      />
+    );
+  }
+  return readOnly;
+}
+
+function ConfigRow({
+  name,
+  path,
+  value,
+  editor,
+}: {
+  name: string;
+  path: string;
+  value: unknown;
+  editor: Editor | null;
+}) {
+  const edited = editor !== null && hasPath(editor.document, path);
+  const current = edited && editor !== null ? readPath(editor.document, path) : value;
+  const restart =
+    edited && editor !== null ? frozenReason(editor.frozen, path) : undefined;
+  const error = editor?.errors[path];
+
+  return (
+    <div className="config-row">
+      <span className="config-key">{labelFor(name)}</span>
+      <span className="config-value">
+        <Field path={path} base={value} current={current} editor={editor} />
+        {editor !== null && editor.overridden.includes(path) && (
+          <>
+            <span className="config-pill overridden">overridden</span>
+            <button
+              type="button"
+              className="link-button"
+              aria-label={`Clear override for ${path}`}
+              onClick={() => editor.clear(path)}
+            >
+              Clear
+            </button>
+          </>
+        )}
+        {restart !== undefined && (
+          <span className="config-pill restart" title={restart}>
+            restart to apply
+          </span>
+        )}
+        {error !== undefined && (
+          <span className="config-field-error" role="alert">
+            {error}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
 /** Recursive renderer driven entirely by the response's shape: scalars and
  * lists become label/value rows, nested objects become indented subsections.
  * Nothing here names a config field, so a new key appears without a frontend
- * change. */
-function ConfigNode({ value }: { value: Record<string, unknown> }) {
+ * change. `path` accumulates the dotted path the API speaks in. */
+function ConfigNode({
+  value,
+  path = "",
+  editor = null,
+}: {
+  value: Record<string, unknown>;
+  path?: string;
+  editor?: Editor | null;
+}) {
   return (
     <div className="config-node">
-      {Object.entries(value).map(([key, entry]) =>
-        isPlainObject(entry) ? (
+      {Object.entries(value).map(([key, entry]) => {
+        const childPath = path === "" ? key : `${path}.${key}`;
+        return isPlainObject(entry) ? (
           <div className="config-subsection" key={key}>
             <h3>{labelFor(key)}</h3>
-            <ConfigNode value={entry} />
+            <ConfigNode value={entry} path={childPath} editor={editor} />
           </div>
         ) : (
-          <div className="config-row" key={key}>
-            <span className="config-key">{labelFor(key)}</span>
-            <span className="config-value">
-              {Array.isArray(entry) ? (
-                <ListValue value={entry} />
-              ) : (
-                <ScalarValue value={entry} />
-              )}
-            </span>
-          </div>
-        ),
-      )}
+          <ConfigRow
+            key={key}
+            name={key}
+            path={childPath}
+            value={entry}
+            editor={editor}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -117,8 +428,16 @@ function ConfigNode({ value }: { value: Record<string, unknown> }) {
  * pinned last -- the server already appends it last, but an all-redacted
  * panel drifting into the middle of the page on a server refactor would be a
  * regression worth defending against here. */
-function ConfigSections({ config }: { config: ConfigResponse }) {
-  const entries = Object.entries(config);
+function ConfigSections({
+  config,
+  editor,
+}: {
+  config: ConfigResponse;
+  editor: Editor;
+}) {
+  const entries = Object.entries(config).filter(
+    ([key]) => !PROVENANCE_KEYS.includes(key),
+  );
   const general = entries.filter(([, value]) => !isPlainObject(value));
   const sections = entries
     .filter((entry): entry is [string, Record<string, unknown>] =>
@@ -133,13 +452,20 @@ function ConfigSections({ config }: { config: ConfigResponse }) {
       {general.length > 0 && (
         <section className="panel config-section">
           <h2>General</h2>
-          <ConfigNode value={Object.fromEntries(general)} />
+          <ConfigNode value={Object.fromEntries(general)} editor={editor} />
         </section>
       )}
       {sections.map(([key, value]) => (
         <section className="panel config-section" key={key}>
           <h2>{labelFor(key)}</h2>
-          <ConfigNode value={value} />
+          {/* Secrets are environment-only and the API refuses a document
+              carrying one at any depth, so the panel gets no editor at all
+              rather than disabled inputs. */}
+          <ConfigNode
+            value={value}
+            path={key}
+            editor={key === "secrets" ? null : editor}
+          />
         </section>
       ))}
     </>
@@ -149,12 +475,28 @@ function ConfigSections({ config }: { config: ConfigResponse }) {
 export function Settings() {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // `saved` is the document as the server holds it; `document` is that plus
+  // whatever is pending. Dirtiness is the difference between the two, so
+  // editing a field back to its stored value stops being a change.
+  const [savedDocument, setSavedDocument] = useState<OverridesDocument>({});
+  const [pendingDocument, setPendingDocument] = useState<OverridesDocument>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [result, setResult] = useState<ConfigSaveResponse | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const adopt = useCallback((response: ConfigResponse) => {
+    const stored = documentFromConfig(response);
+    setConfig(response);
+    setSavedDocument(stored);
+    setPendingDocument(stored);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     apiFetch<ConfigResponse>("/api/config")
       .then((response) => {
-        if (!cancelled) setConfig(response);
+        if (!cancelled) adopt(response);
       })
       .catch((caught: Error) => {
         if (!cancelled) setError(caught.message);
@@ -162,7 +504,59 @@ export function Settings() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [adopt]);
+
+  const editor: Editor = {
+    document: pendingDocument,
+    overridden: Array.isArray(config?.overridden_paths)
+      ? config.overridden_paths.filter(
+          (path): path is string => typeof path === "string",
+        )
+      : [],
+    frozen: isPlainObject(config?.frozen_paths)
+      ? Object.fromEntries(
+          Object.entries(config.frozen_paths).map(([key, reason]) => [
+            key,
+            String(reason),
+          ]),
+        )
+      : {},
+    errors,
+    setValue: (path, value) =>
+      setPendingDocument((current) => withPath(current, path, value)),
+    // Clearing removes the key. It never writes null -- see the document
+    // helpers above.
+    clear: (path) => setPendingDocument((current) => withoutPath(current, path)),
+  };
+
+  const pending = JSON.stringify(pendingDocument, null, 2);
+  const dirty = pending !== JSON.stringify(savedDocument, null, 2);
+
+  async function save() {
+    setSaving(true);
+    setErrors({});
+    setSaveError(null);
+    setResult(null);
+    try {
+      const response = await apiFetch<ConfigSaveResponse>("/api/config/overrides", {
+        method: "PUT",
+        body: JSON.stringify({ document: pendingDocument }),
+      });
+      setResult(response);
+      // Provenance is the server's to report: which paths are overridden now
+      // is a fact about what it stored, not about what was typed here.
+      adopt(await apiFetch<ConfigResponse>("/api/config"));
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 422) {
+        setErrors(fieldErrors(caught.detail));
+        setSaveError("The server rejected these settings.");
+      } else {
+        setSaveError((caught as Error).message);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <>
@@ -214,12 +608,52 @@ export function Settings() {
       <section className="panel">
         <h2>Running configuration</h2>
         <p className="muted config-note">
-          Read-only. Every secret is redacted by the server and never sent to
-          this page. Editing arrives with the config editor (phase 6c).
+          Edit a field and save to store it as an override. Overrides are kept
+          by this service and merged over the deployed configuration file;
+          clearing one hands the setting back to that file. Secrets are
+          redacted by the server, never sent to this page, and never editable
+          here.
         </p>
         {config === null && <p className="muted">Loading…</p>}
+        {result !== null && (
+          <>
+            <p className="config-saved">
+              {`Saved. Render version ${result.version_before} → ${result.version_after}.`}
+            </p>
+            {result.restart_required.length > 0 && (
+              <p className="config-restart">
+                {`Restart required to apply: ${result.restart_required.join(", ")}`}
+              </p>
+            )}
+          </>
+        )}
       </section>
-      {config !== null && <ConfigSections config={config} />}
+
+      {dirty && (
+        <section className="panel config-pending">
+          <h2>Pending changes</h2>
+          {/* The document itself, because it is what will be stored and what
+              every error below is reported against. */}
+          <pre className="config-document">{pending}</pre>
+          {saveError !== null && <p className="page-error">{saveError}</p>}
+          {/* An error naming a path that is not in the document has no field
+              to sit at -- a malformed body reports at the body itself. It is
+              still a reason the save failed, so it is shown rather than
+              dropped. */}
+          {Object.entries(errors)
+            .filter(([path]) => !hasPath(pendingDocument, path))
+            .map(([path, message]) => (
+              <p className="page-error" key={path}>
+                {path === "" ? message : `${path}: ${message}`}
+              </p>
+            ))}
+          <button type="button" onClick={() => void save()} disabled={saving}>
+            Save
+          </button>
+        </section>
+      )}
+
+      {config !== null && <ConfigSections config={config} editor={editor} />}
     </>
   );
 }

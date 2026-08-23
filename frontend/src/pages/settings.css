@@ -79,6 +79,12 @@
 .config-value {
   min-width: 0;
   overflow-wrap: anywhere;
+  /* The value cell now holds a widget plus its provenance badges, so it
+   * lays them out in a row that wraps rather than a single text run. */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .config-subsection {
@@ -119,4 +125,72 @@
 .config-pill.redacted {
   color: var(--text-muted);
   background: var(--surface);
+}
+
+.config-pill.overridden {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.config-pill.restart {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.config-value input[type="text"],
+.config-value input[type="number"] {
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+
+.config-value input[type="text"] {
+  width: 32ch;
+}
+
+.config-value input[type="number"] {
+  width: 10ch;
+}
+
+.config-list-edit,
+.config-list-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.config-field-error {
+  color: var(--error);
+  font-size: 12px;
+}
+
+.config-pending {
+  margin-top: 16px;
+}
+
+.config-document {
+  max-height: 40vh;
+  overflow: auto;
+  margin: 0 0 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.config-saved,
+.config-restart {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.config-restart {
+  color: var(--warn);
 }
