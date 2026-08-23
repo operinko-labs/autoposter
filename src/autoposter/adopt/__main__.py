@@ -58,26 +58,29 @@ async def main() -> None:
             )
 
             total_items = total_renders = total_missing = total_skipped = 0
-            total_by_config = 0
+            total_by_config = total_unnumbered = 0
             for name in config.adopt.libraries:
                 section = await fetch_section(server, name)
                 report = await adopt_library(session, config, section, dry_run=dry_run)
                 logger.info(
                     "%s: %d item(s), %d render(s), %d missing asset(s), %d skipped, "
-                    "%d not rendered by this config, by kind %s",
+                    "%d not rendered by this config, %d unnumbered, by kind %s",
                     name, report.items, report.renders, report.missing_assets,
-                    report.skipped, report.skipped_by_config, report.by_kind,
+                    report.skipped, report.skipped_by_config, report.unnumbered,
+                    report.by_kind,
                 )
                 total_items += report.items
                 total_renders += report.renders
                 total_missing += report.missing_assets
                 total_skipped += report.skipped
                 total_by_config += report.skipped_by_config
+                total_unnumbered += report.unnumbered
 
             logger.info(
                 "total: %d item(s), %d render(s), %d missing asset(s), %d skipped, "
-                "%d not rendered by this config%s",
+                "%d not rendered by this config, %d unnumbered%s",
                 total_items, total_renders, total_missing, total_skipped, total_by_config,
+                total_unnumbered,
                 " (dry run -- nothing written)" if dry_run else "",
             )
     finally:
