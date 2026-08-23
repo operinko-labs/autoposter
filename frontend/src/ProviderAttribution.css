@@ -1,0 +1,56 @@
+/* The provider attribution block. Moved here with the component out of
+ * settings.css, because the candidate picker on the item page carries the same
+ * block and a page that imported the markup without the styling would show the
+ * TMDB logo at its natural size beside an unstyled wordmark -- which is the
+ * prominence comparison below, failing silently. */
+
+.attribution {
+  margin-bottom: 16px;
+}
+
+.provider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.provider:last-of-type {
+  border-bottom: none;
+}
+
+/* TMDB's terms require their logo to be less prominent than this
+ * application's own branding. Comparing a font-size to an image width, as a
+ * previous version of this comment did, does not establish that: 16px is a
+ * font-size, not a rendered width, so "16 < 72" proves nothing about which
+ * element occupies more of the page. It also compared against the sidebar,
+ * which is not part of a page's own rendered output.
+ *
+ * `.brand-mark` in ProviderAttribution.tsx is the actual comparison: it
+ * renders in this same block, directly above this logo, at 28px bold and full
+ * opacity. This image is 72x38 (2736px^2) at 0.85 opacity; "Autoposter" at
+ * 28px bold is comfortably wider than 72px on its own and roughly twice the
+ * logo's area, fully opaque where the logo is dimmed. On every axis that makes
+ * the comparison meaningful -- size, weight, opacity -- the wordmark wins,
+ * wherever the block is placed, without relying on chrome outside it. */
+.provider-logo {
+  flex: 0 0 auto;
+  width: 72px;
+  height: auto;
+  opacity: 0.85;
+}
+
+.brand-mark {
+  margin: 0 0 14px;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.provider-notice {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  max-width: 70ch;
+}

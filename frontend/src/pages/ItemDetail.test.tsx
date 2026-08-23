@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../App";
+import { TMDB_NOTICE, TVDB_NOTICE } from "../ProviderAttribution";
 import { setToken } from "../api/client";
 import { formatTime } from "../format";
 import { ItemDetail } from "./ItemDetail";
@@ -45,9 +46,18 @@ const MOVIE = {
       rendered_at: "2026-08-01T09:15:00Z",
       uploaded_at: "2026-08-02T18:40:00Z",
       provider: null,
+      source_url: null,
+      textless: null,
     },
   ],
 };
+
+/** The absolute path a manual override stamps into `source_url`. It is a path
+ * on the operator's mount, not a URL: a page that turned it into an href or an
+ * <img src> would emit `file:`-ish nonsense the browser cannot fetch, and on a
+ * page that hot-links provider thumbnails the difference is one line of code
+ * apart. Asserted below to be plain text. */
+const OVERRIDE_PATH = "/manualassets/Movies/Ghostbusters (1984)/poster.jpg";
 
 /** The same movie with both of its art kinds rendered, one of them from a
  * hand-placed override file. Listed poster-first on purpose: the panes are
@@ -56,8 +66,21 @@ const MOVIE = {
 const MOVIE_BOTH_KINDS = {
   ...MOVIE,
   renders: [
-    { ...MOVIE.renders[0], art_kind: "poster", provider: "manual" },
-    { ...MOVIE.renders[0], art_kind: "background", provider: "tmdb" },
+    {
+      ...MOVIE.renders[0],
+      art_kind: "poster",
+      provider: "manual",
+      source_url: OVERRIDE_PATH,
+      // Null under an override: there was no candidate to ask.
+      textless: null,
+    },
+    {
+      ...MOVIE.renders[0],
+      art_kind: "background",
+      provider: "tmdb",
+      source_url: "https://image.tmdb.org/t/p/original/bg.jpg",
+      textless: true,
+    },
   ],
 };
 
@@ -72,6 +95,48 @@ const EPISODE = {
   rating_key: "909",
   facts: null,
   renders: [],
+};
+
+/** Two candidates from two providers, one provider having failed.
+ *
+ * Every field differs between the two tiles -- provider, language, dimensions,
+ * textlessness, and both URLs -- so a panel that rendered one tile's data twice,
+ * or read `thumb_url` where it meant `url`, cannot pass by coincidence. The
+ * thumb URLs are deliberately NOT the full-size ones: the pick body must carry
+ * `url`, and a tile that posted what it displayed would be indistinguishable
+ * from a correct one if the two strings were equal.
+ */
+const TMDB_URL = "https://image.tmdb.org/t/p/original/aaaaaa.jpg";
+const TMDB_THUMB = "https://image.tmdb.org/t/p/w342/aaaaaa.jpg";
+const TVDB_URL = "https://artworks.thetvdb.com/banners/posters/bbbbbb.jpg";
+
+const CANDIDATES = {
+  candidates: [
+    {
+      provider: "tmdb",
+      url: TMDB_URL,
+      thumb_url: TMDB_THUMB,
+      language: "en",
+      width: 2000,
+      height: 3000,
+      score: 9.1,
+      includes_text: null,
+    },
+    {
+      provider: "tvdb",
+      url: TVDB_URL,
+      thumb_url: TVDB_URL,
+      language: "fi",
+      width: 1000,
+      height: 1500,
+      score: 4.2,
+      includes_text: false,
+    },
+  ],
+  // The exception's class name, which is what the endpoint sends -- deliberately
+  // not a friendly sentence, so the page has to say which provider and what.
+  errors: { fanart: "ReadTimeout" },
+  current: { source_url: TVDB_URL, provider: "tvdb" },
 };
 
 function json(body: unknown, status = 200): Response {
@@ -183,6 +248,23 @@ function renderRow(artKind: string): HTMLElement {
   );
   if (found === undefined) throw new Error(`no render row for "${artKind}"`);
   return found;
+}
+
+/** The open candidate panel, or a throw naming what was expected. */
+function candidatePanel(): HTMLElement {
+  const panel = document.querySelector<HTMLElement>(".candidate-panel");
+  if (panel === null) throw new Error("no candidate panel is open");
+  return panel;
+}
+
+function tiles(): HTMLElement[] {
+  return [...candidatePanel().querySelectorAll<HTMLElement>(".candidate-tile")];
+}
+
+/** Opens the panel a button label names and waits for its tiles. */
+async function openPanel(name: string) {
+  fireEvent.click(screen.getByRole("button", { name }));
+  await waitFor(() => expect(tiles().length).toBeGreaterThan(0));
 }
 
 function noteIn(element: HTMLElement): string {
@@ -387,6 +469,9 @@ describe("ItemDetail", () => {
       "rendered",
       // A null provider is a row nothing has rendered a source for yet, not
       // the string "null".
+      "—",
+      // Same for a null source_url: an em dash, not "null" and not an empty
+      // cell that reads as a rendering failure.
       "—",
       `${FINGERPRINT.slice(0, 12)}…`,
       `${BADGE_FINGERPRINT.slice(0, 12)}…`,
@@ -710,5 +795,334 @@ describe("ItemDetail", () => {
 
     await act(async () => {});
     window.history.pushState({}, "", "/");
+  });
+});
+
+/** The candidate picker.
+ *
+ * Two things here are not ordinary UI wiring and are asserted as such: the
+ * pick body must carry the FULL-SIZE `url` (the server refuses anything it did
+ * not itself offer, and a thumbnail URL is not one of those), and the panel
+ * must carry the provider attribution, which is a licence condition of showing
+ * TMDB's and TheTVDB's artwork at all -- and this panel is the first surface in
+ * the application that shows it as theirs.
+ */
+describe("ItemDetail candidate picker", () => {
+  it("expands an inline panel of hot-linked provider tiles", async () => {
+    stubFetch(
+      movieRoutes({ "/api/items/3/candidates/poster": () => json(CANDIDATES) }),
+    );
+
+    await renderItem();
+    // Nothing is fetched and nothing is shown until it is asked for: browsing
+    // costs upstream provider calls per item.
+    expect(document.querySelector(".candidate-panel")).toBeNull();
+
+    await openPanel("Browse candidates");
+
+    const images = tiles().map((tile) => tile.querySelector("img")!);
+    // Straight into `src`, and the provider's own URL: these are public and
+    // unauthenticated. Our own image endpoints cannot be loaded this way (they
+    // need a bearer header) and go through apiFetchImage instead -- the two
+    // must never be confused, so the exact strings are compared.
+    expect(images.map((image) => image.getAttribute("src"))).toEqual([
+      TMDB_THUMB,
+      TVDB_URL,
+    ]);
+    expect(images.map((image) => image.getAttribute("loading"))).toEqual([
+      "lazy",
+      "lazy",
+    ]);
+
+    const text = tiles().map((tile) => tile.textContent ?? "");
+    expect(text[0]).toContain("tmdb");
+    expect(text[0]).toContain("en");
+    expect(text[0]).toContain("2000×3000");
+    expect(text[1]).toContain("tvdb");
+    expect(text[1]).toContain("fi");
+    expect(text[1]).toContain("1000×1500");
+    // TheTVDB is the only provider that reports textlessness; `false` there
+    // means no burned-in text, and `null` on the TMDB tile means unknown --
+    // which must not be shown as though it were an answer.
+    expect(text[1]).toContain("textless");
+    expect(text[0]).not.toContain("textless");
+  });
+
+  it("marks the candidate the render row is already using", async () => {
+    stubFetch(
+      movieRoutes({ "/api/items/3/candidates/poster": () => json(CANDIDATES) }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+
+    const marked = tiles().filter((tile) => tile.classList.contains("is-current"));
+    expect(marked).toHaveLength(1);
+    // The one whose `url` is the response's `current.source_url` -- not the
+    // first, and not the highest-scoring.
+    expect(marked[0].querySelector("img")!.getAttribute("src")).toBe(TVDB_URL);
+  });
+
+  it("lists a provider's failure beside the tiles, not instead of them", async () => {
+    stubFetch(
+      movieRoutes({ "/api/items/3/candidates/poster": () => json(CANDIDATES) }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+
+    // The endpoint sends the exception's class name, never a sentence. Shown as
+    // one, it would read as the page's own diagnosis of the failure.
+    expect(candidatePanel().querySelector(".candidate-errors")?.textContent).toContain(
+      "fanart unavailable (ReadTimeout)",
+    );
+    // A failing provider costs its own rows only: this is a partial result, not
+    // an error state.
+    expect(tiles()).toHaveLength(2);
+  });
+
+  it("picks a candidate by posting exactly that tile's provider and full-size url", async () => {
+    let detailCalls = 0;
+    const fetchMock = stubFetch(
+      movieRoutes({
+        "/api/items/3": () => {
+          detailCalls += 1;
+          return json(MOVIE);
+        },
+        "/api/items/3/candidates/poster": () => json(CANDIDATES),
+        "/api/items/3/candidates/poster/pick": () =>
+          json({ status: "picked", queued: true }),
+      }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+    expect(detailCalls).toBe(1);
+
+    fireEvent.click(within(tiles()[0]).getByRole("button", { name: "Pick" }));
+
+    await waitFor(() =>
+      expect(document.querySelector(".candidate-note")).not.toBeNull(),
+    );
+
+    const post = fetchMock.mock.calls.find(
+      (call) => call[0] === "/api/items/3/candidates/poster/pick",
+    );
+    expect(post).toBeDefined();
+    expect(post![1]?.method).toBe("POST");
+    // The body compared whole. The server treats the URL as a claim and refuses
+    // any string it did not itself offer, so posting `thumb_url` -- the one
+    // string this tile actually displays -- is a 422 in production and must be
+    // a red test here.
+    expect(JSON.parse(post![1]!.body as string)).toEqual({
+      provider: "tmdb",
+      url: TMDB_URL,
+    });
+
+    // The row's provider flips to "manual" and its fingerprints are nulled
+    // server-side, so the table on screen is stale until the item is re-read.
+    expect(detailCalls).toBe(2);
+    expect(document.querySelector(".candidate-note")!.textContent).toContain("queued");
+  });
+
+  it("warns on the Pick control that an existing override is not kept", async () => {
+    const MANUAL_CURRENT = {
+      ...CANDIDATES,
+      current: { source_url: OVERRIDE_PATH, provider: "manual" },
+    };
+    stubFetch(
+      bothKindRoutes({
+        "/api/items/3/candidates/poster": () => json(MANUAL_CURRENT),
+        "/api/items/3/candidates/background": () => json(CANDIDATES),
+      }),
+    );
+
+    await renderItem();
+
+    // The poster row is the manual one; sections are ordered background first.
+    fireEvent.click(
+      within(kindSections()[1]).getByRole("button", { name: "Browse candidates" }),
+    );
+    await waitFor(() => expect(tiles().length).toBeGreaterThan(0));
+
+    // A pick overwrites the operator's own override file with no backup kept.
+    // That is deliberate -- the mount is theirs, not ours to version -- which
+    // is exactly why the control has to say so before it is clicked.
+    for (const tile of tiles()) {
+      expect(tile.querySelector("button")!.getAttribute("title")).toContain(
+        "the previous file is not kept",
+      );
+    }
+
+    // ...and does not say it where there is no override to destroy, or the
+    // warning means nothing anywhere.
+    fireEvent.click(
+      within(kindSections()[0]).getByRole("button", { name: "Browse candidates" }),
+    );
+    await waitFor(() =>
+      expect(candidatePanel().closest(".art-kind-panes")).toBe(kindSections()[0]),
+    );
+    for (const tile of tiles()) {
+      expect(tile.querySelector("button")!.getAttribute("title") ?? "").not.toContain(
+        "the previous file is not kept",
+      );
+    }
+  });
+
+  it("carries the provider attribution inside the panel itself", async () => {
+    // Not "somewhere in the application": this panel is the first surface that
+    // shows TMDB's and TheTVDB's artwork as theirs, and both providers' terms
+    // make the notice a condition of doing so. Settings carrying it does not
+    // discharge that for a page an operator can reach without ever opening
+    // Settings.
+    stubFetch(
+      movieRoutes({ "/api/items/3/candidates/poster": () => json(CANDIDATES) }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+
+    const panel = candidatePanel();
+    expect(panel.textContent).toContain(TMDB_NOTICE);
+    expect(panel.textContent).toContain(TVDB_NOTICE);
+    expect(within(panel).getByAltText("TMDB")).toBeInTheDocument();
+    expect(
+      within(panel).getByRole("link", { name: /TheTVDB/i }).getAttribute("href"),
+    ).toBe("https://thetvdb.com");
+    // TMDB's terms require their logo to be less prominent than this
+    // application's own branding, so the mark it is weighed against has to be
+    // in the same block (item.css does the weighing).
+    expect(panel.querySelector(".brand-mark")?.textContent).toBe("Autoposter");
+  });
+
+  it("browses logos from the poster section, and only for kinds that use one", async () => {
+    const fetchMock = stubFetch(
+      movieRoutes({
+        "/api/items/3/candidates/logo": () => json({ ...CANDIDATES, current: null }),
+      }),
+    );
+
+    const view = await renderItem();
+    await openPanel("Browse logos");
+
+    // The logo endpoint, not the poster one: a logo is a separate art kind at
+    // the provider layer even though it is composited into the poster.
+    expect(
+      fetchMock.mock.calls
+        .map((call) => call[0] as string)
+        .filter((path) => path.includes("/candidates/")),
+    ).toEqual(["/api/items/3/candidates/logo"]);
+    // There is no render row for a logo, so `current` is null and nothing is
+    // marked as in use.
+    expect(tiles().some((tile) => tile.classList.contains("is-current"))).toBe(false);
+
+    view.unmount();
+    stubFetch({
+      "/api/items/9": () => json(EPISODE),
+      "/api/items/9/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/9/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
+    });
+    await renderItem(9);
+
+    // Only a movie's or a show's poster render composites a logo; offering the
+    // browse on an episode would invite a pick nothing would ever consume.
+    expect(screen.queryByRole("button", { name: "Browse logos" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Browse candidates" })).toBeInTheDocument();
+  });
+
+  it("reports a refused pick instead of claiming the image was taken", async () => {
+    let detailCalls = 0;
+    stubFetch(
+      movieRoutes({
+        "/api/items/3": () => {
+          detailCalls += 1;
+          return json(MOVIE);
+        },
+        "/api/items/3/candidates/poster": () => json(CANDIDATES),
+        "/api/items/3/candidates/poster/pick": () =>
+          json({ detail: "that image is not one of this item's candidates" }, 422),
+      }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+
+    fireEvent.click(within(tiles()[0]).getByRole("button", { name: "Pick" }));
+
+    await waitFor(() =>
+      expect(candidatePanel().querySelector(".candidate-error")?.textContent).toBe(
+        "that image is not one of this item's candidates",
+      ),
+    );
+    // An error, not a note: a panel showing both would be saying the pick was
+    // refused and taken at once.
+    expect(document.querySelector(".candidate-note")).toBeNull();
+    // Nothing changed on the server, so nothing needed re-reading.
+    expect(detailCalls).toBe(1);
+  });
+
+  it("disables every Pick while one is in flight", async () => {
+    // A pick overwrites the override file outright. Two in flight for one art
+    // kind is a race over which image the operator ends up with.
+    let release!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/candidates/poster": () => json(CANDIDATES),
+        "/api/items/3/candidates/poster/pick": () => pending,
+      }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+
+    const picks = () => screen.getAllByRole("button", { name: "Pick" });
+    expect(picks().every((button) => !button.hasAttribute("disabled"))).toBe(true);
+
+    fireEvent.click(picks()[0]);
+
+    await waitFor(() =>
+      expect(picks().every((button) => button.hasAttribute("disabled"))).toBe(true),
+    );
+
+    await act(async () => {
+      release(json({ status: "picked", queued: false }));
+    });
+
+    await waitFor(() =>
+      expect(document.querySelector(".candidate-note")).not.toBeNull(),
+    );
+    // What the server said: the reprocess enqueue de-duplicates, so a pick made
+    // while a re-render is already pending queues nothing new.
+    expect(document.querySelector(".candidate-note")!.textContent).not.toMatch(
+      /queued a re-render/,
+    );
+  });
+
+  it("shows each render row's source by host, and an override path as plain text", async () => {
+    stubFetch(bothKindRoutes());
+
+    await renderItem();
+
+    const source = (artKind: string) =>
+      [...renderRow(artKind).querySelectorAll("td")][3];
+
+    // Under an override this field is an absolute path on the operator's own
+    // mount, not a URL. Turned into an href or an <img src> -- one line from
+    // what the tiles above legitimately do -- it is a broken link at best.
+    expect(source("poster").textContent).toContain(OVERRIDE_PATH);
+    expect(source("poster").querySelector("a")).toBeNull();
+    expect(source("poster").querySelector("img")).toBeNull();
+    // No textlessness was recorded for an override: there was no candidate to
+    // ask, and claiming one would be inventing provenance.
+    expect(source("poster").textContent).not.toContain("textless");
+
+    // A provider URL is shown by host: the table is nowrap, and a full TMDB URL
+    // pushes every other column off the screen.
+    expect(source("background").textContent).toContain("image.tmdb.org");
+    expect(source("background").textContent).not.toContain("/t/p/original");
+    expect(source("background").textContent).toContain("textless");
   });
 });

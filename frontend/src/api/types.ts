@@ -201,6 +201,20 @@ export interface CandidatesResponse {
   current: { source_url: string | null; provider: string | null } | null;
 }
 
+/** POST /api/items/{id}/candidates/{art_kind}/pick.
+ *
+ * `status` is always "picked" -- a failure raises rather than reporting itself
+ * in the body. `queued` is whether a re-render was enqueued, which the
+ * reprocess de-duplication can make false.
+ *
+ * The pick OVERWRITES any existing manual override file and keeps no backup:
+ * the mount is the operator's own, not this service's to version. Say so
+ * before the click, not after. */
+export interface PickResponse {
+  status: string;
+  queued: boolean;
+}
+
 /** The facts the badges are drawn from. `originally_available` is a date, not
  * a timestamp -- it serialises as "2019-06-28" with no time in it. */
 export interface ItemFacts {

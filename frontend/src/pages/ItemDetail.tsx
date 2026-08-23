@@ -1,11 +1,15 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
+import { ProviderAttribution } from "../ProviderAttribution";
 import { ApiError, apiFetch, apiFetchImage } from "../api/client";
 import type {
+  ArtCandidate,
+  CandidatesResponse,
   ClearOverrideResponse,
   ItemDetailResponse,
   ItemRender,
+  PickResponse,
   ReprocessResponse,
 } from "../api/types";
 import { artKindFor } from "../artKind";
@@ -251,6 +255,48 @@ function Provider({
   );
 }
 
+/** A provider URL reduced to its host, and anything else left exactly as it is.
+ *
+ * Under a manual override `source_url` is not a URL at all: the pipeline stamps
+ * the absolute path of the override file on the operator's mount. `new URL`
+ * throws on it (and a drive-lettered path parses as a scheme with no host),
+ * so both cases fall through to the value itself. */
+function hostOrPath(value: string): string {
+  try {
+    const { host } = new URL(value);
+    if (host !== "") return host;
+  } catch {
+    // Not a URL. A path, then.
+  }
+  return value;
+}
+
+/** Where a row's base image came from.
+ *
+ * Never a link and never an image source. Half the values here are provider
+ * URLs and half are filesystem paths on a mount this browser cannot reach, and
+ * text is the only rendering that is true of both -- on a page that legitimately
+ * hot-links provider thumbnails a few lines away, which is exactly how the two
+ * get confused. The host alone, because the table is nowrap and a full TMDB URL
+ * pushes every other column off a laptop screen; the whole value is on the
+ * title. */
+function Source({ render }: { render: ItemRender }) {
+  if (render.source_url === null || render.source_url === "") {
+    return <span className="muted">—</span>;
+  }
+  return (
+    <>
+      <span className="source-url" title={render.source_url}>
+        {hostOrPath(render.source_url)}
+      </span>
+      {/* Only when the provider said so. Null is "no candidate was asked",
+        * which is the state under an override, and showing it as either answer
+        * would be inventing provenance. */}
+      {render.textless === true && <span className="textless-badge"> textless</span>}
+    </>
+  );
+}
+
 function Renders({
   renders,
   clearing,
@@ -273,6 +319,7 @@ function Renders({
           <th>Art</th>
           <th>Status</th>
           <th>Provider</th>
+          <th>Source</th>
           <th>Fingerprint</th>
           <th>Badge fingerprint</th>
           <th>Upload</th>
@@ -297,6 +344,9 @@ function Renders({
                 />
               </td>
               <td>
+                <Source render={render} />
+              </td>
+              <td>
                 <Fingerprint value={render.fingerprint} />
               </td>
               <td>
@@ -308,7 +358,7 @@ function Renders({
             </tr>
             {note !== null && note.artKind === render.art_kind && (
               <tr>
-                <td colSpan={8}>
+                <td colSpan={9}>
                   <p className={note.failed ? "render-error" : "render-note"}>
                     {note.message}
                   </p>
@@ -322,6 +372,202 @@ function Renders({
   );
 }
 
+/** The item kinds whose poster render composites a clearlogo, and therefore the
+ * only ones a picked logo would ever be consumed by. Mirrors
+ * LOGO_BROWSABLE_ITEM_KINDS in src/autoposter/api/candidates.py, which 404s a
+ * logo browse for anything else. */
+const LOGO_BROWSABLE_KINDS = ["movie", "show"];
+
+/** Which section has a panel open, and what that panel is browsing.
+ *
+ * The two are not the same: a logo is browsed from the poster section, because
+ * a logo has no section of its own -- there is no render row for one. */
+interface Browsing {
+  section: string;
+  artKind: string;
+}
+
+type PanelState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ready"; response: CandidatesResponse };
+
+function dimensions(candidate: ArtCandidate): string {
+  if (candidate.width === null || candidate.height === null) return "size unknown";
+  return `${candidate.width}×${candidate.height}`;
+}
+
+/** Every provider's artwork for one art kind, with a control that takes one.
+ *
+ * An inline panel rather than a modal: the SPA has no overlay anywhere, and the
+ * grid is worth reading beside the panes it is going to replace.
+ */
+function CandidatePanel({
+  itemId,
+  artKind,
+  onPicked,
+}: {
+  itemId: number;
+  artKind: string;
+  onPicked: () => Promise<void>;
+}) {
+  const [state, setState] = useState<PanelState>({ status: "loading" });
+  /** True while a pick is in flight. A pick overwrites a file outright, so two
+   * at once for one art kind is a race over which image the operator ends up
+   * with -- every button goes down, not only the one clicked. */
+  const [picking, setPicking] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: "loading" });
+    apiFetch<CandidatesResponse>(`/api/items/${itemId}/candidates/${artKind}`)
+      .then((response) => {
+        if (!cancelled) setState({ status: "ready", response });
+      })
+      .catch((caught: Error) => {
+        if (!cancelled) setState({ status: "error", message: caught.message });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [itemId, artKind]);
+
+  async function pick(candidate: ArtCandidate) {
+    setPicking(true);
+    setNote(null);
+    setFailure(null);
+    try {
+      const response = await apiFetch<PickResponse>(
+        `/api/items/${itemId}/candidates/${artKind}/pick`,
+        {
+          method: "POST",
+          // The full-size `url`, never the `thumb_url` this tile is showing.
+          // The endpoint treats the URL as a claim and re-runs the provider
+          // fan-out to check it, so a thumbnail URL -- which no provider
+          // offered -- is refused with a 422.
+          body: JSON.stringify({ provider: candidate.provider, url: candidate.url }),
+        },
+      );
+      // Re-read before reporting: the row's provider has just become "manual"
+      // and its fingerprints were nulled server-side, so the table on screen is
+      // stale the moment this returns.
+      await onPicked();
+      setNote(
+        response.queued
+          ? "Picked. The image was written to the mount and a re-render was queued."
+          : "Picked. The image was written to the mount; a re-render was already pending, so nothing new was added.",
+      );
+    } catch (caught) {
+      // Verbatim: a 422 says the server was not offering that image, a 502
+      // names the provider that would not serve it, and a 503 carries the OS
+      // error for the mount. This page is behind require_session.
+      setFailure((caught as Error).message);
+    } finally {
+      setPicking(false);
+    }
+  }
+
+  const current = state.status === "ready" ? state.response.current : null;
+  /** A pick overwrites an existing override with no backup kept -- deliberately:
+   * the mount is the operator's, not this service's to version. The control has
+   * to say so before it is clicked, because nothing afterwards can. */
+  const pickTitle =
+    current?.provider === "manual"
+      ? "Picking replaces the current override — the previous file is not kept."
+      : undefined;
+
+  return (
+    <div className="panel candidate-panel">
+      <h3 className="candidate-heading">{artKind} candidates</h3>
+
+      {state.status === "loading" && <p className="muted">Loading…</p>}
+      {state.status === "error" && <p className="candidate-error">{state.message}</p>}
+
+      {state.status === "ready" && (
+        <>
+          {/* Beside the tiles, never instead of them: a failing provider costs
+            * its own rows only, and a partial list is the normal result. The
+            * server sends the exception's class name rather than a sentence --
+            * shown as one it would read as this page's own diagnosis. */}
+          {Object.keys(state.response.errors).length > 0 && (
+            <ul className="candidate-errors">
+              {Object.entries(state.response.errors).map(([provider, failed]) => (
+                <li key={provider}>{`${provider} unavailable (${failed})`}</li>
+              ))}
+            </ul>
+          )}
+
+          {state.response.candidates.length === 0 ? (
+            <p className="empty">No provider offered artwork of this kind.</p>
+          ) : (
+            <ul className="candidate-grid">
+              {state.response.candidates.map((candidate) => {
+                const isCurrent =
+                  current !== null && current.source_url === candidate.url;
+                return (
+                  <li
+                    key={`${candidate.provider} ${candidate.url}`}
+                    className={isCurrent ? "candidate-tile is-current" : "candidate-tile"}
+                  >
+                    {/* A plain <img src>, and the only place on this page where
+                      * that is correct: provider image URLs are public and
+                      * unauthenticated. Our own artwork endpoints accept the
+                      * session as a bearer header only, which a browser does
+                      * not send for an image it loads itself -- those go
+                      * through apiFetchImage. */}
+                    <img
+                      className="candidate-thumb"
+                      src={candidate.thumb_url}
+                      loading="lazy"
+                      alt=""
+                    />
+                    <p className="candidate-meta">
+                      <span className="candidate-provider">{candidate.provider}</span>
+                      {" · "}
+                      {candidate.language ?? "no language"}
+                      {" · "}
+                      {dimensions(candidate)}
+                      {candidate.includes_text === false && (
+                        <>
+                          {" · "}
+                          <span className="candidate-textless">textless</span>
+                        </>
+                      )}
+                    </p>
+                    {isCurrent && <p className="candidate-current">in use</p>}
+                    <button
+                      type="button"
+                      className="pick"
+                      disabled={picking}
+                      title={pickTitle}
+                      onClick={() => void pick(candidate)}
+                    >
+                      Pick
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {note !== null && <p className="candidate-note">{note}</p>}
+          {failure !== null && <p className="candidate-error">{failure}</p>}
+
+          {/* Required by TMDB's and TheTVDB's terms, and required HERE: this
+            * panel is the surface showing their artwork as theirs, and an
+            * operator can browse candidates for a whole evening without ever
+            * opening Settings. */}
+          <div className="attribution candidate-attribution">
+            <ProviderAttribution />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function ItemDetail() {
   const { itemId } = useParams();
   const [item, setItem] = useState<ItemDetailResponse | null>(null);
@@ -331,12 +577,18 @@ export function ItemDetail() {
   /** The art kind whose clear-override call is in flight, or null. */
   const [clearing, setClearing] = useState<string | null>(null);
   const [clearNote, setClearNote] = useState<ClearNote | null>(null);
+  /** The one open candidate panel, or null. One at a time: each open panel
+   * costs a fan-out across every provider for this item. */
+  const [browsing, setBrowsing] = useState<Browsing | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setItem(null);
     setOutcome(null);
     setClearNote(null);
+    // A panel opened on the previous item browses the previous item's
+    // candidates; left open it would offer a pick against this one.
+    setBrowsing(null);
     // Cleared here, not only on success: navigating from a failed item to a
     // good one must not show the previous item's error while loading.
     setError(null);
@@ -419,6 +671,23 @@ export function ItemDetail() {
     }
   }
 
+  /** Opens a section's panel, or closes it if it is already showing that art
+   * kind -- the same button is the way back out. */
+  function toggleBrowse(section: string, artKind: string) {
+    setBrowsing((open) =>
+      open !== null && open.section === section && open.artKind === artKind
+        ? null
+        : { section, artKind },
+    );
+  }
+
+  /** Re-reads the item after a pick: the row's provider becomes "manual" and
+   * its fingerprints are nulled server-side, so nothing on screen is true
+   * until it is read again. */
+  async function reloadItem() {
+    setItem(await apiFetch<ItemDetailResponse>(`/api/items/${itemId}`));
+  }
+
   if (item === null) {
     return (
       <>
@@ -472,6 +741,32 @@ export function ItemDetail() {
             <BasePane itemId={item.id} artKind={kind} />
             <LivePane itemId={item.id} artKind={kind} />
           </div>
+          <div className="browse-controls">
+            <button type="button" className="browse" onClick={() => toggleBrowse(kind, kind)}>
+              Browse candidates
+            </button>
+            {/* A logo has no section of its own -- no render row, no pane -- but
+              * it is composited into the poster, so the poster section is where
+              * an operator would look for it. Offered only for the item kinds
+              * whose poster render uses one; anywhere else the pick would be
+              * consumed by nothing. */}
+            {kind === "poster" && LOGO_BROWSABLE_KINDS.includes(item.kind) && (
+              <button
+                type="button"
+                className="browse"
+                onClick={() => toggleBrowse(kind, "logo")}
+              >
+                Browse logos
+              </button>
+            )}
+          </div>
+          {browsing !== null && browsing.section === kind && (
+            <CandidatePanel
+              itemId={item.id}
+              artKind={browsing.artKind}
+              onPicked={reloadItem}
+            />
+          )}
         </section>
       ))}
 

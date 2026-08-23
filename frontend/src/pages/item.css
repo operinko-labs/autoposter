@@ -81,6 +81,125 @@
   font-size: 12px;
 }
 
+.browse-controls {
+  display: flex;
+  gap: 8px;
+  /* Pulled up against the panes above, whose own margin already separates the
+   * pair from whatever follows. */
+  margin: -16px 0 24px;
+}
+
+/* An inline panel, opened under the pair it is about. Not a modal: there is no
+ * overlay anywhere in this application, and the grid is worth reading beside
+ * the panes the pick is going to replace. */
+.candidate-panel {
+  margin-bottom: 24px;
+}
+
+.candidate-heading {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.candidate-errors {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.candidate-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+/* The candidate this item's base image already came from. A border rather than
+ * a colour wash, so it reads at a glance against a grid of images without
+ * tinting the one image the operator is comparing the others to. */
+.candidate-tile.is-current {
+  border-color: var(--ok);
+}
+
+.candidate-thumb {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  /* The provider's own aspect ratio, whatever it is: these are candidates for
+   * several art kinds, and cropping one to a poster's box would hide exactly
+   * the framing the choice is being made on. */
+  object-fit: contain;
+}
+
+.candidate-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.candidate-provider {
+  color: var(--text-strong);
+}
+
+.candidate-current {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ok);
+}
+
+.candidate-tile .pick {
+  margin-top: auto;
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+.candidate-note {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--ok);
+}
+
+.candidate-error {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--error);
+}
+
+.candidate-attribution {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* Against the table's blanket nowrap this stays on one line, which is what the
+ * host-only rendering in ItemDetail.tsx is for; the whole value is on the
+ * title. */
+.source-url {
+  cursor: help;
+}
+
+.textless-badge {
+  color: var(--text-muted);
+}
+
 .item-panel {
   margin-bottom: 20px;
 }
