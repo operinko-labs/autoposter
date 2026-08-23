@@ -90,8 +90,11 @@ class StatusBroadcaster:
     subscribe could fall into the gap. The snapshot is ``None`` only before
     the first poll of a loop generation has completed.
 
-    A poll that raises is logged and retried on the next tick: a database
-    blip must not silently end the stream for everyone connected.
+    A tick that raises -- whether building the snapshot or fanning it out --
+    is logged and retried on the next one: a database blip must not silently
+    end the stream for everyone connected. The loop also re-checks the
+    subscriber set every tick, so it stops itself even if the cancellation
+    ``unsubscribe`` sends never arrives.
     """
 
     def __init__(
@@ -134,19 +137,31 @@ class StatusBroadcaster:
 
     async def _run(self, generation: int) -> None:
         while True:
+            if not self._subscribers:
+                # Nobody is watching. Normally unsubscribe's cancel is what
+                # ends this loop; this makes that not the *only* exit. The
+                # poll goes through SQLAlchemy's greenlet bridge, and a
+                # CancelledError swallowed anywhere in there would otherwise
+                # leave the process polling the database forever -- and
+                # unrecoverably, since unsubscribe has already dropped its
+                # reference to this task.
+                return
             try:
                 snapshot = await self._build_snapshot()
-            except Exception:
-                # Never fatal while somebody is still watching: the next tick
-                # tries again. CancelledError is a BaseException and passes
-                # through here, which is how unsubscribe stops this loop.
-                logger.warning("dashboard status poll failed", exc_info=True)
-            else:
                 if generation != self._generation:
                     # A newer loop owns the broadcaster now; this poll's
                     # result belongs to nobody.
                     return
                 self._publish(snapshot)
+            except Exception:
+                # Never fatal while somebody is still watching: the next tick
+                # tries again. This covers the publish as well as the poll --
+                # an encoding failure that ended the loop would end it for
+                # good, because _task still points here and subscribe only
+                # starts a replacement when it is None. CancelledError is a
+                # BaseException and passes through here, which is how
+                # unsubscribe stops this loop.
+                logger.warning("dashboard status poll failed", exc_info=True)
             await asyncio.sleep(self._interval_seconds)
 
     async def _build_snapshot(self) -> dict:

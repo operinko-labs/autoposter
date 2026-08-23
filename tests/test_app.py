@@ -298,3 +298,32 @@ async def test_the_lifespan_hands_the_notifier_to_the_scheduler(
     assert created[0].get("notifier") is wired, (
         "the lifespan built a notifier but did not hand it to the scheduler"
     )
+
+
+async def test_the_lifespan_fills_the_dict_the_broadcaster_holds_rather_than_rebinding_it(
+    session_factory, secrets, stubbed_background_services
+):
+    """``app.state.scheduler_intervals`` is handed to the dashboard
+    broadcaster by ``create_app`` as the object, not a copy, so the lifespan
+    has to fill it in place. Rebinding it (``= {...}``) would leave
+    ``/api/status`` reporting the real cadences while the live stream reported
+    null intervals forever -- and no test that builds its own dict can tell
+    the difference, so the identity the broadcaster holds is captured here
+    before the lifespan runs and asserted through it.
+    """
+    app = create_app(load_config(EXAMPLE), session_factory, secrets, run_background=True)
+    held = app.state.dashboard_broadcaster._scheduler_intervals
+    assert held is app.state.scheduler_intervals and held == {}, (
+        "precondition: create_app publishes one empty mapping, shared"
+    )
+
+    async with app.router.lifespan_context(app):
+        assert app.state.scheduler_intervals, (
+            "precondition: the example config registers scheduler jobs"
+        )
+        assert held == app.state.scheduler_intervals, (
+            "the lifespan rebound app.state.scheduler_intervals; the broadcaster "
+            f"still holds the mapping it was given ({held!r}) and the stream "
+            "would report null intervals forever"
+        )
+        assert held is app.state.scheduler_intervals

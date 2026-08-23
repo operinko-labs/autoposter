@@ -146,7 +146,9 @@ async def test_status_reports_the_interval_of_a_registered_scheduler_job(
     frontend computes the next run from this plus ``last_started_at``."""
     session.add(ScheduledRun(name="collections_reconcile"))
     await session.commit()
-    app.state.scheduler_intervals = {"collections_reconcile": 86400}
+    # In place, never rebound -- the same discipline app.py's lifespan follows,
+    # and for the same reason: the dashboard broadcaster holds this exact dict.
+    app.state.scheduler_intervals.update({"collections_reconcile": 86400})
 
     response = await client.get("/api/status", headers=auth_headers)
     scheduled = response.json()["scheduled_jobs"]

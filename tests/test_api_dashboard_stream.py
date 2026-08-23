@@ -273,6 +273,133 @@ async def test_a_failed_poll_does_not_end_the_loop(session_factory, config, capl
     await stop(broadcaster)
 
 
+async def test_the_loop_stops_when_the_last_subscriber_leaves_even_if_the_cancel_is_lost(
+    broadcaster,
+):
+    """Cancellation must not be the *only* way out of the loop.
+
+    ``unsubscribe`` stops the poller by cancelling its task, and a
+    CancelledError swallowed anywhere in the SQLAlchemy/greenlet path the poll
+    goes through would otherwise leave the process reading the database every
+    tick forever with nobody watching -- and unrecoverably, because
+    ``unsubscribe`` already dropped the task reference. Modelled here by
+    neutering ``cancel`` itself, which is the same thing seen from the loop:
+    the cancellation never arrives.
+    """
+    _, queue = broadcaster.subscribe()
+    task = broadcaster._task
+    await asyncio.wait_for(queue.get(), timeout=10)
+
+    real_cancel = task.cancel
+    task.cancel = lambda *args, **kwargs: True  # the cancellation is lost
+    try:
+        broadcaster.unsubscribe(queue)
+        assert broadcaster._subscribers == set(), "precondition: nobody is watching"
+        assert not task.cancelled(), "precondition: the cancel really did not land"
+
+        await asyncio.wait([task], timeout=10)
+        assert task.done(), (
+            "the poll loop kept polling the database with no subscribers left"
+        )
+    finally:
+        # Even when the assertion above fails, the rogue loop has to be stopped
+        # here: a poll left running holds a session idle in transaction and the
+        # next test's TRUNCATE would block on it forever.
+        del task.cancel
+        real_cancel()
+        await asyncio.wait([task], timeout=10)
+
+
+async def test_a_failure_publishing_a_snapshot_does_not_end_the_loop(
+    broadcaster, session, caplog
+):
+    """The same log-and-continue discipline as a failed poll, and for a
+    sharper reason: ``unsubscribe`` has already set ``_task`` to None only
+    when it stopped the loop deliberately, so a loop that dies here dies with
+    ``_task`` still pointing at it -- and ``subscribe`` would then never start
+    a replacement. Every viewer's stream goes silent for the life of the
+    process.
+    """
+    import autoposter.api.dashboard_stream as module
+
+    real_encode = module._encode
+    calls = []
+
+    def flaky_encode(payload, *, sort_keys=False):
+        calls.append(1)
+        if len(calls) == 1:
+            raise TypeError("object of type object is not JSON serializable")
+        return real_encode(payload, sort_keys=sort_keys)
+
+    module._encode = flaky_encode
+    try:
+        _, queue = broadcaster.subscribe()
+        with caplog.at_level(logging.WARNING):
+            snapshot = await asyncio.wait_for(queue.get(), timeout=10)
+    finally:
+        module._encode = real_encode
+
+    assert len(calls) >= 2, "the loop tried again after the failed publish"
+    assert "status" in snapshot and "events" in snapshot
+    assert "dashboard status poll failed" in caplog.text
+
+    broadcaster.unsubscribe(queue)
+
+
+async def test_an_outgoing_loop_cannot_publish_into_the_loop_that_replaced_it(
+    broadcaster,
+):
+    """The stop-then-restart race the generation counter exists for.
+
+    Neither ``unsubscribe`` nor ``subscribe`` awaits, so a loop that is still
+    unwinding can complete one more poll after its replacement has started.
+    Without the generation check that stale poll publishes into the new
+    subscriber's queue and overwrites the snapshot the new loop built, and the
+    outgoing loop then keeps running as a second poller. Modelled by having
+    the first poll swallow its cancellation, which is what makes the window
+    observable rather than a matter of timing.
+    """
+    stale = {"status": {"processed_last_24h": 999}, "events": []}
+    entered = asyncio.Event()
+    calls = []
+    real_build = broadcaster._build_snapshot
+
+    async def build():
+        calls.append(1)
+        if len(calls) == 1:
+            entered.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                pass  # swallowed in the driver; the poll completes anyway
+            return stale
+        return await real_build()
+
+    broadcaster._build_snapshot = build
+
+    _, first = broadcaster.subscribe()
+    old_task = broadcaster._task
+    await asyncio.wait_for(entered.wait(), timeout=10)
+
+    broadcaster.unsubscribe(first)
+    _, second = broadcaster.subscribe()
+    new_task = broadcaster._task
+    assert new_task is not old_task, "precondition: a replacement loop was started"
+    assert len(calls) == 1, "precondition: the outgoing poll has not finished yet"
+
+    snapshot = await asyncio.wait_for(second.get(), timeout=10)
+    assert snapshot["status"]["processed_last_24h"] != 999, (
+        "the outgoing loop published its stale poll into its replacement's subscribers"
+    )
+    assert broadcaster._latest["status"]["processed_last_24h"] != 999
+
+    await asyncio.wait([old_task], timeout=10)
+    assert old_task.done(), "the outgoing loop stayed alive as a second poller"
+    assert not new_task.done() and broadcaster._task is new_task
+
+    broadcaster.unsubscribe(second)
+
+
 async def test_the_broadcaster_reads_scheduler_intervals_filled_after_construction(
     session_factory, config, session
 ):
