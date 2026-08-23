@@ -1,6 +1,7 @@
 """The /api router: login, logout and everything behind require_session."""
 import asyncio
 import logging
+import os
 from dataclasses import asdict
 from datetime import timedelta
 
@@ -33,7 +34,9 @@ from autoposter.db.models import (
 )
 from autoposter.db.models import Session as SessionModel
 from autoposter.intake.arr import RenderIntent
+from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue, enqueue_batch
+from autoposter.render.pipeline import ART_KINDS_FOR, manual_override_path
 
 logger = logging.getLogger(__name__)
 
@@ -589,6 +592,29 @@ async def dismiss_job(
     return {"id": job.id, "state": job.state}
 
 
+async def _enqueue_reprocess(session, item: MediaItem) -> int | None:
+    """Queue a process_item job for one item; the job id, or None if deduped.
+
+    Shared by ``reprocess_item`` and ``clear_manual_override`` so the second
+    cannot drift from the first: the ``dedupe_key`` is what makes asking twice
+    while the first request is still pending queue nothing the second time,
+    and two hand-built RenderIntents would eventually disagree about it.
+    """
+    intent = RenderIntent(
+        kind=item.kind,
+        title=item.title,
+        tmdb_id=item.tmdb_id,
+        tvdb_id=item.tvdb_id,
+        imdb_id=item.imdb_id,
+        year=item.year,
+        season_number=item.season_number,
+        episode_number=item.episode_number,
+    )
+    return await enqueue(
+        session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key
+    )
+
+
 @router.post("/items/{item_id}/reprocess")
 async def reprocess_item(
     item_id: int, request: Request, _: SessionModel = Depends(require_session)
@@ -604,20 +630,85 @@ async def reprocess_item(
         if item is None:
             raise HTTPException(status_code=404, detail="item not found")
 
-        intent = RenderIntent(
-            kind=item.kind,
-            title=item.title,
-            tmdb_id=item.tmdb_id,
-            tvdb_id=item.tvdb_id,
-            imdb_id=item.imdb_id,
-            year=item.year,
-            season_number=item.season_number,
-            episode_number=item.episode_number,
-        )
-        job_id = await enqueue(
-            session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key
-        )
+        job_id = await _enqueue_reprocess(session, item)
     return {"queued": job_id is not None, "job_id": job_id}
+
+
+@router.post("/items/{item_id}/renders/{art_kind}/clear-override")
+async def clear_manual_override(
+    item_id: int, art_kind: str, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Take a hand-placed override out of play and re-render the item.
+
+    A manual override is a file on the manualassets mount and nothing else --
+    the pipeline stats for it on every pass (``render/pipeline.py``) and no
+    database column can suppress one -- so the only way to clear it is to move
+    the file. It is renamed to ``<name>.disabled`` rather than deleted: it is
+    the operator's own artwork, this project deletes nothing anywhere else,
+    and restoring it is a rename back. ``os.replace`` rather than ``rename``
+    so a ``.disabled`` left by an earlier clear does not make this fail.
+
+    Then the render row's fingerprints are cleared, because the rename alone
+    changes nothing the next pass would notice in time: the fingerprint
+    short-circuit returns "unchanged" before the override is even consulted.
+    That ordering matters in the other direction too -- if the rename fails,
+    nothing else happens, since a cleared fingerprint with the override still
+    in place would re-render straight back to the override while this endpoint
+    claimed to have cleared it.
+
+    ``art_kind`` is the only caller-supplied value that reaches a path
+    builder, so it is checked against the kinds the item can actually have
+    before anything touches the mount; the path itself is built from config
+    and the item's own columns, never from the request.
+    """
+    config = request.app.state.config
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        item = (
+            await session.execute(select(MediaItem).where(MediaItem.id == item_id))
+        ).scalar_one_or_none()
+        if item is None:
+            raise HTTPException(status_code=404, detail="item not found")
+        if art_kind not in ART_KINDS_FOR.get(item.kind, ()):
+            raise HTTPException(status_code=404, detail="unknown art kind for this item")
+        if item.root_folder is None:
+            # Nullable, and the asset layout is rooted at it -- an item without
+            # one has nowhere an override could have been filed.
+            raise HTTPException(status_code=409, detail="no manual override for this art kind")
+
+        resolved = ResolvedItem(
+            rating_key=item.rating_key, library=item.library, kind=item.kind,
+            title=item.title, year=item.year,
+            season_number=item.season_number, episode_number=item.episode_number,
+            root_folder=item.root_folder, file_path=item.file_path, art_url=None,
+            tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id, imdb_id=item.imdb_id,
+        )
+        # Offloaded like every other touch of this mount: manual_assets_root is
+        # typically NFS, and a hung mount must not stall the event loop that
+        # also carries the workers and the scheduler.
+        override = await asyncio.to_thread(manual_override_path, config, resolved, art_kind)
+        if override is None:
+            raise HTTPException(status_code=409, detail="no manual override for this art kind")
+
+        disabled = override.with_name(override.name + ".disabled")
+        try:
+            await asyncio.to_thread(os.replace, override, disabled)
+        except OSError as exc:
+            logger.warning("could not disable override %s: %s", override, exc)
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+
+        render = (
+            await session.execute(
+                select(Render).where(Render.item_id == item_id, Render.art_kind == art_kind)
+            )
+        ).scalar_one_or_none()
+        if render is not None:
+            render.fingerprint = None
+            render.badge_fingerprint = None
+            await session.commit()
+
+        job_id = await _enqueue_reprocess(session, item)
+    return {"status": "cleared", "queued": job_id is not None}
 
 
 @router.post("/scheduled-runs/{name}/run")
