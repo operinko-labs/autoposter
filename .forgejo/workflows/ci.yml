@@ -46,6 +46,19 @@ env:
   # renovate: datasource=docker depName=postgres versioning=docker
   POSTGRES_VERSION: "18.6"
   IMAGE_NAME: autoposter
+  # Every Docker resource a run creates is suffixed with the run id, because
+  # the runner hosts concurrent jobs on one shared daemon. With fixed names,
+  # two overlapping runs fought over them: each began with `docker rm -f
+  # ci-postgres`, so the later run killed the earlier run's database
+  # mid-suite -- StaleDataErrors and connection failures that read exactly
+  # like real regressions -- and a PR's image job could re-tag `autoposter:ci`
+  # between a main run's build and its push, shipping the wrong image.
+  PG_CONTAINER: ci-postgres-${{ github.run_id }}
+  PG_NETWORK: ci-db-${{ github.run_id }}
+  MIG_CONTAINER: ci-pg-${{ github.run_id }}
+  MIG_NETWORK: ci-net-${{ github.run_id }}
+  CI_IMAGE: autoposter:ci-${{ github.run_id }}
+  DEV_IMAGE: autoposter:ci-dev-${{ github.run_id }}
 
 jobs:
   test:
@@ -60,6 +73,10 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          # Cache pip's wheel cache between runs, keyed on pyproject.toml --
+          # the same treatment setup-node already gives npm below.
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install the package and its dev extras
         run: |
@@ -73,16 +90,32 @@ jobs:
       # service sat there reporting healthy.
       - name: Start PostgreSQL
         run: |
-          docker rm -f ci-postgres >/dev/null 2>&1 || true
-          docker network create ci-db >/dev/null 2>&1 || true
+          # The rm covers a re-run attempt, which reuses the run id and so
+          # could find attempt 1's container if its cleanup never ran. The
+          # network needs the same tolerance: attempt 1's network survives a
+          # cancelled cleanup too, so remove it before creating, and tolerate
+          # the removal failing (it may still be attached to attempt 1's
+          # not-yet-reaped container).
+          docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+          docker network rm "$PG_NETWORK" >/dev/null 2>&1 || true
+          docker network create "$PG_NETWORK" >/dev/null 2>&1 || true
           # Succeeds when the job is a container; harmlessly fails when it is
           # not, in which case the published port below is the route instead.
-          docker network connect ci-db "$(hostname)" >/dev/null 2>&1 || true
-          docker run -d --name ci-postgres --network ci-db -p 5432:5432 \
+          docker network connect "$PG_NETWORK" "$(hostname)" >/dev/null 2>&1 || true
+          # An ephemeral host port rather than 5432:5432 -- a fixed published
+          # port is one more thing two concurrent runs cannot both hold.
+          docker run -d --name "$PG_CONTAINER" --network "$PG_NETWORK" \
+            -p 127.0.0.1::5432 \
             -e POSTGRES_USER=autoposter \
             -e POSTGRES_PASSWORD=autoposter \
             -e POSTGRES_DB=autoposter \
             postgres:${{ env.POSTGRES_VERSION }}-alpine
+          PG_HOST_PORT="$(docker port "$PG_CONTAINER" 5432/tcp | head -n1 | cut -d: -f2)"
+          # An empty value here would silently fall back to 5432 in
+          # wait_for_postgres.py -- wrong by construction under an ephemeral
+          # publish, and a confusing 180s timeout on a host-mode runner.
+          test -n "$PG_HOST_PORT"
+          echo "PG_HOST_PORT=$PG_HOST_PORT" >> "$GITHUB_ENV"
 
       # Waiting on `pg_isready` inside the container was the previous attempt's
       # mistake: it probes the unix socket, while the suite connects over TCP
@@ -99,7 +132,7 @@ jobs:
 
       - name: Show PostgreSQL logs if it never came up
         if: failure()
-        run: docker logs ci-postgres || true
+        run: docker logs "$PG_CONTAINER" || true
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -147,11 +180,17 @@ jobs:
       # The cost of that gap was real: `FakePlex` sat here without a
       # `fetch_item` method until it was found by accident.
       #
-      # So they run in a container carrying exactly the Dockerfile's
-      # ImageMagick packages. Alpine's is the Q16-HDRI build byte-equality
-      # depends on; a plain Q16 renders the same source 0.077% differently.
-      # The delegate subpackages are not decoration -- with `imagemagick`
-      # alone this fails with "no decode delegate for this image format".
+      # So they run in the Dockerfile's own `dev` stage, which inherits
+      # `pybase` -- exactly the ImageMagick packages the shipped image
+      # carries. Alpine's is the Q16-HDRI build byte-equality depends on; a
+      # plain Q16 renders the same source 0.077% differently. Building the
+      # stage here rather than `apk add` + `pip install` into a bare
+      # python:alpine (the previous shape) means the daemon's layer cache
+      # answers for both on most runs: the ImageMagick layer survives until
+      # the base image moves, and the pip install layer until pyproject.toml
+      # or src/ change. A plain `docker build`, not docker/build-push-action:
+      # tests/test_ci_path_filters.py forbids that action a `target:` so the
+      # image job can never quietly ship a non-final stage.
       #
       # `CI=true` is passed in on purpose. It is what makes the fixture fail
       # instead of skip, so if this step ever stops providing a `magick` the
@@ -159,40 +198,40 @@ jobs:
       # tests/test_ci_path_filters.py asserts both that flag and this step.
       - name: Test the ImageMagick-gated poster parity
         run: |
-          # A private database. The run above drops and recreates every table
-          # in `autoposter`; sharing it with a second suite is what produced a
-          # StaleDataError when this was tried. Separate `psql` invocations
-          # because CREATE DATABASE cannot run inside a transaction block.
-          docker exec ci-postgres psql -U autoposter -d postgres \
+          # A private database. The run above rebuilds the schema in
+          # `autoposter` and truncates between tests; sharing it with a second
+          # suite is what produced a StaleDataError when this was tried.
+          # Separate `psql` invocations because CREATE DATABASE cannot run
+          # inside a transaction block.
+          docker exec "$PG_CONTAINER" psql -U autoposter -d postgres \
             -c 'DROP DATABASE IF EXISTS autoposter_magick'
-          docker exec ci-postgres psql -U autoposter -d postgres \
+          docker exec "$PG_CONTAINER" psql -U autoposter -d postgres \
             -c 'CREATE DATABASE autoposter_magick OWNER autoposter'
 
-          # `docker create` + `docker cp` rather than `-v "$PWD:/repo"`,
-          # because this job is itself a container: a bind mount would ask the
-          # host's daemon for a path that exists only in here. `docker cp`
-          # streams over the API, so it does not care. It creates only the
-          # last path component, hence copying into /usr/src, which the image
-          # already has -- and which is where `assets_root()` then resolves
-          # `assets/` from, since it walks up two levels from the package.
-          cid=$(docker create --network ci-db -w /usr/src \
+          # `docker build` streams this checkout to the daemon over the API,
+          # so it works where a bind mount would not: this job is itself a
+          # container, and `-v "$PWD:/repo"` would ask the host's daemon for
+          # a path that exists only in here.
+          docker build --target dev -t "$DEV_IMAGE" .
+
+          # `docker create` + `docker cp` for the parts the dev stage does
+          # not carry, for the same reason. pyproject.toml and src/ are
+          # already in the image at /app -- the build above just put this
+          # checkout's copies there -- and the editable install resolves
+          # `assets_root()` two levels up from /app/src, so the tree lands
+          # exactly where docker-compose.yml's bind mount puts it locally.
+          #
+          # -v so the report names every test that ran: a reviewer can see
+          # these executed rather than inferring it from a count. A marker
+          # matching nothing exits 5, which fails this step -- deleting
+          # the marker cannot quietly empty this run either.
+          cid=$(docker create --network "$PG_NETWORK" -w /app \
             -e CI=true \
-            -e AUTOPOSTER_TEST_DATABASE_URL=postgresql+asyncpg://autoposter:autoposter@ci-postgres:5432/autoposter_magick \
-            -e AUTOPOSTER_MAINTENANCE_DATABASE_URL=postgresql://autoposter:autoposter@ci-postgres:5432/postgres \
-            python:${{ env.PYTHON_VERSION }}-alpine sh -euc '
-              apk add --no-cache imagemagick imagemagick-jpeg imagemagick-webp \
-                imagemagick-svg font-dejavu
-              magick -version
-              pip install -q -e ".[dev]"
-              # -v so the report names every test that ran: a reviewer can see
-              # these executed rather than inferring it from a count. A marker
-              # matching nothing exits 5, which fails this step -- deleting
-              # the marker cannot quietly empty this run either.
-              python -m pytest tests/ -v -m imagemagick
-            ')
-          docker cp pyproject.toml "${cid}:/usr/src/pyproject.toml"
-          for path in src tests config assets; do
-            docker cp "$path" "${cid}:/usr/src/${path}"
+            -e AUTOPOSTER_TEST_DATABASE_URL="postgresql+asyncpg://autoposter:autoposter@${PG_CONTAINER}:5432/autoposter_magick" \
+            -e AUTOPOSTER_MAINTENANCE_DATABASE_URL="postgresql://autoposter:autoposter@${PG_CONTAINER}:5432/postgres" \
+            "$DEV_IMAGE" python -m pytest tests/ -v -m imagemagick)
+          for path in tests config assets; do
+            docker cp "$path" "${cid}:/app/${path}"
           done
           # `|| status=$?` rather than reading $? afterwards: the runner's
           # shell exits on error, so a failing pytest would abort this script
@@ -201,6 +240,18 @@ jobs:
           docker start -a "$cid" || status=$?
           docker rm -f "$cid" >/dev/null
           exit $status
+
+      # Per-run names do not clean themselves up: without this, a persistent
+      # runner accumulates one database container and network per run.
+      - name: Remove PostgreSQL
+        if: always()
+        run: |
+          docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+          docker network disconnect "$PG_NETWORK" "$(hostname)" >/dev/null 2>&1 || true
+          docker network rm "$PG_NETWORK" >/dev/null 2>&1 || true
+          # Untag only: BuildKit's layer cache is what makes the next run's
+          # dev build fast, and it survives the tag's removal.
+          docker rmi "$DEV_IMAGE" >/dev/null 2>&1 || true
 
   image:
     name: Build, verify and push the image
@@ -226,7 +277,7 @@ jobs:
           context: .
           load: true
           push: false
-          tags: ${{ env.IMAGE_NAME }}:ci
+          tags: ${{ env.CI_IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -238,7 +289,7 @@ jobs:
       # the check that would have caught it.
       - name: Verify the application imports inside the image
         run: |
-          docker run --rm ${{ env.IMAGE_NAME }}:ci \
+          docker run --rm ${{ env.CI_IMAGE }} \
             python -c "import autoposter.main; import autoposter.app; print('entrypoint imports OK')"
 
       - name: Verify ImageMagick is a Q16-HDRI build
@@ -251,7 +302,7 @@ jobs:
           # shell has pipefail set, so the pipeline fails even though the
           # match succeeded. It is a race, which is why it passed several
           # runs before biting. No pipe, no race.
-          version=$(docker run --rm ${{ env.IMAGE_NAME }}:ci magick -version)
+          version=$(docker run --rm ${{ env.CI_IMAGE }} magick -version)
           echo "$version"
           case "$version" in
             *HDRI*) echo "Q16-HDRI confirmed" ;;
@@ -263,7 +314,7 @@ jobs:
         # /app/assets, so they cannot be found relative to the module files.
         # AUTOPOSTER_ASSETS_ROOT is what bridges that, and it is set in the image.
         run: |
-          docker run --rm ${{ env.IMAGE_NAME }}:ci python -c "
+          docker run --rm ${{ env.CI_IMAGE }} python -c "
           from autoposter.assets import assets_root
           from autoposter.badges.spec import BADGES
           from autoposter.badges.values import resolution_image, MediaInfo
@@ -300,7 +351,7 @@ jobs:
         # body in hand, so proving the licence condition against the bundle
         # that ships costs one assertion.
         run: |
-          docker run --rm ${{ env.IMAGE_NAME }}:ci python -c "
+          docker run --rm ${{ env.CI_IMAGE }} python -c "
           import asyncio, os, re
           from pathlib import Path
           from fastapi import FastAPI
@@ -351,8 +402,8 @@ jobs:
         # The container runs `alembic upgrade head` on startup, so a migration
         # that cannot apply is a failure to boot, not a deferred problem.
         run: |
-          docker network create ci-net
-          docker run -d --name ci-pg --network ci-net \
+          docker network create "$MIG_NETWORK"
+          docker run -d --name "$MIG_CONTAINER" --network "$MIG_NETWORK" \
             -e POSTGRES_USER=autoposter -e POSTGRES_PASSWORD=autoposter \
             -e POSTGRES_DB=autoposter postgres:${{ env.POSTGRES_VERSION }}-alpine
           # Probe over TCP from a peer container, not with `docker exec
@@ -361,7 +412,7 @@ jobs:
           # alembic below connects over TCP, so wait on that.
           ready=0
           for i in $(seq 1 60); do
-            if docker run --rm --network ci-net postgres:${{ env.POSTGRES_VERSION }}-alpine                  pg_isready -h ci-pg -p 5432 -U autoposter >/dev/null 2>&1; then
+            if docker run --rm --network "$MIG_NETWORK" postgres:${{ env.POSTGRES_VERSION }}-alpine                  pg_isready -h "$MIG_CONTAINER" -p 5432 -U autoposter >/dev/null 2>&1; then
               ready=$((ready + 1))
             else
               ready=0
@@ -371,20 +422,17 @@ jobs:
           done
           if [ "$ready" -lt 2 ]; then
             echo "PostgreSQL never accepted TCP connections" >&2
-            docker logs ci-pg || true
-            docker rm -f ci-pg; docker network rm ci-net
+            docker logs "$MIG_CONTAINER" || true
             exit 1
           fi
-          docker run --rm --network ci-net \
-            -e AUTOPOSTER_DATABASE_URL=postgresql+asyncpg://autoposter:autoposter@ci-pg:5432/autoposter \
-            ${{ env.IMAGE_NAME }}:ci alembic upgrade head
+          docker run --rm --network "$MIG_NETWORK" \
+            -e AUTOPOSTER_DATABASE_URL="postgresql+asyncpg://autoposter:autoposter@${MIG_CONTAINER}:5432/autoposter" \
+            ${{ env.CI_IMAGE }} alembic upgrade head
           # alembic runs quietly in the image, so exit 0 alone is also what
           # "did nothing at all" would look like. Assert on the effect.
           COUNT_SQL="select count(*) from information_schema.tables where table_schema='public'"
-          TABLES=$(docker exec ci-pg psql -U autoposter -d autoposter -tAc "$COUNT_SQL")
+          TABLES=$(docker exec "$MIG_CONTAINER" psql -U autoposter -d autoposter -tAc "$COUNT_SQL")
           echo "tables after migration: ${TABLES}"
-          docker rm -f ci-pg
-          docker network rm ci-net
           test "${TABLES}" -ge 10 || {
             echo "migrations exited 0 but created ${TABLES} tables, expected >= 10" >&2
             exit 1
@@ -397,10 +445,10 @@ jobs:
       # the registry instead of discovering it in the UI afterwards.
       - name: Scan the image for vulnerabilities
         run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity MEDIUM,HIGH,CRITICAL --no-progress             ${{ env.IMAGE_NAME }}:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity MEDIUM,HIGH,CRITICAL --no-progress             ${{ env.CI_IMAGE }}
           # Medium findings are reported above but do not block; anything
           # HIGH or CRITICAL fails the job and so is never pushed.
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity HIGH,CRITICAL --exit-code 1 --no-progress             ${{ env.IMAGE_NAME }}:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity HIGH,CRITICAL --exit-code 1 --no-progress             ${{ env.CI_IMAGE }}
 
       - name: Resolve Harbor registry host
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -423,8 +471,19 @@ jobs:
         run: |
           TAG="${{ steps.gen_tag.outputs.tag }}"
           TARGET="${IMAGE_PREFIX}/${{ env.IMAGE_NAME }}"
-          docker tag ${{ env.IMAGE_NAME }}:ci "${TARGET}:${TAG}"
-          docker tag ${{ env.IMAGE_NAME }}:ci "${TARGET}:latest"
+          docker tag ${{ env.CI_IMAGE }} "${TARGET}:${TAG}"
+          docker tag ${{ env.CI_IMAGE }} "${TARGET}:latest"
           docker push "${TARGET}:${TAG}"
           docker push "${TARGET}:latest"
           echo "pushed ${TARGET}:${TAG} and ${TARGET}:latest"
+
+      # Per-run names do not clean themselves up, and this also covers the
+      # failure paths -- a failing alembic used to leave ci-pg and ci-net
+      # behind for the next run to trip over. Untagging the run's image
+      # leaves BuildKit's layer cache intact for the next build.
+      - name: Remove the migration database and the run's image tag
+        if: always()
+        run: |
+          docker rm -f "$MIG_CONTAINER" >/dev/null 2>&1 || true
+          docker network rm "$MIG_NETWORK" >/dev/null 2>&1 || true
+          docker rmi ${{ env.CI_IMAGE }} >/dev/null 2>&1 || true

@@ -28,29 +28,35 @@ import asyncpg
 USER = "autoposter"
 PASSWORD = "autoposter"
 PORT = 5432
-CONTAINER_HOST = "ci-postgres"
+# Per-run rather than fixed: the workflow suffixes every Docker resource with
+# the run id so concurrent runs on the shared daemon cannot collide. The
+# fallbacks keep the script runnable outside the workflow.
+CONTAINER_HOST = os.environ.get("PG_CONTAINER", "ci-postgres")
+# The published port is ephemeral for the same reason; the workflow resolves
+# it with `docker port` and hands it over. Only the localhost route uses it.
+HOST_PORT = int(os.environ.get("PG_HOST_PORT") or PORT)
 TIMEOUT_SECONDS = 180
 RETRY_SECONDS = 3
 
 
-def candidate_hosts() -> list[str]:
-    """Hosts to try, most specific first.
+def candidate_hosts() -> list[tuple[str, int]]:
+    """(host, port) pairs to try, most specific first.
 
     The container name only resolves when this job shares a network with the
     database, which is the containerised-runner case.
     """
-    hosts = ["localhost"]
+    hosts = [("localhost", HOST_PORT)]
     try:
         socket.getaddrinfo(CONTAINER_HOST, PORT)
     except socket.gaierror:
         return hosts
-    return [CONTAINER_HOST, *hosts]
+    return [(CONTAINER_HOST, PORT), *hosts]
 
 
-async def _connect(host: str) -> str:
+async def _connect(host: str, port: int) -> str:
     connection = await asyncpg.connect(
         user=USER, password=PASSWORD, database="postgres",
-        host=host, port=PORT, timeout=5,
+        host=host, port=port, timeout=5,
     )
     try:
         return await connection.fetchval("select version()")
@@ -58,8 +64,8 @@ async def _connect(host: str) -> str:
         await connection.close()
 
 
-def export(host: str) -> None:
-    credentials = f"{USER}:{PASSWORD}@{host}:{PORT}"
+def export(host: str, port: int) -> None:
+    credentials = f"{USER}:{PASSWORD}@{host}:{port}"
     lines = [
         f"AUTOPOSTER_TEST_DATABASE_URL=postgresql+asyncpg://{credentials}/autoposter",
         f"AUTOPOSTER_DATABASE_URL=postgresql+asyncpg://{credentials}/autoposter",
@@ -83,15 +89,15 @@ def main() -> int:
 
     while time.monotonic() < deadline:
         attempt += 1
-        for host in candidate_hosts():
+        for host, port in candidate_hosts():
             try:
-                version = asyncio.run(_connect(host))
+                version = asyncio.run(_connect(host, port))
             except Exception as error:  # noqa: BLE001 - any failure means "not yet"
                 last_error = f"{host}: {type(error).__name__}: {error}"
                 continue
-            print(f"connected to {host}:{PORT} on attempt {attempt}")
+            print(f"connected to {host}:{port} on attempt {attempt}")
             print(f"  {version.split(',')[0]}")
-            export(host)
+            export(host, port)
             return 0
         print(f"attempt {attempt}: not ready ({last_error})")
         time.sleep(RETRY_SECONDS)
