@@ -99,6 +99,36 @@ async def test_full_pass_covers_every_kind_not_just_movies_and_shows(
     assert "process_item:episode:tvdb200:s01e01" in keys
 
 
+async def test_every_queued_intent_carries_its_rows_plex_rating_key(
+    client, auth_headers, session
+):
+    """Without it the ~14,000 jobs of a post-adoption pass mostly cannot
+    resolve: adoption stored each season's and episode's OWN external ids, and
+    the GUID search reads an episode intent's ids as the *series'* -- so they
+    match nothing and the job retries towards parking, or match an unrelated
+    item carrying the same number. The rating key is that item's exact Plex
+    identity and is already in the row; it just was not being passed on.
+
+    Asserted against the queued payload rather than the intent, because that
+    payload is what ``queue/worker.py`` rebuilds the intent from.
+    """
+    session.add_all(_one_of_each_kind())
+    await session.commit()
+
+    await client.post("/api/full-pass", headers=auth_headers)
+
+    jobs = (await session.execute(select(Job))).scalars().all()
+    assert {job.payload["kind"]: job.payload["rating_key"] for job in jobs} == {
+        "movie": "rk-movie",
+        "show": "rk-show",
+        "season": "rk-season",
+        "episode": "rk-episode",
+    }
+    # And the queue keys are untouched by it, so jobs queued by the previous
+    # release are still deduplicated against.
+    assert "process_item:episode:tvdb200:s01e01" in {job.dedupe_key for job in jobs}
+
+
 async def test_second_trigger_reports_the_dedupe_instead_of_queueing_again(
     client, auth_headers, session
 ):

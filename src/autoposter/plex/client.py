@@ -71,6 +71,10 @@ class _RawMatch:
     reached by navigating down from the matched show inside this same thread.
     ``file_path``/``item_locations`` stay the *show's*, because assets for every
     season and episode live under the show's folder.
+
+    ``_fetch_by_rating_key_sync`` arrives at the same split from the other
+    direction — it fetches the season or episode itself and climbs back up to
+    the show — and must fill these fields identically.
     """
 
     rating_key: str
@@ -112,6 +116,90 @@ class PlexClient:
             if s.title not in self._excluded and s.type == wanted_type
         ]
 
+    def _fetch_by_rating_key_sync(self, intent: RenderIntent, sections) -> _RawMatch | None:
+        """The item named by ``intent.rating_key``, or None to fall back.
+
+        Adoption stored every item's exact Plex identity in
+        ``media_items.rating_key``, so an intent built from such a row does not
+        need an agent lookup at all. It also must not use one: adoption stored
+        each episode's OWN external ids, while `_search_sync` reads an episode
+        intent's ids as the *series'* ids -- true on the webhook path, where
+        Sonarr supplies them, and false for every adopted row. Episode-level
+        ids either match nothing (the job retries as "waiting for Plex" until
+        it parks) or match an unrelated item that happens to carry the same
+        number.
+
+        Returning None rather than raising is the whole contract here: a
+        rating key is a *hint*. Plex renumbers on a library rebuild, so a
+        stored key can name nothing, or name something else entirely. Every
+        such case degrades to the GUID search rather than failing the job.
+
+        The result deliberately mirrors what the GUID search would have built
+        for the same intent, field for field, so that a key going stale
+        changes how fast an item resolves and nothing else about it.
+        ``_RawMatch``'s docstring has the split: identity comes from the item
+        the intent refers to, everything path- and agent-shaped comes from the
+        movie or show containing it.
+        """
+        try:
+            item = self._server.fetchItem(int(intent.rating_key))  # type: ignore[arg-type]
+        except (PlexNotFound, TypeError, ValueError):
+            # NotFound: the key names nothing any more. TypeError/ValueError:
+            # `rating_key` is a text column, so a row can hold a non-number.
+            return None
+        if item is None or getattr(item, "type", None) != intent.kind:
+            # Compared against the intent's kind, not the library type, so a
+            # key that now names the season of the episode we wanted is
+            # refused too -- accepting it would write the episode's title card
+            # onto the season's identity.
+            return None
+
+        # `fetchItem` knows nothing about sections, so neither the library
+        # exclusions nor the section-type filter apply to it. Requiring the
+        # item's own library to be among the sections the GUID walk was
+        # allowed to ask re-applies both -- and yields the `locations` the
+        # root folder is derived from, which the item itself does not carry.
+        section = next(
+            (s for s in sections if s.title == getattr(item, "librarySectionTitle", None)),
+            None,
+        )
+        if section is None:
+            return None
+
+        container = item
+        parent_rating_key = None
+        if intent.kind in ("season", "episode"):
+            # Seasons and episodes have no folder and no agent ids of their
+            # own worth trusting; both live on the show, which the GUID search
+            # reaches first and a direct fetch has to climb back up to.
+            try:
+                container = item.show()
+            except PlexNotFound:
+                return None
+            parent_rating_key = (
+                str(container.ratingKey)
+                if intent.kind == "season"
+                else str(item.parentRatingKey) if item.parentRatingKey is not None else None
+            )
+
+        file_path = None
+        if getattr(container, "media", None):
+            parts = container.media[0].parts
+            if parts:
+                file_path = parts[0].file
+        return _RawMatch(
+            rating_key=str(item.ratingKey),
+            library=section.title,
+            title=item.title,
+            year=getattr(container, "year", None),
+            file_path=file_path,
+            item_locations=list(getattr(container, "locations", None) or section.locations),
+            section_locations=list(section.locations),
+            art_url=getattr(container, "thumb", None),
+            guids=[g.id for g in getattr(container, "guids", [])],
+            parent_rating_key=parent_rating_key,
+        )
+
     def _search_sync(self, intent: RenderIntent) -> _RawMatch | None:
         wanted = []
         if intent.tmdb_id:
@@ -125,8 +213,14 @@ class PlexClient:
         # resolve by matching the *show*, so all three need a show library.
         # Mirrors resolve()'s own movie/else split below.
         wanted_type = "movie" if intent.kind == "movie" else "show"
+        sections = self._sections(wanted_type)
 
-        for section in self._sections(wanted_type):
+        if intent.rating_key:
+            match = self._fetch_by_rating_key_sync(intent, sections)
+            if match is not None:
+                return match
+
+        for section in sections:
             for guid in wanted:
                 # `search(guid=...)` matches only an item's PRIMARY guid, which under
                 # the Plex Movie/TV agents is a `plex://` URI — external ids live in

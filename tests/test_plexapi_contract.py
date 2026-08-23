@@ -112,6 +112,39 @@ def test_the_type_strings_the_resolver_filters_on():
     assert _provides(Show, "type")
 
 
+def test_fetchitem_is_how_a_rating_key_is_resolved_directly():
+    """An intent carrying a stored rating key skips the GUID search entirely
+    and asks the server for that one item."""
+    assert inspect.isfunction(inspect.getattr_static(PlexServer, "fetchItem"))
+
+
+def test_every_kind_reports_its_own_type_and_library():
+    """The direct fetch has no section object to reason from, so it checks the
+    fetched item's own ``type`` against the intent's kind and its own
+    ``librarySectionTitle`` against the sections it is allowed to read. Both
+    comparisons are against literal strings, so a plexapi rename here would
+    leave the suite green while a real server resolved the wrong item.
+    """
+    assert Season.TYPE == "season"
+    assert Episode.TYPE == "episode"
+    for cls in (Movie, Show, Season, Episode):
+        assert _provides(cls, "type"), f"plexapi {cls.__name__} exposes no type"
+        assert _provides(cls, "librarySectionTitle"), (
+            f"plexapi {cls.__name__} exposes no librarySectionTitle"
+        )
+
+
+def test_a_season_or_episode_can_navigate_up_to_its_show():
+    """A season's and an episode's assets live under the *show's* folder, and
+    the show is where the agent ids sit, so a directly fetched child has to
+    reach its show -- the GUID path gets it for free by matching it first.
+    ``Movie`` deliberately has no ``show()``; the fakes mirror that."""
+    assert inspect.isfunction(inspect.getattr_static(Season, "show"))
+    assert inspect.isfunction(inspect.getattr_static(Episode, "show"))
+    assert inspect.getattr_static(Movie, "show", None) is None
+    assert _provides(Show, "locations")
+
+
 def test_notfound_is_the_exception_getguid_raises():
     from plexapi.exceptions import NotFound
 

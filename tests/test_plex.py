@@ -62,7 +62,7 @@ class FakeItem:
 
     def __init__(
         self, rating_key, title, year, file_path, guids, item_type="movie",
-        parent_rating_key=None,
+        parent_rating_key=None, library_section_title=None, show=None,
     ):
         self.ratingKey = rating_key
         self.title = title
@@ -72,6 +72,20 @@ class FakeItem:
         self.media = [FakeMedia(file_path)] if file_path else []
         self.thumb = f"/library/metadata/{rating_key}/thumb/1"
         self.parentRatingKey = parent_rating_key
+        # Every plexapi item knows which library it came out of; the direct
+        # rating-key fetch has no section object and reads this instead.
+        self.librarySectionTitle = library_section_title
+        self._show = show
+        if item_type in ("season", "episode"):
+            # Only plexapi Season and Episode carry ``show()``. A Movie does
+            # not, and this fake must never be more permissive than the
+            # library it stands in for.
+            self.show = self._navigate_to_show
+
+    def _navigate_to_show(self):
+        if self._show is None:
+            raise PlexNotFound(f"no show for {self.ratingKey}")
+        return self._show
 
     def add_episode(self, number, episode_item):
         if not hasattr(self, "_episodes"):
@@ -88,10 +102,14 @@ class FakeItem:
 class FakeShow(FakeItem):
     """A show — the only kind of item that navigates down to seasons/episodes."""
 
-    def __init__(self, rating_key, title, year, file_path, guids, parent_rating_key=None):
+    def __init__(
+        self, rating_key, title, year, file_path, guids, parent_rating_key=None,
+        library_section_title=None,
+    ):
         super().__init__(
             rating_key, title, year, file_path, guids,
             item_type="show", parent_rating_key=parent_rating_key,
+            library_section_title=library_section_title,
         )
         self._seasons = {}
 
@@ -124,7 +142,12 @@ class FakeServer:
         return self._sections
 
     def fetchItem(self, ekey):
-        return self._items_by_key[ekey]
+        # plexapi raises NotFound for a key the server no longer has -- which
+        # is exactly what a rating key stored before a Plex rebuild becomes.
+        try:
+            return self._items_by_key[ekey]
+        except KeyError:
+            raise PlexNotFound(f"Unable to find item with key {ekey}")
 
 
 @pytest.fixture
@@ -226,24 +249,37 @@ async def test_resolve_finds_a_show_by_series_directory():
     assert item.file_path is None
 
 
-def _show_with_season_and_episode(guids=("tvdb://371980",)):
+def _show_with_season_and_episode(guids=("tvdb://371980",), section_title="Shows"):
     """A show with one scanned season and one scanned episode inside it.
 
     Mirrors the real ``plexapi`` shape: the season carries its own rating key
     and title, its ``parentRatingKey`` is the show; the episode carries its
-    own rating key and title, its ``parentRatingKey`` is the season.
+    own rating key and title, its ``parentRatingKey`` is the season. Both
+    children know their library and can navigate back up to the show, as
+    ``Season.show()``/``Episode.show()`` do.
     """
-    show = FakeShow("555", "Severance", 2022, None, list(guids))
+    show = FakeShow(
+        "555", "Severance", 2022, None, list(guids), library_section_title=section_title
+    )
     show.locations = ["/mnt/Media/Shows/Severance (2022)"]
     season = FakeItem(
         "556", "Season 2", None, None, [], item_type="season", parent_rating_key="555",
+        library_section_title=section_title, show=show,
     )
     episode = FakeItem(
         "557", "Who Is Alive?", None, None, [], item_type="episode", parent_rating_key="556",
+        library_section_title=section_title, show=show,
     )
     season.add_episode(3, episode)
     show.add_season(2, season)
     return show
+
+
+def _by_key(show):
+    """The show, its season and its episode indexed by integer rating key --
+    the way ``PlexServer.fetchItem`` reaches any of them directly."""
+    season = show.season(season=2)
+    return {555: show, 556: season, 557: season._episode(3)}
 
 
 async def test_resolve_a_season_intent_returns_the_seasons_own_identity():
@@ -420,3 +456,204 @@ async def test_a_movie_intent_refuses_a_show_matched_by_a_colliding_guid():
         await client.resolve(intent)
 
     assert "no Plex item for movie" in str(exc_info.value)
+
+
+# --- resolving by the rating key we already stored ---
+
+
+def _show_library(show, section_title="Shows", indexed=True):
+    """A show section holding ``show``, on a server that can also fetch every
+    item in it by rating key."""
+    section = FakeSection(section_title, "/mnt/Media/Shows", [show], section_type="show")
+    server = FakeServer(
+        [section], items_by_key=_by_key(show) if indexed else {}
+    )
+    return section, server
+
+
+async def test_an_episode_with_a_rating_key_resolves_without_any_guid_search():
+    """The production case, and the reason this path exists.
+
+    Adoption stored each episode's OWN external ids in ``media_items``: for
+    'The Pirate Solution' that is tmdb 64677 / tvdb 1123661, *episode*-level
+    numbers. ``_search_sync`` reads an episode intent's ids as the SERIES'
+    ids -- true on the webhook path, where Sonarr supplies them -- so those
+    ids match nothing, the job retries as "waiting for Plex" and eventually
+    parks. Roughly 14,000 jobs of one post-adoption full pass behaved this
+    way. The rating key adoption also stored is the item's exact Plex
+    identity, so it settles the question without asking any agent at all.
+
+    The episode-level ids are on the intent here and match nothing in the
+    library, which is what makes the zero-``getGuid`` assertion load-bearing:
+    without the direct fetch this test cannot resolve at all.
+    """
+    show = _show_with_season_and_episode()
+    shows, server = _show_library(show)
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="episode", title="Who Is Alive?", tmdb_id=64677, tvdb_id=1123661,
+        season_number=2, episode_number=3, rating_key="557",
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "557"
+    assert item.title == "Who Is Alive?"
+    assert item.parent_rating_key == "556"
+    assert item.library == "Shows"
+    assert item.root_folder == "Severance (2022)"
+    assert shows.getguid_calls == []
+
+
+async def test_a_season_with_a_rating_key_resolves_without_any_guid_search():
+    show = _show_with_season_and_episode()
+    shows, server = _show_library(show)
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="season", title="Season 2", tvdb_id=1123661, season_number=2,
+        rating_key="556",
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "556"
+    assert item.title == "Season 2"
+    assert item.parent_rating_key == "555"
+    assert item.root_folder == "Severance (2022)"
+    assert shows.getguid_calls == []
+
+
+async def test_a_movie_with_a_rating_key_resolves_directly_with_its_own_file():
+    """A movie is its own container, so the file path comes off the fetched
+    item itself -- and ``resolve`` still refuses a movie with no media parts."""
+    movie = FakeItem(
+        "12345", "Dune: Part Two", 2024,
+        "/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv",
+        ["tmdb://693134", "imdb://tt15239678"], library_section_title="Movies",
+    )
+    movies = FakeSection("Movies", "/mnt/Media/Movies", [movie])
+    server = FakeServer([movies], items_by_key={12345: movie})
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="movie", title="Dune: Part Two", tmdb_id=693134, rating_key="12345"
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "12345"
+    assert item.root_folder == "Dune Part Two (2024)"
+    assert item.file_path == "/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv"
+    assert item.imdb_id == "tt15239678"
+    assert movies.getguid_calls == []
+
+
+async def test_the_rating_key_shortcut_returns_exactly_what_the_guid_search_would():
+    """A rating key is a faster route to the same answer, never a different one.
+
+    Everything below the item's own identity -- root folder, file path, the
+    external ids written back to ``media_items`` -- is taken from the *show*
+    on both paths, because that is where an episode's assets and agent ids
+    live. If the two paths disagreed, a rating key going stale after a Plex
+    rebuild would quietly rewrite the row it had been maintaining.
+    """
+    show = _show_with_season_and_episode()
+    shows, server = _show_library(show)
+    client = PlexClient(server=server, excluded_libraries=[])
+    fields = dict(
+        kind="episode", title="Severance", tvdb_id=371980,
+        season_number=2, episode_number=3,
+    )
+
+    by_guid = await client.resolve(RenderIntent(**fields))
+    by_key = await client.resolve(RenderIntent(**fields, rating_key="557"))
+
+    assert by_key == by_guid
+    assert by_guid.file_path is None
+    assert shows.getguid_calls == ["tvdb://371980"]
+
+
+async def test_a_stale_rating_key_falls_back_to_the_guid_search():
+    """Plex renumbers on a library rebuild, so a stored key can name nothing.
+
+    ``fetchItem`` raises ``NotFound`` then, and the item must still resolve
+    the slow way rather than the job failing -- degrade, do not break.
+    """
+    show = _show_with_season_and_episode()
+    shows, server = _show_library(show, indexed=False)
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="episode", title="Severance", tvdb_id=371980,
+        season_number=2, episode_number=3, rating_key="557",
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "557"
+    assert shows.getguid_calls == ["tvdb://371980"]
+
+
+async def test_a_rating_key_naming_the_wrong_kind_of_item_falls_back():
+    """A renumbered key can land on a real item of the wrong kind.
+
+    Here the key an episode row carries now names the *season*. Accepting it
+    would file the episode's title card under the season's identity and
+    overwrite the season's ``media_items`` row with episode data, silently --
+    so the fetched item's own ``type`` has to match the intent's kind, the
+    same refusal the GUID path makes after ``getGuid``.
+    """
+    show = _show_with_season_and_episode()
+    shows, server = _show_library(show)
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="episode", title="Severance", tvdb_id=371980,
+        season_number=2, episode_number=3, rating_key="556",
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "557"
+    assert item.title == "Who Is Alive?"
+    assert shows.getguid_calls == ["tvdb://371980"]
+
+
+async def test_a_rating_key_inside_an_excluded_library_resolves_nothing():
+    """Exclusion means invisible, and a rating key is not a way around it.
+
+    ``fetchItem`` knows nothing about sections, so the direct path has to
+    re-apply the exclusion itself: the fetched item's library must be one of
+    the sections the GUID walk would have been allowed to ask. It is not, so
+    the fetch is abandoned and the GUID search takes over -- and that search
+    is barred from the same library, so the intent stays unresolved. This
+    matches ``test_excluded_libraries_are_never_searched``: excluding the
+    only library an item lives in makes it unreachable, not merely slower.
+    """
+    show = _show_with_season_and_episode()
+    shows, server = _show_library(show)
+    client = PlexClient(server=server, excluded_libraries=["Shows"])
+    intent = RenderIntent(
+        kind="episode", title="Severance", tvdb_id=371980,
+        season_number=2, episode_number=3, rating_key="557",
+    )
+
+    with pytest.raises(ItemNotFound):
+        await client.resolve(intent)
+
+    assert shows.getguid_calls == []
+
+
+async def test_a_malformed_rating_key_falls_back_instead_of_raising():
+    """``media_items.rating_key`` is text. A row whose key is not a number --
+    hand-edited, or imported from somewhere else -- must not turn into a
+    TypeError inside the worker thread."""
+    show = _show_with_season_and_episode()
+    shows, server = _show_library(show)
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="episode", title="Severance", tvdb_id=371980,
+        season_number=2, episode_number=3, rating_key="not-a-number",
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "557"
+    assert shows.getguid_calls == ["tvdb://371980"]

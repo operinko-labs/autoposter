@@ -560,6 +560,12 @@ async def _enqueue_reprocess(session, item: MediaItem) -> int | None:
     cannot drift from the first: the ``dedupe_key`` is what makes asking twice
     while the first request is still pending queue nothing the second time,
     and two hand-built RenderIntents would eventually disagree about it.
+
+    The row's ``rating_key`` rides along: this item has already been resolved
+    once, so the job need not ask an agent to find it again -- and for an
+    adopted season or episode the stored external ids are the *item's* own,
+    which the GUID search would misread as the series'. It does not enter the
+    dedupe key (intake/arr.py).
     """
     intent = RenderIntent(
         kind=item.kind,
@@ -570,6 +576,7 @@ async def _enqueue_reprocess(session, item: MediaItem) -> int | None:
         year=item.year,
         season_number=item.season_number,
         episode_number=item.episode_number,
+        rating_key=item.rating_key,
     )
     return await enqueue(
         session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key
@@ -745,6 +752,12 @@ async def run_full_pass(
     last pass are still pending inserts nothing for those items -- and the
     response reports that honestly via ``skipped`` rather than claiming to
     have queued everything again.
+
+    Each intent carries its row's ``rating_key`` so the job resolves straight
+    to the item instead of searching by external id. That matters most for the
+    adopted seasons and episodes, whose stored ids are their own rather than
+    the series' -- see ``PlexClient._fetch_by_rating_key_sync``. The key is not
+    part of the dedupe key, so this changes nothing about what deduplicates.
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -759,6 +772,7 @@ async def run_full_pass(
                     MediaItem.year,
                     MediaItem.season_number,
                     MediaItem.episode_number,
+                    MediaItem.rating_key,
                 )
             )
         ).all()
@@ -773,6 +787,7 @@ async def run_full_pass(
                 year=row.year,
                 season_number=row.season_number,
                 episode_number=row.episode_number,
+                rating_key=row.rating_key,
             )
             entries.append((asdict(intent), intent.dedupe_key))
         queued = await enqueue_batch(session, "process_item", entries)

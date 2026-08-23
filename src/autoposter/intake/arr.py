@@ -19,7 +19,13 @@ def _str_or_none(value: object) -> str | None:
 
 @dataclass(frozen=True)
 class RenderIntent:
-    """One item whose artwork may need rebuilding. Carries no Plex identity yet."""
+    """One item whose artwork may need rebuilding.
+
+    ``rating_key`` is the item's Plex identity, and is set only by the paths
+    that build an intent from a ``media_items`` row we already resolved once
+    (the full pass and reprocess in ``api/routes.py``). The webhook paths below
+    leave it None: Sonarr and Radarr know nothing about Plex.
+    """
 
     kind: str  # movie | show | season | episode
     title: str
@@ -29,11 +35,14 @@ class RenderIntent:
     year: int | None = None
     season_number: int | None = None
     episode_number: int | None = None
+    rating_key: str | None = None
 
     @property
     def dedupe_key(self) -> str:
         """Stable queue key. External ids are used because the Plex rating key is
-        not known until the job runs."""
+        not known until the job runs -- and it stays out of the key even when it
+        *is* known, so that a job queued without one still dedupes against a
+        later enqueue of the same item."""
         ident = (
             f"tmdb{self.tmdb_id}" if self.tmdb_id
             else f"tvdb{self.tvdb_id}" if self.tvdb_id

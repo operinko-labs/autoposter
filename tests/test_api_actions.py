@@ -263,6 +263,26 @@ async def test_reprocess_enqueues_a_job(client, auth_headers, session):
     assert jobs[0].state == "pending"
 
 
+async def test_reprocess_carries_the_items_plex_rating_key(client, auth_headers, session):
+    """Same reason as the full pass: the row already knows exactly which Plex
+    item this is, so the job resolves by rating key instead of by external ids
+    that -- for an adopted season or episode -- are the item's own rather than
+    the series', and so resolve to nothing or to the wrong thing. The dedupe
+    key is asserted alongside it because it must not have moved."""
+    session.add(MediaItem(
+        rating_key="77632", library="TV", kind="episode", title="The Pirate Solution",
+        tmdb_id=64677, tvdb_id=1123661, season_number=3, episode_number=4,
+    ))
+    await session.commit()
+    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+
+    await client.post(f"/api/items/{item_id}/reprocess", headers=auth_headers)
+
+    job = (await session.execute(select(Job))).scalars().one()
+    assert job.payload["rating_key"] == "77632"
+    assert job.dedupe_key == "process_item:episode:tmdb64677:s03e04"
+
+
 async def test_reprocessing_twice_still_queues_once(client, auth_headers, session):
     session.add(MediaItem(rating_key="rk1", library="Movies", kind="movie", title="A"))
     await session.commit()
