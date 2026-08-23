@@ -119,6 +119,63 @@ export async function apiFetchImage(path: string): Promise<Blob | null> {
   return await response.blob();
 }
 
+/** An NDJSON stream rather than a JSON body, for the log tail.
+ *
+ * This exists for the same reason as `apiFetchImage`: the session travels
+ * only as an `Authorization: Bearer` header, which rules out `EventSource`,
+ * so the stream is fetched here with the header and read line by line. Each
+ * parsed object is handed to `onValue` as it arrives; the promise resolves
+ * when the server ends the stream and rejects on a transport error, so the
+ * caller owns reconnecting. The signal aborts the read mid-stream -- an
+ * abort resolves rather than rejects, because the caller asked for it.
+ */
+export async function apiFetchNdjson(
+  path: string,
+  onValue: (value: unknown) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const headers = new Headers();
+  if (token !== null) headers.set("Authorization", `Bearer ${token}`);
+
+  const response = await fetch(path, { headers, signal });
+
+  if (response.status === 401) {
+    // Same contract as apiFetch: the session is dead, so drop it and let the
+    // one subscriber route to the login form.
+    setToken(null);
+    onUnauthorized?.();
+    throw new ApiError(401, "not authenticated");
+  }
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorMessage(response));
+  }
+
+  if (response.body === null) return;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffered += decoder.decode(value, { stream: true });
+      const parts = buffered.split("\n");
+      buffered = parts.pop() ?? "";
+      for (const part of parts) {
+        if (part.trim() === "") continue;
+        onValue(JSON.parse(part));
+      }
+    }
+  } catch (caught) {
+    if (signal.aborted) return;
+    throw caught;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 async function errorMessage(response: Response): Promise<string> {
   try {
     const body = await response.json();

@@ -11,6 +11,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from autoposter.api.auth import LoginRateLimiter
+from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
 from autoposter.config.schema import Config, Secrets
 from autoposter.facts import imdb as imdb_module
@@ -48,6 +49,11 @@ def create_app(
         if not run_background:
             yield
             return
+        # Capture the process's own log stream for /api/logs. Attached here
+        # rather than in create_app: the root logger is process-global, so
+        # attaching per app instance would leave every test app's handler
+        # stacked on it for the rest of the process.
+        logging.getLogger().addHandler(app.state.log_buffer)
         stop_event = asyncio.Event()
         # Single client for the process: provider clients borrow it rather than
         # each owning one, so there is exactly one AsyncClient to close on shutdown.
@@ -160,6 +166,7 @@ def create_app(
             )
             imdb_module.configure_miss_refresh(http, 0)
             await http.aclose()
+            logging.getLogger().removeHandler(app.state.log_buffer)
 
     # The interactive docs enumerate every endpoint and its request shape to
     # anyone who can reach the port, and FastAPI serves them outside the
@@ -179,6 +186,10 @@ def create_app(
     # Per process, so every worker pod limits its own callers -- see
     # LoginRateLimiter.
     app.state.login_rate_limiter = LoginRateLimiter()
+    # Created here so the /api/logs endpoints always have one to read, but
+    # attached to the root logger only by the lifespan above (run_background
+    # deployments) -- see the comment there.
+    app.state.log_buffer = LogBuffer()
     if not secrets.admin_password_hash:
         # Once, here, rather than per attempt in the login handler: an
         # unauthenticated caller could otherwise flood the log at will.

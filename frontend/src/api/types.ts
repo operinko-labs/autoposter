@@ -153,6 +153,25 @@ export interface FullPassResponse {
   skipped: number;
 }
 
+/** One line of GET /api/logs and /api/logs/stream. The stream also carries
+ * `{"heartbeat": true}` keepalives, which are not log lines and carry none of
+ * these fields -- see isLogLine. */
+export interface LogLine {
+  ts: string;
+  level: string;
+  logger: string;
+  message: string;
+}
+
+export function isLogLine(value: unknown): value is LogLine {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as LogLine).message === "string" &&
+    typeof (value as LogLine).level === "string"
+  );
+}
+
 export interface LoginResponse {
   token: string;
   expires_at: string;

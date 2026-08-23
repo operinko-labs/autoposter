@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from autoposter.api.artwork import router as artwork_router
+from autoposter.api.logs import router as logs_router
 from autoposter.api.auth import (
     create_session,
     hash_password,
@@ -97,6 +98,10 @@ router = APIRouter(prefix="/api")
 # touch the filesystem, and the containment rules that go with that do not
 # belong scattered through the JSON handlers.
 router.include_router(artwork_router)
+
+# The live log endpoints -- the in-memory capture of this process's own log
+# stream (see api/logs.py for why it is a module of its own).
+router.include_router(logs_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
