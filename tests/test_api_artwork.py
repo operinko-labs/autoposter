@@ -492,9 +492,9 @@ class _FakePlexClient:
 async def wire_plex(app):
     """Give the app a fake Plex client and an httpx client on a MockTransport.
 
-    Mirrors production wiring: ``app.state.plex`` is set by main.build() and
-    ``app.state.http`` by the lifespan, neither of which runs under create_app()
-    alone.
+    Mirrors production wiring: ``app.state.plex`` and ``app.state.http`` are
+    both set by the lifespan's run_background branch, which does not run under
+    create_app() alone.
     """
     clients = []
 
@@ -875,9 +875,9 @@ async def test_the_live_bytes_carry_nosniff(client, auth_headers, session, wire_
 async def test_live_artwork_is_503_when_this_instance_has_no_plex_connection(
     client, auth_headers, session, caplog
 ):
-    """create_app leaves app.state.plex/http None; main.build() and the lifespan
-    fill them in. Without them there is nothing to ask, which is a 503 rather
-    than an AttributeError 500.
+    """create_app leaves app.state.plex/http None; the lifespan's
+    run_background branch fills them in. Without them there is nothing to ask,
+    which is a 503 rather than an AttributeError 500.
 
     And it has to be logged. This is the only 503 here whose cause is local
     wiring rather than Plex, while its body reads exactly like the other two --

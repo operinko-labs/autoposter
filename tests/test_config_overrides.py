@@ -6,7 +6,6 @@ Three properties matter enough to be pinned here -- the merge replaces rather
 than accumulates, a ``secrets`` key never survives it, and an empty (or
 absent) document is exactly the old file-only behaviour.
 """
-import asyncio
 import logging
 import os
 from pathlib import Path
@@ -15,7 +14,6 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from autoposter import main as main_module
 from autoposter.adopt import __main__ as adopt_main
 from autoposter.collections import __main__ as collections_main
 from autoposter.config.holder import ConfigHolder
@@ -209,14 +207,14 @@ def test_a_reader_holding_the_holder_sees_the_new_generation():
 # --- the entry points load the effective config -------------------------------
 
 
-async def test_main_effective_config_applies_the_overrides(session, monkeypatch):
-    """``main.effective_config`` is synchronous (uvicorn calls ``build()``
-    before any event loop exists), so it is exercised here from a worker
-    thread, which is the closest thing to its real caller a test can be."""
-    monkeypatch.setattr(main_module, "CONFIG_PATH", EXAMPLE)
-    await _store(session, {"workers": 3})
-    config = await asyncio.to_thread(main_module.effective_config, TEST_DB_URL)
-    assert config.workers == 3
+# The API entry point's own overrides read lives in its lifespan rather than
+# in ``main.build()`` -- ``uvicorn --factory`` calls ``build()`` from inside a
+# running event loop, where nothing can be awaited or bridged. It is covered
+# in tests/test_app.py, which is where the fixture that drives a lifespan
+# lives:
+#   test_the_lifespan_boots_on_the_effective_config_not_the_file_alone
+#   test_the_lifespan_builds_the_plex_client_from_the_effective_config
+# The two CLIs below load theirs in their own async mains and are unaffected.
 
 
 async def test_collections_cli_reads_the_overrides(session, monkeypatch, caplog):

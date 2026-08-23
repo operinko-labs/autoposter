@@ -20,10 +20,10 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 import autoposter.main as main_module
-from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -72,23 +72,42 @@ def dist(tmp_path) -> Path:
 def _stub_build_dependencies(monkeypatch, dist):
     """Replace everything `build()` needs besides the SPA wiring under test.
 
-    `effective_config` reads a real file *and* the overrides row in a real
-    database, `Secrets.from_env` reads real environment variables,
-    `make_engine` opens a real database connection pool, and `PlexClient`
-    wraps a (lazily-connecting) real Plex server -- none of that is what this
-    test is about, so all four are stubbed with lightweight stand-ins.
+    `CONFIG_PATH` points at `/config/autoposter.yaml`, which does not exist
+    outside a deployed pod, `Secrets.from_env` reads real environment
+    variables, and `make_engine` opens a real database connection pool -- none
+    of that is what these tests are about, so each gets a stand-in.
+
+    Note what is deliberately *not* stubbed: the config load itself. It used
+    to be, back when `build()` read the overrides row through a synchronous
+    `asyncio.run` bridge -- and that stub is exactly why no test noticed the
+    bridge exploding under `uvicorn --factory`. Pointing `CONFIG_PATH` at the
+    example config keeps these tests off the network and off the database
+    while still running the real load path.
     """
-    monkeypatch.setattr(
-        main_module, "effective_config", lambda database_url: load_config(EXAMPLE)
-    )
+    monkeypatch.setattr(main_module, "CONFIG_PATH", EXAMPLE)
     monkeypatch.setattr(main_module, "Secrets", _FakeSecrets)
     monkeypatch.setattr(main_module, "make_engine", lambda url: object())
-    monkeypatch.setattr(
-        main_module, "PlexClient", lambda server, excluded_libraries: object()
-    )
     # spa_dist() itself is not under test; only whether build() calls
     # mount_spa with its result.
     monkeypatch.setattr(main_module, "spa_dist", lambda: dist)
+
+
+async def test_build_can_be_called_from_inside_a_running_event_loop():
+    """``uvicorn autoposter.main:build --factory`` -- the dev-compose ``api``
+    command, and the only form ``--reload`` accepts -- calls ``build()`` from
+    inside the server's own event loop. ``build()`` may therefore not bridge
+    an async read with ``asyncio.run``: the config editor's first cut did, and
+    every hot-reload boot died on ``RuntimeError: asyncio.run() cannot be
+    called from a running event loop`` before serving a single request.
+
+    This test *is* that repro. pytest-asyncio already runs it on a loop, so a
+    direct call here is precisely what uvicorn's factory path does; production
+    (``python -m autoposter.main``, which builds before ``uvicorn.run``) never
+    saw it, which is why it survived a merge.
+    """
+    app = main_module.build()
+
+    assert isinstance(app, FastAPI)
 
 
 async def test_build_wires_the_spa_into_the_returned_app():

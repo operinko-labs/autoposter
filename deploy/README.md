@@ -41,9 +41,17 @@ Practical consequences:
   cadences) takes effect immediately in the serving pod — no restart. The
   editor marks the rest ("restart to apply"): worker count, provider
   clients, notification wiring, Plex connection settings, `poll_seconds`,
-  `api_docs_enabled`, and whether a scheduled job is registered at all.
-  A restart also brings any other replica up to date; a running sibling
-  replica keeps its old configuration until then.
+  and whether a scheduled job is registered at all. A restart also brings
+  any other replica up to date; a running sibling replica keeps its old
+  configuration until then.
+- `api_docs_enabled` is the one exception a restart does NOT fix: it must
+  be set in the ConfigMap. FastAPI decides whether `/docs`, `/redoc` and
+  `/openapi.json` exist when the application object is built, and that
+  happens before the pod has read a single override, so an override on it
+  is inert at every boot. The editor says as much in its own reason text.
+  To close the docs on a pod whose ConfigMap has them on, edit the
+  ConfigMap (or set `AUTOPOSTER_CONFIG` at a file that has them off) and
+  restart — a database override will not do it.
 - An invalid save changes nothing — the merged result is validated whole
   before anything is persisted or applied, and errors come back
   field-labelled.

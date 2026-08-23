@@ -10,7 +10,9 @@ from autoposter.app import _build_mdblist, _build_providers, _handle_intent, cre
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import load_config
+from autoposter.config.overrides import OVERRIDES_ROW_ID
 from autoposter.config.schema import Secrets
+from autoposter.db.models import ConfigOverride
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.intake.arr import RenderIntent
 from autoposter.notify.dispatch import Notifier, NullNotifier
@@ -112,6 +114,115 @@ def stubbed_background_services(monkeypatch):
     monkeypatch.setattr("autoposter.app.run_workers", _fake_run_workers)
 
 
+def _background_app(config, session_factory, secrets, **kwargs):
+    """A ``run_background=True`` application that knows it came from EXAMPLE.
+
+    The lifespan's first statement re-reads ``app.state.config_path`` to merge
+    the database overrides over it, so an app built from the example config
+    has to say which file that was: ``create_app`` defaults the attribute to
+    the deployed ``/config/autoposter.yaml``, which exists in a pod and
+    nowhere else. ``main.build()`` rebinds it for exactly the same reason.
+    """
+    app = create_app(config, session_factory, secrets, run_background=True, **kwargs)
+    app.state.config_path = EXAMPLE
+    return app
+
+
+async def _store_override(session, document: dict) -> None:
+    session.add(ConfigOverride(id=OVERRIDES_ROW_ID, document=document))
+    await session.commit()
+
+
+async def test_the_lifespan_boots_on_the_effective_config_not_the_file_alone(
+    session, session_factory, secrets, stubbed_background_services, monkeypatch
+):
+    """``main.build()`` loads the *file* config; the database overrides are
+    merged in here, at the top of the lifespan.
+
+    They have to be. ``uvicorn --factory`` calls ``build()`` from inside its
+    own event loop, so ``build()`` cannot await the overrides read and cannot
+    bridge it either (see tests/test_main.py). The lifespan is the first place
+    that is both on the loop and holding the session factory, so that is where
+    the effective generation is loaded and swapped in.
+
+    Two assertions, and the second is the load-bearing one. ``workers`` is
+    read exactly once, by the lifespan itself, on the line that starts the
+    pool -- so it reports not merely *that* the swap happened but that it
+    happened before the consumers were built from it. A swap performed even
+    one line too late leaves the first assertion green and this one showing
+    the file's value.
+    """
+    file_config = load_config(EXAMPLE)
+    overridden = file_config.workers + 7
+    await _store_override(session, {"workers": overridden})
+
+    started = []
+
+    async def capture_workers(count, factory, handler, stop_event, is_healthy=None):
+        started.append(count)
+        await stop_event.wait()
+
+    monkeypatch.setattr("autoposter.app.run_workers", capture_workers)
+
+    app = _background_app(file_config, session_factory, secrets)
+    assert app.state.config.workers == file_config.workers, (
+        "precondition: create_app starts on the file generation"
+    )
+
+    async with app.router.lifespan_context(app):
+        # run_workers is started as a task, so let it reach its first await.
+        await asyncio.sleep(0)
+        assert app.state.config.workers == overridden, (
+            "the lifespan never applied the stored overrides; every deployment "
+            "would boot on the file config alone and the Settings editor would "
+            "not survive a restart"
+        )
+        assert started == [overridden], (
+            "the worker pool was sized from the file config, so the overrides "
+            f"swap happens after its consumers read it ({started!r})"
+        )
+
+
+async def test_the_lifespan_builds_the_plex_client_from_the_effective_config(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """``app.state.plex`` is built from the config the *lifespan* holds.
+
+    It used to be built in ``main.build()``, which was fine while ``build()``
+    itself loaded the effective config. It no longer does, and ``config.plex``
+    feeds three things built at startup -- this client, the liveness probe and
+    the scheduler's server factory. The other two are built in the lifespan,
+    after the swap; leaving this one in ``build()`` would point the client that
+    runs every job at the un-overridden URL while the probe that decides
+    whether jobs run at all watched the overridden one.
+    """
+    overridden_url = "http://plex.overridden.internal:32400"
+    file_config = load_config(EXAMPLE)
+    assert file_config.plex.url != overridden_url
+    await _store_override(session, {"plex": {"url": overridden_url}})
+
+    seen = []
+
+    def plex_factory(config):
+        seen.append(config)
+        return "the-plex-client"
+
+    app = _background_app(
+        file_config, session_factory, secrets, plex_factory=plex_factory
+    )
+    assert app.state.plex is None, "create_app alone must not build a Plex client"
+
+    async with app.router.lifespan_context(app):
+        assert app.state.plex == "the-plex-client", (
+            "the lifespan did not build the Plex client from the factory "
+            f"build() handed it ({app.state.plex!r})"
+        )
+        assert [c.plex.url for c in seen] == [overridden_url], (
+            "the Plex client was built from the file config, so it and the "
+            "liveness probe disagree about which server this deployment talks to"
+        )
+
+
 async def test_the_lifespan_publishes_its_http_client_for_request_handlers(
     session_factory, secrets, stubbed_background_services
 ):
@@ -127,7 +238,7 @@ async def test_the_lifespan_publishes_its_http_client_for_request_handlers(
     than a second one made for handlers: the ``finally`` closes only the one
     the providers were built with.
     """
-    app = create_app(load_config(EXAMPLE), session_factory, secrets, run_background=True)
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
     assert app.state.http is None, "create_app alone must not build a client"
 
     async with app.router.lifespan_context(app):
@@ -241,7 +352,7 @@ async def test_the_wired_artwork_probe_reads_provenance_for_one_plex_item(monkey
 
 
 async def test_the_lifespan_wires_a_notifier_from_config(
-    session_factory, secrets, stubbed_background_services
+    session, session_factory, secrets, stubbed_background_services
 ):
     """``app.state.notifier = build_notifier(...)`` is production-only wiring,
     the same shape as ``app.state.http`` above: nothing else in the suite
@@ -249,10 +360,16 @@ async def test_the_lifespan_wires_a_notifier_from_config(
     while no deployed instance ever sent a notification. Before the lifespan
     (and in every no-lifespan test app) the state carries a ``NullNotifier``,
     never ``None``, so callers send unconditionally."""
-    config = load_config(EXAMPLE)
-    config.notifications.enabled = True
-    config.notifications.url = "http://hooks.internal/notify"
-    app = create_app(config, session_factory, secrets, run_background=True)
+    # Expressed as a stored override rather than mutated onto the Config
+    # object handed to create_app: under run_background the lifespan boots on
+    # the effective config it loads itself, so an in-memory mutation of the
+    # argument never reaches the notifier. This is how a deployment turns
+    # notifications on -- ConfigMap or Settings editor, both merged here.
+    await _store_override(
+        session,
+        {"notifications": {"enabled": True, "url": "http://hooks.internal/notify"}},
+    )
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
     assert isinstance(app.state.notifier, NullNotifier), (
         "create_app alone must install a NullNotifier stand-in, never None"
     )
@@ -273,7 +390,7 @@ async def test_without_the_lifespan_the_notifier_is_a_null_stand_in(secrets):
 
 
 async def test_the_lifespan_hands_the_notifier_to_the_scheduler(
-    session_factory, secrets, stubbed_background_services, monkeypatch
+    session, session_factory, secrets, stubbed_background_services, monkeypatch
 ):
     """The scheduler's run-completed hook only fires if the lifespan actually
     passes the notifier it built -- pinned here because the stubbed Scheduler
@@ -288,10 +405,16 @@ async def test_the_lifespan_hands_the_notifier_to_the_scheduler(
             await stop_event.wait()
 
     monkeypatch.setattr("autoposter.app.Scheduler", _RecordingScheduler)
-    config = load_config(EXAMPLE)
-    config.notifications.enabled = True
-    config.notifications.url = "http://hooks.internal/notify"
-    app = create_app(config, session_factory, secrets, run_background=True)
+    # Expressed as a stored override rather than mutated onto the Config
+    # object handed to create_app: under run_background the lifespan boots on
+    # the effective config it loads itself, so an in-memory mutation of the
+    # argument never reaches the notifier. This is how a deployment turns
+    # notifications on -- ConfigMap or Settings editor, both merged here.
+    await _store_override(
+        session,
+        {"notifications": {"enabled": True, "url": "http://hooks.internal/notify"}},
+    )
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
 
     async with app.router.lifespan_context(app):
         wired = app.state.notifier
@@ -314,7 +437,7 @@ async def test_the_lifespan_fills_the_dict_the_broadcaster_holds_rather_than_reb
     the difference, so the identity the broadcaster holds is captured here
     before the lifespan runs and asserted through it.
     """
-    app = create_app(load_config(EXAMPLE), session_factory, secrets, run_background=True)
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
     held = app.state.dashboard_broadcaster._scheduler_intervals
     assert held is app.state.scheduler_intervals and held == {}, (
         "precondition: create_app publishes one empty mapping, shared"
@@ -358,21 +481,25 @@ async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_process
     monkeypatch.setattr("autoposter.app.run_workers", capture_workers)
     monkeypatch.setattr("autoposter.app.process_item", capture_process_item)
 
-    config = load_config(EXAMPLE)
-    app = create_app(config, session_factory, secrets, run_background=True)
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=1)
 
     async with app.router.lifespan_context(app):
         # run_workers is started as a task, so let it reach its first await.
         await asyncio.sleep(0)
+        # The generation the lifespan itself booted on. Read off the app
+        # rather than reusing the Config create_app was handed: the lifespan
+        # re-reads the file and merges the (here empty) overrides over it, so
+        # the boot generation is an equal-but-distinct object.
+        booted = app.state.config
         handler = captured["handler"]
         await handler(None, intent)
 
-        swapped = config.model_copy(update={"workers": config.workers + 7})
+        swapped = booted.model_copy(update={"workers": booted.workers + 7})
         swap_config(app, swapped)
         await handler(None, intent)
 
-    assert seen[0] is config, "the first job did not see the boot generation"
+    assert seen[0] is booted, "the first job did not see the boot generation"
     assert seen[1] is swapped, (
         "the second job still saw the boot generation: the handler partial "
         "closures a Config instance rather than the holder, so nothing a "

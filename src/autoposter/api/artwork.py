@@ -248,8 +248,8 @@ async def live_artwork(
         # own it are not running. Not the caller's fault and not permanent.
         #
         # Logged because the body reads as "Plex is down" while the cause is
-        # local wiring: app.state.plex comes from main.build() and
-        # app.state.http from the lifespan's run_background branch, so an
+        # local wiring: app.state.plex and app.state.http both come from the
+        # lifespan's run_background branch, so an
         # operator seeing this and finding nothing in the log would go looking
         # at their Plex server instead of at this process.
         missing = " and ".join(

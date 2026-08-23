@@ -15,7 +15,9 @@ from autoposter.api.dashboard_stream import StatusBroadcaster
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
 from autoposter.config.holder import ConfigHolder
+from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
+from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Config, Secrets
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
@@ -45,13 +47,63 @@ logger = logging.getLogger(__name__)
 
 
 def create_app(
-    config: Config, session_factory, secrets: Secrets, run_background: bool = False
+    config: Config, session_factory, secrets: Secrets, run_background: bool = False,
+    plex_factory=None,
 ) -> FastAPI:
+    """The application, built from ``config`` -- the *file* generation.
+
+    Note what ``config`` is and is not under ``run_background=True``. It is
+    the generation the application object itself is shaped by (the docs
+    routes) and the one the holder starts on, which is what every request
+    arriving before startup finishes would see -- there are none. It is *not*
+    what the background services boot on: the lifespan loads the effective
+    config (this file plus the database overrides) for itself and swaps it in
+    before building any of them, so mutating this argument to configure a
+    background application does nothing. Configure one the way a deployment
+    does, through the file at ``app.state.config_path`` or the overrides row.
+
+    ``plex_factory`` is a callable taking the effective ``Config`` and
+    returning the client to publish as ``app.state.plex``. Only
+    ``main.build()`` passes one, exactly as only ``main.build()`` passes
+    ``run_background=True``: both are production wiring the lifespan performs
+    on its behalf, because both need something ``build()`` cannot have -- a
+    running event loop, and the config generation that loop reads out of the
+    database. Every test application passes neither and keeps
+    ``app.state.plex`` as ``None``.
+    """
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if not run_background:
             yield
             return
+        # The effective config -- the mounted file with the database overrides
+        # merged over it -- is loaded HERE, first, and nowhere earlier.
+        #
+        # Not in main.build(), because `uvicorn --factory` calls build() from
+        # inside the server's own event loop: an await is impossible there and
+        # an asyncio.run bridge raises outright (see main.build's docstring).
+        # This is the first point in the boot that is both on the loop and
+        # holding the session factory.
+        #
+        # First, because everything below -- the provider clients, the
+        # notifier, the Plex client, the liveness probe, the scheduler's job
+        # set, the worker pool -- is constructed from `config`, and `config`
+        # is rebound here to the swapped generation. Note what that rebinding
+        # buys beyond correctness: `config` is now a local of this function,
+        # so a config read accidentally added *above* this line is an
+        # UnboundLocalError at boot rather than a silent read of the
+        # un-overridden file.
+        #
+        # The overrides table is assumed to exist: every entry point runs
+        # behind `alembic upgrade head` (docker-compose.yml's `api` command,
+        # the deployment's init step), which is what the rest of this
+        # lifespan already assumes of the schema.
+        async with session_factory() as session:
+            swap_config(app, await load_effective_config(app.state.config_path, session))
+        config = app.state.config_holder.current
+        if plex_factory is not None:
+            app.state.plex = plex_factory(config)
         # Capture the process's own log stream for /api/logs. Attached here
         # rather than in create_app: the root logger is process-global, so
         # attaching per app instance would leave every test app's handler
@@ -203,6 +255,14 @@ def create_app(
     # anyone who can reach the port, and FastAPI serves them outside the
     # router, so they cannot carry require_session. Off by default; passing
     # openapi_url=None is what actually removes /docs and /redoc too.
+    #
+    # Read from the file generation, and only ever from it: this decision is
+    # baked into the FastAPI object itself, which exists before the lifespan
+    # runs and therefore before any override is known. A database override on
+    # api_docs_enabled consequently does nothing, restart or not -- the one
+    # setting in the schema that is genuinely file-only. FROZEN_SECTIONS says
+    # so in the reason the editor renders, and deploy/README.md says so in
+    # the overrides section.
     docs = config.api_docs_enabled
     app = FastAPI(
         title="autoposter",
@@ -218,11 +278,12 @@ def create_app(
     # object the holder now holds. The two are never allowed to diverge.
     app.state.config_holder = ConfigHolder(config)
     app.state.config = config
-    # The *file* the config was loaded from, which the config editor needs and
-    # a loaded Config cannot tell it: an override is a delta over that
-    # document, so reverting one means re-reading it. Published here so every
-    # application has it; a test whose app was built from a different file
-    # rebinds this to that file.
+    # The *file* the config was loaded from, which a loaded Config cannot tell
+    # anyone: an override is a delta over that document, so both reverting one
+    # (the config editor) and applying one (the lifespan's merge above) mean
+    # re-reading it. Published here so every application has it; main.build()
+    # rebinds it to the path it actually read, and so does a test whose app was
+    # built from a different file.
     app.state.config_path = DEFAULT_CONFIG_PATH
     app.state.session_factory = session_factory
     app.state.secrets = secrets
@@ -240,10 +301,12 @@ def create_app(
             "AUTOPOSTER_ADMIN_PASSWORD_HASH is not set; this deployment has no "
             "admin password configured, so every login attempt will fail"
         )
+    # Built by the lifespan from plex_factory, once it holds the effective
+    # config -- see the top of the lifespan and main.build's plex_client.
     app.state.plex = None
-    # Set by the lifespan, like app.state.plex is set by main.build(). Handlers
-    # that need to talk to Plex check for None rather than making a client of
-    # their own, so there stays exactly one AsyncClient to close on shutdown.
+    # Set by the lifespan too. Handlers that need to talk to Plex check for
+    # None rather than making a client of their own, so there stays exactly
+    # one AsyncClient to close on shutdown.
     app.state.http = None
     app.state.providers = []
     app.state.tmdb_facts = None

@@ -55,9 +55,16 @@ FROZEN_SECTIONS: dict[str, str] = {
         "the miss-triggered IMDb refresh is installed process-wide at startup "
         "(gather_facts carries no client of its own)"
     ),
+    # The one entry here that a restart does not fix either. FastAPI builds
+    # the docs routes into the application object, which exists before the
+    # lifespan has read a single override -- so this value can only ever come
+    # from the mounted file. Said plainly rather than as "restart to apply",
+    # which would be a lie an operator would only discover by restarting.
     "api_docs_enabled": (
         "FastAPI decides whether /docs, /redoc and /openapi.json exist when "
-        "the application object is constructed"
+        "the application object is constructed, which happens before the "
+        "overrides are read -- so a restart will not apply this one either; "
+        "set it in the mounted autoposter.yaml"
     ),
     "scheduler.enabled": (
         "the scheduler's job set is registered once at startup; the cadences "
