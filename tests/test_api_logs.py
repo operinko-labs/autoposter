@@ -74,9 +74,8 @@ def test_buffer_entries_carry_level_logger_and_timestamp():
 
 
 def test_buffer_excludes_uvicorn_access_lines():
-    """The dashboard polls the API every few seconds; with access lines
-    included, the log view would be mostly a mirror of the viewer's own
-    requests."""
+    """With access lines included, the log view would be mostly a mirror of
+    the viewer's own requests rather than a record of what the service did."""
     buffer = LogBuffer()
     buffer.emit(record('GET /api/status 200', name="uvicorn.access"))
     buffer.emit(record("a real line"))

@@ -11,6 +11,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from autoposter.api.auth import LoginRateLimiter
+from autoposter.api.dashboard_stream import StatusBroadcaster
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
 from autoposter.config.schema import Config, Secrets
@@ -145,9 +146,14 @@ def create_app(
         # written to scheduled_runs. Built from the jobs actually registered
         # just above, so a job this configuration skipped is simply absent
         # and reports a null interval rather than a cadence nothing honours.
-        app.state.scheduler_intervals = {
-            job.name: job.interval_seconds for job in scheduler_jobs
-        }
+        #
+        # Filled in place, never rebound: the dashboard broadcaster holds this
+        # exact dict (create_app hands it the object, not a copy), so
+        # replacing it here would leave the stream reporting null intervals
+        # forever while /api/status reported the real ones.
+        app.state.scheduler_intervals.update(
+            {job.name: job.interval_seconds for job in scheduler_jobs}
+        )
         scheduler = Scheduler(
             session_factory, scheduler_jobs,
             poll_seconds=config.scheduler.poll_seconds, notifier=notifier,
@@ -224,6 +230,15 @@ def create_app(
     # the scheduler disabled -- still serves /api/status, and that handler
     # reads this. Filled by the lifespan's background branch.
     app.state.scheduler_intervals = {}
+    # Created here so /api/dashboard/stream always has one to subscribe to --
+    # the log_buffer precedent above. No lifespan work: the poll loop is
+    # subscriber-driven and its task is created from subscribe(), which runs
+    # on the event loop create_app does not have. It is handed the interval
+    # mapping itself so the lifespan's later fill (in place, see above) is
+    # visible to it.
+    app.state.dashboard_broadcaster = StatusBroadcaster(
+        session_factory, config, app.state.scheduler_intervals
+    )
     app.include_router(router)
     app.include_router(api_router)
 

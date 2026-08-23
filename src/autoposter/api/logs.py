@@ -50,9 +50,10 @@ class LogBuffer(logging.Handler):
     captured when the first subscriber arrives, because a handler attached at
     process start has no running loop to ask.
 
-    ``uvicorn.access`` is excluded at the source: the dashboard polls the API
-    every few seconds, so with access lines included the log view would be
-    mostly a mirror of the viewer's own requests.
+    ``uvicorn.access`` is excluded at the source: with access lines included
+    the log view would be mostly a mirror of the viewer's own requests --
+    every page the operator opens, every stream they hold open -- rather than
+    a record of what the service did.
     """
 
     def __init__(self, capacity: int = 1000):

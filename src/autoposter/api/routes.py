@@ -3,7 +3,6 @@ import asyncio
 import logging
 import os
 from dataclasses import asdict
-from datetime import timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -13,7 +12,9 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from autoposter.api.artwork import router as artwork_router
+from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.logs import router as logs_router
+from autoposter.api.snapshots import events_snapshot, status_snapshot
 from autoposter.api.auth import (
     create_session,
     hash_password,
@@ -24,7 +25,6 @@ from autoposter.api.auth import (
     verify_password,
 )
 from autoposter.db.models import (
-    EventLog,
     ItemFacts,
     Job,
     ManagedCollection,
@@ -39,11 +39,6 @@ from autoposter.queue.jobs import enqueue, enqueue_batch
 from autoposter.render.pipeline import ART_KINDS_FOR, manual_override_path
 
 logger = logging.getLogger(__name__)
-
-# jobs.state values (see db/models.py's Job docstring); always reported even
-# when zero, so an empty database returns zeroed counts rather than an
-# incomplete dict.
-JOB_STATES = ("pending", "running", "done", "failed", "parked", "dismissed")
 
 # The names of the four periodic jobs, from the Job(name=...) literals in
 # scheduler/jobs.py (:63, :157, :291, :517). Spelled out rather than imported
@@ -118,6 +113,9 @@ router.include_router(artwork_router)
 # The live log endpoints -- the in-memory capture of this process's own log
 # stream (see api/logs.py for why it is a module of its own).
 router.include_router(logs_router)
+
+# The dashboard's push stream, and the per-process broadcaster behind it.
+router.include_router(dashboard_stream_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
@@ -202,57 +200,13 @@ async def logout(
 async def status(
     request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
+    # The queries live in api/snapshots.py because the dashboard stream's
+    # broadcaster builds this same body on its poll -- see that module.
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        # GROUP BY in SQL rather than fetching every job row and counting in
-        # Python -- the jobs table is the hot one at this library's size.
-        state_counts = (
-            await session.execute(select(Job.state, func.count()).group_by(Job.state))
-        ).all()
-        jobs_by_state = dict.fromkeys(JOB_STATES, 0)
-        for state, count in state_counts:
-            jobs_by_state[state] = count
-
-        processed_last_24h = (
-            await session.execute(
-                select(func.count())
-                .select_from(Job)
-                .where(
-                    Job.state == "done",
-                    Job.updated_at >= func.now() - timedelta(hours=24),
-                )
-            )
-        ).scalar_one()
-
-        scheduled_rows = (
-            (await session.execute(select(ScheduledRun).order_by(ScheduledRun.name)))
-            .scalars()
-            .all()
+        return await status_snapshot(
+            session, request.app.state.config, request.app.state.scheduler_intervals
         )
-
-    # Cadence is not in the database -- it lives on the in-memory scheduler
-    # Job dataclass, published by create_app (empty) and filled by the
-    # lifespan with whatever it actually registered. Merging by name here
-    # means a row left behind by a job the current configuration no longer
-    # registers reports a null interval rather than a stale one. The frontend
-    # computes the next run from this plus last_started_at.
-    intervals = request.app.state.scheduler_intervals
-    return {
-        "jobs_by_state": jobs_by_state,
-        "workers": request.app.state.config.workers,
-        "processed_last_24h": processed_last_24h,
-        "scheduled_jobs": [
-            {
-                "name": row.name,
-                "last_started_at": row.last_started_at,
-                "last_finished_at": row.last_finished_at,
-                "last_status": row.last_status,
-                "last_detail": row.last_detail,
-                "interval_seconds": intervals.get(row.name),
-            }
-            for row in scheduled_rows
-        ],
-    }
 
 
 @router.get("/events")
@@ -264,28 +218,7 @@ async def events(
     capped_limit = min(max(limit, 1), MAX_EVENTS_LIMIT)
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        # payload is never selected -- it holds whole webhook bodies and can
-        # carry tokens from the sending service.
-        rows = (
-            await session.execute(
-                select(
-                    EventLog.source, EventLog.event_type, EventLog.outcome, EventLog.received_at
-                )
-                .order_by(EventLog.received_at.desc())
-                .limit(capped_limit)
-            )
-        ).all()
-    return {
-        "events": [
-            {
-                "source": row.source,
-                "event_type": row.event_type,
-                "outcome": row.outcome,
-                "received_at": row.received_at,
-            }
-            for row in rows
-        ]
-    }
+        return {"events": await events_snapshot(session, capped_limit)}
 
 
 @router.get("/items")
