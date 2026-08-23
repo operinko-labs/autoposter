@@ -18,7 +18,12 @@
    * without it the flex stretch would make it as tall as the page. */
   position: sticky;
   top: 0;
+  /* dvh where supported: on mobile 100vh is the LARGE viewport, so the
+   * rail's last item can sit under the browser's URL bar. The vh line is
+   * the fallback for engines without dvh; the dvh line wins where both
+   * parse. */
   height: 100vh;
+  height: 100dvh;
   /* Its own scrollbar, so a short viewport can still reach Sign out. */
   overflow-y: auto;
   /* .app-main is flex: 1, so shrinking this column hands the difference
@@ -212,10 +217,16 @@
 }
 
 /* The opposite case: a cell whose value is long and arbitrary (an error
- * string, a path) wraps inside its column rather than widening the table. */
+ * string, a path) wraps inside its column rather than widening the table.
+ * The min-width matters as much as the wrapping: inside a .table-scroll,
+ * neighbouring nowrap columns squeeze this one to almost nothing, and
+ * break-word then wraps at every fifth character -- an unreadable vertical
+ * ribbon (observed on the Failures page at 500px). A floor keeps the wrap
+ * at word-ish width; the container scrolls for whatever that costs. */
 .cell-wrap {
   white-space: pre-wrap;
   word-break: break-word;
+  min-width: 16rem;
 }
 
 /* Per-row controls. Beside each other while the row has width for them, on a

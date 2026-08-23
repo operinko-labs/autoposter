@@ -165,7 +165,12 @@ describe("the sidebar stays reachable", () => {
   it("pins the rail to the viewport with its own scrollbar", () => {
     expect(declaration(shellCss, ".sidebar", "position")).toBe("sticky");
     expect(declaration(shellCss, ".sidebar", "top")).toBe("0");
-    expect(declaration(shellCss, ".sidebar", "height")).toBe("100vh");
+    // Two height declarations on purpose: dvh (the small mobile viewport,
+    // so the rail's last item cannot hide under the URL bar) must come
+    // LAST so it wins where it parses, with vh as the older-engine
+    // fallback above it. `declaration` returns the last one.
+    expect(declaration(shellCss, ".sidebar", "height")).toBe("100dvh");
+    expect(shellCss).toContain("height: 100vh;");
     expect(declaration(shellCss, ".sidebar", "overflow-y")).toBe("auto");
   });
 
