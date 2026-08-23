@@ -60,6 +60,10 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          # Cache pip's wheel cache between runs, keyed on pyproject.toml --
+          # the same treatment setup-node already gives npm below.
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install the package and its dev extras
         run: |
@@ -147,11 +151,17 @@ jobs:
       # The cost of that gap was real: `FakePlex` sat here without a
       # `fetch_item` method until it was found by accident.
       #
-      # So they run in a container carrying exactly the Dockerfile's
-      # ImageMagick packages. Alpine's is the Q16-HDRI build byte-equality
-      # depends on; a plain Q16 renders the same source 0.077% differently.
-      # The delegate subpackages are not decoration -- with `imagemagick`
-      # alone this fails with "no decode delegate for this image format".
+      # So they run in the Dockerfile's own `dev` stage, which inherits
+      # `pybase` -- exactly the ImageMagick packages the shipped image
+      # carries. Alpine's is the Q16-HDRI build byte-equality depends on; a
+      # plain Q16 renders the same source 0.077% differently. Building the
+      # stage here rather than `apk add` + `pip install` into a bare
+      # python:alpine (the previous shape) means the daemon's layer cache
+      # answers for both on most runs: the ImageMagick layer survives until
+      # the base image moves, and the pip install layer until pyproject.toml
+      # or src/ change. A plain `docker build`, not docker/build-push-action:
+      # tests/test_ci_path_filters.py forbids that action a `target:` so the
+      # image job can never quietly ship a non-final stage.
       #
       # `CI=true` is passed in on purpose. It is what makes the fixture fail
       # instead of skip, so if this step ever stops providing a `magick` the
@@ -168,31 +178,30 @@ jobs:
           docker exec ci-postgres psql -U autoposter -d postgres \
             -c 'CREATE DATABASE autoposter_magick OWNER autoposter'
 
-          # `docker create` + `docker cp` rather than `-v "$PWD:/repo"`,
-          # because this job is itself a container: a bind mount would ask the
-          # host's daemon for a path that exists only in here. `docker cp`
-          # streams over the API, so it does not care. It creates only the
-          # last path component, hence copying into /usr/src, which the image
-          # already has -- and which is where `assets_root()` then resolves
-          # `assets/` from, since it walks up two levels from the package.
-          cid=$(docker create --network ci-db -w /usr/src \
+          # `docker build` streams this checkout to the daemon over the API,
+          # so it works where a bind mount would not: this job is itself a
+          # container, and `-v "$PWD:/repo"` would ask the host's daemon for
+          # a path that exists only in here.
+          docker build --target dev -t autoposter:ci-dev .
+
+          # `docker create` + `docker cp` for the parts the dev stage does
+          # not carry, for the same reason. pyproject.toml and src/ are
+          # already in the image at /app -- the build above just put this
+          # checkout's copies there -- and the editable install resolves
+          # `assets_root()` two levels up from /app/src, so the tree lands
+          # exactly where docker-compose.yml's bind mount puts it locally.
+          #
+          # -v so the report names every test that ran: a reviewer can see
+          # these executed rather than inferring it from a count. A marker
+          # matching nothing exits 5, which fails this step -- deleting
+          # the marker cannot quietly empty this run either.
+          cid=$(docker create --network ci-db -w /app \
             -e CI=true \
             -e AUTOPOSTER_TEST_DATABASE_URL=postgresql+asyncpg://autoposter:autoposter@ci-postgres:5432/autoposter_magick \
             -e AUTOPOSTER_MAINTENANCE_DATABASE_URL=postgresql://autoposter:autoposter@ci-postgres:5432/postgres \
-            python:${{ env.PYTHON_VERSION }}-alpine sh -euc '
-              apk add --no-cache imagemagick imagemagick-jpeg imagemagick-webp \
-                imagemagick-svg font-dejavu
-              magick -version
-              pip install -q -e ".[dev]"
-              # -v so the report names every test that ran: a reviewer can see
-              # these executed rather than inferring it from a count. A marker
-              # matching nothing exits 5, which fails this step -- deleting
-              # the marker cannot quietly empty this run either.
-              python -m pytest tests/ -v -m imagemagick
-            ')
-          docker cp pyproject.toml "${cid}:/usr/src/pyproject.toml"
-          for path in src tests config assets; do
-            docker cp "$path" "${cid}:/usr/src/${path}"
+            autoposter:ci-dev python -m pytest tests/ -v -m imagemagick)
+          for path in tests config assets; do
+            docker cp "$path" "${cid}:/app/${path}"
           done
           # `|| status=$?` rather than reading $? afterwards: the runner's
           # shell exits on error, so a failing pytest would abort this script

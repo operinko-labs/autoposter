@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from autoposter.config.loader import load_config
@@ -120,12 +121,32 @@ def no_outbound_network(monkeypatch):
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
 
 
+_SCHEMA_READY = False
+
+
 @pytest_asyncio.fixture
 async def engine():
+    """A per-test engine over a database that is empty when the test starts.
+
+    The schema is dropped and rebuilt once per process, then TRUNCATEd between
+    tests rather than rebuilt. Rebuilding all tables for every test cost
+    0.6-0.8s of setup per DB test locally and several seconds each on the CI
+    runner -- ~340 DB tests made that the whole of a 21-minute Test step. One
+    TRUNCATE is a single round trip; RESTART IDENTITY makes it equivalent to a
+    fresh schema for anything reading generated ids. The engine itself stays
+    function-scoped because asyncpg connections are bound to the current
+    test's event loop.
+    """
+    global _SCHEMA_READY
     eng = create_async_engine(TEST_DB_URL, future=True)
     async with eng.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        if not _SCHEMA_READY:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+            _SCHEMA_READY = True
+        else:
+            tables = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
+            await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
     yield eng
     await eng.dispose()
 
