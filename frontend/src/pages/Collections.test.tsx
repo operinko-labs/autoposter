@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
 import { formatTime } from "../format";
@@ -70,9 +70,19 @@ function json(body: unknown, code = 200): Response {
   });
 }
 
+/** A fixture is either a fixed body or a function called per request, so a
+ * test can let the server's answer change between polls -- which is the whole
+ * point of the completion watch. */
+type Supplied = unknown | (() => unknown);
+
+function supply(supplied: Supplied, fallback: unknown): unknown {
+  if (typeof supplied === "function") return (supplied as () => unknown)();
+  return supplied ?? fallback;
+}
+
 interface StubOptions {
-  collections?: unknown;
-  status?: unknown;
+  collections?: Supplied;
+  status?: Supplied;
   run?: (path: string, init?: RequestInit) => Promise<Response>;
 }
 
@@ -80,11 +90,15 @@ function stubFetch(options: StubOptions = {}) {
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     if (path.startsWith("/api/scheduled-runs/") && options.run) return options.run(path, init);
     if (path.startsWith("/api/scheduled-runs/")) return json({ status: "requested", poll_seconds: 60 });
-    if (path === "/api/status") return json(options.status ?? status());
-    return json(options.collections ?? COLLECTIONS);
+    if (path === "/api/status") return json(supply(options.status, status()));
+    return json(supply(options.collections, COLLECTIONS));
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+function callsTo(fetchMock: ReturnType<typeof stubFetch>, path: string) {
+  return fetchMock.mock.calls.filter(([called]) => called === path).length;
 }
 
 async function rowFor(title: string) {
@@ -96,6 +110,10 @@ async function rowFor(title: string) {
 
 beforeEach(() => {
   setToken(null);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("Collections", () => {
@@ -223,6 +241,145 @@ describe("Collections", () => {
 
     expect(await screen.findByText("scheduler table is locked")).toBeInTheDocument();
     expect(screen.queryByText(/picks up within/)).not.toBeInTheDocument();
+  });
+
+  it("keeps polling status without re-reading collections while the pass has not finished", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // last_finished_at never moves: the requested pass has not landed yet.
+    const fetchMock = stubFetch();
+
+    render(<Collections />);
+    fireEvent.click(await screen.findByRole("button", { name: "Diff now" }));
+    expect(await screen.findByText("requested — picks up within 60s")).toBeInTheDocument();
+
+    const statusCalls = callsTo(fetchMock, "/api/status");
+    expect(callsTo(fetchMock, "/api/collections")).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+
+    // Two ticks of the watch: status is re-read each time, but the collection
+    // numbers are still the pre-run ones, so re-reading them would be churn
+    // that shows nothing new.
+    expect(callsTo(fetchMock, "/api/status")).toBe(statusCalls + 2);
+    expect(callsTo(fetchMock, "/api/collections")).toBe(1);
+    expect(screen.getByText("requested — picks up within 60s")).toBeInTheDocument();
+    expect((await rowFor("Marvel Chronological")).getByText("+3 −1")).toBeInTheDocument();
+  });
+
+  it("re-reads collections in place and drops the note once last_finished_at advances", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let finished = false;
+    const fetchMock = stubFetch({
+      status: () =>
+        finished
+          ? status({ last_finished_at: "2026-01-02T09:09:05Z", last_detail: "7 updated" })
+          : status(),
+      collections: () =>
+        finished
+          ? {
+              collections: [
+                {
+                  ...COLLECTIONS.collections[0],
+                  member_count: 40,
+                  last_added: 6,
+                  last_removed: 0,
+                },
+                ...COLLECTIONS.collections.slice(1),
+              ],
+            }
+          : COLLECTIONS,
+    });
+
+    render(<Collections />);
+    fireEvent.click(await screen.findByRole("button", { name: "Diff now" }));
+    expect(await screen.findByText("requested — picks up within 60s")).toBeInTheDocument();
+
+    finished = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    // The point of the whole loop: the new numbers appear without a reload.
+    const row = await rowFor("Marvel Chronological");
+    expect(row.getByText("40")).toBeInTheDocument();
+    expect(row.getByText("+6 −0")).toBeInTheDocument();
+    expect(row.queryByText("+3 −1")).not.toBeInTheDocument();
+    // The request is no longer outstanding, so the note must go.
+    expect(screen.queryByText(/picks up within/)).not.toBeInTheDocument();
+    expect(screen.getByText(`Last refresh: ${formatTime("2026-01-02T09:09:05Z")}`)).toBeInTheDocument();
+
+    // And the watch stops: it exists only between an accepted request and its
+    // completion, never as a page-wide poll.
+    const settled = fetchMock.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+    });
+    expect(fetchMock.mock.calls.length).toBe(settled);
+  });
+
+  it("gives up silently once the run's own poll interval plus ten minutes has passed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // 30s poll + 600s == 630s of ticks. A reconcile slower than that is slow,
+    // not broken, so the note stays and no error is claimed.
+    const fetchMock = stubFetch({ run: async () => json({ status: "requested", poll_seconds: 30 }) });
+
+    render(<Collections />);
+    fireEvent.click(await screen.findByRole("button", { name: "Diff now" }));
+    expect(await screen.findByText("requested — picks up within 30s")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(640000);
+    });
+    const settled = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60000);
+    });
+    expect(fetchMock.mock.calls.length).toBe(settled);
+    expect(screen.getByText("requested — picks up within 30s")).toBeInTheDocument();
+    expect(document.querySelector(".page-error")).toBeNull();
+  });
+
+  it("stops the watch when a second Diff now supersedes it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = stubFetch();
+
+    render(<Collections />);
+    const button = await screen.findByRole("button", { name: "Diff now" });
+    fireEvent.click(button);
+    expect(await screen.findByText("requested — picks up within 60s")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Diff now" }));
+    // One initial status read plus one per click, all settled, so the count
+    // below cannot be racing a request still in flight.
+    await waitFor(() => expect(callsTo(fetchMock, "/api/status")).toBe(3));
+
+    const before = callsTo(fetchMock, "/api/status");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    // One watch, not two: the superseded interval has to be cleared or the
+    // page doubles its status traffic on every press.
+    expect(callsTo(fetchMock, "/api/status")).toBe(before + 1);
+  });
+
+  it("leaves no timer behind when the page is unmounted mid-watch", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = stubFetch();
+
+    const { unmount } = render(<Collections />);
+    fireEvent.click(await screen.findByRole("button", { name: "Diff now" }));
+    expect(await screen.findByText("requested — picks up within 60s")).toBeInTheDocument();
+
+    unmount();
+    const settled = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+    });
+    expect(fetchMock.mock.calls.length).toBe(settled);
   });
 
   it("keeps the empty state when nothing is managed", async () => {

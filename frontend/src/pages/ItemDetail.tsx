@@ -442,7 +442,7 @@ export function ItemDetail() {
   const artKinds =
     item.renders.length === 0
       ? [artKindFor(item.kind)]
-      : [...item.renders].map((render) => render.art_kind).sort();
+      : item.renders.map((render) => render.art_kind).sort();
 
   return (
     <>

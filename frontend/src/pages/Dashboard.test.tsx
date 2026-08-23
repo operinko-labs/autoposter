@@ -17,7 +17,7 @@ const STATUS = {
   processed_last_24h: 96,
   scheduled_jobs: [
     {
-      name: "library_scan",
+      name: "collections_reconcile",
       last_started_at: "2026-01-02T03:04:05Z",
       last_finished_at: "2026-01-02T03:09:05Z",
       last_status: "ok",
@@ -107,7 +107,7 @@ describe("Dashboard", () => {
     expect(screen.getByText(/4 workers/)).toBeInTheDocument();
     expect(screen.getByText(/96 processed in 24h/)).toBeInTheDocument();
 
-    expect(screen.getByText("library_scan")).toBeInTheDocument();
+    expect(screen.getByText("collections_reconcile")).toBeInTheDocument();
     expect(screen.getByText("plex")).toBeInTheDocument();
     expect(screen.getByText("library.new")).toBeInTheDocument();
     expect(screen.getByText("queued")).toBeInTheDocument();
@@ -189,7 +189,7 @@ describe("Dashboard", () => {
     );
 
     render(<Dashboard />);
-    const row = await jobRow("library_scan");
+    const row = await jobRow("collections_reconcile");
     fireEvent.click(row.getByRole("button", { name: "Run now" }));
 
     // The endpoint only marks the row due -- nothing has started, and the
@@ -198,7 +198,7 @@ describe("Dashboard", () => {
     expect(await row.findByText("requested — picks up within 30s")).toBeInTheDocument();
 
     const call = fetchMock.mock.calls.find(([path]) => path.startsWith("/api/scheduled-runs/"));
-    expect(call?.[0]).toBe("/api/scheduled-runs/library_scan/run");
+    expect(call?.[0]).toBe("/api/scheduled-runs/collections_reconcile/run");
     expect((call?.[1] as RequestInit).method).toBe("POST");
   });
 
@@ -207,7 +207,7 @@ describe("Dashboard", () => {
 
     render(<Dashboard />);
 
-    const registered = await jobRow("library_scan");
+    const registered = await jobRow("collections_reconcile");
     expect(registered.getByRole("button", { name: "Run now" })).toBeEnabled();
 
     // A null interval means the scheduler has no such job. Marking the row
@@ -223,7 +223,7 @@ describe("Dashboard", () => {
     stubFetch(undefined, () => new Promise<Response>((resolve) => (resolveRun = resolve)));
 
     render(<Dashboard />);
-    const row = await jobRow("library_scan");
+    const row = await jobRow("collections_reconcile");
     fireEvent.click(row.getByRole("button", { name: "Run now" }));
 
     // Not idempotent against an in-flight run: a second press queues a
@@ -242,7 +242,7 @@ describe("Dashboard", () => {
     stubFetch(undefined, async () => json({ detail: "unknown scheduled job" }, 404));
 
     render(<Dashboard />);
-    const row = await jobRow("library_scan");
+    const row = await jobRow("collections_reconcile");
     fireEvent.click(row.getByRole("button", { name: "Run now" }));
 
     expect(await row.findByText("unknown scheduled job")).toBeInTheDocument();

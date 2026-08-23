@@ -21,6 +21,18 @@ import "./collections.css";
  * so this string has to match exactly. */
 const RECONCILE_JOB = "collections_reconcile";
 
+/** How often the completion watch re-reads status, matching the dashboard's
+ * own poll so the two pages agree on how fresh "now" is. This is NOT a
+ * page-wide poll: the interval exists only between an accepted Diff now and
+ * that pass finishing (or the watch timing out). */
+const POLL_MS = 5000;
+
+/** How long past the scheduler's own pickup interval the watch keeps waiting,
+ * in seconds. A reconcile that outlasts this is slow -- a big library, a
+ * rate-limited Plex -- not failed, so the watch stops without claiming
+ * anything and the requested note stays as it was. */
+const WATCH_GRACE_SECONDS = 600;
+
 /** When the scheduler will next start the job on its own.
  *
  * The server sends no next-run time: it publishes `last_started_at` and the
@@ -55,6 +67,10 @@ export function Collections() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [requestedPoll, setRequestedPoll] = useState<number | null>(null);
+  // The completion watch for an outstanding Diff now. A fresh object per
+  // request even when the fields match, so the effect below tears the
+  // previous interval down and a second press cannot leave two running.
+  const [watch, setWatch] = useState<{ finishedAt: string | null; ticks: number } | null>(null);
 
   // A ref rather than the effect's `cancelled` local: the run-now response
   // lands in a click handler that local cannot reach -- the same reasoning as
@@ -86,6 +102,59 @@ export function Collections() {
     };
   }, [loadStatus]);
 
+  /** Watch an outstanding request until its pass lands, then show what it
+   * changed -- the page's promise is that Diff now produces a result without
+   * a reload.
+   *
+   * `last_finished_at` moving is the only completion signal the server gives:
+   * the run-now endpoint nulls `last_started_at` and nothing else, and the
+   * scheduler stamps the finish when the pass returns. Null to non-null
+   * counts as movement -- a job that had never finished has now. */
+  useEffect(() => {
+    if (watch === null) return;
+    let elapsed = 0;
+    const timer = setInterval(() => {
+      elapsed += 1;
+      // Out of patience, not out of hope: a reconcile slower than this is a
+      // big library or a rate-limited Plex, so stop quietly and leave the
+      // requested note standing rather than claiming a failure.
+      if (elapsed > watch.ticks) {
+        setWatch(null);
+        return;
+      }
+      void (async () => {
+        let next: Status;
+        try {
+          next = await apiFetch<Status>("/api/status");
+        } catch {
+          // A status read that failed is not the user's request failing.
+          // Leave the page as it is and try again on the next tick.
+          return;
+        }
+        if (!live.current) return;
+        const job = next.scheduled_jobs.find((candidate) => candidate.name === RECONCILE_JOB);
+        if ((job?.last_finished_at ?? null) === watch.finishedAt) {
+          setStatus(next);
+          return;
+        }
+        // The pass has landed, so the member counts and the +N −M deltas are
+        // stale in the table: re-read them rather than leaving the user to
+        // reload the page themselves.
+        try {
+          const response = await apiFetch<CollectionsResponse>("/api/collections");
+          if (live.current) setCollections(response.collections);
+        } catch (caught) {
+          if (live.current) setError((caught as Error).message);
+        }
+        if (!live.current) return;
+        setStatus(next);
+        setRequestedPoll(null);
+        setWatch(null);
+      })();
+    }, POLL_MS);
+    return () => clearInterval(timer);
+  }, [watch]);
+
   const reconcile = status?.scheduled_jobs.find((job) => job.name === RECONCILE_JOB);
   const scheduled = reconcile !== undefined && reconcile.interval_seconds !== null;
 
@@ -93,12 +162,26 @@ export function Collections() {
     setBusy(true);
     setError(null);
     setRequestedPoll(null);
+    // The finish time the watch has to see move, read before the request is
+    // made. Reading it after would risk capturing the requested pass's own
+    // finish on a fast scheduler and declaring completion of a run whose
+    // result is already on screen.
+    const finishedAt = reconcile?.last_finished_at ?? null;
+    // Any watch from an earlier press is superseded here, so its interval is
+    // torn down rather than left running alongside the new one.
+    setWatch(null);
     try {
       const outcome = await apiFetch<ScheduledRunRequestResponse>(
         `/api/scheduled-runs/${RECONCILE_JOB}/run`,
         { method: "POST" }
       );
-      if (live.current) setRequestedPoll(outcome.poll_seconds);
+      if (live.current) {
+        setRequestedPoll(outcome.poll_seconds);
+        setWatch({
+          finishedAt,
+          ticks: Math.ceil(((outcome.poll_seconds + WATCH_GRACE_SECONDS) * 1000) / POLL_MS),
+        });
+      }
       // Re-read rather than patching the row locally: the server has just
       // nulled last_started_at, and the status endpoint is the authority on
       // what the scheduler now thinks.
