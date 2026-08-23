@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
-import { apiFetch } from "../api/client";
+import { apiFetch, apiFetchNdjson } from "../api/client";
 import {
   JOB_STATES,
-  type EventsResponse,
+  isDashboardSnapshot,
+  type EventEntry,
   type FullPassResponse,
   type ScheduledRunRequestResponse,
   type Status,
@@ -12,14 +13,15 @@ import { formatTime } from "../format";
 import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
 import "./dashboard.css";
 
-/** Polling, not a WebSocket: no socket endpoint exists yet, and adding one is
- * a server change that belongs with the other phase 4c endpoints. */
-const POLL_MS = 5000;
+/** How long to wait before reconnecting a dropped stream -- the log tail's
+ * interval, for the same reason. */
+const RECONNECT_MS = 3000;
 
 export function Dashboard() {
   const [status, setStatus] = useState<Status | null>(null);
-  const [events, setEvents] = useState<EventsResponse["events"]>([]);
+  const [events, setEvents] = useState<EventEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
   const [passBusy, setPassBusy] = useState(false);
   const [passOutcome, setPassOutcome] = useState<FullPassResponse | null>(null);
   // Keyed by job name rather than page-level: several rows have their own
@@ -28,9 +30,9 @@ export function Dashboard() {
   const [runNotes, setRunNotes] = useState<Record<string, number>>({});
   const [runErrors, setRunErrors] = useState<Record<string, string>>({});
 
-  // A ref rather than the polling effect's `cancelled` local because the
-  // full-pass response lands in a click handler that local cannot reach --
-  // the same reasoning as the Failures page.
+  // A ref rather than the stream effect's abort signal because the full-pass
+  // response lands in a click handler that cannot reach it -- the same
+  // reasoning as the Failures page.
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
@@ -58,8 +60,8 @@ export function Dashboard() {
    * is NOT idempotent against a run already in flight -- pressing twice
    * queues a second copy of the pass on the next poll. The button is disabled
    * for the duration of the request for that reason, and nothing here fires
-   * it automatically. The polling effect below picks up whatever the
-   * scheduler does next, so there is no extra re-read to do. */
+   * it automatically. The stream below pushes whatever the scheduler does
+   * next, so there is no extra re-read to do. */
   async function runNow(name: string) {
     setRunBusy(name);
     setRunErrors((previous) => {
@@ -80,34 +82,47 @@ export function Dashboard() {
     }
   }
 
+  // The server pushes a whole status+events snapshot whenever it changes, so
+  // there is no polling here and no per-tick re-read: the first line of the
+  // stream paints the page and every later line replaces it wholesale. The
+  // reconnect is the log tail's, minus its clear-on-connect -- the tail
+  // replays a buffer, whereas each snapshot here is self-contained, so the
+  // last one stays on screen while a dropped stream is re-established rather
+  // than blanking the page for three seconds.
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-    async function load() {
+    async function connect() {
       try {
-        const [nextStatus, nextEvents] = await Promise.all([
-          apiFetch<Status>("/api/status"),
-          apiFetch<EventsResponse>("/api/events?limit=25"),
-        ]);
-        // The interval keeps firing while a request is in flight, and the tab
-        // may be closed mid-request; without this the response lands on an
-        // unmounted component.
-        if (cancelled) return;
-        setStatus(nextStatus);
-        setEvents(nextEvents.events);
-        setError(null);
+        setConnected(true);
+        await apiFetchNdjson(
+          "/api/dashboard/stream",
+          (value) => {
+            if (!isDashboardSnapshot(value)) return; // heartbeat
+            setStatus(value.status);
+            setEvents(value.events);
+            setError(null);
+          },
+          controller.signal,
+        );
       } catch (caught) {
-        // A 401 is already handled centrally by apiFetch, which drops the
-        // session and sends the user to the login form.
-        if (!cancelled) setError((caught as Error).message);
+        // A 401 is already handled centrally by apiFetchNdjson, which drops
+        // the session and sends the user to the login form; the session is
+        // checked once, at connect, so an expired one surfaces here as a
+        // failed reconnect.
+        if (controller.signal.aborted) return;
+        setError((caught as Error).message);
       }
+      if (controller.signal.aborted) return;
+      setConnected(false);
+      timer = setTimeout(() => void connect(), RECONNECT_MS);
     }
 
-    void load();
-    const timer = setInterval(() => void load(), POLL_MS);
+    void connect();
     return () => {
-      cancelled = true;
-      clearInterval(timer);
+      controller.abort();
+      if (timer !== undefined) clearTimeout(timer);
     };
   }, []);
 
@@ -127,6 +142,9 @@ export function Dashboard() {
       <div className="page-header">
         <h1>Dashboard</h1>
         <div className="header-actions">
+          <span className={connected ? "stream-status live" : "stream-status"}>
+            {connected ? "live" : "reconnecting…"}
+          </span>
           <span className="muted">
             {status.workers} worker{status.workers === 1 ? "" : "s"} · {status.processed_last_24h}{" "}
             processed in 24h

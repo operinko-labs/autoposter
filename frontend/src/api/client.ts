@@ -9,8 +9,10 @@
  *    page eventually forgets and renders an error where a login form belongs.
  *    `apiFetch` notifies a single subscriber instead.
  *
- * Swapping the dashboard's polling for a WebSocket in phase 4c should touch
- * this module and nothing else.
+ * The live pages (the log tail and the dashboard) stream through
+ * `apiFetchNdjson` below rather than through a WebSocket, because the session
+ * travels only as an `Authorization` header and a browser `WebSocket` cannot
+ * send one -- the same constraint that shapes `apiFetchImage`.
  */
 
 const TOKEN_KEY = "autoposter.token";

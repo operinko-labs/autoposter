@@ -4,6 +4,15 @@
   gap: 12px;
 }
 
+.stream-status {
+  font-size: 0.8rem;
+  color: var(--muted, #888);
+}
+
+.stream-status.live {
+  color: #3fb950;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

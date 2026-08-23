@@ -55,6 +55,26 @@ export interface EventsResponse {
   events: EventEntry[];
 }
 
+/** One line of GET /api/dashboard/stream: exactly what GET /api/status and
+ * GET /api/events?limit=25 return, in one object, so the dashboard renders a
+ * pushed snapshot with the same code that rendered the fetched pair. The
+ * stream also carries `{"heartbeat": true}` keepalives, which carry neither
+ * field -- see isDashboardSnapshot. */
+export interface DashboardSnapshot {
+  status: Status;
+  events: EventEntry[];
+}
+
+export function isDashboardSnapshot(value: unknown): value is DashboardSnapshot {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as DashboardSnapshot).status === "object" &&
+    (value as DashboardSnapshot).status !== null &&
+    Array.isArray((value as DashboardSnapshot).events)
+  );
+}
+
 /** GET /api/jobs/parked. `reason` is the job's last_error. */
 export interface ParkedJob {
   id: number;

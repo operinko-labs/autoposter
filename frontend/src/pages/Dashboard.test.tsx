@@ -49,6 +49,17 @@ const EVENTS = {
   ],
 };
 
+/** One line of GET /api/dashboard/stream: the same two payloads the page used
+ * to fetch separately, in one object. */
+const SNAPSHOT = { status: STATUS, events: EVENTS.events };
+
+function snapshotWithPending(pending: number) {
+  return {
+    status: { ...STATUS, jobs_by_state: { ...STATUS.jobs_by_state, pending } },
+    events: EVENTS.events,
+  };
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -56,10 +67,47 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+/** A streamed NDJSON body, per the helper in Logs.test.tsx. The stream stays
+ * open until the test closes it (a closed stream makes the page schedule a
+ * reconnect), and it errors its own controller when the fetch's AbortSignal
+ * fires, matching a real fetch body -- without that, `apiFetchNdjson`'s
+ * pending `reader.read()` never settles and unmount leaves it dangling. */
+function ndjsonStream(signal: AbortSignal, ...values: unknown[]) {
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+      for (const value of values) {
+        controller.enqueue(encoder.encode(JSON.stringify(value) + "\n"));
+      }
+    },
+  });
+  signal.addEventListener("abort", () => {
+    controller.error(new DOMException("aborted", "AbortError"));
+  });
+  return {
+    response: new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson" },
+    }),
+    push(value: unknown) {
+      controller.enqueue(encoder.encode(JSON.stringify(value) + "\n"));
+    },
+    close() {
+      controller.close();
+    },
+  };
+}
+
 type Handler = (path: string, init?: RequestInit) => Promise<Response>;
 
-function stubFetch(fullPass?: Handler, run?: Handler) {
+function stubFetch(fullPass?: Handler, run?: Handler, stream?: Handler) {
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+    if (path === "/api/dashboard/stream") {
+      if (stream) return stream(path, init);
+      return ndjsonStream(init!.signal as AbortSignal, SNAPSHOT).response;
+    }
     if (path === "/api/full-pass" && fullPass) return fullPass(path, init);
     if (path.startsWith("/api/scheduled-runs/")) {
       return run ? run(path, init) : json({ status: "requested", poll_seconds: 60 });
@@ -68,6 +116,12 @@ function stubFetch(fullPass?: Handler, run?: Handler) {
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+/** The number on the card for `state`, read the same way the render test reads
+ * it: via the label, so the value is pinned to the right card. */
+function statValue(state: string): string | undefined {
+  return screen.getByText(state).parentElement?.querySelector(".stat-value")?.textContent ?? undefined;
 }
 
 /** The scheduled-runs row for `name`, scoped so a second row's identically
@@ -113,27 +167,99 @@ describe("Dashboard", () => {
     expect(screen.getByText("queued")).toBeInTheDocument();
   });
 
-  it("polls while mounted and stops when unmounted", async () => {
+  it("updates a count in place from a later snapshot, fetching nothing else", async () => {
+    let push!: (value: unknown) => void;
+    const fetchMock = stubFetch(undefined, undefined, async (_path, init) => {
+      const stream = ndjsonStream(init!.signal as AbortSignal, SNAPSHOT);
+      push = stream.push;
+      return stream.response;
+    });
+
+    render(<Dashboard />);
+    await screen.findByText("collections_reconcile");
+    expect(statValue("pending")).toBe("3");
+
+    await act(async () => {
+      push(snapshotWithPending(9));
+    });
+
+    await waitFor(() => expect(statValue("pending")).toBe("9"));
+    // The whole point of the stream: the page no longer re-reads /api/status
+    // or /api/events, per tick or at all.
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual(["/api/dashboard/stream"]);
+  });
+
+  it("ignores heartbeat lines rather than treating them as snapshots", async () => {
+    stubFetch(undefined, undefined, async (_path, init) =>
+      ndjsonStream(init!.signal as AbortSignal, SNAPSHOT, { heartbeat: true }).response,
+    );
+
+    render(<Dashboard />);
+
+    // A heartbeat that got past the guard would be stored as the snapshot and
+    // crash the render (status.jobs_by_state is undefined) rather than fail an
+    // assertion, so also assert no trace of it reached the DOM.
+    expect(await screen.findByText("collections_reconcile")).toBeInTheDocument();
+    await waitFor(() => expect(statValue("pending")).toBe("3"));
+    expect(document.body.textContent ?? "").not.toContain("heartbeat");
+  });
+
+  it("keeps the last snapshot rendered and reconnects three seconds after a drop", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let connects = 0;
+    let close!: () => void;
+    const fetchMock = stubFetch(undefined, undefined, async (_path, init) => {
+      connects += 1;
+      const stream = ndjsonStream(
+        init!.signal as AbortSignal,
+        connects === 1 ? SNAPSHOT : snapshotWithPending(9),
+      );
+      close = stream.close;
+      return stream.response;
+    });
+
+    render(<Dashboard />);
+    await screen.findByText("collections_reconcile");
+
+    // The server ended the stream -- a restart, a proxy timeout.
+    await act(async () => {
+      close();
+    });
+
+    expect(await screen.findByText("reconnecting…")).toBeInTheDocument();
+    // Blanking the page while disconnected would be worse than showing data a
+    // few seconds old, so the last snapshot stays put.
+    expect(statValue("pending")).toBe("3");
+    expect(screen.getByText(/4 workers/)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(statValue("pending")).toBe("9"));
+    expect(screen.getByText("live")).toBeInTheDocument();
+  });
+
+  it("aborts the stream on unmount and opens nothing afterwards", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const fetchMock = stubFetch();
 
     const { unmount } = render(<Dashboard />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-
-    // /api/status and /api/events per tick.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    await screen.findByText("collections_reconcile");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const signal = (fetchMock.mock.calls[0][1] as RequestInit).signal;
 
     unmount();
 
-    // The interval has to be cleared, or a page the user navigated away from
-    // keeps a request every five seconds running for the life of the tab.
+    // Without the abort the read hangs on for the life of the tab, and
+    // without the aborted-check the ended read would reconnect it.
+    expect(signal?.aborted).toBe(true);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30000);
     });
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("runs a full pass and shows the server's outcome, not an optimistic one", async () => {
@@ -250,8 +376,8 @@ describe("Dashboard", () => {
   });
 
   it("shows the failure rather than an endless spinner", async () => {
-    // A fresh Response per call: a body can only be read once, and the page
-    // makes two requests per poll.
+    // A fresh Response per call: a body can only be read once, and the failed
+    // stream is retried.
     vi.stubGlobal(
       "fetch",
       vi.fn(
