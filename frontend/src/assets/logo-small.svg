@@ -1,0 +1,5 @@
+<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Autoposter">
+  <rect x="15" y="9" width="18" height="28" rx="4" fill="#8b5cf6"/>
+  <path d="M28 8.4 A22 11.5 -18 0 1 41 24.5 A22 11.5 -18 0 1 30 38.6" fill="none" stroke="#c4b5fd" stroke-width="3.2" stroke-linecap="round"/>
+  <circle cx="41" cy="24.5" r="4.2" fill="#fff"/>
+</svg>

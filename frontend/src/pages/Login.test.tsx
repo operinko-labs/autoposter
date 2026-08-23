@@ -1,7 +1,9 @@
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { ApiError } from "../api/client";
-import { loginErrorMessage } from "./Login";
+import { SessionProvider } from "../auth/SessionContext";
+import { Login, loginErrorMessage } from "./Login";
 
 describe("loginErrorMessage", () => {
   it("reports a rejected password for a 401, and says nothing more", () => {
@@ -28,5 +30,17 @@ describe("loginErrorMessage", () => {
     const message = loginErrorMessage(new TypeError("Failed to fetch"));
     expect(message).not.toContain("password");
     expect(message).toContain("Could not reach the server");
+  });
+});
+
+describe("Login", () => {
+  it("shows the brand mark above the form", () => {
+    render(
+      <SessionProvider>
+        <Login />
+      </SessionProvider>,
+    );
+
+    expect(screen.getByRole("img", { name: "Autoposter" })).toBeInTheDocument();
   });
 });

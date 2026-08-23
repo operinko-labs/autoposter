@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 
 import { ApiError } from "../api/client";
 import { useSession } from "../auth/SessionContext";
+import logoMark from "../assets/logo-full.svg";
 import "./login.css";
 
 export function loginErrorMessage(caught: unknown): string {
@@ -45,6 +46,7 @@ export function Login() {
   return (
     <div className="login-screen">
       <form className="login-box" onSubmit={onSubmit}>
+        <img className="login-logo" src={logoMark} alt="Autoposter" width={72} height={72} />
         <h1 className="login-title">Autoposter</h1>
 
         <label className="login-label" htmlFor="password">

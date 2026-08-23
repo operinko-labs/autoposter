@@ -52,16 +52,21 @@
   padding: 12px 4px;
 }
 
+/* Weighted to match the wordmark in docs/logo-lockup.svg, which the mark
+ * below reads as a collapsed half of. */
+.sidebar-brand-name {
+  font-weight: 600;
+}
+
 .sidebar-brand-mark {
-  display: none;
+  display: block;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
 }
 
 .sidebar.collapsed .sidebar-brand-name {
   display: none;
-}
-
-.sidebar.collapsed .sidebar-brand-mark {
-  display: block;
 }
 
 .sidebar-toggle {

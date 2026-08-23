@@ -86,6 +86,7 @@ describe("Sidebar", () => {
       "true",
     );
     expect(screen.getByText("Autoposter")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Autoposter" })).toBeInTheDocument();
   });
 
   it("starts collapsed below 768px", () => {
@@ -98,6 +99,9 @@ describe("Sidebar", () => {
       "aria-expanded",
       "false",
     );
+    // The wordmark is clipped out of sight when collapsed, so the mark alone
+    // must still carry the brand's accessible name.
+    expect(screen.getByRole("img", { name: "Autoposter" })).toBeInTheDocument();
   });
 
   it("keeps every collapsed link named and titled while the label is out of sight", () => {

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 
 import { useSession } from "../auth/SessionContext";
+import logoMark from "../assets/logo-small.svg";
 import "./shell.css";
 
 /** Inline rather than an icon package: four icons do not justify a dependency
@@ -100,9 +101,7 @@ export function Sidebar() {
     <nav className={collapsed ? "sidebar collapsed" : "sidebar"}>
       <div className="sidebar-brand">
         <span className="sidebar-brand-name">Autoposter</span>
-        <span className="sidebar-brand-mark" aria-hidden="true">
-          A
-        </span>
+        <img className="sidebar-brand-mark" src={logoMark} alt="Autoposter" width={24} height={24} />
         <button
           className="sidebar-toggle"
           type="button"

@@ -1,3 +1,5 @@
+![Autoposter](docs/logo-lockup.svg)
+
 # autoposter
 
 Event-driven artwork and metadata automation for a Plex library, replacing
