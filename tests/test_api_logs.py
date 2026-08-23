@@ -3,13 +3,13 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from autoposter.api.auth import hash_password
-from autoposter.api.logs import LogBuffer
+from autoposter.api.logs import LogBuffer, ndjson_lines, stream_logs
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
@@ -143,6 +143,13 @@ async def test_logs_limit_returns_the_most_recent_lines(app, client, auth_header
 
 
 # --- /api/logs/stream ---
+#
+# The tail never ends, and httpx's ASGITransport runs the app to completion
+# before returning a response -- an endpoint-level test of it does not fail,
+# it hangs until the runner is killed (this suite proved that: three
+# containers sat blocked for ten hours). So the endpoint tests below cover
+# only what terminates, and the streaming behaviour is driven against
+# `ndjson_lines` directly, with bounded iteration and an explicit aclose().
 
 
 async def test_stream_requires_a_session(client):
@@ -150,37 +157,59 @@ async def test_stream_requires_a_session(client):
     assert response.status_code == 401
 
 
-async def test_stream_yields_the_backlog_then_lines_logged_while_connected(
-    app, client, auth_headers
-):
-    app.state.log_buffer.emit(record("from the backlog"))
+async def test_stream_response_is_unbuffered_ndjson(app):
+    """The frame the SPA parses, and the header that stops a reverse proxy
+    from holding the tail back until the (never-arriving) end of the body."""
+    request = SimpleNamespace(app=app)
+    response = await stream_logs(request, _=None)
 
-    async with client.stream("GET", "/api/logs/stream", headers=auth_headers) as response:
-        assert response.status_code == 200
-        assert response.headers["content-type"].startswith("application/x-ndjson")
-        lines = response.aiter_lines()
+    assert response.media_type == "application/x-ndjson"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-accel-buffering"] == "no"
+    await response.body_iterator.aclose()
 
-        first = json.loads(await asyncio.wait_for(anext(lines), timeout=5))
+
+async def test_stream_yields_the_backlog_then_lines_logged_while_connected(app):
+    buffer = app.state.log_buffer
+    buffer.emit(record("from the backlog"))
+
+    stream = ndjson_lines(buffer)
+    try:
+        first = json.loads(await asyncio.wait_for(anext(stream), timeout=5))
         assert first["message"] == "from the backlog"
 
-        app.state.log_buffer.emit(record("logged live"))
-        second = json.loads(await asyncio.wait_for(anext(lines), timeout=5))
+        buffer.emit(record("logged live"))
+        second = json.loads(await asyncio.wait_for(anext(stream), timeout=5))
         assert second["message"] == "logged live"
+    finally:
+        await stream.aclose()
 
 
-async def test_stream_unsubscribes_when_the_client_disconnects(app, client, auth_headers):
+async def test_stream_sends_a_heartbeat_when_nothing_is_logged(app, monkeypatch):
+    """Silence must not be indistinguishable from a dead connection: the
+    keepalive is what makes a broken socket fail a write rather than hold the
+    subscription open."""
+    monkeypatch.setattr("autoposter.api.logs.HEARTBEAT_SECONDS", 0.05)
+    stream = ndjson_lines(app.state.log_buffer)
+    try:
+        assert json.loads(await asyncio.wait_for(anext(stream), timeout=5)) == {
+            "heartbeat": True
+        }
+    finally:
+        await stream.aclose()
+
+
+async def test_stream_unsubscribes_when_the_client_disconnects(app):
     """A closed connection must not leave its queue subscribed forever --
     every line ever logged after it would pile up against the dead reader's
-    cap and every fanout would keep paying for it."""
-    app.state.log_buffer.emit(record("one line"))
+    cap and every fanout would keep paying for it. Starlette closes the body
+    generator when the client goes away, which is what aclose() models here."""
+    buffer = app.state.log_buffer
+    buffer.emit(record("one line"))
 
-    async with client.stream("GET", "/api/logs/stream", headers=auth_headers) as response:
-        await asyncio.wait_for(anext(response.aiter_lines()), timeout=5)
-        assert len(app.state.log_buffer._subscribers) == 1
+    stream = ndjson_lines(buffer)
+    await asyncio.wait_for(anext(stream), timeout=5)
+    assert len(buffer._subscribers) == 1
 
-    # The generator's finally runs on close; give the loop a tick to run it.
-    for _ in range(10):
-        if not app.state.log_buffer._subscribers:
-            break
-        await asyncio.sleep(0.05)
-    assert len(app.state.log_buffer._subscribers) == 0
+    await stream.aclose()
+    assert len(buffer._subscribers) == 0

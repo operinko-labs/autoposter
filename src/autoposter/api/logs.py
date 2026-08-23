@@ -136,41 +136,56 @@ async def get_logs(
     return {"lines": buffer.lines(limit=limit)}
 
 
-@router.get("/logs/stream")
-async def stream_logs(
-    request: Request,
-    _: SessionModel = Depends(require_session),
-) -> StreamingResponse:
-    """The backlog, then every new line as it is logged, as NDJSON.
+async def ndjson_lines(buffer: "LogBuffer"):
+    """The backlog, then every new line as it is logged, one JSON object per
+    line, forever -- the body of ``GET /api/logs/stream``.
 
-    NDJSON over a plain streamed response rather than Server-Sent Events
-    because the session travels in an ``Authorization`` header (see
-    api/auth.py), which ``EventSource`` cannot send -- the SPA reads this with
-    ``fetch`` and a stream reader either way, and NDJSON is the simpler frame.
+    A module-level generator rather than a closure inside the endpoint so the
+    tests can drive it directly. httpx's ``ASGITransport`` runs the app to
+    completion before it returns a response, so an endpoint-level test of a
+    stream that never ends does not fail -- it hangs until the runner is
+    killed. Endpoint-level tests here cover only what terminates (the 401,
+    the response's shape); the streaming behaviour is exercised against this
+    generator with bounded iteration and ``aclose()``.
 
     A ``{"heartbeat": true}`` line goes out after HEARTBEAT_SECONDS of
     silence, so a broken connection fails the next write instead of holding
     the subscription open indefinitely.
     """
+    backlog, queue = buffer.subscribe()
+    try:
+        for entry in backlog:
+            yield json.dumps(entry) + "\n"
+        while True:
+            try:
+                entry = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
+            except asyncio.TimeoutError:
+                yield json.dumps({"heartbeat": True}) + "\n"
+                continue
+            yield json.dumps(entry) + "\n"
+    finally:
+        # Reached when the client disconnects (Starlette closes the generator)
+        # as well as on any error: without it every dead reader's queue would
+        # stay in the fanout set, costing a put_nowait per line forever.
+        buffer.unsubscribe(queue)
+
+
+@router.get("/logs/stream")
+async def stream_logs(
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> StreamingResponse:
+    """The live log tail, as NDJSON.
+
+    NDJSON over a plain streamed response rather than Server-Sent Events
+    because the session travels in an ``Authorization`` header (see
+    api/auth.py), which ``EventSource`` cannot send -- the SPA reads this with
+    ``fetch`` and a stream reader either way, and NDJSON is the simpler frame.
+    """
     buffer: LogBuffer = request.app.state.log_buffer
 
-    async def generate():
-        backlog, queue = buffer.subscribe()
-        try:
-            for entry in backlog:
-                yield json.dumps(entry) + "\n"
-            while True:
-                try:
-                    entry = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
-                except asyncio.TimeoutError:
-                    yield json.dumps({"heartbeat": True}) + "\n"
-                    continue
-                yield json.dumps(entry) + "\n"
-        finally:
-            buffer.unsubscribe(queue)
-
     return StreamingResponse(
-        generate(),
+        ndjson_lines(buffer),
         media_type="application/x-ndjson",
         headers={
             "Cache-Control": "no-store",
