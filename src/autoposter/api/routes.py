@@ -628,12 +628,17 @@ async def run_scheduled_job_now(
 
     Nothing is run here and nothing is waited on. ``claim_due``
     (scheduler/core.py) treats ``last_started_at IS NULL`` as due
-    unconditionally, so nulling that column is the whole mechanism -- which
-    also means the request cannot start a second copy of a pass that is
-    already running, and does not care whether this replica is the one that
-    happens to claim it. The response carries the scheduler's poll interval
-    so the UI can say when it will be picked up rather than pretending the
-    work is done.
+    unconditionally, so nulling that column is the whole mechanism, and it
+    does not care which replica happens to claim the row. The response
+    carries the scheduler's poll interval so the UI can say when it will be
+    picked up rather than pretending the work is done.
+
+    Pressing this while the job is ALREADY running starts a second copy:
+    the claim is not a lease (claim_due's own note), so nulling the column
+    mid-run makes the row due again on the next poll. The jobs are
+    reconciliation passes, so a double run wastes work rather than
+    corrupting anything, and the UI is told to present the button
+    accordingly -- but do not read this endpoint as idempotent.
 
     An INSERT ... ON CONFLICT rather than a read-then-write: the row may not
     exist yet -- the scheduler creates it on its first claim -- and an
