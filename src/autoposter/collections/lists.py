@@ -170,9 +170,16 @@ async def reconcile_list_collection(
             # takes the update branch. Writing it only on create would mean the
             # new hash gets stored while the old summary stays on the collection
             # forever, with every later pass short-circuiting on that hash.
-            if summary and getattr(collection, "summary", None) != summary:
+            #
+            # The helper is called unconditionally -- it skips by itself. The
+            # text comparison here gates only the ACTION MESSAGE: gating the
+            # call on it would starve the helper's lock repair, leaving a
+            # summary whose text already matches but whose field is unlocked
+            # (the Kometa-era state) unlocked forever.
+            if summary:
+                if getattr(collection, "summary", None) != summary:
+                    actions.append("updated the summary of %r" % title)
                 _edit_collection_summary(collection, summary)
-                actions.append("updated the summary of %r" % title)
 
             current = {str(i.ratingKey): i for i in collection.items()}
             desired = {str(i.ratingKey): i for i in items}

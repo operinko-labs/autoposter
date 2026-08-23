@@ -39,13 +39,15 @@ class FakeCollection:
     immediately would hide exactly the bug this models.
     """
 
-    def __init__(self, title, items=(), labels=(LABEL,), summary=None):
+    def __init__(self, title, items=(), labels=(LABEL,), summary=None, summary_locked=False):
         self.title = title
         self.ratingKey = "c-" + title
         self._live = list(items)
         self._cache = list(items)
         self._labels = [type("L", (), {"tag": t})() for t in labels]
         self.summary = summary
+        self._real_fields = [type("F", (), {"name": "summary", "locked": summary_locked})()]
+        self._fields = []
         self.added = []
         self.removed = []
         self.moves = []
@@ -62,10 +64,15 @@ class FakeCollection:
     def reload(self):
         self.reloaded += 1
         self._cache = list(self._live)
+        self._fields = self._real_fields
 
     @property
     def labels(self):
         return self._labels
+
+    @property
+    def fields(self):
+        return self._fields
 
     def items(self):
         return list(self._cache)
@@ -103,10 +110,12 @@ class FakeCollection:
         raise NotFound("(404) not_found; /library/sections/42/all?type=18")
 
     def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """Stands in for ``server.query`` -- the item-level summary PUT."""
+        """Stands in for ``server.query`` -- the item-level summary PUT, which
+        also locks the field (``summary.locked=1`` rides on every write)."""
         self.summary_queries.append({"key": key, "method": method})
         self.summary_set = parse_qs(urlsplit(key).query)["summary.value"][0]
         self.summary = self.summary_set
+        self._real_fields[0].locked = True
 
     def addLabel(self, labels, locked=True):
         self._labels.append(type("L", (), {"tag": labels})())
@@ -310,9 +319,10 @@ async def test_a_corrected_summary_reaches_an_existing_collection(session):
     assert existing.summary_queries[0]["method"] == "PUT-SENTINEL"
 
 
-async def test_a_matching_summary_is_not_rewritten(session):
+async def test_a_matching_locked_summary_is_not_rewritten(session):
     existing = FakeCollection(
         "Oscars Winners 2026", items=[FakeItem("a")], summary="Already right.",
+        summary_locked=True,
     )
     section = FakeSection([existing])
     await reconcile_list_collection(
@@ -320,6 +330,24 @@ async def test_a_matching_summary_is_not_rewritten(session):
         [FakeItem("a"), FakeItem("b")], LABEL, summary="Already right.", dry_run=False,
     )
     assert existing.summary_set is None
+
+
+async def test_a_matching_but_unlocked_summary_is_still_locked(session):
+    """The Kometa-era state: the text is already right but the field is not
+    locked. The write must still happen (it carries ``summary.locked=1``) --
+    but it is a repair, not a change, so no "updated the summary" action is
+    reported."""
+    existing = FakeCollection(
+        "Oscars Winners 2026", items=[FakeItem("a")], summary="Already right.",
+        summary_locked=False,
+    )
+    section = FakeSection([existing])
+    actions = await reconcile_list_collection(
+        session, section, "Movies", "Oscars Winners 2026",
+        [FakeItem("a"), FakeItem("b")], LABEL, summary="Already right.", dry_run=False,
+    )
+    assert existing.summary_set == "Already right."
+    assert not any("summary" in a for a in actions)
 
 
 async def test_the_sort_mode_is_configurable(session):
