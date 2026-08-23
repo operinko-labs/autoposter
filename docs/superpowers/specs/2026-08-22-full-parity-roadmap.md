@@ -54,7 +54,7 @@ endpoints + two UI pages; phases 2 and 3: the largest shipped units, multi-week 
 | 5c | Tracearr webhook intake | small | Harvest-first; needs the live instance |
 | — | **Cutover: retire Posterizarr and Kometa** | — | After 5a + 5b + full-pass trigger |
 | 6a | Collections UI, search, compare, override actions — **delivered** (rows 22–24; collection stats, diff-now, per-job run-now) | ≈ 4c | Spec §6 debts |
-| 6b | WebSocket (dashboard + live log tail) | small | Spec §6 debt |
+| 6b | WebSocket (dashboard + live log tail) — **delivered** (as NDJSON streams; row 72) | small | Spec §6 debt |
 | 6c | Config editor with hot-reload and impact preview | large (≈ phase 2) | Spec §6 debt |
 | 6d | Provider-candidate picker and logo browser | ≈ 4c | Spec §6 debt; feeds 11 |
 | 6e | Manual mode and testing mode | ≈ 4c | |
@@ -165,7 +165,7 @@ one-liner is in the `.superpowers/sdd/p5b-task-{1,2,3}-report.md` and
 | 69 | Member-item edits | `item_label` and per-member metadata application from a collection definition | S–M | parity-only | — |
 | 70 | Per-collection cadence and date windows | Per-collection refresh schedule + range gating — the real capability inside Kometa's schedule DSL that seasonal collections need | S–M — APScheduler already in place | parity-only | — |
 | 71 | Logo updater mode | Scan Plex for missing clearlogos, fetch, upload as Plex metadata — a pipeline distinct from posters | M — new upload target | parity-only | — |
-| 72 | WebSocket | Replace the dashboard's 5-second polling; add the live log tail view | M — server infra + client swap (client.ts is pre-shaped for it) | spec §6 | — |
+| 72 | WebSocket | answered 6b: delivered as NDJSON streams, not WebSocket — the anticipated auth risk (bearer header, no browser WS headers) is exactly what the logs stream's fetch-based NDJSON already solved, and no WS infra existed to reuse. Log tail shipped with the logs page; dashboard now consumes `GET /api/dashboard/stream` fed by a per-process broadcaster that polls the DB only while subscribers exist (replica-correct; cheaper than per-tab polling) | M — server infra + client swap (client.ts is pre-shaped for it) | spec §6 | — |
 | 73 | Provider-candidate picker (Asset Replacer) | Search all providers for an item, browse candidates, pick one; persisted as a manual override. Includes the logo browser | M — designed in spec §6, not built | spec §6 | — |
 | 74 | Manual mode | Build one styled artifact (any kind, incl. collection cards) from an arbitrary local file or URL — API + UI | M — reuses the render path | parity-only | 73 helps |
 | 75 | Testing mode | Sample renders (short/medium/long text, every artifact kind) against current config — cheap insurance before mass re-renders | M — render path against fixtures | parity-only | — |
@@ -295,6 +295,12 @@ headers from browsers uniformly — ticket-based connect is the likely shape). N
 the PR rather than discovering it at review.
 **Testable when shipped:** events appear on the dashboard without a poll cycle; a
 worker log line reaches the tail view.
+**Delivered (6b):** as fetch-based NDJSON, not WebSocket — the named auth risk only
+exists for a browser `WebSocket`, and the logs page had already established the
+authenticated NDJSON pattern this reuses. The dashboard consumes
+`GET /api/dashboard/stream`; a per-process broadcaster polls the database only while
+subscribers exist (replica-correct, unlike in-process fanout) and pushes on change.
+The log tail half shipped earlier with the logs page.
 
 #### 6c — Config editor with hot-reload and impact preview
 
