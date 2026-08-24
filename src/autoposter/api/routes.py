@@ -19,6 +19,7 @@ from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.logs import router as logs_router
 from autoposter.api.manual import router as manual_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
+from autoposter.api.testing import router as testing_router
 from autoposter.api.auth import (
     create_session,
     hash_password,
@@ -143,6 +144,11 @@ router.include_router(candidates_router)
 # the SSRF guard and the mount containment that make an arbitrary source safe
 # are the substance of it.
 router.include_router(manual_router)
+
+# Testing mode: render one styled sample artifact of any kind against a
+# generated canvas and return the bytes inline. Its own module because it drives
+# the pipeline's compositing seam directly and writes nothing anywhere.
+router.include_router(testing_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
