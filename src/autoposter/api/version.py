@@ -20,7 +20,9 @@ internal hostname -- and it is not in the response, not in an event row, and
 not in the log. That last one is the trap: every httpx exception renders the
 full request URL in its own message, so ``logger.warning("...%s", exc)``,
 ``repr(exc)`` or ``exc_info=True`` would each publish it into a log an
-operator pastes into a ticket. Only ``type(exc).__name__`` is logged.
+operator pastes into a ticket. Only ``type(exc).__name__`` is logged --
+plus, for an ``httpx.HTTPStatusError``, the response's status code, which is
+just an int and names nothing about where it was fetched from.
 
 **A registry that cannot be answered is not an error.** The half of this
 endpoint an operator actually needs -- the version they are running -- is
@@ -32,6 +34,7 @@ import logging
 import os
 import time
 
+import httpx
 from fastapi import APIRouter, Depends, Request
 
 from autoposter.api.auth import require_session
@@ -56,7 +59,8 @@ TAG_PREFIX = "sha-"
 # cadence, so a genuinely new image is still noticed within one coffee.
 CACHE_TTL_SECONDS = 900
 
-# ``(monotonic reading when filled, latest tag or None)``, for the process.
+# ``{(harbor_url, project, repository): (monotonic reading when filled,
+# latest tag or None)}``, for the process.
 #
 # A module global rather than a scheduler job, deliberately: a background poll
 # would keep asking a registry nobody is currently looking at the answer from,
@@ -64,10 +68,12 @@ CACHE_TTL_SECONDS = 900
 # reader. Failures are cached too -- an outage must not be hammered by every
 # mount for as long as it lasts.
 #
-# Note the consequence: for up to CACHE_TTL_SECONDS after the Harbor settings
-# are edited, this still answers from the old target. That is a stale
-# decoration, not a stale decision, and it costs nothing to wait out.
-_cache: tuple[float, str | None] | None = None
+# Keyed on the target, not just on time: ``version_check`` is live-editable in
+# the settings editor, and a time-only key would keep answering from the old
+# target for up to CACHE_TTL_SECONDS after an edit pointed it somewhere new.
+# Editing back and forth costs nothing extra -- each target keeps its own
+# entry and its own TTL.
+_cache: dict[tuple[str, str, str], tuple[float, str | None]] = {}
 
 
 def _running_version() -> str:
@@ -113,19 +119,26 @@ async def _ask_harbor(http, harbor_url: str, project: str, repository: str, toke
 
 async def latest_tag(http, harbor_url: str, project: str, repository: str, token: str):
     """``_ask_harbor`` behind the process-wide cache, never raising."""
-    global _cache
+    key = (harbor_url, project, repository)
     now = time.monotonic()
-    if _cache is not None and now - _cache[0] < CACHE_TTL_SECONDS:
-        return _cache[1]
+    entry = _cache.get(key)
+    if entry is not None and now - entry[0] < CACHE_TTL_SECONDS:
+        return entry[1]
     try:
         latest = await _ask_harbor(http, harbor_url, project, repository, token)
+    except httpx.HTTPStatusError as exc:
+        # The status code too -- an int, never a URL -- so a rotated robot
+        # token (401) reads differently in the log from an outage.
+        logger.warning("the update check could not reach the registry (%s %s)",
+                       type(exc).__name__, exc.response.status_code)
+        latest = None
     except Exception as exc:
         # The class name and nothing else. See this module's docstring: the
         # exception's own message carries the Harbor URL.
         logger.warning("the update check could not reach the registry (%s)",
                        type(exc).__name__)
         latest = None
-    _cache = (now, latest)
+    _cache[key] = (now, latest)
     return latest
 
 

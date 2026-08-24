@@ -60,7 +60,7 @@ def clean_cache(monkeypatch):
     """The Harbor answer is cached in a module global, so one test's answer
     would otherwise be the next test's -- and the cache test would pass on a
     leftover entry rather than on its own first call."""
-    monkeypatch.setattr(version_module, "_cache", None)
+    monkeypatch.setattr(version_module, "_cache", {})
 
 
 @pytest.fixture(autouse=True)
@@ -383,6 +383,26 @@ async def test_a_failure_logs_the_exception_class_and_not_the_url(
     assert "connection refused" not in caplog.text
 
 
+async def test_a_401_logs_the_status_code_and_not_just_the_class(
+    client, auth_headers, app, wire, caplog
+):
+    """A rotated robot token (401) and an outage both land in `except
+    Exception` today, and both log identically -- an operator cannot tell a
+    credential problem from Harbor being down. For an HTTPStatusError the
+    status code, an int with no URL in it, should be in the log too."""
+    wire(app, status=401)
+
+    with caplog.at_level(logging.WARNING):
+        await get(client, auth_headers)
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "HTTPStatusError" in warnings[0].getMessage()
+    assert "401" in warnings[0].getMessage()
+    assert "harbor.example" not in caplog.text
+    assert HARBOR_URL not in caplog.text
+
+
 async def test_a_failed_check_is_cached_so_an_outage_is_not_hammered(
     client, auth_headers, app, wire
 ):
@@ -426,12 +446,32 @@ async def test_the_window_expiring_asks_harbor_again(
 
     # Age the entry past the window rather than waiting out fifteen real
     # minutes: the cache stores the monotonic clock reading it was filled at.
-    stamped, latest = version_module._cache
+    key = (HARBOR_URL, PROJECT, REPOSITORY)
+    stamped, latest = version_module._cache[key]
     monkeypatch.setattr(
         version_module,
         "_cache",
-        (stamped - version_module.CACHE_TTL_SECONDS - 1, latest),
+        {key: (stamped - version_module.CACHE_TTL_SECONDS - 1, latest)},
     )
+
+    await get(client, auth_headers)
+
+    assert len(seen) == 2
+
+
+async def test_editing_the_target_forces_a_fresh_check(
+    client, auth_headers, app, wire
+):
+    """`version_check` is live-editable in the settings editor. A cache keyed
+    only on time would keep answering for the target it was primed against --
+    up to fifteen minutes of showing an operator the wrong registry's answer
+    right after they changed it."""
+    seen = wire(app)
+
+    await get(client, auth_headers)
+    assert len(seen) == 1
+
+    app.state.config_holder.current.version_check.harbor_url = "https://harbor2.example"
 
     await get(client, auth_headers)
 

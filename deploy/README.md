@@ -146,13 +146,15 @@ no marker.
    `harbor_url` is deliberately config rather than a secret, but it is treated
    as private all the same: it never appears in `GET /api/version`'s response,
    in an event row, or in the log — a failed check logs the exception's class
-   name and nothing else. It is not read from the environment because it is
-   not a credential and belongs beside the other things an operator tunes.
+   name (plus, for an HTTP error from Harbor, the status code) and nothing
+   else. It is not read from the environment because it is not a credential
+   and belongs beside the other things an operator tunes.
 
-The check is cached in-process for fifteen minutes, so the registry sees at
-most four requests an hour per pod however many browser tabs are open. Editing
-the block above takes effect on the next config swap, but a check already
-cached answers from the old target until that window expires.
+The check is cached in-process for fifteen minutes per `harbor_url` /
+`project` / `repository` combination, so the registry sees at most four
+requests an hour per pod however many browser tabs are open. The cache is
+keyed on that triple, so editing the block above is answered by a fresh check
+immediately rather than from the old target until the window expires.
 
 The comparison only works because the image knows its own tag: CI passes the
 commit's short sha to `docker build` as `GIT_SHA`, the Dockerfile stamps it as
