@@ -135,6 +135,11 @@ class RestoreMode:
             )
         ).all()
         total = len(rows)
+        # End the read transaction before the planning phase: what follows is a
+        # stat per (item, kind) over a possible NFS mount and then a push per
+        # file, and nothing reads the database again until the run is over. See
+        # reset.py for why the rows survive the commit.
+        await session.commit()
 
         backup_config = self._config.model_copy(
             update={"assets_root": Path(self._config.artwork_modes.plex_backup_root)}

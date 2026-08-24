@@ -160,6 +160,13 @@ class ResetMode:
             )
         ).all()
         total = len(rows)
+        # End the read transaction before the probe phase. What follows is one
+        # Plex request per candidate over a whole library and touches no row of
+        # this result again (they are plain tuples, not ORM objects, so nothing
+        # is expired), and holding a transaction open across all of it would
+        # leave the connection idle-in-transaction for the length of the run --
+        # pinning the oldest xmin and blocking autovacuum meanwhile.
+        await session.commit()
 
         base_url = self._config.plex.url
         # Which fields of which candidates are showing art we uploaded. Rating

@@ -142,6 +142,10 @@ async def test_apply_pushes_the_clean_base(session, config, assets_root):
     assert (result.pushed, result.failed, result.files) == (2, 0, 2)
     assert ("poster", b"the-clean-base") in item.uploaded
     assert ("art", b"the-clean-bg") in item.uploaded
+    # One fetch for the item, not one per file: the planning phase groups the
+    # render rows by rating key precisely so an applied run resolves each Plex
+    # object once. Push per file, fetch per item.
+    assert plex.fetched == ["rk1"]
     # background routes to uploadArt+lockArt, the rest to uploadPoster+lockPoster.
     assert set(item.locked) == {"poster", "art"}
     assert result.as_response()["status"] == "reverted"

@@ -165,6 +165,11 @@ class BackupMode:
                 ).order_by(MediaItem.id)
             )
         ).all()
+        # End the read transaction before the walk: what follows is a Plex
+        # request and a file write per (item, kind) over the whole library, and
+        # nothing reads the database again. See reset.py for why the rows
+        # survive the commit.
+        await session.commit()
 
         items = written = skipped = failed = 0
         for row in rows:

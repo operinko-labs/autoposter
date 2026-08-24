@@ -385,19 +385,27 @@ async def test_updater_survives_a_failed_marker_write(session, config, serving):
     outcome as an upload Plex reported no key for."""
 
     class OneBadCommit:
-        """The real session, with the first marker commit blowing up."""
+        """The real session, with the first marker commit blowing up.
+
+        Identified as "the first commit once a logo has actually landed on
+        Plex", not by ordinal: the mode also ends its read transaction with a
+        commit before the upload phase begins, and breaking *that* would be a
+        different test entirely (a run that never starts, rather than a run
+        that loses one item's marker)."""
 
         def __init__(self, wrapped):
             self._wrapped = wrapped
             self.commits = 0
             self.rollbacks = 0
+            self.broke = False
 
         def __getattr__(self, name):
             return getattr(self._wrapped, name)
 
         async def commit(self):
             self.commits += 1
-            if self.commits == 1:
+            if first.uploaded and not self.broke:
+                self.broke = True
                 raise RuntimeError("the database went away")
             await self._wrapped.commit()
 

@@ -132,6 +132,11 @@ class RevertMode:
                 .order_by(MediaItem.id, Render.art_kind)
             )
         ).all()
+        # End the read transaction before the resolve/push phase: what follows
+        # is a realpath and a stat per render row over a possible NFS mount and
+        # then a push per file, and nothing reads the database again until the
+        # run is over. See reset.py for why the rows survive the commit.
+        await session.commit()
 
         assets_root = Path(self._config.assets_root)
         planned: dict[str, list[tuple[str, Path]]] = defaultdict(list)

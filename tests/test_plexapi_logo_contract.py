@@ -17,7 +17,7 @@ the 4.15 the rest of the surface needed.
 import inspect
 
 import pytest
-from plexapi.media import Logo
+from plexapi.media import BaseResource, Logo
 from plexapi.mixins import LogoMixin
 from plexapi.video import Episode, Movie, Season, Show
 
@@ -72,10 +72,35 @@ def test_a_logo_listing_entry_carries_a_rating_key_and_a_selected_flag():
     """The revert marker is the ``upload://`` rating key of the logo Plex has
     *selected*, so both attributes are load-bearing: without ``selected`` the
     mode cannot tell which of several logos is showing, and without
-    ``ratingKey`` it cannot tell ours from an operator's."""
-    source = inspect.getsource(Logo.__mro__[1]._loadData)
+    ``ratingKey`` it cannot tell ours from an operator's.
+
+    Read off ``BaseResource`` by name rather than ``Logo.__mro__[1]``: an
+    inserted base class upstream would silently move that index onto some other
+    class whose ``_loadData`` these assertions might happen to pass against."""
+    assert issubclass(Logo, BaseResource), "plexapi Logo no longer derives from BaseResource"
+    source = inspect.getsource(BaseResource._loadData)
     assert "self.ratingKey" in source, "plexapi Logo entries lost ratingKey"
     assert "self.selected" in source, "plexapi Logo entries lost selected"
+
+
+def test_the_lock_pair_edits_the_clearlogo_field_and_nothing_else():
+    """``upload_logo`` locks and ``clear_logo`` unlocks, and the only reason
+    either is safe is that it edits ``clearLogo.locked`` -- a rename upstream to
+    another field's lock would have this project locking the wrong field on
+    every item it touches, silently."""
+    for name, value in (("lockLogo", "1"), ("unlockLogo", "0")):
+        source = inspect.getsource(getattr(LogoMixin, name))
+        assert "'clearLogo.locked'" in source, f"plexapi {name} no longer edits clearLogo.locked"
+        assert value in source, f"plexapi {name} no longer sets clearLogo.locked to {value}"
+
+
+def test_delete_targets_the_clearlogo_endpoint():
+    """``clear_logo`` really removes the image, unlike the poster reset, and
+    that rests on ``deleteLogo`` issuing a DELETE against the item's
+    ``/clearLogo`` -- not against its poster or the whole item."""
+    source = inspect.getsource(LogoMixin.deleteLogo)
+    assert "/clearLogo" in source, "plexapi deleteLogo no longer targets /clearLogo"
+    assert "delete" in source, "plexapi deleteLogo no longer issues a DELETE"
 
 
 def test_an_uploaded_logo_is_keyed_by_the_upload_prefix():
@@ -84,5 +109,5 @@ def test_an_uploaded_logo_is_keyed_by_the_upload_prefix():
     same convention the reset mode already does."""
     from autoposter.plex.artwork import UPLOADED_ARTWORK_PREFIX
 
-    assert "upload://" in inspect.getsource(Logo.__mro__[1].resourceFilepath.fget)
+    assert "upload://" in inspect.getsource(BaseResource.resourceFilepath.fget)
     assert UPLOADED_ARTWORK_PREFIX == "upload://"

@@ -209,6 +209,11 @@ class LogoMode:
             )
         ).all()
         total = len(rows)
+        # End the read transaction before the probe phase: what follows is one
+        # Plex request per candidate, then a provider call and an upload per
+        # missing logo. The per-item marker writes below open their own short
+        # transactions. See reset.py for why the rows survive the commit.
+        await session.commit()
 
         # Which candidates Plex shows no clearlogo for. One property read per
         # item -- and a dry run, the default, stops here, so it costs no
@@ -377,6 +382,11 @@ class LogoRevertMode:
                 .order_by(MediaItem.id)
             )
         ).all()
+        # End the read transaction before the probe phase: what follows is one
+        # Plex request per marked item, then a clear per item of ours. The
+        # marker clearing below opens its own transaction. See reset.py for why
+        # the rows survive the commit.
+        await session.commit()
 
         # Marked is not enough: Plex must still be showing that exact upload.
         # An operator who has since replaced our logo with their own made a

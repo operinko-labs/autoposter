@@ -1,8 +1,10 @@
 """Upload badged artwork to Plex, and read what Plex is serving back off it.
 
-plexapi's upload methods take a filepath rather than bytes, so the encoded
-image goes to a temporary file that is removed on both the success and the
-failure path.
+Every upload here goes through a temporary file, removed on both the success and
+the failure path. Not because plexapi requires one -- its ``utils.openOrRead``
+takes bytes and file-likes as happily as a path -- but so the three upload
+targets (poster, art, clearlogo) hand plexapi the same kind of thing, with the
+same removal handling, rather than one of them being the odd one out.
 
 Reading back comes in two depths over the same fetch path: ``artwork_provenance``
 wants only the EXIF fingerprint and pays a range request or two for it, while
@@ -96,8 +98,10 @@ def upload_logo(plex_item, data: bytes, suffix: str = ".png") -> str | None:
     A separate target from ``upload_artwork``, not another ``art_kind`` routed
     through it: the clearlogo is its own Plex field (``uploadLogo``/``lockLogo``,
     plexapi >= 4.16), not the ``thumb``/``art`` pair the badged images go to. The
-    temp-file dance is the same because plexapi takes a filepath, not bytes, and
-    the file is removed on both paths.
+    temp-file dance is the same for symmetry with ``upload_artwork`` rather than
+    from necessity -- plexapi's ``openOrRead`` accepts a file-like object, so
+    bytes could be handed over directly, but one upload path that behaves two
+    ways is a worse trade than one temp file. It is removed on both paths.
 
     Locking is for the same reason ``upload_artwork`` locks: without it Plex's
     metadata agent can reclaim the field and replace what we just uploaded.
