@@ -48,6 +48,16 @@ class MediaItem(Base):
     # item that can never be resolved would otherwise stay permanently at the
     # front of every sweep and starve everything behind it.
     facts_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The ``upload://`` rating key Plex filed THIS service's clearlogo upload
+    # under (artwork_modes/logo.py). NULL means "we never set a logo here", and
+    # that is the whole safety promise of the logo revert: it clears only an
+    # item whose marker is set *and* whose currently-selected logo is still that
+    # exact key, so a logo an operator uploaded (keyed ``upload://`` too) or one
+    # they replaced ours with is never touched. Not a ``renders`` row: a logo
+    # has none and never will -- it rides into the poster's fingerprint as
+    # ``logo_sha`` (render/pipeline.py), and a renders row here would make the
+    # revert mode push a logo as though it were a poster base.
+    logo_upload_key: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

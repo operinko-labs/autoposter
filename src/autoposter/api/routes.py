@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from autoposter.api.artwork import router as artwork_router
 from autoposter.artwork_modes.backup import BackupMode
+from autoposter.artwork_modes.logo import LogoMode, LogoRevertMode
 from autoposter.artwork_modes.reset import ResetMode
 from autoposter.artwork_modes.restore import RestoreMode
 from autoposter.artwork_modes.revert import RevertMode
@@ -964,6 +965,64 @@ async def run_artwork_reset(
     headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
     apply = body.apply if body.apply is not None else config.artwork_modes.reset_apply
     mode = ResetMode(
+        config, plex, http, headers, apply=apply,
+        kind=body.type, library=body.library, item_id=body.item_id,
+    )
+    return await _run_plex_writing_mode(request, mode, apply)
+
+
+@router.post("/artwork-modes/logo")
+async def run_artwork_logo(
+    body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Upload a clearlogo for every item Plex has none for (roadmap row 71).
+
+    Movies and shows only -- a clearlogo belongs to one of those and to nothing
+    below one. The logo comes from the same provider ladder the render path
+    walks, ranked by ``artwork.logo_language_order``, and is uploaded to Plex's
+    own ``clearLogo`` field and locked; this is a separate target from the
+    badged poster, not a variation on it.
+
+    Items that already show a clearlogo are left alone: "fill in the missing
+    ones" is not "overwrite every one". Dry-run by default
+    (``config.artwork_modes.logo_apply``), and a dry run spends no provider call
+    at all -- it reports how many items are missing a logo, not which logo each
+    would get.
+    """
+    plex, http = _require_plex(request)
+    config = request.app.state.config
+    headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
+    apply = body.apply if body.apply is not None else config.artwork_modes.logo_apply
+    mode = LogoMode(
+        config, plex, http, headers, request.app.state.providers, apply=apply,
+        kind=body.type, library=body.library, item_id=body.item_id,
+    )
+    return await _run_plex_writing_mode(request, mode, apply)
+
+
+@router.post("/artwork-modes/logo-revert")
+async def run_artwork_logo_revert(
+    body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Remove the clearlogos this service set, and only those (roadmap row 67).
+
+    Acts on an item only when the logo updater recorded a marker for it *and*
+    Plex still has that exact upload selected, so a logo an operator set by hand
+    -- or one they replaced ours with since -- is never touched. Dry-run by
+    default (``config.artwork_modes.logo_revert_apply``).
+
+    Unlike the poster reset, this leaves nothing orphaned on the Plex server:
+    Plex exposes a DELETE for the clearlogo field, so the response carries no
+    note about a dangling upload.
+    """
+    plex, http = _require_plex(request)
+    config = request.app.state.config
+    headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
+    apply = (
+        body.apply if body.apply is not None
+        else config.artwork_modes.logo_revert_apply
+    )
+    mode = LogoRevertMode(
         config, plex, http, headers, apply=apply,
         kind=body.type, library=body.library, item_id=body.item_id,
     )

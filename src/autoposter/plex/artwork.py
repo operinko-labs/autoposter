@@ -8,6 +8,12 @@ Reading back comes in two depths over the same fetch path: ``artwork_provenance`
 wants only the EXIF fingerprint and pays a range request or two for it, while
 ``fetch_artwork`` wants the whole image because a human is about to look at it.
 Both derive the URL the same way, through ``_artwork_url``.
+
+The clearlogo target (``upload_logo`` and its inverse ``clear_logo``) is a
+third, separate field: Plex's ``clearLogo``, not the ``thumb``/``art`` pair the
+badged images go to. It is deliberately not another ``art_kind`` routed through
+``upload_artwork``, because routing it there would make a caller that passes
+``"logo"`` by mistake upload a poster.
 """
 import asyncio
 import logging
@@ -80,6 +86,88 @@ def upload_artwork(plex_item, data: bytes, art_kind: str, lock: bool = True) -> 
             os.unlink(handle.name)
         except OSError:
             logger.warning("could not remove temporary upload file %s", handle.name)
+
+
+def upload_logo(plex_item, data: bytes, suffix: str = ".png") -> str | None:
+    """Upload one clearlogo to Plex's ``clearLogo`` field, lock it, and return
+    the ``upload://`` rating key Plex filed it under -- ``None`` if Plex reports
+    no uploaded logo selected afterwards.
+
+    A separate target from ``upload_artwork``, not another ``art_kind`` routed
+    through it: the clearlogo is its own Plex field (``uploadLogo``/``lockLogo``,
+    plexapi >= 4.16), not the ``thumb``/``art`` pair the badged images go to. The
+    temp-file dance is the same because plexapi takes a filepath, not bytes, and
+    the file is removed on both paths.
+
+    Locking is for the same reason ``upload_artwork`` locks: without it Plex's
+    metadata agent can reclaim the field and replace what we just uploaded.
+
+    The returned key is the logo revert's marker. It is read back rather than
+    assumed because only Plex knows what it keyed the upload as, and the revert
+    compares it against what is selected *at revert time* -- that comparison is
+    what keeps it off a logo an operator has since replaced ours with.
+    """
+    handle = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        # Closed by the ``with`` even when the write itself fails, so the
+        # ``finally`` below never unlinks a file that is still open.
+        with handle:
+            handle.write(data)
+        plex_item.uploadLogo(filepath=handle.name)
+        plex_item.lockLogo()
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            logger.warning("could not remove temporary upload file %s", handle.name)
+    return selected_uploaded_logo_key(plex_item)
+
+
+def selected_uploaded_logo_key(plex_item) -> str | None:
+    """The rating key of the clearlogo Plex currently shows, if somebody uploaded it.
+
+    ``None`` for an item showing agent-supplied art, for one showing nothing, and
+    for a listing entry without a usable key -- everything, that is, except "an
+    uploaded image is selected right now". The ``upload://`` restriction matters
+    on both sides of the marker: an agent's rating key could never equal one we
+    recorded, so admitting one here could only ever produce a false match.
+
+    Blocking: ``logos()`` is an HTTP GET through plexapi. Callers offload it.
+    """
+    for entry in plex_item.logos():
+        if not getattr(entry, "selected", False):
+            continue
+        rating_key = getattr(entry, "ratingKey", "") or ""
+        return rating_key if rating_key.startswith(UPLOADED_ARTWORK_PREFIX) else None
+    return None
+
+
+def clear_logo(plex_item) -> None:
+    """Unlock the ``clearLogo`` field and remove the logo currently on it.
+
+    The inverse of :func:`upload_logo`, and unlike the poster reset this really
+    does remove the image rather than leaving it behind as an orphaned
+    ``upload://`` entry: Plex exposes a DELETE for the clearlogo field where it
+    exposes none for a poster. The unlock happens first so the agent is free to
+    fill the field on its own next pass.
+
+    Never ``.refresh()``, which the project-wide AST guard forbids: it would have
+    Plex re-pull from its agents and revert locked fields elsewhere.
+    """
+    plex_item.unlockLogo()
+    plex_item.deleteLogo()
+
+
+async def has_clearlogo(plex_item) -> bool:
+    """Whether Plex is showing a clearlogo for ``plex_item``.
+
+    ``plexapi``'s ``logo`` is a *property* computed from the item's ``images``
+    rather than a parsed attribute like ``thumb``, so reading it on a partial
+    object can trigger a blocking ``_reload()`` HTTP GET -- a plain metadata
+    read, not ``refresh()``. Offloaded for the same reason ``_artwork_url``
+    offloads its own field read: this runs once per item across a whole library.
+    """
+    return bool(await asyncio.to_thread(getattr, plex_item, "logo", None))
 
 
 def _agent_default(listing):

@@ -1,4 +1,5 @@
-"""POST /api/artwork-modes/{backup,restore,revert,reset} -- the trigger endpoints.
+"""POST /api/artwork-modes/{backup,restore,revert,reset,logo,logo-revert} -- the
+trigger endpoints.
 
 Built like test_api_artwork.py: a real ``create_app`` whose ``app.state.plex``
 and ``app.state.http`` are wired by hand (the lifespan's run_background branch
@@ -15,6 +16,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
+from sqlalchemy import select
 
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
@@ -22,6 +24,7 @@ from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.db.models import MediaItem, Render
 from autoposter.plex.exif import PROVENANCE_TAG, format_provenance
+from autoposter.providers.base import LOGO, ArtCandidate
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -30,6 +33,10 @@ PLEX_TOKEN = "plex-token-for-this-test"
 POSTER_BYTES = b"\xff\xd8 poster bytes from plex"
 AGENT_KEY = "metadata://posters/tmdb_12345"
 AGENT_ART_KEY = "metadata://art/tmdb_12345"
+LOGO_URL = "https://provider.example/logo.png"
+LOGO_BYTES = b"\x89PNG\r\n\x1a\n the clearlogo bytes"
+# What Plex keys our clearlogo upload under, and therefore the revert marker.
+OUR_LOGO_KEY = "upload://clearLogos/ours-7f3c9a"
 
 
 class FakePoster:
@@ -46,12 +53,15 @@ class FakeItem:
     record whether the worker fence was raised at that instant."""
 
     def __init__(self, thumb=None, art=None, pause=None, posters=(AGENT_KEY,),
-                 arts=(AGENT_ART_KEY,)):
+                 arts=(AGENT_ART_KEY,), logo=None, logos=()):
         self.thumb = thumb
         self.art = art
+        self.logo = logo
         self._pause = pause
         self._posters = [FakePoster(key) for key in posters]
         self._arts = [FakePoster(key) for key in arts]
+        self._logos = [FakeLogo(key, selected) for key, selected in logos]
+        self.deleted_logos = 0
         self.uploaded = []
         self.locked = []
         self.unlocked = []
@@ -102,6 +112,50 @@ class FakeItem:
 
     def setArt(self, art):  # noqa: N802 - plexapi name
         self.selected.append(art.ratingKey)
+
+    def uploadLogo(self, url=None, filepath=None):  # noqa: N802 - plexapi name
+        self._record("logo", filepath)
+        self.logo = "/library/metadata/1/clearLogo/1"
+        for entry in self._logos:
+            entry.selected = False
+        self._logos.append(FakeLogo(OUR_LOGO_KEY, selected=True))
+
+    def lockLogo(self):  # noqa: N802 - plexapi name
+        self.locked.append("logo")
+
+    def logos(self):
+        return list(self._logos)
+
+    def unlockLogo(self):  # noqa: N802 - plexapi name
+        self._note_pause()
+        self.unlocked.append("logo")
+
+    def deleteLogo(self):  # noqa: N802 - plexapi name
+        self.deleted_logos += 1
+        self.logo = None
+
+
+class FakeLogo:
+    """One entry of a plexapi ``logos()`` listing: the rating key that tells an
+    upload from an agent image, and which of them Plex has selected."""
+
+    def __init__(self, rating_key, selected=False):
+        self.ratingKey = rating_key  # noqa: N815 - plexapi name
+        self.selected = selected
+
+
+class FakeLogoProvider:
+    """One rung of the real ladder, answering the LOGO request with one PNG."""
+
+    name = "Fake"
+
+    async def fetch(self, request):
+        if request.art_kind != LOGO:
+            return []
+        return [ArtCandidate(
+            provider=self.name, url=LOGO_URL, language="en",
+            width=800, height=310, score=8.0,
+        )]
 
 
 class FakePlexClient:
@@ -171,7 +225,7 @@ async def wire(app):
     that installs the fake items and a MockTransport handler."""
     clients = []
 
-    def install(items, handler=None):
+    def install(items, handler=None, providers=None):
         def refuse(request):
             raise AssertionError(f"no Plex request expected, got {request.url}")
 
@@ -179,6 +233,9 @@ async def wire(app):
         clients.append(http)
         app.state.plex = FakePlexClient(items)
         app.state.http = http
+        # create_app leaves the ladder empty; the lifespan builds it. Only the
+        # logo updater reads it.
+        app.state.providers = providers if providers is not None else []
         return app.state.plex
 
     yield install
@@ -193,10 +250,10 @@ def _seed_backup(backup_root, library, root_folder, name, data):
 
 
 async def _add_item(session, *, rating_key, kind="movie", library="Movies",
-                    root_folder="A (1999)"):
+                    root_folder="A (1999)", logo_upload_key=None):
     item = MediaItem(
         rating_key=rating_key, library=library, kind=kind, title="A",
-        root_folder=root_folder,
+        root_folder=root_folder, tmdb_id=101, logo_upload_key=logo_upload_key,
     )
     session.add(item)
     await session.commit()
@@ -479,3 +536,136 @@ async def test_apply_reset_selects_the_agent_default_with_the_pool_paused(
     assert item.paused_during_write == [True, True]
     assert app.state.worker_pause.is_paused is False
     assert item.refreshed is False
+
+
+# --- logo + logo revert ------------------------------------------------------
+
+
+async def _marker(session, item_id):
+    """The logo marker as the endpoint's own session committed it."""
+    return (
+        await session.execute(
+            select(MediaItem.logo_upload_key).where(MediaItem.id == item_id)
+        )
+    ).scalar_one()
+
+
+def _serves_logo():
+    def handler(request):
+        if request.url.path == "/logo.png":
+            return httpx.Response(200, content=LOGO_BYTES)
+        return httpx.Response(404)
+
+    return handler
+
+
+async def test_logo_requires_a_session(client):
+    assert (await client.post("/api/artwork-modes/logo", json={})).status_code == 401
+
+
+async def test_logo_revert_requires_a_session(client):
+    assert (
+        await client.post("/api/artwork-modes/logo-revert", json={})
+    ).status_code == 401
+
+
+async def test_logo_503_when_plex_unset(client, auth_headers):
+    response = await client.post("/api/artwork-modes/logo", headers=auth_headers, json={})
+    assert response.status_code == 503
+
+
+async def test_logo_revert_503_when_plex_unset(client, auth_headers):
+    response = await client.post(
+        "/api/artwork-modes/logo-revert", headers=auth_headers, json={}
+    )
+    assert response.status_code == 503
+
+
+async def test_logo_dry_run_is_the_default_and_uploads_nothing(
+    client, auth_headers, session, wire
+):
+    await _add_item(session, rating_key="rk1")
+    item = FakeItem(logo=None)
+    wire({"rk1": item}, providers=[FakeLogoProvider()])
+
+    # apply omitted -> falls back to config default (logo_apply=False).
+    response = await client.post("/api/artwork-modes/logo", headers=auth_headers, json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "logo" and body["dry_run"] is True
+    assert body["items"] == 1 and body["items_missing_logo"] == 1
+    assert item.uploaded == []
+
+
+async def test_apply_logo_uploads_with_the_pool_paused(
+    client, auth_headers, session, wire, app
+):
+    """The pause mutation-proof for the logo updater: it writes to the same Plex
+    items the live pipeline does, so the fence must be up at the instant of the
+    upload and released afterwards. Drop the ``apply`` branch in
+    ``_run_plex_writing_mode`` and the recorded value flips to False."""
+    row = await _add_item(session, rating_key="rk1")
+    item = FakeItem(logo=None, pause=app.state.worker_pause)
+    wire({"rk1": item}, handler=_serves_logo(), providers=[FakeLogoProvider()])
+
+    response = await client.post(
+        "/api/artwork-modes/logo", headers=auth_headers, json={"apply": True}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dry_run"] is False and body["uploaded"] == 1 and body["failed"] == 0
+    assert ("logo", LOGO_BYTES) in item.uploaded
+    assert item.locked == ["logo"]
+    assert item.paused_during_write == [True]
+    assert app.state.worker_pause.is_paused is False
+    assert item.refreshed is False
+    # The marker the revert endpoint below depends on.
+    assert await _marker(session, row.id) == OUR_LOGO_KEY
+
+
+async def test_logo_revert_dry_run_is_the_default_and_changes_nothing(
+    client, auth_headers, session, wire
+):
+    await _add_item(session, rating_key="rk1", logo_upload_key=OUR_LOGO_KEY)
+    item = FakeItem(logo="/clearLogo", logos=((OUR_LOGO_KEY, True),))
+    wire({"rk1": item})
+
+    response = await client.post(
+        "/api/artwork-modes/logo-revert", headers=auth_headers, json={}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "logo_revert" and body["dry_run"] is True
+    assert body["items_with_our_logo"] == 1
+    assert item.unlocked == [] and item.deleted_logos == 0
+    # Unlike reset, nothing is left orphaned on the server, so no note is due.
+    assert "note" not in body
+
+
+async def test_apply_logo_revert_clears_with_the_pool_paused(
+    client, auth_headers, session, wire, app
+):
+    """The pause mutation-proof for the logo revert, and the end-to-end shape of
+    the marker: an item this service set a logo on, still showing that exact
+    upload, is unlocked and cleared, and the marker goes with it."""
+    row = await _add_item(session, rating_key="rk1", logo_upload_key=OUR_LOGO_KEY)
+    item = FakeItem(
+        logo="/clearLogo", logos=((OUR_LOGO_KEY, True),), pause=app.state.worker_pause
+    )
+    wire({"rk1": item})
+
+    response = await client.post(
+        "/api/artwork-modes/logo-revert", headers=auth_headers, json={"apply": True}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dry_run"] is False and body["cleared"] == 1 and body["failed"] == 0
+    assert item.unlocked == ["logo"] and item.deleted_logos == 1
+    assert item.paused_during_write == [True]
+    assert app.state.worker_pause.is_paused is False
+    assert item.refreshed is False
+    assert await _marker(session, row.id) is None
