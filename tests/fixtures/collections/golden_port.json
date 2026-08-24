@@ -1,0 +1,2376 @@
+{
+  "movies_dry_run": {
+    "actions": [
+      "would create 'Age 1+ Movies' -> G",
+      "would create 'Age 2+ Movies' -> G",
+      "would create 'Age 3+ Movies' -> G",
+      "would create 'Age 4+ Movies' -> G",
+      "would create 'Age 5+ Movies' -> G",
+      "would create 'Age 6+ Movies' -> G",
+      "would create 'Age 13+ Movies' -> PG-13",
+      "would create 'Age 14+ Movies' -> PG-13",
+      "would create 'Age 17+ Movies' -> R, TV-MA",
+      "would create 'Age 18+ Movies' -> R, TV-MA",
+      "would create 'Not Rated Movies' -> NR",
+      "would create 'Ratings Collections'",
+      "would create 'IMDb Popular' with 3 item(s)",
+      "would create 'IMDb Top 250' with 3 item(s)",
+      "would create 'IMDb Lowest Rated' with 3 item(s)",
+      "would create 'Oscars Best Picture Winners' with 4 item(s)",
+      "would create 'Oscars Best Director Winners' with 2 item(s)",
+      "would create 'Oscars Winners 2026' with 2 item(s)",
+      "would create 'Oscars Winners 2025' with 2 item(s)",
+      "would create 'Oscars Winners 2024' with 1 item(s)",
+      "would create 'Oscars Winners 2023' with 1 item(s)",
+      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+    ],
+    "state": {}
+  },
+  "movies_apply": {
+    "actions": [
+      "created 'Age 1+ Movies'",
+      "created 'Age 2+ Movies'",
+      "created 'Age 3+ Movies'",
+      "created 'Age 4+ Movies'",
+      "created 'Age 5+ Movies'",
+      "created 'Age 6+ Movies'",
+      "created 'Age 13+ Movies'",
+      "created 'Age 14+ Movies'",
+      "created 'Age 17+ Movies'",
+      "created 'Age 18+ Movies'",
+      "created 'Not Rated Movies'",
+      "created 'Ratings Collections'",
+      "created 'IMDb Popular' with 3 item(s)",
+      "created 'IMDb Top 250' with 3 item(s)",
+      "created 'IMDb Lowest Rated' with 3 item(s)",
+      "created 'Oscars Best Picture Winners' with 4 item(s)",
+      "created 'Oscars Best Director Winners' with 2 item(s)",
+      "created 'Oscars Winners 2026' with 2 item(s)",
+      "created 'Oscars Winners 2025' with 2 item(s)",
+      "created 'Oscars Winners 2024' with 1 item(s)",
+      "created 'Oscars Winners 2023' with 1 item(s)",
+      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+    ],
+    "state": {
+      "Age 1+ Movies": {
+        "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 2+ Movies": {
+        "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 3+ Movies": {
+        "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 4+ Movies": {
+        "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 5+ Movies": {
+        "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 6+ Movies": {
+        "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 13+ Movies": {
+        "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 14+ Movies": {
+        "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 17+ Movies": {
+        "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 18+ Movies": {
+        "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Not Rated Movies": {
+        "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "NR"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!110_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "IMDb Popular": {
+        "summary": "List of IMDb Popular movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "IMDb Top 250": {
+        "summary": "List of IMDb Top 250 movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "IMDb Lowest Rated": {
+        "summary": "List of IMDb Lowest Rated movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Best Picture Winners": {
+        "summary": "The Academy Award for Best Picture is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m4",
+          "m7",
+          "m8",
+          "m9"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Best Director Winners": {
+        "summary": "The Academy Award for Best Director is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m5",
+          "m6"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2026": {
+        "summary": "Academy Awards (Oscars) Winners for 2026.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m5",
+          "m4"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2025": {
+        "summary": "Academy Awards (Oscars) Winners for 2025.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m6",
+          "m7"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2024": {
+        "summary": "Academy Awards (Oscars) Winners for 2024.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m8"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2023": {
+        "summary": "Academy Awards (Oscars) Winners for 2023.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m9"
+        ],
+        "posters_uploaded": 0
+      }
+    }
+  },
+  "movies_apply_again": {
+    "actions": [
+      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+    ],
+    "state": {
+      "Age 1+ Movies": {
+        "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 2+ Movies": {
+        "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 3+ Movies": {
+        "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 4+ Movies": {
+        "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 5+ Movies": {
+        "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 6+ Movies": {
+        "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 13+ Movies": {
+        "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 14+ Movies": {
+        "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 17+ Movies": {
+        "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 18+ Movies": {
+        "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Not Rated Movies": {
+        "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "NR"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!110_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "IMDb Popular": {
+        "summary": "List of IMDb Popular movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "IMDb Top 250": {
+        "summary": "List of IMDb Top 250 movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "IMDb Lowest Rated": {
+        "summary": "List of IMDb Lowest Rated movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Best Picture Winners": {
+        "summary": "The Academy Award for Best Picture is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m4",
+          "m7",
+          "m8",
+          "m9"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Best Director Winners": {
+        "summary": "The Academy Award for Best Director is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m5",
+          "m6"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2026": {
+        "summary": "Academy Awards (Oscars) Winners for 2026.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m5",
+          "m4"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2025": {
+        "summary": "Academy Awards (Oscars) Winners for 2025.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m6",
+          "m7"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2024": {
+        "summary": "Academy Awards (Oscars) Winners for 2024.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m8"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2023": {
+        "summary": "Academy Awards (Oscars) Winners for 2023.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m9"
+        ],
+        "posters_uploaded": 0
+      }
+    }
+  },
+  "shows_dry_run": {
+    "actions": [
+      "would create 'Age 1+ Shows' -> TV-G",
+      "would create 'Age 2+ Shows' -> TV-G",
+      "would create 'Age 3+ Shows' -> TV-G",
+      "would create 'Age 4+ Shows' -> TV-G",
+      "would create 'Age 5+ Shows' -> TV-G",
+      "would create 'Age 6+ Shows' -> TV-G",
+      "would create 'Age 14+ Shows' -> TV-14",
+      "would create 'Age 15+ Shows' -> TV-14",
+      "would create 'Age 16+ Shows' -> TV-14",
+      "would create 'Age 17+ Shows' -> TV-14, TV-MA",
+      "would create 'Age 18+ Shows' -> TV-MA",
+      "would create 'Ratings Collections'",
+      "would create 'IMDb Popular' with 2 item(s)",
+      "would create 'IMDb Top 250' with 2 item(s)"
+    ],
+    "state": {}
+  },
+  "shows_apply": {
+    "actions": [
+      "created 'Age 1+ Shows'",
+      "created 'Age 2+ Shows'",
+      "created 'Age 3+ Shows'",
+      "created 'Age 4+ Shows'",
+      "created 'Age 5+ Shows'",
+      "created 'Age 6+ Shows'",
+      "created 'Age 14+ Shows'",
+      "created 'Age 15+ Shows'",
+      "created 'Age 16+ Shows'",
+      "created 'Age 17+ Shows'",
+      "created 'Age 18+ Shows'",
+      "created 'Ratings Collections'",
+      "created 'IMDb Popular' with 2 item(s)",
+      "created 'IMDb Top 250' with 2 item(s)"
+    ],
+    "state": {
+      "Age 1+ Shows": {
+        "summary": "Shows that are rated 1 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 2+ Shows": {
+        "summary": "Shows that are rated 2 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 3+ Shows": {
+        "summary": "Shows that are rated 3 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 4+ Shows": {
+        "summary": "Shows that are rated 4 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 5+ Shows": {
+        "summary": "Shows that are rated 5 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 6+ Shows": {
+        "summary": "Shows that are rated 6 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 14+ Shows": {
+        "summary": "Shows that are rated 14 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-14"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 15+ Shows": {
+        "summary": "Shows that are rated 15 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-14"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 16+ Shows": {
+        "summary": "Shows that are rated 16 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-14"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 17+ Shows": {
+        "summary": "Shows that are rated 17 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-14",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 18+ Shows": {
+        "summary": "Shows that are rated 18 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!110_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "IMDb Popular": {
+        "summary": "List of IMDb Popular shows.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "s1",
+          "s2"
+        ],
+        "posters_uploaded": 0
+      },
+      "IMDb Top 250": {
+        "summary": "List of IMDb Top 250 shows.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "s1",
+          "s2"
+        ],
+        "posters_uploaded": 0
+      }
+    }
+  },
+  "movies_posters_missing": {
+    "actions": [
+      "created 'Age 1+ Movies'",
+      "could not fetch a usable poster for 'Age 1+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/1.jpg",
+      "created 'Age 2+ Movies'",
+      "could not fetch a usable poster for 'Age 2+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/2.jpg",
+      "created 'Age 3+ Movies'",
+      "could not fetch a usable poster for 'Age 3+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/3.jpg",
+      "created 'Age 4+ Movies'",
+      "could not fetch a usable poster for 'Age 4+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/4.jpg",
+      "created 'Age 5+ Movies'",
+      "could not fetch a usable poster for 'Age 5+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/5.jpg",
+      "created 'Age 6+ Movies'",
+      "could not fetch a usable poster for 'Age 6+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/6.jpg",
+      "created 'Age 13+ Movies'",
+      "could not fetch a usable poster for 'Age 13+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/13.jpg",
+      "created 'Age 14+ Movies'",
+      "could not fetch a usable poster for 'Age 14+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/14.jpg",
+      "created 'Age 17+ Movies'",
+      "could not fetch a usable poster for 'Age 17+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/17.jpg",
+      "created 'Age 18+ Movies'",
+      "could not fetch a usable poster for 'Age 18+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/18.jpg",
+      "created 'Not Rated Movies'",
+      "could not fetch a usable poster for 'Not Rated Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/NR.jpg",
+      "created 'Ratings Collections'",
+      "could not fetch a usable poster for 'Ratings Collections' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/separators/orig/content_rating.jpg",
+      "created 'IMDb Popular' with 3 item(s)",
+      "could not fetch a usable poster for 'IMDb Popular' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/chart/color/IMDb%20Popular.jpg",
+      "created 'IMDb Top 250' with 3 item(s)",
+      "could not fetch a usable poster for 'IMDb Top 250' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/chart/color/IMDb%20Top%20250.jpg",
+      "created 'IMDb Lowest Rated' with 3 item(s)",
+      "could not fetch a usable poster for 'IMDb Lowest Rated' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/chart/color/IMDb%20Lowest%20Rated.jpg",
+      "created 'Oscars Best Picture Winners' with 4 item(s)",
+      "could not fetch a usable poster for 'Oscars Best Picture Winners' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/best_picture_winner.jpg",
+      "created 'Oscars Best Director Winners' with 2 item(s)",
+      "could not fetch a usable poster for 'Oscars Best Director Winners' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/best_director_winner.jpg",
+      "created 'Oscars Winners 2026' with 2 item(s)",
+      "could not fetch a usable poster for 'Oscars Winners 2026' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2026.jpg",
+      "created 'Oscars Winners 2025' with 2 item(s)",
+      "could not fetch a usable poster for 'Oscars Winners 2025' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2025.jpg",
+      "created 'Oscars Winners 2024' with 1 item(s)",
+      "could not fetch a usable poster for 'Oscars Winners 2024' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2024.jpg",
+      "created 'Oscars Winners 2023' with 1 item(s)",
+      "could not fetch a usable poster for 'Oscars Winners 2023' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2023.jpg",
+      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+    ],
+    "state": {
+      "Age 1+ Movies": {
+        "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 2+ Movies": {
+        "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 3+ Movies": {
+        "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 4+ Movies": {
+        "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 5+ Movies": {
+        "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 6+ Movies": {
+        "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 13+ Movies": {
+        "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 14+ Movies": {
+        "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 17+ Movies": {
+        "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 18+ Movies": {
+        "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Not Rated Movies": {
+        "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "NR"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!110_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "IMDb Popular": {
+        "summary": "List of IMDb Popular movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "IMDb Top 250": {
+        "summary": "List of IMDb Top 250 movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "IMDb Lowest Rated": {
+        "summary": "List of IMDb Lowest Rated movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Best Picture Winners": {
+        "summary": "The Academy Award for Best Picture is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m4",
+          "m7",
+          "m8",
+          "m9"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Best Director Winners": {
+        "summary": "The Academy Award for Best Director is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m5",
+          "m6"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2026": {
+        "summary": "Academy Awards (Oscars) Winners for 2026.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m5",
+          "m4"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2025": {
+        "summary": "Academy Awards (Oscars) Winners for 2025.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m6",
+          "m7"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2024": {
+        "summary": "Academy Awards (Oscars) Winners for 2024.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m8"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2023": {
+        "summary": "Academy Awards (Oscars) Winners for 2023.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m9"
+        ],
+        "posters_uploaded": 0
+      }
+    }
+  },
+  "movies_posters_served": {
+    "actions": [
+      "created 'Age 1+ Movies'",
+      "set the poster for 'Age 1+ Movies' from the hosted default",
+      "created 'Age 2+ Movies'",
+      "set the poster for 'Age 2+ Movies' from the hosted default",
+      "created 'Age 3+ Movies'",
+      "set the poster for 'Age 3+ Movies' from the hosted default",
+      "created 'Age 4+ Movies'",
+      "set the poster for 'Age 4+ Movies' from the hosted default",
+      "created 'Age 5+ Movies'",
+      "set the poster for 'Age 5+ Movies' from the hosted default",
+      "created 'Age 6+ Movies'",
+      "set the poster for 'Age 6+ Movies' from the hosted default",
+      "created 'Age 13+ Movies'",
+      "set the poster for 'Age 13+ Movies' from the hosted default",
+      "created 'Age 14+ Movies'",
+      "set the poster for 'Age 14+ Movies' from the hosted default",
+      "created 'Age 17+ Movies'",
+      "set the poster for 'Age 17+ Movies' from the hosted default",
+      "created 'Age 18+ Movies'",
+      "set the poster for 'Age 18+ Movies' from the hosted default",
+      "created 'Not Rated Movies'",
+      "set the poster for 'Not Rated Movies' from the hosted default",
+      "created 'Ratings Collections'",
+      "set the poster for 'Ratings Collections' from the hosted default",
+      "created 'IMDb Popular' with 3 item(s)",
+      "set the poster for 'IMDb Popular' from the hosted default",
+      "created 'IMDb Top 250' with 3 item(s)",
+      "set the poster for 'IMDb Top 250' from the hosted default",
+      "created 'IMDb Lowest Rated' with 3 item(s)",
+      "set the poster for 'IMDb Lowest Rated' from the hosted default",
+      "created 'Oscars Best Picture Winners' with 4 item(s)",
+      "set the poster for 'Oscars Best Picture Winners' from the hosted default",
+      "created 'Oscars Best Director Winners' with 2 item(s)",
+      "set the poster for 'Oscars Best Director Winners' from the hosted default",
+      "created 'Oscars Winners 2026' with 2 item(s)",
+      "set the poster for 'Oscars Winners 2026' from the hosted default",
+      "created 'Oscars Winners 2025' with 2 item(s)",
+      "set the poster for 'Oscars Winners 2025' from the hosted default",
+      "created 'Oscars Winners 2024' with 1 item(s)",
+      "set the poster for 'Oscars Winners 2024' from the hosted default",
+      "created 'Oscars Winners 2023' with 1 item(s)",
+      "set the poster for 'Oscars Winners 2023' from the hosted default",
+      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+    ],
+    "state": {
+      "Age 1+ Movies": {
+        "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Age 2+ Movies": {
+        "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Age 3+ Movies": {
+        "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Age 4+ Movies": {
+        "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Age 5+ Movies": {
+        "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Age 6+ Movies": {
+        "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Age 13+ Movies": {
+        "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Age 14+ Movies": {
+        "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Age 17+ Movies": {
+        "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Age 18+ Movies": {
+        "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Not Rated Movies": {
+        "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "NR"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!110_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "IMDb Popular": {
+        "summary": "List of IMDb Popular movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 1
+      },
+      "IMDb Top 250": {
+        "summary": "List of IMDb Top 250 movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 1
+      },
+      "IMDb Lowest Rated": {
+        "summary": "List of IMDb Lowest Rated movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 1
+      },
+      "Oscars Best Picture Winners": {
+        "summary": "The Academy Award for Best Picture is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m4",
+          "m7",
+          "m8",
+          "m9"
+        ],
+        "posters_uploaded": 1
+      },
+      "Oscars Best Director Winners": {
+        "summary": "The Academy Award for Best Director is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m5",
+          "m6"
+        ],
+        "posters_uploaded": 1
+      },
+      "Oscars Winners 2026": {
+        "summary": "Academy Awards (Oscars) Winners for 2026.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m5",
+          "m4"
+        ],
+        "posters_uploaded": 1
+      },
+      "Oscars Winners 2025": {
+        "summary": "Academy Awards (Oscars) Winners for 2025.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m6",
+          "m7"
+        ],
+        "posters_uploaded": 1
+      },
+      "Oscars Winners 2024": {
+        "summary": "Academy Awards (Oscars) Winners for 2024.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m8"
+        ],
+        "posters_uploaded": 1
+      },
+      "Oscars Winners 2023": {
+        "summary": "Academy Awards (Oscars) Winners for 2023.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m9"
+        ],
+        "posters_uploaded": 1
+      }
+    }
+  },
+  "movies_chart_source_down": {
+    "actions": [
+      "created 'Age 1+ Movies'",
+      "created 'Age 2+ Movies'",
+      "created 'Age 3+ Movies'",
+      "created 'Age 4+ Movies'",
+      "created 'Age 5+ Movies'",
+      "created 'Age 6+ Movies'",
+      "created 'Age 13+ Movies'",
+      "created 'Age 14+ Movies'",
+      "created 'Age 17+ Movies'",
+      "created 'Age 18+ Movies'",
+      "created 'Not Rated Movies'",
+      "created 'Ratings Collections'",
+      "'IMDb Popular': source returned no items; leaving the collection untouched",
+      "'IMDb Top 250': source returned no items; leaving the collection untouched",
+      "'IMDb Lowest Rated': source returned no items; leaving the collection untouched",
+      "created 'Oscars Best Picture Winners' with 4 item(s)",
+      "created 'Oscars Best Director Winners' with 2 item(s)",
+      "created 'Oscars Winners 2026' with 2 item(s)",
+      "created 'Oscars Winners 2025' with 2 item(s)",
+      "created 'Oscars Winners 2024' with 1 item(s)",
+      "created 'Oscars Winners 2023' with 1 item(s)",
+      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+    ],
+    "state": {
+      "Age 1+ Movies": {
+        "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 2+ Movies": {
+        "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 3+ Movies": {
+        "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 4+ Movies": {
+        "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 5+ Movies": {
+        "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 6+ Movies": {
+        "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 13+ Movies": {
+        "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 14+ Movies": {
+        "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 17+ Movies": {
+        "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 18+ Movies": {
+        "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Not Rated Movies": {
+        "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "NR"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!110_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Oscars Best Picture Winners": {
+        "summary": "The Academy Award for Best Picture is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m4",
+          "m7",
+          "m8",
+          "m9"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Best Director Winners": {
+        "summary": "The Academy Award for Best Director is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m5",
+          "m6"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2026": {
+        "summary": "Academy Awards (Oscars) Winners for 2026.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m5",
+          "m4"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2025": {
+        "summary": "Academy Awards (Oscars) Winners for 2025.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m6",
+          "m7"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2024": {
+        "summary": "Academy Awards (Oscars) Winners for 2024.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m8"
+        ],
+        "posters_uploaded": 0
+      },
+      "Oscars Winners 2023": {
+        "summary": "Academy Awards (Oscars) Winners for 2023.",
+        "sort": "release",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m9"
+        ],
+        "posters_uploaded": 0
+      }
+    }
+  },
+  "movies_award_source_down": {
+    "actions": [
+      "created 'Age 1+ Movies'",
+      "created 'Age 2+ Movies'",
+      "created 'Age 3+ Movies'",
+      "created 'Age 4+ Movies'",
+      "created 'Age 5+ Movies'",
+      "created 'Age 6+ Movies'",
+      "created 'Age 13+ Movies'",
+      "created 'Age 14+ Movies'",
+      "created 'Age 17+ Movies'",
+      "created 'Age 18+ Movies'",
+      "created 'Not Rated Movies'",
+      "created 'Ratings Collections'",
+      "created 'IMDb Popular' with 3 item(s)",
+      "created 'IMDb Top 250' with 3 item(s)",
+      "created 'IMDb Lowest Rated' with 3 item(s)",
+      "'Oscars Best Picture Winners': source returned no items; leaving the collection untouched",
+      "'Oscars Best Director Winners': source returned no items; leaving the collection untouched"
+    ],
+    "state": {
+      "Age 1+ Movies": {
+        "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 2+ Movies": {
+        "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 3+ Movies": {
+        "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 4+ Movies": {
+        "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 5+ Movies": {
+        "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 6+ Movies": {
+        "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 13+ Movies": {
+        "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 14+ Movies": {
+        "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 17+ Movies": {
+        "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 18+ Movies": {
+        "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Not Rated Movies": {
+        "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "NR"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!110_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "IMDb Popular": {
+        "summary": "List of IMDb Popular movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "IMDb Top 250": {
+        "summary": "List of IMDb Top 250 movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      },
+      "IMDb Lowest Rated": {
+        "summary": "List of IMDb Lowest Rated movies.",
+        "sort": "custom",
+        "sort_title": null,
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [
+          "m1",
+          "m2",
+          "m3"
+        ],
+        "posters_uploaded": 0
+      }
+    }
+  },
+  "movies_owning_nothing": {
+    "actions": [
+      "created 'Age 1+ Movies'",
+      "created 'Age 2+ Movies'",
+      "created 'Age 3+ Movies'",
+      "created 'Age 4+ Movies'",
+      "created 'Age 5+ Movies'",
+      "created 'Age 6+ Movies'",
+      "created 'Age 13+ Movies'",
+      "created 'Age 14+ Movies'",
+      "created 'Age 17+ Movies'",
+      "created 'Age 18+ Movies'",
+      "created 'Not Rated Movies'",
+      "created 'Ratings Collections'",
+      "'IMDb Popular': source returned no items; leaving the collection untouched",
+      "'IMDb Top 250': source returned no items; leaving the collection untouched",
+      "'IMDb Lowest Rated': source returned no items; leaving the collection untouched",
+      "'Oscars Best Picture Winners': source returned no items; leaving the collection untouched",
+      "'Oscars Best Director Winners': source returned no items; leaving the collection untouched",
+      "'Oscars Winners 2026': source returned no items; leaving the collection untouched",
+      "'Oscars Winners 2025': source returned no items; leaving the collection untouched",
+      "'Oscars Winners 2024': source returned no items; leaving the collection untouched",
+      "'Oscars Winners 2023': source returned no items; leaving the collection untouched",
+      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+    ],
+    "state": {
+      "Age 1+ Movies": {
+        "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 2+ Movies": {
+        "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 3+ Movies": {
+        "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 4+ Movies": {
+        "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 5+ Movies": {
+        "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 6+ Movies": {
+        "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "G"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 13+ Movies": {
+        "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 14+ Movies": {
+        "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "PG-13"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 17+ Movies": {
+        "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Age 18+ Movies": {
+        "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "R",
+            "TV-MA"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Not Rated Movies": {
+        "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
+        "sort": null,
+        "sort_title": null,
+        "filters": {
+          "contentRating": [
+            "NR"
+          ]
+        },
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!110_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      }
+    }
+  }
+}
