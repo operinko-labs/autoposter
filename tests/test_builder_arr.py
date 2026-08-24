@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from autoposter.arr.client import RADARR, SONARR, ArrClient
 from autoposter.collections.builders import REGISTRY, BuilderContext, SourceClients
 from autoposter.collections.builders.arr import ArrBuilderRefused
+from autoposter.collections.builders.base import LibraryTypeMismatch
 
 # ``tags`` on an entry is a list of tag *ids*; the labels live behind
 # /api/v3/tag. Entry 4 carries no ids at all, which is what an unmatched item
@@ -102,7 +103,65 @@ async def test_radarr_all_raises_when_radarr_is_not_configured():
 
 async def test_sonarr_taglist_raises_when_sonarr_is_not_configured():
     with pytest.raises(ArrBuilderRefused, match="sonarr is not configured"):
-        await REGISTRY["sonarr_taglist"].build(_ctx(SourceClients(), tags=["kids"]))
+        await REGISTRY["sonarr_taglist"].build(
+            _ctx(SourceClients(), tags=["kids"], library_type="Show")
+        )
+
+
+async def test_radarr_all_refuses_a_show_library_before_checking_configuration():
+    """Every other typed builder in this family guards its library type
+    (``require_library_type``); ``radarr_all`` did not, which let a Show
+    library resolve Radarr's TMDb *movie* ids into its own tmdb namespace --
+    plausible wrong members rather than a loud failure. The guard runs before
+    client acquisition, so even an unconfigured Radarr reports the mismatch
+    rather than "not configured". Mutation proof: drop the guard and this
+    goes red with ``ArrBuilderRefused`` (or worse, a result) instead."""
+    with pytest.raises(LibraryTypeMismatch):
+        await REGISTRY["radarr_all"].build(_ctx(SourceClients(), library_type="Show"))
+
+
+async def test_radarr_all_on_a_show_library_makes_no_request():
+    """The guard runs before any client is touched, so a misdirected
+    definition costs no request to Radarr at all."""
+    def handler(request):
+        raise AssertionError(
+            f"radarr_all must not talk to Radarr for a Show library: {request.url}"
+        )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(LibraryTypeMismatch):
+            await REGISTRY["radarr_all"].build(
+                _ctx(SourceClients(radarr=_radarr(http)), library_type="Show")
+            )
+
+
+async def test_sonarr_taglist_refuses_a_movie_library_before_any_request():
+    """The Sonarr mirror of the same guard: ``sonarr_*`` on a Movie library
+    would emit TVDb *show* ids into the movie library's tvdb namespace.
+    Mutation proof: drop the guard and this goes red."""
+    def handler(request):
+        raise AssertionError(
+            f"sonarr_taglist must not talk to Sonarr for a Movie library: {request.url}"
+        )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(LibraryTypeMismatch):
+            await REGISTRY["sonarr_taglist"].build(
+                _ctx(
+                    SourceClients(sonarr=_sonarr(http)), tags=["kids"],
+                    library_type="Movie",
+                )
+            )
+
+
+async def test_radarr_taglist_refuses_a_show_library():
+    with pytest.raises(LibraryTypeMismatch):
+        await REGISTRY["radarr_taglist"].build(
+            _ctx(SourceClients(), tags=["kids"], library_type="Show")
+        )
+
+
+async def test_sonarr_all_refuses_a_movie_library():
+    with pytest.raises(LibraryTypeMismatch):
+        await REGISTRY["sonarr_all"].build(_ctx(SourceClients(), library_type="Movie"))
 
 
 async def test_radarr_all_raises_on_a_non_2xx_rather_than_building_nothing():
@@ -218,7 +277,9 @@ async def test_radarr_and_sonarr_tag_maps_do_not_share_one_memo():
                 _ctx(sources, run_cache=run_cache, tags=["4K"])
             )
             result = await REGISTRY["sonarr_taglist"].build(
-                _ctx(sources, run_cache=run_cache, tags=["ongoing"])
+                _ctx(
+                    sources, run_cache=run_cache, tags=["ongoing"], library_type="Show"
+                )
             )
 
     assert result.ids == [("tvdb", "353546")]

@@ -93,6 +93,30 @@ async def test_movie_items_become_ids_in_watchlist_order():
     assert account.calls == 1
 
 
+async def test_the_account_factory_and_watchlist_fetch_run_off_the_loop():
+    """``MyPlexAccount()`` and ``.watchlist()`` are synchronous plex.tv round
+    trips; run on the event loop they would block every other task in the
+    pass for their duration. Both must happen inside the same thread hop --
+    ``text_file``'s pattern for its (much cheaper) blocking file read.
+    Mutation proof: revert to a bare ``account_factory().watchlist()`` call
+    and this goes red because the fake account is never touched off-thread."""
+    import threading
+
+    caller_thread = threading.current_thread()
+    seen_threads: list[threading.Thread] = []
+
+    class ThreadRecordingAccount(FakeAccount):
+        def watchlist(self, *args, **kwargs):
+            seen_threads.append(threading.current_thread())
+            return super().watchlist(*args, **kwargs)
+
+    account = ThreadRecordingAccount(_items())
+    result = await REGISTRY["plex_watchlist"].build(_ctx(_sources(account)))
+
+    assert result.ids == [("tmdb", "438631"), ("imdb", "tt2543164")]
+    assert seen_threads and seen_threads[0] is not caller_thread
+
+
 async def test_a_show_library_gets_the_show_half_of_the_same_watchlist():
     """A watchlist holds films and series together; each library's pass takes
     its own half, and a movie id emitted into a Show library could collide

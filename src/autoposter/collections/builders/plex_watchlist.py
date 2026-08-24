@@ -29,6 +29,7 @@ is the resolver's ordinary business, the same call ``mdblist_list`` and
 unlucky watchlist, it is the guid children having stopped arriving on the
 listing response -- which would empty a live collection -- so that raises.
 """
+import asyncio
 import logging
 
 from pydantic import BaseModel, ConfigDict
@@ -83,6 +84,15 @@ class PlexWatchlistParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def _fetch_watchlist(account_factory) -> list:
+    """Construct the account and read its watchlist -- both plex.tv round
+    trips, both synchronous. Run through ``asyncio.to_thread`` as one hop
+    (``text_file``'s ``_read`` pattern) rather than on the event loop, where
+    either would block every other task in the pass for their duration.
+    """
+    return account_factory().watchlist()
+
+
 def _external_id(item: object) -> ExternalId | None:
     """The first usable namespaced id on a watchlist item, or None.
 
@@ -122,7 +132,7 @@ class PlexWatchlistBuilder:
 
         ids: list[ExternalId] = []
         candidates = 0
-        for item in account_factory().watchlist():
+        for item in await asyncio.to_thread(_fetch_watchlist, account_factory):
             if getattr(item, "type", None) != wanted:
                 # A watchlist holds films and series together; the other half
                 # of it belongs to the other library's pass.

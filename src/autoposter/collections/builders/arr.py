@@ -9,8 +9,15 @@ this config.
 
 No translation is needed: Radarr's ``tmdbId`` and Sonarr's ``tvdbId`` are
 already the namespaces the resolver takes. What these builders add over
-``client.listing()`` is three refusals.
+``client.listing()`` is four refusals.
 
+- **The wrong library raises**, before any client is touched. Radarr's
+  ``tmdbId`` only ever means a movie and Sonarr's ``tvdbId`` only ever means a
+  show, so ``radarr_all``/``radarr_taglist`` allow only ``Movie`` and
+  ``sonarr_all``/``sonarr_taglist`` only ``Show`` -- the same
+  ``require_library_type`` guard every other typed builder in the package
+  runs. Without it the wrong library does not error, it emits plausible but
+  wrong ids into the shared namespace instead.
 - **An unconfigured service raises**, per ``SourceClients``: None means the
   deployment never set it up, and a builder that shrugged would leave a
   collection quietly empty rather than reporting a dead source.
@@ -31,7 +38,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoposter.collections.builders.base import BuilderContext, BuilderResult
+from autoposter.collections.builders.base import (
+    BuilderContext,
+    BuilderResult,
+    require_library_type,
+)
 
 __all__ = [
     "ArrAllParams",
@@ -105,12 +116,24 @@ async def _tag_map(ctx: BuilderContext, client, service: str) -> dict[str, int]:
 class _ArrBuilder:
     """What the four builders share: the client, and how ids come out of it.
 
-    ``service`` is the ``SourceClients`` field name and the memo key, and
-    ``namespace`` is the id namespace that service's id field lives in.
+    ``service`` is the ``SourceClients`` field name and the memo key,
+    ``namespace`` is the id namespace that service's id field lives in, and
+    ``allowed_library_types`` is what ``require_library_type`` checks before
+    any client is touched -- Radarr's ``tmdbId`` only ever means a movie, and
+    Sonarr's ``tvdbId`` only ever means a show, so the other library type
+    would otherwise emit plausible-looking wrong members into the shared
+    namespace rather than failing loudly.
     """
 
     service: str
     namespace: str
+    allowed_library_types: tuple[str, ...]
+
+    def _guard_library_type(self, ctx: BuilderContext) -> None:
+        require_library_type(
+            f"the {self.type_name!r} builder", ctx.library_type,
+            self.allowed_library_types,
+        )
 
     def _client(self, ctx: BuilderContext):
         client = getattr(ctx.sources, self.service)
@@ -133,6 +156,7 @@ class _ArrAllBuilder(_ArrBuilder):
 
     async def build(self, ctx: BuilderContext) -> BuilderResult:
         ArrAllParams.model_validate(ctx.config)
+        self._guard_library_type(ctx)
         client = self._client(ctx)
         return self._result(client, await client.listing())
 
@@ -142,6 +166,7 @@ class _ArrTagListBuilder(_ArrBuilder):
 
     async def build(self, ctx: BuilderContext) -> BuilderResult:
         params = ArrTagListParams.model_validate(ctx.config)
+        self._guard_library_type(ctx)
         client = self._client(ctx)
         wanted = await self._tag_ids(ctx, client, params.tags)
         entries = await client.listing()
@@ -185,6 +210,7 @@ class RadarrAllBuilder(_ArrAllBuilder):
     type_name = "radarr_all"
     service = "radarr"
     namespace = "tmdb"
+    allowed_library_types = ("Movie",)
 
 
 class SonarrAllBuilder(_ArrAllBuilder):
@@ -193,6 +219,7 @@ class SonarrAllBuilder(_ArrAllBuilder):
     type_name = "sonarr_all"
     service = "sonarr"
     namespace = "tvdb"
+    allowed_library_types = ("Show",)
 
 
 class RadarrTagListBuilder(_ArrTagListBuilder):
@@ -201,6 +228,7 @@ class RadarrTagListBuilder(_ArrTagListBuilder):
     type_name = "radarr_taglist"
     service = "radarr"
     namespace = "tmdb"
+    allowed_library_types = ("Movie",)
 
 
 class SonarrTagListBuilder(_ArrTagListBuilder):
@@ -209,3 +237,4 @@ class SonarrTagListBuilder(_ArrTagListBuilder):
     type_name = "sonarr_taglist"
     service = "sonarr"
     namespace = "tvdb"
+    allowed_library_types = ("Show",)

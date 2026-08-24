@@ -345,3 +345,42 @@ async def test_the_pass_bundle_carries_a_tvdb_client_built_from_the_apikey():
 
     assert isinstance(sources.tvdb, TVDBClient)
     assert sources.tvdb._cache_ttl_seconds == 3600
+
+
+async def test_the_bundle_has_no_tvdb_client_when_the_key_is_blank():
+    """``tmdb``/``mdblist`` both guard a blank key into None rather than a
+    client that would 401 on first use; ``tvdb`` was constructed
+    unconditionally. Mutation proof: drop the guard in
+    ``build_source_clients`` and this goes red with an ``isinstance`` client
+    instead of None."""
+    async with httpx.AsyncClient() as http:
+        sources = build_source_clients(
+            _bundle_config(),
+            Secrets(
+                database_url="postgresql+asyncpg://unused", plex_token="x",
+                tmdb_token="x", tvdb_apikey="", fanart_apikey="x",
+                webhook_secret="x",
+            ),
+            http,
+        )
+
+    assert sources.tvdb is None
+
+
+async def test_a_blank_tvdb_apikey_makes_tvdb_list_report_not_configured():
+    """The bundle's None then reaches the builder's own documented refusal --
+    the same message a deployment that never set the key gets."""
+    async with httpx.AsyncClient() as http:
+        sources = build_source_clients(
+            _bundle_config(),
+            Secrets(
+                database_url="postgresql+asyncpg://unused", plex_token="x",
+                tmdb_token="x", tvdb_apikey="", fanart_apikey="x",
+                webhook_secret="x",
+            ),
+            http,
+        )
+        with pytest.raises(TvdbBuilderRefused, match="TVDb is not configured"):
+            await REGISTRY["tvdb_list"].build(
+                _ctx(sources, id=8194)
+            )

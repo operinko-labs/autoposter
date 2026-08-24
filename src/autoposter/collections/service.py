@@ -240,7 +240,13 @@ def build_source_clients(
             )
             if secrets.mdblist_apikey else None
         ),
-        tvdb=TVDBClient(secrets.tvdb_apikey, http, cache=cache, cache_ttl_seconds=ttl),
+        # TVDb: same blank-key guard as tmdb/mdblist above, for the same
+        # reason -- a client holding "" would 401 instead of reporting "not
+        # configured" the way ``tvdb_list``'s own refusal already documents.
+        tvdb=(
+            TVDBClient(secrets.tvdb_apikey, http, cache=cache, cache_ttl_seconds=ttl)
+            if secrets.tvdb_apikey else None
+        ),
         radarr=_arr_client(config.radarr, secrets.radarr_apikey, RADARR, http),
         sonarr=_arr_client(config.sonarr, secrets.sonarr_apikey, SONARR, http),
         plex_account=_plex_account_factory(secrets.plex_account_token),
