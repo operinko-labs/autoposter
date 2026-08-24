@@ -5,6 +5,7 @@ import { Collections } from "./pages/Collections";
 import { Dashboard } from "./pages/Dashboard";
 import { Failures } from "./pages/Failures";
 import { ItemDetail } from "./pages/ItemDetail";
+import { Jobs } from "./pages/Jobs";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Logs } from "./pages/Logs";
@@ -24,6 +25,7 @@ function AuthenticatedApp() {
           <Route path="/library" element={<Library />} />
           <Route path="/items/:itemId" element={<ItemDetail />} />
           <Route path="/collections" element={<Collections />} />
+          <Route path="/jobs" element={<Jobs />} />
           <Route path="/failures" element={<Failures />} />
           <Route path="/modes" element={<Modes />} />
           <Route path="/logs" element={<Logs />} />

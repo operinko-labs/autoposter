@@ -89,6 +89,52 @@ export interface ParkedJobsResponse {
   jobs: ParkedJob[];
 }
 
+/** GET /api/jobs -- the pending and running queue, for the Jobs overview.
+ *
+ * The raw payload is deliberately absent: the server lifts out the four fields
+ * that name the item and keeps the rest (provider ids, source URLs, mode
+ * filters) in the database.
+ *
+ * `max_attempts` is not a constant. A job waiting on Plex to index a new file
+ * is retried against a much larger budget than any other failure, so the two
+ * travel together and `attempts`/`max_attempts` is only meaningful as a pair.
+ *
+ * `run_in_seconds` is how long until the next attempt, and is negative for a
+ * job that is already due -- every running job included.
+ */
+export interface QueuedJob {
+  id: number;
+  kind: string;
+  state: string;
+  attempts: number;
+  max_attempts: number;
+  waiting_for_plex: boolean;
+  title: string | null;
+  item_kind: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  run_in_seconds: number;
+  last_error: string | null;
+  created_at: string | null;
+}
+
+export interface QueuedJobsResponse {
+  jobs: QueuedJob[];
+  /** How many jobs are live in total; the list itself is capped server-side. */
+  total: number;
+}
+
+/** POST /api/jobs/{id}/cancel. Exactly one of the two flags is present:
+ * `cancelled` for a pending job that was stopped outright, `cancel_requested`
+ * for a running one the worker will drop when its attempt ends. */
+export interface CancelJobResponse {
+  id: number;
+  state: string;
+  cancelled?: boolean;
+  cancel_requested?: boolean;
+  detail?: string;
+}
+
 /** GET /api/collections.
  *
  * The four reconcile stats are nullable and null on every row no pass has

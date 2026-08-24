@@ -1,0 +1,42 @@
+/* The Jobs overview. The `.pill` base and the shared table hooks
+ * (`.table-scroll`, `.cell-time`, `.cell-wrap`, `.row-actions`) come from
+ * dashboard.css and shell.css; only what is specific to the two live queue
+ * states and the per-row cancel outcome lives here. */
+
+.pill-pending {
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  color: var(--text-muted);
+}
+
+.pill-running {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+}
+
+/* Sits under the N/M count rather than beside it: the two are one statement
+ * ("4 of 10, because Plex has not indexed this yet") and the attempts column
+ * is narrow. */
+.jobs-waiting {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+/* The outcome of the last cancel on this row, under whatever error the job
+ * already had. Block, so it never reads as a continuation of the error text
+ * above it. */
+.jobs-message {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.jobs-message-note {
+  color: var(--accent);
+}
+
+.jobs-message-error {
+  color: var(--error);
+}

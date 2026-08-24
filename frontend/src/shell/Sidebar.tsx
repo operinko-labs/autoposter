@@ -16,6 +16,8 @@ const ICONS: Record<string, string> = {
     "M4 6H2v14a2 2 0 0 0 2 2h14v-2H4V6zm16-4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z",
   failures:
     "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z",
+  jobs:
+    "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z",
   logs: "M3 4h18v2H3V4zm0 4h12v2H3V8zm0 4h18v2H3v-2zm0 4h12v2H3v-2zm0 4h18v2H3v-2z",
   modes: "M8 5v14l11-7L8 5zM4 5h2v14H4V5z",
   settings:
@@ -32,6 +34,9 @@ const NAV = [
   { to: "/", label: "Dashboard", icon: "dashboard", end: true },
   { to: "/library", label: "Library", icon: "library", end: false },
   { to: "/collections", label: "Collections", icon: "collections", end: false },
+  // Before Failures: the live queue is the question an operator has while a
+  // pass is running, and Failures is what is left over once it has stopped.
+  { to: "/jobs", label: "Jobs", icon: "jobs", end: false },
   { to: "/failures", label: "Failures", icon: "failures", end: false },
   { to: "/modes", label: "Run modes", icon: "modes", end: false },
   { to: "/logs", label: "Logs", icon: "logs", end: false },
