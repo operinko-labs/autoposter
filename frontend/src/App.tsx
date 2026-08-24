@@ -8,6 +8,7 @@ import { ItemDetail } from "./pages/ItemDetail";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Logs } from "./pages/Logs";
+import { Modes } from "./pages/Modes";
 import { Settings } from "./pages/Settings";
 import { Testing } from "./pages/Testing";
 import { Sidebar } from "./shell/Sidebar";
@@ -24,6 +25,7 @@ function AuthenticatedApp() {
           <Route path="/items/:itemId" element={<ItemDetail />} />
           <Route path="/collections" element={<Collections />} />
           <Route path="/failures" element={<Failures />} />
+          <Route path="/modes" element={<Modes />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/testing" element={<Testing />} />
           <Route path="/settings" element={<Settings />} />

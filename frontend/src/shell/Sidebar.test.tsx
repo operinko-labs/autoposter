@@ -153,6 +153,19 @@ describe("Sidebar", () => {
     expect(link).toHaveAttribute("title", "Testing");
   });
 
+  it("reaches the run-modes page", () => {
+    stubMatchMedia(false);
+
+    renderSidebar();
+
+    // The six artwork modes are only reachable from here; a route with no
+    // link into it is a page that ships and is never found.
+    expect(screen.getByRole("link", { name: "Run modes" })).toHaveAttribute(
+      "href",
+      "/modes",
+    );
+  });
+
   it("marks the current route active in both states", () => {
     stubMatchMedia(false);
 

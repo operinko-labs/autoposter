@@ -17,6 +17,7 @@ const ICONS: Record<string, string> = {
   failures:
     "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z",
   logs: "M3 4h18v2H3V4zm0 4h12v2H3V8zm0 4h18v2H3v-2zm0 4h12v2H3v-2zm0 4h18v2H3v-2z",
+  modes: "M8 5v14l11-7L8 5zM4 5h2v14H4V5z",
   settings:
     "M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.62l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.58.24-1.12.55-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.86a.5.5 0 0 0 .12.62l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.62l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.39 1.04.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.62l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z",
   testing:
@@ -32,6 +33,7 @@ const NAV = [
   { to: "/library", label: "Library", icon: "library", end: false },
   { to: "/collections", label: "Collections", icon: "collections", end: false },
   { to: "/failures", label: "Failures", icon: "failures", end: false },
+  { to: "/modes", label: "Run modes", icon: "modes", end: false },
   { to: "/logs", label: "Logs", icon: "logs", end: false },
   { to: "/testing", label: "Testing", icon: "testing", end: false },
   { to: "/settings", label: "Settings", icon: "settings", end: false },

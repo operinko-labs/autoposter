@@ -393,3 +393,46 @@ export interface ConfigApplyResponse extends ConfigSaveResponse {
   queued: number;
   skipped: number;
 }
+
+/** POST /api/artwork-modes/{mode}. The filters and the apply switch every
+ * Plex-writing mode takes (`ModeFilterBody` in src/autoposter/api/routes.py).
+ *
+ * Each field is omitted rather than sent empty: `apply` omitted would fall back
+ * to that mode's configured default, and the page is explicit about which run
+ * it is asking for, so it always sends it. The backup mode takes no body at
+ * all.
+ */
+export interface ArtworkModeRequest {
+  type?: string;
+  library?: string;
+  item_id?: number;
+  apply: boolean;
+}
+
+/** What every artwork mode answers with.
+ *
+ * The six modes return the same envelope -- `mode`, `status`, `dry_run` and a
+ * flat set of counts -- but *which* counts differ per mode and per outcome: a
+ * dry run omits the outcome split (`pushed`/`failed`, `reset`/`failed`,
+ * `uploaded`/`failed`) because nothing was attempted, and the backup mode has
+ * no `dry_run` at all since it never writes to Plex.
+ *
+ * So the numbers are typed as an index signature rather than enumerated. That
+ * is deliberate rather than lazy: a fixed list here would have to be kept in
+ * step with five dataclasses, and a count this file forgot would silently stop
+ * being displayed. The page renders whatever numbers arrive, under a label
+ * table, so a new count shows up unlabelled rather than not at all.
+ *
+ * `status` also carries the refusals (`"refused"`, `"backup failed"`), which
+ * are answers and not errors: they arrive as a 200 with real counts and a
+ * `reason` naming the numbers. `note` is the reset mode's standing warning
+ * that the artwork it replaced is still on the Plex server.
+ */
+export interface ArtworkModeResponse {
+  mode: string;
+  status: string;
+  dry_run?: boolean;
+  reason?: string;
+  note?: string;
+  [count: string]: string | number | boolean | undefined;
+}

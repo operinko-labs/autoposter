@@ -19,6 +19,7 @@ function stylesheet(relative: string): string {
 const collectionsCss = stylesheet("./pages/collections.css");
 const itemCss = stylesheet("./pages/item.css");
 const logsCss = stylesheet("./pages/logs.css");
+const modesCss = stylesheet("./pages/modes.css");
 const settingsCss = stylesheet("./pages/settings.css");
 const shellCss = stylesheet("./shell/shell.css");
 const testingCss = stylesheet("./pages/testing.css");
@@ -217,6 +218,34 @@ describe("the testing grid stays inside its box", () => {
   it("clips a sample to its preview box rather than widening the cell", () => {
     expect(declaration(testingCss, ".sample-view", "overflow")).toBe("hidden");
     expect(declaration(testingCss, ".sample-image", "object-fit")).toBe("contain");
+  });
+});
+
+describe("the mode cards fit a phone", () => {
+  it("drops to one column below 640px, under the 420px track width", () => {
+    // The track is wider than the viewport there, so the auto-fit grid would
+    // otherwise hand every card its own horizontal scrollbar.
+    expect(declaration(modesCss, ".mode-grid", "grid-template-columns")).toBe(
+      "repeat(auto-fit, minmax(420px, 1fr))",
+    );
+    expect(declaration(modesCss, ".mode-grid", "grid-template-columns", MOBILE)).toBe("1fr");
+  });
+
+  it("stacks a filter label over its control below 640px", () => {
+    expect(declaration(modesCss, ".mode-filters label", "flex-direction", MOBILE)).toBe(
+      "column",
+    );
+    expect(declaration(modesCss, ".mode-filters label", "align-items", MOBILE)).toBe(
+      "stretch",
+    );
+  });
+
+  it("stops a number input overhanging the card at any width", () => {
+    expect(declaration(modesCss, ".mode-filters select", "max-width")).toBe("100%");
+  });
+
+  it("lets the confirmation sentence take its own line when the row wraps", () => {
+    expect(declaration(modesCss, ".mode-confirm", "flex")).toBe("1 1 14rem");
   });
 });
 

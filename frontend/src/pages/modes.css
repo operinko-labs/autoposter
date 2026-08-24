@@ -1,0 +1,171 @@
+/* One column per card while the window has room for two, one card wide
+ * otherwise. 420px rather than the dashboard's 340px: these cards carry three
+ * or four full sentences of consequence, and a narrower track wrapped them
+ * into ribbons. */
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.mode-card h2 {
+  margin-top: 0;
+}
+
+.mode-summary {
+  margin: 0 0 10px;
+}
+
+/* The consequences. Muted and small, but always present -- an operator who
+ * has to open something to find out that reset cannot reclaim the replaced
+ * upload finds out afterwards instead. */
+.mode-notes {
+  margin: 0 0 14px;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mode-notes li + li {
+  margin-top: 5px;
+}
+
+.mode-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.mode-filters label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mode-filters select,
+.mode-filters input {
+  font-family: inherit;
+  font-size: 14px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  /* A number input carries a browser default width in `size` units that
+   * overhangs the card at a phone width. */
+  max-width: 100%;
+}
+
+.mode-filters select:focus,
+.mode-filters input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.mode-filters input[type="number"] {
+  width: 7rem;
+}
+
+/* .row-actions already wraps; what is added here is the alignment for the
+ * confirmation sentence that joins the row when a mode is armed. */
+.mode-actions {
+  align-items: center;
+}
+
+.mode-confirm {
+  color: var(--warn);
+  font-size: 12px;
+  /* Takes the whole line when the row has wrapped, so the sentence is never
+   * a two-word sliver squeezed between the two buttons. */
+  flex: 1 1 14rem;
+}
+
+.mode-result {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.mode-result-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* Auto-fit rather than a fixed column count: which counts come back depends
+ * on the mode and on whether the run was applied, so the row is between two
+ * and five tiles wide and has to absorb both. */
+.mode-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.mode-count {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.mode-count-value {
+  display: block;
+  color: var(--text-strong);
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.mode-count-label {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+  /* These labels are phrases, not words ("items with a file in the backup
+   * tree"), so they wrap inside their tile rather than widening the grid. */
+  line-height: 1.35;
+}
+
+.mode-reason {
+  margin: 10px 0 0;
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mode-note {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  /* Below this the 420px track is wider than the viewport, and the grid
+   * would hand every card a horizontal scrollbar of its own. */
+  .mode-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* A label and its control side by side leave the select a sliver at a
+   * phone width; stacked, each gets the full card. */
+  .mode-filters label {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    flex: 1 1 100%;
+  }
+
+  .mode-filters input[type="number"] {
+    width: auto;
+  }
+}
