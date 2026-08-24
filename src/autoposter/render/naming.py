@@ -46,6 +46,34 @@ def episode_asset_name(season_number: int, episode_number: int) -> str:
     return f"S{season_number:02d}E{episode_number:02d}.jpg"
 
 
+# The numbers ``_file_name`` refuses to build a file name without.
+_REQUIRED_NUMBERS = {
+    "season_poster": ("season_number",),
+    "title_card": ("season_number", "episode_number"),
+}
+
+
+def missing_number(
+    art_kind: str, season_number: int | None, episode_number: int | None
+) -> str | None:
+    """Name the number ``art_kind`` needs and this item does not have, if any.
+
+    Plex's TV agent really does hand back ``index: None`` -- year-grouped
+    specials filed under ``parentIndex`` 2021/2024/2025 come through that way,
+    74 of 12,694 episodes on the production server. Both the adoption walk and
+    the render pipeline ask this before calling ``asset_path``. It is a
+    *narrow* guard on that one known shape, deliberately not a blanket
+    ``try/except ValueError`` around the naming call: a new ``ValueError``
+    class out of this module means a new bug and must surface loudly rather
+    than be swallowed as a skipped item.
+    """
+    values = {"season_number": season_number, "episode_number": episode_number}
+    for number in _REQUIRED_NUMBERS.get(art_kind, ()):
+        if values[number] is None:
+            return number
+    return None
+
+
 def _file_name(art_kind: str, season_number: int | None, episode_number: int | None) -> str:
     if art_kind == "poster":
         return "poster.jpg"

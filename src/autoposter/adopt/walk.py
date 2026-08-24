@@ -52,7 +52,7 @@ class AdoptionReport:
     # backgrounds off it would otherwise report ~2,000 phantom gaps.
     skipped_by_config: int = 0
     # Art kinds skipped because the item lacks a number their file name is
-    # built from -- see ``_REQUIRED_NUMBERS``. Counted separately so the
+    # built from -- see ``naming.missing_number``. Counted separately so the
     # operator sees them: neither a gap on disk nor a deliberate config choice.
     unnumbered: int = 0
 
@@ -69,30 +69,6 @@ class _Counters:
     unnumbered: int = 0
     hashed: int = 0
     by_kind: dict[str, int] = field(default_factory=dict)
-
-
-# The numbers ``naming._file_name`` refuses to build a file name without. Kept
-# in step with it by ``tests/test_adopt_walk.py``.
-_REQUIRED_NUMBERS = {
-    "season_poster": ("season_number",),
-    "title_card": ("season_number", "episode_number"),
-}
-
-
-def _missing_number(art_kind: str, resolved: ResolvedItem) -> str | None:
-    """Name the number ``art_kind`` needs and this item does not have, if any.
-
-    Plex's TV agent really does hand back ``index: None`` -- year-grouped
-    specials filed under ``parentIndex`` 2021/2024/2025 come through that way,
-    74 of 12,694 episodes on the production server. This is a *narrow* guard on
-    that one known shape, deliberately not a blanket ``try/except ValueError``
-    around the naming call: a new ``ValueError`` class out of ``naming`` means a
-    new bug and must surface loudly rather than be swallowed as a skipped item.
-    """
-    for number in _REQUIRED_NUMBERS.get(art_kind, ()):
-        if getattr(resolved, number) is None:
-            return number
-    return None
 
 
 def _as_int(value: str | None) -> int | None:
@@ -266,7 +242,9 @@ async def _adopt_item(
         # Placed after the config gate so an item that is both TBA-titled and
         # unnumbered keeps its more specific "this config would never render
         # it" reason.
-        missing_number = _missing_number(art_kind, resolved)
+        missing_number = naming.missing_number(
+            art_kind, resolved.season_number, resolved.episode_number
+        )
         if missing_number is not None:
             counters.unnumbered += 1
             logger.warning(

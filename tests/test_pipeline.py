@@ -183,6 +183,41 @@ async def test_tba_title_card_is_skipped_without_writing_a_file(session, tmp_pat
     assert not target.exists()
 
 
+async def test_unnumbered_title_card_is_recorded_as_skipped_not_raised(session, tmp_path):
+    """Plex's TV agent hands back ``index: None`` for year-grouped specials.
+
+    The adoption walk already guards these (``naming.missing_number``), but a
+    queued render job reaches ``naming._file_name`` directly and raised
+    ``title_card requires episode_number`` -- parking ~63 jobs every full pass
+    on the production server (roadmap row 125). The render side must record
+    the same skip instead: a status the operator can see, no exception, no
+    artifact.
+    """
+    config = _logo_test_config(tmp_path)
+    unnumbered = item(kind="episode", title="Episode 05-28", season=0, episode=None)
+
+    async with _fake_http() as http:
+        render = await render_artifact(session, config, http, unnumbered, "title_card", [])
+
+    assert render.status == "skipped"
+    assert "episode_number" in render.detail
+    # No artifact was written anywhere: the assets root was never even created.
+    assert not Path(config.assets_root).exists()
+
+
+async def test_unnumbered_season_poster_is_recorded_as_skipped_not_raised(session, tmp_path):
+    """``season_poster`` needs ``season_number``; same guard, other raise site."""
+    config = _logo_test_config(tmp_path)
+    unnumbered = item(kind="season", title="2021", season=None)
+
+    async with _fake_http() as http:
+        render = await render_artifact(session, config, http, unnumbered, "season_poster", [])
+
+    assert render.status == "skipped"
+    assert "season_number" in render.detail
+    assert not Path(config.assets_root).exists()
+
+
 def test_publish_keeps_one_previous_generation(tmp_path):
     from autoposter.render.pipeline import _publish
 

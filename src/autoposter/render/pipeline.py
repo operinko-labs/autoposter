@@ -320,7 +320,7 @@ async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> Media
 
 
 async def _get_or_create_render(
-    session: AsyncSession, media_item: MediaItem, art_kind: str, asset_path: Path
+    session: AsyncSession, media_item: MediaItem, art_kind: str, asset_path: Path | str
 ) -> Render:
     """Insert or update the render row, safe under concurrent workers.
 
@@ -456,7 +456,12 @@ async def render_artifact(
     """Build one artifact. Idempotent: safe to run repeatedly for the same item."""
     settings = art_config_for(config, art_kind)
     media_item = await _upsert_media_item(session, item)
-    target = naming.asset_path(
+    # The adoption walk's guard (naming.missing_number): year-grouped specials
+    # arrive with episode_number None, and asset_path would raise for an item
+    # whose artifact cannot be named at all -- parking the job on every full
+    # pass. Such a row records an empty asset_path: there is no path to record.
+    missing = naming.missing_number(art_kind, item.season_number, item.episode_number)
+    target = "" if missing is not None else naming.asset_path(
         config, item.library, item.root_folder, art_kind,
         item.season_number, item.episode_number,
     )
@@ -471,6 +476,14 @@ async def render_artifact(
     if _should_skip_title(config, item, art_kind):
         render.status = "skipped"
         render.detail = f"title {item.title!r} matches a skip word"
+        await session.commit()
+        return render
+
+    # After the config and skip-word gates, mirroring the walk: an item that
+    # is both TBA-titled and unnumbered keeps its more specific reason.
+    if missing is not None:
+        render.status = "skipped"
+        render.detail = f"item has no {missing}; cannot name its {art_kind}"
         await session.commit()
         return render
 
