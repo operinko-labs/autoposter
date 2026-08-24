@@ -15,7 +15,9 @@ from sqlalchemy.exc import IntegrityError
 
 from autoposter.api.artwork import router as artwork_router
 from autoposter.artwork_modes.backup import BackupMode
+from autoposter.artwork_modes.reset import ResetMode
 from autoposter.artwork_modes.restore import RestoreMode
+from autoposter.artwork_modes.revert import RevertMode
 from autoposter.api.candidates import router as candidates_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.logs import router as logs_router
@@ -821,13 +823,15 @@ async def run_full_pass(
     return {"total": total, "queued": queued, "skipped": skipped}
 
 
-class RestoreModeBody(BaseModel):
-    """Filters and the apply switch for a restore run.
+class ModeFilterBody(BaseModel):
+    """Filters and the apply switch for a filtered, Plex-writing artwork mode.
 
-    ``type`` is the item kind (movie|show|season|episode), mapping onto the
-    ``/api/items`` filter idiom; ``apply`` is optional so an omitted value falls
-    back to ``config.artwork_modes.restore_apply`` -- the dry-run-by-default
-    posture -- rather than being forced true by a missing field.
+    Shared by restore, revert and reset, which take the same three filters and
+    the same switch. ``type`` is the item kind (movie|show|season|episode),
+    mapping onto the ``/api/items`` filter idiom; ``apply`` is optional so an
+    omitted value falls back to that mode's ``config.artwork_modes.*_apply``
+    flag -- the dry-run-by-default posture -- rather than being forced true by
+    a missing field.
     """
 
     type: str | None = None
@@ -872,18 +876,39 @@ async def run_artwork_backup(
     return result.as_response()
 
 
+async def _run_plex_writing_mode(request: Request, mode, apply: bool) -> dict:
+    """Run one Plex-writing mode inline and return its parallel response body.
+
+    Inline rather than through the worker dispatch map, deliberately: the pause
+    fence has to be held across the whole operation, and the trigger answers
+    with the counts synchronously so the operator sees what a dry run would do
+    without going and reading a job row.
+
+    Only an applied run writes to Plex, so only it raises the fence; a dry run
+    touches nothing on Plex and must not idle the live pipeline. The fence is
+    released in ``WorkerPause.paused``'s ``finally``, so a mode that raises does
+    not leave the pool idled forever.
+    """
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        if apply:
+            with request.app.state.worker_pause.paused():
+                result = await mode.run(session)
+        else:
+            result = await mode.run(session)
+    return result.as_response()
+
+
 @router.post("/artwork-modes/restore")
 async def run_artwork_restore(
-    body: RestoreModeBody, request: Request, _: SessionModel = Depends(require_session)
+    body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
     """Push the backup tree back to Plex, filtered (roadmap row 77).
 
     Dry-run by default: with ``apply`` false (or omitted, falling back to
     ``config.artwork_modes.restore_apply``) it reports what it WOULD push and
-    pushes nothing. An applied run pauses the worker pool for its duration so
-    the live pipeline cannot upload to the same items underneath it, resuming in
-    a ``finally`` (``WorkerPause.paused``); the response names dry-run vs applied
-    and the counts either way.
+    pushes nothing. The response names dry-run vs applied and the counts either
+    way; see ``_run_plex_writing_mode`` for the worker fence.
     """
     plex, http = _require_plex(request)
     config = request.app.state.config
@@ -893,16 +918,53 @@ async def run_artwork_restore(
         config, plex, http, headers, apply=apply,
         kind=body.type, library=body.library, item_id=body.item_id,
     )
-    session_factory = request.app.state.session_factory
-    async with session_factory() as session:
-        if apply:
-            # Only an applied run writes to Plex, so only it needs the fence; a
-            # dry-run touches nothing Plex and should not idle the pipeline.
-            with request.app.state.worker_pause.paused():
-                result = await mode.run(session)
-        else:
-            result = await mode.run(session)
-    return result.as_response()
+    return await _run_plex_writing_mode(request, mode, apply)
+
+
+@router.post("/artwork-modes/revert")
+async def run_artwork_revert(
+    body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Put the un-badged ``/assets`` base back on Plex, filtered (roadmap row 65).
+
+    The "remove overlays" mode: it re-uploads the base image the badged one was
+    composited over, which is the same picture without the badges. Dry-run by
+    default (``config.artwork_modes.revert_apply``); items whose base is not on
+    disk are counted but never pushed.
+    """
+    plex, http = _require_plex(request)
+    config = request.app.state.config
+    headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
+    apply = body.apply if body.apply is not None else config.artwork_modes.revert_apply
+    mode = RevertMode(
+        config, plex, http, headers, apply=apply,
+        kind=body.type, library=body.library, item_id=body.item_id,
+    )
+    return await _run_plex_writing_mode(request, mode, apply)
+
+
+@router.post("/artwork-modes/reset")
+async def run_artwork_reset(
+    body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Unlock our posters and hand the field back to Plex's agent (roadmap row 66).
+
+    Acts only on items currently showing a poster this service uploaded, told
+    apart from a hand-set one by its EXIF provenance -- so "reset everything"
+    never means "undo the operator's own choices". Dry-run by default
+    (``config.artwork_modes.reset_apply``). The response carries a ``note``
+    saying the replaced upload stays on the Plex server: nothing here can delete
+    it, and the UI has to say so.
+    """
+    plex, http = _require_plex(request)
+    config = request.app.state.config
+    headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
+    apply = body.apply if body.apply is not None else config.artwork_modes.reset_apply
+    mode = ResetMode(
+        config, plex, http, headers, apply=apply,
+        kind=body.type, library=body.library, item_id=body.item_id,
+    )
+    return await _run_plex_writing_mode(request, mode, apply)
 
 
 def _host_only(url: str) -> str:

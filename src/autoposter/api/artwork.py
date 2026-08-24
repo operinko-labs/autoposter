@@ -73,8 +73,8 @@ class OutsideAssetsRoot(Exception):
     """A renders row whose asset_path resolves outside the asset tree."""
 
 
-def _read_asset(asset_path: str, assets_root: Path) -> bytes:
-    """Return the bytes of ``asset_path``, having proven it is inside the tree.
+def resolve_asset(asset_path: str, assets_root: Path) -> Path:
+    """Return ``asset_path`` resolved, having proven it is a file inside the tree.
 
     Both sides are put through ``realpath`` before being compared, so a
     symlink planted inside ``assets_root`` and pointing at ``/etc/passwd`` is
@@ -82,9 +82,12 @@ def _read_asset(asset_path: str, assets_root: Path) -> bytes:
     check -- ``normpath``, or comparing the strings -- would let that through.
 
     Synchronous, and called from a thread: ``assets_root`` can be an NFS
-    mount, so the ``realpath`` walk, the ``stat`` and the read all have to
-    stay off the event loop that also carries the workers, the scheduler and
-    the liveness probe.
+    mount, so the ``realpath`` walk and the ``stat`` have to stay off the event
+    loop that also carries the workers, the scheduler and the liveness probe.
+
+    Separate from :func:`_read_asset` so a caller that only needs to know
+    *whether* a render's base is on disk -- the revert mode's dry run, which
+    plans across a whole library -- can ask without reading every file's bytes.
     """
     root = Path(os.path.realpath(assets_root))
     resolved = Path(os.path.realpath(asset_path))
@@ -95,7 +98,12 @@ def _read_asset(asset_path: str, assets_root: Path) -> bytes:
     # read_bytes() would turn into a 500.
     if not resolved.is_file():
         raise FileNotFoundError(str(resolved))
-    return resolved.read_bytes()
+    return resolved
+
+
+def _read_asset(asset_path: str, assets_root: Path) -> bytes:
+    """Return the bytes of ``asset_path``, having proven it is inside the tree."""
+    return resolve_asset(asset_path, assets_root).read_bytes()
 
 
 def _if_none_match(header: str | None, etag: str) -> bool:

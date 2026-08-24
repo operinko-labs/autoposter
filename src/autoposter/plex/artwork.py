@@ -43,6 +43,12 @@ PLEX_ART_FIELDS = {
 # ~45s, not 15s.
 ARTWORK_FETCH_TIMEOUT = 15.0
 
+# How Plex keys an image somebody pushed to the server -- this service's own
+# uploads included. Everything else a ``posters()`` listing returns came from a
+# metadata agent, so this prefix is what separates "art we (or an operator) put
+# there" from "art Plex found for itself".
+UPLOADED_POSTER_PREFIX = "upload://"
+
 
 def upload_artwork(plex_item, data: bytes, art_kind: str, lock: bool = True) -> None:
     """Upload one badged image and lock the field.
@@ -74,6 +80,53 @@ def upload_artwork(plex_item, data: bytes, art_kind: str, lock: bool = True) -> 
             os.unlink(handle.name)
         except OSError:
             logger.warning("could not remove temporary upload file %s", handle.name)
+
+
+def _agent_default_poster(posters):
+    """The entry in a ``posters()`` listing that is Plex's own agent art.
+
+    ``None`` when the listing holds nothing but uploads -- an item whose agents
+    never found a poster, so there is no default to hand the field back to.
+
+    Plex returns uploaded and agent-supplied images from the one call and tells
+    them apart by rating key (``upload://...`` vs the agent's own), listing the
+    agent's in the agent's preference order. So the first non-upload entry *is*
+    the default Plex would pick for itself. ``ratingKey`` is read defensively:
+    a listing entry without one is not something we can prove is agent art.
+    """
+    for poster in posters:
+        rating_key = getattr(poster, "ratingKey", "") or ""
+        if rating_key.startswith(UPLOADED_POSTER_PREFIX):
+            continue
+        return poster
+    return None
+
+
+def reset_poster_to_agent_default(plex_item) -> bool:
+    """Unlock ``plex_item``'s poster and hand the field back to Plex's agent art.
+
+    The inverse of what ``upload_artwork`` does: that uploads and *locks* so the
+    agent cannot reclaim the field, and this unlocks and re-selects the agent's
+    own image. ``True`` when an agent poster was found and selected, ``False``
+    when Plex holds none.
+
+    The unlock happens first and unconditionally, so an item with no agent art
+    still ends up unlocked -- that half is what the operator asked for, and it
+    lets the agent fill the field on its own next pass. The caller counts the
+    ``False`` as a failed reset even so, because the visible poster did not
+    change.
+
+    Never ``.refresh()``, which the project-wide AST guard forbids: it would
+    have Plex re-pull from its agents, reverting locked fields elsewhere.
+    ``setPoster`` is a targeted select and needs no reload afterwards -- nothing
+    reads this object again once the selection is made.
+    """
+    plex_item.unlockPoster()
+    poster = _agent_default_poster(plex_item.posters())
+    if poster is None:
+        return False
+    plex_item.setPoster(poster)
+    return True
 
 
 async def _artwork_url(plex_item, base_url: str, art_kind: str = "poster") -> str | None:
