@@ -31,6 +31,13 @@ Both are bounded by ``max_pages`` regardless, because a runaway upstream must
 cost a bounded number of requests -- a definition's ``limit`` trims after
 resolution and cannot stop a fetch that has already happened.
 
+**A mixed list is filtered to one media type.** ``/list/{id}`` is the only
+endpoint here that answers with movies and shows at once, and TMDb's movie
+and show ids are different id spaces sharing one *namespace* -- so a show's
+id handed to a Movie library can resolve to an unrelated film rather than to
+nothing. ``_of_media_type`` drops the other kind before ids are taken; see
+its docstring, and note what that costs the ``item_count`` stop condition.
+
 **Companies, networks and keywords go through ``/discover``**, not through
 ``/company/{id}/movies`` or ``/keyword/{id}/movies``: TMDb marks those
 deprecated in favour of the discover filters, and there is no listing endpoint
@@ -146,8 +153,22 @@ class TmdbListClient:
             )
         return payload
 
-    async def _paged(self, path: str, params: dict, *, subject: str, items_key: str) -> list[str]:
-        """Every page of ``path``, in order, bounded by ``max_pages``."""
+    async def _paged(
+        self,
+        path: str,
+        params: dict,
+        *,
+        subject: str,
+        items_key: str,
+        media_type: str | None = None,
+    ) -> list[str]:
+        """Every page of ``path``, in order, bounded by ``max_pages``.
+
+        ``media_type`` keeps only the entries of one kind -- see
+        ``_of_media_type``. ``None``, the default, keeps everything, which is
+        the right answer for every endpoint that already answers for exactly
+        one media type.
+        """
         ids: list[str] = []
         for page in range(1, self._max_pages + 1):
             payload = await self._get(path, {**params, "page": page}, subject)
@@ -160,11 +181,21 @@ class TmdbListClient:
                 # The page past the end. A source that really is empty is data,
                 # not a failure -- unlike a 404, which is the id being wrong.
                 break
-            ids += _ids(entries, subject)
+            ids += _ids(_of_media_type(entries, media_type, subject), subject)
             total_pages = payload.get("total_pages")
             if isinstance(total_pages, int) and page >= total_pages:
                 break
             item_count = payload.get("item_count")
+            # ``item_count`` counts a list's *members*, both media types
+            # together, so once ``media_type`` filters any of them out this
+            # comparison can no longer be satisfied and the break becomes
+            # unreachable -- it only ever fires for an unfiltered read. That
+            # is deliberate rather than repaired here: the loop still
+            # terminates on the empty page TMDb serves past the end, and on
+            # ``max_pages`` in the pathological "TMDb ignored ``page``" case
+            # this condition was the cheap guard for. Hardening it (count
+            # entries seen, or stop on an identical page) is a filed roadmap
+            # row, not a silent change to what a filtered list returns.
             if isinstance(item_count, int) and len(ids) >= item_count:
                 break
         return ids
@@ -189,14 +220,26 @@ class TmdbListClient:
             path, params, subject=f"the TMDb chart at {path}", items_key="results"
         )
 
-    async def list_items(self, list_id: int) -> list[str]:
+    async def list_items(self, list_id: int, *, media_type: str | None = None) -> list[str]:
         """A public v3 list's members, in list order.
+
+        ``media_type`` is TMDb's own word (``"movie"``/``"tv"``) and keeps
+        only the members of that kind. A v3 list is the one endpoint here
+        that can hold both, and passing the other kind through would not
+        merely fail to resolve -- see ``_of_media_type``.
 
         No ``language``: the only thing read out of the response is ids, and
         every extra parameter is a second cache key for an identical answer.
+        ``media_type`` is applied to the response rather than sent, so it
+        costs no extra cache key either: both library types read one cached
+        copy of the list.
         """
         return await self._paged(
-            f"/list/{list_id}", {}, subject=f"TMDb list {list_id}", items_key="items"
+            f"/list/{list_id}",
+            {},
+            subject=f"TMDb list {list_id}",
+            items_key="items",
+            media_type=media_type,
         )
 
     async def collection_parts(self, collection_id: int) -> list[str]:
@@ -221,6 +264,42 @@ class TmdbListClient:
         return await self._paged(
             path, dict(filters), subject=f"TMDb discover ({described})", items_key="results"
         )
+
+
+def _of_media_type(entries: list, media_type: str | None, subject: str) -> list:
+    """The entries of one TMDb media type, when the caller wants only one.
+
+    ``None`` means every entry, which is what the chart and discover
+    endpoints need: each already answers for a single media type and tags
+    nothing. ``/list/{id}`` is the exception -- a v3 list holds movies and
+    shows at once and carries a ``media_type`` on each entry.
+
+    Filtering matters rather than being tidiness, and for the same reason
+    ``builders/mdblist.py`` and ``builders/tvdb.py`` drop the other kind:
+    TMDb's movie and show ids are different id spaces sharing one namespace,
+    so a show's id offered to a Movie library does not fail to resolve, it
+    can resolve to an *unrelated film*. A missing member is visible as a
+    smaller collection; a wrong one looks exactly like a right one.
+
+    An entry that does not say which it is raises, on ``_ids``' argument one
+    field over: guessing adds a title nobody listed and skipping removes one
+    somebody did, and neither leaves anything to notice.
+    """
+    if media_type is None:
+        return entries
+    kept = []
+    for entry in entries:
+        value = entry.get("media_type") if isinstance(entry, dict) else None
+        if value is None:
+            raise TmdbListRefused(
+                f"{subject}: an entry in TMDb's response has no 'media_type', so "
+                "there is no way to tell which library it belongs in. TMDb's "
+                "movie and show ids share one namespace, so guessing would add "
+                "an unrelated title rather than nothing."
+            )
+        if value == media_type:
+            kept.append(entry)
+    return kept
 
 
 def _ids(entries: list, subject: str) -> list[str]:

@@ -158,6 +158,23 @@ async def test_a_missing_file_raises_naming_only_the_relative_path(tmp_path):
     assert str(tmp_path) not in str(caught.value)
 
 
+async def test_a_file_that_is_not_utf8_text_is_refused(tmp_path):
+    """The one read failure that is not an ``OSError``:
+    ``UnicodeDecodeError`` is a ``ValueError``, so it escapes the read's
+    refusal arm entirely and reaches the engine as an unrelated class carrying
+    a message about byte offsets rather than about the operator's file. An
+    image or a spreadsheet saved into the mount by mistake is exactly how it
+    happens."""
+    (tmp_path / "list.bin").write_bytes(b"\xff\xfe\x00t\x00t\x000\x00")
+
+    with pytest.raises(TextFileRefused) as caught:
+        await _build(tmp_path, path="list.bin")
+
+    message = str(caught.value)
+    assert "list.bin" in message and "UTF-8" in message
+    assert str(tmp_path) not in message
+
+
 async def test_a_directory_is_not_a_list(tmp_path):
     (tmp_path / "lists").mkdir()
 

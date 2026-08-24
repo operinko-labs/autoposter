@@ -23,6 +23,14 @@ Params are the builder's own business. A builder that takes params declares a
 pydantic model for them (the ``params_model`` convention below) and validates
 ``ctx.config`` through it, so a mis-spelled key is an error instead of a
 silently-applied default. ``plex_id`` below is the worked example.
+
+Since 8b that model is also the *config's* contract: ``CollectionDefinition``
+validates a definition's ``params`` against the declared ``params_model`` at
+config load (``config/schema.py``), so the mis-spelled key is caught at the
+moment of the edit rather than mid-pass hours later. The builders keep
+validating ``ctx.config`` themselves regardless -- a builder is also called
+directly, by tests and by an expanding builder's constructed definitions --
+so the two are defence in depth, not one replacing the other.
 """
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable

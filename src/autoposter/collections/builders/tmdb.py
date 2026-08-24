@@ -14,6 +14,11 @@ three decisions that are not TMDb's to make.
   library: each would resolve to nothing and report a count, which is exactly
   what a correct collection of unowned titles looks like. ``base``'s
   ``require_library_type`` refuses them instead, before any request.
+- **Which half of a mixed list this library meant.** ``tmdb_list`` is the one
+  source here that answers with both media types, and the hazard is the
+  opposite one: a show's id in a Movie library can resolve to an unrelated
+  film, because TMDb's two id spaces share one namespace. The client filters
+  by media type; see ``TmdbListBuilder``.
 - **That absence is an error.** No token means no client means raise, per
   ``SourceClients``; a 404 raises out of the client for the same reason. An
   empty membership one layer down means "remove every member".
@@ -212,20 +217,39 @@ class TmdbChartBuilder(_TmdbBuilder):
 
 
 class TmdbListBuilder(_TmdbBuilder):
-    """A public TMDb list, in list order.
+    """A public TMDb list, in list order, as this library's half of it.
 
-    No library-type guard: a TMDb list may hold movies and shows at once, and
-    every member lands in the ``tmdb`` namespace either way -- the library the
-    pass runs against already decides which of them can resolve.
+    Nothing is refused at the definition level -- a TMDb list may hold movies
+    and shows at once, so unlike a franchise collection it cannot be typed as
+    a whole -- and everything is decided per entry, which is the shape
+    ``tvdb_list`` has for the same reason.
+
+    The other media type is dropped (in the client, see
+    ``providers/tmdb_lists._of_media_type``) rather than handed to the
+    resolver to miss. TMDb's movie and show ids are different id spaces
+    sharing one namespace, so a show's id offered to a Movie library can
+    resolve to an unrelated *film*: a plausible wrong member, not an absent
+    one. ``mdblist_list`` drops the other media type for exactly this.
+
+    ``media_types`` maps this library's type to TMDb's word for it and
+    doubles as the mismatch guard's allowed set, as ``_DiscoverBuilder``'s
+    does -- a library type it cannot name has no filter to apply, and reading
+    the list unfiltered there is the collision above.
     """
 
     type_name = "tmdb_list"
     params_model = TmdbEntityParams
+    media_types = {"Movie": "movie", "Show": "tv"}
 
     async def build(self, ctx: BuilderContext) -> BuilderResult:
         params = TmdbEntityParams.model_validate(ctx.config)
+        require_library_type(
+            f"the {self.type_name!r} builder", ctx.library_type, self.media_types
+        )
         client = self._client(ctx)
-        ids = await client.list_items(params.id)
+        ids = await client.list_items(
+            params.id, media_type=self.media_types[ctx.library_type]
+        )
         return BuilderResult(ids=[("tmdb", value) for value in ids])
 
 

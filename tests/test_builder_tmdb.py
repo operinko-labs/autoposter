@@ -254,6 +254,48 @@ async def test_a_list_id_written_as_a_string_still_works():
     assert result.ids == [("tmdb", "11"), ("tmdb", "1891")]
 
 
+async def test_a_list_drops_the_other_media_types_members_on_a_movie_library():
+    """The recorded second page of the list fixture holds the show 95396 next
+    to a film. TMDb's movie and show ids share one namespace, so passing that
+    id into a Movie library does not merely fail to resolve -- it can resolve
+    to an unrelated film, which is a plausible, *wrong* member rather than a
+    missing one. Same collision ``mdblist_list`` and ``tvdb_list`` drop the
+    other media type for.
+
+    ``item_count`` is overridden the way the fixture-based tests above already
+    do it, so the loop ends on this one page.
+    """
+    routes = {"/list/7096": load("tmdb_list_p2.json") | {"item_count": 1}}
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        result = await REGISTRY["tmdb_list"].build(_ctx(_sources(http), id=7096))
+
+    assert result.ids == [("tmdb", "1892")]
+    assert ("tmdb", "95396") not in result.ids
+
+
+async def test_the_same_list_keeps_the_shows_on_a_show_library():
+    """The mirror: one definition, both libraries, each getting the half of
+    the list it can actually own."""
+    routes = {"/list/7096": load("tmdb_list_p2.json") | {"item_count": 1}}
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        result = await REGISTRY["tmdb_list"].build(
+            _ctx(_sources(http), library_type="Show", id=7096)
+        )
+
+    assert result.ids == [("tmdb", "95396")]
+
+
+async def test_a_list_is_refused_on_a_library_type_with_no_tmdb_media_type():
+    """The media-type map has to be total for the filter to mean anything, so
+    a library type it has no entry for is refused rather than read unfiltered
+    -- which is what would silently reintroduce the collision above."""
+    async with httpx.AsyncClient(transport=_routed({})) as http:
+        with pytest.raises(LibraryTypeMismatch):
+            await REGISTRY["tmdb_list"].build(
+                _ctx(_sources(http), library_type="Artist", id=7096)
+            )
+
+
 async def test_a_missing_list_raises_naming_the_id_rather_than_building_nothing():
     """The pin: ``fetch_json`` turns a 404 into ``None``, and ``None`` must not
     become an empty collection -- in sync mode that removes every member."""

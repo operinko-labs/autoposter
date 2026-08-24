@@ -293,7 +293,7 @@ async def test_the_list_builder_runs_on_a_show_library_too():
 @pytest.mark.parametrize(
     "value",
     [
-        "ur7954977",                                   # the user id, by mistake
+        "ur000000001",                                 # the user id, by mistake
         "https://www.imdb.com/list/ls055350410/",       # the whole URL, pasted
         "ls055350410/",
         "LS055350410",
@@ -325,14 +325,14 @@ async def test_the_watchlist_builder_reads_a_public_watchlist():
     seen: list = []
     transport = _answers(load("imdb_watchlist.json"), seen)
     async with httpx.AsyncClient(transport=transport) as http:
-        result = await REGISTRY["imdb_watchlist"].build(_ctx(http, user="ur7954977"))
+        result = await REGISTRY["imdb_watchlist"].build(_ctx(http, user="ur000000001"))
 
     assert result.ids == [
         ("imdb", "tt0039152"), ("imdb", "tt0057569"), ("imdb", "tt0013442"),
     ]
     body = _body(seen[0])
     assert body["query"] == WATCHLIST_QUERY
-    assert body["variables"] == {"user": "ur7954977", "first": PAGE_SIZE}
+    assert body["variables"] == {"user": "ur000000001", "first": PAGE_SIZE}
     assert "WATCH_LIST" in body["query"], (
         "the enum value is WATCH_LIST -- the endpoint rejects 'WATCHLIST'"
     )
@@ -345,9 +345,9 @@ async def test_a_private_watchlist_is_refused_naming_the_user():
     transport = _answers(load("imdb_watchlist_private.json"))
     async with httpx.AsyncClient(transport=transport) as http:
         with pytest.raises(ImdbListRefused) as caught:
-            await REGISTRY["imdb_watchlist"].build(_ctx(http, user="ur23892615"))
+            await REGISTRY["imdb_watchlist"].build(_ctx(http, user="ur000000002"))
 
-    assert "ur23892615" in str(caught.value)
+    assert "ur000000002" in str(caught.value)
 
 
 async def test_an_unknown_user_is_refused():
@@ -362,10 +362,10 @@ async def test_an_unknown_user_is_refused():
     "value",
     [
         "ls055350410",                                  # the list id, by mistake
-        "https://www.imdb.com/user/ur7954977/watchlist",
-        "UR7954977",
+        "https://www.imdb.com/user/ur000000001/watchlist",
+        "UR000000001",
         "ur",
-        "7954977",
+        "000000001",
     ],
 )
 async def test_a_value_that_is_not_a_user_id_is_refused(value):
@@ -376,7 +376,7 @@ async def test_a_value_that_is_not_a_user_id_is_refused(value):
 async def test_the_watchlist_builder_refuses_params_it_does_not_understand():
     with pytest.raises(ValidationError):
         await REGISTRY["imdb_watchlist"].build(
-            _ctx(None, user="ur7954977", sort="added")
+            _ctx(None, user="ur000000001", sort="added")
         )
 
 

@@ -63,7 +63,13 @@ def _routed(routes: dict, seen: list | None = None, default=None):
             return default or httpx.Response(404, json=load("tmdb_not_found.json"))
         if isinstance(payload, dict) and "__pages__" in payload:
             page = int(request.url.params.get("page", 1))
-            return httpx.Response(200, json=payload["__pages__"][page])
+            # A page past the last recorded one answers the way TMDb really
+            # does -- an empty array, not a 404 (``test_an_empty_page_ends_the
+            # _loop`` pins that shape). Without this a caller that legitimately
+            # walks one page further than the fixture set would see a KeyError
+            # from the test's own scaffolding rather than the client's answer.
+            empty = {"results": [], "items": []}
+            return httpx.Response(200, json=payload["__pages__"].get(page, empty))
         return httpx.Response(200, json=payload)
 
     return httpx.MockTransport(handler)
@@ -217,6 +223,49 @@ async def test_a_list_that_repeats_its_only_page_is_still_read_once():
 
     assert ids == ["11", "1891"]
     assert len(seen) == 1
+
+
+async def test_a_list_keeps_only_the_media_type_the_caller_asked_for():
+    """A v3 list is the one endpoint here that answers with both kinds at
+    once -- ``tmdb_list_p2.json`` carries the show 95396 beside a film -- and
+    TMDb's movie and show ids are different id spaces sharing one namespace,
+    so that id offered to a Movie library can resolve to an unrelated *film*.
+    Dropping it here is what ``builders/mdblist.py`` and ``builders/tvdb.py``
+    already do for the same collision."""
+    async with httpx.AsyncClient(transport=_routed({"/list/7096": LIST})) as http:
+        ids = await _client(http).list_items(7096, media_type="movie")
+
+    assert ids == ["11", "1891", "1892"]
+    assert "95396" not in ids
+
+
+async def test_a_list_can_be_read_for_the_shows_instead():
+    async with httpx.AsyncClient(transport=_routed({"/list/7096": LIST})) as http:
+        ids = await _client(http).list_items(7096, media_type="tv")
+
+    assert ids == ["95396"]
+
+
+async def test_an_entry_with_no_media_type_raises_when_one_was_asked_for():
+    """``_ids``' rule, one field over: a guess adds an unrelated title and a
+    silent skip removes a real one, and neither leaves anything to notice."""
+    routes = {
+        "/list/7096": {
+            "items": [{"id": 11, "media_type": "movie"}, {"id": 12}],
+            "item_count": 2,
+        }
+    }
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        with pytest.raises(TmdbListRefused, match="media_type"):
+            await _client(http).list_items(7096, media_type="movie")
+
+
+async def test_an_unfiltered_read_does_not_demand_a_media_type():
+    """The chart and discover endpoints answer for one media type already and
+    do not tag their entries; only ``/list/{id}`` is mixed."""
+    routes = {"/list/7096": {"items": [{"id": 11}, {"id": 12}], "item_count": 2}}
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        assert await _client(http).list_items(7096) == ["11", "12"]
 
 
 async def test_a_missing_list_raises_and_names_the_id():

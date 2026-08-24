@@ -18,6 +18,17 @@ paths:
 These correspond to `assets_root`, `manual_assets_root` and `backup_root` in
 `autoposter.yaml`.
 
+`/manualassets` has a second consumer as of the list builders: a `text_file`
+collection definition names its list file **relative to this mount**
+(`params: {path: lists/oscars.txt}`), so hand-maintained lists live beside the
+manual artwork operators already drop there. Nothing extra needs mounting, and
+editing a list takes effect on the next pass with no config change and no
+restart. The path is contained the same way the manual-artwork endpoint
+contains its own: mount and candidate are *both* resolved before being
+compared, so a path that climbs out — or a symlink sitting inside the mount and
+pointing at something outside it — is refused on its target rather than read.
+An absolute path is refused earlier still, as a config-load error.
+
 One more mount, which Posterizarr and Kometa do not have and which this
 deployment has to add:
 
@@ -102,7 +113,20 @@ variables:
 - `AUTOPOSTER_WEBHOOK_SECRET`
 - `AUTOPOSTER_MDBLIST_APIKEY` — optional. Unset, only the `content_rating`
   metadata field is skipped; every other metadata operation (ratings, genres,
-  studio, release date) still runs (see `app.py`'s `_build_mdblist`).
+  studio, release date) still runs (see `app.py`'s `_build_mdblist`), and any
+  `mdblist_list` collection definition reports itself failed while the rest of
+  the pass proceeds.
+
+  **One key, one budget.** The `mdblist_list` collection builder spends the
+  *same* daily allowance the content-rating lookups do — 10,000 requests/day
+  on this account — so adding list definitions eats into the metadata side and
+  vice versa. MDBList signals exhaustion with an HTTP `200` carrying
+  `{"error": "API Limit Reached!"}` rather than a `429`, so nothing in the HTTP
+  layer slows down: the builder memoises that refusal for the rest of the
+  library's pass so the remaining definitions fail without spending further
+  calls. Because the response is a successful one as far as the response cache
+  is concerned, it is also cached — recovery after the allowance rolls over can
+  therefore lag by up to the cache TTL.
 - `AUTOPOSTER_RADARR_APIKEY` / `AUTOPOSTER_SONARR_APIKEY` — optional, same
   posture as the MDBList key. Unset, `radarr.enabled`/`sonarr.enabled`
   default to `false` anyway, so the app boots the same either way; see
@@ -117,10 +141,21 @@ variables:
   A plex.tv *account* token, for the collection builders whose source is the
   account rather than the server. Deliberately not `AUTOPOSTER_PLEX_TOKEN`:
   that one may be scoped to the server, which is fine for everything else this
-  service does and is rejected by plex.tv. Mint one with
-  `python -m autoposter.plex.auth`, which prints it exactly once and persists
-  it nowhere. Unset, only those definitions report themselves failed; the rest
-  of the pass is unaffected.
+  service does and is rejected by plex.tv.
+
+  Mint one with the same PIN flow "Obtaining AUTOPOSTER_PLEX_TOKEN" below
+  describes — `python -m autoposter.plex.auth`, which accepts
+  `--client-identifier` (reuse the value a previous run printed, to refresh
+  that "Authorized Devices" entry instead of adding a new one) and `--timeout`
+  (seconds to wait for the browser step; default 300). It prints the token
+  exactly once and persists it nowhere. The PIN flow always yields an
+  account-wide token, so one run can serve either variable — note that the
+  command's closing reminder names `AUTOPOSTER_PLEX_TOKEN`, and it is which
+  secret you store the value in that decides the role it plays here. Rotate it
+  the same way you rotate the server token.
+
+  Unset, only the definitions that read the account report themselves failed;
+  the rest of the pass is unaffected.
 
 ### The sidebar's update check
 

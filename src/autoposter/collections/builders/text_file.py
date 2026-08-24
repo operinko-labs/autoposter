@@ -102,6 +102,16 @@ def _read(root: Path, relative: str) -> str:
         )
     try:
         return resolved.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        # Its own arm because ``UnicodeDecodeError`` is a ``ValueError``, not
+        # an ``OSError``: it would otherwise escape this function entirely and
+        # reach the engine as an unrelated class whose message is about a byte
+        # offset rather than about the operator's file. Same shape as the
+        # OSError arm -- the relative path only, nothing of the mount layout.
+        raise TextFileRefused(
+            f"could not read {relative!r} from the manual assets mount: it is "
+            "not UTF-8 text. A list file is plain text, one id per line."
+        ) from error
     except OSError as error:
         raise TextFileRefused(
             f"could not read {relative!r} from the manual assets mount "

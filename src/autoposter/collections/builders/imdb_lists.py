@@ -5,7 +5,7 @@ did not expect -- see its docstring for why a list builder that degrades to
 fewer ids is worse than one that fails.
 
 What these add is the id format check. ``list: ls055350410`` and
-``user: ur7954977`` are the two shapes IMDb uses, and getting them the wrong
+``user: ur000000001`` are the two shapes IMDb uses, and getting them the wrong
 way round (or pasting the whole URL) is the mistake an operator actually
 makes. Caught here, at config load, it names the field; sent to IMDb it comes
 back as a null and reads like "your list was deleted".
@@ -71,7 +71,7 @@ class ImdbWatchlistParams(BaseModel):
     def _must_be_a_user_id(cls, value: str) -> str:
         if not _USER_ID.match(value):
             raise ValueError(
-                f"{value!r} is not an IMDb user id: they look like 'ur7954977' "
+                f"{value!r} is not an IMDb user id: they look like 'ur000000001' "
                 "and are the 'ur…' part of an imdb.com/user/ URL. An 'ls…' value "
                 "is a list id -- use the `imdb_list` builder for that."
             )
