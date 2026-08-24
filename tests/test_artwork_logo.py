@@ -16,11 +16,13 @@ that column is set *and* Plex still has that exact key selected -- so a logo an
 operator set by hand (no marker) and a logo an operator replaced ours with
 (marker present, different key selected) are both left alone.
 """
+import logging
 from pathlib import Path
 
 import httpx
 import pytest
 import pytest_asyncio
+from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import select
 
 from autoposter.artwork_modes.logo import LogoMode, LogoRevertMode
@@ -255,6 +257,45 @@ async def test_updater_skips_an_item_that_already_has_a_logo(session, config, se
     assert item.uploaded == []
     assert provider.requests == []  # not even a provider call was spent
     assert await _marker(session, row.id) is None
+
+
+async def test_updater_logs_one_line_for_a_stale_rating_key(session, config, serving, caplog):
+    """A stale rating_key 404s against Plex as ``plexapi``'s ``NotFound`` -- an
+    expected probe failure (the item was deleted/moved in Plex), not a crash
+    worth a traceback. ``NotFound``'s message embeds the server URL, so the
+    log line must never carry ``str(exc)`` -- only the item and the
+    exception's class name, project-wide convention (see e.g.
+    ``api/manual.py``'s ``type(exc).__name__`` logging).
+
+    Also the counting proof: a probe failure must cost the item its line in
+    ``items_missing_logo``, exactly like a download failure does elsewhere in
+    this mode -- not abort the run.
+    """
+
+    class GoneClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            raise PlexNotFound(
+                f"(404) not_found ({rating_key}) http://plex.local:32400/library/metadata/{rating_key}"
+            )
+
+    await _add_item(session, rating_key="rk-gone")
+    plex = GoneClient({})
+
+    with caplog.at_level(logging.WARNING):
+        result = await LogoMode(
+            config, plex, serving(), _headers(), [FakeProvider()], apply=True
+        ).run(session)
+
+    assert (result.items, result.items_missing_logo) == (1, 0)
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.exc_info is None
+    assert record.exc_text is None
+    message = record.getMessage()
+    assert "plex.local" not in message  # never the URL-bearing str(exc)
+    assert "NotFound" in message
+    assert "rk-gone" in message
 
 
 async def test_updater_dry_run_uploads_nothing(session, config, serving):

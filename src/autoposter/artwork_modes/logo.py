@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -226,6 +227,14 @@ class LogoMode:
                 plex_item = await self._plex.fetch_item(row.rating_key)
                 if not await has_clearlogo(plex_item):
                     missing.append(row)
+            except PlexNotFound as exc:
+                # A stale rating_key (item deleted/moved in Plex) is expected,
+                # not a crash -- one line, no traceback. NotFound's message
+                # embeds the server URL, so never str(exc); class name only.
+                logger.warning(
+                    "logo: could not probe Plex item %s (%s)",
+                    row.rating_key, type(exc).__name__,
+                )
             except Exception:  # noqa: BLE001 - one bad item must not abort the probe
                 logger.warning(
                     "logo: could not probe Plex item %s", row.rating_key, exc_info=True
