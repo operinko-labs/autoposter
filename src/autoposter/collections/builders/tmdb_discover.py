@@ -79,6 +79,7 @@ __all__ = [
     "DiscoverParam",
     "TmdbDiscoverBuilder",
     "TmdbDiscoverParams",
+    "TmdbSortUnsupported",
     "discover_filters",
 ]
 
@@ -127,6 +128,12 @@ def _a_language_tag(value: str) -> str:
     return value
 
 
+# ISO-3166-1 country codes and bare ISO-639-1 language codes are both exactly
+# two letters, so this reuses ``_REGION``'s pattern under a name that says what
+# it actually checks here, rather than a byte-identical second regex.
+_BARE_TWO_LETTER_CODE = _REGION
+
+
 def _a_bare_language_code(value: str) -> str:
     """``with_original_language`` is the one language field with no country half.
 
@@ -135,7 +142,7 @@ def _a_bare_language_code(value: str) -> str:
     about it, so a well-formed-looking regional tag would quietly produce an
     empty collection. ``language`` above is the opposite case and stays lenient.
     """
-    if not _REGION.match(value):
+    if not _BARE_TWO_LETTER_CODE.match(value):
         raise ValueError(
             f"{value!r} is not a bare ISO-639-1 code: `with_original_language` matches "
             "a title's original language, which TMDb writes as two letters with no "
@@ -299,7 +306,14 @@ DISCOVER_PARAMS: tuple[DiscoverParam, ...] = (
         "timezone", str, "tv",
         "resolves /discover/tv's air-date filters; movie release dates use region",
     ),
-    DiscoverParam("with_networks", int, "tv", "TMDb has no movie form of a network, in any API"),
+    DiscoverParam(
+        "with_networks", str, "tv",
+        # Widened from the obvious `int` for the same reason as
+        # `with_release_type` above: TMDb accepts the comma/pipe OR-form
+        # (`213|49`) and an int cannot carry it.
+        "TMDb has no movie form of a network, in any API; widened to carry the "
+        "documented `213|49` OR-form, as with_release_type",
+    ),
     DiscoverParam("with_status", str, "tv", "a series' production status: 0 Returning .. 5 Pilot"),
     DiscoverParam("with_type", str, "tv", "a series' type: 0 Documentary .. 6 Video"),
 )
@@ -320,6 +334,19 @@ COMPANION_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
         "watch_region",
     ),
     (("certification", "certification.gte", "certification.lte"), "certification_country"),
+)
+
+# The four names that order or scope a query rather than filter it: `sort_by`
+# alone (or alongside `language`/`region`/`watch_region`) still builds TMDb's
+# default-ordered, unfiltered result -- `tmdb_chart` under another name -- so
+# the "at least one attribute" guard below must not count them.
+#
+# The *filtering* set is derived as everything else in the matrix, rather than
+# hand-picked, so a row added to ``DISCOVER_PARAMS`` later is a filter by
+# default and the guard cannot silently forget it.
+_NON_FILTERING_NAMES = frozenset({"sort_by", "language", "region", "watch_region"})
+_FILTERING_FIELDS: frozenset[str] = frozenset(
+    row.field for row in DISCOVER_PARAMS if row.name not in _NON_FILTERING_NAMES
 )
 
 
@@ -347,9 +374,18 @@ class _TmdbDiscoverParamsBase(BaseModel):
         would build "two hundred arbitrarily popular titles" -- which
         ``tmdb_chart`` already builds deliberately, and which in ``sync_mode``
         would write those titles into a collection that was meant to say
-        something. An operator who wrote no attributes did not mean this.
+        something. An operator who wrote no attributes did not mean this --
+        and neither did one who wrote only ``sort_by`` (or ``language``,
+        ``region``, ``watch_region``): none of those four filter anything, so
+        ``{sort_by: popularity.desc}`` alone is the exact same unfiltered
+        result with a redundant order on top. Only ``_FILTERING_FIELDS``
+        counts here; see its definition for why that set, not this guard, is
+        where a newly added row has to be excluded.
         """
-        if not any(getattr(self, name) is not None for name in self.model_fields_set):
+        if not any(
+            name in _FILTERING_FIELDS and getattr(self, name) is not None
+            for name in self.model_fields_set
+        ):
             raise ValueError(
                 "tmdb_discover needs at least one attribute: an unfiltered discover is "
                 "TMDb's popularity chart, which `tmdb_chart` already builds"
@@ -389,6 +425,18 @@ TmdbDiscoverParams = create_model(
 )
 
 
+class TmdbSortUnsupported(Exception):
+    """``sort_by`` was set to a key this media type's ``/discover`` has no sort for.
+
+    Its own class rather than reusing ``LibraryTypeMismatch`` -- as
+    ``TmdbRegionUnsupported`` in ``builders/tmdb.py`` reuses neither -- because
+    a wrong sort key is not a library/media-type mismatch, and the engine's log
+    line, which carries only the exception class name, would otherwise mislabel
+    it as one. ``sort_by`` is a shared parameter name whose vocabulary is not:
+    see ``SORT_BY``.
+    """
+
+
 def discover_filters(params: BaseModel, media_type: str, library_type: str) -> dict[str, object]:
     """The wire filters for one build, or a refusal naming the offending field.
 
@@ -418,7 +466,7 @@ def discover_filters(params: BaseModel, media_type: str, library_type: str) -> d
         )
     sort = filters.get("sort_by")
     if sort is not None and sort not in SORT_BY[media_type]:
-        raise LibraryTypeMismatch(
+        raise TmdbSortUnsupported(
             f"TMDb cannot sort /discover/{media_type} by {sort!r}, so this pass against a "
             f"{library_type} library would fall back to its default order. The sorts "
             f"/discover/{media_type} accepts are " + ", ".join(sorted(SORT_BY[media_type]))

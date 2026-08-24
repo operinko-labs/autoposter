@@ -34,6 +34,7 @@ from autoposter.collections.builders.tmdb_discover import (
     DISCOVER_PARAMS,
     SORT_BY,
     TmdbDiscoverParams,
+    TmdbSortUnsupported,
 )
 from autoposter.config.schema import CollectionDefinition
 from autoposter.providers.tmdb_lists import TmdbListClient
@@ -210,6 +211,21 @@ def test_an_empty_discover_is_refused():
         _definition()
 
 
+def test_sort_by_alone_does_not_satisfy_the_empty_guard():
+    """``sort_by`` orders a result, it does not filter one: ``{sort_by:
+    popularity.desc}`` and nothing else is TMDb's default popularity chart
+    with a redundant sort, the exact outcome the guard exists to refuse."""
+    with pytest.raises(ValueError, match="at least one attribute") as caught:
+        _definition(sort_by="popularity.desc")
+    assert "tmdb_chart" in str(caught.value)
+
+
+def test_a_genuine_filter_alongside_sort_by_satisfies_the_guard():
+    definition = _definition(sort_by="popularity.desc", with_genres="18")
+
+    assert definition.params["with_genres"] == "18"
+
+
 def test_a_watch_provider_filter_without_a_watch_region_is_refused():
     """TMDb ignores the provider filter without ``watch_region`` and answers the
     unfiltered query, so the collection would hold every title rather than the
@@ -311,6 +327,20 @@ async def test_only_the_attributes_the_operator_wrote_are_sent():
     assert dict(seen[0].url.params) == {"with_networks": "213", "page": "1"}
 
 
+async def test_with_networks_accepts_the_or_form():
+    """TMDb accepts ``with_networks=213|49`` exactly as it does
+    ``with_release_type`` -- both are documented comma/pipe AND/OR filters on
+    the wire, and an ``int`` field cannot carry the pipe."""
+    seen: list = []
+    routes = {"/discover/tv": load("tmdb_discover_tv.json")}
+    async with httpx.AsyncClient(transport=_routed(routes, seen)) as http:
+        await REGISTRY["tmdb_discover"].build(
+            _ctx(_sources(http), library_type="Show", with_networks="213|49")
+        )
+
+    assert seen[0].url.params["with_networks"] == "213|49"
+
+
 # --- scope: the build-time refusal -------------------------------------------
 
 
@@ -377,12 +407,21 @@ async def test_a_shared_attribute_crosses_to_both_endpoints(library_type, media_
 async def test_a_movie_sort_on_a_show_library_is_refused():
     """``sort_by`` is a shared name with an unshared vocabulary: TMDb cannot
     sort shows by revenue, and falling back to its default order would be an
-    operator's ranking quietly not applied."""
+    operator's ranking quietly not applied.
+
+    ``TmdbSortUnsupported``, not ``LibraryTypeMismatch``: a wrong sort key is
+    not a library/media-type mismatch, and the engine's log line carries only
+    the exception class name, so the wrong class would mislabel this failure."""
     seen: list = []
     async with httpx.AsyncClient(transport=_routed({}, seen)) as http:
-        with pytest.raises(LibraryTypeMismatch) as caught:
+        with pytest.raises(TmdbSortUnsupported) as caught:
             await REGISTRY["tmdb_discover"].build(
-                _ctx(_sources(http), library_type="Show", sort_by="revenue.desc")
+                _ctx(
+                    _sources(http),
+                    library_type="Show",
+                    sort_by="revenue.desc",
+                    with_genres="18",
+                )
             )
 
     assert "revenue.desc" in str(caught.value)
@@ -394,7 +433,12 @@ async def test_a_sort_both_endpoints_share_is_allowed_on_either():
     routes = {"/discover/tv": load("tmdb_discover_tv.json")}
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
         result = await REGISTRY["tmdb_discover"].build(
-            _ctx(_sources(http), library_type="Show", sort_by="popularity.desc")
+            _ctx(
+                _sources(http),
+                library_type="Show",
+                sort_by="popularity.desc",
+                with_genres="18",
+            )
         )
 
     assert result.ids == [("tmdb", "95396"), ("tmdb", "1416")]
