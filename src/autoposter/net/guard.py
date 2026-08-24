@@ -55,6 +55,22 @@ this deployment's networking does not have -- so, like DNS rebinding above,
 this is named rather than range-checked: an untested check against a residual
 nothing here can trigger is worse than an honest docstring.
 
+**``100.64.0.0/10`` (RFC 6598, "shared address space" -- CGNAT, and this
+deployment's own Tailscale range) is checked, not left as a residual like the
+two ranges above.** Unlike NAT64 and 6to4, this needs no translator on the
+path: a service listening on a ``100.64.0.0/10`` address is a direct fetch
+target the moment ``getaddrinfo`` resolves a name onto it, or an operator
+types the literal. ``ipaddress`` classifies neither ``is_private`` nor
+``is_global`` as ``True`` for this range -- its own ``is_private`` docstring
+calls it out by name as the one range where the two properties are not
+opposites -- so ``_address_refusal`` checks membership in the network
+explicitly rather than folding it into the property loop above. A blanket
+``not is_global`` would also catch it, but ``is_global`` is ``False`` for
+every unassigned/reserved range too (and would need auditing against this
+deployment's real target set to rule out over-rejection); the explicit
+network is the narrower, unambiguous fix for the one range actually in use
+here.
+
 **A refusal never names the URL.** The pick endpoint could log a candidate
 URL's host, because a provider client had just produced it. A source typed by
 an operator is a different object: it can carry ``user:password@`` userinfo, a
@@ -86,6 +102,12 @@ MAX_REDIRECTS = 3
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+# RFC 6598 "shared address space" (CGNAT). ``ipaddress`` reports
+# ``is_private=False`` and ``is_global=False`` for the whole range -- neither
+# property below catches it -- so it needs its own membership check. See the
+# module docstring for why this one residual is checked rather than named.
+_SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
 
 
 class FetchRefused(Exception):
@@ -148,6 +170,13 @@ def _address_refusal(address: str) -> str | None:
     ):
         if blocked:
             return f"the host resolves to a {name} address"
+    # Not a property, unlike the loop above: membership on an IPv4Network
+    # does NOT auto-unwrap an IPv4-mapped IPv6 address the way is_private and
+    # friends do, so the unwrap the comment above says is unneeded elsewhere
+    # is needed here, or ``::ffff:100.64.0.1`` would pass this check.
+    candidate = ip.ipv4_mapped if isinstance(ip, ipaddress.IPv6Address) else ip
+    if isinstance(candidate, ipaddress.IPv4Address) and candidate in _SHARED_ADDRESS_SPACE:
+        return "the host resolves to a shared address space (CGNAT, RFC 6598) address"
     return None
 
 

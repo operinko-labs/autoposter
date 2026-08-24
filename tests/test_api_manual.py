@@ -629,16 +629,21 @@ async def test_an_item_with_no_root_folder_is_409(
 
 @pytest.mark.parametrize("art_kind", ["poster", "logo"])
 @pytest.mark.parametrize(
-    "response_for, why",
+    "response_for, why, detail_contains",
     [
-        (lambda request: httpx.Response(404), "an upstream 404"),
-        (_ok(b"<!doctype html>", "text/html"), "a content type outside the allowlist"),
-        (_ok(b"", "image/png"), "an empty body"),
-        (_ok(b"not actually a png", "image/png"), "bytes no decoder accepts"),
+        (lambda request: httpx.Response(404), "an upstream 404", "status 404"),
+        (
+            _ok(b"<!doctype html>", "text/html"),
+            "a content type outside the allowlist",
+            "content type",
+        ),
+        (_ok(b"", "image/png"), "an empty body", "empty body"),
+        (_ok(b"not actually a png", "image/png"), "bytes no decoder accepts", "undecodable image"),
     ],
 )
 async def test_a_failed_url_source_writes_nothing_and_leaves_the_row_alone(
-    client, auth_headers, session, manual_root, transport, response_for, why, art_kind
+    client, auth_headers, session, manual_root, transport, response_for, why, detail_contains,
+    art_kind,
 ):
     """File-success-first, as clear-override orders it: nulled fingerprints
     with no file behind them re-render straight back to the automatic pick
@@ -648,6 +653,12 @@ async def test_a_failed_url_source_writes_nothing_and_leaves_the_row_alone(
     re-encoded, a logo is written through untouched, so for a logo the status,
     Content-Type and size checks are the only thing between an HTML error page
     and a file called ``logo.png`` handed to the compositor.
+
+    The detail is the plan's promise, not just the status code: a guard
+    reason ("status 404", "content type outside the artwork allowlist",
+    "empty body") is URL-free by construction and actionable, unlike the
+    generic "could not fetch the image from that URL" a raw transport
+    failure gets instead.
     """
     transport._response_for = response_for
     item_id = await _item(session)
@@ -656,6 +667,7 @@ async def test_a_failed_url_source_writes_nothing_and_leaves_the_row_alone(
     response = await _install(client, item_id, art_kind, auth_headers, source=source)
 
     assert response.status_code == 502, why
+    assert detail_contains in response.json()["detail"], why
     assert list(manual_root.rglob("*")) == []
     render = (
         await session.execute(select(Render).where(Render.item_id == item_id))

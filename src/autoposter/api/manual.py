@@ -47,7 +47,7 @@ from autoposter.api.candidates import (
 from autoposter.collections.posters import poster_override_target
 from autoposter.db.models import EventLog, ManagedCollection, MediaItem, Render
 from autoposter.db.models import Session as SessionModel
-from autoposter.net.guard import FetchRefused, TargetRefused, guarded_download
+from autoposter.net.guard import BodyRefused, FetchRefused, TargetRefused, guarded_download
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers import base as art
 from autoposter.render.pipeline import (
@@ -152,13 +152,23 @@ async def _staged_source(config, http, source: str, workspace: Path) -> Path:
         # leaves an operator with a working URL and no idea why.
         logger.warning("refused to fetch a manual source: %s", exc)
         raise HTTPException(status_code=422, detail=f"that source was refused: {exc}") from None
+    except BodyRefused as exc:
+        # The request was made, and the response came back, but it is not
+        # usable artwork -- "status 404", "content type outside the artwork
+        # allowlist", "image exceeded the size cap", "empty body". Handed
+        # back verbatim like TargetRefused above: the guard's own messages
+        # are URL-free by construction (see the guard's module docstring,
+        # "a refusal never names the URL"), so there is nothing to withhold
+        # and an actionable reason is what the plan promised.
+        logger.warning("manual source fetch produced an unusable body: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from None
     except (FetchRefused, httpx.HTTPError) as exc:
-        # The request was made and did not produce usable artwork. NOT
-        # str(exc), and NOT exc_info, for the httpx half: its exception
-        # messages -- and the traceback exc_info would attach -- can embed the
-        # full request URL, which is the one thing that must not reach even
-        # the server log. A reason string only, same as the guard's own
-        # exceptions carry.
+        # The raw transport failure, plus any future FetchRefused subclass
+        # this branch has no specific handling for. NOT str(exc), and NOT
+        # exc_info, for the httpx half: its exception messages -- and the
+        # traceback exc_info would attach -- can embed the full request URL,
+        # which is the one thing that must not reach even the server log. A
+        # reason string only, same as the guard's own exceptions carry.
         logger.warning("manual source fetch failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=502, detail="could not fetch the image from that URL"
