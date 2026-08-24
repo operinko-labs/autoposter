@@ -154,11 +154,12 @@ async def _staged_source(config, http, source: str, workspace: Path) -> Path:
         raise HTTPException(status_code=422, detail=f"that source was refused: {exc}") from None
     except (FetchRefused, httpx.HTTPError) as exc:
         # The request was made and did not produce usable artwork. NOT
-        # str(exc) for the httpx half: its exception messages embed the full
-        # request URL, which is the one thing that must not reach a response.
-        logger.warning(
-            "could not fetch a manual source: %s", type(exc).__name__, exc_info=exc
-        )
+        # str(exc), and NOT exc_info, for the httpx half: its exception
+        # messages -- and the traceback exc_info would attach -- can embed the
+        # full request URL, which is the one thing that must not reach even
+        # the server log. A reason string only, same as the guard's own
+        # exceptions carry.
+        logger.warning("manual source fetch failed: %s", type(exc).__name__)
         raise HTTPException(
             status_code=502, detail="could not fetch the image from that URL"
         ) from None

@@ -47,6 +47,14 @@ guard's job here is to stop the operator-supplied URL, not a determined
 attacker who also controls a nameserver. Documented so a later reader knows
 it was weighed and not missed.
 
+**Also not stopped: NAT64 and 6to4 literals.** ``ipaddress`` does not classify
+``64:ff9b::/96`` (NAT64) or ``2002::/16`` (6to4) as reserved, so a literal
+address in either range passes ``_address_refusal`` uncaught. Both are only
+exploitable with a NAT64 or 6to4 translator sitting on the network path, which
+this deployment's networking does not have -- so, like DNS rebinding above,
+this is named rather than range-checked: an untested check against a residual
+nothing here can trigger is worse than an honest docstring.
+
 **A refusal never names the URL.** The pick endpoint could log a candidate
 URL's host, because a provider client had just produced it. A source typed by
 an operator is a different object: it can carry ``user:password@`` userinfo, a

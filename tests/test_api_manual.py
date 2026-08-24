@@ -666,6 +666,31 @@ async def test_a_failed_url_source_writes_nothing_and_leaves_the_row_alone(
     assert (await session.execute(select(Job))).scalars().all() == []
 
 
+async def test_a_failed_url_fetch_does_not_log_the_url(
+    client, auth_headers, session, transport, caplog
+):
+    """The response detail already withholds the URL (the test above); the
+    server log must too. An httpx exception's message -- and the traceback
+    ``exc_info`` would attach -- can embed the full request URL, including
+    userinfo credentials, which is the one thing this endpoint's own
+    discipline keeps out of responses and event rows precisely because it may
+    carry secrets. A server log is read by the same people who read a ticket
+    the response text got pasted into."""
+    def refused(request):
+        raise httpx.ConnectError(f"connection refused: {request.url}")
+
+    transport._response_for = refused
+    item_id = await _item(session)
+
+    with caplog.at_level("WARNING"):
+        response = await _install(client, item_id, "poster", auth_headers)
+
+    assert response.status_code == 502
+    for record in caplog.records:
+        text = record.getMessage() + (record.exc_text or "")
+        assert "http" not in text.lower()
+
+
 async def test_an_undecodable_file_on_the_mount_is_the_callers_fault(
     client, auth_headers, session, manual_root
 ):
