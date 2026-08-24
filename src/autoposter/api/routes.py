@@ -27,6 +27,7 @@ from autoposter.api.manual import router as manual_router
 from autoposter.api.mismatches import router as mismatches_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
 from autoposter.api.testing import router as testing_router
+from autoposter.api.version import router as version_router
 from autoposter.api.auth import (
     create_session,
     hash_password,
@@ -169,6 +170,12 @@ router.include_router(jobs_router)
 # two services against Plex, and it pairs them by path for a reason that needs
 # writing down.
 router.include_router(mismatches_router)
+
+# The sidebar's version line: what this pod is running, and whether the Harbor
+# registry holds a newer image. Its own module because the registry URL is
+# operator config that must not reach a log or a response, and the rules that
+# keep it out of both are the substance of it.
+router.include_router(version_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
