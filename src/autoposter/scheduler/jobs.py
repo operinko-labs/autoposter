@@ -39,7 +39,10 @@ logger = logging.getLogger(__name__)
 
 
 def make_collections_job(
-    holder: ConfigHolder, server_factory: Callable[[], object], http: httpx.AsyncClient
+    holder: ConfigHolder,
+    server_factory: Callable[[], object],
+    http: httpx.AsyncClient,
+    summaries=None,
 ) -> Job:
     """Build the scheduled collections-reconcile job.
 
@@ -61,6 +64,11 @@ def make_collections_job(
     ``reconcile_libraries``; running this job with it off is simply a
     periodic dry run, a sensible way to watch what a pass would do before
     switching writes on.
+
+    ``summaries`` is the process's TMDB facts client, which a definition
+    configured with ``tmdb_summary:`` borrows its summary through. Closured
+    rather than read per run: it wraps the process's HTTP client and provider
+    cache, neither of which a config swap replaces.
     """
 
     async def run(session: AsyncSession) -> str:
@@ -76,7 +84,7 @@ def make_collections_job(
         interval = max(config.scheduler.collections_hours * 3600, 1)
         run_index = int(time.time() // interval)
         result = await reconcile_libraries(
-            session, server, config, http, run_index=run_index
+            session, server, config, http, run_index=run_index, summaries=summaries,
         )
         # Raised, not returned, because ``last_status`` is decided by whether
         # this coroutine raised (scheduler/core.py). Returning the summary of a

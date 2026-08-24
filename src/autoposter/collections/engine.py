@@ -144,11 +144,13 @@ async def run_definitions(
     dry_run: bool | None = None,
     run_index: int = 0,
     now: datetime | None = None,
+    summaries=None,
 ) -> list[str]:
     """``run_library``'s action strings, for callers that want only those."""
     run = await run_library(
         session, section, library, library_type, definitions, config,
         http=http, label=label, dry_run=dry_run, run_index=run_index, now=now,
+        summaries=summaries,
     )
     return run.actions
 
@@ -167,6 +169,7 @@ async def run_library(
     now: datetime | None = None,
     sweep: bool = False,
     preview: bool = False,
+    summaries=None,
 ) -> LibraryRun:
     """Reconcile every definition that applies to this library, in order.
 
@@ -181,6 +184,10 @@ async def run_library(
 
     ``preview`` fills the per-definition counts, at the cost of a member read
     per collection -- see ``DefinitionResult``.
+
+    ``summaries`` is the TMDB facts client a ``tmdb_summary:`` definition
+    borrows its summary through (roadmap row 30). Optional, and its absence is
+    reported rather than raised: every other part of a pass works without it.
     """
     label = config.collections.ownership_label if label is None else label
     if dry_run is None:
@@ -236,7 +243,7 @@ async def run_library(
                 SmartContext(
                     session=session, section=section, library=library,
                     library_type=library_type, label=label, config=config,
-                    http=http, dry_run=dry_run,
+                    http=http, dry_run=dry_run, definition=definition,
                 )
             )
             actions += smart_actions
@@ -268,6 +275,7 @@ async def run_library(
                 session, section, library, unit, REGISTRY[unit.builder], context(unit),
                 label=label, dry_run=dry_run, http=http, config=config,
                 owned_index=owned_index, listing=listing, preview=preview,
+                summaries=summaries,
             )
             actions += result.actions
             results.append(result)
@@ -311,6 +319,7 @@ async def _run_one(
     owned_index,
     listing,
     preview: bool = False,
+    summaries=None,
 ) -> DefinitionResult:
     """One collection: build, resolve, cap, apply."""
     outcome = DefinitionResult(title=definition.title, library=library)
@@ -358,9 +367,13 @@ async def _run_one(
             adding, removing = member_diff(collection, items, definition.sync_mode)
             outcome.adding, outcome.removing = len(adding), len(removing)
 
-    outcome.actions = await reconcile_list_collection(
+    summary, summary_action = await _summary_for(definition, result, summaries)
+    if summary_action:
+        outcome.actions.append(summary_action)
+
+    outcome.actions += await reconcile_list_collection(
         session, section, library, definition.title, items, label,
-        summary=definition.summary or result.summary,
+        summary=summary,
         sort=definition.sort,
         dry_run=dry_run,
         existing=listing(),
@@ -373,8 +386,58 @@ async def _run_one(
         http=http,
         config=config,
         sync_mode=definition.sync_mode,
+        settings=definition,
     )
     return outcome
+
+
+async def _summary_for(
+    definition: CollectionDefinition, result: BuilderResult, summaries
+) -> tuple[str | None, str | None]:
+    """The summary this collection should carry, and anything to report.
+
+    Three sources, in order: the one written in the config, the one TMDB holds
+    for the collection the definition names (roadmap row 30), and the one the
+    builder derived. The static summary wins because it is an explicit choice;
+    a pull that silently overrode it would be a setting that reads as applied
+    and is not.
+
+    The pull is contained here rather than by the caller's builder wrapper: a
+    summary is cosmetic, and a TMDB outage must leave the collection's
+    membership reconciled, not the whole definition failed. So a failure means
+    the summary falls back to the builder's (usually None) and the pass says
+    so -- and nothing derived from the exception reaches the action string,
+    because a provider error carries the URL it failed on.
+    """
+    if definition.summary is not None or definition.tmdb_summary is None:
+        return definition.summary or result.summary, None
+
+    if summaries is None:
+        # No TMDB client on this instance -- the preview endpoint on a replica
+        # without the background lifespan, and the direct callers in tests.
+        return result.summary, (
+            "%r asked for its summary from TMDB, but this instance has no TMDB "
+            "client; the summary is unchanged" % definition.title
+        )
+
+    try:
+        pulled = await summaries.collection_summary(definition.tmdb_summary)
+    except Exception:
+        logger.exception(
+            "could not read the TMDB summary for %r (collection %d)",
+            definition.title, definition.tmdb_summary,
+        )
+        return result.summary, (
+            "could not read the TMDB summary for %r; the summary is unchanged"
+            % definition.title
+        )
+
+    if not pulled:
+        return result.summary, (
+            "TMDB has no summary for the collection %r names"
+            % definition.title
+        )
+    return pulled, None
 
 
 async def _sweep(

@@ -172,3 +172,61 @@ async def test_without_a_cache_every_lookup_hits_the_api():
         await client.season_episode_ratings(95396, 2)
 
     assert len(calls) == 2
+
+
+# --- the collection overview a ``tmdb_summary:`` definition borrows ---------
+
+
+async def test_a_collection_summary_is_read_from_the_overview():
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"id": 10, "overview": "The whole saga."})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        summary = await TMDBFactsClient("tok", http).collection_summary(10)
+
+    assert summary == "The whole saga."
+    assert calls == ["https://api.themoviedb.org/3/collection/10"]
+
+
+@pytest.mark.parametrize("payload", [{"id": 10}, {"id": 10, "overview": ""}])
+async def test_a_collection_with_no_overview_has_no_summary_to_borrow(payload):
+    """TMDB writes an empty string, not a missing key, for a collection nobody
+    has described. Both mean "nothing to borrow" -- and the caller must leave
+    the collection's own summary alone rather than blank it."""
+    def handler(request):
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        assert await TMDBFactsClient("tok", http).collection_summary(10) is None
+
+
+async def test_a_collection_tmdb_does_not_know_has_no_summary():
+    def handler(request):
+        return httpx.Response(404, json={"status_message": "not found"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        assert await TMDBFactsClient("tok", http).collection_summary(999) is None
+
+
+async def test_a_collection_summary_is_served_from_the_cache(session):
+    """One request per TTL. A pass over two libraries reconciles the same
+    definition twice, and the summary is the same both times."""
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"id": 10, "overview": "The whole saga."})
+
+    from autoposter.providers.cache import ProviderCache
+
+    cache = ProviderCache(session_factory_for(session))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = TMDBFactsClient("tok", http, cache=cache, cache_ttl_seconds=3600)
+        first = await client.collection_summary(10)
+        second = await client.collection_summary(10)
+
+    assert first == second == "The whole saga."
+    assert len(calls) == 1

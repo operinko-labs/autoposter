@@ -117,8 +117,15 @@ class SmartContext:
     rather than a second builder ecosystem.
 
     A smart builder returns action strings from ``apply`` and ignores the
-    membership knobs -- ``limit`` and ``sync_mode`` are rejected on its
-    definitions at config load rather than silently doing nothing.
+    membership knobs -- ``limit``, ``sync_mode``, ``item_label`` and
+    ``tmdb_summary`` are rejected on its definitions at config load rather than
+    silently doing nothing.
+
+    ``definition`` is the definition itself, which a smart builder needs (and a
+    list builder does not) because it applies its own collections: the
+    per-definition collection settings the engine hands to
+    ``reconcile_list_collection`` have to reach the smart reconciler the same
+    way. None for a direct caller that has no definition.
     """
 
     session: AsyncSession
@@ -129,6 +136,7 @@ class SmartContext:
     config: Any
     http: httpx.AsyncClient | None = None
     dry_run: bool = True
+    definition: Any = None
 
 
 @runtime_checkable

@@ -41,6 +41,10 @@ def test_library_section_methods_take_the_parameters_we_pass(name, required):
         ("removeItems", ["items"]),
         ("moveItem", ["item", "after"]),
         ("sortUpdate", ["sort"]),
+        # Phase 8a ride-alongs: the display mode (row 104) and the managed hub
+        # a collection is promoted into (row 68).
+        ("modeUpdate", ["mode"]),
+        ("visibility", []),
     ],
 )
 def test_collection_methods_take_the_parameters_we_pass(name, required):
@@ -148,7 +152,7 @@ def test_sort_update_accepts_the_two_orders_this_phase_uses():
     assert "'custom'" in source and "'release'" in source
 
 
-# --- The raw POST used to create an empty collection (reconcile._create_separator) ---
+# --- The raw POST used to create an empty collection (reconcile.create_blank_collection) ---
 #
 # ``section.createCollection`` raises ``BadRequest`` given no items, so the
 # separator collection (permanently empty by design) cannot go through it.
@@ -241,6 +245,105 @@ def test_plex_server_exposes_the_put_the_item_level_summary_write_uses():
     source = inspect.getsource(PlexServer.__init__)
     assert "self._session = session or requests.Session()" in source
     assert callable(requests.Session().put)
+
+
+# --- Phase 8a's ride-along settings (rows 68, 69, 104) ---------------------
+
+
+def test_the_collection_mode_names_we_accept_are_the_ones_plexapi_maps():
+    """``config.CollectionDefinition.collection_mode`` and
+    ``reconcile.COLLECTION_MODES`` both spell out plexapi's four mode names and
+    their integer values -- the integers so a no-op mode write can be skipped
+    by comparing against ``Collection.collectionMode``, which ``_loadData``
+    casts to int. Both copies are pinned against plexapi's own mapping: a
+    renamed mode would otherwise be a ``BadRequest`` mid-pass against a live
+    server, and a re-numbered one would silently write the wrong mode."""
+    from autoposter.collections.reconcile import COLLECTION_MODES
+
+    source = inspect.getsource(Collection.modeUpdate)
+    for name, value in COLLECTION_MODES.items():
+        assert "'%s': %d" % (name, value) in source, (
+            "plexapi no longer maps the collection mode %r to %d" % (name, value)
+        )
+    assert "editAdvanced(collectionMode=" in source
+    assert "self.collectionMode = utils.cast(int" in inspect.getsource(
+        Collection._loadData
+    ), "collectionMode is no longer the int our skip-if-unchanged compares against"
+
+
+def test_collection_visibility_returns_a_managed_hub():
+    """Row 68 goes through ``collection.visibility()``, which builds the hub
+    even for a collection that has never been promoted (``_promoted = False``)
+    -- that unpromoted case is the one every first pin/unpin takes, and
+    ``updateVisibility`` branches on it to POST rather than PUT."""
+    from plexapi.library import ManagedHub
+
+    assert callable(Collection.visibility)
+    source = inspect.getsource(Collection.visibility)
+    assert "ManagedHub" in source
+    assert "_promoted = False" in source, (
+        "visibility() no longer synthesises a hub for an unpromoted collection"
+    )
+    assert "metadataItemId" in inspect.getsource(ManagedHub.updateVisibility), (
+        "updateVisibility no longer handles the not-yet-promoted collection"
+    )
+
+
+@pytest.mark.parametrize(
+    "name,required",
+    [
+        ("updateVisibility", ["recommended", "home", "shared"]),
+        ("move", ["after"]),
+    ],
+)
+def test_managed_hub_methods_take_the_parameters_we_pass(name, required):
+    """The three visibility flags map one-to-one onto
+    ``visible_library``/``visible_home``/``visible_shared``, and ``move`` is
+    how ``hub_priority`` is expressed -- plexapi has no move-to-index."""
+    from plexapi.library import ManagedHub
+
+    params = inspect.signature(getattr(ManagedHub, name)).parameters
+    for parameter in required:
+        assert parameter in params, "ManagedHub.%s lost its %r parameter" % (
+            name, parameter
+        )
+
+
+def test_the_hub_ordering_is_read_from_the_section():
+    """``hub_priority`` is an index, and turning an index into "move after
+    this hub" needs the library's current hub order. ``managedHubs`` is that
+    listing, and the identifier is what tells the hub being moved apart from
+    the rest of it."""
+    from plexapi.library import ManagedHub
+
+    assert callable(LibrarySection.managedHubs)
+    source = inspect.getsource(LibrarySection.managedHubs)
+    assert "/manage" in source and "ManagedHub" in source
+    assert "self.identifier = data.attrib.get('identifier')" in inspect.getsource(
+        ManagedHub._loadData
+    )
+
+
+def test_library_items_can_be_labelled_the_same_way_collections_are():
+    """Row 69 labels the collection's resolved MEMBERS, which are Movie and
+    Show objects rather than Collections. They reach ``addLabel`` through the
+    same ``LabelMixin``, so the member loop needs no per-type special case --
+    and ``removeLabel`` exists on them too, which is exactly what that loop
+    must never call."""
+    from plexapi.mixins import LabelMixin
+    from plexapi.video import Movie, Show
+
+    for cls in (Movie, Show, Collection):
+        assert issubclass(cls, LabelMixin), "%s no longer has the label mixin" % cls
+        assert "labels" in inspect.signature(cls.addLabel).parameters
+
+
+def test_library_section_collections_accepts_the_label_filter_ops_use():
+    """``mass_collection_mode`` narrows to our own collections by asking Plex
+    for the labelled ones, the same server-side filter the leftovers report
+    uses -- pinned above; this asserts the ops endpoint's own call shape."""
+    params = inspect.signature(LibrarySection.collections).parameters
+    assert "kwargs" in params
 
 
 def test_library_section_collection_fetches_by_title():

@@ -211,7 +211,7 @@ async def test_the_cli_exits_non_zero_when_a_library_failed(monkeypatch):
     """The exit code itself, not just the predicate behind it."""
     import autoposter.collections.__main__ as cli
 
-    async def fake_reconcile(session, server, config, http):
+    async def fake_reconcile(session, server, config, http, summaries=None):
         return ReconcileResult(libraries=[
             LibraryOutcome(library="Movies", actions=["a", "b", "c"]),
             LibraryOutcome(library="TV Shows", error="simulated"),
@@ -227,7 +227,7 @@ async def test_the_cli_exits_non_zero_when_a_library_failed(monkeypatch):
 async def test_the_cli_exits_zero_when_every_library_succeeded(monkeypatch):
     import autoposter.collections.__main__ as cli
 
-    async def fake_reconcile(session, server, config, http):
+    async def fake_reconcile(session, server, config, http, summaries=None):
         return ReconcileResult(libraries=[
             LibraryOutcome(library="Movies", actions=["a", "b", "c"]),
             LibraryOutcome(library="TV Shows"),
@@ -258,13 +258,19 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile):
         return SimpleNamespace(
             collections=SimpleNamespace(enabled=True),
             plex=SimpleNamespace(url="http://plex.invalid"),
+            # The CLI builds its own cache-fronted TMDB facts client, for the
+            # ``tmdb_summary:`` definitions a pass may carry -- so the stub
+            # config needs the section that decides whether to cache.
+            providers=SimpleNamespace(cache_ttl_seconds=0),
         )
 
     monkeypatch.setattr(cli, "load_effective_config", fake_load_effective_config)
     monkeypatch.setattr(
         cli, "Secrets",
         SimpleNamespace(
-            from_env=lambda: SimpleNamespace(plex_token="t", database_url="postgresql://x")
+            from_env=lambda: SimpleNamespace(
+                plex_token="t", tmdb_token="t", database_url="postgresql://x"
+            )
         ),
     )
     monkeypatch.setattr(cli, "PlexServer", lambda url, token: object())

@@ -160,3 +160,19 @@ class TMDBFactsClient:
         """One request covers every episode of the season."""
         payload = await self._get(f"/tv/{tmdb_id}/season/{season_number}")
         return parse_season_episode_ratings(payload) if payload else {}
+
+    async def collection_summary(self, tmdb_id: int) -> str | None:
+        """A TMDB collection's overview, for a ``tmdb_summary:`` definition.
+
+        The one thing the collections engine asks TMDB for (roadmap row 30).
+        ``None`` for an id TMDB does not know (``fetch_json`` returns None on
+        404) and for a collection whose overview is the empty string TMDB uses
+        when nobody has written one -- both mean "no summary to borrow", and
+        the caller's job is to leave the collection's own summary alone rather
+        than blank it.
+        """
+        payload = await self._get(f"/collection/{tmdb_id}")
+        if not payload:
+            return None
+        overview = payload.get("overview")
+        return overview if isinstance(overview, str) and overview else None

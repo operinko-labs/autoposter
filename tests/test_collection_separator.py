@@ -254,7 +254,7 @@ async def test_no_members_are_ever_added(session):
     """The one rule that must never break: this code path cannot populate
     the collection, no matter what state it starts or ends in.
 
-    What this does *not* prove: that the raw POST in ``_create_separator``
+    What this does *not* prove: that the raw POST in ``create_blank_collection``
     produces an empty collection on a real Plex server. The fake never has
     ``addItems`` called on it by any code path, so this assertion cannot
     fail -- it is a regression pin against a future edit adding one, not

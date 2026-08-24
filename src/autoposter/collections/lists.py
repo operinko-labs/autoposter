@@ -17,19 +17,64 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections.posters import apply_poster, posters_enabled
-from autoposter.collections.reconcile import _edit_collection_summary, resolve_collision
+from autoposter.collections.reconcile import (
+    _edit_collection_summary,
+    apply_collection_settings,
+    resolve_collision,
+)
 from autoposter.db.models import ManagedCollection
 
 logger = logging.getLogger(__name__)
 
+# The per-definition settings that ride along on a collection, and the value
+# each has when the operator has not asked for it. Order is fixed because it
+# feeds a hash; the defaults are what keep that hash unchanged for every
+# definition that sets none of them (see ``_settings_parts``).
+_RIDE_ALONG_DEFAULTS = (
+    ("labels", []),
+    ("label_sync", False),
+    ("item_label", []),
+    ("sort_title", None),
+    ("collection_mode", None),
+    ("visible_library", None),
+    ("visible_home", None),
+    ("visible_shared", None),
+    ("hub_priority", None),
+)
 
-def _members_hash(items: list, summary: str | None, sync_mode: str = "sync") -> str:
+
+def _settings_parts(settings) -> list[str]:
+    """The ride-along settings' contribution to the members hash.
+
+    They have to be in it. The hash is what a pass short-circuits on, so a
+    definition whose *only* edit was a new label or a new sort title would
+    otherwise be recognised as already current and the edit would never be
+    applied -- a setting that reads as saved and silently is not.
+
+    A definition that sets none of them contributes nothing, exactly as
+    ``sync`` does for the mode: that is what keeps every hash already stored
+    matching, instead of this change re-reconciling every managed collection
+    in the library to write nothing.
+    """
+    if settings is None:
+        return []
+    return [
+        "%s=%r" % (name, value)
+        for name, default in _RIDE_ALONG_DEFAULTS
+        if (value := getattr(settings, name, default)) != default
+    ]
+
+
+def _members_hash(
+    items: list, summary: str | None, sync_mode: str = "sync", settings=None
+) -> str:
     """The desired state, hashed -- what an unchanged pass short-circuits on.
 
     The mode is part of it, because the same list means two different desired
     states under the two modes: switching a definition to sync has to remove
     members append was keeping, and a hash blind to the mode would report the
-    membership as already correct and never do it.
+    membership as already correct and never do it. The ride-along settings are
+    in it for the same reason -- see ``_settings_parts``.
 
     ``sync`` contributes nothing to the payload, so every hash already stored
     still matches: the mode is the shipped behaviour, and making the upgrade
@@ -40,8 +85,27 @@ def _members_hash(items: list, summary: str | None, sync_mode: str = "sync") -> 
         summary or "",
         *[str(i.ratingKey) for i in items],
         *([] if sync_mode == "sync" else [sync_mode]),
+        *_settings_parts(settings),
     ])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _label_members(items: list, settings, title: str) -> list[str]:
+    """Row 69: the definition's ``item_label`` on every resolved member.
+
+    Only ever added, and only to the items the source names *now*. A member
+    that left the collection is not a member, so taking the label off it would
+    be a write against an item this definition no longer describes -- and the
+    label may be one the operator applies from elsewhere too. Sync semantics
+    stop at the collection object (row 29); an item is not ours to own.
+    """
+    if settings is None or not settings.item_label:
+        return []
+    tags = list(dict.fromkeys(settings.item_label))
+    for item in items:
+        for tag in tags:
+            item.addLabel(tag)
+    return ["labelled %d member(s) of %r: %s" % (len(items), title, ", ".join(tags))]
 
 
 def member_diff(collection, items: list, sync_mode: str = "sync") -> tuple[list, list]:
@@ -115,6 +179,7 @@ async def reconcile_list_collection(
     http: httpx.AsyncClient | None = None,
     config=None,
     sync_mode: str = "sync",
+    settings=None,
 ) -> list[str]:
     """Bring one list collection in line with ``items`` (already in source order).
 
@@ -128,6 +193,11 @@ async def reconcile_list_collection(
     ``append`` (``items`` are added; nothing is ever removed and nothing
     already there is moved). See ``member_diff`` and ``_enforce_order``'s
     caller below for what each half of that means.
+
+    ``settings`` is the ``CollectionDefinition`` this collection is built from,
+    and carries everything applied *besides* membership -- labels, sort title,
+    display mode, hub visibility, member labels. Optional: the direct callers
+    that predate definitions pass none and get exactly what they always got.
     """
     if not items:
         return [
@@ -156,7 +226,7 @@ async def reconcile_list_collection(
         )
     ).scalar_one_or_none()
 
-    wanted = _members_hash(items, summary, sync_mode)
+    wanted = _members_hash(items, summary, sync_mode, settings)
     # ``key`` is checked alongside ``kind``: one without the other would
     # interpolate the string "None" into a poster URL.
     posters_on = (
@@ -242,6 +312,17 @@ async def reconcile_list_collection(
                     "updated %r: +%d -%d, %d move(s)"
                     % (title, added_count, removed_count, moves)
                 )
+
+        # Below both write branches and skipped entirely under dry_run: every
+        # step of this writes to Plex. It runs on an update as well as a create
+        # because the settings are in the hash -- reaching here at all means
+        # either the membership or one of them changed, and which one it was is
+        # not worth a second hash to learn.
+        if not dry_run and collection is not None:
+            actions += apply_collection_settings(
+                section, collection, settings, label, config
+            )
+            actions += _label_members(items, settings, title)
 
         if not dry_run:
             if record is None:

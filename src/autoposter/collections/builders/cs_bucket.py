@@ -8,7 +8,10 @@ service manages, which is what the leftovers report depends on.
 
 It is deliberately a thin wrapper. Nothing about the bucket derivation, the
 ownership rules or the separator moved: ``reconcile_content_ratings`` is called
-with exactly the arguments ``reconcile_libraries`` used to pass it.
+with exactly the arguments ``reconcile_libraries`` used to pass it, plus the
+definition itself -- which carries the per-definition collection settings
+(labels, sort title, display mode, hub visibility) the reconciler applies to
+each bucket it creates or updates.
 """
 from autoposter.collections.buckets import derive_buckets
 from autoposter.collections.builders.base import SmartContext
@@ -37,6 +40,7 @@ class CsBucketBuilder:
             protect_labels=ctx.config.collections.protect_labels,
             http=ctx.http,
             config=ctx.config,
+            settings=ctx.definition,
         )
 
     def titles(self, library_type: str, config) -> set[str]:

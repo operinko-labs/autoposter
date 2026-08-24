@@ -197,6 +197,7 @@ async def reconcile_libraries(
     config: Config,
     http: httpx.AsyncClient,
     run_index: int = 0,
+    summaries=None,
 ) -> ReconcileResult:
     """Reconcile every configured library, committing after each one.
 
@@ -211,6 +212,11 @@ async def reconcile_libraries(
     ``run_index`` is which pass this is, for definitions gated to every Nth --
     the scheduler derives it (``scheduler/jobs.py``). A hand-run pass leaves it
     at 0, which runs everything: someone who ran the CLI meant to.
+
+    ``summaries`` is the TMDB facts client a ``tmdb_summary:`` definition
+    borrows its summary through. Optional everywhere: without it such a
+    definition reports that it could not, and every other definition is
+    unaffected.
     """
     result = ReconcileResult()
     for name in config.collections.libraries:
@@ -225,6 +231,7 @@ async def reconcile_libraries(
                 session, section, name, library_type,
                 library_definitions(config, library_type),
                 config, http=http, run_index=run_index, sweep=True,
+                summaries=summaries,
             )
             actions = run.actions
 

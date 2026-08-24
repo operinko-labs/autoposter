@@ -44,7 +44,7 @@ from autoposter.api.candidates import (
     PICK_CONTENT_TYPES, PICK_MAX_BYTES, DownloadRefused, _clear_stale_logo_overrides,
     _install, _item_for_kind, _prepare_jpeg, _verify_image,
 )
-from autoposter.collections.posters import poster_override_target
+from autoposter.collections.posters import PosterPathRefused, poster_override_target
 from autoposter.db.models import EventLog, ManagedCollection, MediaItem, Render
 from autoposter.db.models import Session as SessionModel
 from autoposter.net.guard import BodyRefused, FetchRefused, TargetRefused, guarded_download
@@ -373,7 +373,16 @@ async def install_collection_poster(
                 status_code=_unusable_status(body.source), detail=str(exc)
             ) from None
 
-        target = poster_override_target(config, library, title)
+        try:
+            target = poster_override_target(config, library, title)
+        except PosterPathRefused as exc:
+            # The title is a stored value, not this request's input, so there
+            # is nothing reflected by naming it -- but the same rule as
+            # ``_staged_source`` applies to the path itself, which is not
+            # repeated. 422: the request names a collection this endpoint
+            # cannot write a poster for.
+            logger.warning("refused the poster path for %r/%r: %s", library, title, exc)
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         try:
             # _install creates the parent: a collection that has never had a
             # local poster has no directory under assets_root at all.

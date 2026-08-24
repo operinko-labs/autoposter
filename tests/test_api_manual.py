@@ -863,3 +863,24 @@ async def test_the_collection_endpoint_does_not_upload_to_plex(
     ).scalar_one()
     await session.refresh(collection)
     assert collection.poster_sha256 is None
+
+
+async def test_a_collection_title_that_escapes_the_assets_root_is_refused(
+    client, auth_headers, session, assets_root, transport
+):
+    """Row 124. ``ManagedCollection.title`` is interpolated into the write
+    path, and titles come from operator config and from collections adopted
+    out of Plex -- so a title carrying ``..`` would steer this endpoint's
+    write (``_install`` creates parents) outside ``assets_root``. Refused with
+    422 and nothing written, the same posture ``_mount_source`` takes on the
+    read side."""
+    collection_id = await _collection(session, title="../../escaped")
+
+    response = await _set_poster(client, collection_id, auth_headers)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "the title steers its path outside the assets root"
+    )
+    assert not (assets_root.parent / "escaped").exists()
+    assert list(assets_root.rglob("poster.jpg")) == []

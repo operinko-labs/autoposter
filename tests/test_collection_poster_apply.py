@@ -381,3 +381,40 @@ def test_a_failing_write_closes_the_handle_before_the_file_is_unlinked(tmp_path,
         _write_and_upload(_FakeCollection(), b"poster-bytes")
 
     assert handle.closed is True
+
+
+async def test_a_title_that_escapes_the_assets_root_refuses_the_whole_step(
+    tmp_path, config_factory, session
+):
+    """Row 124. A managed title is interpolated into the poster path, and a
+    title carrying ``..`` steers it outside ``assets_root``. The poster step
+    refuses that collection outright -- it does not fall through to the
+    hosted default, because the refusal is about the collection's identity
+    rather than about this one source being unusable -- and nothing is
+    fetched, written or uploaded."""
+    root = tmp_path / "assets"
+    root.mkdir()
+    config = config_factory(assets_root=str(root), library_folders=True)
+    record = await _record(session)
+    record.title = "../../escaped"
+    await session.flush()
+    collection = _FakeCollection()
+    fetches: list[str] = []
+
+    async def handler(request):
+        fetches.append(str(request.url))
+        return httpx.Response(200, content=_jpeg_bytes())
+
+    async with _client(handler) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY, KIND, KEY,
+            dry_run=False,
+        )
+
+    assert message == (
+        "refused a poster for '../../escaped': the title steers its path "
+        "outside the assets root"
+    )
+    assert fetches == [], "a refused collection must not reach the network"
+    assert collection.uploaded_paths == []
+    assert record.poster_sha256 is None

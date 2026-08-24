@@ -26,6 +26,8 @@ from autoposter.collections.service import reconcile_libraries
 from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
+from autoposter.facts.tmdb_facts import TMDBFactsClient
+from autoposter.providers.cache import ProviderCache
 
 CONFIG_PATH = Path(os.environ.get("AUTOPOSTER_CONFIG", "/config/autoposter.yaml"))
 
@@ -52,7 +54,21 @@ async def main() -> None:
 
             server = PlexServer(config.plex.url, secrets.plex_token)
             async with httpx.AsyncClient() as http:
-                result = await reconcile_libraries(session, server, config, http)
+                # The same cache-fronted client the API process uses, built
+                # here because this process has no lifespan to build it: a
+                # ``tmdb_summary:`` definition run from the CLI must borrow its
+                # summary through the provider cache, not around it.
+                cache = (
+                    ProviderCache(session_factory)
+                    if config.providers.cache_ttl_seconds > 0 else None
+                )
+                summaries = TMDBFactsClient(
+                    secrets.tmdb_token, http, cache=cache,
+                    cache_ttl_seconds=config.providers.cache_ttl_seconds,
+                )
+                result = await reconcile_libraries(
+                    session, server, config, http, summaries=summaries
+                )
             logger.info(result.summary)
     finally:
         await engine.dispose()

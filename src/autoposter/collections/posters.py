@@ -39,6 +39,15 @@ DEFAULT_IMAGES_BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Ima
 _LOCAL_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
 
 
+class PosterPathRefused(Exception):
+    """A collection's poster path does not land inside ``assets_root``.
+
+    Raised rather than returned, and raised from the one place the layout is
+    spelled (``_poster_candidates``), so neither the reconciler's read nor the
+    manual endpoint's write can be the caller that forgot to check.
+    """
+
+
 def hosted_poster_url(kind: str, key: str) -> str | None:
     """The default poster URL for a collection of the given kind, or ``None``.
 
@@ -73,12 +82,36 @@ def _poster_candidates(config: Config, library: str, title: str) -> tuple[Path, 
     failure mode of two spellings is a file written successfully and then
     never looked at, which is what ``manual_override_target`` exists to
     prevent on the item side.
+
+    ``library`` and ``title`` are interpolated verbatim, and neither is a
+    value this service chose: a title comes from operator config or from a
+    collection adopted out of Plex, where ``../`` and a leading ``/`` are both
+    legal characters. So every candidate is contained here (roadmap row 124),
+    by the double-``realpath`` idiom ``api/manual.py`` uses for the manual
+    assets mount -- both sides resolved before being compared, so a directory
+    inside the root that symlinks out of it is caught on its target rather
+    than waved through by a lexical check. Joining an absolute path onto the
+    root yields the absolute path (pathlib's rule), so ``/etc`` needs no case
+    of its own; it simply resolves outside.
+
+    The candidates are returned unresolved. The comparison is what needed the
+    realpath, not the value -- and callers compare the returned path against
+    the layout they expect.
     """
     root = Path(config.assets_root)
     if config.library_folders:
         folder = root / library / title
-        return tuple(folder / f"poster.{ext}" for ext in _LOCAL_EXTENSIONS)
-    return tuple(root / f"{title}.{ext}" for ext in _LOCAL_EXTENSIONS)
+        candidates = tuple(folder / f"poster.{ext}" for ext in _LOCAL_EXTENSIONS)
+    else:
+        candidates = tuple(root / f"{title}.{ext}" for ext in _LOCAL_EXTENSIONS)
+
+    real_root = Path(os.path.realpath(root))
+    for candidate in candidates:
+        if not Path(os.path.realpath(candidate)).is_relative_to(real_root):
+            raise PosterPathRefused(
+                "the title steers its path outside the assets root"
+            )
+    return candidates
 
 
 def poster_override_target(config: Config, library: str, title: str) -> Path:
@@ -88,6 +121,9 @@ def poster_override_target(config: Config, library: str, title: str) -> Path:
     load-bearing rather than incidental: the endpoint transcodes to JPEG, and
     because ``jpg`` is probed first a poster left behind in another format by
     an earlier hand-placement cannot shadow the new file.
+
+    Raises ``PosterPathRefused`` when the title steers the write outside
+    ``assets_root``; the caller turns that into a refusal rather than a write.
     """
     return _poster_candidates(config, library, title)[0]
 
@@ -101,6 +137,11 @@ def local_poster_path(config: Config, library: str, title: str) -> Path | None:
     ``<assets_root>/<title>.<ext>``. This is how ``prioritize_assets: true``
     worked in the tool being replaced: a file here overrides the hosted
     default, so it must never be silently skipped in favour of a download.
+
+    Raises ``PosterPathRefused`` for a title that escapes ``assets_root``:
+    "no local poster" and "this collection's path is not ours to read" are
+    different answers, and returning None for the second would let the hosted
+    default be applied to a collection whose identity is already suspect.
     """
     for candidate in _poster_candidates(config, library, title):
         if candidate.is_file():
@@ -222,7 +263,15 @@ async def apply_poster(
     """
     data: bytes | None = None
     source = ""
-    local = local_poster_path(config, library, record.title)
+    try:
+        local = local_poster_path(config, library, record.title)
+    except PosterPathRefused as exc:
+        # Row 124. Refused rather than falling through to the hosted default:
+        # the objection is to the collection's title, which the local branch
+        # and the manual endpoint's write both interpolate, so a collection
+        # that fails it has no poster path at all rather than an unusable one.
+        logger.warning("refused a poster path for %r: %s", record.title, exc)
+        return "refused a poster for %r: %s" % (record.title, exc)
     if local is not None:
         candidate = local.read_bytes()
         if _is_image(candidate):

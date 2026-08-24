@@ -167,8 +167,160 @@ def resolve_collision(
     return True, "claimed %r (was labelled %r)" % (collection.title, prior)
 
 
-def _create_separator(section, libtype: str):
-    """Create the empty ``Ratings Collections`` divider via a raw POST.
+# plexapi's own mapping, reproduced so a no-op mode write can be skipped by
+# comparing against ``Collection.collectionMode`` (an int). Pinned against
+# ``Collection.modeUpdate``'s source in the plexapi contract test, so a rename
+# upstream fails here rather than writing the wrong mode to a live server.
+COLLECTION_MODES = {"default": -1, "hide": 0, "hideItems": 1, "showItems": 2}
+
+
+def _apply_labels(collection, definition, label: str, config) -> list[str]:
+    """Row 29: the definition's labels on the collection object.
+
+    Additive by default. ``label_sync`` makes the definition's labels plus the
+    ownership label authoritative and removes the rest -- except a protected or
+    ``adopt_from`` label, which this never strips: those mark another tool's
+    claim, and giving one up is what ``adopt_removes_prior_label`` decides
+    deliberately and once. A sync that quietly undid the label
+    ``claim_ownership`` had just been told to keep would be the same bug in
+    the opposite direction.
+    """
+    wanted = list(dict.fromkeys(definition.labels))
+    if not wanted and not definition.label_sync:
+        return []
+
+    load_labels(collection)
+    current = {tag.tag for tag in (getattr(collection, "labels", None) or [])}
+    adding = [tag for tag in wanted if tag not in current]
+    removing: list[str] = []
+    if definition.label_sync:
+        collections = getattr(config, "collections", None)
+        keep = {
+            label, *wanted,
+            *(getattr(collections, "adopt_from", None) or []),
+            *(getattr(collections, "protect_labels", None) or []),
+        }
+        removing = sorted(current - keep)
+
+    for tag in adding:
+        collection.addLabel(tag)
+    for tag in removing:
+        collection.removeLabel(tag)
+
+    if not adding and not removing:
+        return []
+    return ["labelled %r: +%d -%d" % (collection.title, len(adding), len(removing))]
+
+
+def _apply_sort_title(collection, definition) -> list[str]:
+    """Row 104's sort title, on create and on every later edit of it.
+
+    ``editSortTitle`` is the one collection edit route proven working against
+    the live server (see ``_edit_collection_summary``), so it is used as-is.
+    """
+    wanted = definition.sort_title
+    if wanted is None or getattr(collection, "titleSort", None) == wanted:
+        return []
+    collection.editSortTitle(wanted)
+    return ["set the sort title of %r to %r" % (collection.title, wanted)]
+
+
+def _apply_mode(collection, definition) -> list[str]:
+    """Row 104's display mode."""
+    wanted = definition.collection_mode
+    if wanted is None or getattr(collection, "collectionMode", None) == COLLECTION_MODES[wanted]:
+        return []
+    collection.modeUpdate(mode=wanted)
+    return ["set the display mode of %r to %r" % (collection.title, wanted)]
+
+
+def _apply_hub(section, collection, definition) -> list[str]:
+    """Row 68: pin the collection to Plex's recommendation hubs.
+
+    Contained, unlike the writes above: promoting a collection to a hub is a
+    Plex Pass feature, so on a server without one every call here fails and
+    that must cost the definition an action string rather than the library its
+    pass. Nothing is read back from the exception -- the same rule the engine
+    applies to a builder's.
+
+    ``None`` leaves a flag alone: "not visible on the home page" and "this
+    definition does not manage the home page" are different requests, and only
+    the second can be expressed by omitting the setting.
+    """
+    flags = (definition.visible_library, definition.visible_home, definition.visible_shared)
+    if all(flag is None for flag in flags) and definition.hub_priority is None:
+        return []
+
+    actions: list[str] = []
+    try:
+        hub = collection.visibility()
+        if any(flag is not None for flag in flags):
+            hub = hub.updateVisibility(
+                recommended=definition.visible_library,
+                home=definition.visible_home,
+                shared=definition.visible_shared,
+            )
+            actions.append(
+                "set the hub visibility of %r (library=%s, home=%s, shared=%s)"
+                % (collection.title, *flags)
+            )
+        if definition.hub_priority is not None:
+            actions += _move_hub(section, hub, definition.hub_priority, collection.title)
+    except Exception:
+        logger.exception(
+            "could not set the hub visibility of %r; a Plex Pass is required",
+            collection.title,
+        )
+        return [
+            "could not set the hub visibility of %r: see logs (a Plex Pass is "
+            "required for hub pinning)" % collection.title
+        ]
+    return actions
+
+
+def _move_hub(section, hub, priority: int, title: str) -> list[str]:
+    """Put ``hub`` at ``priority`` among the library's managed recommendations.
+
+    plexapi moves a hub *after* another one rather than to an index, so the
+    index is turned into the hub it should follow -- and the hub being moved is
+    taken out of that listing first, or a hub already at position 3 would be
+    asked to move after itself. A priority past the end lands it last, which is
+    what an operator asking for "near the bottom" of a list whose length they
+    cannot see meant.
+    """
+    others = [
+        other for other in section.managedHubs()
+        if getattr(other, "identifier", None) != hub.identifier
+    ]
+    index = min(priority, len(others))
+    hub.move(after=others[index - 1] if index else None)
+    return ["moved %r to position %d in the managed recommendations" % (title, index)]
+
+
+def apply_collection_settings(section, collection, definition, label: str, config) -> list[str]:
+    """Every per-definition setting that lives on the collection *object*.
+
+    Shared by both reconcilers -- the list collections in ``lists.py`` and the
+    Common Sense family here -- so a definition means the same thing whichever
+    kind of collection it builds, and so the ownership and containment rules
+    cannot drift between two copies of this.
+
+    Never called under ``dry_run``: every step writes to Plex. ``definition``
+    is None for the direct callers that predate definitions (most tests, and
+    the separator, which owns its own sort title).
+    """
+    if definition is None:
+        return []
+    return [
+        *_apply_labels(collection, definition, label, config),
+        *_apply_sort_title(collection, definition),
+        *_apply_mode(collection, definition),
+        *_apply_hub(section, collection, definition),
+    ]
+
+
+def create_blank_collection(section, libtype: str, title: str):
+    """Create an empty collection via a raw POST, and return it.
 
     ``section.createCollection`` raises ``BadRequest`` when given no items --
     plexapi has no way to create an empty collection through its normal API.
@@ -182,17 +334,22 @@ def _create_separator(section, libtype: str):
     ``plexapi.utils.joinArgs`` still builds a URL-encoded query string from a
     dict, and ``PlexServer.query`` still accepts a ``method`` override to
     issue the POST instead of its default GET.
+
+    The title is a parameter because the separator is no longer the only blank
+    collection this service creates: roadmap row 28's ``blank`` operator
+    endpoint makes one on demand, and two spellings of this POST would be two
+    chances to get the ``uri`` wrong.
     """
     server = section._server
     args = {
         "type": 1 if libtype == "movie" else 2,
-        "title": SEPARATOR_TITLE,
+        "title": title,
         "smart": 0,
         "sectionId": section.key,
         "uri": "%s/library/metadata" % server._uriRoot(),
     }
     server.query("/library/collections%s" % joinArgs(args), method=server._session.post)
-    return section.collection(SEPARATOR_TITLE)
+    return section.collection(title)
 
 
 def _edit_collection_summary(collection, summary: str) -> None:
@@ -213,7 +370,7 @@ def _edit_collection_summary(collection, summary: str) -> None:
     collection + summary is broken. ``PUT /library/metadata/{ratingKey}?``
     ``summary.value=...&summary.locked=1`` returns 200. So the item-level
     route is what is used here, with the same raw-query idiom
-    ``_create_separator`` above needs for its POST. ``editSortTitle`` is
+    ``create_blank_collection`` above needs for its POST. ``editSortTitle`` is
     deliberately left alone: its route is proven working.
 
     A summary that already matches writes nothing, following this module's
@@ -291,7 +448,7 @@ async def _reconcile_separator(
             )
         else:
             if collection is None:
-                collection = _create_separator(section, libtype)
+                collection = create_blank_collection(section, libtype, SEPARATOR_TITLE)
                 collection.addLabel(label)
                 actions.append("created %r" % SEPARATOR_TITLE)
             else:
@@ -336,6 +493,7 @@ async def reconcile_content_ratings(
     protect_labels: list[str] | None = None,
     http: httpx.AsyncClient | None = None,
     config=None,
+    settings=None,
 ) -> list[str]:
     """Bring this library's Common Sense collections in line with its ratings.
 
@@ -343,6 +501,15 @@ async def reconcile_content_ratings(
     ``"Kids Movies"``) and is what ``ManagedCollection.library`` is keyed on --
     two libraries of the same ``library_type`` must not collide. ``library_type``
     (``"Movie"``/``"Show"``) only drives title/summary text and ``libtype``.
+
+    ``settings`` is the ``CollectionDefinition`` this family is built from, and
+    supplies the per-definition collection settings (labels, sort title,
+    display mode, hub visibility) applied to every bucket -- roadmap row 104's
+    half of the create path that lives here. One definition names the whole
+    family, so they share those settings, which is what Kometa's section
+    sort-title prefix is for in the first place: the family sorts as one block.
+    The separator is deliberately excluded -- its sort title is the constant
+    that makes it a divider. None (the default) applies nothing.
 
     ``separators`` additionally maintains the blank ``Ratings Collections``
     divider that belongs to this same family -- production always passes it
@@ -422,6 +589,9 @@ async def reconcile_content_ratings(
                     actions.append("updated %r" % bucket.title)
 
                 _edit_collection_summary(collection, bucket.summary)
+                actions += apply_collection_settings(
+                    section, collection, settings, label, config
+                )
 
                 if record is None:
                     record = ManagedCollection(

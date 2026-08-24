@@ -267,8 +267,44 @@ class CollectionDefinition(BaseModel):
     schedule: ScheduleGate | None = None
     # Extra Plex labels, beyond collections.ownership_label.
     labels: list[str] = Field(default_factory=list)
+    # Make ``labels`` (plus the ownership label) the authoritative set: any
+    # other label on the collection is removed. Off by default because it is
+    # the destructive reading of the same field, and it never touches a
+    # protected or adopt_from label -- stripping a prior tool's marker is what
+    # collections.adopt_removes_prior_label decides, deliberately and once.
+    label_sync: bool = False
+    # Labels applied to every RESOLVED MEMBER of the collection (Kometa's
+    # item_label). Only ever added: a member the source stops naming is no
+    # longer a member, and removing a label from it would be a write against
+    # an item this definition no longer describes.
+    item_label: list[str] = Field(default_factory=list)
+    # The collection's Plex sort title, applied verbatim on create and kept in
+    # sync afterwards. This is the whole string, not a prefix -- Kometa's
+    # ``!110_<title>`` scheme is written out in full. A definition that names a
+    # family of collections (a smart builder) gives all of them the same sort
+    # title, which is exactly what that scheme is for: the family sorts as one
+    # block, ordered by title inside it.
     sort_title: str | None = None
-    collection_mode: str | None = None
+    # Plex's collection display mode. Named values only: the plexapi call
+    # rejects anything else with a BadRequest mid-pass, which is a worse place
+    # to learn about a typo than config load.
+    collection_mode: Literal["default", "hide", "hideItems", "showItems"] | None = None
+    # Row 68: pin the collection to a hub. None leaves Plex's current setting
+    # alone -- these are Plex Pass features, and "off" is a different request
+    # from "not managed by this definition".
+    visible_library: bool | None = None
+    visible_home: bool | None = None
+    visible_shared: bool | None = None
+    # Position among the library's managed recommendations, 0 = first. Only
+    # meaningful once the collection is promoted to a hub by one of the
+    # visible_* flags above.
+    hub_priority: int | None = Field(default=None, ge=0)
+    # Row 30: take the summary from TMDB instead of writing one by hand -- the
+    # id of the TMDB *collection* whose overview this collection borrows.
+    # ``summary`` above still wins when both are set: a summary written out in
+    # the config is an explicit choice, and a pull that silently overrode it
+    # would be a setting that reads as applied and is not.
+    tmdb_summary: int | None = Field(default=None, gt=0)
 
     @field_validator("builder")
     @classmethod
@@ -289,12 +325,21 @@ class CollectionDefinition(BaseModel):
 
     @model_validator(mode="after")
     def _membership_knobs_need_a_membership(self) -> "CollectionDefinition":
-        """A smart builder has no membership to cap or to append to.
+        """A smart builder has no membership to cap, append to or label.
 
         Plex evaluates a smart collection's filter live, so ``limit`` and
-        ``sync_mode`` have nothing to act on there. Accepting them silently
+        ``sync_mode`` have nothing to act on there, and neither has
+        ``item_label``: this service never resolves the members, so there is no
+        list of items to label. ``tmdb_summary`` goes the same way -- a smart
+        definition names a *family* of collections whose summaries the builder
+        derives per collection, so one borrowed overview could not be the
+        summary of any particular one of them. Accepting any of these silently
         would be the worst outcome: the operator would see a setting that reads
         as applied and never is.
+
+        ``sort_title`` and ``collection_mode`` are deliberately NOT here. They
+        are properties of the collection object rather than of its membership,
+        and the smart create path applies them (roadmap row 104).
         """
         from autoposter.collections.builders import REGISTRY
 
@@ -302,7 +347,10 @@ class CollectionDefinition(BaseModel):
         if not getattr(builder, "smart", False):
             return self
         for field, value, default in (
-            ("limit", self.limit, None), ("sync_mode", self.sync_mode, "sync")
+            ("limit", self.limit, None),
+            ("sync_mode", self.sync_mode, "sync"),
+            ("item_label", self.item_label, []),
+            ("tmdb_summary", self.tmdb_summary, None),
         ):
             if value != default:
                 raise ValueError(

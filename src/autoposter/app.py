@@ -223,7 +223,9 @@ def create_app(
         scheduler_jobs = []
         if config.scheduler.enabled:
             if config.collections.enabled:
-                scheduler_jobs.append(make_collections_job(holder, server_factory, http))
+                scheduler_jobs.append(make_collections_job(
+                    holder, server_factory, http, summaries=app.state.tmdb_facts,
+                ))
             scheduler_jobs.append(make_drift_job(holder))
             scheduler_jobs.append(make_cleanup_job(holder))
             if config.arr_sync.enabled:

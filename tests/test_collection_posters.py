@@ -6,7 +6,12 @@ is harder to spot than an error.
 """
 import pytest
 
-from autoposter.collections.posters import hosted_poster_url, local_poster_path
+from autoposter.collections.posters import (
+    PosterPathRefused,
+    hosted_poster_url,
+    local_poster_path,
+    poster_override_target,
+)
 
 BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master"
 
@@ -67,3 +72,63 @@ def test_the_flat_layout_is_honoured(tmp_path, config_factory):
     config = config_factory(assets_root=str(tmp_path), library_folders=False)
     (tmp_path / "IMDb Top 250.jpg").write_bytes(b"x")
     assert local_poster_path(config, "Movies", "IMDb Top 250").name == "IMDb Top 250.jpg"
+
+
+# --- row 124: the title is interpolated into the path, so contain it --------
+#
+# ``ManagedCollection.title`` reaches ``_poster_candidates`` verbatim. Titles
+# come from operator config and from collections adopted out of Plex, so a
+# title carrying ``..`` -- or an absolute path, which pathlib's join rule turns
+# into the absolute path itself -- would steer both the reconciler's READ and
+# the manual endpoint's WRITE outside ``assets_root``.
+
+
+@pytest.mark.parametrize(
+    "library,title",
+    [
+        ("Movies", "../../etc"),
+        ("Movies", "../../sibling"),
+        ("../..", "IMDb Top 250"),
+        ("Movies", "/etc"),
+    ],
+)
+def test_a_title_that_escapes_the_assets_root_is_refused(
+    tmp_path, config_factory, library, title
+):
+    root = tmp_path / "assets"
+    root.mkdir()
+    config = config_factory(assets_root=str(root), library_folders=True)
+
+    with pytest.raises(PosterPathRefused):
+        local_poster_path(config, library, title)
+    with pytest.raises(PosterPathRefused):
+        poster_override_target(config, library, title)
+
+
+def test_the_flat_layout_is_contained_too(tmp_path, config_factory):
+    """The flat layout interpolates the title straight under the root, so it
+    escapes with one fewer ``..`` than the foldered one."""
+    root = tmp_path / "assets"
+    root.mkdir()
+    config = config_factory(assets_root=str(root), library_folders=False)
+
+    with pytest.raises(PosterPathRefused):
+        poster_override_target(config, "Movies", "../escaped")
+
+
+def test_a_symlinked_title_is_refused_on_its_target(tmp_path, config_factory):
+    """``realpath`` on both sides, not ``normpath`` or a ``startswith``: a
+    directory inside the root that points out of it is the case a lexical
+    check waves through. Skipped where the OS will not make the symlink."""
+    root = tmp_path / "assets"
+    (root / "Movies").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (root / "Movies" / "Escaped").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform will not create the symlink")
+    config = config_factory(assets_root=str(root), library_folders=True)
+
+    with pytest.raises(PosterPathRefused):
+        poster_override_target(config, "Movies", "Escaped")
