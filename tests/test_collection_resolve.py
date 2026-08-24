@@ -1,11 +1,6 @@
 """Mapping namespaced external ids to owned Plex items."""
 from autoposter.collections.builders.base import NAMESPACES
-from autoposter.collections.resolve import (
-    build_imdb_index,
-    build_owned_index,
-    resolve_external,
-    resolve_ids,
-)
+from autoposter.collections.resolve import build_owned_index, resolve_external
 
 
 class FakeGuid:
@@ -40,50 +35,7 @@ def _section():
     ])
 
 
-def test_the_index_is_built_from_one_call():
-    """section.all() returns guids already populated; reloading per item
-    would turn one request into thousands."""
-    section = _section()
-    build_imdb_index(section)
-    assert section.all_calls == 1
-
-
-def test_the_index_maps_imdb_ids_to_items():
-    index = build_imdb_index(_section())
-    assert index["tt0111161"].title == "Shawshank"
-    assert index["tt0068646"].title == "Godfather"
-
-
-def test_items_without_an_imdb_guid_are_absent():
-    index = build_imdb_index(_section())
-    assert len(index) == 2
-    assert all(key.startswith("tt") for key in index)
-
-
-def test_resolution_preserves_the_requested_order():
-    """The order is the chart rank."""
-    index = build_imdb_index(_section())
-    items = resolve_ids(index, ["tt0068646", "tt0111161"])
-    assert [i.title for i in items] == ["Godfather", "Shawshank"]
-
-
-def test_unowned_ids_are_dropped_not_guessed():
-    index = build_imdb_index(_section())
-    items = resolve_ids(index, ["tt0111161", "tt9999999", "tt0068646"])
-    assert [i.title for i in items] == ["Shawshank", "Godfather"]
-
-
-def test_resolving_an_empty_list_yields_nothing():
-    assert resolve_ids(build_imdb_index(_section()), []) == []
-
-
-def test_duplicate_ids_resolve_once():
-    index = build_imdb_index(_section())
-    items = resolve_ids(index, ["tt0111161", "tt0111161"])
-    assert len(items) == 1
-
-
-# --- the multi-namespace index -------------------------------------------
+# --- the owned index ------------------------------------------------------
 
 def test_the_owned_index_is_built_from_one_call():
     """Every namespace comes off the same ``section.all()`` pass; a second

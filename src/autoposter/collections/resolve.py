@@ -113,24 +113,3 @@ def resolve_external(index: OwnedIndex, ids: list[ExternalId]) -> ResolvedList:
         seen_items.add(identity)
         items.append(item)
     return ResolvedList(items, unresolved)
-
-
-def build_imdb_index(section) -> dict[str, object]:
-    """``{imdb_id: plex_item}``, the IMDb slice of the owned index.
-
-    Transitional: the shipped sources still call it. Removed when they become
-    builders.
-    """
-    return build_owned_index(section)["imdb"]
-
-
-def resolve_ids(index: dict[str, object], imdb_ids: list[str]) -> list[object]:
-    """The owned items for these IMDb ids, in the order given.
-
-    Transitional, as ``build_imdb_index`` -- the IMDb-namespace call of
-    ``resolve_external``, minus the unresolved count the old callers have
-    nowhere to put.
-    """
-    return resolve_external(
-        {"imdb": index}, [("imdb", imdb_id) for imdb_id in imdb_ids]
-    ).items

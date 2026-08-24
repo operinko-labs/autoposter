@@ -18,7 +18,6 @@ Two things the definitions deliberately do not decide:
 """
 from autoposter.collections.builders.imdb_award import AWARDS
 from autoposter.collections.builders.imdb_chart import CHART_TITLES, CHARTS_FOR
-from autoposter.collections.engine import run_definitions
 from autoposter.config.schema import CollectionDefinition
 
 # The chart inventory as ``{library type: [(collection title, chart key), ...]}``
@@ -72,27 +71,3 @@ def default_definitions(config, library_type: str) -> list[CollectionDefinition]
         CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket"),
         *chart_and_award_definitions(config, library_type),
     ]
-
-
-async def build_all(
-    http,
-    session,
-    section,
-    library: str,
-    library_type: str,
-    label: str,
-    config,
-) -> list[str]:
-    """Reconcile every configured chart and award collection for one library.
-
-    The list-collection half of a pass. ``reconcile_libraries`` no longer calls
-    it -- it runs the whole inventory, smart family included, through one
-    ``run_definitions`` call -- so this survives as the narrower entry point
-    ``tests/test_collection_sources.py`` drives, and goes when those tests move
-    onto the engine.
-    """
-    return await run_definitions(
-        session, section, library, library_type,
-        chart_and_award_definitions(config, library_type),
-        config, http=http, label=label,
-    )

@@ -6,7 +6,22 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 from plexapi.exceptions import NotFound
 
-from autoposter.collections.sources import CHART_COLLECTIONS, build_all
+from autoposter.collections.engine import run_definitions
+from autoposter.collections.sources import CHART_COLLECTIONS, chart_and_award_definitions
+
+
+async def build_all(http, session, section, library, library_type, label, config):
+    """The list-collection half of a pass, through the engine.
+
+    What ``sources.build_all`` was before ``reconcile_libraries`` moved onto
+    ``run_definitions`` directly: the chart and award definitions without the
+    smart Common Sense family, which this file is not about.
+    """
+    return await run_definitions(
+        session, section, library, library_type,
+        chart_and_award_definitions(config, library_type),
+        config, http=http, label=label,
+    )
 
 AWARD_FIXTURE = Path("tests/fixtures/collections/ev0000003.yml").read_text(encoding="utf-8")
 CHART_FIXTURE = (Path("tests/fixtures/collections/imdb_chart.json")).read_text(encoding="utf-8")
@@ -186,7 +201,7 @@ async def test_award_collections_are_movies_only(session):
 
 
 async def test_a_library_with_nothing_to_build_pays_for_no_index(session):
-    """``build_imdb_index`` costs a full ``section.all()``. A Show library
+    """``build_owned_index`` costs a full ``section.all()``. A Show library
     with only awards enabled builds no collection at all, so it must not pay
     for the index -- nor list the section's collections."""
 
