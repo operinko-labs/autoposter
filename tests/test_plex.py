@@ -40,6 +40,13 @@ class FakeSection:
         # movie library about a show-shaped intent at all.
         self.getguid_calls = []
 
+    def all(self, **kwargs):
+        # plexapi's section listing. `list_items` walks it; the resolver never
+        # does, which is why this arrived with that method. Real plexapi
+        # accepts `libtype`/`includeGuids`/etc as kwargs here -- accepted and
+        # ignored, since this fake already returns every item's real data.
+        return list(self._items)
+
     def getGuid(self, guid):
         # Mirrors plexapi: an EXTERNAL id (tvdb://, tmdb://, imdb://) is matched
         # against the item's `guids` list, not its primary `.guid`, and a miss
@@ -63,7 +70,7 @@ class FakeItem:
     def __init__(
         self, rating_key, title, year, file_path, guids, item_type="movie",
         parent_rating_key=None, library_section_title=None, show=None,
-        index=None, parent_index=None,
+        index=None, parent_index=None, locations=None,
     ):
         self.ratingKey = rating_key
         self.title = title
@@ -71,6 +78,11 @@ class FakeItem:
         self.type = item_type
         self.guids = [type("Guid", (), {"id": g})() for g in guids]
         self.media = [FakeMedia(file_path)] if file_path else []
+        # A movie's own location is its file, a show's its directory -- the
+        # same split `arr.sync.source_path` reads. Empty unless a test sets it,
+        # which is what every plexapi caller here already tolerates (`resolve`
+        # falls back to the section's locations).
+        self.locations = list(locations or [])
         self.thumb = f"/library/metadata/{rating_key}/thumb/1"
         self.parentRatingKey = parent_rating_key
         # Every plexapi item knows which library it came out of; the direct
@@ -742,3 +754,60 @@ async def test_a_malformed_rating_key_falls_back_instead_of_raising():
 
     assert item.rating_key == "557"
     assert shows.getguid_calls == ["tvdb://371980"]
+
+
+# --- list_items: the section walk the id-mismatch view reads -----------------
+
+
+def _mismatch_library():
+    movie = FakeItem(
+        "12345", "Dune: Part Two", 2024,
+        "/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv",
+        ["tmdb://693134", "imdb://tt15239678"],
+        locations=["/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv"],
+    )
+    other = FakeItem(
+        "22222", "Private Film", 2001, "/mnt/Media/Hidden/p.mkv", ["tmdb://1"],
+        locations=["/mnt/Media/Hidden/p.mkv"],
+    )
+    show = FakeShow("500", "Severance", 2022, None, ["tvdb://371980"])
+    show.locations = ["/mnt/Media/TV/Severance"]
+    return FakeServer([
+        FakeSection("Movies", "/mnt/Media/Movies", [movie]),
+        FakeSection("Hidden", "/mnt/Media/Hidden", [other]),
+        FakeSection("TV", "/mnt/Media/TV", [show], section_type="show"),
+    ])
+
+
+async def test_list_items_returns_plain_data_for_one_section_type():
+    client = PlexClient(server=_mismatch_library(), excluded_libraries=[])
+
+    items = await client.list_items("movie")
+
+    assert [item.title for item in items] == ["Dune: Part Two", "Private Film"]
+    first = items[0]
+    assert first.rating_key == "12345"
+    assert first.library == "Movies"
+    assert first.year == 2024
+    assert first.locations == ["/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv"]
+    # Parsed, not raw guid strings: every caller wants {agent: id}.
+    assert first.guids == {"tmdb": "693134", "imdb": "tt15239678"}
+
+
+async def test_list_items_asks_only_sections_of_the_type_it_was_given():
+    """A show section answering a movie walk would pair series folders against
+    Radarr and report every one of them as a mismatch."""
+    client = PlexClient(server=_mismatch_library(), excluded_libraries=[])
+
+    shows = await client.list_items("show")
+
+    assert [item.title for item in shows] == ["Severance"]
+    assert shows[0].locations == ["/mnt/Media/TV/Severance"]
+
+
+async def test_list_items_honours_the_library_exclusions():
+    client = PlexClient(server=_mismatch_library(), excluded_libraries=["Hidden"])
+
+    items = await client.list_items("movie")
+
+    assert [item.title for item in items] == ["Dune: Part Two"]

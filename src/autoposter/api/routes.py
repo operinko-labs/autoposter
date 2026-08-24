@@ -22,10 +22,13 @@ from autoposter.artwork_modes.revert import RevertMode
 from autoposter.api.candidates import router as candidates_router
 from autoposter.api.collections_builders import router as collections_builders_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
+from autoposter.api.jobs import router as jobs_router
 from autoposter.api.logs import router as logs_router
 from autoposter.api.manual import router as manual_router
+from autoposter.api.mismatches import router as mismatches_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
 from autoposter.api.testing import router as testing_router
+from autoposter.api.version import router as version_router
 from autoposter.api.auth import (
     create_session,
     hash_password,
@@ -160,6 +163,25 @@ router.include_router(testing_router)
 # a pass would do. Its own module for the reason testing mode is -- it drives
 # an engine directly and writes nothing.
 router.include_router(collections_builders_router)
+
+# The jobs overview: what is pending or running, and the per-job cancel. Its
+# own module because cancelling races the worker pool, and the row locking and
+# state fork that make it safe are the substance of it. The parked-job
+# endpoints below stay here -- they belong to the Failures page, which is a
+# different question about a different set of states.
+router.include_router(jobs_router)
+
+# The id-mismatch view: where Plex and Radarr/Sonarr disagree about what a
+# folder holds. Its own module because it is the only handler that pairs the
+# two services against Plex, and it pairs them by path for a reason that needs
+# writing down.
+router.include_router(mismatches_router)
+
+# The sidebar's version line: what this pod is running, and whether the Harbor
+# registry holds a newer image. Its own module because the registry URL is
+# operator config that must not reach a log or a response, and the rules that
+# keep it out of both are the substance of it.
+router.include_router(version_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.

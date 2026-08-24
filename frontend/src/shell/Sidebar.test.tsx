@@ -1,6 +1,6 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SessionProvider } from "../auth/SessionContext";
 import { Sidebar } from "./Sidebar";
@@ -57,6 +57,43 @@ function stubStorage(): Storage {
   vi.stubGlobal("localStorage", store);
   return store;
 }
+
+const RUNNING = "sha-4b2a34d";
+
+/** `GET /api/version` issued but not yet answered.
+ *
+ * The default for every test in this file, because the sidebar now fetches on
+ * mount and the tests above it are synchronous. Left unstubbed they would
+ * reach jsdom's own `fetch`; stubbed with a *resolving* promise they would
+ * each update state after their last assertion, which React reports as an
+ * unwrapped `act()`. A request still in flight is what a synchronous render
+ * sees in a browser too, so this is the honest default rather than a
+ * workaround -- and it is what proves the layout tests do not depend on the
+ * version line existing. */
+function stubPendingVersion() {
+  const fetchMock = vi.fn().mockReturnValue(new Promise<Response>(() => {}));
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** `GET /api/version` answered with `body`. */
+function stubVersion(
+  body: unknown = { version: RUNNING, latest: null, update_available: null },
+  status = 200,
+) {
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+beforeEach(() => {
+  stubPendingVersion();
+});
 
 function renderSidebar(path = "/") {
   return render(
@@ -153,6 +190,19 @@ describe("Sidebar", () => {
     expect(link).toHaveAttribute("title", "Testing");
   });
 
+  it("reaches the id-mismatch view", () => {
+    stubMatchMedia(false);
+
+    renderSidebar();
+
+    // The scan is only reachable from here; a route with no link into it is a
+    // page that ships and is never found.
+    expect(screen.getByRole("link", { name: "ID mismatches" })).toHaveAttribute(
+      "href",
+      "/mismatches",
+    );
+  });
+
   it("reaches the run-modes page", () => {
     stubMatchMedia(false);
 
@@ -217,5 +267,112 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
     media.cross(true);
     expect(sidebarElement()).not.toHaveClass("collapsed");
+  });
+});
+
+describe("Sidebar version line", () => {
+  it("shows the running version just above Sign out", async () => {
+    stubMatchMedia(false);
+    stubVersion({ version: RUNNING, latest: null, update_available: null });
+
+    renderSidebar();
+
+    const tag = await screen.findByText(RUNNING);
+    // Placement is the requirement, not merely presence: this is a footer
+    // note, and above the navigation it would read as a heading.
+    const signOut = screen.getByRole("button", { name: "Sign out" });
+    expect(tag.compareDocumentPosition(signOut)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("marks an update when the registry holds a newer image", async () => {
+    stubMatchMedia(false);
+    stubVersion({
+      version: RUNNING,
+      latest: "sha-9f10c2e",
+      update_available: true,
+    });
+
+    renderSidebar();
+
+    expect(await screen.findByText("Update available")).toBeInTheDocument();
+    // The running version stays visible beside the marker: "there is an
+    // update" is only actionable next to "from what".
+    expect(screen.getByText(RUNNING)).toBeInTheDocument();
+  });
+
+  it("shows no marker when the running version is the newest", async () => {
+    stubMatchMedia(false);
+    stubVersion({ version: RUNNING, latest: RUNNING, update_available: false });
+
+    renderSidebar();
+
+    await screen.findByText(RUNNING);
+    expect(screen.queryByText("Update available")).not.toBeInTheDocument();
+  });
+
+  it("shows no marker when the registry was not asked", async () => {
+    stubMatchMedia(false);
+    // What an unconfigured deployment answers: a null is "unknown", and
+    // rendering it as "up to date" would be a claim the server did not make.
+    stubVersion({ version: RUNNING, latest: null, update_available: null });
+
+    renderSidebar();
+
+    await screen.findByText(RUNNING);
+    expect(screen.queryByText("Update available")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing at all when the version cannot be read", async () => {
+    stubMatchMedia(false);
+    stubVersion({ detail: "boom" }, 500);
+
+    renderSidebar();
+
+    // The shell must not show an error for a decoration -- Sign out and the
+    // navigation are unaffected, and there is simply no version line.
+    await screen.findByRole("button", { name: "Sign out" });
+    await waitFor(() => {
+      expect(document.querySelector(".sidebar-version")).toBeNull();
+    });
+  });
+
+  it("keeps the collapsed rail's marker named while its text is out of sight", async () => {
+    stubMatchMedia(true);
+    stubVersion({
+      version: RUNNING,
+      latest: "sha-9f10c2e",
+      update_available: true,
+    });
+
+    renderSidebar();
+
+    const marker = await screen.findByTitle("Update available");
+    expect(sidebarElement()).toHaveClass("collapsed");
+    // Same contract as the links above: the text is clipped by CSS, not
+    // removed, so the dot that is all a sighted user sees still carries a
+    // name -- and `title` gives them the same word on hover.
+    expect(marker.querySelector(".sidebar-label")).toHaveTextContent("Update available");
+    expect(marker.querySelector(".sidebar-update-dot")).not.toBeNull();
+    // The version tag is clipped by the very same rule rather than dropped.
+    expect(screen.getByText(RUNNING)).toHaveClass("sidebar-label");
+  });
+
+  it("asks for the version once per mount and never polls", async () => {
+    stubMatchMedia(false);
+    const fetchMock = stubVersion();
+
+    renderSidebar();
+    await screen.findByText(RUNNING);
+
+    // The server caches Harbor's answer for fifteen minutes, so a poll would
+    // mostly re-read one string; the mount is frequent enough on its own.
+    const calls = fetchMock.mock.calls.filter(([path]) => path === "/api/version");
+    expect(calls).toHaveLength(1);
+
+    // And nothing schedules a second one afterwards.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(
+      fetchMock.mock.calls.filter(([path]) => path === "/api/version"),
+    ).toHaveLength(1);
   });
 });

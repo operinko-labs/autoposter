@@ -17,7 +17,7 @@ from autoposter.render.pipeline import (
     gather_fingerprint_inputs, logo_override_path, manual_override_path,
     render_artifact, title_text_for,
 )
-from autoposter.render.textfit import FitResult
+from autoposter.render.textfit import FitResult, prepare_text
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -703,3 +703,152 @@ async def test_use_logo_false_ignores_the_override_file(session, tmp_path, monke
     assert logo_calls == []
     flat = [token for call in calls for token in call]
     assert any(str(token).startswith("caption:") for token in flat)
+
+
+# --- the show-poster fallback for season posters ------------------------------
+#
+# Roadmap row 132. A season poster is classically the show's own poster with the
+# season text applied -- which is exactly what this pipeline does to whatever
+# base image it is handed -- so a season with no season-specific art on any
+# provider should be styled from the show's poster rather than recorded as
+# no_art. 19 production items sat at no_art for that reason.
+
+
+SEASON_URL = "https://img/season2.jpg"
+SHOW_URL = "https://img/show-poster.jpg"
+
+
+class _SeasonAwareProvider:
+    """Serves season-poster art, show-poster art, both or neither, on demand."""
+
+    name = "TMDB"
+
+    def __init__(self, *, season_art: bool, show_art: bool):
+        self._season_art = season_art
+        self._show_art = show_art
+        self.requests = []
+
+    async def fetch(self, request):
+        self.requests.append(request)
+        if request.art_kind == "season_poster" and self._season_art:
+            return [ArtCandidate("TMDB", SEASON_URL, None, 2000, 3000, 5.0)]
+        if request.art_kind == "poster" and self._show_art:
+            return [ArtCandidate("TMDB", SHOW_URL, None, 2000, 3000, 5.0)]
+        return []
+
+
+def _season_item():
+    return item(kind="season", title="Season 2", season=2, root="Severance (2022)")
+
+
+async def test_season_poster_falls_back_to_the_shows_poster_when_no_season_art(
+    session, tmp_path, monkeypatch
+):
+    """The point of the row: no season art is not the same as no art."""
+    config = _logo_test_config(tmp_path)
+    calls, _ = _stub_out_imagemagick(monkeypatch)
+    provider = _SeasonAwareProvider(season_art=False, show_art=True)
+    resolved = _season_item()
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, resolved, "season_poster", [provider],
+        )
+
+    assert render.status == "rendered"
+    assert render.source_url == SHOW_URL
+    # Provenance: this row must be distinguishable from one built on the
+    # season's own art, both in the operator-facing detail and in a column that
+    # survives the "unchanged" short-circuit on the next pass.
+    assert render.source_mode == "show_fallback"
+    assert "show" in (render.detail or "")
+
+    # The season ladder was asked first, at season scope; the fallback asks the
+    # SHOW's poster ladder, with the show's own ids and no season number.
+    assert [request.art_kind for request in provider.requests] == [
+        "season_poster", "poster",
+    ]
+    season_request, show_request = provider.requests
+    assert season_request.season_number == 2
+    assert show_request.season_number is None
+    assert show_request.episode_number is None
+    assert show_request.tmdb_id == resolved.tmdb_id
+    assert show_request.is_movie is False
+
+    # And the season text styling still ran, exactly as for real season art --
+    # that is what makes the show's poster into this season's poster.
+    flat = [str(token) for call in calls for token in call]
+    season_text = prepare_text("Season 2", config.artwork.season_poster.text)
+    assert any(t.startswith("caption:") and season_text in t for t in flat)
+
+
+async def test_a_season_whose_show_has_no_poster_art_either_is_still_no_art(
+    session, tmp_path, monkeypatch
+):
+    """The fallback adds a second chance, it does not invent one."""
+    config = _logo_test_config(tmp_path)
+    _stub_out_imagemagick(monkeypatch)
+    provider = _SeasonAwareProvider(season_art=False, show_art=False)
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, _season_item(), "season_poster", [provider],
+        )
+
+    assert render.status == "no_art"
+    assert render.detail == "no season_poster art on any provider"
+    assert render.source_mode == "generate"
+    assert not Path(config.assets_root).exists()
+
+
+async def test_season_art_that_exists_is_used_and_the_show_is_never_asked(
+    session, tmp_path, monkeypatch
+):
+    """Ladder preference is untouched: the fallback is only for the empty case.
+
+    Mutation proof for the guard -- dropping ``selection.candidate is None``
+    from the fallback condition reds this on both assertions at once.
+    """
+    config = _logo_test_config(tmp_path)
+    _stub_out_imagemagick(monkeypatch)
+    provider = _SeasonAwareProvider(season_art=True, show_art=True)
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, _season_item(), "season_poster", [provider],
+        )
+
+    assert render.status == "rendered"
+    assert render.source_url == SEASON_URL
+    assert render.source_mode == "generate"
+    assert [request.art_kind for request in provider.requests] == ["season_poster"]
+
+
+async def test_season_art_appearing_later_re_renders_and_clears_the_fallback(
+    session, tmp_path, monkeypatch
+):
+    """The fingerprint carries the source URL, so a fallen-back row is not
+    frozen: once a provider gains season art the ladder prefers it, the
+    fingerprint changes, and the next pass re-renders from the season's own art
+    -- which must also stop the row claiming a fallback it no longer made."""
+    config = _logo_test_config(tmp_path)
+    _stub_out_imagemagick(monkeypatch)
+    resolved = _season_item()
+
+    async with _fake_http() as http:
+        first = await render_artifact(
+            session, config, http, resolved, "season_poster",
+            [_SeasonAwareProvider(season_art=False, show_art=True)],
+        )
+        fallback_fingerprint = first.fingerprint
+        assert first.source_mode == "show_fallback"
+
+        second = await render_artifact(
+            session, config, http, resolved, "season_poster",
+            [_SeasonAwareProvider(season_art=True, show_art=True)],
+        )
+
+    assert second.fingerprint != fallback_fingerprint
+    assert second.detail != "unchanged"
+    assert second.source_url == SEASON_URL
+    assert second.source_mode == "generate"

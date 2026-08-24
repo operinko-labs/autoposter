@@ -32,6 +32,27 @@ class ResolvedItem:
     parent_rating_key: str | None = None
 
 
+@dataclass(frozen=True)
+class SectionItem:
+    """One movie or show in a library section, as plain data.
+
+    What ``list_items`` returns: nothing here is a ``plexapi`` object, for the
+    same reason ``_RawMatch`` is not one -- reading an attribute back on the
+    event loop can trigger a synchronous HTTP reload.
+
+    ``locations`` is the item's own, not the section's: a movie's is its file
+    and a show's is its directory, which is exactly what ``arr.sync``'s
+    ``source_path`` expects to be handed.
+    """
+
+    rating_key: str
+    library: str
+    title: str
+    year: int | None
+    locations: list[str]
+    guids: dict[str, str]
+
+
 def parse_guids(guids: list[str]) -> dict[str, str]:
     """Map Plex GUID strings to ``{agent: id}``.
 
@@ -337,6 +358,49 @@ class PlexClient:
         agent re-pull is triggered.
         """
         return await asyncio.to_thread(self._server.fetchItem, int(rating_key))
+
+    def _list_items_sync(self, wanted_type: str) -> list[SectionItem]:
+        items = []
+        for section in self._sections(wanted_type):
+            # ``includeGuids`` is plexapi's default for `.search()`/`.all()`
+            # already (pinned in tests/test_plexapi_list_items_contract.py),
+            # so this asks for nothing the listing would not have carried
+            # anyway -- it just says so at the call site rather than relying
+            # on an upstream default holding. Guids and locations both come
+            # back inline in this one request for any item that has them.
+            #
+            # The residual risk is the item that has *neither*: plexapi's
+            # partial-object reload trips on any falsy attribute value, not
+            # only an unset one, so a genuinely empty `.guids` (an unmatched
+            # Plex item -- exactly the case this endpoint's zero-ids row
+            # exists to catch) or `.locations` still costs one extra
+            # synchronous HTTP round trip per such item. No listing parameter
+            # closes that gap; a real Plex library with unmatched items should
+            # get a live timing check post-deploy.
+            for item in section.all(includeGuids=True):
+                items.append(
+                    SectionItem(
+                        rating_key=str(item.ratingKey),
+                        library=section.title,
+                        title=item.title,
+                        year=getattr(item, "year", None),
+                        locations=list(getattr(item, "locations", None) or []),
+                        guids=parse_guids([g.id for g in getattr(item, "guids", None) or []]),
+                    )
+                )
+        return items
+
+    async def list_items(self, wanted_type: str) -> list[SectionItem]:
+        """Every item of one Plex type ("movie"/"show"), across the sections
+        this client is allowed to read.
+
+        The library exclusions and the section-type filter come from
+        ``_sections``, so a caller cannot walk a library the rest of the
+        application does not touch. Listing a section is a blocking call of
+        several seconds -- the scheduled arr sync offloads it for exactly this
+        reason -- so the whole walk runs in one thread and returns plain data.
+        """
+        return await asyncio.to_thread(self._list_items_sync, wanted_type)
 
     async def resolve(self, intent: RenderIntent) -> ResolvedItem:
         match = await asyncio.to_thread(self._search_sync, intent)

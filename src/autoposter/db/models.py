@@ -142,6 +142,17 @@ class Job(Base):
     run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     claimed_by: Mapped[str | None] = mapped_column(String(64))
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # An operator asked for this job to stop while it was already ``running``.
+    # A claimed job is not interrupted -- a render that has happened cannot be
+    # un-rendered, and killing a handler mid-upload would leave Plex holding
+    # half the change. So this is a request the worker honours at the *end* of
+    # the attempt: on failure the job is dismissed instead of rescheduled
+    # (queue/jobs.py's fail()), and on success it completes normally.
+    # server_default, not just default: ADD COLUMN NOT NULL would otherwise
+    # fail against the populated jobs table a deployed instance already has.
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

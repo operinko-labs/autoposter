@@ -19,6 +19,7 @@ function stylesheet(relative: string): string {
 const collectionsCss = stylesheet("./pages/collections.css");
 const itemCss = stylesheet("./pages/item.css");
 const logsCss = stylesheet("./pages/logs.css");
+const mismatchesCss = stylesheet("./pages/mismatches.css");
 const modesCss = stylesheet("./pages/modes.css");
 const settingsCss = stylesheet("./pages/settings.css");
 const shellCss = stylesheet("./shell/shell.css");
@@ -250,6 +251,29 @@ describe("the mode cards fit a phone", () => {
 
   it("lets the confirmation sentence take its own line when the row wraps", () => {
     expect(declaration(modesCss, ".mode-confirm", "flex")).toBe("1 1 14rem");
+  });
+});
+
+describe("the id-mismatch rows fit a narrow table", () => {
+  it("wraps a row's ids rather than handing the column the width of three", () => {
+    // A series carries tvdb, tmdb and imdb on each side; in one line they are
+    // wider than a phone viewport, and the table would scroll for every row.
+    expect(declaration(mismatchesCss, ".mismatch-ids", "flex-wrap")).toBe("wrap");
+    expect(declaration(mismatchesCss, ".mismatch-ids", "min-width")).toBe("8rem");
+    // Each chip stays on one line -- "tmdb 438631" broken across two is not an
+    // id any more.
+    expect(declaration(mismatchesCss, ".mismatch-id", "white-space")).toBe("nowrap");
+  });
+
+  it("marks a disagreeing id by more than its colour", () => {
+    expect(declaration(mismatchesCss, ".mismatch-id.differs", "border-color")).toBe(
+      "var(--error)",
+    );
+    expect(declaration(mismatchesCss, ".mismatch-id.differs", "font-weight")).toBe("600");
+  });
+
+  it("wraps the scan control and its explanation", () => {
+    expect(declaration(mismatchesCss, ".mismatch-controls", "flex-wrap")).toBe("wrap");
   });
 });
 

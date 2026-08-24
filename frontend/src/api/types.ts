@@ -89,6 +89,112 @@ export interface ParkedJobsResponse {
   jobs: ParkedJob[];
 }
 
+/** GET /api/jobs -- the pending and running queue, for the Jobs overview.
+ *
+ * The raw payload is deliberately absent: the server lifts out the four fields
+ * that name the item and keeps the rest (provider ids, source URLs, mode
+ * filters) in the database.
+ *
+ * `max_attempts` is not a constant. A job waiting on Plex to index a new file
+ * is retried against a much larger budget than any other failure, so the two
+ * travel together and `attempts`/`max_attempts` is only meaningful as a pair.
+ *
+ * `run_in_seconds` is how long until the next attempt, and is negative for a
+ * job that is already due -- every running job included.
+ */
+export interface QueuedJob {
+  id: number;
+  kind: string;
+  state: string;
+  attempts: number;
+  max_attempts: number;
+  waiting_for_plex: boolean;
+  title: string | null;
+  item_kind: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  run_in_seconds: number;
+  last_error: string | null;
+  created_at: string | null;
+  /** Set once a running job's cancel has been requested, and persists across
+   * reloads -- unlike the client-only note the cancel click shows, this is
+   * read from the row itself, so an operator who reloads mid-attempt still
+   * sees the pending cancel instead of losing that state. */
+  cancel_requested: boolean;
+}
+
+export interface QueuedJobsResponse {
+  jobs: QueuedJob[];
+  /** How many jobs are live in total; the list itself is capped server-side. */
+  total: number;
+}
+
+/** POST /api/jobs/{id}/cancel. Exactly one of the two flags is present:
+ * `cancelled` for a pending job that was stopped outright, `cancel_requested`
+ * for a running one the worker will drop when its attempt ends. */
+export interface CancelJobResponse {
+  id: number;
+  state: string;
+  cancelled?: boolean;
+  cancel_requested?: boolean;
+  detail?: string;
+}
+
+/** One row of GET /api/id-mismatches.
+ *
+ * The same shape carries all three groups, so the unmatched ones leave the
+ * other side null: `rating_key`/`plex_title`/`library` are null for an
+ * `arr_only` row, `arr_title` is null for a `plex_only` one, and that absence
+ * is the finding rather than missing data.
+ *
+ * `arr_ids`/`plex_ids` are keyed by agent (`tmdb`, `tvdb`, `imdb`) and hold
+ * only the ids that side actually has. `differing` names the agents both sides
+ * hold and disagree about -- an id only one side carries is not a
+ * disagreement, so it is never listed there. In `mismatched`, `differing` can
+ * also carry `"no_ids_on_plex"` or `"no_ids_on_arr"`: a path-matched pair
+ * where one side has no comparable ids at all, which is not a per-agent
+ * disagreement but is exactly the mismatch this view exists to surface.
+ */
+export interface IdMismatchRow {
+  service: string;
+  kind: string;
+  path: string;
+  library: string | null;
+  rating_key: string | null;
+  plex_title: string | null;
+  arr_title: string | null;
+  year: number | null;
+  arr_ids: Record<string, string>;
+  plex_ids: Record<string, string>;
+  differing: string[];
+}
+
+/** GET /api/id-mismatches.
+ *
+ * The three lists are capped at `limit` rows in total while `counts` always
+ * reports everything found, so a remount that moved every path shows its true
+ * size without serialising the whole library. `skipped` names the services
+ * that were not asked at all (disabled, or without a base URL or api key);
+ * `refused` names a service whose own root folders share no tree with the
+ * configured arr path -- the wrong instance or a bad base URL -- mapped to a
+ * message naming why, with that service excluded from every group rather than
+ * reporting its whole library as arr_only and plex_only at once. `unmapped`
+ * counts Plex items outside the configured root, which the service does not
+ * manage and whose absence there is therefore not a finding; `arr_unmapped`
+ * is the same idea from the other side -- arr entries with no path at all. */
+export interface IdMismatchesResponse {
+  mismatched: IdMismatchRow[];
+  arr_only: IdMismatchRow[];
+  plex_only: IdMismatchRow[];
+  counts: Record<string, number>;
+  total: number;
+  limit: number;
+  skipped: string[];
+  refused: Record<string, string>;
+  unmapped: number;
+  arr_unmapped: number;
+}
+
 /** GET /api/collections.
  *
  * The four reconcile stats are nullable and null on every row no pass has
@@ -470,4 +576,21 @@ export interface ArtworkModeResponse {
   reason?: string;
   note?: string;
   [count: string]: string | number | boolean | undefined;
+}
+
+/** `GET /api/version` -- what this pod is running, and whether Harbor has newer.
+ *
+ * `update_available` is a tri-state, and the null is the point: it means the
+ * registry was not asked (no `version_check.harbor_url`, no robot token) or
+ * could not be reached. That is not the same as "you are up to date", so the
+ * sidebar shows no marker at all rather than one it cannot stand behind.
+ * `latest` is null in exactly the same cases.
+ *
+ * The Harbor URL is deliberately absent from this shape: it is operator config
+ * and never leaves the server -- see src/autoposter/api/version.py.
+ */
+export interface VersionResponse {
+  version: string;
+  latest: string | null;
+  update_available: boolean | null;
 }

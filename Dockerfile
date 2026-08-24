@@ -132,5 +132,20 @@ ENV AUTOPOSTER_ASSETS_ROOT=/app/assets
 # passes while `/` answers 404, so the failure looks like a healthy service.
 ENV AUTOPOSTER_SPA_DIST=/app/frontend/dist
 ENV AUTOPOSTER_CONFIG=/config/autoposter.yaml
+
+# The image's own name in the registry. .forgejo/workflows/ci.yml passes the
+# commit's short sha here and then pushes the built image as `sha-<that>`, so
+# these two strings are the same by construction -- which is the whole reason
+# GET /api/version can compare what is running against what Harbor holds.
+#
+# Deliberately last among the ENVs and after every COPY: this layer changes on
+# every commit, so anything below it would be rebuilt every time. Nothing is.
+#
+# A local `docker build` passes no --build-arg, so GIT_SHA is empty and this
+# expands to the bare `sha-`. api/version.py treats that as `dev` rather than
+# as a tag, so an unstamped build says so instead of reporting a tag the
+# registry has never heard of.
+ARG GIT_SHA=""
+ENV AUTOPOSTER_VERSION=sha-${GIT_SHA}
 EXPOSE 8080
 CMD ["sh", "-c", "alembic upgrade head && python -m autoposter.main"]

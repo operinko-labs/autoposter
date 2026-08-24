@@ -81,12 +81,17 @@ def _external_id(item, guid_key: str) -> str | None:
     return guids.get(guid_key)
 
 
-def _source_path(item, kind: ArrKind) -> str | None:
+def source_path(item, kind: ArrKind) -> str | None:
     """The Plex-side path to register.
 
     A movie's location is its file; the service registers a folder, so the
     parent directory is used. A show's location is already the series
     directory, and is used as-is.
+
+    Public because the id-mismatch view (api/mismatches.py) pairs arr entries
+    with Plex items by exactly this path, the same way the collision guard
+    below does. A second implementation of it there would be a second answer
+    to "are these the same thing on disk".
     """
     locations = getattr(item, "locations", None) or []
     if not locations:
@@ -98,13 +103,20 @@ def _source_path(item, kind: ArrKind) -> str | None:
     return location
 
 
-def _norm(path: str) -> str:
+def norm_path(path: str) -> str:
+    """The normalisation ``ArrClient.paths_in`` keys its map by -- forward
+    slashes, no trailing slash, case preserved. Shared with the id-mismatch
+    view so both sides of that comparison are normalised identically."""
     return path.replace("\\", "/").rstrip("/")
 
 
-def _shares_tree(path: str, other: str) -> bool:
+def shares_tree(path: str, other: str) -> bool:
     """True when two normalised paths are the same directory, or one holds
     the other. Segment-wise, so ``/mnt/media2`` does not match ``/mnt/media``.
+
+    Public because the id-mismatch view (api/mismatches.py) uses it for the
+    same root-folder sanity check ``sync_section``'s guard below runs, before
+    it, too, trusts an arr instance's answers.
     """
     return path == other or path.startswith(other + "/") or other.startswith(path + "/")
 
@@ -197,9 +209,9 @@ async def sync_section(
     """
     guid_key = _GUID_KEY[kind.name]
 
-    arr_root = _norm(settings.arr_root)
-    root_folders = [_norm(path) for path in await client.root_folders()]
-    if not any(_shares_tree(arr_root, folder) for folder in root_folders):
+    arr_root = norm_path(settings.arr_root)
+    root_folders = [norm_path(path) for path in await client.root_folders()]
+    if not any(shares_tree(arr_root, folder) for folder in root_folders):
         raise ArrSyncRefused(
             f"configured arr path {settings.arr_root!r} shares no tree with any root "
             f"folder {kind.name} manages ({root_folders or 'none reported'}) -- probably "
@@ -232,8 +244,8 @@ async def sync_section(
 
         ext_id = _external_id(item, guid_key)
         if ext_id is None:
-            source_path = _source_path(item, kind)
-            mapped_for_check = map_path(source_path, settings.plex_root, settings.arr_root)
+            unmatched_path = source_path(item, kind)
+            mapped_for_check = map_path(unmatched_path, settings.plex_root, settings.arr_root)
             if mapped_for_check is not None and mapped_for_check.rstrip("/") in existing_paths:
                 present_by_path += 1
             else:
@@ -245,7 +257,7 @@ async def sync_section(
 
         missing += 1
 
-        mapped = map_path(_source_path(item, kind), settings.plex_root, settings.arr_root)
+        mapped = map_path(source_path(item, kind), settings.plex_root, settings.arr_root)
         if mapped is None:
             skipped_no_path += 1
             continue

@@ -429,3 +429,89 @@ async def test_run_worker_processes_jobs_normally_when_healthy(session_factory):
         stop_event.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+# --- cancellation requested while the job was running -------------------------
+
+
+async def _cancel_requested(session, job_id: int) -> None:
+    """What POST /api/jobs/{id}/cancel leaves on a job it found running."""
+    await session.execute(
+        text("UPDATE jobs SET cancel_requested = true WHERE id = :id"), {"id": job_id}
+    )
+    await session.commit()
+
+
+async def test_a_cancelled_job_is_dismissed_rather_than_rescheduled_on_failure(session):
+    # The operator cancelled this job mid-attempt. A finished render cannot be
+    # un-rendered, so the attempt is allowed to end -- but once it has ended in
+    # failure the cancellation is honoured: dismissed, not queued for another
+    # try, and regardless of how much retry budget is left.
+    async def handler(session_, intent):
+        raise RuntimeError("provider exploded")
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=50)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await _cancel_requested(session, job_id)
+
+    await run_once(session, "worker-1", _only_process_item(handler))
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "dismissed"
+    assert job.attempts < MAX_ATTEMPTS, "the budget was not what stopped it"
+
+
+async def test_a_cancelled_job_waiting_for_plex_is_also_dismissed(session):
+    # The ItemNotFound path has its own, much larger attempt budget, so a
+    # cancellation that only beat the generic cap would leave these retrying
+    # for another hour.
+    async def handler(session_, intent):
+        raise ItemNotFound("no Plex item for movie 'Dune'")
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=51)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await _cancel_requested(session, job_id)
+
+    await run_once(session, "worker-1", _only_process_item(handler))
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "dismissed"
+
+
+async def test_a_cancelled_job_that_succeeds_still_completes(session):
+    # A render that already happened cannot be taken back, and the upload with
+    # it. Reporting it as dismissed would be a false record of what the service
+    # did to the library.
+    handled = []
+
+    async def handler(session_, intent):
+        handled.append(intent)
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=52)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await _cancel_requested(session, job_id)
+
+    await run_once(session, "worker-1", _only_process_item(handler))
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "done"
+    assert len(handled) == 1
+
+
+async def test_an_uncancelled_job_still_reschedules_after_a_failure(session):
+    # The other side of the guard: nothing about the retry path changes for a
+    # job nobody cancelled.
+    async def handler(session_, intent):
+        raise RuntimeError("provider exploded")
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=53)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+
+    await run_once(session, "worker-1", _only_process_item(handler))
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "pending"

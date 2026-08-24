@@ -46,6 +46,12 @@ class Secrets(BaseModel):
     # api/auth.py and api/routes.py. Never a plaintext password, always a
     # bcrypt hash produced by hash_password().
     admin_password_hash: str = ""
+    # Soft secret, same reasoning as mdblist_apikey: the update check is one
+    # line in the sidebar, so a deployment without a Harbor robot account must
+    # still boot -- it simply reports what it is running and says nothing about
+    # newer. Already base64 of `robot$name:secret`, ready to be the value of an
+    # `Authorization: Basic` header; see api/version.py.
+    harbor_token: str = ""
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -59,6 +65,7 @@ class Secrets(BaseModel):
         values["radarr_apikey"] = os.environ.get("AUTOPOSTER_RADARR_APIKEY", "")
         values["sonarr_apikey"] = os.environ.get("AUTOPOSTER_SONARR_APIKEY", "")
         values["admin_password_hash"] = os.environ.get("AUTOPOSTER_ADMIN_PASSWORD_HASH", "")
+        values["harbor_token"] = os.environ.get("AUTOPOSTER_HARBOR_TOKEN", "")
         return cls(**values)
 
 
@@ -739,6 +746,26 @@ class NotificationsConfig(BaseModel):
     retry_count: int = Field(3, ge=1)
 
 
+class VersionCheckConfig(BaseModel):
+    """Where to ask what the newest deployable image is.
+
+    The registry, not the git history: a commit whose image failed to build or
+    failed the vulnerability scan was never pushed, so git would report an
+    update to something nobody can deploy. Harbor holds exactly the images that
+    exist.
+
+    ``harbor_url`` is null by default, which switches the check off entirely --
+    the endpoint then reports the running version and nothing about newer. It
+    is operator config and is never logged, returned or echoed anywhere; see
+    api/version.py for why that matters. The credential is not here: it is the
+    ``AUTOPOSTER_HARBOR_TOKEN`` environment variable, like every other secret.
+    """
+
+    harbor_url: str | None = None
+    project: str = ""
+    repository: str = ""
+
+
 class Config(BaseModel):
     assets_root: Path
     manual_assets_root: Path
@@ -769,4 +796,9 @@ class Config(BaseModel):
     sonarr: SonarrConfig = Field(default_factory=SonarrConfig)
     arr_sync: ArrSyncConfig = Field(default_factory=ArrSyncConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    version_check: VersionCheckConfig = Field(default_factory=VersionCheckConfig)
+    # Not a release number: the hash of every setting that changes what a
+    # render produces, computed by config/loader.py's render_version and
+    # stored on each Render row so a settings change can be detected as
+    # staleness. Unrelated to `version_check` above, which is about the image.
     version: str = ""

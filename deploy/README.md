@@ -111,6 +111,57 @@ variables:
   password. See "Web UI authentication" below: unlike the keys above, an
   unset value does not mean "no auth required", it means every login attempt
   401s.
+- `AUTOPOSTER_HARBOR_TOKEN` — optional, same posture as the MDBList key. See
+  "The sidebar's update check" below.
+
+### The sidebar's update check
+
+The sidebar shows the version the pod is running, and marks "Update
+available" when the Harbor registry holds a newer image. It is off until both
+halves are provided, and it is off safely — the version line still shows, with
+no marker.
+
+1. **A Harbor robot account.** In Harbor, under the project → Robot Accounts,
+   create one with `pull` and `list` on the `autoposter` repository (nothing
+   more; this account never pushes). Harbor shows the secret once. The
+   environment variable is not that secret but
+   `base64("robot$<name>:<secret>")` — the value of an `Authorization: Basic`
+   header, which is what the app sends verbatim:
+
+   ```sh
+   printf '%s' 'robot$autoposter-readonly:THE-SECRET' | base64 -w0
+   ```
+
+   Put the result in the ExternalSecret as `AUTOPOSTER_HARBOR_TOKEN`.
+
+2. **The registry to ask**, in `autoposter.yaml`:
+
+   ```yaml
+   version_check:
+     harbor_url: https://harbor.example.internal
+     project: operinko-labs
+     repository: autoposter
+   ```
+
+   `harbor_url` is deliberately config rather than a secret, but it is treated
+   as private all the same: it never appears in `GET /api/version`'s response,
+   in an event row, or in the log — a failed check logs the exception's class
+   name (plus, for an HTTP error from Harbor, the status code) and nothing
+   else. It is not read from the environment because it is not a credential
+   and belongs beside the other things an operator tunes.
+
+The check is cached in-process for fifteen minutes per `harbor_url` /
+`project` / `repository` combination, so the registry sees at most four
+requests an hour per pod however many browser tabs are open. The cache is
+keyed on that triple, so editing the block above is answered by a fresh check
+immediately rather than from the old target until the window expires.
+
+The comparison only works because the image knows its own tag: CI passes the
+commit's short sha to `docker build` as `GIT_SHA`, the Dockerfile stamps it as
+`AUTOPOSTER_VERSION=sha-<it>`, and the same job pushes the image under that
+exact tag. An image built any other way reports `dev`, and a `dev` pod with a
+reachable registry always shows the marker — correctly, since it is running
+something that was never published.
 
 None of these are read from the YAML config file.
 

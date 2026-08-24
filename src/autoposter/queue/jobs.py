@@ -162,12 +162,30 @@ async def complete(session: AsyncSession, job_id: int) -> None:
 async def fail(
     session: AsyncSession, job_id: int, error: str, max_attempts: int = MAX_ATTEMPTS
 ) -> str:
-    """Reschedule with exponential backoff, or park once attempts are exhausted."""
+    """Reschedule with exponential backoff, or park once attempts are exhausted.
+
+    A job an operator cancelled while it was running is dismissed here instead,
+    whatever budget it had left. This is the only place that decides what
+    happens after a failed attempt -- both of ``run_once``'s failure branches
+    come through it, the ItemNotFound/Plex-wait one included, and that one
+    carries the far larger ``resolve_max_attempts`` budget. Honouring the
+    cancellation at the caller instead would have to be written twice and would
+    let the Plex-wait path keep retrying for another hour.
+    """
+    # Read without FOR UPDATE, unlike cancel_job's own read of this row: a
+    # cancel that commits between this SELECT and the UPDATE below is missed
+    # here, so this failure reschedules the job instead of dismissing it. That
+    # is benign, not a bug to close -- cancel_requested is still True on the
+    # row afterwards, so the job's *next* failure sees it and dismisses the job
+    # there. The race costs the cancel one extra attempt; it never loses the
+    # cancel. Locking here was reviewed and judged not worth it for that.
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     job.last_error = error
     job.claimed_by = None
     job.claimed_at = None
-    if job.attempts >= max_attempts:
+    if job.cancel_requested:
+        job.state = "dismissed"
+    elif job.attempts >= max_attempts:
         job.state = "parked"
     else:
         job.state = "pending"
