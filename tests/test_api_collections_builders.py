@@ -478,6 +478,35 @@ async def test_one_unreadable_library_does_not_take_the_whole_preview_down(
     )
 
 
+async def test_a_bundle_construction_failure_is_a_library_failure_not_a_500(
+    client, auth_headers, monkeypatch
+):
+    """Fix round F4: the source bundle used to be built once, above the
+    per-library loop and its ``try``, so a raise there took down the whole
+    preview with a 500 -- the exact thing this endpoint's own docstring
+    promises never happens to one library's failure (see
+    ``test_one_unreadable_library_does_not_take_the_whole_preview_down``)."""
+    def _boom(config, secrets, http, cache):
+        raise RuntimeError("the bundle blew up")
+
+    monkeypatch.setattr(
+        "autoposter.api.collections_builders.build_source_clients", _boom
+    )
+
+    response = await client.post(
+        "/api/collections/preview", json={}, headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    movies = [d for d in response.json()["definitions"] if d["library"] == "Movies"]
+    assert movies == [{
+        "title": "(library)", "library": "Movies",
+        "adding": 0, "removing": 0, "deleting": 0, "unresolved": 0,
+        "failed": True, "skipped": True,
+        "actions": ["Movies: could not be previewed (RuntimeError)"],
+    }]
+
+
 # --- roadmap row 28: the lifecycle operations ------------------------------
 
 

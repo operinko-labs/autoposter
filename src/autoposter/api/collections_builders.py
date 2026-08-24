@@ -161,9 +161,6 @@ async def preview_collections(
     # whose source clients were fixed at startup would answer for a
     # configuration the next real pass is not going to run.
     secrets = getattr(request.app.state, "secrets", None)
-    sources = (
-        build_source_clients(config, secrets, http, cache) if secrets is not None else None
-    )
 
     definitions_out: list[dict] = []
     actions: list[str] = []
@@ -172,6 +169,14 @@ async def preview_collections(
             if body.library is not None and name != body.library:
                 continue
             try:
+                # Built inside the per-library try, not once above the loop:
+                # a construction failure here is a library-level failure like
+                # any other, and must become that library's failure entry
+                # rather than a 500 for the whole preview.
+                sources = (
+                    build_source_clients(config, secrets, http, cache)
+                    if secrets is not None else None
+                )
                 section = server.library.section(name)
                 library_type = LIBRARY_TYPES.get(section.type)
                 if library_type is None:

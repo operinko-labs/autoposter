@@ -18,6 +18,7 @@ import pytest
 from plexapi.exceptions import NotFound
 from sqlalchemy import select
 
+from autoposter.collections.builders import SourceClients
 from autoposter.collections.service import (
     LibraryOutcome,
     ReconcileResult,
@@ -238,7 +239,35 @@ async def test_the_cli_exits_zero_when_every_library_succeeded(monkeypatch):
     await cli.main()  # must not raise SystemExit
 
 
-def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile):
+async def test_the_cli_threads_a_real_source_bundle_to_the_reconcile(monkeypatch):
+    """Fix round F3: ``BuilderContext.sources`` defaults via
+    ``default_factory``, so if ``main()`` ever stopped building and passing
+    the bundle, every source-backed builder would just silently see "not
+    configured" -- no error, nothing at config load or runtime. Pin that the
+    CLI actually threads a REAL bundle carrying this run's secret, not the
+    empty default ``build_source_clients`` is never even called to produce."""
+    import autoposter.collections.__main__ as cli
+
+    captured = {}
+
+    async def fake_reconcile(session, server, config, http, summaries=None, **kwargs):
+        captured.update(kwargs)
+        return ReconcileResult(libraries=[LibraryOutcome(library="Movies")])
+
+    _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, mdblist_apikey="the-real-key")
+
+    await cli.main()
+
+    sources = captured["sources"]
+    assert sources is not None and sources != SourceClients(), (
+        "the CLI must pass the real bundle, not the empty default"
+    )
+    assert sources.mdblist is not None and sources.mdblist._apikey == "the-real-key", (
+        "the bundle must carry this run's secrets, not someone else's"
+    )
+
+
+def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, mdblist_apikey=""):
     """Replace everything ``main()`` touches outside its own logic: config
     loading, the Plex connection, the engine and the reconcile itself. What
     is under test here is only what ``main()`` does with the summary."""
@@ -277,7 +306,7 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile):
                 plex_token="t", tmdb_token="t", database_url="postgresql://x",
                 # The soft secrets the bundle reads. Empty is the real default
                 # for every one of them, and means "not configured".
-                tvdb_apikey="t", mdblist_apikey="", radarr_apikey="",
+                tvdb_apikey="t", mdblist_apikey=mdblist_apikey, radarr_apikey="",
                 sonarr_apikey="", plex_account_token="",
             )
         ),

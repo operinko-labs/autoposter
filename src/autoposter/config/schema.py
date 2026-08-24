@@ -364,13 +364,20 @@ class CollectionDefinition(BaseModel):
         nothing to hold it to. And an *expanding* builder's model describes
         the units it expands into, not the placeholder an operator writes --
         ``imdb_award_years`` takes a year, and no placeholder can name one,
-        which is the whole reason it expands.
+        which is the whole reason it expands. That second exemption is
+        narrowed to an **empty** ``params``, though: the engine never reads a
+        placeholder's params at all (``expand`` builds its own), so anything
+        an operator puts there is never even a runtime error -- it is
+        silently ignored forever. Exempting the whole dict would let
+        ``params: {garbage: 1}`` on ``imdb_award_years`` load clean and stay
+        wrong indefinitely; the shipped placeholder ships with ``params: {}``,
+        which still loads.
         """
         from autoposter.collections.builders import REGISTRY
 
         builder = REGISTRY.get(self.builder)
         model = getattr(builder, "params_model", None)
-        if model is None or hasattr(builder, "expand"):
+        if model is None or (hasattr(builder, "expand") and not self.params):
             return self
         try:
             model.model_validate(self.params)

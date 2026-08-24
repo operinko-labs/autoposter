@@ -14,8 +14,10 @@ import httpx
 import pytest
 from plexapi.exceptions import NotFound
 
-from autoposter.collections.service import CollectionsPassFailed
+from autoposter.collections.builders import SourceClients
+from autoposter.collections.service import CollectionsPassFailed, ReconcileResult
 from autoposter.config.holder import ConfigHolder
+from autoposter.config.schema import Secrets
 from autoposter.scheduler.jobs import make_collections_job
 
 LABEL = "autoposter"
@@ -188,6 +190,47 @@ async def test_a_failure_reconciling_one_library_does_not_prevent_the_other(sess
     detail = str(failure.value)
     assert "Movies: 2 action(s)" in detail
     assert "TV Shows" in detail and "failed" in detail.lower()
+
+
+async def test_a_real_secrets_bundle_reaches_the_reconcile(session, monkeypatch):
+    """Fix round F3: ``sources`` defaults via ``default_factory``
+    (``BuilderContext.sources``), so a forgotten wiring here would silently
+    degrade every source-backed builder to "not configured" -- no error, no
+    failed collection, nothing. Pin that the job actually builds and threads
+    a REAL bundle carrying this run's secret, not the empty default."""
+    captured = {}
+
+    async def fake_reconcile(session, server, config, http, **kwargs):
+        captured.update(kwargs)
+        return ReconcileResult()
+
+    monkeypatch.setattr("autoposter.scheduler.jobs.reconcile_libraries", fake_reconcile)
+
+    secrets = Secrets(
+        database_url="postgresql+asyncpg://unused", plex_token="x", tmdb_token="x",
+        tvdb_apikey="x", fanart_apikey="x", webhook_secret="x",
+        mdblist_apikey="the-real-key",
+    )
+    config = _config(["Movies"])
+    # build_source_clients reads these sections too; _config's shared shape
+    # has no reason to carry them since every other test here passes no
+    # secrets and never reaches that call.
+    config.providers = SimpleNamespace(cache_ttl_seconds=0)
+    config.radarr = SimpleNamespace(enabled=False, base_url="")
+    config.sonarr = SimpleNamespace(enabled=False, base_url="")
+    server = FakeServer({"Movies": FakeSection({"R"})})
+
+    async with httpx.AsyncClient() as http:
+        job = make_collections_job(ConfigHolder(config), lambda: server, http, secrets=secrets)
+        await job.run(session)
+
+    sources = captured["sources"]
+    assert sources is not None and sources != SourceClients(), (
+        "the job must pass the real bundle, not the empty default"
+    )
+    assert sources.mdblist is not None and sources.mdblist._apikey == "the-real-key", (
+        "the bundle must carry this run's secrets, not someone else's"
+    )
 
 
 async def test_the_plex_connection_runs_off_the_event_loop(session):

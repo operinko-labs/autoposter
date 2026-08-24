@@ -275,6 +275,22 @@ def test_an_expanding_definitions_placeholder_is_not_held_to_the_params_model():
     assert definition.params == {}
 
 
+def test_a_non_empty_placeholder_params_is_still_held_to_the_params_model():
+    """Fix round F1: the exemption above is narrowed to an *empty* params
+    dict, not the whole builder. The engine never reads a placeholder's
+    params -- ``expand`` builds its own -- so garbage left there used to load
+    clean and stay wrong forever, never even a runtime error. Non-empty
+    params on an expanding builder must fail here, at config load, exactly
+    like any other builder's."""
+    document = _document_with_definitions([
+        {"title": AWARD_YEARS_TITLE, "builder": "imdb_award_years",
+         "params": {"garbage": 1}}
+    ])
+
+    with pytest.raises(ValidationError, match="garbage"):
+        build_config(document)
+
+
 def test_the_example_config_declares_definitions_as_a_real_key():
     """`test_example_config_matches_schema.py` reads the example with
     `yaml.safe_load`, which cannot see comments -- so a purely commented-out
