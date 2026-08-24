@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 
+import { apiFetch } from "../api/client";
+import type { VersionResponse } from "../api/types";
 import { useSession } from "../auth/SessionContext";
 import logoMark from "../assets/logo-small.svg";
 import "./shell.css";
@@ -111,7 +113,33 @@ export function Sidebar() {
     writeStored(next);
   };
 
+  // Fetched once, at mount, and never polled. The server caches Harbor's
+  // answer for fifteen minutes, so a refetch would mostly re-read the same
+  // string; and the sidebar mounts on every full page load, which is often
+  // enough for a line that changes when the pod is replaced. A failure leaves
+  // this null and the line simply does not render -- the shell must not show
+  // an error for a decoration.
+  const [version, setVersion] = useState<VersionResponse | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch<VersionResponse>("/api/version")
+      .then((response) => {
+        if (!cancelled) setVersion(response);
+      })
+      .catch(() => {
+        // Including the 401 on a dead session: `apiFetch` has already routed
+        // to the login form by then, and this is the one caller with nothing
+        // to say about it.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const toggleLabel = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  // Only a true is a marker. A null means the registry was not asked or could
+  // not be reached, which is not evidence of being up to date.
+  const updateAvailable = version?.update_available === true;
 
   return (
     <nav className={collapsed ? "sidebar collapsed" : "sidebar"}>
@@ -160,6 +188,25 @@ export function Sidebar() {
           </li>
         ))}
       </ul>
+
+      {/* Above Sign out, and only once the answer is in: a version line that
+          renders empty and then fills would shift the two controls under the
+          operator's cursor. Both the tag and the marker's text live in
+          `.sidebar-label`, so the collapsed rail clips them out of sight while
+          keeping them in the accessibility tree -- the same treatment every
+          link above gets. What survives the collapse is the marker's dot,
+          named by that clipped label and by `title`. */}
+      {version !== null && (
+        <div className="sidebar-version">
+          <span className="sidebar-label sidebar-version-tag">{version.version}</span>
+          {updateAvailable && (
+            <span className="sidebar-update" title="Update available">
+              <span className="sidebar-update-dot" aria-hidden="true" />
+              <span className="sidebar-label">Update available</span>
+            </span>
+          )}
+        </div>
+      )}
 
       <button
         className="sidebar-logout"

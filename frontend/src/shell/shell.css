@@ -148,6 +148,68 @@
   padding: 9px 0;
 }
 
+/* The running version, above Sign out. Deliberately quiet: it answers a
+ * question an operator asks occasionally and must never compete with the
+ * navigation. `flex-wrap` rather than a fixed row -- the tag and the marker
+ * together are wider than the 210px rail, so the marker takes a second line
+ * instead of widening the sidebar or being clipped. */
+.sidebar-version {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Monospace: a sha is read character by character when it is compared against
+ * a deploy, and a proportional font makes that harder than it needs to be. */
+.sidebar-version-tag {
+  font-family: var(--font-mono);
+}
+
+/* Informational, not a warning. The accent this application is identified by
+ * rather than --warn: an available update is good news, and an amber or red
+ * marker sitting permanently in the shell of a self-hosted service reads as a
+ * fault to be cleared. */
+.sidebar-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  /* The clipped `.sidebar-label` inside is positioned absolutely, so this has
+   * to be the box it is positioned against -- without it the label would clip
+   * relative to the sidebar and could drag its scroll height. */
+  position: relative;
+}
+
+.sidebar-update-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Collapsed, the tag and the marker's text are clipped by the shared
+ * `.sidebar-label` rule, leaving the dot alone. It keeps its name from that
+ * clipped label and from `title`, exactly like the icon-only links above. */
+.sidebar.collapsed .sidebar-version {
+  justify-content: center;
+  margin: 0 8px;
+}
+
+.sidebar.collapsed .sidebar-update {
+  padding: 4px;
+  border-color: transparent;
+}
+
 .sidebar-logout {
   display: flex;
   align-items: center;
