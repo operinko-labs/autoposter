@@ -56,22 +56,24 @@ this is named rather than range-checked: an untested check against a residual
 nothing here can trigger is worse than an honest docstring.
 
 **``100.64.0.0/10`` (RFC 6598, "shared address space" -- the CGNAT range) is
-checked, not left as a residual like the two ranges above.** It is reserved
-and not globally routable, so a defense-in-depth guard should refuse to fetch
-into it regardless of whether any specific host lives there. Unlike NAT64 and
-6to4, this needs no translator on the
-path: a service listening on a ``100.64.0.0/10`` address is a direct fetch
-target the moment ``getaddrinfo`` resolves a name onto it, or an operator
-types the literal. ``ipaddress`` classifies neither ``is_private`` nor
-``is_global`` as ``True`` for this range -- its own ``is_private`` docstring
-calls it out by name as the one range where the two properties are not
-opposites -- so ``_address_refusal`` checks membership in the network
-explicitly rather than folding it into the property loop above. A blanket
-``not is_global`` would also catch it, but ``is_global`` is ``False`` for
-every unassigned/reserved range too (and would need auditing against this
-deployment's real target set to rule out over-rejection); the explicit
-network is the narrower, unambiguous fix for the one range actually in use
-here.
+checked, not left as a residual like the two ranges above.** It is reserved,
+non-globally-routable address space -- IANA allocated it for carrier-grade
+NAT, not for hosts a public client is meant to reach -- so a defense-in-depth
+guard should refuse to fetch into it as a matter of not fetching reserved
+address space, independent of whether any specific host happens to live there
+in this deployment. Unlike NAT64 and 6to4, there is no "needs a translator on
+the path" argument for leaving it unchecked: a resolved or literal address in
+this range is a live target the moment ``getaddrinfo`` answers with one, or an
+operator types it, with nothing else required to sit in the middle.
+``ipaddress`` classifies neither ``is_private`` nor ``is_global`` as ``True``
+for it, though -- its own ``is_private`` docstring calls it out by name as the
+one range where the two properties are not opposites -- so
+``_address_refusal`` checks membership in the network explicitly rather than
+folding it into the property loop above. A blanket ``not is_global`` would
+also catch it, but ``is_global`` is ``False`` for every unassigned/reserved
+range too (and would need auditing to rule out over-rejecting a legitimate
+target); the explicit network is the narrower, unambiguous fix for a range
+that is reserved regardless of what, if anything, this deployment runs on it.
 
 **A refusal never names the URL.** The pick endpoint could log a candidate
 URL's host, because a provider client had just produced it. A source typed by

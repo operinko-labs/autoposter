@@ -131,7 +131,7 @@ async def test_the_metadata_service_is_refused_and_never_requested(transport, de
         ("[::ffff:169.254.169.254]", "the IPv4-mapped spelling of the metadata service"),
         ("[::ffff:10.0.0.5]", "the IPv4-mapped spelling of an RFC1918 address"),
         ("[::ffff:224.0.0.1]", "the IPv4-mapped spelling of a multicast address"),
-        ("100.64.0.1", "CGNAT: RFC 6598 shared address space (this deployment's Tailscale range)"),
+        ("100.64.0.1", "CGNAT: RFC 6598 shared address space, reserved and non-globally-routable"),
         ("100.100.100.100", "CGNAT: well inside 100.64.0.0/10, not just its first address"),
     ],
 )
