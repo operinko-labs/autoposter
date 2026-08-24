@@ -359,6 +359,31 @@ class CollectionDefinition(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _hub_priority_needs_a_promotion(self) -> "CollectionDefinition":
+        """``hub_priority`` is "only meaningful once the collection is
+        promoted to a hub by one of the visible_* flags above" (see that
+        field's comment) -- and that is not just documentation. plexapi's
+        ``ManagedHub.move`` raises ``BadRequest`` on a hub that has never been
+        promoted (pinned in
+        ``test_managed_hub_move_requires_the_hub_to_be_promoted``), and
+        ``visibility()`` synthesises exactly that unpromoted hub for a
+        collection with none. A definition setting ``hub_priority`` alone
+        would fail on its very first pass -- caught here, at config load,
+        with the real cause, instead of surfacing as a misleading "Plex Pass"
+        report mid-run.
+        """
+        if self.hub_priority is not None and all(
+            flag is None
+            for flag in (self.visible_library, self.visible_home, self.visible_shared)
+        ):
+            raise ValueError(
+                "'hub_priority' requires at least one of 'visible_library', "
+                "'visible_home' or 'visible_shared' to promote the collection "
+                "to a managed hub first"
+            )
+        return self
+
 
 def definition_config_hash(definition: CollectionDefinition) -> str:
     """A content hash of one definition, for detecting edits.

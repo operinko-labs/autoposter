@@ -275,7 +275,12 @@ class ManagedCollection(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     library: Mapped[str] = mapped_column(String(128), index=True)
     title: Mapped[str] = mapped_column(String(255))
-    # smart | manual | separator
+    # smart | manual | separator | operator
+    # "operator" is a row an operator created directly through a lifecycle
+    # endpoint (``api/collections_builders.py::blank_collection``) rather than
+    # a definition -- no definition enumerates its title, so it needs its own
+    # durable marker to stay out of ``engine._sweep``'s "no definition builds
+    # this any more" candidates. Never written except by that endpoint.
     kind: Mapped[str] = mapped_column(String(16), default="smart")
     plex_rating_key: Mapped[str | None] = mapped_column(String(32))
     # Hash of the desired filter and summary, so an unchanged pass writes nothing.

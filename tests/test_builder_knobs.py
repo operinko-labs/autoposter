@@ -502,6 +502,38 @@ async def test_a_dry_run_lists_the_would_deletes_without_deleting(session):
     ).scalar_one_or_none() is not None
 
 
+async def test_an_operator_created_blank_survives_the_sweep(session):
+    """Fix round item 3: ``ops/blank`` labels its collection and writes a
+    managed row that no definition enumerates -- with
+    ``delete_unconfigured: true`` the next pass would otherwise read it as
+    exactly the kind of orphan this sweep exists to clean up, and delete what
+    the operator just made. Its row is marked ``kind="operator"`` for
+    exactly this reason; the sweep must recognise and report it rather than
+    delete it, regardless of ``delete_unconfigured``."""
+    blank = FakeCollection("Divider", [], labels=[LABEL])
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[blank])
+    session.add(ManagedCollection(
+        library="Movies", title="Divider", kind="operator",
+        plex_rating_key="c-Divider", definition_hash="",
+    ))
+    await session.flush()
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [],
+        _config(delete_unconfigured=True), sweep=True,
+    )
+
+    assert blank.deleted is False
+    assert any("Divider" in action for action in run.actions), (
+        "the exemption must be visible, not a silent skip"
+    )
+    assert (
+        await session.execute(
+            select(ManagedCollection).where(ManagedCollection.title == "Divider")
+        )
+    ).scalar_one_or_none() is not None
+
+
 async def test_a_delete_is_recorded_as_an_event(session):
     orphan = FakeCollection("Retired Chart", [FakeItem("m1")], labels=[LABEL])
     section = FakeSection([("m1", ["imdb://tt1"])], existing=[orphan])

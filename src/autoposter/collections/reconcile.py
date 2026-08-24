@@ -46,9 +46,24 @@ SEPARATOR_HASH = hashlib.sha256(
 ).hexdigest()
 
 
-def definition_hash(bucket: Bucket) -> str:
-    """Hash the desired filter and summary, so an unchanged pass writes nothing."""
-    payload = "\x1f".join([bucket.title, bucket.summary, *bucket.values])
+def definition_hash(bucket: Bucket, settings=None) -> str:
+    """Hash the desired filter, summary, and ride-along settings.
+
+    ``settings`` folds in the same way ``lists._settings_parts`` folds it into
+    the list-collection members hash, and for the same reason: a pass
+    short-circuits on this hash, so a definition whose only edit was a new
+    label or sort title would otherwise be recognised as already current and
+    the edit would never be applied. Imported locally -- ``lists.py`` imports
+    from this module at load time, so a module-level import here would be a
+    cycle. Settings contribute nothing at their defaults, which is what keeps
+    every hash already stored matching: this is not a re-render storm on
+    deploy.
+    """
+    from autoposter.collections.lists import _settings_parts
+
+    payload = "\x1f".join([
+        bucket.title, bucket.summary, *bucket.values, *_settings_parts(settings),
+    ])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -271,10 +286,13 @@ def _apply_hub(section, collection, definition) -> list[str]:
             "could not set the hub visibility of %r; a Plex Pass is required",
             collection.title,
         )
-        return [
+        # Appended, not returned: a visibility write that already succeeded
+        # above must not be reported as total failure just because the move
+        # after it failed.
+        actions.append(
             "could not set the hub visibility of %r: see logs (a Plex Pass is "
             "required for hub pinning)" % collection.title
-        ]
+        )
     return actions
 
 
@@ -541,7 +559,7 @@ async def reconcile_content_ratings(
             # and leave any existing collection exactly as it is.
             continue
 
-        wanted = definition_hash(bucket)
+        wanted = definition_hash(bucket, settings)
         collection = existing.get(bucket.title)
 
         if collection is not None:

@@ -289,6 +289,21 @@ def test_collection_visibility_returns_a_managed_hub():
     )
 
 
+def test_managed_hub_move_requires_the_hub_to_be_promoted():
+    """``move`` raises ``BadRequest`` on a hub that ``visibility()``
+    synthesised for a never-promoted collection (``_promoted = False``,
+    pinned above) -- exactly the case ``hub_priority`` set without any
+    ``visible_*`` flag would hit on its very first pass.
+    ``CollectionDefinition`` refuses that combination at config load
+    (``_hub_priority_needs_a_promotion``) precisely because this call has no
+    other way to succeed."""
+    from plexapi.library import ManagedHub
+
+    source = inspect.getsource(ManagedHub.move)
+    assert "if not self._promoted:" in source
+    assert "raise BadRequest" in source
+
+
 @pytest.mark.parametrize(
     "name,required",
     [

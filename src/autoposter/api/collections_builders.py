@@ -336,7 +336,14 @@ async def blank_collection(
     async with request.app.state.session_factory() as session:
         if await _managed_row(session, body.library, body.title) is None:
             session.add(ManagedCollection(
-                library=body.library, title=body.title, kind="separator",
+                # "operator", not "separator": this row is not the Common
+                # Sense family's divider, and reusing that kind would leave
+                # it with no marker of its own -- ``engine._sweep`` skips
+                # "operator" rows specifically because no definition
+                # enumerates this title, so nothing else would keep the next
+                # ``delete_unconfigured`` pass from deleting what an operator
+                # just made.
+                library=body.library, title=body.title, kind="operator",
                 plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
                 # No definition builds it, so there is no desired state to
                 # hash. The empty string is not a hash any pass can produce,

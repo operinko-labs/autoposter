@@ -495,6 +495,19 @@ async def _sweep(
     for title, collection in listing().items():
         if title in managed or title not in rows:
             continue
+        if rows[title].kind == "operator":
+            # An operator created this directly (``ops/blank``) -- no
+            # definition enumerates its title, so it always lands here, and
+            # it must never be swept just because nothing builds it. Reported
+            # rather than silently skipped, and regardless of
+            # ``delete_unconfigured``: that setting decides what an
+            # unattended pass may delete, and this was never such a
+            # candidate in the first place.
+            results.append(_swept(title, library, (
+                "%r was created by an operator, not any definition; "
+                "the sweep never deletes it" % title
+            )))
+            continue
         load_labels(collection)
         protecting = protected_label(collection, config.collections.protect_labels or [])
         if protecting is not None:

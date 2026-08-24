@@ -9,10 +9,13 @@ import pytest
 from plexapi.exceptions import NotFound
 from sqlalchemy import select
 
+from autoposter.collections.buckets import Bucket
 from autoposter.collections.reconcile import (
     _edit_collection_summary,
+    definition_hash,
     reconcile_content_ratings,
 )
+from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ManagedCollection
 
 LABEL = "autoposter"
@@ -291,6 +294,48 @@ async def test_smart_collection_rows_never_get_reconcile_stats(session):
         assert row.last_added is None
         assert row.last_removed is None
         assert row.last_reconciled_at is None
+
+
+# --- fix round: the smart hash carries the ride-along settings too ---------
+#
+# ``lists.py``'s members hash already folds in the ride-along settings
+# (labels, sort title, mode, hub visibility) so a settings-only edit is not
+# recognised as "already current" and silently skipped. The smart family's
+# ``definition_hash`` did not -- these are its twin of ``lists.py``'s
+# ``test_a_definition_with_no_settings_hashes_exactly_as_before`` and
+# ``test_a_settings_only_edit_is_applied_to_an_unchanged_membership``.
+
+
+def test_a_definition_with_no_settings_hashes_exactly_as_before():
+    """A definition at its defaults must hash exactly as the shipped code
+    did, or the fold would re-reconcile every managed bucket already in a
+    library for no actual change -- a re-render storm on deploy."""
+    bucket = Bucket(key="17", title="Age 17+ Movies", summary="a summary", values=("R", "17"))
+    plain = CollectionDefinition(title="X", builder="cs_bucket")
+
+    assert definition_hash(bucket) == definition_hash(bucket, plain)
+
+
+async def test_a_settings_only_edit_is_applied_to_an_unchanged_smart_membership(session):
+    """The property the hash test above exists for, end to end: two passes
+    over the same bucket filter, the second with a label the first did not
+    have. Before the fold, the second pass short-circuited on the unchanged
+    filter hash and the label was silently never written."""
+    section = FakeSection({"R", "17"})
+    plain = CollectionDefinition(title="X", builder="cs_bucket")
+
+    await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False, settings=plain
+    )
+    collection = section._existing["Age 17+ Movies"]
+    collection.labels_added = []
+
+    await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False,
+        settings=plain.model_copy(update={"labels": ["Added Later"]}),
+    )
+
+    assert "Added Later" in collection.labels_added
 
 
 # --- The summary helper itself (_edit_collection_summary) ----------------

@@ -554,7 +554,12 @@ async def test_a_blank_collection_is_created_labelled_and_recorded(
     row = (await session.execute(
         select(ManagedCollection).where(ManagedCollection.title == "Divider")
     )).scalar_one()
-    assert row.kind == "separator"
+    assert row.kind == "operator"
+    event = (await session.execute(
+        select(EventLog).where(EventLog.event_type == "collection_blanked")
+    )).scalar_one()
+    assert event.payload == {"library": "Movies", "title": "Divider"}
+    assert "http" not in event.outcome
 
 
 async def test_a_blank_collection_never_overwrites_an_existing_title(

@@ -73,6 +73,14 @@ class FakeHub:
         self.moved_after.append(after)
 
 
+class FailingMoveHub(FakeHub):
+    """A hub whose visibility write succeeds but whose move fails -- the
+    fix round's partial-success case (item 2c)."""
+
+    def move(self, after=None):
+        raise RuntimeError("https://plex.local/hubs/move?token=SECRET failed")
+
+
 class FakeCollection:
     """``test_builder_knobs.py``'s fake plus the ride-along surface."""
 
@@ -582,6 +590,43 @@ async def test_a_server_without_a_plex_pass_reports_and_carries_on(
     assert [i.ratingKey for i in live._live] == ["m1"], (
         "the membership still reconciled"
     )
+
+
+async def test_a_failed_move_does_not_discard_a_successful_visibility_write(
+    session, registry_entry
+):
+    """Fix round item 2c: a successful ``updateVisibility`` before a failed
+    ``move`` must not be reported as total failure -- the operator would
+    otherwise be told the hub pinning failed when half of it actually
+    worked."""
+    registry_entry(_Listing("settings_hub_move_fails", [("imdb", "tt1")]))
+    mine = FailingMoveHub("hub.mine")
+    live = FakeCollection("Pinned", labels=[LABEL], hub=mine)
+    section = _one_item_section(existing=[live], hubs=[mine])
+
+    actions = await _run(session, section, [CollectionDefinition(
+        title="Pinned", builder="settings_hub_move_fails",
+        visible_home=True, hub_priority=0,
+    )])
+
+    assert mine.visibility_calls == [(None, True, None)], "the visibility write ran"
+    assert any(
+        "set the hub visibility of 'Pinned'" in a for a in actions
+    ), "the successful write must still be reported"
+    assert any("could not" in a for a in actions), "and the failed move too"
+    assert not any("token" in a or "http" in a for a in actions)
+
+
+def test_hub_priority_alone_is_refused_when_the_config_loads():
+    """Fix round item 2b: ``hub_priority`` without any ``visible_*`` flag
+    would hit plexapi's ``ManagedHub.move`` on a hub ``visibility()`` never
+    promoted -- a guaranteed ``BadRequest`` on the first pass, which
+    ``_apply_hub`` used to misreport as a missing Plex Pass. Caught here,
+    at config load, with the real cause."""
+    with pytest.raises(ValueError, match="hub_priority"):
+        CollectionDefinition(
+            title="Pinned", builder="plex_id", params={"ids": ["1"]}, hub_priority=0,
+        )
 
 
 # --- row 69: labels on the members -----------------------------------------
