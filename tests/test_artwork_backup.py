@@ -211,6 +211,34 @@ async def test_backup_all_fail_status_is_not_success(session, config, http_servi
     assert response["written"] == 0 and response["failed"] == 2
 
 
+async def test_backup_skips_an_unnumbered_title_card_rather_than_raising(
+    session, config, backup_root, http_serving
+):
+    """Plex's TV agent really does hand back ``index: None`` -- year-grouped
+    specials, 74 of 12,694 episodes on the production server. ``asset_path``
+    cannot name a file for one, so the walk asks ``naming.missing_number``
+    first and skips it. Without the guard the ValueError escapes mid-walk and
+    the trigger 500s after a partial tree has already been written."""
+    await _add_item(
+        session, rating_key="rk-ok", kind="episode", library="TV Shows",
+        root_folder="The Show", season=1, episode=2,
+    )
+    await _add_item(
+        session, rating_key="rk-bad", kind="episode", library="TV Shows",
+        root_folder="The Show", season=2021, episode=None,
+    )
+    plex = FakePlexClient({
+        "rk-ok": FakeItem(thumb="/thumb"), "rk-bad": FakeItem(thumb="/thumb"),
+    })
+
+    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+
+    # The walk finished: the numbered episode is on disk and the unnumbered one
+    # is counted, not fatal.
+    assert (result.items, result.written, result.skipped, result.failed) == (2, 1, 1, 0)
+    assert (backup_root / "TV Shows" / "The Show" / "S01E02.jpg").read_bytes() == POSTER_BYTES
+
+
 async def test_backup_backs_up_a_title_card_at_the_episode_path(
     session, config, backup_root, http_serving
 ):

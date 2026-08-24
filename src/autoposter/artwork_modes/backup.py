@@ -56,7 +56,8 @@ class BackupResult:
     general. Two situations never reach kind granularity and count once
     against the whole item instead: no ``root_folder`` to file assets under
     (``skipped``), and a Plex item that could not be fetched at all
-    (``failed``).
+    (``failed``). ``skipped`` also absorbs a kind whose file name cannot be
+    built -- an episode Plex reports no number for (``naming.missing_number``).
     """
 
     items: int
@@ -165,6 +166,21 @@ class BackupMode:
             # Per-(item, kind) tally: a partial item (one kind writes, another
             # errors) must show up in both written and failed, not just one.
             for art_kind in ART_KINDS_FOR[row.kind]:
+                # The adoption walk's and the render pipeline's guard, for the
+                # same reason: Plex's TV agent hands back ``index: None`` for
+                # year-grouped specials, and ``asset_path`` cannot name a file
+                # without the number. Unguarded it raises mid-walk, so the
+                # trigger 500s after a partial tree is already on disk.
+                missing = naming.missing_number(
+                    art_kind, row.season_number, row.episode_number
+                )
+                if missing is not None:
+                    logger.warning(
+                        "backup: %s (rating_key %s) has no %s -- skipping its %s",
+                        row.kind, row.rating_key, missing, art_kind,
+                    )
+                    skipped += 1
+                    continue
                 try:
                     fetched = await fetch_artwork(
                         self._http, plex_item, base_url, self._headers, art_kind

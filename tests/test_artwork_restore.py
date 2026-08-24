@@ -107,7 +107,7 @@ async def test_dry_run_pushes_nothing(session, config, backup_root):
     assert item.uploaded == []
     assert result.as_response() == {
         "mode": "restore", "status": "dry run", "dry_run": True, "items": 1,
-        "items_with_backup": 1, "files": 1,
+        "items_with_backup": 1, "files": 1, "skipped": 0,
     }
 
 
@@ -223,6 +223,29 @@ async def test_restore_skips_an_item_with_no_backup_file(session, config, backup
     assert item.uploaded == []
 
 
+async def test_restore_skips_an_unnumbered_title_card_rather_than_raising(
+    session, config, backup_root
+):
+    """The planning phase's half of the same guard the backup walk carries:
+    ``asset_path`` cannot name a file for an episode Plex reports no ``index``
+    for, so the row is skipped and counted. Without it the ValueError escapes
+    while planning and the trigger 500s before it pushes anything at all."""
+    await _add_item(session, rating_key="rk-ok", kind="episode", library="TV Shows",
+                    root_folder="The Show", season=1, episode=2)
+    await _add_item(session, rating_key="rk-bad", kind="episode", library="TV Shows",
+                    root_folder="The Show", season=2021, episode=None)
+    _seed_backup(backup_root, "TV Shows", "The Show", "S01E02.jpg", b"the-card")
+    ok, bad = FakeItem(), FakeItem()
+    plex = FakePlexClient({"rk-ok": ok, "rk-bad": bad})
+
+    result = await RestoreMode(config, plex, None, _headers(), apply=True).run(session)
+
+    assert (result.items, result.items_with_backup, result.files) == (2, 1, 1)
+    assert result.skipped == 1
+    assert ("poster", b"the-card") in ok.uploaded
+    assert bad.uploaded == []
+
+
 async def test_restore_refuses_an_empty_table(session, config):
     plex = FakePlexClient({})
     result = await RestoreMode(config, plex, None, _headers(), apply=True).run(session)
@@ -232,4 +255,5 @@ async def test_restore_refuses_an_empty_table(session, config):
     assert result.as_response() == {
         "mode": "restore", "status": "refused", "reason": result.refused,
         "dry_run": False, "items": 0, "items_with_backup": 0, "files": 0,
+        "skipped": 0,
     }

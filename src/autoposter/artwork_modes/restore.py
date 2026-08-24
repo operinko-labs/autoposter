@@ -48,11 +48,18 @@ class RestoreResult:
     that would change, which the plausibility cap is measured against.
     ``files`` is the total number of backup files present to push. On an applied
     run ``pushed`` and ``failed`` split those files by outcome.
+
+    ``skipped`` counts (item, kind) pairs the planning phase could not even name
+    a path for, which is the backup walk's own ``skipped`` in the one shape it
+    can happen here: an episode Plex reports no number for. It is reported on a
+    dry run too, because "these rows will never be restored" is exactly what a
+    dry run exists to say.
     """
 
     items: int
     items_with_backup: int
     files: int
+    skipped: int
     pushed: int
     failed: int
     dry_run: bool
@@ -65,6 +72,7 @@ class RestoreResult:
             "items": self.items,
             "items_with_backup": self.items_with_backup,
             "files": self.files,
+            "skipped": self.skipped,
         }
         if self.refused is not None:
             body["status"] = "refused"
@@ -101,7 +109,7 @@ class RestoreMode:
             # dry_run mirrors the success paths below (True iff apply was not
             # requested), not just self._apply -- a refusal was previously
             # never exposed to as_response(), so this was backwards and unseen.
-            return RestoreResult(0, 0, 0, 0, 0, not self._apply, refused=empty)
+            return RestoreResult(0, 0, 0, 0, 0, 0, not self._apply, refused=empty)
 
         conditions = []
         if self._kind is not None:
@@ -136,12 +144,27 @@ class RestoreMode:
         # applied run fetches each Plex object once. Order preserved (by id).
         planned: dict[str, list[tuple[str, Path]]] = {}
         items_with_backup = 0
-        files = 0
+        files = skipped = 0
         for row in rows:
             if row.root_folder is None:
                 continue
             present: list[tuple[str, Path]] = []
             for art_kind in ART_KINDS_FOR[row.kind]:
+                # The backup walk's guard, on the same naming call: Plex's TV
+                # agent hands back ``index: None`` for year-grouped specials,
+                # and ``asset_path`` cannot name a file without the number.
+                # Unguarded it raises while planning, so the trigger 500s
+                # before it pushes anything at all.
+                missing = naming.missing_number(
+                    art_kind, row.season_number, row.episode_number
+                )
+                if missing is not None:
+                    logger.warning(
+                        "restore: %s (rating_key %s) has no %s -- skipping its %s",
+                        row.kind, row.rating_key, missing, art_kind,
+                    )
+                    skipped += 1
+                    continue
                 path = naming.asset_path(
                     backup_config, row.library, row.root_folder, art_kind,
                     row.season_number, row.episode_number,
@@ -161,11 +184,14 @@ class RestoreMode:
         if refusal is not None:
             # See the empty-table refusal above: dry_run is not self._apply.
             return RestoreResult(
-                total, items_with_backup, files, 0, 0, not self._apply, refused=refusal
+                total, items_with_backup, files, skipped, 0, 0,
+                not self._apply, refused=refusal,
             )
 
         if not self._apply:
-            return RestoreResult(total, items_with_backup, files, 0, 0, dry_run=True)
+            return RestoreResult(
+                total, items_with_backup, files, skipped, 0, 0, dry_run=True
+            )
 
         pushed = failed = 0
         for rating_key, entries in planned.items():
@@ -189,4 +215,6 @@ class RestoreMode:
                     )
                     failed += 1
 
-        return RestoreResult(total, items_with_backup, files, pushed, failed, dry_run=False)
+        return RestoreResult(
+            total, items_with_backup, files, skipped, pushed, failed, dry_run=False
+        )
