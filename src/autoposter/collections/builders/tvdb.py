@@ -23,6 +23,7 @@ network at all and are otherwise just their params model -- still carry a
 library-type guard.
 """
 import logging
+import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -48,6 +49,12 @@ __all__ = [
 # kind is a library this builder can mean nothing for.
 _ENTITY_FIELD = {"Movie": "movieId", "Show": "seriesId"}
 
+# A TVDb slug, and nothing else -- the same one-line pattern as MDBList's
+# ``_LIST_REFERENCE``. Unreserved characters only, so it needs no escaping
+# into the path, and it refuses a pasted list URL (which would otherwise
+# become a path with extra slashes and a 404 to read out of a log).
+_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]*$")
+
 
 class TvdbBuilderRefused(Exception):
     """This deployment cannot build from TVDb.
@@ -68,12 +75,29 @@ class TvdbListParams(BaseModel):
     ``gt=0`` for ``TmdbEntityParams``' reason: ``0`` is what a mis-read config
     or an unfilled template renders to, and TVDb answers it with a 404 the
     operator then has to go and read out of a log.
+
+    ``slug`` is restricted to unreserved characters (``_SLUG``), the same
+    one-line pattern as MDBList's ``_LIST_REFERENCE``: it is interpolated
+    straight into the request path, so a pasted list URL or a value carrying
+    ``/``, ``?``, ``#`` would otherwise change which request is made rather
+    than failing cleanly here.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     id: int | None = Field(default=None, gt=0)
     slug: str | None = None
+
+    @field_validator("slug")
+    @classmethod
+    def _must_be_a_bare_slug(cls, value: str | None) -> str | None:
+        if value is not None and not _SLUG.match(value):
+            raise ValueError(
+                f"{value!r} is not a TVDb list slug: write the name from the "
+                "list's URL (slug: a-mixed-tvdb-list), not a full URL or a "
+                "value containing '/'"
+            )
+        return value
 
     @model_validator(mode="after")
     def _exactly_one_way_of_naming_it(self) -> "TvdbListParams":

@@ -6,7 +6,13 @@ import pytest
 
 from conftest import session_factory_for
 
-from autoposter.facts.mdblist import MDBListClient, NullMDBListClient, parse_content_rating
+from autoposter.facts.mdblist import (
+    MDBListClient,
+    MDBListRefused,
+    NullMDBListClient,
+    parse_content_rating,
+    parse_list_items,
+)
 from autoposter.providers.cache import ProviderCache
 
 FIXTURES = Path(__file__).parent / "fixtures" / "facts"
@@ -168,6 +174,19 @@ async def test_a_cached_404_still_returns_none(session):
     assert first is None
     assert second is None
     assert len(calls) == 1
+
+
+def test_a_mediatype_value_mdblist_has_never_served_raises():
+    """Fix round, finding 1: ``parse_list_items`` accepted any ``mediatype``
+    string and left filtering to the builder, which compares it to the one
+    value the library wants and silently drops everything else. If MDBList
+    renamed 'show' to 'tv', every entry would compare unequal and the
+    collection would empty out with nothing to say why -- the same failure
+    mode the shape checks above already guard. An unrecognised value must
+    raise here, naming the value, so the drift is loud instead of silent."""
+    payload = [{"title": "Something", "tmdb_id": 1, "mediatype": "tv"}]
+    with pytest.raises(MDBListRefused, match="tv"):
+        parse_list_items(payload, "MDBList list 'x'")
 
 
 async def test_null_client_always_returns_none_without_a_request():

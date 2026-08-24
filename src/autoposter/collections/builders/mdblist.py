@@ -24,13 +24,16 @@ An entry of the wrong media type could not correctly resolve here anyway.
 **The budget.** MDBList answers ``200`` with ``{"error": "API Limit
 Reached!"}`` when the daily allowance is spent, so nothing in the HTTP layer
 slows down and N more definitions would each spend another call against an
-allowance that is already gone. The first one memoises the exception on the
-pass's ``run_cache`` and every later MDBList definition re-raises it without a
-request -- the ``imdb_award._event`` precedent (memoise the *failure* too, or a
-dead source is re-fetched once per collection), with the roles reversed: there
-the memo saves a shared fetch, here it saves the ones that would fail anyway.
-Each affected definition still reports failed and nothing is touched, which is
-the engine's containment doing its ordinary job.
+allowance that is already gone. The first one memoises the exception on this
+library's ``run_cache`` (``engine.run_library`` builds one per library, not
+one per pass -- an N-library deployment spends the budget once per library,
+which is bounded and acceptable, not once per definition) and every later
+MDBList definition in that same library re-raises it without a request -- the
+``imdb_award._event`` precedent (memoise the *failure* too, or a dead source is
+re-fetched once per collection), with the roles reversed: there the memo saves
+a shared fetch, here it saves the ones that would fail anyway. Each affected
+definition still reports failed and nothing is touched, which is the engine's
+containment doing its ordinary job.
 """
 import logging
 import re
@@ -63,8 +66,9 @@ _PREFERENCE: dict[str, tuple[tuple[str, str], ...]] = {
     "Show": (("tvdb_id", "tvdb"), ("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
 }
 
-# Where the pass's "MDBList has stopped answering" memo lives. Namespaced by
-# module, like ``imdb_award``'s.
+# Where this library's "MDBList has stopped answering" memo lives (in
+# ``ctx.run_cache``, which ``engine.run_library`` builds one per library, not
+# one per pass). Namespaced by module, like ``imdb_award``'s.
 _LIMIT_REACHED = "mdblist.limit_reached"
 
 
@@ -127,7 +131,10 @@ async def _list_items(ctx: BuilderContext, client, params: MdblistListParams):
     The memo is checked before the request and written from the failure, so the
     first definition to hit the limit is the only one that spends a call on it.
     The exception itself is memoised rather than a flag, so every later
-    definition reports exactly what MDBList said.
+    definition reports exactly what MDBList said. ``ctx.run_cache`` is one
+    library's run, not the whole collections pass -- so "the first definition
+    to hit the limit" and "every later definition" both mean within this
+    library, and a second library still asks MDBList fresh.
     """
     reached = ctx.run_cache.get(_LIMIT_REACHED)
     if reached is not None:

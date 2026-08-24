@@ -40,6 +40,13 @@ class MDBListRefused(Exception):
 # entry that does not carry its own.
 _MEDIATYPE_KEYS = {"movies": "movie", "shows": "show"}
 
+# The only mediatype values MDBList has ever served. A value outside this set
+# is not "the other kind" -- it is the vocabulary having moved, and every
+# caller of ``parse_list_items`` compares against exactly these two, so an
+# unrecognised value would otherwise compare unequal everywhere and empty a
+# collection with nothing to say why.
+_KNOWN_MEDIATYPES = set(_MEDIATYPE_KEYS.values())
+
 
 def parse_content_rating(payload: dict) -> str | None:
     """Common Sense age rating as a bare string, or ``None``.
@@ -73,6 +80,13 @@ def parse_list_items(payload: object, subject: str) -> list[tuple[str, dict]]:
     for the same reason -- if the field has gone away, *every* entry lacks it.
     A list that really is empty is data, not a failure, exactly as an empty
     page is in ``providers/tmdb_lists.py``.
+
+    A ``mediatype`` value outside ``_KNOWN_MEDIATYPES`` (``movie``/``show``)
+    raises too, for the same reason as a missing one: the builder filters
+    entries by comparing this value to the one media type the library wants,
+    so if MDBList renamed ``show`` to ``tv`` every entry would compare unequal
+    and quietly empty the collection instead of loudly saying the vocabulary
+    moved.
     """
     if isinstance(payload, list):
         groups: list[tuple[str | None, list]] = [(None, payload)]
@@ -109,7 +123,15 @@ def parse_list_items(payload: object, subject: str) -> list[tuple[str, dict]]:
                     "'mediatype', so there is no way to tell which id namespace "
                     "it belongs in"
                 )
-            items.append((str(mediatype), entry))
+            mediatype = str(mediatype)
+            if mediatype not in _KNOWN_MEDIATYPES:
+                raise MDBListRefused(
+                    f"{subject}: an entry in MDBList's response has mediatype "
+                    f"{mediatype!r}, which is neither 'movie' nor 'show'. "
+                    "MDBList's vocabulary may have changed; reading it as the "
+                    "other kind would silently drop every entry with this value."
+                )
+            items.append((mediatype, entry))
     return items
 
 

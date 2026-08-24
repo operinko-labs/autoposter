@@ -177,6 +177,11 @@ class TVDBClient:
         entities can be asked for. That is worth paying rather than refusing
         slugs: a TVDb list's URL carries the slug and not the id, so the slug
         is what an operator copying a list actually has.
+
+        Coerced with ``int()`` rather than returned as whatever the JSON
+        happened to carry -- the annotation says ``int`` and this is where
+        that becomes true, instead of a caller finding out three requests
+        later.
         """
         payload = await self._fetch_json(f"/lists/slug/{slug}")
         data = (payload or {}).get("data") or {}
@@ -186,7 +191,7 @@ class TVDBClient:
                 f"TVDb has no list with the slug {slug!r}. Building an empty "
                 "collection instead would remove every member it has."
             )
-        return list_id
+        return int(list_id)
 
     async def list_entities(
         self, *, list_id: int | None = None, slug: str | None = None
@@ -206,7 +211,17 @@ class TVDBClient:
         Goes through ``_fetch_json`` like every other read here, so it inherits
         the cached token, the one-shot re-login on a 401, and the cache -- the
         login itself still never goes through any of it.
+
+        Both ``list_id`` and ``slug`` being ``None`` is unreachable through the
+        builder (``TvdbListParams`` enforces exactly one), but this is a public
+        client method and building ``/lists/slug/None`` for a caller that
+        passed neither would read as a confusing 404 rather than saying what
+        actually went wrong.
         """
+        if list_id is None and slug is None:
+            raise TVDBListRefused(
+                "list_entities() needs a list id or slug, and got neither"
+            )
         if list_id is None:
             list_id = await self._list_id_for_slug(slug)
         payload = await self._fetch_json(f"/lists/{list_id}/extended")

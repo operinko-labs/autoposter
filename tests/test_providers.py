@@ -3,13 +3,14 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
 from autoposter.providers.base import (
     BACKGROUND, LOGO, POSTER, SEASON_POSTER, TITLE_CARD, ArtRequest,
 )
 from autoposter.providers.fanart import parse_fanart
 from autoposter.providers.tmdb import TMDBClient, parse_tmdb_images
-from autoposter.providers.tvdb import TVDBClient, parse_tvdb_artworks
+from autoposter.providers.tvdb import TVDBClient, TVDBListRefused, parse_tvdb_artworks
 
 FIXTURES = Path(__file__).parent / "fixtures" / "providers"
 
@@ -320,3 +321,18 @@ async def test_tvdb_season_poster_returns_empty_when_the_series_has_no_matching_
     result = await client.fetch(request)
 
     assert result == []
+
+
+async def test_list_entities_with_neither_id_nor_slug_raises_a_clear_error():
+    """Fix round, finding 4: unreachable via the builder (``TvdbListParams``
+    already enforces exactly one of them), but ``list_entities`` is a public
+    client method and calling it with both None must not silently build
+    ``/lists/slug/None`` and read out a confusing 404 -- it should say plainly
+    that it got neither."""
+
+    async def handler(request):
+        raise AssertionError("no request should have been made")
+
+    client = _tvdb_client(handler)
+    with pytest.raises(TVDBListRefused, match="id or slug"):
+        await client.list_entities()
