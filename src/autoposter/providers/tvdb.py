@@ -24,6 +24,23 @@ _TYPE_IDS = {
 }
 
 
+class TVDBListRefused(Exception):
+    """TVDb could not answer this list, or answered something unusable.
+
+    Its own class, and one class for all three cases -- the list does not
+    exist, the slug does not exist, the response carries no ``entities`` array
+    -- because the engine's log line carries the exception class name and
+    nothing else, and the message says which. It carries the list reference
+    asked for; the API key lives in the login body and the token in a header,
+    and neither enters a message.
+
+    Deliberately *not* the empty list every artwork path returns for a 404: an
+    empty membership means "remove every member" one layer down
+    (``lists.reconcile_list_collection``), so a list that was deleted would
+    empty a live collection on the next sync.
+    """
+
+
 def parse_tvdb_artworks(payload: dict, art_kind: str, is_movie: bool) -> list[ArtCandidate]:
     """Convert a TVDB extended/artworks response into candidates.
 
@@ -151,6 +168,61 @@ class TVDBClient:
             cache=self._cache,
             ttl_seconds=self._cache_ttl_seconds,
         )
+
+    async def _list_id_for_slug(self, slug: str) -> int:
+        """The list id behind a slug.
+
+        ``/lists/slug/{slug}`` answers the list's *base* record, which has no
+        ``entities`` in it, so a slug costs one extra request before the
+        entities can be asked for. That is worth paying rather than refusing
+        slugs: a TVDb list's URL carries the slug and not the id, so the slug
+        is what an operator copying a list actually has.
+        """
+        payload = await self._fetch_json(f"/lists/slug/{slug}")
+        data = (payload or {}).get("data") or {}
+        list_id = data.get("id")
+        if list_id is None:
+            raise TVDBListRefused(
+                f"TVDb has no list with the slug {slug!r}. Building an empty "
+                "collection instead would remove every member it has."
+            )
+        return list_id
+
+    async def list_entities(
+        self, *, list_id: int | None = None, slug: str | None = None
+    ) -> list[dict]:
+        """A TVDb list's entries, in the order the list gives them.
+
+        Each entry is ``{"order": n, "seriesId": …, "movieId": …}`` -- one or
+        the other -- so a list is inherently mixed and this returns the entries
+        as they are; deciding which kind this library meant belongs to the
+        builder, which is the only layer that knows.
+
+        The array is taken in the order it arrives rather than re-sorted on the
+        ``order`` field: two sources of truth for one ordering is one more than
+        there should be, and order is the source's throughout the collections
+        engine.
+
+        Goes through ``_fetch_json`` like every other read here, so it inherits
+        the cached token, the one-shot re-login on a 401, and the cache -- the
+        login itself still never goes through any of it.
+        """
+        if list_id is None:
+            list_id = await self._list_id_for_slug(slug)
+        payload = await self._fetch_json(f"/lists/{list_id}/extended")
+        if payload is None:
+            raise TVDBListRefused(
+                f"TVDb has no list {list_id}. Building an empty collection instead "
+                "would remove every member it has."
+            )
+        entities = (payload.get("data") or payload).get("entities")
+        if not isinstance(entities, list):
+            raise TVDBListRefused(
+                f"TVDb list {list_id}: the response carries no 'entities' array. "
+                "Reading it as an empty list would remove every member the "
+                "collection has."
+            )
+        return entities
 
     async def _resolve_season_id(self, tvdb_id: int, season_number: int) -> int | None:
         """Look up the TVDB season id for a season number.

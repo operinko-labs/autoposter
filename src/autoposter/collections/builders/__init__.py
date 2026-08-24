@@ -35,6 +35,7 @@ from autoposter.collections.builders.imdb_award import (
     ImdbAwardYearsBuilder,
 )
 from autoposter.collections.builders.imdb_chart import ImdbChartBuilder
+from autoposter.collections.builders.mdblist import MdblistListBuilder
 from autoposter.collections.builders.simple_ids import (
     ImdbIdBuilder,
     PlexRatingKeyBuilder,
@@ -49,6 +50,11 @@ from autoposter.collections.builders.tmdb import (
     TmdbKeywordBuilder,
     TmdbListBuilder,
     TmdbNetworkBuilder,
+)
+from autoposter.collections.builders.tvdb import (
+    TvdbListBuilder,
+    TvdbMovieBuilder,
+    TvdbShowBuilder,
 )
 
 register(PlexIdBuilder())
@@ -70,6 +76,10 @@ register(TmdbCollectionBuilder())
 register(TmdbCompanyBuilder())
 register(TmdbNetworkBuilder())
 register(TmdbKeywordBuilder())
+register(MdblistListBuilder())
+register(TvdbListBuilder())
+register(TvdbMovieBuilder())
+register(TvdbShowBuilder())
 register(ImdbAwardBuilder())
 register(ImdbAwardYearsBuilder())
 register(CsBucketBuilder())

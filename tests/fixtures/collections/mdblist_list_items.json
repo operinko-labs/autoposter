@@ -1,0 +1,77 @@
+{
+  "movies": [
+    {
+      "id": 1,
+      "rank": 1,
+      "adult": 0,
+      "title": "Fight Club",
+      "imdb_id": "tt0137523",
+      "tmdb_id": 550,
+      "tvdb_id": null,
+      "language": "en",
+      "mediatype": "movie",
+      "release_year": 1999
+    },
+    {
+      "id": 2,
+      "rank": 2,
+      "adult": 0,
+      "title": "A Title MDBList Has No Ids For",
+      "imdb_id": null,
+      "tmdb_id": null,
+      "tvdb_id": null,
+      "language": "en",
+      "mediatype": "movie",
+      "release_year": 2024
+    },
+    {
+      "id": 3,
+      "rank": 3,
+      "adult": 0,
+      "title": "Parasite",
+      "imdb_id": "tt6751668",
+      "tvdb_id": null,
+      "language": "ko",
+      "mediatype": "movie",
+      "release_year": 2019
+    }
+  ],
+  "shows": [
+    {
+      "id": 4,
+      "rank": 1,
+      "adult": 0,
+      "title": "Breaking Bad",
+      "imdb_id": "tt0903747",
+      "tmdb_id": 1396,
+      "tvdb_id": 81189,
+      "language": "en",
+      "mediatype": "show",
+      "release_year": 2008
+    },
+    {
+      "id": 5,
+      "rank": 2,
+      "adult": 0,
+      "title": "Chernobyl",
+      "imdb_id": "tt7366338",
+      "tmdb_id": 87108,
+      "tvdb_id": null,
+      "language": "en",
+      "mediatype": "show",
+      "release_year": 2019
+    },
+    {
+      "id": 6,
+      "rank": 3,
+      "adult": 0,
+      "title": "A Show MDBList Has Only An IMDb Id For",
+      "imdb_id": "tt0417299",
+      "tmdb_id": null,
+      "tvdb_id": null,
+      "language": "en",
+      "mediatype": "show",
+      "release_year": 2005
+    }
+  ]
+}

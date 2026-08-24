@@ -1,0 +1,11 @@
+{
+  "status": "success",
+  "data": {
+    "id": 8194,
+    "name": "A Mixed TVDb List",
+    "overview": "The base record the slug endpoint answers with: no entities.",
+    "url": "a-mixed-tvdb-list",
+    "isOfficial": false,
+    "score": 0
+  }
+}
