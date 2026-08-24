@@ -68,7 +68,25 @@ CHART_ENDPOINTS: dict[str, dict[str, str]] = {
     "trending_week": {"Movie": "/trending/movie/week", "Show": "/trending/tv/week"},
 }
 
-__all__ = ["CHART_ENDPOINTS", "MAX_PAGES", "TmdbListClient", "TmdbListRefused"]
+# The endpoints in ``CHART_ENDPOINTS`` where TMDb actually applies `region` to
+# filter membership. Every other endpoint -- the four `/tv/*` charts and all
+# `/trending/*` variants -- accepts the parameter over HTTP without complaint
+# and silently drops it, which is exactly the "operator asked for a regional
+# chart and got a global one with nothing to notice" hazard the builder's
+# region validator exists to guard against. See
+# ``collections.builders.tmdb.TmdbChartBuilder`` for the build-time refusal
+# that reads this set.
+CHART_ENDPOINTS_ACCEPTING_REGION: frozenset[str] = frozenset(
+    {"/movie/popular", "/movie/top_rated", "/movie/now_playing", "/movie/upcoming"}
+)
+
+__all__ = [
+    "CHART_ENDPOINTS",
+    "CHART_ENDPOINTS_ACCEPTING_REGION",
+    "MAX_PAGES",
+    "TmdbListClient",
+    "TmdbListRefused",
+]
 
 
 class TmdbListRefused(Exception):

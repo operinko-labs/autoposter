@@ -35,7 +35,7 @@ from autoposter.collections.builders.base import (
     BuilderResult,
     require_library_type,
 )
-from autoposter.providers.tmdb_lists import CHART_ENDPOINTS
+from autoposter.providers.tmdb_lists import CHART_ENDPOINTS, CHART_ENDPOINTS_ACCEPTING_REGION
 
 __all__ = [
     "TmdbBuilderRefused",
@@ -47,6 +47,7 @@ __all__ = [
     "TmdbKeywordBuilder",
     "TmdbListBuilder",
     "TmdbNetworkBuilder",
+    "TmdbRegionUnsupported",
 ]
 
 # ISO-3166-1 alpha-2, and ISO-639-1 optionally qualified by one ("fi", "fi-FI").
@@ -62,6 +63,16 @@ class TmdbBuilderRefused(Exception):
     """
 
 
+class TmdbRegionUnsupported(Exception):
+    """``region`` was set on a chart whose resolved endpoint ignores it.
+
+    Its own class rather than reusing ``LibraryTypeMismatch`` so the engine's
+    log line -- which carries only the exception class name -- says what kind
+    of failure this was. See ``CHART_ENDPOINTS_ACCEPTING_REGION`` for which
+    endpoints actually apply the filter.
+    """
+
+
 class TmdbChartParams(BaseModel):
     """``tmdb_chart``'s params: which chart, and optionally for where.
 
@@ -72,7 +83,15 @@ class TmdbChartParams(BaseModel):
     ``region`` and ``language`` are shape-checked because TMDb *ignores* a
     malformed one rather than complaining: ``region: Finland`` would silently
     produce the unfiltered chart, and an operator who asked for a regional
-    chart would get a global one with nothing to notice.
+    chart would get a global one with nothing to notice. A well-formed
+    ``region`` on a chart whose endpoint ignores it entirely is the same
+    hazard by another route -- TMDb only honours ``region`` on the
+    `/movie/popular`, `/movie/top_rated`, `/movie/now_playing` and
+    `/movie/upcoming` endpoints, dropping it silently everywhere else -- so
+    that half of the guard lives in ``TmdbChartBuilder.build``, which knows
+    the endpoint this chart resolves to and refuses before the request is
+    sent. Between the two, enforcement here is complete: shape catches a
+    malformed value, the builder catches a well-formed one TMDb would ignore.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -146,6 +165,33 @@ class _TmdbBuilder:
         return client
 
 
+def _require_region_supported(chart: str, path: str, region: str | None) -> None:
+    """Refuse a ``region`` that TMDb would silently drop for this endpoint.
+
+    Only the four ``/movie/*`` list endpoints apply ``region`` to membership
+    (``CHART_ENDPOINTS_ACCEPTING_REGION``); every other chart -- the four
+    ``/tv/*`` forms and all ``/trending/*`` variants -- accepts the parameter
+    over HTTP and ignores it, which is the same "operator asked for a
+    regional chart and got the global one with nothing to notice" hazard
+    ``TmdbChartParams``'s shape validators guard against, plus a wasted,
+    distinct cache key for an identical answer.
+    """
+    if region is None or path in CHART_ENDPOINTS_ACCEPTING_REGION:
+        return
+    accepting = sorted(
+        key
+        for key, endpoints in CHART_ENDPOINTS.items()
+        if any(candidate in CHART_ENDPOINTS_ACCEPTING_REGION for candidate in endpoints.values())
+    )
+    raise TmdbRegionUnsupported(
+        f"the TMDb {chart!r} chart resolves to {path!r} here, and TMDb does not "
+        f"honour `region` on that endpoint -- it applies `region` only on the "
+        + ", ".join(accepting)
+        + " charts (built against a Movie library). Remove `region` from this "
+        "definition; sending it would silently return the unfiltered chart."
+    )
+
+
 class TmdbChartBuilder(_TmdbBuilder):
     """One TMDb chart, in TMDb's order, for this library's media type."""
 
@@ -158,10 +204,10 @@ class TmdbChartBuilder(_TmdbBuilder):
         require_library_type(
             f"the TMDb {params.chart!r} chart", ctx.library_type, endpoints
         )
+        path = endpoints[ctx.library_type]
+        _require_region_supported(params.chart, path, params.region)
         client = self._client(ctx)
-        ids = await client.chart(
-            endpoints[ctx.library_type], region=params.region, language=params.language
-        )
+        ids = await client.chart(path, region=params.region, language=params.language)
         return BuilderResult(ids=[("tmdb", value) for value in ids])
 
 

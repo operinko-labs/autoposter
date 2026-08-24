@@ -22,7 +22,7 @@ from pydantic import ValidationError
 
 from autoposter.collections.builders import REGISTRY, BuilderContext, SourceClients
 from autoposter.collections.builders.base import LibraryTypeMismatch
-from autoposter.collections.builders.tmdb import TmdbBuilderRefused
+from autoposter.collections.builders.tmdb import TmdbBuilderRefused, TmdbRegionUnsupported
 from autoposter.collections.service import build_source_clients
 from autoposter.config.schema import Secrets
 from autoposter.providers.tmdb_lists import TmdbListClient, TmdbListRefused
@@ -147,6 +147,50 @@ async def test_a_lowercase_region_is_normalised_rather_than_sent_as_typed():
         )
 
     assert seen[0].url.params["region"] == "FI"
+
+
+async def test_region_still_works_on_the_movie_popular_chart():
+    """The four ``/movie/*`` list endpoints are where TMDb actually applies
+    ``region`` -- the fix round's refusal must not catch the charts it is
+    supposed to keep working."""
+    seen: list = []
+    routes = {"/movie/popular": load("tmdb_chart_movie_popular_p1.json") | {"total_pages": 1}}
+    async with httpx.AsyncClient(transport=_routed(routes, seen)) as http:
+        result = await REGISTRY["tmdb_chart"].build(
+            _ctx(_sources(http), chart="popular", region="FI")
+        )
+
+    assert result.ids == [("tmdb", "438631"), ("tmdb", "693134")]
+    assert seen[0].url.params["region"] == "FI"
+
+
+async def test_region_on_the_tv_popular_chart_is_refused():
+    """``/tv/popular`` accepts ``region`` over HTTP and silently ignores it --
+    the operator would get the global chart with no signal, plus a wasted
+    distinct cache key. The builder must refuse before that request is sent."""
+    seen: list = []
+    async with httpx.AsyncClient(transport=_routed({}, seen)) as http:
+        with pytest.raises(TmdbRegionUnsupported) as caught:
+            await REGISTRY["tmdb_chart"].build(
+                _ctx(_sources(http), library_type="Show", chart="popular", region="FI")
+            )
+
+    message = str(caught.value)
+    assert "popular" in message and "top_rated" in message
+    assert "now_playing" in message and "upcoming" in message
+    assert seen == []
+
+
+async def test_region_on_a_trending_chart_is_refused():
+    """None of the ``/trending/*`` endpoints honour ``region`` at all."""
+    seen: list = []
+    async with httpx.AsyncClient(transport=_routed({}, seen)) as http:
+        with pytest.raises(TmdbRegionUnsupported):
+            await REGISTRY["tmdb_chart"].build(
+                _ctx(_sources(http), chart="trending_day", region="FI")
+            )
+
+    assert seen == []
 
 
 async def test_an_unknown_chart_is_refused():
