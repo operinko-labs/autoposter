@@ -106,7 +106,7 @@ async def test_dry_run_pushes_nothing(session, config, backup_root):
     assert plex.fetched == []
     assert item.uploaded == []
     assert result.as_response() == {
-        "mode": "restore", "dry_run": True, "items": 1,
+        "mode": "restore", "status": "dry run", "dry_run": True, "items": 1,
         "items_with_backup": 1, "files": 1,
     }
 
@@ -126,6 +126,7 @@ async def test_apply_pushes_the_backup_bytes(session, config, backup_root):
     assert ("art", b"the-real-bg") in item.uploaded
     # background routes to uploadArt+lockArt, the rest to uploadPoster+lockPoster.
     assert set(item.locked) == {"poster", "art"}
+    assert result.as_response()["status"] == "restored"
 
 
 async def test_apply_pushes_exactly_the_filtered_set(session, config, backup_root):
@@ -188,7 +189,12 @@ async def test_restore_respects_the_cap(session, config, backup_root):
     assert "2 of 2" in result.refused
     assert "1" in result.refused
     assert plex.fetched == []
-    assert result.as_response()["status"] == "refused"
+    response = result.as_response()
+    assert response["status"] == "refused"
+    assert response["dry_run"] is False  # apply=True was requested
+    # The refusal is computed from real numbers -- the UI should not have to
+    # parse them back out of the reason string.
+    assert (response["items"], response["items_with_backup"], response["files"]) == (2, 2, 2)
 
 
 async def test_restore_never_refreshes_the_plex_object(session, config, backup_root):
@@ -222,3 +228,8 @@ async def test_restore_refuses_an_empty_table(session, config):
     result = await RestoreMode(config, plex, None, _headers(), apply=True).run(session)
     assert result.refused is not None
     assert "media_items" in result.refused
+    # apply=True was requested, so dry_run mirrors the success paths: False.
+    assert result.as_response() == {
+        "mode": "restore", "status": "refused", "reason": result.refused,
+        "dry_run": False, "items": 0, "items_with_backup": 0, "files": 0,
+    }

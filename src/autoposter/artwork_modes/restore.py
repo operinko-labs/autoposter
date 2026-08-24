@@ -59,8 +59,6 @@ class RestoreResult:
     refused: str | None = None
 
     def as_response(self) -> dict:
-        if self.refused is not None:
-            return {"mode": "restore", "status": "refused", "reason": self.refused}
         body = {
             "mode": "restore",
             "dry_run": self.dry_run,
@@ -68,7 +66,14 @@ class RestoreResult:
             "items_with_backup": self.items_with_backup,
             "files": self.files,
         }
-        if not self.dry_run:
+        if self.refused is not None:
+            body["status"] = "refused"
+            body["reason"] = self.refused
+            return body
+        if self.dry_run:
+            body["status"] = "dry run"
+        else:
+            body["status"] = "restored"
             body["pushed"] = self.pushed
             body["failed"] = self.failed
         return body
@@ -93,7 +98,10 @@ class RestoreMode:
     async def run(self, session: AsyncSession) -> RestoreResult:
         empty = await refuse_if_empty(session, MediaItem, table_name="media_items")
         if empty is not None:
-            return RestoreResult(0, 0, 0, 0, 0, self._apply, refused=empty)
+            # dry_run mirrors the success paths below (True iff apply was not
+            # requested), not just self._apply -- a refusal was previously
+            # never exposed to as_response(), so this was backwards and unseen.
+            return RestoreResult(0, 0, 0, 0, 0, not self._apply, refused=empty)
 
         conditions = []
         if self._kind is not None:
@@ -151,8 +159,9 @@ class RestoreMode:
             self._config.artwork_modes.max_change_share,
         )
         if refusal is not None:
+            # See the empty-table refusal above: dry_run is not self._apply.
             return RestoreResult(
-                total, items_with_backup, files, 0, 0, self._apply, refused=refusal
+                total, items_with_backup, files, 0, 0, not self._apply, refused=refusal
             )
 
         if not self._apply:

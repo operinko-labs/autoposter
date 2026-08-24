@@ -46,13 +46,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class BackupResult:
-    """The per-item tally of one backup walk, or a refusal.
+    """The tally of one backup walk, or a refusal.
 
-    Every item lands in exactly one of ``written``/``skipped``/``failed``, so
-    the three sum to ``items``: ``written`` when at least one art file was
-    saved, ``skipped`` when Plex served nothing for the item (or it has no
-    ``root_folder`` to file assets under), ``failed`` when an error kept every
-    kind from being read or written.
+    ``items`` counts media items walked. ``written``/``skipped``/``failed``
+    count per **(item, kind)** outcome -- a movie has two kinds (poster,
+    background), so a fully-written movie contributes 2 to ``written``, and a
+    movie where one kind writes and the other errors contributes 1 to
+    ``written`` and 1 to ``failed``. They therefore do NOT sum to ``items`` in
+    general. Two situations never reach kind granularity and count once
+    against the whole item instead: no ``root_folder`` to file assets under
+    (``skipped``), and a Plex item that could not be fetched at all
+    (``failed``).
     """
 
     items: int
@@ -63,10 +67,21 @@ class BackupResult:
 
     def as_response(self) -> dict:
         if self.refused is not None:
-            return {"mode": "backup", "status": "refused", "reason": self.refused}
+            return {
+                "mode": "backup",
+                "status": "refused",
+                "reason": self.refused,
+                "items": self.items,
+                "written": self.written,
+                "skipped": self.skipped,
+                "failed": self.failed,
+            }
+        # written == 0 with failed > 0 means nothing was actually saved --
+        # an all-fail run must not read as a clean "backed up".
+        status = "backup failed" if self.written == 0 and self.failed > 0 else "backed up"
         return {
             "mode": "backup",
-            "status": "backed up",
+            "status": status,
             "items": self.items,
             "written": self.written,
             "skipped": self.skipped,
@@ -147,8 +162,8 @@ class BackupMode:
                 failed += 1
                 continue
 
-            wrote_any = False
-            had_error = False
+            # Per-(item, kind) tally: a partial item (one kind writes, another
+            # errors) must show up in both written and failed, not just one.
             for art_kind in ART_KINDS_FOR[row.kind]:
                 try:
                     fetched = await fetch_artwork(
@@ -159,9 +174,11 @@ class BackupMode:
                         "backup: could not read %s for %s",
                         art_kind, row.rating_key, exc_info=True,
                     )
-                    had_error = True
+                    failed += 1
                     continue
                 if fetched is None:
+                    # Plex served no artwork of this kind for this item.
+                    skipped += 1
                     continue
                 data, _content_type = fetched
                 path = naming.asset_path(
@@ -175,16 +192,8 @@ class BackupMode:
                         "backup: could not write %s for %s",
                         path, row.rating_key, exc_info=True,
                     )
-                    had_error = True
+                    failed += 1
                     continue
-                wrote_any = True
-
-            if wrote_any:
                 written += 1
-            elif had_error:
-                failed += 1
-            else:
-                # Plex served no artwork of any kind for this item.
-                skipped += 1
 
         return BackupResult(items, written, skipped, failed)

@@ -66,6 +66,7 @@ def config(backup_root):
 
 def _serves():
     """A MockTransport answering ``/thumb`` and ``/art`` with distinct bytes,
+    ``/broken`` with a 500 (a fetch that raises, not one that finds nothing),
     and 404 for anything else -- so the wrong field reads as no artwork."""
 
     def handler(request):
@@ -75,6 +76,8 @@ def _serves():
             return httpx.Response(
                 200, content=BACKGROUND_BYTES, headers={"content-type": "image/jpeg"}
             )
+        if request.url.path == "/broken":
+            return httpx.Response(500)
         return httpx.Response(404)
 
     return handler
@@ -110,7 +113,9 @@ async def test_backup_writes_the_tree_at_the_right_paths(
 
     result = await BackupMode(config, plex, http_serving, _headers()).run(session)
 
-    assert (result.items, result.written, result.skipped, result.failed) == (1, 1, 0, 0)
+    # written is per-(item, kind): a movie has poster + background, both
+    # written here, so written == 2 even though items == 1.
+    assert (result.items, result.written, result.skipped, result.failed) == (1, 2, 0, 0)
     # library_folders is true in the example config -> the nested Kometa tree.
     poster = backup_root / "Movies" / "A (1999)" / "poster.jpg"
     background = backup_root / "Movies" / "A (1999)" / "background.jpg"
@@ -125,7 +130,8 @@ async def test_backup_skips_an_item_plex_serves_nothing_for(session, config, htt
 
     result = await BackupMode(config, plex, http_serving, _headers()).run(session)
 
-    assert (result.items, result.written, result.skipped, result.failed) == (1, 0, 1, 0)
+    # skipped is per-kind too: a movie's poster and background both skip.
+    assert (result.items, result.written, result.skipped, result.failed) == (1, 0, 2, 0)
 
 
 async def test_backup_skips_an_item_without_a_root_folder(session, config, http_serving):
@@ -147,7 +153,7 @@ async def test_backup_never_uploads_to_plex(session, config, http_serving):
 
     result = await BackupMode(config, plex, http_serving, _headers()).run(session)
 
-    assert result.written == 1  # got here without the upload assertions firing
+    assert result.written == 2  # got here without the upload assertions firing
 
 
 async def test_backup_counts_a_failed_fetch(session, config, http_serving):
@@ -166,7 +172,43 @@ async def test_backup_refuses_an_empty_table(session, config, http_serving):
 
     assert result.refused is not None
     assert "media_items" in result.refused
-    assert result.as_response()["status"] == "refused"
+    # A refusal still carries the (zero) counts it knows, in the same shape
+    # a successful response uses -- the UI should not have to branch on
+    # whether the numeric fields are present.
+    assert result.as_response() == {
+        "mode": "backup", "status": "refused", "reason": result.refused,
+        "items": 0, "written": 0, "skipped": 0, "failed": 0,
+    }
+
+
+async def test_backup_counts_a_partial_item_in_both_written_and_failed(
+    session, config, http_serving
+):
+    """One kind writes, the other's fetch raises: the item must show up in
+    BOTH written and failed, not just written with the failure silently
+    dropped."""
+    await _add_item(session, rating_key="rk1", kind="movie")
+    plex = FakePlexClient({"rk1": FakeItem(thumb="/thumb", art="/broken")})
+
+    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+
+    assert (result.items, result.written, result.skipped, result.failed) == (1, 1, 0, 1)
+    assert result.as_response()["status"] == "backed up"  # partial success is not a failure
+
+
+async def test_backup_all_fail_status_is_not_success(session, config, http_serving):
+    """An item where every kind's fetch raises must not read as a clean
+    "backed up": written stays 0 while failed is > 0, so the status must say
+    so."""
+    await _add_item(session, rating_key="rk1", kind="movie")
+    plex = FakePlexClient({"rk1": FakeItem(thumb="/broken", art="/broken")})
+
+    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+
+    assert (result.items, result.written, result.skipped, result.failed) == (1, 0, 0, 2)
+    response = result.as_response()
+    assert response["status"] == "backup failed"
+    assert response["written"] == 0 and response["failed"] == 2
 
 
 async def test_backup_backs_up_a_title_card_at_the_episode_path(
