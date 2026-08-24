@@ -401,7 +401,15 @@ def definition_config_hash(definition: CollectionDefinition) -> str:
 
 
 class CollectionsConfig(BaseModel):
-    """Common Sense age-bucket smart collections, replacing Kometa's."""
+    """Every collection this service builds and owns in Plex.
+
+    The Common Sense age-bucket smart collections that replace Kometa's are
+    one source among several: the built-in IMDb charts and Oscars awards
+    (``charts``/``awards``), the blank divider (``separators``), and any
+    number of operator ``definitions`` built by a registered builder
+    (``collections/builders``). All of them share the same ownership,
+    adoption, protection, poster and delete-sweep rules configured below.
+    """
 
     enabled: bool = True
     # Dry run by default, the same posture as operations.write_to_plex and

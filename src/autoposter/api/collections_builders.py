@@ -334,7 +334,8 @@ async def blank_collection(
 
     action = "created the empty collection %r in %r" % (body.title, body.library)
     async with request.app.state.session_factory() as session:
-        if await _managed_row(session, body.library, body.title) is None:
+        row = await _managed_row(session, body.library, body.title)
+        if row is None:
             session.add(ManagedCollection(
                 # "operator", not "separator": this row is not the Common
                 # Sense family's divider, and reusing that kind would leave
@@ -351,6 +352,32 @@ async def blank_collection(
                 # on it if a definition is ever pointed at this title.
                 definition_hash="",
             ))
+        else:
+            # A row can outlive the Plex collection it describes: rows are
+            # never reaped when the object vanishes straight out of Plex, so
+            # a definition-built collection hand-deleted there leaves a
+            # "manual"/"smart" row behind with a hash no definition will ever
+            # match again. If an operator then blanks the same title, the
+            # title check above already proved Plex has nothing by that name
+            # -- but this row still does, and unless it is corrected it keeps
+            # describing the collection that is gone rather than the blank
+            # that now exists. A stale kind + stale hash is exactly what
+            # ``engine._sweep`` reads as "no definition builds this any
+            # more", so the very next ``delete_unconfigured`` pass would
+            # delete the blank an operator just made -- the same class of bug
+            # the "operator" kind exists to prevent, arriving through the
+            # row surviving rather than through the row never being written.
+            row.kind = "operator"
+            row.definition_hash = ""
+            row.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+            # The rest of the row described the OLD Plex object; none of it
+            # is true of the new blank one, and "operator" rows are never
+            # stamped by a reconcile pass anyway (only list.py's are).
+            row.poster_sha256 = None
+            row.member_count = None
+            row.last_added = None
+            row.last_removed = None
+            row.last_reconciled_at = None
         _audit(session, "collection_blanked", body.library, body.title, action)
         await session.commit()
 

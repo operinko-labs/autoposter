@@ -416,6 +416,35 @@ async def test_the_collection_is_recorded_as_managed(session):
     assert row.kind == "manual"
 
 
+async def test_reconciling_an_operator_row_upgrades_its_kind_to_manual(session):
+    """Fix round item 2, the mirror of item 1: an operator blank
+    (``ops/blank``) writes a row with ``kind="operator"``. If a definition is
+    later pointed at that same title, this reconcile is that definition
+    claiming it -- and leaving the row's kind at "operator" afterwards would
+    make it lie forever: if the definition is later removed,
+    ``engine._sweep`` reads "operator" as "no definition ever built this,
+    never delete it" and reports a collection an operator made by hand, not
+    one a since-removed definition actually owned. "manual" is the true story
+    once a definition has reconciled the title.
+    """
+    section = FakeSection()
+    section._existing["Divider"] = FakeCollection("Divider", items=[], labels=[LABEL])
+    session.add(ManagedCollection(
+        library="Movies", title="Divider", kind="operator",
+        plex_rating_key="c-Divider", definition_hash="",
+    ))
+    await session.flush()
+
+    await reconcile_list_collection(
+        session, section, "Movies", "Divider", [FakeItem("a")], LABEL, dry_run=False,
+    )
+
+    row = (await session.execute(
+        select(ManagedCollection).where(ManagedCollection.title == "Divider")
+    )).scalar_one()
+    assert row.kind == "manual"
+
+
 async def _stats(session):
     """The reconcile stats as the database holds them.
 

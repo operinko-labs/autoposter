@@ -562,6 +562,38 @@ async def test_a_blank_collection_is_created_labelled_and_recorded(
     assert "http" not in event.outcome
 
 
+async def test_a_blank_collection_resets_a_stale_managed_row_to_operator_kind(
+    client, auth_headers, section, session
+):
+    """Fix round item 1: a ``managed_collections`` row can outlive the Plex
+    collection it describes -- rows are never reaped when the object vanishes
+    straight out of Plex rather than through this service. If a definition
+    built "Divider" once, an operator later hand-deleted it in Plex, and an
+    operator now blanks the same title, the pre-existing row must not keep
+    its stale "manual" kind and hash: that combination is exactly what
+    ``engine._sweep`` reads as "no definition builds this any more", so the
+    very next ``delete_unconfigured`` pass would delete the blank the
+    operator just made -- the same class of bug the "operator" kind exists to
+    prevent, arriving through the row surviving instead of never existing.
+    """
+    session.add(ManagedCollection(
+        library="Movies", title="Divider", kind="manual",
+        plex_rating_key="stale-key", definition_hash="stale-hash",
+    ))
+    await session.commit()
+
+    response = await client.post(
+        BLANK, json={"library": "Movies", "title": "Divider"}, headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    row = (await session.execute(
+        select(ManagedCollection).where(ManagedCollection.title == "Divider")
+    )).scalar_one()
+    assert row.kind == "operator"
+    assert row.definition_hash == ""
+
+
 async def test_a_blank_collection_never_overwrites_an_existing_title(
     client, auth_headers, section
 ):

@@ -335,6 +335,19 @@ async def reconcile_list_collection(
             else:
                 record.definition_hash = wanted
                 record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+                if record.kind == "operator":
+                    # An operator blank (``ops/blank``) can sit under a title
+                    # a definition is later pointed at -- reconciling here is
+                    # this definition claiming it, the same as any other
+                    # take-over. Leaving "operator" would make the row lie
+                    # forever afterwards: if the definition is later removed,
+                    # ``engine._sweep`` reads "operator" as "no definition
+                    # ever built this, never delete it" and reports a
+                    # collection an operator made, not one a since-removed
+                    # definition did. "manual" is the safe direction and the
+                    # true story -- a definition really does own this title
+                    # now.
+                    record.kind = "manual"
             record.member_count = len(items)
             record.last_added = added_count
             record.last_removed = removed_count

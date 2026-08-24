@@ -81,10 +81,15 @@ class BuilderContext:
     """Everything a builder is allowed to reach.
 
     ``config`` is the definition's ``params`` block, not the application config.
-    ``http`` and ``cache`` are the shared client and the provider response cache
-    (``providers.fetch.fetch_json`` takes exactly this pair); both default to
-    None because a builder like ``plex_id`` needs neither, and one that does
-    need them fails loudly rather than fetching un-cached.
+    ``http`` is the shared client, passed through by every ``engine.py`` call
+    site. ``cache`` names the provider response cache ``providers.fetch.fetch_json``
+    takes alongside it -- but unlike ``http``, nothing populates it: the engine
+    itself holds no ``ProviderCache``, only ``summaries``
+    (a ``TMDBFactsClient`` used solely for ``tmdb_summary:``, not this cache),
+    so every ``BuilderContext`` gets ``cache=None`` regardless of what a
+    builder asks for, and no builder reads ``ctx.cache`` today. Wiring a real
+    cache through here is future work, not a promise this field currently
+    keeps.
 
     ``run_cache`` is scratch shared by every builder in one pass over one
     library, and it exists for exactly one reason: the seven Oscars collections
