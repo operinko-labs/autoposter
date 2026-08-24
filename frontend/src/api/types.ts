@@ -140,6 +140,51 @@ export interface CancelJobResponse {
   detail?: string;
 }
 
+/** One row of GET /api/id-mismatches.
+ *
+ * The same shape carries all three groups, so the unmatched ones leave the
+ * other side null: `rating_key`/`plex_title`/`library` are null for an
+ * `arr_only` row, `arr_title` is null for a `plex_only` one, and that absence
+ * is the finding rather than missing data.
+ *
+ * `arr_ids`/`plex_ids` are keyed by agent (`tmdb`, `tvdb`, `imdb`) and hold
+ * only the ids that side actually has. `differing` names the agents both sides
+ * hold and disagree about -- an id only one side carries is not a
+ * disagreement, so it is never listed there.
+ */
+export interface IdMismatchRow {
+  service: string;
+  kind: string;
+  path: string;
+  library: string | null;
+  rating_key: string | null;
+  plex_title: string | null;
+  arr_title: string | null;
+  year: number | null;
+  arr_ids: Record<string, string>;
+  plex_ids: Record<string, string>;
+  differing: string[];
+}
+
+/** GET /api/id-mismatches.
+ *
+ * The three lists are capped at `limit` rows in total while `counts` always
+ * reports everything found, so a remount that moved every path shows its true
+ * size without serialising the whole library. `skipped` names the services
+ * that were not asked at all (disabled, or without a base URL or api key);
+ * `unmapped` counts Plex items outside the configured root, which the service
+ * does not manage and whose absence there is therefore not a finding. */
+export interface IdMismatchesResponse {
+  mismatched: IdMismatchRow[];
+  arr_only: IdMismatchRow[];
+  plex_only: IdMismatchRow[];
+  counts: Record<string, number>;
+  total: number;
+  limit: number;
+  skipped: string[];
+  unmapped: number;
+}
+
 /** GET /api/collections.
  *
  * The four reconcile stats are nullable and null on every row no pass has

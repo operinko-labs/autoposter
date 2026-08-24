@@ -153,6 +153,19 @@ describe("Sidebar", () => {
     expect(link).toHaveAttribute("title", "Testing");
   });
 
+  it("reaches the id-mismatch view", () => {
+    stubMatchMedia(false);
+
+    renderSidebar();
+
+    // The scan is only reachable from here; a route with no link into it is a
+    // page that ships and is never found.
+    expect(screen.getByRole("link", { name: "ID mismatches" })).toHaveAttribute(
+      "href",
+      "/mismatches",
+    );
+  });
+
   it("reaches the run-modes page", () => {
     stubMatchMedia(false);
 

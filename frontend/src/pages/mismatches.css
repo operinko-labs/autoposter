@@ -1,0 +1,76 @@
+/* The ID-mismatch view. The shared table hooks (`.table-scroll`, `.cell-time`,
+ * `.cell-wrap`) come from shell.css; only the scan control and the two sides'
+ * ids live here. */
+
+.mismatch-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+/* What the scan did not cover, under the control that ran it. Its own line so
+ * it never reads as part of the sentence describing the button. */
+.mismatch-note {
+  margin: 10px 0 0;
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.mismatch-heading {
+  margin-bottom: 12px;
+}
+
+.mismatch-heading h2 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+
+.mismatch-heading p {
+  margin: 0;
+  font-size: 12px;
+}
+
+/* One side's ids. Wrapping rather than nowrap: a series carries three of them,
+ * and at a phone width they would otherwise hand the table a column wider than
+ * the viewport. */
+.mismatch-ids {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 8rem;
+}
+
+.mismatch-id {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* The disagreement itself. Colour alone would not carry it -- the border and
+ * the weight make the differing id findable in a table of otherwise identical
+ * chips without relying on being able to tell red from grey. */
+.mismatch-id.differs {
+  border-color: var(--error);
+  color: var(--error);
+  font-weight: 600;
+}
+
+.mismatch-agent {
+  color: var(--text-muted);
+}
+
+.mismatch-id.differs .mismatch-agent {
+  color: var(--error);
+}
+
+/* The other record's title, when the two disagree about that too. Block, so it
+ * cannot be read as a continuation of the title above it. */
+.mismatch-other-title {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+}
