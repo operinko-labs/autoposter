@@ -8,9 +8,10 @@ engine's, and these are the four rules a collection's safety rests on:
 - ``limit`` counts members, so it is applied after resolution;
 - a definition outside its schedule is skipped, not failed -- and is still a
   managed title, or the leftovers report would invite an operator to delete a
-  collection that is merely waiting for its turn;
-- ``sync_mode: append`` says so out loud instead of quietly syncing, which would
-  remove the very members it exists to keep.
+  collection that is merely waiting for its turn.
+
+The membership modes, the delete sweep and how a failed definition is reported
+are ``tests/test_builder_knobs.py``'s.
 
 The Oscars memoisation is here too: seven collections, one dataset, one request
 -- and one request when it fails, not seven.
@@ -296,27 +297,6 @@ async def test_a_definition_aimed_at_another_library_is_skipped(session, registr
     )
 
     assert actions == []
-    assert section._existing == {}
-
-
-async def test_append_mode_says_so_rather_than_syncing(session, registry_entry):
-    """Treating append as sync would remove the manually-added members an
-    append definition exists to keep; doing nothing quietly would look like a
-    collection that had stopped updating."""
-    registry_entry(_Listing("test_appending", [("imdb", "tt1")]))
-    section = FakeSection([("m1", ["imdb://tt1"])])
-
-    actions = await _run(
-        session, section,
-        [CollectionDefinition(
-            title="Appended", builder="test_appending", sync_mode="append"
-        )],
-        _config(),
-    )
-
-    assert actions == [
-        "'Appended': skipped; sync_mode 'append' is not implemented yet"
-    ]
     assert section._existing == {}
 
 

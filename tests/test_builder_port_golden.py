@@ -13,7 +13,8 @@ reconciler, then ``build_all``" into the single engine call. Everything else in
 this file -- the fakes, the fixtures, the scenarios, the recorded strings --
 stays exactly as captured, so a diff can only come from the code under it.
 
-Re-capture (only ever on the pre-port commit)::
+Re-capture (only ever on the pre-port commit). It writes the fixture and then
+*fails*, so a capture run can never be mistaken for a passing gate::
 
     docker compose -p 8at3 -f docker-compose.yml -f .superpowers/isolated-db.yml \
         run --rm -e AUTOPOSTER_GOLDEN_CAPTURE=1 test \
@@ -31,6 +32,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import pytest
 from PIL import Image
 from plexapi.exceptions import NotFound
 
@@ -406,6 +408,15 @@ async def test_the_ported_sources_reproduce_the_recorded_run(
         # Only ever run on the pre-port commit -- see the module docstring.
         GOLDEN.write_bytes(
             (json.dumps(recorded, indent=2, sort_keys=False) + "\n").encode("utf-8")
+        )
+        # Fail, deliberately, rather than falling through to compare the file
+        # against the run that just wrote it -- which would pass whatever the
+        # code does. A capture run is not a test run, and the only way this
+        # branch can be reached after the port is by accident: the failure is
+        # what stops that accident being committed as a green gate.
+        pytest.fail(
+            "fixture recaptured -- this is a capture run, not a gate. Never "
+            "commit a golden_port.json written from a post-port tree."
         )
 
     expected = json.loads(GOLDEN.read_text(encoding="utf-8"))

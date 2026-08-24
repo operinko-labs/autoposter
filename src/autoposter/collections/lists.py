@@ -1,8 +1,9 @@
 """Reconcile regular (list) collections against a source-ordered item list.
 
 Unlike the smart collections in ``reconcile.py``, membership here is explicit
-and diffed on every pass, with sync semantics: a member the source no longer
-selects is removed.
+and diffed on every pass, with sync semantics by default: a member the source
+no longer selects is removed. A definition may ask for ``append`` instead,
+which only ever adds -- see ``member_diff``.
 
 That makes an empty desired-set dangerous. A failed chart fetch returning
 nothing would, taken literally, empty a live collection -- so an empty list
@@ -22,9 +23,44 @@ from autoposter.db.models import ManagedCollection
 logger = logging.getLogger(__name__)
 
 
-def _members_hash(items: list, summary: str | None) -> str:
-    payload = "\x1f".join([summary or "", *[str(i.ratingKey) for i in items]])
+def _members_hash(items: list, summary: str | None, sync_mode: str = "sync") -> str:
+    """The desired state, hashed -- what an unchanged pass short-circuits on.
+
+    The mode is part of it, because the same list means two different desired
+    states under the two modes: switching a definition to sync has to remove
+    members append was keeping, and a hash blind to the mode would report the
+    membership as already correct and never do it.
+
+    ``sync`` contributes nothing to the payload, so every hash already stored
+    still matches: the mode is the shipped behaviour, and making the upgrade
+    itself look like an edit would re-reconcile every managed collection in the
+    library for no change at all.
+    """
+    payload = "\x1f".join([
+        summary or "",
+        *[str(i.ratingKey) for i in items],
+        *([] if sync_mode == "sync" else [sync_mode]),
+    ])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def member_diff(collection, items: list, sync_mode: str = "sync") -> tuple[list, list]:
+    """``(adding, removing)`` for one collection against the desired list.
+
+    The one place the append rule lives: under ``append`` the removals are
+    always empty -- a member the source no longer names, or never named, is
+    exactly what an append definition exists to keep. Shared with the dry-run
+    preview so the counts an operator is shown are the ones a real pass would
+    act on, rather than a second implementation of the same subtraction.
+    """
+    current = {str(i.ratingKey): i for i in collection.items()}
+    desired = {str(i.ratingKey): i for i in items}
+    adding = [i for k, i in desired.items() if k not in current]
+    removing = (
+        [] if sync_mode == "append"
+        else [i for k, i in current.items() if k not in desired]
+    )
+    return adding, removing
 
 
 def _enforce_order(collection, desired: list) -> int:
@@ -78,6 +114,7 @@ async def reconcile_list_collection(
     key: str | None = None,
     http: httpx.AsyncClient | None = None,
     config=None,
+    sync_mode: str = "sync",
 ) -> list[str]:
     """Bring one list collection in line with ``items`` (already in source order).
 
@@ -86,6 +123,11 @@ async def reconcile_list_collection(
     library -- 305 of them on the production Movies section -- so the caller
     reconciling several collections in a row passes one listing in rather than
     paying for it per collection. Omitting it falls back to listing here.
+
+    ``sync_mode`` is ``sync`` (the collection is exactly ``items``) or
+    ``append`` (``items`` are added; nothing is ever removed and nothing
+    already there is moved). See ``member_diff`` and ``_enforce_order``'s
+    caller below for what each half of that means.
     """
     if not items:
         return [
@@ -114,7 +156,7 @@ async def reconcile_list_collection(
         )
     ).scalar_one_or_none()
 
-    wanted = _members_hash(items, summary)
+    wanted = _members_hash(items, summary, sync_mode)
     # ``key`` is checked alongside ``kind``: one without the other would
     # interpolate the string "None" into a poster URL.
     posters_on = (
@@ -181,16 +223,19 @@ async def reconcile_list_collection(
                     actions.append("updated the summary of %r" % title)
                 _edit_collection_summary(collection, summary)
 
-            current = {str(i.ratingKey): i for i in collection.items()}
-            desired = {str(i.ratingKey): i for i in items}
-
-            adding = [i for k, i in desired.items() if k not in current]
-            removing = [i for k, i in current.items() if k not in desired]
+            adding, removing = member_diff(collection, items, sync_mode)
             if adding:
                 collection.addItems(adding)
             if removing:
                 collection.removeItems(removing)
-            moves = _enforce_order(collection, items)
+            # Order is enforced only under sync. ``_enforce_order`` arranges
+            # the collection to be exactly ``items``, which would drag every
+            # appended definition's picks to the front and push whatever else
+            # the collection holds behind them -- a write against members this
+            # mode exists not to touch. Under append the new members arrive in
+            # source order at the end, where addItems puts them, and the
+            # positions that were already there are left alone.
+            moves = 0 if sync_mode == "append" else _enforce_order(collection, items)
             added_count, removed_count = len(adding), len(removing)
             if adding or removing or moves:
                 actions.append(

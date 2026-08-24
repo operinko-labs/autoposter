@@ -22,7 +22,7 @@ from pathlib import Path
 import httpx
 from plexapi.server import PlexServer
 
-from autoposter.collections.service import reconcile_libraries, summary_has_failure
+from autoposter.collections.service import reconcile_libraries
 from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
@@ -52,15 +52,15 @@ async def main() -> None:
 
             server = PlexServer(config.plex.url, secrets.plex_token)
             async with httpx.AsyncClient() as http:
-                summary = await reconcile_libraries(session, server, config, http)
-            logger.info(summary)
+                result = await reconcile_libraries(session, server, config, http)
+            logger.info(result.summary)
     finally:
         await engine.dispose()
 
     # reconcile_libraries contains a failing library rather than raising, so
     # without this the process exits 0 after a library failed and a cron
     # wrapper watching the exit code never sees it.
-    if summary_has_failure(summary):
+    if result.failed:
         raise SystemExit(1)
 
 

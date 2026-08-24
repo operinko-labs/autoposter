@@ -211,6 +211,72 @@ def test_the_commented_example_definition_is_one_the_schema_accepts():
     assert config.definitions[0].builder in ("plex_id",)
 
 
+def test_a_definition_colliding_with_a_shipped_collection_is_rejected():
+    """Definition identity is ``(library, title)``, so two definitions naming
+    the same title in the same library are one collection built twice -- the
+    second overwrites the first every pass, and the members hash flaps between
+    them forever. The collision is knowable when the config loads, and that is
+    where it is refused."""
+    document = _document_with_definitions(
+        [{"title": "IMDb Top 250", "builder": "plex_id", "params": {"ids": ["1"]}}]
+    )
+
+    with pytest.raises(ValidationError, match="IMDb Top 250"):
+        build_config(document)
+
+
+def test_the_collision_error_names_what_it_collided_with():
+    document = _document_with_definitions(
+        [{"title": "Ratings Collections", "builder": "plex_id", "params": {"ids": ["1"]}}]
+    )
+
+    with pytest.raises(ValidationError, match="built-in"):
+        build_config(document)
+
+
+def test_two_operator_definitions_may_not_share_a_title_in_one_library():
+    document = _document_with_definitions([
+        {"title": "Hand Picked", "builder": "plex_id", "params": {"ids": ["1"]}},
+        {"title": "Hand Picked", "builder": "plex_id", "params": {"ids": ["2"]}},
+    ])
+
+    with pytest.raises(ValidationError, match="Hand Picked"):
+        build_config(document)
+
+
+def test_the_same_title_in_two_different_libraries_is_fine():
+    """``(library, title)`` is the identity, so the same title in libraries
+    that do not overlap is two collections, not a collision."""
+    document = _document_with_definitions([
+        {"title": "Hand Picked", "builder": "plex_id", "params": {"ids": ["1"]},
+         "libraries": ["Movies"]},
+        {"title": "Hand Picked", "builder": "plex_id", "params": {"ids": ["2"]},
+         "libraries": ["TV Shows"]},
+    ])
+
+    assert len(build_config(document).collections.definitions) == 2
+
+
+def test_a_definition_may_take_a_shipped_title_the_toggle_switched_off():
+    """The charts are not built when ``charts: false``, so their titles are
+    not taken. Refusing on a title nothing builds would be refusing a config
+    that works."""
+    document = _document_with_definitions(
+        [{"title": "IMDb Top 250", "builder": "plex_id", "params": {"ids": ["1"]}}]
+    )
+    document["collections"]["charts"] = False
+
+    assert len(build_config(document).collections.definitions) == 1
+
+
+def test_the_delete_sweep_is_off_by_default_and_capped():
+    """Deleting is opt-in, and even opted in it is capped: a config edit that
+    drops every definition must not cascade into a wiped library."""
+    config = load_config(EXAMPLE_CONFIG)
+    assert config.collections.delete_unconfigured is False
+    assert config.collections.max_deletes == 5
+
+
 def test_definitions_are_editable_without_a_restart():
     """The whole section is live except `collections.enabled`; a definition
     added in Settings has to take effect on the next reconcile."""

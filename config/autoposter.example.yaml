@@ -57,6 +57,8 @@ collections:
   adopt_removes_prior_label: false # strip the prior label once claimed; keeping it is reversible, this isn't
   protect_labels: # labels of other tools' collections, e.g. Maintainerr; never touched, even if also adopt_from-labelled
     - Collection managed by Maintainerr
+  delete_unconfigured: false # delete collections we own once no definition builds them; the only setting here that deletes anything
+  max_deletes: 5 # per-pass cap on that sweep: past it it refuses entirely and reports the numbers
   # Operator-configured collections, each built by a registered builder. An
   # unknown `builder:` is rejected when the config loads, not hours later in a
   # reconcile. Empty by default; the toggles above are unaffected. Example:

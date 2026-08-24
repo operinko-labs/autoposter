@@ -27,7 +27,7 @@ from autoposter.arr.sync import (
     enqueue_unknown_items,
     sync_section,
 )
-from autoposter.collections.service import reconcile_libraries
+from autoposter.collections.service import CollectionsPassFailed, reconcile_libraries
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.schema import RadarrConfig, Secrets, SonarrConfig
 from autoposter.db.models import ItemFacts, MediaItem, Render
@@ -75,7 +75,18 @@ def make_collections_job(
         # -- does not matter to something asking to run every other pass.
         interval = max(config.scheduler.collections_hours * 3600, 1)
         run_index = int(time.time() // interval)
-        return await reconcile_libraries(session, server, config, http, run_index=run_index)
+        result = await reconcile_libraries(
+            session, server, config, http, run_index=run_index
+        )
+        # Raised, not returned, because ``last_status`` is decided by whether
+        # this coroutine raised (scheduler/core.py). Returning the summary of a
+        # pass where every source was dead recorded the run as ``ok`` and left
+        # the failure visible only in the log -- roadmap row 115. Raised HERE,
+        # after the reconcile: every library that succeeded has already
+        # committed, so nothing is rolled back by this.
+        if result.failed:
+            raise CollectionsPassFailed(result.detail)
+        return result.summary
 
     return Job(
         name="collections_reconcile",

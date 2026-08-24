@@ -22,11 +22,20 @@ Three rules it exists to keep:
 - **Gating is skipping, not failing.** A definition outside its schedule
   contributes no actions and its collection is not touched; it is still a
   managed title, so the leftovers report does not suddenly call it abandoned.
+
+Two things sit on top of that loop. Every definition's outcome is recorded
+(``DefinitionResult``), because "6 action(s)" is not an answer to "did the
+pass work" -- a dead source produces no actions and used to be reported as a
+clean run (roadmap row 115). And, when the caller asks for it, the delete
+sweep (``_sweep``) -- the only code in this service that deletes a collection,
+off by default, capped, and refused outright past the cap.
 """
 import logging
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections.builders import REGISTRY
@@ -35,11 +44,59 @@ from autoposter.collections.builders.base import (
     BuilderResult,
     SmartContext,
 )
-from autoposter.collections.lists import reconcile_list_collection
+from autoposter.collections.lists import member_diff, reconcile_list_collection
+from autoposter.collections.reconcile import has_label, load_labels, protected_label
 from autoposter.collections.resolve import build_owned_index, resolve_external
 from autoposter.config.schema import CollectionDefinition
+from autoposter.db.models import EventLog, ManagedCollection
 
 logger = logging.getLogger(__name__)
+
+# What the sweep reports under when it has nothing to report *about* -- the
+# refusal past the cap belongs to the library, not to any one collection, and
+# a real collection title here would read as that collection being the problem.
+SWEEP_TITLE = "(delete sweep)"
+
+
+@dataclass
+class DefinitionResult:
+    """What one pass did, or would do, to one collection.
+
+    Counts are a *preview* concern and are filled only when the caller asked
+    for them (``run_library(preview=True)``): learning them costs a read of the
+    collection's members per definition, which a scheduled pass has no use for
+    -- it reports through the action strings, and the deltas it actually
+    applied are stamped on the ``managed_collections`` row.
+
+    ``skipped`` covers every reason nothing was applied -- outside its
+    schedule, or nothing left to apply after a failure or an empty resolve --
+    so a failed definition is skipped too, with ``failed`` saying which of the
+    two it was.
+    """
+
+    title: str
+    library: str
+    adding: int = 0
+    removing: int = 0
+    deleting: int = 0
+    unresolved: int = 0
+    failed: bool = False
+    skipped: bool = False
+    actions: list[str] = field(default_factory=list)
+
+
+@dataclass
+class LibraryRun:
+    """One library's pass: every action string, and how each definition fared."""
+
+    actions: list[str]
+    definitions: list[DefinitionResult]
+
+    @property
+    def failures(self) -> list[str]:
+        """The titles whose builder failed. A pass with any of these is not a
+        success, whatever the action count says (roadmap row 115)."""
+        return [result.title for result in self.definitions if result.failed]
 
 
 def _targets(definition: CollectionDefinition, library: str) -> bool:
@@ -88,10 +145,42 @@ async def run_definitions(
     run_index: int = 0,
     now: datetime | None = None,
 ) -> list[str]:
+    """``run_library``'s action strings, for callers that want only those."""
+    run = await run_library(
+        session, section, library, library_type, definitions, config,
+        http=http, label=label, dry_run=dry_run, run_index=run_index, now=now,
+    )
+    return run.actions
+
+
+async def run_library(
+    session: AsyncSession,
+    section,
+    library: str,
+    library_type: str,
+    definitions: list[CollectionDefinition],
+    config,
+    http: httpx.AsyncClient | None = None,
+    label: str | None = None,
+    dry_run: bool | None = None,
+    run_index: int = 0,
+    now: datetime | None = None,
+    sweep: bool = False,
+    preview: bool = False,
+) -> LibraryRun:
     """Reconcile every definition that applies to this library, in order.
 
     ``run_index`` and ``now`` drive schedule gating and are injected rather than
     read here, so a gate is testable without waiting a month.
+
+    ``sweep`` runs the delete sweep afterwards (see ``_sweep``). It is off by
+    default and switched on only by ``service.reconcile_libraries``, which is
+    the one caller that passes the *whole* definition list for the library: a
+    sweep run against a subset would find every definition the subset left out
+    unaccounted for.
+
+    ``preview`` fills the per-definition counts, at the cost of a member read
+    per collection -- see ``DefinitionResult``.
     """
     label = config.collections.ownership_label if label is None else label
     if dry_run is None:
@@ -99,6 +188,7 @@ async def run_definitions(
     now = now or datetime.now(UTC)
 
     actions: list[str] = []
+    results: list[DefinitionResult] = []
     run_cache: dict = {}
     index = None
     existing: dict | None = None
@@ -131,6 +221,9 @@ async def run_definitions(
             logger.debug(
                 "%s: %r is outside its schedule this pass", library, definition.title
             )
+            results.append(
+                DefinitionResult(title=definition.title, library=library, skipped=True)
+            )
             continue
 
         builder = REGISTRY[definition.builder]
@@ -139,13 +232,21 @@ async def run_definitions(
             # Not wrapped: a smart builder does not fetch, so anything it raises
             # is a Plex write failing, which belongs to the caller's per-library
             # rollback rather than being swallowed as a dead source.
-            actions += await builder.apply(
+            smart_actions = await builder.apply(
                 SmartContext(
                     session=session, section=section, library=library,
                     library_type=library_type, label=label, config=config,
                     http=http, dry_run=dry_run,
                 )
             )
+            actions += smart_actions
+            # One result for the family, under the definition's own title: a
+            # smart builder owns several collections and Plex evaluates each
+            # one's membership itself, so there is no per-collection count to
+            # report and nothing here would be true of only one of them.
+            results.append(DefinitionResult(
+                title=definition.title, library=library, actions=list(smart_actions)
+            ))
             continue
 
         try:
@@ -157,16 +258,30 @@ async def run_definitions(
             logger.exception(
                 "%s: could not expand %r (%s)", library, definition.title, definition.builder
             )
+            results.append(DefinitionResult(
+                title=definition.title, library=library, failed=True, skipped=True
+            ))
             continue
 
         for unit in units:
-            actions += await _run_one(
+            result = await _run_one(
                 session, section, library, unit, REGISTRY[unit.builder], context(unit),
                 label=label, dry_run=dry_run, http=http, config=config,
-                owned_index=owned_index, listing=listing,
+                owned_index=owned_index, listing=listing, preview=preview,
             )
+            actions += result.actions
+            results.append(result)
 
-    return actions
+    if sweep:
+        swept = await _sweep(
+            session, section, library, library_type, definitions, config,
+            label=label, dry_run=dry_run, listing=listing,
+        )
+        for result in swept:
+            actions += result.actions
+            results.append(result)
+
+    return LibraryRun(actions=actions, definitions=results)
 
 
 async def _run_one(
@@ -182,15 +297,10 @@ async def _run_one(
     config,
     owned_index,
     listing,
-) -> list[str]:
+    preview: bool = False,
+) -> DefinitionResult:
     """One collection: build, resolve, cap, apply."""
-    if definition.sync_mode == "append":
-        # Reported rather than treated as sync: sync would remove members an
-        # append definition exists to keep, and silently doing nothing would
-        # look like a collection that had simply stopped updating.
-        return [
-            "%r: skipped; sync_mode 'append' is not implemented yet" % definition.title
-        ]
+    outcome = DefinitionResult(title=definition.title, library=library)
 
     try:
         result = await builder.build(ctx)
@@ -202,9 +312,17 @@ async def _run_one(
         logger.exception(
             "%s: source failed for %r (%s)", library, definition.title, definition.builder
         )
+        outcome.failed = True
+        # An empty result, and empty is what ``lists.py`` reads as "make no
+        # changes". The other fields being left at their defaults is safe only
+        # because that early return (lists.py, the ``if not items`` branch)
+        # happens before anything reads the summary or the poster fields --
+        # were it ever moved below them, this would start interpolating None
+        # into a poster URL. The pairing is deliberate, not incidental.
         result = BuilderResult(ids=[])
 
     resolved = resolve_external(owned_index(), result.ids)
+    outcome.unresolved = resolved.unresolved
     if resolved.unresolved:
         logger.info(
             "%s: %r has %d id(s) this library does not own",
@@ -218,7 +336,16 @@ async def _run_one(
         # the library was missing one of the first few.
         items = items[: definition.limit]
 
-    return await reconcile_list_collection(
+    outcome.skipped = not items
+    if preview:
+        collection = listing().get(definition.title)
+        if collection is None:
+            outcome.adding = len(items)
+        elif items:
+            adding, removing = member_diff(collection, items, definition.sync_mode)
+            outcome.adding, outcome.removing = len(adding), len(removing)
+
+    outcome.actions = await reconcile_list_collection(
         session, section, library, definition.title, items, label,
         summary=definition.summary or result.summary,
         sort=definition.sort,
@@ -232,6 +359,156 @@ async def _run_one(
         key=result.poster_key,
         http=http,
         config=config,
+        sync_mode=definition.sync_mode,
+    )
+    return outcome
+
+
+async def _sweep(
+    session: AsyncSession,
+    section,
+    library: str,
+    library_type: str,
+    definitions: list[CollectionDefinition],
+    config,
+    label: str,
+    dry_run: bool,
+    listing,
+) -> list[DefinitionResult]:
+    """Collections this service owns that no definition builds any more.
+
+    The only place anything is deleted, and every guard is here rather than
+    spread over the callers:
+
+    - a candidate must carry the **ownership label** *and* have a
+      ``managed_collections`` row. Either alone is a collection that is not
+      ours to delete: the row alone can name a collection somebody else
+      recreated under that title, and the label alone is a collection an
+      operator labelled by hand.
+    - a **protected label wins**, as it does everywhere else -- checked before
+      ownership, so a Maintainerr collection that also carries our label is
+      reported and left alone.
+    - ``delete_unconfigured`` is off by default, and off means *reported*: the
+      posture ``unmanaged_prior_collections`` takes towards a prior tool's
+      leftovers, turned on our own. The two reports overlap by design on an
+      adopted collection, which carries both labels.
+    - past ``max_deletes`` the sweep refuses **entirely**, with the numbers.
+      Deleting "the first five" of a hundred would be the same accident,
+      spread over twenty passes (the ``cleanup.max_orphans`` precedent).
+
+    The enumeration is library-scoped (``definition_titles_for``) because a
+    delete decision cannot use the leftovers report's deliberately
+    over-inclusive set: that one counts a definition aimed at another library
+    as managing this one's titles, which is the safe direction for a report
+    and the wrong one for a sweep.
+    """
+    managed = definition_titles_for(
+        definitions, listing().values(), library, library_type, config
+    )
+    rows = {
+        row.title: row
+        for row in (
+            await session.execute(
+                select(ManagedCollection).where(ManagedCollection.library == library)
+            )
+        ).scalars()
+    }
+
+    results: list[DefinitionResult] = []
+    candidates: list[tuple[str, object, ManagedCollection]] = []
+    for title, collection in listing().items():
+        if title in managed or title not in rows:
+            continue
+        load_labels(collection)
+        protecting = protected_label(collection, config.collections.protect_labels or [])
+        if protecting is not None:
+            results.append(_swept(title, library, (
+                "protected: %r carries %r; leaving it untouched" % (title, protecting)
+            )))
+            continue
+        if not has_label(collection, label):
+            logger.info(
+                "%s: %r has a managed row but not the %r label; not ours to delete",
+                library, title, label,
+            )
+            continue
+        candidates.append((title, collection, rows[title]))
+
+    if not config.collections.delete_unconfigured:
+        for title, _, _ in candidates:
+            results.append(_swept(title, library, (
+                "%r is no longer built by any definition; "
+                "set collections.delete_unconfigured to delete it" % title
+            )))
+        return results
+
+    cap = config.collections.max_deletes
+    if len(candidates) > cap:
+        # One string for the whole sweep, naming both numbers: the operator
+        # needs to know it was not a near miss before raising the cap.
+        results.append(_swept(SWEEP_TITLE, library, (
+            "refusing to delete %d unconfigured collection(s) in %r: more than "
+            "the max_deletes cap of %d; nothing was deleted and everything else "
+            "was reconciled" % (len(candidates), library, cap)
+        )))
+        return results
+
+    for title, collection, row in candidates:
+        if dry_run:
+            results.append(_swept(
+                title, library, "would delete %r: no definition builds it" % title, 1
+            ))
+            continue
+        collection.delete()
+        await session.delete(row)
+        session.add(EventLog(
+            source="collections",
+            event_type="collection_deleted",
+            # Identity only. The row's stats are gone with it and the
+            # collection's members were never ours to record.
+            payload={
+                "library": library,
+                "title": title,
+                "rating_key": str(getattr(collection, "ratingKey", "") or ""),
+            },
+            outcome="deleted; no definition builds it",
+        ))
+        results.append(_swept(
+            title, library, "deleted %r: no definition builds it" % title, 1
+        ))
+    return results
+
+
+def _swept(title: str, library: str, action: str, deleting: int = 0) -> DefinitionResult:
+    """One sweep outcome, in the same shape a definition reports.
+
+    A would-be-deleted collection is still a collection with a title and a
+    pending action, so the preview renders it as another row rather than a
+    second kind of thing.
+    """
+    return DefinitionResult(
+        title=title, library=library, deleting=deleting, skipped=True, actions=[action]
+    )
+
+
+def definition_titles_for(
+    definitions: list[CollectionDefinition],
+    collections,
+    library: str,
+    library_type: str,
+    config,
+) -> set[str]:
+    """``definition_titles``, narrowed to what this library actually builds.
+
+    The narrowing is the whole point: ``definition_titles`` counts every
+    definition's title whatever library it targets, which keeps the leftovers
+    report from inviting an operator to delete a sibling library's collection.
+    A sweep reading that set would never delete an orphan whose title some
+    other library's definition happens to use.
+    """
+    return definition_titles(
+        [d for d in definitions if _targets(d, library)],
+        collections, library_type, config,
     )
 
 

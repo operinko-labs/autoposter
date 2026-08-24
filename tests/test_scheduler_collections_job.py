@@ -11,8 +11,10 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import pytest
 from plexapi.exceptions import NotFound
 
+from autoposter.collections.service import CollectionsPassFailed
 from autoposter.config.holder import ConfigHolder
 from autoposter.scheduler.jobs import make_collections_job
 
@@ -131,6 +133,9 @@ def _config(libraries=("Movies", "TV Shows"), enabled=True, apply_to_plex=True):
             # No operator-configured definitions: this test is about the
             # shipped inventory, which is what an empty list leaves.
             definitions=[],
+            # The delete sweep is off by default; it is exercised in
+            # tests/test_builder_knobs.py.
+            delete_unconfigured=False, max_deletes=5,
         ),
         scheduler=SimpleNamespace(collections_hours=24),
     )
@@ -168,15 +173,21 @@ async def test_a_successful_pass_returns_a_summary_naming_each_library(session):
 
 
 async def test_a_failure_reconciling_one_library_does_not_prevent_the_other(session):
+    """The containment is unchanged -- the healthy library is still
+    reconciled and still named -- but the *job* now fails, which is the whole
+    of roadmap row 115: the run this test used to assert was ``ok`` was a run
+    where a configured library had not been reconciled at all."""
     server = BreaksOnSecondLibrary({"Movies": FakeSection({"R", "17"})})
     config = _config(["Movies", "TV Shows"])
 
     async with httpx.AsyncClient() as http:
         job = make_collections_job(ConfigHolder(config), lambda: server, http)
-        summary = await job.run(session)
+        with pytest.raises(CollectionsPassFailed) as failure:
+            await job.run(session)
 
-    assert "Movies: 2 action(s)" in summary
-    assert "TV Shows" in summary and "failed" in summary.lower()
+    detail = str(failure.value)
+    assert "Movies: 2 action(s)" in detail
+    assert "TV Shows" in detail and "failed" in detail.lower()
 
 
 async def test_the_plex_connection_runs_off_the_event_loop(session):

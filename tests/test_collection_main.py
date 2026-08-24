@@ -18,7 +18,11 @@ import pytest
 from plexapi.exceptions import NotFound
 from sqlalchemy import select
 
-from autoposter.collections.service import reconcile_libraries, summary_has_failure
+from autoposter.collections.service import (
+    LibraryOutcome,
+    ReconcileResult,
+    reconcile_libraries,
+)
 from autoposter.db.models import ManagedCollection
 
 LABEL = "autoposter"
@@ -131,6 +135,10 @@ def _config(libraries):
             # No operator-configured definitions: this test is about the
             # shipped inventory, which is what an empty list leaves.
             definitions=[],
+            # The delete sweep runs on every reconcile_libraries pass; off is
+            # the default and what this file's fakes are written for -- the
+            # sweep itself is tests/test_builder_knobs.py's.
+            delete_unconfigured=False, max_deletes=5,
         )
     )
 
@@ -142,7 +150,7 @@ async def test_a_failure_on_the_second_library_does_not_roll_back_the_first(
     config = _config(["Movies", "TV Shows"])
 
     async with httpx.AsyncClient() as http:
-        summary = await reconcile_libraries(session, server, config, http)
+        summary = (await reconcile_libraries(session, server, config, http)).summary
 
     assert "TV Shows" in summary and "failed" in summary.lower(), (
         "a failure reconciling one library must be recorded, not left to "
@@ -170,9 +178,9 @@ async def test_a_failed_leftovers_scan_does_not_discard_the_librarys_rows(
     server = BreaksOnSecondLibrary({"Movies": BreaksOnTheLeftoversScan({"R", "17"})})
 
     async with httpx.AsyncClient() as http:
-        summary = await reconcile_libraries(session, server, _config(["Movies"]), http)
+        result = await reconcile_libraries(session, server, _config(["Movies"]), http)
 
-    assert summary_has_failure(summary) is False, (
+    assert result.failed is False, (
         "a failed diagnostic scan must not be reported as a failed library"
     )
 
@@ -184,19 +192,19 @@ async def test_a_failed_leftovers_scan_does_not_discard_the_librarys_rows(
 
 
 async def test_a_failed_library_is_visible_to_a_caller_watching_the_exit_code(session):
-    """``reconcile_libraries`` contains a failure rather than raising, so the
-    summary string is the only place the outcome survives. The one-shot CLI
-    turns that into an exit code -- without it ``python -m
-    autoposter.collections`` exits 0 after a library failed and a cron
-    wrapper watching the exit code never sees it."""
+    """``reconcile_libraries`` contains a failure rather than raising, so its
+    result is the only place the outcome survives. The one-shot CLI turns that
+    into an exit code -- without it ``python -m autoposter.collections`` exits
+    0 after a library failed and a cron wrapper watching the exit code never
+    sees it."""
     server = BreaksOnSecondLibrary({"Movies": FakeSection({"R", "17"})})
 
     async with httpx.AsyncClient() as http:
         failed = await reconcile_libraries(session, server, _config(["Movies", "TV Shows"]), http)
         clean = await reconcile_libraries(session, server, _config(["Movies"]), http)
 
-    assert summary_has_failure(failed) is True
-    assert summary_has_failure(clean) is False
+    assert failed.failed is True
+    assert clean.failed is False
 
 
 async def test_the_cli_exits_non_zero_when_a_library_failed(monkeypatch):
@@ -204,7 +212,10 @@ async def test_the_cli_exits_non_zero_when_a_library_failed(monkeypatch):
     import autoposter.collections.__main__ as cli
 
     async def fake_reconcile(session, server, config, http):
-        return "Movies: 3 action(s); TV Shows: failed (simulated)"
+        return ReconcileResult(libraries=[
+            LibraryOutcome(library="Movies", actions=["a", "b", "c"]),
+            LibraryOutcome(library="TV Shows", error="simulated"),
+        ])
 
     _stub_cli_dependencies(monkeypatch, cli, fake_reconcile)
 
@@ -217,7 +228,10 @@ async def test_the_cli_exits_zero_when_every_library_succeeded(monkeypatch):
     import autoposter.collections.__main__ as cli
 
     async def fake_reconcile(session, server, config, http):
-        return "Movies: 3 action(s); TV Shows: 0 action(s)"
+        return ReconcileResult(libraries=[
+            LibraryOutcome(library="Movies", actions=["a", "b", "c"]),
+            LibraryOutcome(library="TV Shows"),
+        ])
 
     _stub_cli_dependencies(monkeypatch, cli, fake_reconcile)
 

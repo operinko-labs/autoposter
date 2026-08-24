@@ -15,11 +15,12 @@ library it happened on, rather than letting it end the pass, means one bad
 library cannot stop the rest of the configured libraries from being tried.
 """
 import logging
+from dataclasses import dataclass, field
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.collections.engine import definition_titles, run_definitions
+from autoposter.collections.engine import definition_titles, run_library
 from autoposter.collections.reconcile import load_labels, protected_label
 from autoposter.collections.sources import default_definitions
 from autoposter.config.schema import Config
@@ -28,24 +29,97 @@ logger = logging.getLogger(__name__)
 
 LIBRARY_TYPES = {"movie": "Movie", "show": "Show"}
 
-# How a failed library is written into the summary. Kept as a constant because
-# ``summary_has_failure`` reads it back out: the one-shot CLI must exit
-# non-zero when any library failed, and a cron wrapper watching the exit code
-# is the only thing that will ever notice.
+# How a failed library is written into the summary.
 FAILURE_MARKER = ": failed ("
 
 
-def summary_has_failure(summary: str) -> bool:
-    """True when a ``reconcile_libraries`` summary reports any failed library.
+class CollectionsPassFailed(RuntimeError):
+    """Raised by the *callers* of ``reconcile_libraries`` when a pass failed.
 
-    Failures are contained per library rather than raised -- one bad library
-    must not stop the rest -- so the return value is the only place the
-    outcome survives. Callers that need an exit code ask here.
+    Never raised by the reconcile itself: failures are contained per library so
+    one bad library cannot stop the rest, and the contained outcome is carried
+    in ``ReconcileResult``. The scheduled job re-raises this once the pass has
+    finished and its per-library commits have landed, because ``last_status``
+    is derived from whether the job body raised -- and until it did, a pass
+    where every source was dead was recorded as ``ok`` (roadmap row 115).
     """
-    return FAILURE_MARKER in summary
 
 
-def _library_definitions(config: Config, library_type: str) -> list:
+@dataclass
+class LibraryOutcome:
+    """One library's result. ``ok`` is the honest answer, not the action count.
+
+    A library is not ok if the pass over it raised (``error``) *or* if any
+    definition's source failed (``failed_definitions``). The second is the row
+    115 fix: those failures were always contained -- the collection is left
+    exactly as it was -- but containing a failure is not the same as it not
+    having happened.
+    """
+
+    library: str
+    actions: list[str] = field(default_factory=list)
+    failed_definitions: list[str] = field(default_factory=list)
+    leftovers: list[str] = field(default_factory=list)
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and not self.failed_definitions
+
+    @property
+    def summary(self) -> str:
+        if self.error is not None:
+            return "%s%s%s)" % (self.library, FAILURE_MARKER, self.error)
+        summary = "%s: %d action(s)" % (self.library, len(self.actions))
+        if self.failed_definitions:
+            summary += "; %d definition(s) failed (%s)" % (
+                len(self.failed_definitions), ", ".join(self.failed_definitions)
+            )
+        if self.leftovers:
+            summary += "; %d left behind (%s)" % (
+                len(self.leftovers), ", ".join(self.leftovers)
+            )
+        return summary
+
+
+@dataclass
+class ReconcileResult:
+    """Every library's outcome, and the one-line summary of the whole pass."""
+
+    libraries: list[LibraryOutcome] = field(default_factory=list)
+
+    @property
+    def failed(self) -> bool:
+        return any(not outcome.ok for outcome in self.libraries)
+
+    @property
+    def summary(self) -> str:
+        """``"Movies: 3 action(s); TV Shows: 0 action(s)"`` -- what the CLI
+        prints and the job records."""
+        return "; ".join(outcome.summary for outcome in self.libraries)
+
+    @property
+    def detail(self) -> str:
+        """The summary with the failures named first.
+
+        Failures first because this is what a scheduled run's ``last_detail``
+        holds and what a notification carries, and both are truncated (2000
+        characters) -- the part that must survive is what broke.
+        """
+        broken = [
+            "%s%s" % (
+                outcome.library,
+                "" if not outcome.failed_definitions
+                else " (%s)" % ", ".join(outcome.failed_definitions),
+            )
+            for outcome in self.libraries if not outcome.ok
+        ]
+        if not broken:
+            return self.summary
+        return "failed: %s; %s" % ("; ".join(broken), self.summary)
+
+
+def library_definitions(config: Config, library_type: str) -> list:
     """Everything a pass over this library reconciles: defaults, then config.
 
     The operator's definitions are appended rather than merged, so an empty
@@ -69,7 +143,7 @@ def _managed_titles(collections, library_type: str, config: Config) -> set[str]:
     delete something a sibling library manages.
     """
     return definition_titles(
-        _library_definitions(config, library_type), collections, library_type, config
+        library_definitions(config, library_type), collections, library_type, config
     )
 
 
@@ -123,19 +197,22 @@ async def reconcile_libraries(
     config: Config,
     http: httpx.AsyncClient,
     run_index: int = 0,
-) -> str:
+) -> ReconcileResult:
     """Reconcile every configured library, committing after each one.
 
-    Returns a summary such as ``"Movies: 3 action(s); TV Shows: 0
-    action(s)"``. A library that fails is logged and recorded as ``"<name>:
-    failed (<error>)"`` in the summary rather than aborting the remaining
-    libraries.
+    Returns the per-library outcomes (``ReconcileResult``), whose ``summary``
+    is the line the CLI prints and the job records: ``"Movies: 3 action(s); TV
+    Shows: 0 action(s)"``. A library that fails is logged and recorded as
+    ``"<name>: failed (<error>)"`` rather than aborting the remaining
+    libraries -- and, since row 115, so is a library where a definition's
+    source failed. Nothing here raises on a failure; the caller decides what a
+    failed pass means (see ``CollectionsPassFailed``).
 
     ``run_index`` is which pass this is, for definitions gated to every Nth --
     the scheduler derives it (``scheduler/jobs.py``). A hand-run pass leaves it
     at 0, which runs everything: someone who ran the CLI meant to.
     """
-    summaries: list[str] = []
+    result = ReconcileResult()
     for name in config.collections.libraries:
         try:
             section = server.library.section(name)
@@ -144,15 +221,21 @@ async def reconcile_libraries(
                 logger.info("skipping %r: unsupported library type %r", name, section.type)
                 continue
 
-            actions = await run_definitions(
+            run = await run_library(
                 session, section, name, library_type,
-                _library_definitions(config, library_type),
-                config, http=http, run_index=run_index,
+                library_definitions(config, library_type),
+                config, http=http, run_index=run_index, sweep=True,
             )
+            actions = run.actions
 
             logger.info("%s: %d action(s)", name, len(actions))
             for action in actions:
                 logger.info("   %s", action)
+            if run.failures:
+                logger.warning(
+                    "%s: %d definition(s) failed: %s",
+                    name, len(run.failures), ", ".join(run.failures),
+                )
 
             await session.commit()
 
@@ -174,13 +257,13 @@ async def reconcile_libraries(
                     name, len(leftovers), ", ".join(leftovers),
                 )
 
-            summary = "%s: %d action(s)" % (name, len(actions))
-            if leftovers:
-                summary += "; %d left behind (%s)" % (len(leftovers), ", ".join(leftovers))
-            summaries.append(summary)
+            result.libraries.append(LibraryOutcome(
+                library=name, actions=actions,
+                failed_definitions=run.failures, leftovers=leftovers,
+            ))
         except Exception as error:
             await session.rollback()
             logger.exception("failed reconciling %r", name)
-            summaries.append("%s%s%s)" % (name, FAILURE_MARKER, error))
+            result.libraries.append(LibraryOutcome(library=name, error=str(error)))
 
-    return "; ".join(summaries)
+    return result

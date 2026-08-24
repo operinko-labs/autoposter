@@ -93,11 +93,21 @@ def test_label_is_a_documented_search_filter_field():
     assert "**label** (:class:`~plexapi.media.MediaTag`)" in LibrarySection.search.__doc__
 
 
-def test_collection_delete_exists_but_we_never_call_it():
-    """Deleting a collection is out of scope for this phase. The method is
-    pinned here so that if a later phase adds deletion, it is a deliberate
-    change against a known API rather than an accident."""
+def test_collection_delete_takes_no_arguments():
+    """The later phase this pin was written for arrived: ``engine._sweep``
+    calls ``collection.delete()`` for a collection no definition builds any
+    more, behind ``collections.delete_unconfigured``. It is the one
+    irreversible call this service makes, so the signature is pinned rather
+    than assumed -- an extra required parameter would otherwise surface as a
+    TypeError mid-sweep, against a real server, with some collections already
+    gone."""
     assert callable(Collection.delete)
+    required = [
+        parameter for name, parameter in
+        inspect.signature(Collection.delete).parameters.items()
+        if name != "self" and parameter.default is inspect.Parameter.empty
+    ]
+    assert required == [], "Collection.delete grew a required parameter"
 
 
 def test_collection_labels_is_lazy_and_must_be_reloaded_explicitly():

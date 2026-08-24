@@ -3,6 +3,7 @@ import json
 import os
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -379,6 +380,97 @@ class CollectionsConfig(BaseModel):
     # by this list; it is additive. Live like the rest of this section, so a
     # definition added in Settings applies on the next reconcile.
     definitions: list[CollectionDefinition] = Field(default_factory=list)
+    # Delete a collection this service owns once no definition builds it any
+    # more -- a chart switched off, a definition removed, a title renamed.
+    # Off by default and deliberately the only setting in this file that
+    # authorises a delete: with it off the pass reports the orphan instead.
+    # Even switched on it deletes only through every guard (the ownership
+    # label AND a managed_collections row AND no protected label), and never
+    # more than max_deletes in one pass.
+    delete_unconfigured: bool = False
+    # The per-pass cap on that sweep, the cleanup.max_orphans precedent: past
+    # it the sweep refuses entirely and reports the numbers, so a config edit
+    # that drops every definition cannot cascade into a wiped library. ge=0
+    # because 0 is a meaningful setting -- opted in, but nothing this pass.
+    max_deletes: int = Field(default=5, ge=0)
+
+    @model_validator(mode="after")
+    def _titles_must_not_collide(self) -> "CollectionsConfig":
+        """No two definitions may build the same title in the same library.
+
+        Definition identity is ``(library, title)``: the managed row, the
+        members hash and the collection in Plex are all keyed on it. Two
+        definitions sharing one means the second overwrites the first on every
+        pass and the hash flaps between them forever -- a collection that
+        never settles, reported as changing every time. Every input to that
+        judgement is in this document, so it is refused here rather than
+        discovered as a collection that will not stop updating.
+
+        The built-in titles are enumerated the way the engine enumerates them
+        (``engine.definition_titles`` over ``sources.default_definitions``), so
+        a toggle switched off frees its titles, and the age buckets contribute
+        the titles they actually create rather than their definition's
+        placeholder. The dynamic Oscars year titles are *not* enumerable
+        without the ceremony dataset, so a definition titled "Oscars Winners
+        2026" is not caught here; the reconcile leaves whichever definition
+        runs second in charge, and the roadmap has that as the known gap.
+        """
+        # Imported at validation time, not module scope: both reach back into
+        # this module -- the same cycle CollectionDefinition's builder
+        # validator documents.
+        from autoposter.collections.engine import definition_titles
+        from autoposter.collections.service import LIBRARY_TYPES
+        from autoposter.collections.sources import default_definitions
+
+        # default_definitions and the smart builders' titles() read their
+        # settings off ``config.collections``; this model IS that section, so
+        # it stands in as the whole config for the enumeration.
+        shim = SimpleNamespace(collections=self)
+        built_in: set[str] = set()
+        for library_type in LIBRARY_TYPES.values():
+            built_in |= definition_titles(
+                default_definitions(shim, library_type), [], library_type, shim
+            )
+
+        seen: dict[str, CollectionDefinition] = {}
+        for definition in self.definitions:
+            if definition.title in built_in:
+                raise ValueError(
+                    f"collection definition {definition.title!r} has the same "
+                    "title as a built-in collection this service already "
+                    "builds; rename it, or switch off the setting that builds "
+                    "the built-in one"
+                )
+            other = seen.get(definition.title)
+            if other is not None and _libraries_overlap(self, definition, other):
+                raise ValueError(
+                    f"two collection definitions both build {definition.title!r} "
+                    f"in the same library (builders {other.builder!r} and "
+                    f"{definition.builder!r}): a collection is identified by "
+                    "(library, title), so one would overwrite the other on "
+                    "every pass"
+                )
+            seen[definition.title] = definition
+        return self
+
+
+def _libraries_overlap(
+    config: "CollectionsConfig",
+    one: CollectionDefinition,
+    other: CollectionDefinition,
+) -> bool:
+    """Whether two definitions can ever target the same library.
+
+    ``libraries: None`` means every library in ``collections.libraries``, so it
+    is resolved to that list before the sets are compared -- otherwise a
+    definition that names Movies explicitly and one that leaves it to the
+    default would read as targeting different libraries when they do not.
+    """
+    default = set(config.libraries)
+    return bool(
+        (set(one.libraries) if one.libraries is not None else default)
+        & (set(other.libraries) if other.libraries is not None else default)
+    )
 
 
 class CleanupConfig(BaseModel):
