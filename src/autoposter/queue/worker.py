@@ -1,11 +1,12 @@
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 import requests
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.intake.arr import RenderIntent
+from autoposter.artwork_modes.base import WorkerPause
+from autoposter.db.models import Job
 from autoposter.plex.client import ItemNotFound
 from autoposter.queue.jobs import MAX_ATTEMPTS, claim, complete, fail, release
 
@@ -13,8 +14,16 @@ logger = logging.getLogger(__name__)
 
 IDLE_SLEEP_SECONDS = 2.0
 
+# One dispatch entry per job kind. The handler owns decoding its own payload
+# (a process_item job's is a RenderIntent; a mode job's is its filters), so the
+# map values share one signature regardless of kind. Wired in app.py, where the
+# per-process dependencies each handler closes over are constructed.
+JobHandler = Callable[[AsyncSession, Job], Awaitable[None]]
 
-async def run_once(session: AsyncSession, worker_id: str, handler) -> bool:
+
+async def run_once(
+    session: AsyncSession, worker_id: str, handlers: Mapping[str, JobHandler]
+) -> bool:
     """Claim and run at most one job. Returns False when nothing was due."""
     job = await claim(session, worker_id)
     if job is None:
@@ -25,7 +34,8 @@ async def run_once(session: AsyncSession, worker_id: str, handler) -> bool:
     # via plain attribute access on an AsyncSession.
     job_id = job.id
 
-    if job.kind != "process_item":
+    handler = handlers.get(job.kind)
+    if handler is None:
         # Not retryable — a rescheduled unknown kind would spin until it parks anyway.
         job.state = "parked"
         job.last_error = f"unknown job kind {job.kind!r}"
@@ -33,8 +43,7 @@ async def run_once(session: AsyncSession, worker_id: str, handler) -> bool:
         return True
 
     try:
-        intent = RenderIntent(**job.payload)
-        await handler(session, intent)
+        await handler(session, job)
     except asyncio.CancelledError:
         # Shutdown, not a job failure: hand it straight back so it's immediately
         # claimable again, without charging a retry attempt, then let the
@@ -73,11 +82,22 @@ async def run_once(session: AsyncSession, worker_id: str, handler) -> bool:
 async def run_worker(
     worker_id: str,
     session_factory,
-    handler,
+    handlers: Mapping[str, JobHandler],
     stop_event: asyncio.Event,
     is_healthy: Callable[[], bool] | None = None,
+    pause: WorkerPause | None = None,
 ) -> None:
     """Claim jobs until stopped, sleeping briefly when the queue is empty.
+
+    ``handlers`` maps ``job.kind`` to the coroutine that runs it; an unknown
+    kind parks (see ``run_once``).
+
+    ``pause``, when given, is the in-process fence a Plex-writing mode raises so
+    it does not race the live pipeline: while it is paused the worker idles and
+    re-checks instead of claiming, exactly as the health gate does, so a worker
+    already mid-job finishes it and *then* idles -- in-flight work is never
+    interrupted. Checked before ``is_healthy`` so a paused pool does not even
+    probe Plex.
 
     ``is_healthy``, when given, gates claiming: while it returns False the
     worker sleeps and re-checks instead of claiming, so jobs stay ``pending``
@@ -89,6 +109,12 @@ async def run_worker(
     correct; revisit this once a job kind that doesn't need Plex exists.
     """
     while not stop_event.is_set():
+        if pause is not None and pause.is_paused:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=IDLE_SLEEP_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+            continue
         if is_healthy is not None and not is_healthy():
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=IDLE_SLEEP_SECONDS)
@@ -97,7 +123,7 @@ async def run_worker(
             continue
         try:
             async with session_factory() as session:
-                did_work = await run_once(session, worker_id, handler)
+                did_work = await run_once(session, worker_id, handlers)
         except Exception:
             logger.exception("worker %s loop error", worker_id)
             did_work = False
@@ -111,13 +137,16 @@ async def run_worker(
 async def run_workers(
     count: int,
     session_factory,
-    handler,
+    handlers: Mapping[str, JobHandler],
     stop_event: asyncio.Event,
     is_healthy: Callable[[], bool] | None = None,
+    pause: WorkerPause | None = None,
 ) -> None:
     await asyncio.gather(
         *(
-            run_worker(f"worker-{index}", session_factory, handler, stop_event, is_healthy)
+            run_worker(
+                f"worker-{index}", session_factory, handlers, stop_event, is_healthy, pause
+            )
             for index in range(count)
         )
     )

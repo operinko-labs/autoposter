@@ -115,6 +115,30 @@ def test_imdb_refresh_defaults_from_the_example_config():
     assert operations.imdb_refresh_enabled is True
 
 
+def test_artwork_modes_round_trips_from_the_example_config():
+    modes = load_config(EXAMPLE).artwork_modes
+    assert modes.plex_backup_root == Path("/plexbackup")
+    # Every Plex-writing mode is dry run by default, the cleanup.apply posture.
+    assert modes.restore_apply is False
+    assert modes.reset_apply is False
+    assert modes.revert_apply is False
+    assert modes.logo_apply is False
+    assert modes.logo_revert_apply is False
+    assert modes.max_changes == 500
+    assert modes.max_change_share == 0.25
+
+
+def test_artwork_modes_defaults_when_the_section_is_absent():
+    """Attached via default_factory, so a config document that omits the
+    section still gets the full defaults -- the same guarantee every other
+    optional section (operations, badges, cleanup, ...) already carries."""
+    document = read_config_document(EXAMPLE)
+    document.pop("artwork_modes")
+    modes = build_config(document).artwork_modes
+    assert modes.plex_backup_root == Path("/plexbackup")
+    assert modes.max_changes == 500
+
+
 def test_config_version_changes_with_content(tmp_path):
     a = load_config(EXAMPLE)
     changed = tmp_path / "changed.yaml"

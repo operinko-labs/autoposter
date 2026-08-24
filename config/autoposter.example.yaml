@@ -63,6 +63,19 @@ cleanup:
   max_orphans: 500 # refuse the pass if more than this many directories look orphaned
   max_orphan_share: 0.25 # ...or more than this share of the tree; "almost everything is garbage" means something is wrong
 
+artwork_modes:
+  # Operator-triggered bulk operations: backup, restore, poster reset,
+  # remove-overlays revert, logo updater/revert. Every Plex-writing mode is dry
+  # run by default (the cleanup.apply posture); backup is Plex-read-only.
+  plex_backup_root: /plexbackup # NEW mount for backup/restore; never backup_root, which holds relocated orphaned assets
+  restore_apply: false # dry run by default: report what restore would push to Plex, change nothing
+  reset_apply: false # dry run by default: report what reset would unlock and re-select
+  revert_apply: false # dry run by default: report which badges revert would strip
+  logo_apply: false # dry run by default: report which logos the updater would upload
+  logo_revert_apply: false # dry run by default: report which logos revert would unlink
+  max_changes: 500 # refuse a mode that would change more than this many items
+  max_change_share: 0.25 # ...or more than this share of the candidate set; "almost everything" means the filter or mount is wrong
+
 adopt:
   apply: false # dry run by default: produce the report, write nothing
   libraries: # Plex library names to adopt

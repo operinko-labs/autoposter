@@ -1,5 +1,7 @@
 import asyncio
+from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -105,7 +107,9 @@ def stubbed_background_services(monkeypatch):
         async def run(self, stop_event) -> None:
             await stop_event.wait()
 
-    async def _fake_run_workers(count, session_factory, handler, stop_event, is_healthy=None):
+    async def _fake_run_workers(
+        count, session_factory, handlers, stop_event, is_healthy=None, pause=None
+    ):
         await stop_event.wait()
 
     monkeypatch.setattr("autoposter.app.PlexHealth", _FakeHealth)
@@ -158,7 +162,7 @@ async def test_the_lifespan_boots_on_the_effective_config_not_the_file_alone(
 
     started = []
 
-    async def capture_workers(count, factory, handler, stop_event, is_healthy=None):
+    async def capture_workers(count, factory, handlers, stop_event, is_healthy=None, pause=None):
         started.append(count)
         await stop_event.wait()
 
@@ -469,8 +473,8 @@ async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_process
     """
     captured = {}
 
-    async def capture_workers(count, factory, handler, stop_event, is_healthy=None):
-        captured["handler"] = handler
+    async def capture_workers(count, factory, handlers, stop_event, is_healthy=None, pause=None):
+        captured["handlers"] = handlers
         await stop_event.wait()
 
     seen = []
@@ -492,12 +496,16 @@ async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_process
         # re-reads the file and merges the (here empty) overrides over it, so
         # the boot generation is an equal-but-distinct object.
         booted = app.state.config
-        handler = captured["handler"]
-        await handler(None, intent)
+        # The process_item entry of the dispatch map the lifespan built. It
+        # decodes the RenderIntent off the job's payload, so drive it with a
+        # stand-in job carrying that payload rather than the intent directly.
+        process_item_handler = captured["handlers"]["process_item"]
+        job = SimpleNamespace(payload=asdict(intent))
+        await process_item_handler(None, job)
 
         swapped = booted.model_copy(update={"workers": booted.workers + 7})
         swap_config(app, swapped)
-        await handler(None, intent)
+        await process_item_handler(None, job)
 
     assert seen[0] is booted, "the first job did not see the boot generation"
     assert seen[1] is swapped, (

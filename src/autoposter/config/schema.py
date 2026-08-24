@@ -292,6 +292,41 @@ class AdoptConfig(BaseModel):
     libraries: list[str] = Field(default_factory=lambda: ["Movies", "TV Shows"])
 
 
+class ArtworkModesConfig(BaseModel):
+    """Operator-triggered bulk artwork operations (Phase 7b): backup, restore,
+    poster reset, remove-overlays revert and the logo updater/revert.
+
+    Every mode that writes to Plex is dry run by default -- the same posture as
+    ``badges.upload_to_plex``, ``collections.apply_to_plex`` and
+    ``cleanup.apply`` -- so each carries its own ``*_apply`` flag, read off the
+    holder per run. The two caps below are shared by all of them: past
+    ``max_changes`` items, or past ``max_change_share`` of the candidate set, a
+    mode refuses with the real numbers rather than treating an implausibly
+    large operation as a work order (the ``cleanup`` ``max_orphans`` /
+    ``max_orphan_share`` precedent).
+    """
+
+    # Where backup writes and restore reads the Kometa-structured art tree. A
+    # NEW root and mount, deliberately not the overloaded ``backup_root`` (which
+    # holds asset directories the cleanup sweep relocates): the two must never
+    # collide.
+    plex_backup_root: Path = Path("/plexbackup")
+    # Dry run by default, per Plex-writing mode -- see the class docstring.
+    # Backup is Plex-read-only (it writes to disk) and so carries no apply flag.
+    restore_apply: bool = False
+    reset_apply: bool = False
+    revert_apply: bool = False
+    logo_apply: bool = False
+    logo_revert_apply: bool = False
+    # Shared plausibility caps. 500 sits far above any real operator run on a
+    # ~16,000-item library yet far below any "the filter or the mount moved"
+    # figure; the share cap catches the same failure on a small library, where
+    # no useful absolute cap would ever fire. Mirrors ``cleanup.max_orphans`` /
+    # ``max_orphan_share``.
+    max_changes: int = 500
+    max_change_share: float = 0.25
+
+
 class SchedulerConfig(BaseModel):
     """Cadences for three of the periodic passes in ``scheduler/jobs.py`` --
     the collections reconcile, the ratings-drift sweep and the asset cleanup --
@@ -429,6 +464,7 @@ class Config(BaseModel):
     badges: BadgesConfig = Field(default_factory=BadgesConfig)
     collections: CollectionsConfig = Field(default_factory=CollectionsConfig)
     cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
+    artwork_modes: ArtworkModesConfig = Field(default_factory=ArtworkModesConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     adopt: AdoptConfig = Field(default_factory=AdoptConfig)
     radarr: RadarrConfig = Field(default_factory=RadarrConfig)

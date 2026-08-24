@@ -12,6 +12,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
 from autoposter.api.auth import LoginRateLimiter
+from autoposter.artwork_modes.base import WorkerPause
 from autoposter.api.dashboard_stream import StatusBroadcaster
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
@@ -24,6 +25,7 @@ from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.facts.tmdb_facts import TMDBFactsClient
+from autoposter.intake.arr import RenderIntent
 from autoposter.intake.routes import router
 from autoposter.notify.dispatch import NullNotifier, build_notifier
 from autoposter.plex.artwork import artwork_provenance
@@ -176,6 +178,17 @@ def create_app(
             tmdb_facts=app.state.tmdb_facts, mdblist=app.state.mdblist,
             artwork_probe=artwork_probe,
         )
+
+        # The dispatch map the worker pool runs. process_item is registered
+        # like any other kind (Phase 7b): the entry decodes the RenderIntent
+        # payload the render pipeline expects, so run_once stays kind-agnostic.
+        # The mode kinds (backup/restore/reset/revert/logo) register their own
+        # entries here as they land -- this is the one place that both holds the
+        # per-process dependencies a handler needs and can reach app.state.
+        async def process_item_handler(session, job):
+            await handler(session, RenderIntent(**job.payload))
+
+        handlers = {"process_item": process_item_handler}
         imdb_refresh = ImdbAutoRefresh(
             session_factory, http,
             interval_hours=config.operations.imdb_refresh_hours,
@@ -232,8 +245,8 @@ def create_app(
 
         task = asyncio.create_task(
             run_workers(
-                config.workers, session_factory, handler, stop_event,
-                is_healthy=lambda: health.healthy,
+                config.workers, session_factory, handlers, stop_event,
+                is_healthy=lambda: health.healthy, pause=app.state.worker_pause,
             )
         )
         logger.info("started %d workers", config.workers)
@@ -288,6 +301,11 @@ def create_app(
     app.state.config_path = DEFAULT_CONFIG_PATH
     app.state.session_factory = session_factory
     app.state.secrets = secrets
+    # The worker-pause fence (Phase 7b). Created here so every application --
+    # the deployed one and every test's -- has one for a mode trigger endpoint
+    # to reach; the background lifespan hands this exact object to the worker
+    # pool. A no-lifespan app holds one that simply nothing awaits.
+    app.state.worker_pause = WorkerPause()
     # Per process, so every worker pod limits its own callers -- see
     # LoginRateLimiter.
     app.state.login_rate_limiter = LoginRateLimiter()

@@ -51,3 +51,14 @@ def test_the_collections_toggles_are_under_collections():
     assert "charts" in data["collections"]
     assert "awards" in data["collections"]
     assert "charts" not in data.get("cleanup", {})
+
+
+def test_the_artwork_modes_section_is_recognized_by_the_schema():
+    """The Phase 7b section is a real Config field, so its keys are applied
+    rather than silently dropped (the failure this whole file exists to catch).
+    """
+    data = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    model = _model_for(Config.model_fields["artwork_modes"])
+    assert model is not None
+    for subkey in data["artwork_modes"]:
+        assert subkey in model.model_fields
