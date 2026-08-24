@@ -162,12 +162,23 @@ async def complete(session: AsyncSession, job_id: int) -> None:
 async def fail(
     session: AsyncSession, job_id: int, error: str, max_attempts: int = MAX_ATTEMPTS
 ) -> str:
-    """Reschedule with exponential backoff, or park once attempts are exhausted."""
+    """Reschedule with exponential backoff, or park once attempts are exhausted.
+
+    A job an operator cancelled while it was running is dismissed here instead,
+    whatever budget it had left. This is the only place that decides what
+    happens after a failed attempt -- both of ``run_once``'s failure branches
+    come through it, the ItemNotFound/Plex-wait one included, and that one
+    carries the far larger ``resolve_max_attempts`` budget. Honouring the
+    cancellation at the caller instead would have to be written twice and would
+    let the Plex-wait path keep retrying for another hour.
+    """
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     job.last_error = error
     job.claimed_by = None
     job.claimed_at = None
-    if job.attempts >= max_attempts:
+    if job.cancel_requested:
+        job.state = "dismissed"
+    elif job.attempts >= max_attempts:
         job.state = "parked"
     else:
         job.state = "pending"

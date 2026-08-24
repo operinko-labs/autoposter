@@ -21,6 +21,7 @@ from autoposter.artwork_modes.restore import RestoreMode
 from autoposter.artwork_modes.revert import RevertMode
 from autoposter.api.candidates import router as candidates_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
+from autoposter.api.jobs import router as jobs_router
 from autoposter.api.logs import router as logs_router
 from autoposter.api.manual import router as manual_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
@@ -154,6 +155,13 @@ router.include_router(manual_router)
 # generated canvas and return the bytes inline. Its own module because it drives
 # the pipeline's compositing seam directly and writes nothing anywhere.
 router.include_router(testing_router)
+
+# The jobs overview: what is pending or running, and the per-job cancel. Its
+# own module because cancelling races the worker pool, and the row locking and
+# state fork that make it safe are the substance of it. The parked-job
+# endpoints below stay here -- they belong to the Failures page, which is a
+# different question about a different set of states.
+router.include_router(jobs_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
