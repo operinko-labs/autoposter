@@ -251,15 +251,45 @@ class LogoMode:
             if not ok:
                 failed += 1
                 continue
+            await self._record_marker(session, row, marker)
+            uploaded += 1
+
+        return LogoUpdateResult(total, items_missing_logo, uploaded, failed, dry_run=False)
+
+    async def _record_marker(self, session: AsyncSession, row, marker: str | None) -> None:
+        """Commit this item's marker before the next item's upload starts.
+
+        Per item, not once at the end of the run, because the Plex side of this
+        loop is per item and immediate: by the time the second item uploads,
+        the first item's logo is already on the server and locked. One commit
+        at the end would mean any interruption in between -- a redeploy, a
+        proxy timeout on this long inline request, a cancelled task, a database
+        error -- unwinds the session with EVERY marker in it uncommitted, while
+        the logos they name stay on Plex. Those logos would then be
+        unrevertable (the revert's first condition is that the column is set)
+        and unre-markable (a re-run skips them, because Plex now reports a
+        clearlogo for them). Committing here costs one round trip per uploaded
+        item and leaves an interrupted run partial but truthful.
+
+        A database error is this item's own, like every failure in
+        ``_upload_one``: the session is rolled back so the next item's write
+        starts clean. The item still counts as uploaded, because it *is* --
+        the logo is on it. That is the same outcome as a successful upload
+        Plex reported no key for: a logo the revert will not claim later.
+        """
+        try:
             await session.execute(
                 update(MediaItem)
                 .where(MediaItem.id == row.id)
                 .values(logo_upload_key=marker)
             )
-            uploaded += 1
-        await session.commit()
-
-        return LogoUpdateResult(total, items_missing_logo, uploaded, failed, dry_run=False)
+            await session.commit()
+        except Exception:  # noqa: BLE001 - see the docstring
+            await session.rollback()
+            logger.warning(
+                "logo: uploaded a clearlogo for %s but could not record its "
+                "marker -- the revert will not claim it", row.rating_key, exc_info=True,
+            )
 
     async def _upload_one(self, row) -> tuple[bool, str | None]:
         """Fetch and push one item's logo: ``(succeeded, marker to record)``.

@@ -339,6 +339,88 @@ async def test_updater_isolates_one_failing_item(session, config, serving):
     assert await _marker(session, bad.id) is None
 
 
+async def test_updater_commits_each_marker_before_the_next_upload(session, config, serving):
+    """The interruption proof. The Plex side of the loop is immediate -- item
+    one's logo is on the server and locked before item two is even fetched --
+    so item one's marker has to be committed before item two runs, not banked
+    until the end of the run.
+
+    Here item two's upload dies with a ``BaseException`` (task cancellation,
+    a worker torn down mid-request), which escapes the per-item ``except
+    Exception`` and unwinds ``_run_plex_writing_mode``'s session scope -- the
+    rollback below. Bank the markers in one ``session.commit()`` after the loop
+    instead and item one's marker dies with it, leaving a locked logo on Plex
+    that the revert can never claim and a re-run can never re-mark (Plex now
+    reports a clearlogo for it, so it is not a candidate).
+    """
+
+    class Interrupted(BaseException):
+        """Deliberately not an ``Exception``: this is not a per-item failure."""
+
+    class DyingItem(FakeItem):
+        def uploadLogo(self, url=None, filepath=None):  # noqa: N802 - plexapi name
+            raise Interrupted("the container went away")
+
+    # Read out of the ORM object before the rollback below expires it.
+    first_id = (await _add_item(session, rating_key="rk1", tmdb_id=1)).id
+    await _add_item(session, rating_key="rk2", tmdb_id=2)
+    first, second = FakeItem(logo=None), DyingItem(logo=None)
+    plex = FakePlexClient({"rk1": first, "rk2": second})
+
+    with pytest.raises(Interrupted):
+        await LogoMode(
+            config, plex, serving(), _headers(), [FakeProvider()], apply=True
+        ).run(session)
+    await session.rollback()  # what the unwinding session scope does
+
+    assert first.uploaded == [LOGO_BYTES]  # item one's logo really is on Plex
+    assert await _marker(session, first_id) == OUR_KEY  # ...and findable
+    assert second.uploaded == []
+
+
+async def test_updater_survives_a_failed_marker_write(session, config, serving):
+    """A database error on one item's marker is that item's own: the session is
+    rolled back so the next item's write starts clean, and the run carries on.
+    The item still counts as uploaded, because its logo is on Plex -- the same
+    outcome as an upload Plex reported no key for."""
+
+    class OneBadCommit:
+        """The real session, with the first marker commit blowing up."""
+
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+            self.commits = 0
+            self.rollbacks = 0
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+        async def commit(self):
+            self.commits += 1
+            if self.commits == 1:
+                raise RuntimeError("the database went away")
+            await self._wrapped.commit()
+
+        async def rollback(self):
+            self.rollbacks += 1
+            await self._wrapped.rollback()
+
+    # Read out of the ORM objects before the mode's rollback expires them.
+    first_id = (await _add_item(session, rating_key="rk1", tmdb_id=1)).id
+    second_id = (await _add_item(session, rating_key="rk2", tmdb_id=2)).id
+    first, second = FakeItem(logo=None), FakeItem(logo=None)
+    plex = FakePlexClient({"rk1": first, "rk2": second})
+
+    result = await LogoMode(
+        config, plex, serving(), _headers(), [FakeProvider()], apply=True
+    ).run(OneBadCommit(session))
+
+    assert (result.uploaded, result.failed) == (2, 0)
+    assert first.uploaded == [LOGO_BYTES] and second.uploaded == [LOGO_BYTES]
+    assert await _marker(session, first_id) is None
+    assert await _marker(session, second_id) == OUR_KEY
+
+
 async def test_updater_records_no_marker_when_plex_reports_no_upload_key(
     session, config, serving
 ):
