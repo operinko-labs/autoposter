@@ -194,7 +194,7 @@ def _agent_default(listing):
     return None
 
 
-def reset_artwork_to_agent_default(plex_item, art_kind: str = "poster") -> bool:
+def reset_artwork_to_agent_default(plex_item, art_kind: str) -> bool:
     """Unlock one artwork field on ``plex_item`` and hand it back to Plex's agent.
 
     The inverse of what ``upload_artwork`` does: that uploads and *locks* so the
@@ -206,7 +206,9 @@ def reset_artwork_to_agent_default(plex_item, art_kind: str = "poster") -> bool:
     stay the inverse of it: ``background`` is Plex's ``art`` field, and every
     other kind -- an episode's title card included -- is its poster. The three
     calls are picked up front so the unlock/select sequence itself is written
-    once rather than per field.
+    once rather than per field. ``art_kind`` is required for the same reason
+    ``upload_artwork``'s is: a caller that forgets which field it meant should
+    say so, not silently be handed the poster.
 
     The unlock happens first and unconditionally, so an item with no agent art
     still ends up unlocked -- that half is what the operator asked for, and it

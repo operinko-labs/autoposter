@@ -321,6 +321,46 @@ async def test_reset_counts_an_item_with_no_agent_background_as_failed(session, 
     assert item.selected == []
 
 
+@pytest.mark.parametrize("kind", ["season", "episode"])
+async def test_reset_never_touches_a_background_below_a_show(session, config, serving, kind):
+    """Plex fills a season's and an episode's ``art`` from the show's backdrop,
+    which on a badged library is OUR stamped upload -- so probing that field
+    would find our own provenance on a field this service never wrote to, and
+    an applied run would unlock and re-select it. The pipeline uploads a
+    background only to movies and shows (``ART_KINDS_FOR``), so the reset has
+    to stop there too: nothing is counted and nothing is written."""
+    await _add_item(session, rating_key="rk1", kind=kind)
+    # The item's own poster is not ours; its ``art`` serves the show's backdrop,
+    # stamped by us when the show's background was uploaded.
+    item = FakeItem(thumb=None, art="/show-backdrop")
+    plex = FakePlexClient({"rk1": item})
+    http = serving({"/show-backdrop": _stamped_jpeg("fp-show")})
+
+    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+
+    assert (result.items, result.items_with_our_art, result.fields) == (1, 0, 0)
+    assert (result.reset, result.failed) == (0, 0)
+    assert item.unlocked == [] and item.selected == []
+
+
+async def test_reset_still_covers_an_episodes_own_poster(session, config, serving):
+    """The other half of the restriction: an episode's badged image is its
+    *poster*, so that field stays in scope."""
+    await _add_item(session, rating_key="rk1", kind="episode")
+    item = FakeItem(thumb="/ours", art="/show-backdrop")
+    plex = FakePlexClient({"rk1": item})
+    http = serving({
+        "/ours": _stamped_jpeg("fp-abc"),
+        "/show-backdrop": _stamped_jpeg("fp-show"),
+    })
+
+    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+
+    assert (result.items_with_our_art, result.fields) == (1, 1)
+    assert item.unlocked == ["poster"]
+    assert item.selected == [AGENT_KEY]
+
+
 async def test_apply_resets_exactly_the_filtered_set(session, config, serving):
     """A Movies-only reset must not touch the show, even though the show's
     poster is just as much ours."""

@@ -5,10 +5,13 @@ Posterizarr's "poster reset". ``upload_artwork`` uploads a badged image and
 inverse -- unlock the field and re-select the agent's own art
 (``plex/artwork.py::reset_artwork_to_agent_default``).
 
-**Both fields, not just the poster.** The pipeline uploads and locks a poster
-*and* a background, so a complete undo has to release both: the mode walks
-``RESET_ART_KINDS`` per item, and every count below that is not the candidate
-count is per (item, field).
+**Both fields, not just the poster -- on the items that have both.** The
+pipeline uploads and locks a poster *and* a background on a movie or a show, so
+a complete undo has to release both: the mode walks ``RESET_ART_KINDS`` for the
+item's own kind, and every count below that is not the candidate count is per
+(item, field). A season and an episode get their poster only, because that is
+all the pipeline ever wrote to them -- their ``art`` is the show's backdrop
+Plex hands down, ours by provenance but never ours to reset.
 
 **It only ever touches art this service uploaded.** An operator who hand-set a
 poster in Plex meant it, so "reset everything" must not mean "undo the human's
@@ -42,12 +45,26 @@ from autoposter.plex.artwork import artwork_provenance, reset_artwork_to_agent_d
 
 logger = logging.getLogger(__name__)
 
-# The two Plex artwork fields the pipeline uploads to and locks, as the art
-# kinds ``plex/artwork.py`` routes on: the poster (Plex's ``thumb``) and the
+# Which Plex artwork fields this mode may touch on an item of each kind, as the
+# art kinds ``plex/artwork.py`` routes on: the poster (Plex's ``thumb``) and the
 # background (Plex's ``art``). The other kinds this project renders --
 # ``season_poster``, ``title_card`` -- are posters of their own items, so
 # probing them here would ask the same field twice.
-RESET_ART_KINDS = ("poster", "background")
+#
+# Per kind, and NOT ``("poster", "background")`` for everything, because the
+# pipeline only ever uploads a background to a movie or a show
+# (``pipeline.ART_KINDS_FOR``). Plex fills a season's and an episode's ``art``
+# from the show's backdrop -- which on a badged library is our own stamped
+# upload -- so a flat list would find our provenance on the ``art`` field of
+# every episode of every badged show: a dry run's counts would be inflated by
+# thousands, and an applied run would unlock and re-select a field this service
+# never wrote to.
+RESET_ART_KINDS = {
+    "movie": ("poster", "background"),
+    "show": ("poster", "background"),
+    "season": ("poster",),
+    "episode": ("poster",),
+}
 
 ORPHANED_UPLOAD_NOTE = (
     "the artwork this replaced stays on the Plex server as an orphaned "
@@ -61,11 +78,11 @@ class ResetResult:
 
     ``items`` is the candidate set after the filters; ``items_with_our_art`` is
     how many of those are currently showing artwork this service uploaded in at
-    least one of ``RESET_ART_KINDS`` -- the items that would change, which the
-    plausibility cap is measured against, unchanged now that the mode covers
-    both fields. ``fields`` is the total number of (item, field) pairs that are
-    ours, the revert result's ``files`` in the shape this mode needs: one item
-    can contribute two.
+    least one of the fields its kind has in ``RESET_ART_KINDS`` -- the items
+    that would change, which the plausibility cap is measured against.
+    ``fields`` is the total number of (item, field) pairs that are ours, the
+    revert result's ``files`` in the shape this mode needs: a movie or a show
+    can contribute two, a season or an episode at most one.
 
     ``reset`` and ``failed`` are therefore per field, not per item: on an
     applied run they split ``fields`` by outcome. A field Plex holds no agent
@@ -137,7 +154,9 @@ class ResetMode:
 
         rows = (
             await session.execute(
-                select(MediaItem.rating_key).where(*conditions).order_by(MediaItem.id)
+                select(MediaItem.rating_key, MediaItem.kind)
+                .where(*conditions)
+                .order_by(MediaItem.id)
             )
         ).all()
         total = len(rows)
@@ -164,7 +183,7 @@ class ResetMode:
             # so an item whose poster is ours but whose background an operator
             # set by hand has only its poster reset.
             kinds = [
-                art_kind for art_kind in RESET_ART_KINDS
+                art_kind for art_kind in RESET_ART_KINDS[row.kind]
                 if await artwork_provenance(
                     self._http, plex_item, base_url, self._headers, art_kind
                 ) is not None
