@@ -31,6 +31,7 @@ the bundle that means something different for each library in the pass.
 """
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # imported for annotations only -- see the module docstring
@@ -103,6 +104,14 @@ class SourceClients:
     # ``plex_token`` may be server-scoped and must never be assumed to work
     # against plex.tv (``plex/health.py``'s refresh carries the same warning).
     plex_account: "Callable[[], MyPlexAccount] | None" = None
+    # Not a client, and the one thing here that is not: the root of the mount
+    # operators put their own files on. ``text_file`` reads a list from there
+    # and still may not read the application config to find out where "there"
+    # is, so the root arrives the same way a client does -- handed down by the
+    # layer that had the config. A path is not a credential; what it would be
+    # unsafe to hand a builder is the freedom to read *outside* it, which is
+    # the builder's own containment check, not this field's.
+    manual_assets_root: Path | None = None
     # Bound by the engine per library, so it is None on the pass-level bundle
     # and on any bundle a direct caller builds. A builder that needs the
     # library treats that like every other absent client and raises.

@@ -296,6 +296,10 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, mdblist_apikey=""):
             # ``main()`` does with the summary, not about the clients.
             radarr=SimpleNamespace(enabled=False, base_url=""),
             sonarr=SimpleNamespace(enabled=False, base_url=""),
+            # ...and the manual assets mount, which the bundle carries for
+            # ``text_file``. A path, not a client: the value is irrelevant
+            # here, its presence is what a real ``Config`` guarantees.
+            manual_assets_root="/manual",
         )
 
     monkeypatch.setattr(cli, "load_effective_config", fake_load_effective_config)

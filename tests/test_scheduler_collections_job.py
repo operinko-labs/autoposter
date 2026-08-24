@@ -218,6 +218,7 @@ async def test_a_real_secrets_bundle_reaches_the_reconcile(session, monkeypatch)
     config.providers = SimpleNamespace(cache_ttl_seconds=0)
     config.radarr = SimpleNamespace(enabled=False, base_url="")
     config.sonarr = SimpleNamespace(enabled=False, base_url="")
+    config.manual_assets_root = "/manual"
     server = FakeServer({"Movies": FakeSection({"R"})})
 
     async with httpx.AsyncClient() as http:

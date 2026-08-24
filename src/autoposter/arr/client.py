@@ -54,16 +54,41 @@ class ArrClient:
     def ids_in(self, entries: list[dict]) -> set[str]:
         """Ids in a listing, as strings, for comparing against Plex guids.
 
-        Entries whose id field is absent or zero are skipped -- an unmatched
+        A set, because the sync's question is membership -- "does the service
+        hold this?" -- and has no order. ``ordered_ids_in`` is the same
+        entries for the caller whose question does.
+        """
+        return set(self.ordered_ids_in(entries))
+
+    def ordered_ids_in(self, entries: list[dict]) -> list[str]:
+        """The same ids, in the order the service listed them.
+
+        The collection builders read this one: a collection built from a
+        listing *is* an order, and a set has none. Sharing the skip rule with
+        ``ids_in`` rather than restating it is the point -- two spellings
+        would eventually disagree about which entries count, and the
+        disagreement would show up as an item the sync thinks is registered
+        and a collection that leaves it out.
+
+        Entries whose id field is absent or zero are skipped: an unmatched
         item in the service has no external id and must not collide with
         anything.
         """
-        ids = set()
+        ids = []
         for entry in entries:
             value = entry.get(self._kind.id_field)
             if value:
-                ids.add(str(value))
+                ids.append(str(value))
         return ids
+
+    def tag_ids_in(self, entry: dict) -> set[int]:
+        """The tag ids on one listing entry.
+
+        Ids, not labels: a listing entry carries only the numbers, and what
+        they mean is the separate vocabulary ``tags`` fetches. Absent and
+        empty are the same answer -- an entry with no tags.
+        """
+        return {int(value) for value in entry.get("tags") or []}
 
     def paths_in(self, entries: list[dict]) -> dict[str, dict]:
         """Every path in a listing, normalised (no trailing slash, case
@@ -96,6 +121,28 @@ class ArrClient:
             if profile.get("name") == name:
                 return profile.get("id")
         return None
+
+    async def tags(self) -> dict[str, int]:
+        """The instance's tag vocabulary, label to id.
+
+        One flat vocabulary per service -- ``/api/v3/tag`` takes no
+        ``movie``/``series`` resource -- and the only way to turn the labels
+        an operator writes in a config into the ids a listing entry carries.
+
+        Raises on a non-2xx like every other call here, and for a sharper
+        reason than most: an unreadable vocabulary would make every configured
+        tag name look unknown, and "unknown tag" is a refusal an operator
+        would go and act on by editing a config that was never wrong.
+        """
+        url = f"{self._base_url}/api/v3/tag"
+        response = await self._http.get(url, headers=self._headers())
+        response.raise_for_status()
+        labels = {}
+        for entry in response.json():
+            label, tag_id = entry.get("label"), entry.get("id")
+            if label and tag_id is not None:
+                labels[label] = tag_id
+        return labels
 
     async def root_folders(self) -> list[str]:
         """The roots this instance actually manages, e.g. ``/mnt/media/Movies``.

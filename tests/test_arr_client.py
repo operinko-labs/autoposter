@@ -283,3 +283,115 @@ async def test_trailing_slash_on_base_url_does_not_double_the_path():
 
     assert seen["url"] == "https://radarr.example/api/v3/movie"
     assert "//api" not in seen["url"]
+
+
+# ---------------------------------------------------------------------------
+# The list-builder surface: ordered ids, and the tag vocabulary.
+#
+# ``ids_in`` answers "does the service hold this?", which is a set question and
+# has no order. A collection built from the same listing *is* an order, so the
+# builders read ``ordered_ids_in`` instead -- the same entries, the same skip
+# rule, as a list. Both come from one implementation so the two views cannot
+# start disagreeing about which entries count.
+
+RADARR_TAGS = [{"id": 1, "label": "kids"}, {"id": 3, "label": "4K"}]
+
+
+async def test_ordered_ids_in_preserves_the_listing_order():
+    movies = [
+        {"id": 1, "title": "Dune", "tmdbId": 438631},
+        {"id": 2, "title": "The Godfather", "tmdbId": 238},
+        {"id": 3, "title": "Paddington", "tmdbId": 116149},
+    ]
+
+    async def handler(request):
+        return httpx.Response(200, json=movies)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        ids = client.ordered_ids_in(await client.listing())
+
+    assert ids == ["438631", "238", "116149"]
+
+
+async def test_ordered_ids_in_skips_the_same_entries_ids_in_does():
+    """One skip rule, two views: an entry the service has not matched to
+    anything has no external id, and must not appear in either."""
+    async def handler(request):
+        return httpx.Response(200, json=RADARR_MOVIES)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        entries = await client.listing()
+
+        assert client.ordered_ids_in(entries) == ["438631"]
+        assert set(client.ordered_ids_in(entries)) == client.ids_in(entries)
+
+
+async def test_tag_ids_in_reads_the_tag_ids_off_one_entry():
+    client = ArrClient(None, "https://radarr.example", "key", RADARR)
+
+    assert client.tag_ids_in({"id": 1, "tags": [3, 1]}) == {3, 1}
+    # Both shapes an untagged entry takes in the wild.
+    assert client.tag_ids_in({"id": 2, "tags": []}) == set()
+    assert client.tag_ids_in({"id": 3}) == set()
+
+
+async def test_tags_maps_labels_to_ids_with_the_api_key_in_the_header():
+    seen = {}
+
+    async def handler(request):
+        seen["path"] = request.url.path
+        seen["headers"] = request.headers
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=RADARR_TAGS)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "secret-key", RADARR)
+        tags = await client.tags()
+
+    assert tags == {"kids": 1, "4K": 3}
+    assert seen["path"] == "/api/v3/tag"
+    assert seen["headers"]["X-Api-Key"] == "secret-key"
+    assert "secret-key" not in seen["url"]
+
+
+async def test_tags_is_the_same_endpoint_for_sonarr():
+    """/api/v3/tag is not resource-scoped -- both services expose one flat tag
+    vocabulary, so the path does not take the ``movie``/``series`` resource."""
+    seen = {}
+
+    async def handler(request):
+        seen["path"] = request.url.path
+        return httpx.Response(200, json=[{"id": 2, "label": "ongoing"}])
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://sonarr.example", "key", SONARR)
+        tags = await client.tags()
+
+    assert tags == {"ongoing": 2}
+    assert seen["path"] == "/api/v3/tag"
+
+
+async def test_tags_skips_entries_with_no_label():
+    async def handler(request):
+        return httpx.Response(
+            200, json=[{"id": 1, "label": "kids"}, {"id": 2}, {"label": "no id"}]
+        )
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+
+        assert await client.tags() == {"kids": 1}
+
+
+async def test_tags_raises_on_non_2xx():
+    """The same rule as ``listing``: an unreadable tag vocabulary would make
+    every tag name look unknown, which is a refusal, not an empty answer."""
+    async def handler(request):
+        return httpx.Response(401)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.tags()

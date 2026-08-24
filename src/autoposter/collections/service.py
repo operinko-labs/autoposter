@@ -232,6 +232,10 @@ def build_source_clients(
         radarr=_arr_client(config.radarr, secrets.radarr_apikey, RADARR, http),
         sonarr=_arr_client(config.sonarr, secrets.sonarr_apikey, SONARR, http),
         plex_account=_plex_account_factory(secrets.plex_account_token),
+        # Config, not a client -- ``text_file`` resolves its ``path`` under
+        # this root and contains it there. Taken from the config here for the
+        # same reason every client is: this is the layer that has one.
+        manual_assets_root=config.manual_assets_root,
     )
 
 

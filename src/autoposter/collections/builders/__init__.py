@@ -21,14 +21,38 @@ from autoposter.collections.builders.base import (
     SourceClients,
     register,
 )
+from autoposter.collections.builders.arr import (
+    RadarrAllBuilder,
+    RadarrTagListBuilder,
+    SonarrAllBuilder,
+    SonarrTagListBuilder,
+)
 from autoposter.collections.builders.cs_bucket import CsBucketBuilder
 from autoposter.collections.builders.imdb_award import (
     ImdbAwardBuilder,
     ImdbAwardYearsBuilder,
 )
 from autoposter.collections.builders.imdb_chart import ImdbChartBuilder
+from autoposter.collections.builders.simple_ids import (
+    ImdbIdBuilder,
+    PlexRatingKeyBuilder,
+    TmdbMovieBuilder,
+    TmdbShowBuilder,
+)
+from autoposter.collections.builders.text_file import TextFileBuilder
 
 register(PlexIdBuilder())
+# Kometa's second name for the same builder -- see ``PlexRatingKeyBuilder``
+# for why an alias is a registration rather than a second dict key.
+register(PlexRatingKeyBuilder())
+register(ImdbIdBuilder())
+register(TmdbMovieBuilder())
+register(TmdbShowBuilder())
+register(TextFileBuilder())
+register(RadarrAllBuilder())
+register(RadarrTagListBuilder())
+register(SonarrAllBuilder())
+register(SonarrTagListBuilder())
 register(ImdbChartBuilder())
 register(ImdbAwardBuilder())
 register(ImdbAwardYearsBuilder())
