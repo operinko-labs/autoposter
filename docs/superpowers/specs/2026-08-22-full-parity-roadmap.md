@@ -57,7 +57,7 @@ endpoints + two UI pages; phases 2 and 3: the largest shipped units, multi-week 
 | 6b | WebSocket (dashboard + live log tail) — **delivered** (as NDJSON streams; row 72) | small | Spec §6 debt |
 | 6c | Config editor with hot-reload and impact preview — **delivered** (rows 94, 54; DB-overrides layer, generation-swap reload, side-effect-free preview) | large (≈ phase 2) | Spec §6 debt |
 | 6d | Provider-candidate picker and logo browser — **delivered** (row 73; URL-as-claim pick validation, logo-override mechanism) | ≈ 4c | Spec §6 debt; feeds 11 |
-| 6e | Manual mode and testing mode | ≈ 4c | |
+| 6e | Manual mode and testing mode — **delivered** (rows 74, 75; SSRF guard, compose_styled seam) | ≈ 4c | |
 | 7a | Render and selection long tail | small–medium | Many S items, no dependencies |
 | 7b | Artwork modes: backup, restore, reset, revert, logo updater | medium | |
 | 8a | Builder engine core | large | Gate for 8b–8c, 10, 13 |
@@ -167,8 +167,8 @@ one-liner is in the `.superpowers/sdd/p5b-task-{1,2,3}-report.md` and
 | 71 | Logo updater mode | Scan Plex for missing clearlogos, fetch, upload as Plex metadata — a pipeline distinct from posters | M — new upload target | parity-only | — |
 | 72 | WebSocket | answered 6b: delivered as NDJSON streams, not WebSocket — the anticipated auth risk (bearer header, no browser WS headers) is exactly what the logs stream's fetch-based NDJSON already solved, and no WS infra existed to reuse. Log tail shipped with the logs page; dashboard now consumes `GET /api/dashboard/stream` fed by a per-process broadcaster that polls the DB only while subscribers exist (replica-correct; cheaper than per-tab polling) | M — server infra + client swap (client.ts is pre-shaped for it) | spec §6 | — |
 | 73 | Provider-candidate picker (Asset Replacer) | answered 6d: browse endpoint fans out every provider's full candidate list (cache-fronted, ladder-ranked with UNRANKED shown last), picker panel on item detail with hot-linked thumbnails and provider attribution; a pick is validated against a server-side re-fetch (no arbitrary URL is ever fetched), downloaded, decode-verified, transcoded to the .jpg mirror path, fingerprints nulled and a re-render enqueued. Logo browser included via a dedicated logo-override file feeding logo_sha (poster fingerprint coupling) | M — designed in spec §6, not built | spec §6 | — |
-| 74 | Manual mode | Build one styled artifact (any kind, incl. collection cards) from an arbitrary local file or URL — API + UI | M — reuses the render path | parity-only | 73 helps |
-| 75 | Testing mode | Sample renders (short/medium/long text, every artifact kind) against current config — cheap insurance before mass re-renders | M — render path against fixtures | parity-only | — |
+| 74 | Manual mode | answered 6e: `POST …/renders/{art_kind}/manual` and `POST /api/collections/{id}/poster` take a URL (behind a real SSRF guard — scheme allowlist, per-hop redirect revalidation, private/loopback/reserved rejection on every resolved address) or a manualassets mount path (realpath-contained), install it via 6d's verify/transcode/override tail, re-render. UI on item detail + collections. Collection posters apply as-is (title compositing stays row 105); "local file" = the mount path (browser upload is a follow-up row) | M — reuses the render path | parity-only | 73 helps |
+| 75 | Testing mode | answered 6e: `POST /api/testing/sample {art_kind,length}` renders a sample on a generated pink canvas via the extracted `compose_styled` seam, returns the JPEG inline or a truncation outcome; reads the live config holder, so an edit + hot-reload shows in the next sample. A Testing page fronts a kind×length grid | M — render path against fixtures | parity-only | — |
 | 76 | Backup mode | Download all artwork from Plex into a Kometa-structured backup tree | M — bulk download + naming | parity-only | — |
 | 77 | Restore mode | Push backup-tree art back to Plex with type/library/item filters | M | parity-only | 76 |
 | 78 | Show title on season posters | `AddShowTitletoSeason` — extra text/logo block above season text | M — new layout region | parity-only | — |
@@ -216,6 +216,7 @@ one-liner is in the `.superpowers/sdd/p5b-task-{1,2,3}-report.md` and
 | 120 | Picker polish: post-pick honesty + unpickable SVG tiles | 6d final-review minors deferred: (a) between a pick and its queued re-render landing, the panel's current-candidate mark and the replaces-override warning reflect pre-pick state (a second pick in that window shows no warning though an override file now exists); a client-side picked-this-session flag closes it. (b) TMDB serves some logos as SVG — the browse lists them but a pick correctly 502s (outside the content-type allowlist, Pillow can't decode); filter them from the grid or mark unpickable | S | — | — |
 | 121 | First-start setup wizard | End-of-roadmap (user-placed: after the app is otherwise done). Booting with required env absent enters a setup mode that walks the operator through (a) database details, (b) master password, (c) provider API keys. Design constraints recorded at filing: the app cannot set its own env, so collected values need a persistence target (a writable secrets file the loader falls back to is the likely shape — GitOps/ExternalSecrets deployments never enter setup mode and are unaffected); the wizard is a classic unauthenticated attack surface, so it must exist only while unconfigured, demand the master password as its first act, and exit setup mode atomically | M–L — new boot mode + persistence + UI | usability (new deployments) | — |
 | 122 | Adoption report: distinguish newly-adopted from re-confirmed | Live finding (2026-08-23): a rerun reports identical `renders`/`skipped` counts to the first run because already-adopted rows are re-hashed and re-stamped into the same `renders` counter — the operator cannot tell a resumed run made progress (and reasonably suspects it made none). Split the counter (`adopted` vs `re-confirmed`) in `_Counters`/`AdoptionReport`/summary lines | S | — | — |
+| 123 | Browser-upload source for manual mode | 6e follow-up: manual mode takes a URL or a manualassets mount path; a browser file-upload (multipart) source is net-new — no upload endpoint or FormData path exists in the API or SPA today (`apiFetch` sets JSON content-type). Add a multipart endpoint sharing the same verify/transcode/install tail, and a file picker beside the URL input | S–M — first multipart surface | parity-only | — |
 
 ---
 
@@ -365,6 +366,16 @@ no redirects into private ranges; the artwork-endpoint hardening precedent in §
 the bar.
 **Testable when shipped:** a URL becomes a styled collection card; sample sheets change
 when config changes.
+**Delivered (6e):** the SSRF guard (`net/guard.py`) is the phase's security core —
+scheme allowlist, redirects off with ≤3 manually re-validated hops, every resolved
+address checked against private/loopback/link-local/reserved/multicast, the 6d body
+cap + decode verify; an adversarial review confirmed no bypass (decimal/octal/mapped
+IP forms fold through `getaddrinfo`, the same resolver httpx connects with); DNS
+rebinding and NAT64/6to4 literals are the documented residuals. Operator-supplied
+URLs never reach a response, event row, or log line. `compose_styled` was extracted
+byte-parity-proven (identical golden node-ids before/after). Honest scope: collection
+posters apply as-is (row 105 not smuggled in); local source is the mount path, not an
+upload endpoint (follow-up row).
 
 ### Phase 7 — render long tail and artwork modes
 
