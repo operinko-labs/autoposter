@@ -29,6 +29,11 @@ import type {
   ArtworkModeResponse,
   ItemFiltersResponse,
 } from "../api/types";
+// The status pill and the row-error paragraph are dashboard.css's, exactly as
+// Collections.tsx and Library.tsx borrow them. Imported explicitly rather than
+// relied on: which stylesheets are in the bundle depends on which pages the
+// router has loaded, and this page is reachable without the Dashboard.
+import "./dashboard.css";
 import "./modes.css";
 
 /** What a mode's three controls hold: the request minus the switch that says
@@ -58,11 +63,26 @@ interface ModeSpec {
 }
 
 /** Said on every mode whose applied run writes to Plex: `_run_plex_writing_mode`
- * in routes.py raises the worker fence for all five, not only for restore. */
+ * in routes.py raises the worker fence for all five, not only for restore.
+ *
+ * "on this instance" is not a hedge: the fence is an asyncio.Event on one
+ * process's app.state, so it idles this replica's pool and no other's. An
+ * operator running two replicas has to know that. The rest of the sentence is
+ * now literally true -- the trigger drains before it writes. */
 const PAUSES_PIPELINE =
-  "An applied run pauses the whole worker pipeline for its duration: jobs " +
-  "already in flight finish, then the pool sits idle until this mode " +
-  "completes.";
+  "An applied run pauses the whole worker pipeline on this instance for its " +
+  "duration: jobs already in flight finish, then the pool sits idle until " +
+  "this mode completes.";
+
+/** Said on every mode the plausibility cap can refuse. The logo updater has
+ * its own longer version, because on a fresh library a refusal really is its
+ * expected first result; these three refuse identically on a filter that is
+ * too broad, and an operator who meets that refusal needs the same one line of
+ * what to do about it. */
+const CAP_REFUSAL =
+  "A run that would change more of the library than the plausibility cap " +
+  "allows comes back refused, having changed nothing. That is the safeguard " +
+  "working: raise the cap or narrow the filters below, then run it again.";
 
 const MODES: ModeSpec[] = [
   {
@@ -93,9 +113,12 @@ const MODES: ModeSpec[] = [
     summary: "Push the backup tree back onto Plex, filtered.",
     notes: [
       PAUSES_PIPELINE,
+      CAP_REFUSAL,
       "Only items that actually have a file in the backup tree are pushed. " +
         "files counts backup files, not items — an item can carry both a poster " +
         "and a background.",
+      "skipped counts artwork the backup tree could never hold: an episode Plex " +
+        "reports no number for has no file name to look for.",
     ],
     dryRun: true,
     filters: true,
@@ -111,6 +134,7 @@ const MODES: ModeSpec[] = [
       "same picture without the badges.",
     notes: [
       PAUSES_PIPELINE,
+      CAP_REFUSAL,
       "This uploads over the badged image rather than deleting it, so the badged " +
         "upload stays on the Plex server.",
       "Items whose base image is not on disk are counted as candidates and never " +
@@ -134,10 +158,13 @@ const MODES: ModeSpec[] = [
         "server as an orphaned upload:// image each, because Plex offers no API " +
         "to remove one — the reset frees the field, not the disk space.",
       PAUSES_PIPELINE,
+      CAP_REFUSAL,
       "Only fields still showing artwork this service uploaded are touched, told " +
         "apart by their EXIF provenance, so a poster set by hand is left alone.",
-      "fields, reset and failed count (item, field) pairs, not items — one item " +
-        "can contribute two. items showing our art is the per-item number.",
+      "fields, reset and failed count (item, field) pairs, not items — a movie or " +
+        "a show can contribute two. items showing our art is the per-item number.",
+      "A season and an episode have only their poster reset. Their background is " +
+        "the show's, which this service never uploaded to them.",
       "A field Plex holds no agent artwork for counts as failed: it was unlocked, " +
         "but what is displayed did not change.",
     ],
@@ -237,6 +264,28 @@ function statusPill(status: string): string {
   return "pill-ok";
 }
 
+/** What the Item ID box means by what was typed in it.
+ *
+ * `item_id` is a database row id, so the endpoint's `int | None` rejects
+ * anything else with FastAPI's own 422 -- a validation blob the page renders as
+ * "request failed with 422" and the operator cannot act on. A number input
+ * still admits `3.7` (and `1e3`, and `-2`) by typing or by paste, so the
+ * non-integral cases are decided here instead.
+ *
+ * Floored rather than rejected. Rejecting means `undefined`, and `undefined` is
+ * not "no answer" on this page -- it is *no filter*, which on a destructive
+ * mode widens the run from one item to the whole library. Between guessing at a
+ * neighbouring id and silently aiming at everything, the narrow guess is the
+ * only safe one. Anything below 1 or not a finite number is no filter, because
+ * there is no near miss to fall back to.
+ */
+function parseItemId(raw: string): number | undefined {
+  if (raw === "") return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) return undefined;
+  return Math.floor(parsed);
+}
+
 function countsOf(response: ArtworkModeResponse): [string, number][] {
   return Object.entries(response).filter(
     (entry): entry is [string, number] =>
@@ -252,7 +301,11 @@ function ModeResult({ response }: { response: ArtworkModeResponse }) {
     <div className="mode-result" role="status">
       <div className="mode-result-head">
         <span className={`pill ${statusPill(response.status)}`}>{response.status}</span>
-        {response.dry_run === true && (
+        {/* A refusal changed nothing either, and an APPLIED run that was
+          * refused carries `dry_run: false` -- keying this on the dry-run flag
+          * alone left the one result an operator most needs reassuring about
+          * without the reassurance. */}
+        {(response.dry_run === true || response.status === "refused") && (
           <span className="muted">Nothing was changed.</span>
         )}
       </div>
@@ -371,6 +424,14 @@ export function Modes() {
     return available.filter((kind) => spec.kinds?.includes(kind));
   }
 
+  /** Every control on the page is dead while ANY mode is in flight, not just
+   * the one that is running. The server runs one applied mode at a time and
+   * answers a second trigger 409 (see `_run_plex_writing_mode`), and there is
+   * nothing useful an operator can do with the other five cards meanwhile: a
+   * dry run competes with the running mode for the same Plex, and a filter
+   * change would silently re-aim a card whose result is about to land. */
+  const anyRunning = busy !== null;
+
   return (
     <>
       <div className="page-header">
@@ -405,6 +466,7 @@ export function Modes() {
                     Type
                     <select
                       value={current?.type ?? ""}
+                      disabled={anyRunning}
                       onChange={(event) =>
                         setFilter(spec.id, { type: event.target.value || undefined })
                       }
@@ -421,6 +483,7 @@ export function Modes() {
                     Library
                     <select
                       value={current?.library ?? ""}
+                      disabled={anyRunning}
                       onChange={(event) =>
                         setFilter(spec.id, { library: event.target.value || undefined })
                       }
@@ -438,16 +501,13 @@ export function Modes() {
                     <input
                       type="number"
                       min={1}
+                      step={1}
                       value={current?.item_id ?? ""}
                       placeholder="Any"
+                      disabled={anyRunning}
                       onChange={(event) => {
                         const raw = event.target.value.trim();
-                        setFilter(spec.id, {
-                          // An empty or unparseable box is "no filter", never
-                          // `item_id: NaN` -- which serialises to `null` and
-                          // would read as an explicit "no item".
-                          item_id: raw === "" ? undefined : Number(raw) || undefined,
-                        });
+                        setFilter(spec.id, { item_id: parseItemId(raw) });
                       }}
                     />
                   </label>
@@ -458,7 +518,7 @@ export function Modes() {
                 {spec.dryRun && (
                   <button
                     type="button"
-                    disabled={running}
+                    disabled={anyRunning}
                     onClick={() => void run(spec, false)}
                   >
                     {running ? "Running…" : "Dry run"}
@@ -467,11 +527,20 @@ export function Modes() {
 
                 {armed === spec.id ? (
                   <>
-                    <span className="mode-confirm">{spec.confirmPrompt}</span>
+                    {/* `alert`, so a screen reader is told the question has
+                      * appeared: the button label alone ("Confirm apply") does
+                      * not carry what is about to happen. */}
+                    <span className="mode-confirm" role="alert">
+                      {spec.confirmPrompt}
+                    </span>
                     <button
                       type="button"
                       className="primary"
-                      disabled={running}
+                      disabled={anyRunning}
+                      /* Focus follows the gate. Without it a keyboard user is
+                       * left on a button that has just been replaced, and has
+                       * to hunt for the one that answers the question. */
+                      autoFocus
                       onClick={() => void run(spec, true)}
                     >
                       {spec.confirmLabel}
@@ -485,7 +554,7 @@ export function Modes() {
                    * in Modes.test.tsx. */
                   <button
                     type="button"
-                    disabled={running}
+                    disabled={anyRunning}
                     onClick={() => setArmed(spec.id)}
                   >
                     {spec.applyLabel}

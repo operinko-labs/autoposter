@@ -241,7 +241,11 @@ describe("the mode cards fit a phone", () => {
   });
 
   it("stops a number input overhanging the card at any width", () => {
-    expect(declaration(modesCss, ".mode-filters select", "max-width")).toBe("100%");
+    // The input's own selector, not the select's. The two share a grouped
+    // rule, so asserting the select would keep passing after the input was
+    // dropped out of the group -- which is exactly the guard this pins.
+    expect(declaration(modesCss, ".mode-filters input", "max-width")).toBe("100%");
+    expect(declaration(modesCss, '.mode-filters input[type="number"]', "width")).toBe("7rem");
   });
 
   it("lets the confirmation sentence take its own line when the row wraps", () => {

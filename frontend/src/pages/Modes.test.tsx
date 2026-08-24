@@ -164,7 +164,23 @@ describe("the honest copy each mode carries", () => {
 
     const text = (await card("Restore")).textContent ?? "";
     expect(text).toContain("pauses the whole worker pipeline");
+    // Per replica, not per deployment: the fence is an in-process event, so an
+    // operator running two replicas must not read this as covering both.
+    expect(text).toContain("on this instance");
     expect(text).toContain("jobs already in flight finish");
+  });
+
+  it("tells every capped mode what to do about a refusal, not just the logo one", async () => {
+    stubFetch();
+    await renderModes();
+
+    // Restore, revert and reset refuse on a too-broad filter exactly as the
+    // logo updater does; only the logo card used to say so.
+    for (const name of ["Restore", "Remove overlays", "Reset to Plex artwork"]) {
+      const text = (await card(name)).textContent ?? "";
+      expect(text).toContain("plausibility cap");
+      expect(text).toContain("raise the cap or narrow the filters below");
+    }
   });
 
   it("presents the logo updater's first-run refusal as the expected step", async () => {
@@ -253,6 +269,38 @@ describe("dry run", () => {
     });
   });
 
+  it("sends an integral item id, never a float the endpoint would 422 on", async () => {
+    const fetchMock = stubFetch();
+
+    await renderModes();
+    const restore = await card("Restore");
+    fireEvent.change(within(restore).getByLabelText("Item ID"), {
+      target: { value: "42.7" },
+    });
+    fireEvent.click(within(restore).getByRole("button", { name: "Dry run" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    // Floored, not dropped: dropping it means "no item filter", which on these
+    // modes widens the run from one item to the whole library.
+    expect(postedBody(fetchMock)).toEqual({ apply: false, item_id: 42 });
+  });
+
+  it("treats a zero or negative item id as no filter at all", async () => {
+    const fetchMock = stubFetch();
+
+    await renderModes();
+    const restore = await card("Restore");
+    fireEvent.change(within(restore).getByLabelText("Item ID"), {
+      target: { value: "-3" },
+    });
+    fireEvent.click(within(restore).getByRole("button", { name: "Dry run" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    // There is no near miss to fall back to, so the key is omitted rather than
+    // sent as a value the endpoint would reject.
+    expect(postedBody(fetchMock)).toEqual({ apply: false });
+  });
+
   it("keeps one mode's filters out of another's request", async () => {
     const fetchMock = stubFetch();
 
@@ -283,9 +331,25 @@ describe("the confirmation gate", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/api/items/filters");
 
     // What the operator gets instead is the question.
-    expect(within(reset).getByRole("button", { name: "Confirm apply" })).toBeInTheDocument();
+    const confirm = within(reset).getByRole("button", { name: "Confirm apply" });
+    expect(confirm).toBeInTheDocument();
     expect(within(reset).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
     expect(reset.textContent).toContain("This writes to Plex");
+  });
+
+  it("announces the question and puts the keyboard on the answer", async () => {
+    stubFetch();
+
+    await renderModes();
+    const reset = await card("Reset to Plex artwork");
+    fireEvent.click(within(reset).getByRole("button", { name: "Apply…" }));
+
+    // The consequence is only in the prompt, not in the button label, so a
+    // screen reader has to be told the prompt appeared.
+    expect(within(reset).getByRole("alert")).toHaveTextContent("This writes to Plex");
+    // And a keyboard user must not be left standing on a button that has just
+    // been replaced by the one that answers the question.
+    expect(within(reset).getByRole("button", { name: "Confirm apply" })).toHaveFocus();
   });
 
   it("fires the trigger with apply true once confirmed", async () => {
@@ -413,6 +477,92 @@ describe("what comes back", () => {
     expect(within(result).getByText("items missing a logo")).toBeInTheDocument();
     expect(result.textContent).toContain("more than the safety cap of 25%");
     expect(within(logo).queryByRole("alert")).toBeNull();
+    // A refusal changed nothing, and the operator has to be told so plainly --
+    // this one carries dry_run true, and the applied case below carries false.
+    expect(result.textContent).toContain("Nothing was changed");
+  });
+
+  it("says nothing was changed when an APPLIED run comes back refused", async () => {
+    stubFetch(async () =>
+      json({
+        mode: "reset",
+        status: "refused",
+        dry_run: false,
+        items: 4000,
+        items_with_our_art: 3200,
+        reason: "refused: 3200 of 4000 item(s) would change (80%)",
+      }),
+    );
+
+    await renderModes();
+    const reset = await card("Reset to Plex artwork");
+    fireEvent.click(within(reset).getByRole("button", { name: "Apply…" }));
+    fireEvent.click(within(reset).getByRole("button", { name: "Confirm apply" }));
+
+    const result = await within(reset).findByRole("status");
+    // dry_run is false here -- the operator DID ask for an applied run. Keying
+    // the reassurance on that flag alone left the one result they most need it
+    // for without it.
+    expect(result.textContent).toContain("Nothing was changed");
+  });
+
+  it("disables every mode's controls while any one of them is running", async () => {
+    // The server runs one applied mode at a time and answers a second trigger
+    // 409, so the page must not offer a second trigger in the first place --
+    // and a filter change mid-run would silently re-aim a card whose result is
+    // about to land.
+    let answer: (response: Response) => void = () => {};
+    stubFetch(
+      () => new Promise<Response>((resolve) => { answer = resolve; }),
+    );
+
+    await renderModes();
+    const restore = await card("Restore");
+    fireEvent.click(within(restore).getByRole("button", { name: "Dry run" }));
+
+    const revert = await card("Remove overlays");
+    await waitFor(() =>
+      expect(within(revert).getByRole("button", { name: "Dry run" })).toBeDisabled(),
+    );
+    expect(within(revert).getByRole("button", { name: "Apply…" })).toBeDisabled();
+    expect(within(revert).getByLabelText("Library")).toBeDisabled();
+    expect(within(revert).getByLabelText("Type")).toBeDisabled();
+    expect(within(revert).getByLabelText("Item ID")).toBeDisabled();
+    expect(
+      within(await card("Backup")).getByRole("button", { name: "Run backup" }),
+    ).toBeDisabled();
+
+    answer(json({ mode: "restore", status: "dry run", dry_run: true, items: 1 }));
+
+    // And everything comes back once the run lands.
+    await waitFor(() =>
+      expect(within(revert).getByRole("button", { name: "Dry run" })).toBeEnabled(),
+    );
+    expect(within(revert).getByLabelText("Library")).toBeEnabled();
+  });
+
+  it("renders a busy 409 in the mode that asked, without inventing counts", async () => {
+    stubFetch(async () =>
+      json(
+        {
+          detail:
+            "another artwork mode is already running on this instance; wait " +
+            "for it to finish before starting another",
+        },
+        409,
+      ),
+    );
+
+    await renderModes();
+    const restore = await card("Restore");
+    fireEvent.click(within(restore).getByRole("button", { name: "Apply…" }));
+    fireEvent.click(within(restore).getByRole("button", { name: "Confirm apply" }));
+
+    expect(await within(restore).findByRole("alert")).toHaveTextContent(
+      "another artwork mode is already running on this instance",
+    );
+    // Nothing ran, so there is no result block to show.
+    expect(within(restore).queryByRole("status")).toBeNull();
   });
 
   it("shows a failed request in the mode that made it, and nowhere else", async () => {
