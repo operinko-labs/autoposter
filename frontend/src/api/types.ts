@@ -215,6 +215,34 @@ export interface PickResponse {
   queued: boolean;
 }
 
+/** POST /api/items/{id}/renders/{art_kind}/manual. An operator-supplied source
+ * (a URL, or a path under the manual-assets mount) installed as this item's base
+ * artwork. `status` is always "installed" -- a refusal raises rather than
+ * reporting itself in the body. `queued` is whether a re-render was enqueued,
+ * which the reprocess de-duplication can make false. */
+export interface ManualInstallResponse {
+  status: string;
+  queued: boolean;
+}
+
+/** POST /api/collections/{id}/poster. The endpoint writes the file and stops:
+ * a collection poster is applied by the reconciler, so `applies` is
+ * "next reconcile" and Diff now is how an operator makes that immediate. */
+export interface CollectionPosterResponse {
+  status: string;
+  applies: string;
+}
+
+/** The JSON outcome of POST /api/testing/sample when the title does not fit at
+ * the minimum point size. The pipeline writes no artifact in that case, so the
+ * endpoint returns this instead of image bytes -- a labelled outcome, not an
+ * error. */
+export interface SampleTruncatedResponse {
+  truncated: boolean;
+  art_kind: string;
+  length: string;
+}
+
 /** The facts the badges are drawn from. `originally_available` is a date, not
  * a timestamp -- it serialises as "2019-06-28" with no time in it. */
 export interface ItemFacts {

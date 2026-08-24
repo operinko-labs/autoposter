@@ -9,6 +9,7 @@ import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Logs } from "./pages/Logs";
 import { Settings } from "./pages/Settings";
+import { Testing } from "./pages/Testing";
 import { Sidebar } from "./shell/Sidebar";
 import "./shell/shell.css";
 
@@ -24,6 +25,7 @@ function AuthenticatedApp() {
           <Route path="/collections" element={<Collections />} />
           <Route path="/failures" element={<Failures />} />
           <Route path="/logs" element={<Logs />} />
+          <Route path="/testing" element={<Testing />} />
           <Route path="/settings" element={<Settings />} />
           {/* The server serves index.html for any unclaimed path, so an
               unknown URL reaches the router rather than a 404 page. */}

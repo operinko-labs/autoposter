@@ -143,6 +143,16 @@ describe("Sidebar", () => {
     expect(link.querySelector(".sidebar-label")).toHaveTextContent("Library");
   });
 
+  it("offers a Testing entry that routes to /testing", () => {
+    stubMatchMedia(false);
+
+    renderSidebar();
+
+    const link = screen.getByRole("link", { name: "Testing" });
+    expect(link).toHaveAttribute("href", "/testing");
+    expect(link).toHaveAttribute("title", "Testing");
+  });
+
   it("marks the current route active in both states", () => {
     stubMatchMedia(false);
 

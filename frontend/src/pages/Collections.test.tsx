@@ -84,6 +84,7 @@ interface StubOptions {
   collections?: Supplied;
   status?: Supplied;
   run?: (path: string, init?: RequestInit) => Promise<Response>;
+  poster?: (path: string, init?: RequestInit) => Promise<Response> | Response;
 }
 
 function stubFetch(options: StubOptions = {}) {
@@ -91,6 +92,10 @@ function stubFetch(options: StubOptions = {}) {
     if (path.startsWith("/api/scheduled-runs/") && options.run) return options.run(path, init);
     if (path.startsWith("/api/scheduled-runs/")) return json({ status: "requested", poll_seconds: 60 });
     if (path === "/api/status") return json(supply(options.status, status()));
+    if (path.startsWith("/api/collections/") && path.endsWith("/poster")) {
+      if (options.poster) return options.poster(path, init);
+      return json({ status: "installed", applies: "next reconcile" });
+    }
     return json(supply(options.collections, COLLECTIONS));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -462,5 +467,65 @@ describe("Collections", () => {
     render(<Collections />);
 
     expect(await screen.findByText("database is down")).toBeInTheDocument();
+  });
+
+  // --- per-row poster control -----------------------------------------------
+
+  const POSTER_SOURCE = "https://example.com/collection/poster.jpg";
+
+  function posterForm(): HTMLElement {
+    const form = document.querySelector<HTMLElement>(".poster-form-row");
+    if (form === null) throw new Error("no poster form is open");
+    return form;
+  }
+
+  it("sets a collection poster by posting the source, and names Diff now", async () => {
+    const fetchMock = stubFetch();
+
+    render(<Collections />);
+
+    const row = await rowFor("Marvel Chronological");
+    fireEvent.click(row.getByRole("button", { name: "Set poster…" }));
+    fireEvent.change(within(posterForm()).getByRole("textbox"), {
+      target: { value: POSTER_SOURCE },
+    });
+    fireEvent.click(within(posterForm()).getByRole("button", { name: "Install" }));
+
+    await waitFor(() => expect(document.querySelector(".poster-note")).not.toBeNull());
+
+    // Posted to this collection's own poster endpoint, carrying exactly the
+    // `source` field the endpoint reads.
+    const post = fetchMock.mock.calls.find((call) => call[0] === "/api/collections/1/poster");
+    expect(post).toBeDefined();
+    expect(post![1]?.method).toBe("POST");
+    expect(JSON.parse(post![1]!.body as string)).toEqual({ source: POSTER_SOURCE });
+
+    // The endpoint writes the override and stops; the reconciler applies it.
+    // The copy names Diff now, which is how the operator triggers that at once.
+    expect(document.querySelector(".poster-note")!.textContent).toContain("Diff now");
+  });
+
+  it("shows a refused poster inline, without claiming it was installed", async () => {
+    stubFetch({
+      poster: () => json({ detail: "that source was refused: address is not a public host" }, 422),
+    });
+
+    render(<Collections />);
+
+    const row = await rowFor("Marvel Chronological");
+    fireEvent.click(row.getByRole("button", { name: "Set poster…" }));
+    fireEvent.change(within(posterForm()).getByRole("textbox"), {
+      target: { value: POSTER_SOURCE },
+    });
+    fireEvent.click(within(posterForm()).getByRole("button", { name: "Install" }));
+
+    await waitFor(() =>
+      expect(document.querySelector(".poster-error")?.textContent).toBe(
+        "that source was refused: address is not a public host",
+      ),
+    );
+    // An error, not a note: showing both would say the poster was refused and
+    // installed at once.
+    expect(document.querySelector(".poster-note")).toBeNull();
   });
 });

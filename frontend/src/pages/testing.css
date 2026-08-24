@@ -1,0 +1,68 @@
+.testing-note {
+  margin: -8px 0 16px;
+  max-width: 60ch;
+}
+
+.testing-strong {
+  color: var(--text-strong);
+}
+
+/* Each cell holds a fixed-size preview box and the render control under it, so
+ * the grid rows stay aligned whether or not a sample has been rendered. */
+.testing-grid td,
+.testing-grid th {
+  vertical-align: top;
+}
+
+.sample-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+/* The preview box reserves the same space in every state, so the row does not
+ * jump when the bytes land, and a poster-shaped sample keeps its 2:3 while a
+ * background keeps 16:9 -- data-ratio is set per cell in Testing.tsx. */
+.sample-view {
+  width: 160px;
+  aspect-ratio: 2 / 3;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.sample-view[data-ratio="wide"] {
+  aspect-ratio: 16 / 9;
+}
+
+.sample-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.sample-blank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+  text-align: center;
+}
+
+.sample-note {
+  margin: 0;
+  font-size: 12px;
+}
+
+.sample-truncated {
+  color: var(--warn);
+}
+
+.sample-error {
+  color: var(--error);
+}

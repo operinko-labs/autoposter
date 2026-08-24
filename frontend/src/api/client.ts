@@ -128,6 +128,56 @@ export async function apiFetchImage(path: string): Promise<Blob | null> {
   return await response.blob();
 }
 
+/** POST a JSON body to an endpoint that answers with EITHER an image or JSON.
+ *
+ * The testing sample endpoint (src/autoposter/api/testing.py) returns the
+ * styled JPEG bytes when the title fits and a small JSON body reporting the
+ * truncation outcome when it does not -- one endpoint, two content types. A
+ * `<img src>` cannot carry the bearer header require_session needs, and it
+ * could not tell the two outcomes apart anyway, so the POST is made here and
+ * the caller is handed whichever came back.
+ *
+ * `apiFetchImage` is GET-only and returns a bare `Blob | null`; this shares
+ * its bearer header and 401 handling but must post a body and preserve the
+ * image-or-JSON fork, so it returns a tagged result rather than a bare blob.
+ */
+export async function apiPostForImage(
+  path: string,
+  body: unknown,
+): Promise<{ blob: Blob } | { json: unknown }> {
+  const headers = new Headers();
+  if (token !== null) headers.set("Authorization", `Bearer ${token}`);
+  headers.set("Content-Type", "application/json");
+
+  const response = await fetch(path, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (response.status === 401) {
+    // Same contract as apiFetch: drop the dead session and let the one
+    // subscriber route to the login form.
+    setToken(null);
+    onUnauthorized?.();
+    throw new ApiError(401, "not authenticated");
+  }
+
+  if (!response.ok) {
+    const { message, detail } = await errorBody(response);
+    throw new ApiError(response.status, message, detail);
+  }
+
+  // The fork is on the Content-Type the server actually sent, not on the
+  // status: both outcomes are a 200. An `image/*` answer is the styled bytes;
+  // anything else is the JSON outcome (currently the truncation report).
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (contentType.startsWith("image/")) {
+    return { blob: await response.blob() };
+  }
+  return { json: await response.json() };
+}
+
 /** An NDJSON stream rather than a JSON body, for the log tail.
  *
  * This exists for the same reason as `apiFetchImage`: the session travels

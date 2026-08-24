@@ -1240,4 +1240,132 @@ describe("ItemDetail candidate picker", () => {
     // open alongside the second's.
     expect(document.querySelectorAll(".candidate-panel")).toHaveLength(1);
   });
+
+  // --- manual source: install a URL or a mount path -------------------------
+
+  const MANUAL_SOURCE = "https://example.com/art/poster.jpg";
+
+  function manualPanel(): HTMLElement {
+    const panel = document.querySelector<HTMLElement>(".manual-panel");
+    if (panel === null) throw new Error("no manual-source panel is open");
+    return panel;
+  }
+
+  /** Opens the manual panel a button names and types a source into it. */
+  function openManual(name: string, source = MANUAL_SOURCE) {
+    fireEvent.click(screen.getByRole("button", { name }));
+    fireEvent.change(within(manualPanel()).getByRole("textbox"), {
+      target: { value: source },
+    });
+  }
+
+  it("opens a manual-source panel that states the two source forms", async () => {
+    stubFetch(movieRoutes());
+
+    await renderItem();
+    expect(document.querySelector(".manual-panel")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use file or URL" }));
+
+    // Both forms the endpoint accepts, named so the operator does not have to
+    // guess: an https URL, or a path on the mount.
+    expect(manualPanel().textContent).toContain("https://");
+    expect(manualPanel().textContent).toContain("/manualassets");
+  });
+
+  it("installs a manual source by posting exactly the source field, then re-reads", async () => {
+    let detailCalls = 0;
+    const fetchMock = stubFetch(
+      movieRoutes({
+        "/api/items/3": () => {
+          detailCalls += 1;
+          return json(MOVIE);
+        },
+        "/api/items/3/renders/poster/manual": () =>
+          json({ status: "installed", queued: true }),
+      }),
+    );
+
+    await renderItem();
+    expect(detailCalls).toBe(1);
+    openManual("Use file or URL");
+
+    fireEvent.click(within(manualPanel()).getByRole("button", { name: "Install" }));
+
+    await waitFor(() =>
+      expect(manualPanel().querySelector(".candidate-note")).not.toBeNull(),
+    );
+
+    const post = fetchMock.mock.calls.find(
+      (call) => call[0] === "/api/items/3/renders/poster/manual",
+    );
+    expect(post).toBeDefined();
+    expect(post![1]?.method).toBe("POST");
+    // The body compared whole. The endpoint reads exactly `source`; a control
+    // that named the field anything else is a 422 in production and must be a
+    // red test here.
+    expect(JSON.parse(post![1]!.body as string)).toEqual({ source: MANUAL_SOURCE });
+
+    // The row's provider flips to "manual" and its fingerprints are nulled
+    // server-side, so the item is re-read before the outcome is reported.
+    expect(detailCalls).toBe(2);
+    expect(manualPanel().querySelector(".candidate-note")!.textContent).toContain("queued");
+  });
+
+  it("shows a refused manual source inline, without claiming it was installed", async () => {
+    let detailCalls = 0;
+    stubFetch(
+      movieRoutes({
+        "/api/items/3": () => {
+          detailCalls += 1;
+          return json(MOVIE);
+        },
+        "/api/items/3/renders/poster/manual": () =>
+          // The guard's refusal reason -- deliberately carries no URL.
+          json({ detail: "that source was refused: address is not a public host" }, 422),
+      }),
+    );
+
+    await renderItem();
+    openManual("Use file or URL");
+
+    fireEvent.click(within(manualPanel()).getByRole("button", { name: "Install" }));
+
+    await waitFor(() =>
+      expect(manualPanel().querySelector(".candidate-error")?.textContent).toBe(
+        "that source was refused: address is not a public host",
+      ),
+    );
+    // An error, not a note: showing both would say the install was refused and
+    // taken at once.
+    expect(manualPanel().querySelector(".candidate-note")).toBeNull();
+    // Nothing changed on the server, so nothing needed re-reading.
+    expect(detailCalls).toBe(1);
+  });
+
+  it("installs a logo from the poster section's manual control", async () => {
+    const fetchMock = stubFetch(
+      movieRoutes({
+        "/api/items/3/renders/logo/manual": () =>
+          json({ status: "installed", queued: false }),
+      }),
+    );
+
+    await renderItem();
+    openManual("Use logo file or URL", "/manualassets/logo.png");
+
+    fireEvent.click(within(manualPanel()).getByRole("button", { name: "Install" }));
+
+    await waitFor(() =>
+      expect(manualPanel().querySelector(".candidate-note")).not.toBeNull(),
+    );
+
+    // The logo art_kind, not the poster one: a logo is a separate art kind at
+    // this endpoint even though it rides into the poster row server-side.
+    const post = fetchMock.mock.calls.find(
+      (call) => call[0] === "/api/items/3/renders/logo/manual",
+    );
+    expect(post).toBeDefined();
+    expect(JSON.parse(post![1]!.body as string)).toEqual({ source: "/manualassets/logo.png" });
+  });
 });

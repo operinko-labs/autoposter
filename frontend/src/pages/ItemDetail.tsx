@@ -9,6 +9,7 @@ import type {
   ClearOverrideResponse,
   ItemDetailResponse,
   ItemRender,
+  ManualInstallResponse,
   PickResponse,
   ReprocessResponse,
 } from "../api/types";
@@ -578,6 +579,93 @@ function CandidatePanel({
   );
 }
 
+/** Installs an operator-supplied image as this art kind's base artwork.
+ *
+ * The manual-mode counterpart to CandidatePanel: rather than picking one of a
+ * provider's offered images, the operator names a source of their own -- a URL,
+ * or a path on the manual-assets mount. The endpoint (src/autoposter/api/manual.py)
+ * guards a URL against SSRF and contains a path to the mount, then runs the same
+ * install-and-enqueue tail a pick does. An inline panel, not a modal, matching
+ * the idiom the browse panels already use here.
+ */
+function ManualSourcePanel({
+  itemId,
+  artKind,
+  onInstalled,
+}: {
+  itemId: number;
+  artKind: string;
+  onInstalled: () => Promise<void>;
+}) {
+  const [source, setSource] = useState("");
+  const [installing, setInstalling] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  async function install() {
+    setInstalling(true);
+    setNote(null);
+    setFailure(null);
+    try {
+      const response = await apiFetch<ManualInstallResponse>(
+        `/api/items/${itemId}/renders/${artKind}/manual`,
+        {
+          method: "POST",
+          // The one field the endpoint reads, `source`. A URL and a mount path
+          // are told apart by their own shape server-side, so there is no
+          // second field to set -- and sending any other field name is a 422
+          // there.
+          body: JSON.stringify({ source }),
+        },
+      );
+      // Re-read before reporting: the row's provider has just become "manual"
+      // and its fingerprints were nulled server-side, so the Renders table and
+      // the Clear override control are stale until the item is read again.
+      await onInstalled();
+      setNote(
+        response.queued
+          ? "Installed. The image was written to the mount and a re-render was queued."
+          : "Installed. The image was written to the mount; a re-render was already pending, so nothing new was added.",
+      );
+    } catch (caught) {
+      // Verbatim: the guard's refusals carry a reason with no URL in them, a
+      // 422 names a bad mount path, and a 502 says the URL would not serve an
+      // image. This page is behind require_session.
+      setFailure((caught as Error).message);
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  return (
+    <div className="panel manual-panel">
+      <h3 className="candidate-heading">{artKind} — use a file or URL</h3>
+      <p className="manual-help muted">
+        Paste an <span className="mono">https://…</span> URL, or a path under{" "}
+        <span className="mono">/manualassets</span>.
+      </p>
+      <div className="manual-controls">
+        <input
+          type="text"
+          className="manual-input"
+          value={source}
+          placeholder="https://… or /manualassets/…"
+          onChange={(event) => setSource(event.target.value)}
+        />
+        <button
+          type="button"
+          disabled={installing || source.trim() === ""}
+          onClick={() => void install()}
+        >
+          Install
+        </button>
+      </div>
+      {note !== null && <p className="candidate-note">{note}</p>}
+      {failure !== null && <p className="candidate-error">{failure}</p>}
+    </div>
+  );
+}
+
 export function ItemDetail() {
   const { itemId } = useParams();
   const [item, setItem] = useState<ItemDetailResponse | null>(null);
@@ -590,6 +678,10 @@ export function ItemDetail() {
   /** The one open candidate panel, or null. One at a time: each open panel
    * costs a fan-out across every provider for this item. */
   const [browsing, setBrowsing] = useState<Browsing | null>(null);
+  /** The one open manual-source panel, or null. Keyed the same way as
+   * `browsing` -- a logo is installed from the poster section, as it is
+   * browsed from there. */
+  const [manualing, setManualing] = useState<Browsing | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -599,6 +691,7 @@ export function ItemDetail() {
     // A panel opened on the previous item browses the previous item's
     // candidates; left open it would offer a pick against this one.
     setBrowsing(null);
+    setManualing(null);
     // Cleared here, not only on success: navigating from a failed item to a
     // good one must not show the previous item's error while loading.
     setError(null);
@@ -691,6 +784,17 @@ export function ItemDetail() {
     );
   }
 
+  /** The manual-source counterpart of toggleBrowse. Its own toggle, so the
+   * browse panel and the manual panel can be open at once for one section --
+   * neither costs the other's provider fan-out. */
+  function toggleManual(section: string, artKind: string) {
+    setManualing((open) =>
+      open !== null && open.section === section && open.artKind === artKind
+        ? null
+        : { section, artKind },
+    );
+  }
+
   /** Re-reads the item after a pick: the row's provider becomes "manual" and
    * its fingerprints are nulled server-side, so nothing on screen is true
    * until it is read again. */
@@ -755,19 +859,31 @@ export function ItemDetail() {
             <button type="button" className="browse" onClick={() => toggleBrowse(kind, kind)}>
               Browse candidates
             </button>
+            <button type="button" className="browse" onClick={() => toggleManual(kind, kind)}>
+              Use file or URL
+            </button>
             {/* A logo has no section of its own -- no render row, no pane -- but
               * it is composited into the poster, so the poster section is where
               * an operator would look for it. Offered only for the item kinds
               * whose poster render uses one; anywhere else the pick would be
               * consumed by nothing. */}
             {kind === "poster" && LOGO_BROWSABLE_KINDS.includes(item.kind) && (
-              <button
-                type="button"
-                className="browse"
-                onClick={() => toggleBrowse(kind, "logo")}
-              >
-                Browse logos
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="browse"
+                  onClick={() => toggleBrowse(kind, "logo")}
+                >
+                  Browse logos
+                </button>
+                <button
+                  type="button"
+                  className="browse"
+                  onClick={() => toggleManual(kind, "logo")}
+                >
+                  Use logo file or URL
+                </button>
+              </>
             )}
           </div>
           {browsing !== null && browsing.section === kind && (
@@ -781,6 +897,17 @@ export function ItemDetail() {
               itemId={item.id}
               artKind={browsing.artKind}
               onPicked={reloadItem}
+            />
+          )}
+          {manualing !== null && manualing.section === kind && (
+            // Keyed the same way as the browse panel above, and for the same
+            // reason: switching a manual panel between poster and logo must
+            // start it clean rather than carry the prior kind's note.
+            <ManualSourcePanel
+              key={manualing.artKind}
+              itemId={item.id}
+              artKind={manualing.artKind}
+              onInstalled={reloadItem}
             />
           )}
         </section>

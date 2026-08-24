@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "../api/client";
 import type {
+  CollectionPosterResponse,
   CollectionSummary,
   CollectionsResponse,
   ScheduledRun,
@@ -59,6 +60,110 @@ function nextRefreshLabel(job: ScheduledRun | undefined): string {
 function diffLabel(collection: CollectionSummary): string | null {
   if (collection.last_added === null || collection.last_removed === null) return null;
   return `+${collection.last_added} −${collection.last_removed}`;
+}
+
+/** One collection's row, plus the inline control that gives it a poster of the
+ * operator's choosing.
+ *
+ * The control posts to `/api/collections/{id}/poster` (src/autoposter/api/manual.py),
+ * which writes the file and stops -- the reconciler applies it. So the success
+ * copy names Diff now, the button on this page that makes that pass happen
+ * immediately rather than on the scheduler's next tick. An inline form in a row
+ * of its own, the same idiom the render table uses for a clear-override note. */
+function CollectionRow({ collection }: { collection: CollectionSummary }) {
+  const [open, setOpen] = useState(false);
+  const [source, setSource] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const diff = diffLabel(collection);
+
+  async function setPoster() {
+    setBusy(true);
+    setNote(null);
+    setFailure(null);
+    try {
+      await apiFetch<CollectionPosterResponse>(
+        `/api/collections/${collection.id}/poster`,
+        {
+          method: "POST",
+          // The one field the endpoint reads. A URL and a mount path are told
+          // apart by their own shape server-side.
+          body: JSON.stringify({ source }),
+        },
+      );
+      // Named deliberately: the endpoint does not upload to Plex, it writes the
+      // override the reconciler picks up. Diff now is how the operator makes
+      // that pass run at once instead of waiting for the schedule.
+      setNote(
+        "Poster installed. It applies on the next reconcile — use Diff now to apply it immediately.",
+      );
+    } catch (caught) {
+      // Verbatim: a 422 names a bad mount path, a 502 says the URL would not
+      // serve an image, a 503 carries the OS error for the assets mount. This
+      // page is behind require_session.
+      setFailure((caught as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <tr>
+        {/* Against four rigid columns the title was the only one that could
+            give, so it collapsed to a word a line. */}
+        <td className="cell-title">{collection.title}</td>
+        <td className="muted">{collection.library}</td>
+        <td>{collection.kind}</td>
+        <td>{collection.member_count ?? "—"}</td>
+        <td>
+          {diff === null ? (
+            "—"
+          ) : (
+            <span title={formatTime(collection.last_reconciled_at)}>{diff}</span>
+          )}
+        </td>
+        <td>
+          <button
+            type="button"
+            className="set-poster"
+            onClick={() => setOpen((value) => !value)}
+          >
+            Set poster…
+          </button>
+        </td>
+      </tr>
+      {open && (
+        <tr className="poster-form-row">
+          <td colSpan={6}>
+            <p className="poster-help muted">
+              Paste an <span className="mono">https://…</span> URL, or a path under{" "}
+              <span className="mono">/manualassets</span>.
+            </p>
+            <div className="poster-form">
+              <input
+                type="text"
+                className="poster-input"
+                value={source}
+                placeholder="https://… or /manualassets/…"
+                onChange={(event) => setSource(event.target.value)}
+              />
+              <button
+                type="button"
+                disabled={busy || source.trim() === ""}
+                onClick={() => void setPoster()}
+              >
+                Install
+              </button>
+            </div>
+            {note !== null && <p className="poster-note">{note}</p>}
+            {failure !== null && <p className="poster-error">{failure}</p>}
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
 
 export function Collections() {
@@ -245,29 +350,13 @@ export function Collections() {
                   <th>Kind</th>
                   <th>Members</th>
                   <th>Last diff</th>
+                  <th>Poster</th>
                 </tr>
               </thead>
               <tbody>
-                {collections.map((collection) => {
-                  const diff = diffLabel(collection);
-                  return (
-                    <tr key={collection.id}>
-                      {/* Against four rigid columns the title was the only one
-                          that could give, so it collapsed to a word a line. */}
-                      <td className="cell-title">{collection.title}</td>
-                      <td className="muted">{collection.library}</td>
-                      <td>{collection.kind}</td>
-                      <td>{collection.member_count ?? "—"}</td>
-                      <td>
-                        {diff === null ? (
-                          "—"
-                        ) : (
-                          <span title={formatTime(collection.last_reconciled_at)}>{diff}</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {collections.map((collection) => (
+                  <CollectionRow key={collection.id} collection={collection} />
+                ))}
               </tbody>
             </table>
           </div>

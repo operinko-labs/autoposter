@@ -4,6 +4,7 @@ import {
   ApiError,
   apiFetch,
   apiFetchNdjson,
+  apiPostForImage,
   getToken,
   setToken,
   setUnauthorizedHandler,
@@ -135,6 +136,87 @@ describe("apiFetch", () => {
 
     const headers = fetchMock.mock.calls[0][1].headers as Headers;
     expect(headers.get("Content-Type")).toBe("application/json");
+  });
+});
+
+describe("apiPostForImage", () => {
+  it("posts the body as JSON with the bearer header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    setToken("abc123");
+
+    await apiPostForImage("/api/testing/sample", { art_kind: "poster", length: "short" });
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/testing/sample");
+    expect(init.method).toBe("POST");
+    const headers = init.headers as Headers;
+    expect(headers.get("Authorization")).toBe("Bearer abc123");
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(JSON.parse(init.body as string)).toEqual({ art_kind: "poster", length: "short" });
+  });
+
+  it("returns the blob when the answer is an image", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("jpeg-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+      ),
+    );
+
+    const result = await apiPostForImage("/api/testing/sample", {});
+
+    expect("blob" in result).toBe(true);
+    const blob = (result as { blob: Blob }).blob;
+    expect(await blob.text()).toBe("jpeg-bytes");
+  });
+
+  it("returns the parsed JSON when the answer is not an image", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ truncated: true, art_kind: "poster", length: "long" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const result = await apiPostForImage("/api/testing/sample", {});
+
+    expect("json" in result).toBe(true);
+    expect((result as { json: unknown }).json).toEqual({
+      truncated: true,
+      art_kind: "poster",
+      length: "long",
+    });
+  });
+
+  it("clears the session and notifies on a 401", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, 401)));
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setToken("expired");
+
+    await expect(apiPostForImage("/api/testing/sample", {})).rejects.toMatchObject({
+      name: "ApiError",
+      status: 401,
+    });
+    expect(getToken()).toBeNull();
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces the API's detail message on a non-401 error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ detail: "no HTTP client on this instance" }, 503)),
+    );
+
+    await expect(apiPostForImage("/api/testing/sample", {})).rejects.toThrow(
+      "no HTTP client on this instance",
+    );
   });
 });
 

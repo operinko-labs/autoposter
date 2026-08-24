@@ -17,3 +17,40 @@
 .cell-title {
   min-width: 9rem;
 }
+
+/* The per-row poster control's form, opened in a row of its own below the
+ * collection it is about. The input beside the button while the row has width,
+ * the button dropping below when it does not, so a phone width cannot push
+ * Install out of reach. */
+.poster-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.poster-help {
+  margin: 0 0 8px;
+  font-size: 13px;
+  white-space: normal;
+}
+
+.poster-input {
+  flex: 1 1 22rem;
+  min-width: 12rem;
+  max-width: 100%;
+}
+
+.poster-note {
+  margin: 8px 0 0;
+  font-size: 13px;
+  white-space: normal;
+  color: var(--ok);
+}
+
+.poster-error {
+  margin: 8px 0 0;
+  font-size: 13px;
+  white-space: normal;
+  color: var(--error);
+}

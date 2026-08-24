@@ -17,9 +17,11 @@ function stylesheet(relative: string): string {
 }
 
 const collectionsCss = stylesheet("./pages/collections.css");
+const itemCss = stylesheet("./pages/item.css");
 const logsCss = stylesheet("./pages/logs.css");
 const settingsCss = stylesheet("./pages/settings.css");
 const shellCss = stylesheet("./shell/shell.css");
+const testingCss = stylesheet("./pages/testing.css");
 const themeCss = stylesheet("./theme.css");
 
 /* The mobile sweep's findings are mostly layout, and this suite runs with
@@ -196,6 +198,25 @@ describe("the log line restructures below 640px", () => {
     expect(declaration(logsCss, ".log-controls", "flex-wrap", MOBILE)).toBe("wrap");
     expect(declaration(logsCss, ".log-viewport", "height", MOBILE)).toBe("calc(100vh - 17rem)");
     expect(declaration(logsCss, ".log-viewport", "min-height", MOBILE)).toBe("12rem");
+  });
+});
+
+describe("the manual-source controls fit a narrow panel", () => {
+  it("wraps the item panel's input and button rather than overhanging", () => {
+    expect(declaration(itemCss, ".manual-controls", "flex-wrap")).toBe("wrap");
+    expect(declaration(itemCss, ".manual-input", "max-width")).toBe("100%");
+  });
+
+  it("wraps the collection row's poster form the same way", () => {
+    expect(declaration(collectionsCss, ".poster-form", "flex-wrap")).toBe("wrap");
+    expect(declaration(collectionsCss, ".poster-input", "max-width")).toBe("100%");
+  });
+});
+
+describe("the testing grid stays inside its box", () => {
+  it("clips a sample to its preview box rather than widening the cell", () => {
+    expect(declaration(testingCss, ".sample-view", "overflow")).toBe("hidden");
+    expect(declaration(testingCss, ".sample-image", "object-fit")).toBe("contain");
   });
 });
 

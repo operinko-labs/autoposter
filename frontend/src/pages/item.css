@@ -96,6 +96,35 @@
   margin-bottom: 24px;
 }
 
+/* The manual-source panel, the same inline idiom as the candidate panel but a
+ * single input rather than a grid. */
+.manual-panel {
+  margin-bottom: 24px;
+}
+
+.manual-help {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+/* The input beside the button while the row has width, the button dropping
+ * below it when it does not -- a phone width must not push Install off the
+ * panel. */
+.manual-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.manual-input {
+  flex: 1 1 22rem;
+  /* A floor so the field is usable when it wraps under the button, and a cap
+   * so it never overhangs the panel at any width. */
+  min-width: 12rem;
+  max-width: 100%;
+}
+
 .candidate-heading {
   margin: 0 0 12px;
   font-size: 13px;

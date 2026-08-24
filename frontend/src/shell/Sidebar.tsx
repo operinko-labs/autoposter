@@ -19,6 +19,8 @@ const ICONS: Record<string, string> = {
   logs: "M3 4h18v2H3V4zm0 4h12v2H3V8zm0 4h18v2H3v-2zm0 4h12v2H3v-2zm0 4h18v2H3v-2z",
   settings:
     "M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.62l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.58.24-1.12.55-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.86a.5.5 0 0 0 .12.62l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.62l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.39 1.04.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.62l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z",
+  testing:
+    "M13 11.33 18 18H6l5-6.67V6h2m3.96-2H8.04c-.42 0-.65.48-.39.81L9 6.5V11L3.4 18.6c-.49.66-.02 1.6.8 1.6h15.6c.82 0 1.29-.94.8-1.6L15 11V6.5l1.35-1.69c.26-.33.03-.81-.39-.81z",
   logout:
     "M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.59L17 17l5-5-5-5zM4 5h8V3H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8v-2H4V5z",
   collapse: "M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12l4.6-4.6z",
@@ -31,6 +33,7 @@ const NAV = [
   { to: "/collections", label: "Collections", icon: "collections", end: false },
   { to: "/failures", label: "Failures", icon: "failures", end: false },
   { to: "/logs", label: "Logs", icon: "logs", end: false },
+  { to: "/testing", label: "Testing", icon: "testing", end: false },
   { to: "/settings", label: "Settings", icon: "settings", end: false },
 ];
 
