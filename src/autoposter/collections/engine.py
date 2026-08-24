@@ -273,10 +273,23 @@ async def run_library(
             results.append(result)
 
     if sweep:
-        swept = await _sweep(
-            session, section, library, library_type, definitions, config,
-            label=label, dry_run=dry_run, listing=listing,
-        )
+        try:
+            swept = await _sweep(
+                session, section, library, library_type, definitions, config,
+                label=label, dry_run=dry_run, listing=listing,
+            )
+        except Exception:
+            # Mirrors ``service.unmanaged_prior_collections``'s containment:
+            # the sweep's candidate scan does a Plex reload per orphan
+            # (``load_labels``) below the reconcile's own writes, so a
+            # transient read failure here must not reach
+            # ``reconcile_libraries``'s per-library handler and roll back
+            # rows this pass already committed to Plex.
+            logger.exception("%s: delete sweep failed", library)
+            swept = [_swept(
+                SWEEP_TITLE, library,
+                "delete sweep failed; nothing was deleted this pass -- see logs",
+            )]
         for result in swept:
             actions += result.actions
             results.append(result)
@@ -459,7 +472,19 @@ async def _sweep(
                 title, library, "would delete %r: no definition builds it" % title, 1
             ))
             continue
-        collection.delete()
+        try:
+            collection.delete()
+        except Exception:
+            # A later candidate's Plex delete is not this candidate's
+            # problem: it must not stop the remaining candidates from being
+            # tried, and it must not cost the audit trail of a delete that
+            # already happened -- which is why that audit is flushed below
+            # before this loop moves on to the next candidate's delete().
+            logger.exception("%s: could not delete %r", library, title)
+            results.append(_swept(
+                title, library, "failed to delete %r: see logs for detail" % title
+            ))
+            continue
         await session.delete(row)
         session.add(EventLog(
             source="collections",
@@ -473,6 +498,11 @@ async def _sweep(
             },
             outcome="deleted; no definition builds it",
         ))
+        # Flushed now, rather than left for the caller's eventual commit, so
+        # this delete's audit trail is durable in the transaction before the
+        # next candidate's ``collection.delete()`` -- the one Plex-side call
+        # in this loop that can raise -- gets a chance to.
+        await session.flush()
         results.append(_swept(
             title, library, "deleted %r: no definition builds it" % title, 1
         ))

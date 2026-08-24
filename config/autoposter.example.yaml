@@ -58,6 +58,13 @@ collections:
   protect_labels: # labels of other tools' collections, e.g. Maintainerr; never touched, even if also adopt_from-labelled
     - Collection managed by Maintainerr
   delete_unconfigured: false # delete collections we own once no definition builds them; the only setting here that deletes anything
+  # Once delete_unconfigured is true, charts/awards/separators (and any
+  # definitions: entry) become destructive to turn off: switching one off
+  # orphans the collections it used to build, and the next pass's sweep may
+  # delete them. awards builds exactly 5 collections (the year collections,
+  # capped by imdb_award.recent_years) -- which sits AT the default
+  # max_deletes below, so turning awards off deletes them rather than
+  # refusing.
   max_deletes: 5 # per-pass cap on that sweep: past it it refuses entirely and reports the numbers
   # Operator-configured collections, each built by a registered builder. An
   # unknown `builder:` is rejected when the config loads, not hours later in a

@@ -30,6 +30,7 @@ from autoposter.collections.service import (
     CollectionsPassFailed,
     reconcile_libraries,
 )
+from autoposter.collections.sources import AWARD_YEARS_TITLE, chart_and_award_definitions
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import EventLog, ManagedCollection, ScheduledRun
@@ -316,6 +317,24 @@ async def test_switching_the_mode_re_reconciles_instead_of_short_circuiting(
 
 # --- the delete sweep ------------------------------------------------------
 
+class _BreaksOnReload(FakeCollection):
+    """A collection whose Plex reload -- what ``load_labels`` calls to
+    populate ``labels`` -- fails: a collection deleted mid-pass, a timeout, a
+    500. Isolates a read failure in the sweep's candidate scan, the same way
+    ``BreaksOnTheLeftoversScan`` isolates one in the leftovers scan."""
+
+    def reload(self, **kw):
+        raise RuntimeError("simulated failure reloading %r" % self.title)
+
+
+class _BreaksOnDelete(FakeCollection):
+    """A collection whose ``delete()`` -- the sweep's one irreversible,
+    Plex-side call -- fails after the request has already been made."""
+
+    def delete(self):
+        raise RuntimeError("simulated failure deleting %r" % self.title)
+
+
 async def test_an_unconfigured_collection_is_only_reported_by_default(
     session, registry_entry
 ):
@@ -545,6 +564,142 @@ async def test_the_award_years_keep_their_collections_out_of_the_sweep(session):
 
     assert titles == {"Oscars Winners 2026"}
     assert "Oscars Winners (recent ceremonies)" not in titles
+
+
+async def test_a_failed_sweep_scan_does_not_fail_the_librarys_reconcile(
+    session, registry_entry
+):
+    """The sweep's candidate scan does a Plex reload (``load_labels``) per
+    orphan below the reconcile's own writes -- the same shape as
+    ``service.unmanaged_prior_collections`` and its own guard test,
+    ``test_collection_main.py``'s
+    ``test_a_failed_leftovers_scan_does_not_discard_the_librarys_rows``.
+    Before this fix, that reload's failure propagated out of ``run_library``
+    itself; a caller running it inside a per-library try/except (as
+    ``reconcile_libraries`` does) would roll back every row this pass had
+    already written, including definitions that had nothing to do with the
+    sweep."""
+    registry_entry(_Listing("knobs_sweep_scan", [("imdb", "tt1")]))
+    orphan = _BreaksOnReload("Retired Chart", [FakeItem("m1")], labels=[LABEL])
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[orphan])
+    await _managed_row(session, "Movies", "Retired Chart")
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(title="Kept", builder="knobs_sweep_scan")],
+        _config(delete_unconfigured=True), sweep=True,
+    )
+
+    assert orphan.deleted is False
+    kept = next(r for r in run.definitions if r.title == "Kept")
+    assert kept.failed is False and kept.skipped is False, (
+        "a failed sweep scan must leave the other definitions' own results alone"
+    )
+    assert "created 'Kept' with 1 item(s)" in run.actions, (
+        "a failed sweep scan must not stop the rest of the library reconciling"
+    )
+    assert any("delete sweep failed" in action for action in run.actions), (
+        "the sweep's own failure must be visible in the actions, not just the log"
+    )
+    assert (
+        await session.execute(
+            select(ManagedCollection).where(ManagedCollection.title == "Retired Chart")
+        )
+    ).scalar_one_or_none() is not None, (
+        "the library's rows must survive a read failure in the sweep scan"
+    )
+
+
+async def test_a_failed_delete_does_not_lose_an_earlier_deletes_audit_row(session):
+    """``collection.delete()`` is irreversible the moment it returns. Before
+    this fix, a later candidate's ``delete()`` raising propagated straight out
+    of the sweep's loop -- discarding the results list a caller needs to see
+    the first candidate's success, and leaving its ``EventLog`` add and row
+    removal merely staged rather than flushed, at the mercy of whatever
+    caught that exception rolling the session back."""
+    first = FakeCollection("Retired A", [FakeItem("m1")], labels=[LABEL])
+    second = _BreaksOnDelete("Retired B", [FakeItem("m1")], labels=[LABEL])
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[first, second])
+    await _managed_row(session, "Movies", "Retired A")
+    await _managed_row(session, "Movies", "Retired B")
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [],
+        _config(delete_unconfigured=True), sweep=True,
+    )
+
+    assert first.deleted is True
+    assert second.deleted is False
+    assert "deleted 'Retired A': no definition builds it" in run.actions
+    assert any("failed to delete 'Retired B'" in action for action in run.actions), (
+        "a later candidate's failed delete must be visible in the actions"
+    )
+
+    rows = {
+        row.title: row
+        for row in (await session.execute(select(ManagedCollection))).scalars().all()
+    }
+    assert "Retired A" not in rows, (
+        "the surviving delete's row removal must not be lost to a later "
+        "candidate's failure"
+    )
+    assert "Retired B" in rows, "a failed delete must leave its own row untouched"
+
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert [(e.source, e.event_type, e.payload["title"]) for e in events] == [
+        ("collections", "collection_deleted", "Retired A")
+    ]
+
+
+async def test_a_dead_award_source_does_not_orphan_the_year_collections_it_built(
+    session, registry_entry
+):
+    """The blast-radius pin. Five ``Oscars Winners <year>`` collections a
+    prior pass already built survive a pass whose award dataset fetch dies --
+    even with ``delete_unconfigured`` on, and even though this pass's own
+    expansion produces no year definitions at all.
+    ``test_the_award_years_keep_their_collections_out_of_the_sweep`` proves
+    the TITLE_PATTERN match in isolation; this proves it holds against a real
+    dead fetch, end to end, which is what a unit test of the pattern alone
+    cannot pin."""
+    registry_entry(_Listing("knobs_other_award_e2e", [("imdb", "tt1")]))
+    years = [
+        FakeCollection("Oscars Winners %d" % year, [FakeItem("m1")], labels=[LABEL])
+        for year in range(2022, 2027)
+    ]
+    for year_collection in years:
+        await _managed_row(session, "Movies", year_collection.title)
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=list(years))
+
+    config = _config(awards=True, delete_unconfigured=True)
+    definitions = [
+        CollectionDefinition(title="Other", builder="knobs_other_award_e2e"),
+        *chart_and_award_definitions(config, "Movie"),
+    ]
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(500))
+    ) as http:
+        run = await run_library(
+            session, section, "Movies", "Movie", definitions, config,
+            sweep=True, http=http,
+        )
+
+    assert not any(year.deleted for year in years), (
+        "a dead award source must not orphan the year collections it already built"
+    )
+    assert not any("deleted" in action for action in run.actions)
+    assert "created 'Other' with 1 item(s)" in run.actions, (
+        "a dead award source must not stop the rest of the library reconciling"
+    )
+    failed_titles = {result.title for result in run.definitions if result.failed}
+    assert AWARD_YEARS_TITLE in failed_titles, (
+        "the expanding award definition must report its own containment"
+    )
+    assert any(
+        "source returned no items; leaving the collection untouched" in action
+        for action in run.actions
+    ), "the static award definitions report their containment string too"
 
 
 # --- row 115: a failed definition is a failed pass -------------------------
