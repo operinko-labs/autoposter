@@ -368,3 +368,93 @@ def test_library_section_collection_fetches_by_title():
     assert callable(LibrarySection.collection)
     params = inspect.signature(LibrarySection.collection).parameters
     assert "title" in params
+
+
+# --- Phase 8b's plex.tv watchlist (row 64) ---------------------------------
+#
+# ``plex_watchlist`` is the first thing in this project to ask plex.tv about
+# the *account* rather than asking a server about its library, so every
+# plexapi surface it stands on is net-new and pinned here rather than only
+# discovered against a live account.
+
+
+def test_my_plex_account_takes_a_bare_token():
+    """``collections.service._plex_account_factory`` builds the account as
+    ``MyPlexAccount(token=…)`` and nothing else -- no username, no password.
+    A future signature that made either required would turn the one lazy
+    plex.tv call in this service into a TypeError mid-pass."""
+    from plexapi.myplex import MyPlexAccount
+
+    params = inspect.signature(MyPlexAccount.__init__).parameters
+    assert "token" in params
+    required = [
+        name for name, parameter in params.items()
+        if name != "self" and parameter.default is inspect.Parameter.empty
+    ]
+    assert required == [], "MyPlexAccount grew a required constructor argument"
+
+
+def test_the_watchlist_is_listable_with_no_arguments():
+    """``account.watchlist()`` is called bare: no ``filter``, no ``libtype``.
+    Filtering by media type happens in the builder against ``item.type``,
+    because one bundle serves every library in the pass and the plex.tv round
+    trip should not be repeated per library."""
+    from plexapi.myplex import MyPlexAccount
+
+    assert callable(MyPlexAccount.watchlist)
+    params = inspect.signature(MyPlexAccount.watchlist).parameters
+    for optional in ("filter", "sort", "libtype", "maxresults"):
+        assert optional in params
+        assert params[optional].default is None, (
+            "watchlist(%s) is no longer optional" % optional
+        )
+
+
+def test_the_watchlist_is_served_by_plex_tv_discover_and_not_by_the_server():
+    """Which is why it needs an account token and not the server one: the
+    request goes to ``https://discover.provider.plex.tv``, where a
+    server-scoped token is rejected (``config.schema.Secrets``'s note on
+    ``plex_account_token``)."""
+    from plexapi.myplex import MyPlexAccount
+
+    assert MyPlexAccount.DISCOVER == "https://discover.provider.plex.tv"
+    source = inspect.getsource(MyPlexAccount.watchlist)
+    assert "self.DISCOVER" in source
+    assert "/library/sections/watchlist/" in source
+    assert "_toOnlineMetadata" in source, (
+        "watchlist items are online metadata; if that stopped being true the "
+        "builder's guid translation would be reading a different object"
+    )
+
+
+def test_watchlist_items_expose_external_guids_the_same_way_owned_items_do():
+    """``plex_watchlist`` maps an item to a tmdb/tvdb/imdb id by reading
+    ``item.guids``, exactly as ``resolve.build_owned_index`` reads an owned
+    item's. Both sides being the same attribute on the same classes is what
+    keeps a watchlist id in a namespace the index actually records.
+
+    ``guids`` is a ``cached_data_property`` over the listing's own XML, so an
+    item whose response carried no ``<Guid>`` children answers ``[]`` rather
+    than raising -- which is the case the builder skips with a debug line,
+    and the case it refuses to accept for *every* item at once."""
+    from plexapi.base import cached_data_property
+    from plexapi.media import Guid
+    from plexapi.video import Movie, Show
+
+    for cls in (Movie, Show):
+        assert isinstance(cls.__dict__.get("guids"), cached_data_property), (
+            "%s.guids is no longer read off the response data" % cls.__name__
+        )
+        assert "media.Guid" in inspect.getsource(cls.__dict__["guids"].func)
+    assert "self.id = data.attrib.get('id')" in inspect.getsource(Guid._loadData), (
+        "a Guid no longer carries the 'imdb://tt…' string the mapping parses"
+    )
+
+
+def test_watchlist_items_carry_the_type_the_builder_filters_on():
+    """``item.type`` is 'movie'/'show', which is how one watchlist is split
+    between a Movie library's pass and a Show library's."""
+    from plexapi.video import Movie, Show
+
+    assert Movie.TYPE == "movie"
+    assert Show.TYPE == "show"

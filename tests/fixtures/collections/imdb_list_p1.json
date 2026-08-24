@@ -1,0 +1,30 @@
+{
+  "data": {
+    "list": {
+      "titleListItemSearch": {
+        "total": 27,
+        "pageInfo": {
+          "hasNextPage": true,
+          "endCursor": "eyJlc1Rva2VuIjpbXSwiZmlsdGVyIjoie1wiY29uc3RyYWludHNcIjp7XCJleHBsaWNpdENvbnRlbnRDb25zdHJhaW50XCI6e1wiZXhwbGljaXRDb250ZW50RmlsdGVyXCI6XCJJTkNMVURFX0FEVUxUXCJ9fSxcImxhbmd1YWdlXCI6XCJlbi1VU1wiLFwicmVzdWx0SW5kZXhcIjoyNH0iLCJzaWciOiJkMzlmYWE2Mzg1ZGFmMzVhYWQ1NTg1NGU5MWZmY2FjN2NmMDdkOTU1YWY1ZDhlY2E3ZTk5ZWQ2ZTZmNDMxZjk1In0="
+        },
+        "edges": [
+          {
+            "title": {
+              "id": "tt0039152"
+            }
+          },
+          {
+            "title": {
+              "id": "tt0057569"
+            }
+          },
+          {
+            "title": {
+              "id": "tt0013442"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

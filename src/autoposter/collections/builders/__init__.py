@@ -35,7 +35,13 @@ from autoposter.collections.builders.imdb_award import (
     ImdbAwardYearsBuilder,
 )
 from autoposter.collections.builders.imdb_chart import ImdbChartBuilder
+from autoposter.collections.builders.imdb_lists import (
+    ImdbListBuilder,
+    ImdbWatchlistBuilder,
+)
 from autoposter.collections.builders.mdblist import MdblistListBuilder
+from autoposter.collections.builders.plex_trivial import PlexAllBuilder
+from autoposter.collections.builders.plex_watchlist import PlexWatchlistBuilder
 from autoposter.collections.builders.simple_ids import (
     ImdbIdBuilder,
     PlexRatingKeyBuilder,
@@ -62,6 +68,7 @@ register(PlexIdBuilder())
 # for why an alias is a registration rather than a second dict key.
 register(PlexRatingKeyBuilder())
 register(ImdbIdBuilder())
+register(PlexAllBuilder())
 register(TmdbMovieBuilder())
 register(TmdbShowBuilder())
 register(TextFileBuilder())
@@ -70,6 +77,9 @@ register(RadarrTagListBuilder())
 register(SonarrAllBuilder())
 register(SonarrTagListBuilder())
 register(ImdbChartBuilder())
+register(ImdbListBuilder())
+register(ImdbWatchlistBuilder())
+register(PlexWatchlistBuilder())
 register(TmdbChartBuilder())
 register(TmdbListBuilder())
 register(TmdbCollectionBuilder())

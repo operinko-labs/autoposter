@@ -1,0 +1,21 @@
+{
+  "errors": [
+    {
+      "message": "FORBIDDEN exception code while fetching data (/predefinedList) : Permission denied",
+      "path": [
+        "predefinedList"
+      ],
+      "extensions": {
+        "code": "FORBIDDEN",
+        "errorType": "CLIENT",
+        "isRetryable": false,
+        "path": [
+          "predefinedList"
+        ]
+      }
+    }
+  ],
+  "data": {
+    "predefinedList": null
+  }
+}
