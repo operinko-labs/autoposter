@@ -306,6 +306,12 @@ def create_app(
     # to reach; the background lifespan hands this exact object to the worker
     # pool. A no-lifespan app holds one that simply nothing awaits.
     app.state.worker_pause = WorkerPause()
+    # One applied artwork mode at a time in this process (Phase 7b). Two
+    # concurrent applied runs would each raise the fence above and the first to
+    # finish would drop it under the second -- and both would be writing to Plex
+    # at once. Created here for the same reason the fence is: every application
+    # must have one for the trigger endpoint to reach.
+    app.state.mode_lock = asyncio.Lock()
     # Per process, so every worker pod limits its own callers -- see
     # LoginRateLimiter.
     app.state.login_rate_limiter = LoginRateLimiter()

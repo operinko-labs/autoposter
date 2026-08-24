@@ -87,6 +87,21 @@ class WorkerPause:
     until the fence clears -- a worker already mid-job finishes that job, then
     idles, so in-flight work is never interrupted.
 
+    **Raising the fence is not enough on its own: the caller has to drain.**
+    "The pool finishes in-flight then idles" only holds for the *pool*; the
+    mode still has to wait for that to happen before its first write, or it
+    races the very job it was fencing off. So the pause counts active jobs as
+    well as holding the flag: ``run_once`` wraps each handler in
+    :meth:`running_job`, and the trigger endpoint awaits :meth:`drain` after
+    :meth:`pause` and before it writes anything. Counted rather than a plain
+    flag because the pool has several workers and the drain must wait for the
+    last of them, not the first.
+
+    ``run_once`` also re-checks :attr:`is_paused` *after* it claims -- the
+    gate in ``run_worker`` and the claim are several awaits apart, and a fence
+    raised in that window would otherwise let one more job run in full, after
+    the drain had already concluded there was nothing to wait for.
+
     Scope and known limitation: this is an ``asyncio.Event`` living on one
     process's ``app.state``, so it fences only this replica's pool. A second
     replica's workers are NOT paused, and neither is the database-level
@@ -100,10 +115,49 @@ class WorkerPause:
         # ``set()`` == paused. Constructed without a running loop (fine on
         # 3.10+); the pool that awaits it runs inside the lifespan's loop.
         self._event = asyncio.Event()
+        # How many workers are inside a handler right now, and the event that
+        # is set exactly while that count is zero. Starts idle: an application
+        # with no worker pool at all (a test app, an API-only replica) must not
+        # make ``drain`` wait for something that will never happen.
+        self._active = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
 
     @property
     def is_paused(self) -> bool:
         return self._event.is_set()
+
+    @property
+    def active_jobs(self) -> int:
+        """How many workers are inside a handler right now."""
+        return self._active
+
+    @contextlib.contextmanager
+    def running_job(self) -> Iterator[None]:
+        """Count one worker as mid-job for the duration of the block.
+
+        ``run_once`` wraps the handler in this so :meth:`drain` can tell "the
+        pool has stopped claiming" from "the pool has stopped working".
+        """
+        self._active += 1
+        self._idle.clear()
+        try:
+            yield
+        finally:
+            self._active -= 1
+            if self._active == 0:
+                self._idle.set()
+
+    async def drain(self) -> None:
+        """Wait until no worker is mid-job.
+
+        Called by the trigger endpoint after :meth:`pause` and before the mode
+        writes anything. Returns at once when the pool is already idle, which
+        is the normal case; it does *not* time out, because a handler that
+        never returns is a bug that must be visible as a hung trigger rather
+        than hidden behind a mode that went ahead and raced it anyway.
+        """
+        await self._idle.wait()
 
     def pause(self) -> None:
         self._event.set()

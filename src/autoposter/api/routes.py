@@ -877,6 +877,18 @@ async def run_artwork_backup(
     return result.as_response()
 
 
+# What a second applied run is told while one is already going. A 409 with a
+# ``detail`` sentence rather than a 200 carrying ``status: "busy"``: nothing
+# ran, so there are no counts to report in the shape the other responses use,
+# and the page already renders a failed trigger's ``detail`` in that mode's own
+# error slot. The client disables every apply path while a run is in flight, so
+# reaching this means two operators (or two tabs) pressed Confirm at once.
+MODE_BUSY_DETAIL = (
+    "another artwork mode is already running on this instance; wait for it to "
+    "finish before starting another"
+)
+
+
 async def _run_plex_writing_mode(request: Request, mode, apply: bool) -> dict:
     """Run one Plex-writing mode inline and return its parallel response body.
 
@@ -886,17 +898,44 @@ async def _run_plex_writing_mode(request: Request, mode, apply: bool) -> dict:
     without going and reading a job row.
 
     Only an applied run writes to Plex, so only it raises the fence; a dry run
-    touches nothing on Plex and must not idle the live pipeline. The fence is
-    released in ``WorkerPause.paused``'s ``finally``, so a mode that raises does
-    not leave the pool idled forever.
+    touches nothing on Plex, must not idle the live pipeline, and is free to run
+    alongside anything else. The fence is released in ``WorkerPause.paused``'s
+    ``finally``, so a mode that raises does not leave the pool idled forever.
+
+    An applied run does two more things before it writes a byte:
+
+    * **It drains.** Raising the fence only stops the pool *claiming*; a worker
+      already mid-job is still writing to the same Plex items. ``drain()`` waits
+      for that job to finish, which is what the plan's "pool finishes in-flight
+      then idles" actually requires (see ``WorkerPause``).
+    * **It takes the process-wide mode lock.** Two concurrent applied runs would
+      each enter ``paused()`` and the first to finish would drop the fence while
+      the second was still writing -- and they would be writing to Plex at the
+      same time as each other besides. One at a time; a second trigger while one
+      runs is answered 409 (``MODE_BUSY_DETAIL``) rather than queued, because an
+      operator who pressed Confirm twice wants to be told, not to have the
+      second run start silently some minutes later.
+
+    The lock is per process, exactly as the fence is, and carries the same
+    limitation: a second replica is not serialised against this one.
     """
     session_factory = request.app.state.session_factory
-    async with session_factory() as session:
-        if apply:
-            with request.app.state.worker_pause.paused():
-                result = await mode.run(session)
-        else:
+    if not apply:
+        async with session_factory() as session:
             result = await mode.run(session)
+        return result.as_response()
+
+    lock = request.app.state.mode_lock
+    # Safe without a lock of its own: nothing is awaited between the check and
+    # the acquire, so no other task can take the lock in between.
+    if lock.locked():
+        raise HTTPException(status_code=409, detail=MODE_BUSY_DETAIL)
+    async with lock:
+        pause = request.app.state.worker_pause
+        with pause.paused():
+            await pause.drain()
+            async with session_factory() as session:
+                result = await mode.run(session)
     return result.as_response()
 
 

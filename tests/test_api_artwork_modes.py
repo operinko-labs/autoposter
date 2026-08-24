@@ -8,7 +8,9 @@ does not run under create_app alone). Fake Plex throughout; a tmp
 an applied restore must hold the pool paused while it uploads, proven by a
 FakeItem that records ``worker_pause.is_paused`` at the moment of upload.
 """
+import asyncio
 import io
+import threading
 from pathlib import Path
 
 import httpx
@@ -25,6 +27,8 @@ from autoposter.config.schema import Secrets
 from autoposter.db.models import MediaItem, Render
 from autoposter.plex.exif import PROVENANCE_TAG, format_provenance
 from autoposter.providers.base import LOGO, ArtCandidate
+from autoposter.queue.jobs import enqueue
+from autoposter.queue.worker import run_worker
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -366,6 +370,128 @@ async def test_apply_restore_pauses_the_pool_while_uploading(
     assert item.paused_during_write == [True]
     # And released in the finally once the push finished.
     assert app.state.worker_pause.is_paused is False
+
+
+async def test_apply_waits_for_an_in_flight_job_before_it_writes(
+    client, auth_headers, session, session_factory, wire, backup_root, app
+):
+    """The fence has to DRAIN, not merely rise. Raising it stops the pool
+    *claiming*, but a worker already inside a handler is still writing to the
+    same Plex items -- which is precisely the race the fence exists to prevent.
+    So the trigger awaits ``WorkerPause.drain()`` before the mode's first
+    write.
+
+    A real worker is running here with a real job in flight when the trigger
+    arrives. Mutation proof: delete the ``await pause.drain()`` in
+    ``_run_plex_writing_mode`` and the upload lands while the job is still
+    running -- the ``order == ["job start"]`` assertion below reds.
+    """
+    order = []
+    entered = asyncio.Event()
+    finish_job = asyncio.Event()
+
+    async def slow_handler(session_, job):
+        order.append("job start")
+        entered.set()
+        await finish_job.wait()
+        order.append("job end")
+
+    class RecordingItem(FakeItem):
+        def uploadPoster(self, filepath=None):  # noqa: N802 - plexapi name
+            order.append("upload")
+            super().uploadPoster(filepath=filepath)
+
+    await _add_item(session, rating_key="rk1")
+    _seed_backup(backup_root, "Movies", "A (1999)", "poster.jpg", b"p")
+    wire({"rk1": RecordingItem()})
+
+    async with session_factory() as setup_session:
+        await enqueue(setup_session, "slow", {}, dedupe_key="slow-1")
+
+    stop_event = asyncio.Event()
+    worker = asyncio.create_task(
+        run_worker(
+            "worker-1", session_factory, {"slow": slow_handler}, stop_event,
+            pause=app.state.worker_pause,
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+
+        trigger = asyncio.create_task(
+            client.post(
+                "/api/artwork-modes/restore", headers=auth_headers, json={"apply": True}
+            )
+        )
+        # Long enough for the whole (tiny) mode to have run if it were not
+        # waiting: it is a couple of queries, a stat and one upload.
+        await asyncio.sleep(0.3)
+        assert order == ["job start"]  # the write has not begun
+
+        finish_job.set()
+        response = await asyncio.wait_for(trigger, timeout=10)
+
+        assert response.status_code == 200
+        assert response.json()["pushed"] == 1
+        assert order == ["job start", "job end", "upload"]
+    finally:
+        finish_job.set()
+        stop_event.set()
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
+async def test_a_second_applied_run_is_told_busy_and_writes_nothing(
+    client, auth_headers, session, wire, backup_root
+):
+    """One applied mode at a time in this process. Two concurrent applied runs
+    would each raise the fence and the first to finish would drop it under the
+    second, and both would be writing to Plex at once besides.
+
+    The first run is held inside ``upload_artwork`` (which runs in a thread, so
+    the event loop is free to serve the second request) while the second
+    trigger goes out. Mutation proof: drop the ``mode_lock`` in
+    ``_run_plex_writing_mode`` and the second run answers 200 and uploads too.
+    """
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingItem(FakeItem):
+        def uploadPoster(self, filepath=None):  # noqa: N802 - plexapi name
+            started.set()
+            release.wait(10)
+            super().uploadPoster(filepath=filepath)
+
+    await _add_item(session, rating_key="rk1")
+    _seed_backup(backup_root, "Movies", "A (1999)", "poster.jpg", b"p")
+    item = BlockingItem()
+    plex = wire({"rk1": item})
+
+    first = asyncio.create_task(
+        client.post(
+            "/api/artwork-modes/restore", headers=auth_headers, json={"apply": True}
+        )
+    )
+    try:
+        await asyncio.to_thread(started.wait, 10)
+
+        second = await client.post(
+            "/api/artwork-modes/restore", headers=auth_headers, json={"apply": True}
+        )
+
+        assert second.status_code == 409
+        assert "already running" in second.json()["detail"]
+        # And it got nowhere near Plex: the busy answer comes before the mode
+        # is even constructed a session.
+        assert plex.fetched == ["rk1"]
+    finally:
+        release.set()
+        first_response = await asyncio.wait_for(first, timeout=10)
+
+    assert first_response.status_code == 200
+    assert first_response.json()["pushed"] == 1
+    # Exactly one upload happened, not two.
+    assert item.uploaded == [("poster", b"p")]
 
 
 async def test_dry_run_restore_does_not_pause_the_pool(

@@ -353,6 +353,51 @@ async def test_paused_pool_claims_nothing_then_resumes_on_clear(session_factory)
         await asyncio.gather(task, return_exceptions=True)
 
 
+async def test_a_job_claimed_as_the_fence_rises_is_handed_back_uncharged(session):
+    # The other half of the fence. run_worker's gate and the claim inside
+    # run_once are several awaits apart, so a pause raised in that window would
+    # otherwise let one more job run in full -- after the mode's drain had
+    # already concluded there was nothing to wait for. run_once re-checks after
+    # the claim and releases the job. Mutation proof: drop that re-check and the
+    # handler's AssertionError fires.
+    async def handler(session_, intent):
+        raise AssertionError("the fence was up; this job must not have run")
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=41)
+    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+
+    pause = WorkerPause()
+    pause.pause()
+    assert (
+        await run_once(session, "worker-1", _only_process_item(handler), pause) is False
+    )
+
+    job = (await session.execute(select(Job))).scalar_one()
+    # Pending, unclaimed, and the attempt claim() charged handed back: the job
+    # is exactly as claimable as it was, so the fence costs it no retry budget.
+    assert job.state == "pending"
+    assert job.attempts == 0
+    assert job.claimed_by is None
+
+
+async def test_a_running_job_is_counted_active_for_the_drain(session):
+    # What ``drain()`` reads: while the handler is inside run_once the pause
+    # reports an active job, and it is given back afterwards.
+    pause = WorkerPause()
+    seen = []
+
+    async def handler(session_, intent):
+        seen.append(pause.active_jobs)
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=42)
+    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+
+    await run_once(session, "worker-1", _only_process_item(handler), pause)
+
+    assert seen == [1]
+    assert pause.active_jobs == 0
+
+
 async def test_run_worker_processes_jobs_normally_when_healthy(session_factory):
     handled = []
 

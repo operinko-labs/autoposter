@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 
@@ -22,9 +23,18 @@ JobHandler = Callable[[AsyncSession, Job], Awaitable[None]]
 
 
 async def run_once(
-    session: AsyncSession, worker_id: str, handlers: Mapping[str, JobHandler]
+    session: AsyncSession,
+    worker_id: str,
+    handlers: Mapping[str, JobHandler],
+    pause: WorkerPause | None = None,
 ) -> bool:
-    """Claim and run at most one job. Returns False when nothing was due."""
+    """Claim and run at most one job. Returns False when nothing was due.
+
+    ``pause``, when given, is the Plex-writing modes' fence. It is consulted
+    once more *here*, after the claim, and the job is counted as active while
+    its handler runs -- see ``WorkerPause``'s docstring for why the gate in
+    ``run_worker`` alone is not enough.
+    """
     job = await claim(session, worker_id)
     if job is None:
         return False
@@ -34,6 +44,14 @@ async def run_once(
     # via plain attribute access on an AsyncSession.
     job_id = job.id
 
+    if pause is not None and pause.is_paused:
+        # The fence rose between run_worker's gate and this claim, which are
+        # several awaits apart. Hand the job straight back -- pending, and with
+        # the attempt claim() just charged given back -- rather than running it
+        # in full behind a mode that has already drained and started writing.
+        await release(session, job_id)
+        return False
+
     handler = handlers.get(job.kind)
     if handler is None:
         # Not retryable — a rescheduled unknown kind would spin until it parks anyway.
@@ -42,40 +60,45 @@ async def run_once(
         await session.commit()
         return True
 
-    try:
-        await handler(session, job)
-    except asyncio.CancelledError:
-        # Shutdown, not a job failure: hand it straight back so it's immediately
-        # claimable again, without charging a retry attempt, then let the
-        # cancellation continue propagating so the worker task actually stops.
-        # Rolled back first for the same reason as the branches below: a
-        # cancellation landing mid-database-operation can leave the session in
-        # a failed transaction, and release()'s SELECT would raise
-        # PendingRollbackError instead of releasing the job.
-        await session.rollback()
-        await release(session, job_id)
-        raise
-    except (ItemNotFound, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
-        # Expected infrastructure conditions, not a job failure: either Plex
-        # has not scanned the new file yet (ItemNotFound), or Plex itself is
-        # unreachable (a connection/timeout error surfacing from
-        # _LazyPlexServer's connect attempt, see main.py). Both get the same
-        # larger, configurable attempt budget instead of the generic retry cap.
-        logger.info("job %s waiting for Plex: %s", job_id, exc)
-        # The handler may have left the session mid-transaction (e.g. a DB error
-        # surfaced first); fail() issues a SELECT, which would raise
-        # PendingRollbackError on a failed transaction instead of rescheduling.
-        await session.rollback()
-        # config.plex.resolve_max_attempts, threaded through via the exception
-        # rather than a run_once parameter — see _handle_intent in app.py.
-        max_attempts = getattr(exc, "max_attempts", MAX_ATTEMPTS)
-        await fail(session, job_id, str(exc), max_attempts)
-    except Exception as exc:  # noqa: BLE001 - the queue is the error boundary
-        logger.warning("job %s failed: %s", job_id, exc, exc_info=True)
-        await session.rollback()
-        await fail(session, job_id, f"{type(exc).__name__}: {exc}")
-    else:
-        await complete(session, job_id)
+    # Counted as active for the whole of the job, bookkeeping included, so a
+    # mode's drain waits for the job to be *finished*, not merely for its
+    # handler to have returned.
+    tracker = pause.running_job() if pause is not None else contextlib.nullcontext()
+    with tracker:
+        try:
+            await handler(session, job)
+        except asyncio.CancelledError:
+            # Shutdown, not a job failure: hand it straight back so it's immediately
+            # claimable again, without charging a retry attempt, then let the
+            # cancellation continue propagating so the worker task actually stops.
+            # Rolled back first for the same reason as the branches below: a
+            # cancellation landing mid-database-operation can leave the session in
+            # a failed transaction, and release()'s SELECT would raise
+            # PendingRollbackError instead of releasing the job.
+            await session.rollback()
+            await release(session, job_id)
+            raise
+        except (ItemNotFound, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            # Expected infrastructure conditions, not a job failure: either Plex
+            # has not scanned the new file yet (ItemNotFound), or Plex itself is
+            # unreachable (a connection/timeout error surfacing from
+            # _LazyPlexServer's connect attempt, see main.py). Both get the same
+            # larger, configurable attempt budget instead of the generic retry cap.
+            logger.info("job %s waiting for Plex: %s", job_id, exc)
+            # The handler may have left the session mid-transaction (e.g. a DB error
+            # surfaced first); fail() issues a SELECT, which would raise
+            # PendingRollbackError on a failed transaction instead of rescheduling.
+            await session.rollback()
+            # config.plex.resolve_max_attempts, threaded through via the exception
+            # rather than a run_once parameter — see _handle_intent in app.py.
+            max_attempts = getattr(exc, "max_attempts", MAX_ATTEMPTS)
+            await fail(session, job_id, str(exc), max_attempts)
+        except Exception as exc:  # noqa: BLE001 - the queue is the error boundary
+            logger.warning("job %s failed: %s", job_id, exc, exc_info=True)
+            await session.rollback()
+            await fail(session, job_id, f"{type(exc).__name__}: {exc}")
+        else:
+            await complete(session, job_id)
     return True
 
 
@@ -97,7 +120,9 @@ async def run_worker(
     re-checks instead of claiming, exactly as the health gate does, so a worker
     already mid-job finishes it and *then* idles -- in-flight work is never
     interrupted. Checked before ``is_healthy`` so a paused pool does not even
-    probe Plex.
+    probe Plex. Passed on to ``run_once``, which re-checks it after the claim
+    (this gate and that claim are several awaits apart) and counts the job as
+    active while it runs, so the mode can drain on it.
 
     ``is_healthy``, when given, gates claiming: while it returns False the
     worker sleeps and re-checks instead of claiming, so jobs stay ``pending``
@@ -123,7 +148,7 @@ async def run_worker(
             continue
         try:
             async with session_factory() as session:
-                did_work = await run_once(session, worker_id, handlers)
+                did_work = await run_once(session, worker_id, handlers, pause)
         except Exception:
             logger.exception("worker %s loop error", worker_id)
             did_work = False

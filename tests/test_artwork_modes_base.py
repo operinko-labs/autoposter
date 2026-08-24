@@ -1,3 +1,7 @@
+import asyncio
+
+import pytest
+
 from autoposter.artwork_modes.base import (
     SHARE_CHECK_MIN_ITEMS,
     ModeJob,
@@ -94,6 +98,41 @@ def test_paused_context_manager_resumes_even_on_error():
     except RuntimeError:
         pass
     assert pause.is_paused is False
+
+
+async def test_drain_returns_at_once_when_nothing_is_in_flight():
+    """The normal case, and the case of an application with no worker pool at
+    all: there is nothing to wait for, so the mode starts immediately."""
+    await asyncio.wait_for(WorkerPause().drain(), timeout=1)
+
+
+async def test_drain_waits_while_any_worker_is_mid_job():
+    """Counted, not a flag: the pool has several workers, and the fence must
+    not be treated as drained until the LAST of them leaves its handler."""
+    pause = WorkerPause()
+    with pause.running_job():
+        assert pause.active_jobs == 1
+        with pause.running_job():
+            assert pause.active_jobs == 2
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(pause.drain(), timeout=0.05)
+        # One of the two has left; the other is still working. A flag would
+        # have cleared here and let the mode start writing.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(pause.drain(), timeout=0.05)
+    assert pause.active_jobs == 0
+    await asyncio.wait_for(pause.drain(), timeout=1)
+
+
+async def test_a_job_that_raises_still_leaves_the_fence_drainable():
+    """The count is given back in a ``finally``: a handler that blows up must
+    not leave every later mode run waiting forever."""
+    pause = WorkerPause()
+    with pytest.raises(RuntimeError):
+        with pause.running_job():
+            raise RuntimeError("handler blew up")
+    assert pause.active_jobs == 0
+    await asyncio.wait_for(pause.drain(), timeout=1)
 
 
 # --- the ModeJob contract ----------------------------------------------------
