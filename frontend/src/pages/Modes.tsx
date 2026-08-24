@@ -302,8 +302,26 @@ export function Modes() {
     };
   }, []);
 
+  /** A filter change is a change to the request the gate's grant was for, so
+   * the grant does not survive it: arming and re-arming is cheap, an applied
+   * run against the wrong filters is not. The mode's stored result and error
+   * go with it, both for the same reason -- either would go on describing a
+   * request this mode no longer holds. */
   function setFilter(id: string, patch: ModeFilters) {
     setChosen((previous) => ({ ...previous, [id]: { ...previous[id], ...patch } }));
+    setArmed((previous) => (previous === id ? null : previous));
+    setResults((previous) => {
+      if (!(id in previous)) return previous;
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
+    setErrors((previous) => {
+      if (!(id in previous)) return previous;
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
   }
 
   /** The request body, built from what the operator actually chose.

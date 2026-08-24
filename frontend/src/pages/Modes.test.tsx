@@ -353,6 +353,36 @@ describe("the confirmation gate", () => {
       within(await card("Logo revert")).getByRole("button", { name: "Confirm apply" }),
     ).toBeInTheDocument();
   });
+
+  it("disarms the gate and clears the stale result when a filter changes", async () => {
+    const fetchMock = stubFetch(async () =>
+      json({ mode: "reset", status: "dry run", dry_run: true, items: 30 }),
+    );
+
+    await renderModes();
+    const reset = await card("Reset to Plex artwork");
+    fireEvent.change(within(reset).getByLabelText("Library"), { target: { value: "Movies" } });
+    fireEvent.click(within(reset).getByRole("button", { name: "Dry run" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(within(reset).getByText("30")).toBeInTheDocument();
+
+    fireEvent.click(within(reset).getByRole("button", { name: "Apply…" }));
+    expect(within(reset).getByRole("button", { name: "Confirm apply" })).toBeInTheDocument();
+
+    // Changing the filter the grant was for must revoke it: a change to what
+    // would actually be sent must not leave a live "Confirm apply" behind it.
+    fireEvent.change(within(reset).getByLabelText("Library"), { target: { value: "TV" } });
+
+    expect(within(reset).queryByRole("button", { name: "Confirm apply" })).toBeNull();
+    expect(within(reset).getByRole("button", { name: "Apply…" })).toBeInTheDocument();
+    // And the stale dry-run counts, taken against a filter that no longer
+    // applies, must go with it.
+    expect(within(reset).queryByRole("status")).toBeNull();
+
+    // The filter change itself fired no request -- only the dry run above
+    // went out after the initial filters load.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("what comes back", () => {
