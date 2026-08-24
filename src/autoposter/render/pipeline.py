@@ -524,6 +524,7 @@ async def render_artifact(
         # offloaded like the rest of this pipeline's blocking I/O so a hung
         # mount cannot stall the event loop.
         override = await asyncio.to_thread(manual_override_path, config, item, art_kind)
+        show_fallback = False
         if override is not None:
             base_sha = await asyncio.to_thread(_stage_override, override, working)
             source_url, provider_name, textless = str(override), "manual", None
@@ -541,6 +542,31 @@ async def render_artifact(
                     episode_number=item.episode_number,
                 ),
             )
+            if selection.candidate is None and art_kind == "season_poster":
+                # Kometa's effective behaviour: a season poster is classically
+                # the show's own poster with the season text applied -- which is
+                # exactly what compose_styled does below to whatever base image
+                # it is handed. So a season with no season-specific art anywhere
+                # is styled from the show's poster rather than left at no_art.
+                #
+                # A season's ResolvedItem already carries the SHOW's external ids
+                # (plex/client._RawMatch: identity is the season's, but the agent
+                # ids come from the containing show), so dropping the season and
+                # episode numbers is the whole difference between this request
+                # and the season one above -- and makes it the same request the
+                # show's own poster render issues, down to the language order.
+                selection = await select_artwork(
+                    providers,
+                    art_config_for(config, "poster").language_order,
+                    art.ArtRequest(
+                        art_kind=art.POSTER,
+                        is_movie=item.kind == "movie",
+                        tmdb_id=item.tmdb_id,
+                        tvdb_id=item.tvdb_id,
+                        imdb_id=item.imdb_id,
+                    ),
+                )
+                show_fallback = selection.candidate is not None
             if selection.candidate is None:
                 render.status = "no_art"
                 render.detail = f"no {art_kind} art on any provider"
@@ -637,7 +663,20 @@ async def render_artifact(
     render.base_sha256 = base_sha
     render.fingerprint = fingerprint
     render.status = "rendered"
-    render.detail = None
+    render.detail = (
+        "no season_poster art on any provider; styled the show's poster instead"
+        if show_fallback
+        else None
+    )
+    # Provenance the "unchanged" short-circuit above cannot blank out, unlike
+    # detail. Cleared again when the row stops being a fallback: the fingerprint
+    # includes the source URL, so season art appearing on a provider re-renders
+    # this row from the season's own art, and it must not go on claiming a
+    # fallback it no longer made.
+    if show_fallback:
+        render.source_mode = "show_fallback"
+    elif render.source_mode == "show_fallback":
+        render.source_mode = "generate"
     # A real render just happened, so the adoption no longer describes reality:
     # this row now has a source URL and a fingerprint that covers it.
     render.adopted = False
