@@ -3,8 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "../api/client";
 import type {
   CollectionPosterResponse,
+  CollectionPreviewResponse,
   CollectionSummary,
   CollectionsResponse,
+  DefinitionPreviewResult,
   ScheduledRun,
   ScheduledRunRequestResponse,
   Status,
@@ -163,6 +165,223 @@ function CollectionRow({ collection }: { collection: CollectionSummary }) {
         </tr>
       )}
     </>
+  );
+}
+
+/** No endpoint lists the config-defined collection definitions on their own --
+ * only `POST /api/collections/preview` (a real dry run against Plex) reports
+ * what they are. Adding one was out of scope for this touch (frontend-only),
+ * so "Preview all" -- a full, unfiltered preview -- doubles as the listing:
+ * it is also the only preview that reports the delete sweep, since the
+ * server runs the sweep only when nothing was filtered out. */
+const PREVIEW_ALL_KEY = "__all__";
+
+/** `(library, title)` identifies a definition, and a preview row, the same
+ * way the server's `managed_collections` table does. */
+function rowKey(row: { library: string; title: string }): string {
+  return `${row.library}::${row.title}`;
+}
+
+/** One definition's row: its last-known preview state, plus its own Preview
+ * button. `onPreview` re-runs the dry run for just this title -- the server
+ * skips the delete sweep for a title-filtered preview, which is why that
+ * button can never show a deletion the way "Preview all" can. */
+function DefinitionRow({
+  row,
+  busyKey,
+  error,
+  onPreview,
+}: {
+  row: DefinitionPreviewResult;
+  busyKey: string | null;
+  error: string | undefined;
+  onPreview: () => void;
+}) {
+  const key = rowKey(row);
+  const running = busyKey === key;
+  return (
+    <tr>
+      <td className="cell-title">{row.title}</td>
+      <td className="muted">{row.library}</td>
+      <td>
+        <div className="definition-status">
+          {row.failed ? (
+            <span className="pill pill-error">failed</span>
+          ) : (
+            row.skipped && <span className="pill pill-skipped">skipped</span>
+          )}
+          {/* The primary, load-bearing number -- what a real pass would add,
+              remove and delete. Unresolved sits apart (below) because it is
+              not a consequence of running this definition, it is a fact
+              about the source's ids this library does not own. */}
+          <span className="definition-counts muted">
+            {`+${row.adding} −${row.removing}`}
+            {row.deleting > 0 ? `, deleting ${row.deleting}` : ""}
+          </span>
+        </div>
+        {row.unresolved > 0 && (
+          <span className="muted definition-unresolved">
+            {`${row.unresolved} unresolved`}
+          </span>
+        )}
+      </td>
+      <td className="cell-wrap">
+        {/* The action strings are the authority the counts are not: a title
+            collision or a protected label leaves `adding` computed against a
+            collection nothing is about to touch, and only the action string
+            says so. Rendered as the substance of the cell, counts as the
+            aside beside it. */}
+        {row.actions.length === 0 ? (
+          <span className="muted">—</span>
+        ) : (
+          <ul className="definition-actions">
+            {row.actions.map((action, index) => (
+              <li key={index}>{action}</li>
+            ))}
+          </ul>
+        )}
+      </td>
+      <td>
+        <div className="row-actions">
+          <button type="button" disabled={busyKey !== null} onClick={onPreview}>
+            {running ? "Previewing…" : "Preview"}
+          </button>
+        </div>
+        {error !== undefined && (
+          <p className="row-error" role="alert">
+            {error}
+          </p>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+/** The config-defined collections and what the last preview said about each.
+ *
+ * There is no "list definitions" endpoint (see the module-level note on
+ * `PREVIEW_ALL_KEY`), so the panel starts empty and "Preview all" is both the
+ * listing and the first preview -- a real, Plex-touching dry run, so it is a
+ * deliberate click rather than something this page fires on mount, the same
+ * posture the Modes page takes towards every one of its dry runs. */
+function DefinitionsPanel() {
+  const [definitions, setDefinitions] = useState<DefinitionPreviewResult[] | null>(null);
+  const [definitionsError, setDefinitionsError] = useState<string | null>(null);
+  // One key for whichever preview is in flight -- `PREVIEW_ALL_KEY` or one
+  // row's own key -- so only one dry run runs at a time, the same reasoning
+  // Modes.tsx's `anyRunning` gate uses: a second preview competing with the
+  // first for the same Plex connection has nothing useful to offer.
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+
+  async function previewAll() {
+    setBusyKey(PREVIEW_ALL_KEY);
+    setDefinitionsError(null);
+    try {
+      const response = await apiFetch<CollectionPreviewResponse>("/api/collections/preview", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      if (live.current) setDefinitions(response.definitions);
+    } catch (caught) {
+      if (live.current) setDefinitionsError((caught as Error).message);
+    } finally {
+      if (live.current) setBusyKey(null);
+    }
+  }
+
+  async function previewOne(row: DefinitionPreviewResult) {
+    const key = rowKey(row);
+    setBusyKey(key);
+    setRowErrors((previous) => {
+      if (!(key in previous)) return previous;
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+    try {
+      const response = await apiFetch<CollectionPreviewResponse>("/api/collections/preview", {
+        method: "POST",
+        // Both filters, always -- an omitted title would fall through to
+        // this instance's "preview everything" branch server-side, which is
+        // exactly the wrong answer for a button that names one definition.
+        body: JSON.stringify({ library: row.library, title: row.title }),
+      });
+      const updated = response.definitions[0];
+      if (live.current && updated !== undefined) {
+        setDefinitions((previous) =>
+          (previous ?? []).map((entry) => (rowKey(entry) === key ? updated : entry)),
+        );
+      }
+    } catch (caught) {
+      if (live.current) {
+        setRowErrors((previous) => ({ ...previous, [key]: (caught as Error).message }));
+      }
+    } finally {
+      if (live.current) setBusyKey(null);
+    }
+  }
+
+  return (
+    <section className="panel definitions-panel">
+      <div className="definitions-header">
+        <h2>Definitions</h2>
+        <button type="button" disabled={busyKey !== null} onClick={() => void previewAll()}>
+          {busyKey === PREVIEW_ALL_KEY ? "Previewing…" : "Preview all"}
+        </button>
+      </div>
+      <p className="muted definitions-note">
+        Per-definition preview skips the delete sweep — deletions only show under
+        Preview all.
+      </p>
+      <p className="muted definitions-note">
+        Adding/removing counts are computed before the check that decides whether
+        a collision or a protected label leaves the collection untouched, so they
+        can overstate next to an action that says nothing was touched. Read the
+        actions, not the counts.
+      </p>
+
+      {definitionsError !== null && <p className="page-error">{definitionsError}</p>}
+
+      {definitions === null ? (
+        <p className="muted">No preview has been run yet.</p>
+      ) : definitions.length === 0 ? (
+        <p className="empty">No definitions are configured.</p>
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Library</th>
+                <th>State</th>
+                <th>Actions</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {definitions.map((row) => (
+                <DefinitionRow
+                  key={rowKey(row)}
+                  row={row}
+                  busyKey={busyKey}
+                  error={rowErrors[rowKey(row)]}
+                  onPreview={() => void previewOne(row)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -362,6 +581,8 @@ export function Collections() {
           </div>
         )}
       </div>
+
+      <DefinitionsPanel />
     </>
   );
 }

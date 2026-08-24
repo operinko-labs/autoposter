@@ -233,6 +233,41 @@ export interface CollectionPosterResponse {
   applies: string;
 }
 
+/** POST /api/collections/preview (src/autoposter/api/collections_builders.py).
+ * Both filters are optional; omitting both previews every definition in every
+ * configured library and additionally runs the delete sweep. Passing `title`
+ * (a per-definition preview) skips the sweep -- the server runs it only for
+ * an unfiltered library, so a filtered preview never reports a deletion. */
+export interface CollectionPreviewRequest {
+  library?: string;
+  title?: string;
+}
+
+/** One row of a preview's `definitions`: a config definition's dry-run
+ * outcome, a library that could not be previewed (`title: "(library)"`), or a
+ * delete-sweep candidate (`deleting` set, `title` the collection's own).
+ * `adding`/`removing` are computed against the collection Plex already has
+ * *before* the ownership/collision check that decides whether anything would
+ * really be touched -- so they can overstate next to an action string that
+ * says the collection would be left untouched (a title collision, or a
+ * protected label). The action strings are the authority; the counts are not. */
+export interface DefinitionPreviewResult {
+  title: string;
+  library: string;
+  adding: number;
+  removing: number;
+  deleting: number;
+  unresolved: number;
+  failed: boolean;
+  skipped: boolean;
+  actions: string[];
+}
+
+export interface CollectionPreviewResponse {
+  definitions: DefinitionPreviewResult[];
+  actions: string[];
+}
+
 /** The JSON outcome of POST /api/testing/sample when the title does not fit at
  * the minimum point size. The pipeline writes no artifact in that case, so the
  * endpoint returns this instead of image bytes -- a labelled outcome, not an

@@ -85,6 +85,7 @@ interface StubOptions {
   status?: Supplied;
   run?: (path: string, init?: RequestInit) => Promise<Response>;
   poster?: (path: string, init?: RequestInit) => Promise<Response> | Response;
+  preview?: (path: string, init?: RequestInit) => Promise<Response> | Response;
 }
 
 function stubFetch(options: StubOptions = {}) {
@@ -92,6 +93,10 @@ function stubFetch(options: StubOptions = {}) {
     if (path.startsWith("/api/scheduled-runs/") && options.run) return options.run(path, init);
     if (path.startsWith("/api/scheduled-runs/")) return json({ status: "requested", poll_seconds: 60 });
     if (path === "/api/status") return json(supply(options.status, status()));
+    if (path === "/api/collections/preview") {
+      if (options.preview) return options.preview(path, init);
+      return json({ definitions: [], actions: [] });
+    }
     if (path.startsWith("/api/collections/") && path.endsWith("/poster")) {
       if (options.poster) return options.poster(path, init);
       return json({ status: "installed", applies: "next reconcile" });
@@ -527,5 +532,210 @@ describe("Collections", () => {
     // An error, not a note: showing both would say the poster was refused and
     // installed at once.
     expect(document.querySelector(".poster-note")).toBeNull();
+  });
+
+  // --- the Definitions panel --------------------------------------------------
+  //
+  // No lightweight "list the config definitions" endpoint exists (see the task
+  // report), so the panel's only source of definitions is a preview response --
+  // "Preview all" (no filters) both seeds the list and reports the delete
+  // sweep; each row's own "Preview" button then re-previews just that title.
+
+  const PREVIEW_ALL = {
+    definitions: [
+      {
+        title: "Marvel Chronological",
+        library: "Movies",
+        adding: 3,
+        removing: 1,
+        deleting: 0,
+        unresolved: 2,
+        failed: false,
+        skipped: false,
+        actions: ["added 3, removed 1 in 'Marvel Chronological'"],
+      },
+      {
+        title: "Best Picture Winners",
+        library: "Movies",
+        adding: 0,
+        removing: 0,
+        deleting: 0,
+        unresolved: 0,
+        failed: true,
+        skipped: true,
+        actions: [],
+      },
+    ],
+    actions: ["added 3, removed 1 in 'Marvel Chronological'"],
+  };
+
+  function definitionsPanel(): HTMLElement {
+    const panel = document.querySelector<HTMLElement>(".definitions-panel");
+    if (panel === null) throw new Error("no definitions panel");
+    return panel;
+  }
+
+  it("lists definitions from a Preview all response inside the mobile table-scroll wrapper, failed ones visibly flagged", async () => {
+    stubFetch({ preview: () => json(PREVIEW_ALL) });
+
+    render(<Collections />);
+    fireEvent.click(await screen.findByRole("button", { name: "Preview all" }));
+
+    const panel = within(await waitFor(() => definitionsPanel()));
+    const marvelRow = (await panel.findByText("Marvel Chronological")).closest("tr")!;
+    expect(within(marvelRow).getByText("Movies")).toBeInTheDocument();
+    expect(within(marvelRow).getByText("+3 −1")).toBeInTheDocument();
+    expect(within(marvelRow).getByText(/2 unresolved/)).toBeInTheDocument();
+    expect(
+      within(marvelRow).getByText("added 3, removed 1 in 'Marvel Chronological'"),
+    ).toBeInTheDocument();
+
+    // The failed definition is flagged, not just silently present.
+    const failedRow = panel.getByText("Best Picture Winners").closest("tr")!;
+    expect(within(failedRow).getByText("failed")).toBeInTheDocument();
+
+    // Same mobile idiom as the managed-collections table above.
+    expect(panel.getByText("Marvel Chronological")).toHaveClass("cell-title");
+    expect(panel.getByText("Marvel Chronological").closest("table")?.parentElement).toHaveClass(
+      "table-scroll",
+    );
+  });
+
+  it("fires a per-definition preview with exactly {library, title} and renders its strings, counts and the no-sweep note", async () => {
+    const fetchMock = stubFetch({
+      preview: (_path, init) => {
+        const body = JSON.parse((init?.body as string) ?? "{}");
+        if (body.title !== undefined) {
+          return json({
+            definitions: [
+              {
+                title: "Marvel Chronological",
+                library: "Movies",
+                adding: 5,
+                removing: 0,
+                deleting: 0,
+                unresolved: 0,
+                failed: false,
+                skipped: false,
+                actions: ["added 5 in 'Marvel Chronological'"],
+              },
+            ],
+            actions: ["added 5 in 'Marvel Chronological'"],
+          });
+        }
+        return json(PREVIEW_ALL);
+      },
+    });
+
+    render(<Collections />);
+    fireEvent.click(await screen.findByRole("button", { name: "Preview all" }));
+    const panel = within(await waitFor(() => definitionsPanel()));
+    const marvelRow = (await panel.findByText("Marvel Chronological")).closest("tr")!;
+
+    // The mutation proof this test carries: the per-definition button must send
+    // exactly {library, title}. A body that dropped `title` would fall through
+    // to the "Preview all" branch above and this assertion would see the old
+    // (adding: 3) row instead of the new (adding: 5) one -- red.
+    fireEvent.click(within(marvelRow).getByRole("button", { name: "Preview" }));
+
+    await waitFor(() => expect(within(marvelRow).getByText("+5 −0")).toBeInTheDocument());
+    expect(
+      within(marvelRow).getByText("added 5 in 'Marvel Chronological'"),
+    ).toBeInTheDocument();
+
+    const previewCalls = fetchMock.mock.calls.filter(
+      ([path]) => path === "/api/collections/preview",
+    );
+    expect(previewCalls).toHaveLength(2);
+    expect(JSON.parse(previewCalls[1]![1]!.body as string)).toEqual({
+      library: "Movies",
+      title: "Marvel Chronological",
+    });
+
+    // The UI must not imply a per-definition preview ran the delete sweep.
+    expect(screen.getByText(/skips the delete sweep/)).toBeInTheDocument();
+  });
+
+  it("shows would-delete entries from Preview all", async () => {
+    stubFetch({
+      preview: () =>
+        json({
+          definitions: [
+            ...PREVIEW_ALL.definitions,
+            {
+              title: "Old One-Off",
+              library: "Movies",
+              adding: 0,
+              removing: 0,
+              deleting: 1,
+              unresolved: 0,
+              failed: false,
+              skipped: true,
+              actions: ["would delete 'Old One-Off': no definition builds it"],
+            },
+          ],
+          actions: [],
+        }),
+    });
+
+    render(<Collections />);
+    fireEvent.click(await screen.findByRole("button", { name: "Preview all" }));
+
+    const panel = within(await waitFor(() => definitionsPanel()));
+    const sweptRow = (await panel.findByText("Old One-Off")).closest("tr")!;
+    expect(within(sweptRow).getByText(/deleting 1/)).toBeInTheDocument();
+    expect(
+      within(sweptRow).getByText("would delete 'Old One-Off': no definition builds it"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the disabled-collections 503 as a clear state, not a crash", async () => {
+    stubFetch({
+      preview: () =>
+        json({ detail: "collections are disabled in the config for this instance" }, 503),
+    });
+
+    render(<Collections />);
+    fireEvent.click(await screen.findByRole("button", { name: "Preview all" }));
+
+    expect(
+      await screen.findByText("collections are disabled in the config for this instance"),
+    ).toBeInTheDocument();
+    // The panel itself is still there, with a working control -- not a crash.
+    expect(screen.getByRole("button", { name: "Preview all" })).toBeEnabled();
+  });
+
+  it("renders a per-library preview failure entry as a clear state, not a crash", async () => {
+    stubFetch({
+      preview: () =>
+        json({
+          definitions: [
+            {
+              title: "(library)",
+              library: "Shows",
+              adding: 0,
+              removing: 0,
+              deleting: 0,
+              unresolved: 0,
+              failed: true,
+              skipped: true,
+              actions: ["Shows: could not be previewed (RuntimeError)"],
+            },
+          ],
+          actions: ["Shows: could not be previewed (RuntimeError)"],
+        }),
+    });
+
+    render(<Collections />);
+    fireEvent.click(await screen.findByRole("button", { name: "Preview all" }));
+
+    const panel = within(await waitFor(() => definitionsPanel()));
+    const row = (await panel.findByText("(library)")).closest("tr")!;
+    expect(within(row).getByText("failed")).toBeInTheDocument();
+    expect(
+      within(row).getByText("Shows: could not be previewed (RuntimeError)"),
+    ).toBeInTheDocument();
+    // The rest of the page survived it.
+    expect(screen.getByRole("heading", { name: "Collections" })).toBeInTheDocument();
   });
 });
