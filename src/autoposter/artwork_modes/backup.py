@@ -14,6 +14,11 @@ touches the database. It therefore carries NO ``apply`` flag -- reading from
 Plex and writing to disk is not a destructive Plex operation, so the dry-run
 posture the Plex-writing modes share does not apply here.
 
+It does carry the refusal idiom twice over: the empty-table guard every mode
+runs, and a check that ``plex_backup_root`` already exists. That root is a
+mount, and a missing mount is the one failure this mode cannot detect any other
+way -- every write would simply succeed, into the container.
+
 **Fan-out: a single walk, not per-item jobs.** Backup is idempotent -- a rerun
 overwrites the same files at the same paths, so "resume after a failure" is just
 "run it again" and loses no work. A per-item fan-out would put thousands of jobs
@@ -126,12 +131,27 @@ class BackupMode:
         if empty is not None:
             return BackupResult(0, 0, 0, 0, refused=empty)
 
+        # The backup root is a MOUNT the deployment provides (deploy/README.md),
+        # not a directory this mode creates. Required to pre-exist rather than
+        # mkdir-ed, because an unmounted path is indistinguishable from a
+        # mounted one to ``_atomic_write``: every file would land in the
+        # container's own filesystem, filling the node's disk with a backup that
+        # reports success and disappears with the pod. Checked before anything
+        # is read from Plex -- a whole-library walk is not worth spending to
+        # discover the destination is not there.
+        root = Path(self._config.artwork_modes.plex_backup_root)
+        if not await asyncio.to_thread(root.is_dir):
+            return BackupResult(0, 0, 0, 0, refused=(
+                f"refused: the backup root {root} is not there; it is a mount "
+                "this deployment has to provide, and writing into an unmounted "
+                "container path would produce a backup nothing can restore "
+                "from -- change nothing"
+            ))
+
         base_url = self._config.plex.url
         # The manual_override_path trick: one naming function, re-rooted from the
         # live asset tree onto the backup tree by swapping assets_root only.
-        backup_config = self._config.model_copy(
-            update={"assets_root": Path(self._config.artwork_modes.plex_backup_root)}
-        )
+        backup_config = self._config.model_copy(update={"assets_root": root})
 
         rows = (
             await session.execute(

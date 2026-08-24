@@ -183,7 +183,11 @@ def _secrets() -> Secrets:
 
 @pytest.fixture
 def backup_root(tmp_path) -> Path:
-    return tmp_path / "plexbackup"
+    # Pre-created, because in a deployment it is a MOUNT: the backup mode
+    # refuses rather than mkdir-ing a tree into the container's filesystem.
+    root = tmp_path / "plexbackup"
+    root.mkdir()
+    return root
 
 
 @pytest.fixture

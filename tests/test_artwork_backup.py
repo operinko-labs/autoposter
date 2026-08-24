@@ -53,7 +53,11 @@ class FakePlexClient:
 
 @pytest.fixture
 def backup_root(tmp_path) -> Path:
-    return tmp_path / "plexbackup"
+    # Pre-created, because in a deployment it is a MOUNT: backup refuses rather
+    # than mkdir-ing a backup tree into the container's own filesystem.
+    root = tmp_path / "plexbackup"
+    root.mkdir()
+    return root
 
 
 @pytest.fixture
@@ -179,6 +183,29 @@ async def test_backup_refuses_an_empty_table(session, config, http_serving):
         "mode": "backup", "status": "refused", "reason": result.refused,
         "items": 0, "written": 0, "skipped": 0, "failed": 0,
     }
+
+
+async def test_backup_refuses_when_the_backup_root_is_not_mounted(
+    session, config, backup_root, http_serving
+):
+    """``plex_backup_root`` is a MOUNT the deployment provides, not a directory
+    this service creates. Without it every write would land in the container's
+    own filesystem -- a backup that fills the node's disk, reports success, and
+    disappears with the pod. So a missing root is refused before anything is
+    read from Plex."""
+    backup_root.rmdir()  # the fixture pre-creates it, as the mount would
+    await _add_item(session, rating_key="rk1")
+    plex = FakePlexClient({"rk1": FakeItem(thumb="/thumb")})
+
+    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+
+    assert result.refused is not None
+    assert str(backup_root) in result.refused
+    assert result.as_response()["status"] == "refused"
+    # Refused before the walk: nothing was read from Plex and nothing was
+    # created on disk.
+    assert plex.fetched == []
+    assert not backup_root.exists()
 
 
 async def test_backup_counts_a_partial_item_in_both_written_and_failed(

@@ -18,6 +18,26 @@ paths:
 These correspond to `assets_root`, `manual_assets_root` and `backup_root` in
 `autoposter.yaml`.
 
+One more mount, which Posterizarr and Kometa do not have and which this
+deployment has to add:
+
+- `/plexbackup`
+
+This is `artwork_modes.plex_backup_root` — where the Backup mode copies the
+artwork Plex is currently serving, and where Restore reads it back from. It is
+deliberately **not** `backup_root` (`/assetsbackup`), which holds relocated
+orphaned assets and is a different tree with a different lifetime.
+
+Size it for a full copy of the library's artwork: a poster and a background per
+movie and per show, a poster per season and per episode. Back it with real
+storage — the whole point of the mode is to hold the pre-badge artwork, so
+losing it loses the only way back.
+
+The Backup mode **refuses to run** when `/plexbackup` is not mounted, rather
+than creating the directory. Without that refusal every file would be written
+into the container's own filesystem: the run would report success, fill the
+node's disk, and the "backup" would disappear with the pod.
+
 The config file itself is read from the path in `AUTOPOSTER_CONFIG`, which
 the image sets to `/config/autoposter.yaml` — so mount `autoposter.yaml`
 (e.g. from a ConfigMap) at `/config/autoposter.yaml`. Mounting it anywhere
