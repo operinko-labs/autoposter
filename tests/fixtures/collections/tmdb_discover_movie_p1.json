@@ -1,0 +1,9 @@
+{
+  "page": 1,
+  "results": [
+    {"id": 11, "title": "Star Wars", "release_date": "1977-05-25"},
+    {"id": 1891, "title": "The Empire Strikes Back", "release_date": "1980-05-20"}
+  ],
+  "total_pages": 2,
+  "total_results": 4
+}

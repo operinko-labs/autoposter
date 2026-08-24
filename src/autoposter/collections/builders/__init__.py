@@ -57,6 +57,7 @@ from autoposter.collections.builders.tmdb import (
     TmdbListBuilder,
     TmdbNetworkBuilder,
 )
+from autoposter.collections.builders.tmdb_discover import TmdbDiscoverBuilder
 from autoposter.collections.builders.tvdb import (
     TvdbListBuilder,
     TvdbMovieBuilder,
@@ -86,6 +87,7 @@ register(TmdbCollectionBuilder())
 register(TmdbCompanyBuilder())
 register(TmdbNetworkBuilder())
 register(TmdbKeywordBuilder())
+register(TmdbDiscoverBuilder())
 register(MdblistListBuilder())
 register(TvdbListBuilder())
 register(TvdbMovieBuilder())

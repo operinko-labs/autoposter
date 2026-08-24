@@ -44,12 +44,15 @@ deprecated in favour of the discover filters, and there is no listing endpoint
 for a network at *all*, so discover is the only form that covers all three.
 One shape, one paging rule, and the filter name is the only thing that varies.
 """
+import logging
 from collections.abc import Mapping
 
 import httpx
 
 from autoposter.providers.cache import ProviderCache
 from autoposter.providers.fetch import fetch_json
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.themoviedb.org/3"
 
@@ -198,6 +201,22 @@ class TmdbListClient:
             # row, not a silent change to what a filtered list returns.
             if isinstance(item_count, int) and len(ids) >= item_count:
                 break
+        else:
+            # Every page spent and no stop condition met, which is the one exit
+            # from this loop that hands back a *truncated* answer. It used to be
+            # silent, and a silently short collection looks exactly like a
+            # correct one -- `imdb_lists._fetch` says so out loud at its own cap
+            # and this is the same read. Generic discover is what forced it:
+            # `vote_average.gte: 5` matches tens of thousands of titles, so the
+            # cap is reachable by an ordinary definition rather than only by a
+            # runaway upstream. It stays a warning rather than a raise because
+            # the ids collected are real members in TMDb's order -- the same
+            # judgement `imdb_lists` made.
+            logger.warning(
+                "%s: stopped at the %d-page cap with %d id(s); there may be more that "
+                "this pass will not see",
+                subject, self._max_pages, len(ids),
+            )
         return ids
 
     async def chart(
@@ -256,9 +275,20 @@ class TmdbListClient:
         return _ids(parts, subject)
 
     async def discover(self, media_type: str, filters: Mapping[str, object]) -> list[str]:
-        """``/discover/{movie,tv}`` under one filter -- a company, a network or
-        a keyword. See the module docstring for why this rather than the
-        deprecated per-entity listing endpoints."""
+        """``/discover/{movie,tv}`` under an arbitrary filter map.
+
+        Two callers with one shape. The narrow by-id builders send a single
+        entry -- a company, a network, a keyword -- because there is no listing
+        endpoint for those any more (see the module docstring); ``tmdb_discover``
+        sends whatever the operator wrote, already validated and already named
+        in TMDb's own vocabulary by
+        ``collections.builders.tmdb_discover.discover_filters``. Nothing here
+        inspects a key, so the general case needed no plumbing that the narrow
+        one had not already paid for: every parameter TMDb takes, including
+        ``sort_by``, ``region``, ``language`` and ``watch_region``, is just an
+        entry in ``filters``. Deciding which of them mean anything for this
+        media type is the builder's job and happens before this call.
+        """
         path = f"/discover/{media_type}"
         described = ", ".join(f"{name}={value}" for name, value in sorted(filters.items()))
         return await self._paged(
