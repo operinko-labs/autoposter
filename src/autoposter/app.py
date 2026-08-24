@@ -211,9 +211,17 @@ def create_app(
         # inside a registered job -- its cadence included -- comes off the
         # holder per use and is live.
         holder = app.state.config_holder
+        # How anything that needs a *raw* PlexServer gets one: the collections
+        # engine walks library sections and their collections, which is
+        # plexapi surface PlexClient (app.state.plex) deliberately does not
+        # expose. Published rather than kept local to the scheduler branch
+        # below because the collections preview endpoint needs the same thing
+        # on a replica running with the scheduler off. Connecting blocks, so
+        # every caller runs it through asyncio.to_thread.
+        server_factory = functools.partial(PlexServer, config.plex.url, secrets.plex_token)
+        app.state.plex_server_factory = server_factory
         scheduler_jobs = []
         if config.scheduler.enabled:
-            server_factory = functools.partial(PlexServer, config.plex.url, secrets.plex_token)
             if config.collections.enabled:
                 scheduler_jobs.append(make_collections_job(holder, server_factory, http))
             scheduler_jobs.append(make_drift_job(holder))
@@ -329,6 +337,11 @@ def create_app(
     # Built by the lifespan from plex_factory, once it holds the effective
     # config -- see the top of the lifespan and main.build's plex_client.
     app.state.plex = None
+    # A zero-argument callable returning a connected PlexServer, set by the
+    # lifespan's background branch. None here for the same reason plex is: an
+    # app without that branch -- every test app -- has no Plex connection, and
+    # a handler that needs one answers 503 rather than making its own.
+    app.state.plex_server_factory = None
     # Set by the lifespan too. Handlers that need to talk to Plex check for
     # None rather than making a client of their own, so there stays exactly
     # one AsyncClient to close on shutdown.

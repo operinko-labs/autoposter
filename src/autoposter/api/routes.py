@@ -20,6 +20,7 @@ from autoposter.artwork_modes.reset import ResetMode
 from autoposter.artwork_modes.restore import RestoreMode
 from autoposter.artwork_modes.revert import RevertMode
 from autoposter.api.candidates import router as candidates_router
+from autoposter.api.collections_builders import router as collections_builders_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.logs import router as logs_router
 from autoposter.api.manual import router as manual_router
@@ -154,6 +155,11 @@ router.include_router(manual_router)
 # generated canvas and return the bytes inline. Its own module because it drives
 # the pipeline's compositing seam directly and writes nothing anywhere.
 router.include_router(testing_router)
+
+# The collections preview: the builder engine run as a dry run, reporting what
+# a pass would do. Its own module for the reason testing mode is -- it drives
+# an engine directly and writes nothing.
+router.include_router(collections_builders_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
