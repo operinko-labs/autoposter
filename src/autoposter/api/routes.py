@@ -14,6 +14,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from autoposter.api.artwork import router as artwork_router
+from autoposter.artwork_modes.backup import BackupMode
+from autoposter.artwork_modes.restore import RestoreMode
 from autoposter.api.candidates import router as candidates_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.logs import router as logs_router
@@ -817,6 +819,90 @@ async def run_full_pass(
         )
     )
     return {"total": total, "queued": queued, "skipped": skipped}
+
+
+class RestoreModeBody(BaseModel):
+    """Filters and the apply switch for a restore run.
+
+    ``type`` is the item kind (movie|show|season|episode), mapping onto the
+    ``/api/items`` filter idiom; ``apply`` is optional so an omitted value falls
+    back to ``config.artwork_modes.restore_apply`` -- the dry-run-by-default
+    posture -- rather than being forced true by a missing field.
+    """
+
+    type: str | None = None
+    library: str | None = None
+    item_id: int | None = None
+    apply: bool | None = None
+
+
+def _require_plex(request: Request) -> tuple:
+    """The Plex client and http client, or a 503 if this process has neither.
+
+    Both come from the lifespan's ``run_background`` branch, so a replica
+    running without the background services -- or a test app -- has them unset.
+    The artwork modes talk to Plex, so there is nothing to do without them; the
+    503 mirrors ``live_artwork``'s own answer to the same condition.
+    """
+    plex = request.app.state.plex
+    http = request.app.state.http
+    if plex is None or http is None:
+        raise HTTPException(status_code=503, detail="this instance is not connected to Plex")
+    return plex, http
+
+
+@router.post("/artwork-modes/backup")
+async def run_artwork_backup(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Copy Plex's current artwork into the backup tree (roadmap row 76).
+
+    Read-only w.r.t. Plex and the database: it reads what Plex is serving and
+    writes a Kometa-structured tree under ``plex_backup_root``, so there is no
+    dry-run to run and no worker pause to raise -- nothing here writes to Plex.
+    The response reports the per-item tally the walk produced.
+    """
+    plex, http = _require_plex(request)
+    config = request.app.state.config
+    headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
+    mode = BackupMode(config, plex, http, headers)
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        result = await mode.run(session)
+    return result.as_response()
+
+
+@router.post("/artwork-modes/restore")
+async def run_artwork_restore(
+    body: RestoreModeBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Push the backup tree back to Plex, filtered (roadmap row 77).
+
+    Dry-run by default: with ``apply`` false (or omitted, falling back to
+    ``config.artwork_modes.restore_apply``) it reports what it WOULD push and
+    pushes nothing. An applied run pauses the worker pool for its duration so
+    the live pipeline cannot upload to the same items underneath it, resuming in
+    a ``finally`` (``WorkerPause.paused``); the response names dry-run vs applied
+    and the counts either way.
+    """
+    plex, http = _require_plex(request)
+    config = request.app.state.config
+    headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
+    apply = body.apply if body.apply is not None else config.artwork_modes.restore_apply
+    mode = RestoreMode(
+        config, plex, http, headers, apply=apply,
+        kind=body.type, library=body.library, item_id=body.item_id,
+    )
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        if apply:
+            # Only an applied run writes to Plex, so only it needs the fence; a
+            # dry-run touches nothing Plex and should not idle the pipeline.
+            with request.app.state.worker_pause.paused():
+                result = await mode.run(session)
+        else:
+            result = await mode.run(session)
+    return result.as_response()
 
 
 def _host_only(url: str) -> str:

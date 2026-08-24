@@ -1,0 +1,183 @@
+"""Restore mode (Phase 7b, roadmap row 77): push the backup tree back to Plex.
+
+The inverse of ``backup``: reads the Kometa-structured tree rooted at
+``config.artwork_modes.plex_backup_root`` and uploads each present file back to
+its Plex item via ``upload_artwork``. Filtered the way the library browser is --
+by ``type`` (kind), ``library`` and ``item_id`` -- so an operator can restore
+one item, one library or everything.
+
+Dry-run by default (the ``cleanup.apply`` / ``badges.upload_to_plex`` posture):
+with ``apply`` false it reports what it WOULD push and pushes nothing; with
+``apply`` true it pushes. The shared plausibility cap refuses an implausibly
+large operation with the real numbers -- a filter or a mount gone wrong -- and
+the empty-table guard refuses against a ``media_items`` emptied by an unfinished
+restore.
+
+**The worker pool is paused around the push, not here.** Restore uploads to the
+same Plex items the live render pipeline does, so the trigger endpoint raises
+the ``WorkerPause`` fence for the duration (``routes.py``): a worker already
+mid-job finishes it and then idles, so the two never race on one item. The mode
+itself never calls ``.refresh()`` -- a metadata refresh would have Plex re-pull
+from its agents and overwrite the very art being restored (the project-wide AST
+guard forbids it).
+"""
+
+import asyncio
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from autoposter.artwork_modes.base import refuse_if_empty, refuse_if_implausible
+from autoposter.db.models import MediaItem
+from autoposter.plex.artwork import upload_artwork
+from autoposter.render import naming
+from autoposter.render.pipeline import ART_KINDS_FOR
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RestoreResult:
+    """What a restore run did (or would do), or a refusal.
+
+    ``items`` is the candidate set after the filters; ``items_with_backup`` is
+    how many of those have at least one file in the backup tree -- the items
+    that would change, which the plausibility cap is measured against.
+    ``files`` is the total number of backup files present to push. On an applied
+    run ``pushed`` and ``failed`` split those files by outcome.
+    """
+
+    items: int
+    items_with_backup: int
+    files: int
+    pushed: int
+    failed: int
+    dry_run: bool
+    refused: str | None = None
+
+    def as_response(self) -> dict:
+        if self.refused is not None:
+            return {"mode": "restore", "status": "refused", "reason": self.refused}
+        body = {
+            "mode": "restore",
+            "dry_run": self.dry_run,
+            "items": self.items,
+            "items_with_backup": self.items_with_backup,
+            "files": self.files,
+        }
+        if not self.dry_run:
+            body["pushed"] = self.pushed
+            body["failed"] = self.failed
+        return body
+
+
+class RestoreMode:
+    """Push the backup tree back to Plex, filtered. See the module docstring."""
+
+    def __init__(
+        self, config, plex, http, headers: dict, *, apply: bool,
+        kind: str | None = None, library: str | None = None, item_id: int | None = None,
+    ) -> None:
+        self._config = config
+        self._plex = plex
+        self._http = http
+        self._headers = headers
+        self._apply = apply
+        self._kind = kind
+        self._library = library
+        self._item_id = item_id
+
+    async def run(self, session: AsyncSession) -> RestoreResult:
+        empty = await refuse_if_empty(session, MediaItem, table_name="media_items")
+        if empty is not None:
+            return RestoreResult(0, 0, 0, 0, 0, self._apply, refused=empty)
+
+        conditions = []
+        if self._kind is not None:
+            conditions.append(MediaItem.kind == self._kind)
+        if self._library is not None:
+            conditions.append(MediaItem.library == self._library)
+        if self._item_id is not None:
+            conditions.append(MediaItem.id == self._item_id)
+
+        rows = (
+            await session.execute(
+                select(
+                    MediaItem.id,
+                    MediaItem.rating_key,
+                    MediaItem.library,
+                    MediaItem.kind,
+                    MediaItem.root_folder,
+                    MediaItem.season_number,
+                    MediaItem.episode_number,
+                )
+                .where(*conditions)
+                .order_by(MediaItem.id)
+            )
+        ).all()
+        total = len(rows)
+
+        backup_config = self._config.model_copy(
+            update={"assets_root": Path(self._config.artwork_modes.plex_backup_root)}
+        )
+
+        # Which backup files exist for the filtered set, grouped by item so an
+        # applied run fetches each Plex object once. Order preserved (by id).
+        planned: dict[str, list[tuple[str, Path]]] = {}
+        items_with_backup = 0
+        files = 0
+        for row in rows:
+            if row.root_folder is None:
+                continue
+            present: list[tuple[str, Path]] = []
+            for art_kind in ART_KINDS_FOR[row.kind]:
+                path = naming.asset_path(
+                    backup_config, row.library, row.root_folder, art_kind,
+                    row.season_number, row.episode_number,
+                )
+                if await asyncio.to_thread(path.is_file):
+                    present.append((art_kind, path))
+            if present:
+                planned[row.rating_key] = present
+                items_with_backup += 1
+                files += len(present)
+
+        refusal = refuse_if_implausible(
+            items_with_backup, total,
+            self._config.artwork_modes.max_changes,
+            self._config.artwork_modes.max_change_share,
+        )
+        if refusal is not None:
+            return RestoreResult(
+                total, items_with_backup, files, 0, 0, self._apply, refused=refusal
+            )
+
+        if not self._apply:
+            return RestoreResult(total, items_with_backup, files, 0, 0, dry_run=True)
+
+        pushed = failed = 0
+        for rating_key, entries in planned.items():
+            try:
+                plex_item = await self._plex.fetch_item(rating_key)
+            except Exception:  # noqa: BLE001 - one bad item must not abort the run
+                logger.warning(
+                    "restore: could not fetch Plex item %s", rating_key, exc_info=True
+                )
+                failed += len(entries)
+                continue
+            for art_kind, path in entries:
+                try:
+                    data = await asyncio.to_thread(path.read_bytes)
+                    await asyncio.to_thread(upload_artwork, plex_item, data, art_kind)
+                    pushed += 1
+                except Exception:  # noqa: BLE001 - see above
+                    logger.warning(
+                        "restore: could not push %s for %s",
+                        art_kind, rating_key, exc_info=True,
+                    )
+                    failed += 1
+
+        return RestoreResult(total, items_with_backup, files, pushed, failed, dry_run=False)
