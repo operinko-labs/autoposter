@@ -200,9 +200,15 @@ export function Jobs() {
                       </td>
                       <td>
                         <div className="row-actions">
+                          {job.cancel_requested && (
+                            // Read from the row itself, not the client-only
+                            // message: a page reload still shows a cancel that
+                            // is pending, rather than losing that state.
+                            <span className="jobs-cancelling">cancelling…</span>
+                          )}
                           <button
                             type="button"
-                            disabled={busyId === job.id}
+                            disabled={busyId === job.id || job.cancel_requested}
                             onClick={() => void cancel(job)}
                           >
                             Cancel

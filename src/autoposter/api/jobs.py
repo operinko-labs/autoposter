@@ -145,6 +145,7 @@ async def list_jobs(
                 "run_in_seconds": round(run_in_seconds),
                 "last_error": job.last_error,
                 "created_at": job.created_at,
+                "cancel_requested": job.cancel_requested,
             }
         )
     return {"jobs": jobs, "total": total}

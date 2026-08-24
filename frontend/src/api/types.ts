@@ -116,6 +116,11 @@ export interface QueuedJob {
   run_in_seconds: number;
   last_error: string | null;
   created_at: string | null;
+  /** Set once a running job's cancel has been requested, and persists across
+   * reloads -- unlike the client-only note the cancel click shows, this is
+   * read from the row itself, so an operator who reloads mid-attempt still
+   * sees the pending cancel instead of losing that state. */
+  cancel_requested: boolean;
 }
 
 export interface QueuedJobsResponse {

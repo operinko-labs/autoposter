@@ -172,6 +172,13 @@ async def fail(
     cancellation at the caller instead would have to be written twice and would
     let the Plex-wait path keep retrying for another hour.
     """
+    # Read without FOR UPDATE, unlike cancel_job's own read of this row: a
+    # cancel that commits between this SELECT and the UPDATE below is missed
+    # here, so this failure reschedules the job instead of dismissing it. That
+    # is benign, not a bug to close -- cancel_requested is still True on the
+    # row afterwards, so the job's *next* failure sees it and dismisses the job
+    # there. The race costs the cancel one extra attempt; it never loses the
+    # cancel. Locking here was reviewed and judged not worth it for that.
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     job.last_error = error
     job.claimed_by = None

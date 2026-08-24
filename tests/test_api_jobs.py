@@ -231,6 +231,27 @@ async def test_a_row_carries_its_state_error_and_creation_time(client, auth_head
     assert job["created_at"] is not None
 
 
+async def test_a_pending_cancel_on_a_running_job_is_exposed(client, auth_headers, session):
+    """The flag is client-only until it's in the list response: without it, an
+    operator who reloads mid-attempt loses the fact that a cancel is already
+    pending on this row and has no way to tell it apart from any other running
+    job."""
+    job_id = await _make_job(session, state="running")
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    job.cancel_requested = True
+    await session.commit()
+
+    listed = (await client.get("/api/jobs", headers=auth_headers)).json()["jobs"][0]
+    assert listed["cancel_requested"] is True
+
+
+async def test_an_ordinary_job_reports_no_pending_cancel(client, auth_headers, session):
+    await _make_job(session)
+
+    job = (await client.get("/api/jobs", headers=auth_headers)).json()["jobs"][0]
+    assert job["cancel_requested"] is False
+
+
 # --- POST /api/jobs/{id}/cancel ---
 
 

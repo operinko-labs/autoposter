@@ -40,3 +40,12 @@
 .jobs-message-error {
   color: var(--error);
 }
+
+/* The persisted cancel-pending flag, next to the button it disables. Its own
+ * class rather than .jobs-message: that one is the last cancel's outcome for
+ * this browser tab, this is what the row itself says on any page load. */
+.jobs-cancelling {
+  color: var(--warn);
+  font-size: 12px;
+  white-space: nowrap;
+}

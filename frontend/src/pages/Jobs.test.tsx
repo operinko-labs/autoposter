@@ -161,6 +161,20 @@ describe("Jobs", () => {
     expect(screen.getByText("Andor")).toBeInTheDocument();
   });
 
+  it("shows a persisted cancel as a badge and disables the button", async () => {
+    // Not the client-only note from a cancel click -- this comes back from
+    // the list itself, which is what a reload has to go on.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(list({ ...RUNNING, cancel_requested: true })),
+    );
+
+    render(<Jobs />);
+
+    expect(await screen.findByText("cancelling…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  });
+
   it("renders a refused cancel as that row's error", async () => {
     const fetchMock = vi
       .fn()
