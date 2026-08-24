@@ -34,10 +34,29 @@ const GROUPS: { key: GroupKey; title: string; blurb: string }[] = [
  * Both sides are always rendered in full: an operator fixing a mismatch by
  * hand needs the ids that agree as much as the one that does not, because the
  * agreeing id is usually what identifies which record is the wrong one.
+ *
+ * `side` is which of the two `no_ids_on_*` markers in `differing` belongs to
+ * this side's empty case: a matched pair where this side has no ids at all is
+ * exactly the mismatch, not the ordinary "nothing to show" of an arr_only or
+ * plex_only row's absent counterpart, and reads that way rather than as a
+ * plain dash.
  */
-function Ids({ ids, differing }: { ids: Record<string, string>; differing: string[] }) {
+function Ids({
+  ids,
+  differing,
+  side,
+}: {
+  ids: Record<string, string>;
+  differing: string[];
+  side: "plex" | "arr";
+}) {
   const agents = Object.keys(ids);
-  if (agents.length === 0) return <span className="muted">—</span>;
+  if (agents.length === 0) {
+    if (differing.includes(`no_ids_on_${side}`)) {
+      return <span className="mismatch-id differs">no ids</span>;
+    }
+    return <span className="muted">—</span>;
+  }
   return (
     <span className="mismatch-ids">
       {agents.map((agent) => (
@@ -73,10 +92,10 @@ function Row({ row }: { row: IdMismatchRow }) {
       </td>
       <td className="mono cell-wrap">{row.path}</td>
       <td>
-        <Ids ids={row.plex_ids} differing={row.differing} />
+        <Ids ids={row.plex_ids} differing={row.differing} side="plex" />
       </td>
       <td>
-        <Ids ids={row.arr_ids} differing={row.differing} />
+        <Ids ids={row.arr_ids} differing={row.differing} side="arr" />
       </td>
       <td className="muted mono cell-time">{row.rating_key ?? "—"}</td>
     </tr>
@@ -144,10 +163,24 @@ export function Mismatches() {
             key.
           </p>
         )}
+        {result !== null && Object.keys(result.refused).length > 0 && (
+          <p className="mismatch-note">
+            Refused:{" "}
+            {Object.entries(result.refused)
+              .map(([service, reason]) => `${service} — ${reason}`)
+              .join("; ")}
+          </p>
+        )}
         {result !== null && result.unmapped > 0 && (
           <p className="mismatch-note">
             {result.unmapped} Plex item{result.unmapped === 1 ? "" : "s"} sit outside the
             configured root and were not compared.
+          </p>
+        )}
+        {result !== null && result.arr_unmapped > 0 && (
+          <p className="mismatch-note">
+            {result.arr_unmapped} Radarr/Sonarr entr{result.arr_unmapped === 1 ? "y has" : "ies have"}{" "}
+            no path on disk and could not be compared.
           </p>
         )}
       </div>

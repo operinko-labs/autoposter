@@ -103,13 +103,20 @@ async def wire(app):
     """Wire ``app.state.plex``/``app.state.http`` the way the lifespan would.
 
     ``radarr``/``sonarr`` are the listings each service answers with, empty by
-    default. Anything else -- another endpoint, another host -- fails the test
-    rather than being answered: this handler must not quietly stand in for a
-    request the endpoint had no business making.
+    default. ``radarr_roots``/``sonarr_roots`` are what ``/api/v3/rootfolder``
+    answers with -- the root-folder sanity guard calls it before anything else,
+    so it defaults to overlapping the fixture's configured ``arr_path`` for
+    each service, and only tests of that guard itself override it. Anything
+    else -- another endpoint, another host -- fails the test rather than being
+    answered: this handler must not quietly stand in for a request the
+    endpoint had no business making.
     """
     clients = []
 
-    def install(*, movies=(), shows=(), radarr=(), sonarr=()):
+    def install(
+        *, movies=(), shows=(), radarr=(), sonarr=(),
+        radarr_roots=("/mnt/media/Movies",), sonarr_roots=("/mnt/media/TV",),
+    ):
         seen = []
 
         def handler(request):
@@ -119,6 +126,10 @@ async def wire(app):
                 return httpx.Response(200, json=list(radarr))
             if request.url.path == "/api/v3/series" and host == "sonarr.example":
                 return httpx.Response(200, json=list(sonarr))
+            if request.url.path == "/api/v3/rootfolder" and host == "radarr.example":
+                return httpx.Response(200, json=[{"path": p} for p in radarr_roots])
+            if request.url.path == "/api/v3/rootfolder" and host == "sonarr.example":
+                return httpx.Response(200, json=[{"path": p} for p in sonarr_roots])
             raise AssertionError(f"unexpected request {request.method} {request.url}")
 
         http = AsyncClient(transport=httpx.MockTransport(handler))
@@ -242,6 +253,54 @@ async def test_a_series_pair_compares_tvdb_tmdb_and_imdb(client, auth_headers, w
     assert row["differing"] == ["tmdb", "imdb"]
 
 
+async def test_a_matched_pair_where_plex_has_no_ids_is_reported_as_mismatched(
+    client, auth_headers, wire
+):
+    """The whole point, restated: a path-matched pair where Plex's agent found
+    *nothing* -- no tmdb, no imdb -- disagrees about every id there is to
+    disagree about, but `_differing` only compares ids both sides hold, so an
+    empty side never disagrees. Without this, the pair lands in `matched` and
+    is never reported anywhere -- yet "Plex has no ids for this item" is
+    exactly the mismatch symptom this view exists to surface."""
+    wire(
+        movies=[movie()],  # no guid kwargs at all -- an agent that matched nothing
+        radarr=[{
+            "title": "Dune", "path": "/mnt/media/Movies/Dune (2021)",
+            "tmdbId": 438631, "imdbId": "tt1160419",
+        }],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert body["counts"]["mismatched"] == 1
+    assert body["counts"]["arr_only"] == 0
+    assert body["counts"]["plex_only"] == 0
+    row = body["mismatched"][0]
+    assert row["plex_ids"] == {}
+    assert row["arr_ids"] == {"tmdb": "438631", "imdb": "tt1160419"}
+    assert row["differing"] == ["no_ids_on_plex"]
+
+
+async def test_a_matched_pair_where_the_arr_entry_has_no_ids_is_reported_as_mismatched(
+    client, auth_headers, wire
+):
+    """The mirror case: a freshly-added Radarr entry with no external id yet,
+    matched by path to a Plex item that has one. Same invisibility risk, same
+    fix, the other direction."""
+    wire(
+        movies=[movie(tmdb="438631")],
+        radarr=[{"title": "Dune", "path": "/mnt/media/Movies/Dune (2021)"}],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert body["counts"]["mismatched"] == 1
+    row = body["mismatched"][0]
+    assert row["arr_ids"] == {}
+    assert row["plex_ids"] == {"tmdb": "438631"}
+    assert row["differing"] == ["no_ids_on_arr"]
+
+
 # --- the two unmatched groups ------------------------------------------------
 
 
@@ -288,6 +347,28 @@ async def test_a_plex_item_with_no_arr_entry_is_plex_only(client, auth_headers, 
     assert row["path"] == "/mnt/media/Movies/Sinners (2025)"
     assert row["plex_ids"]["tmdb"] == "1233413"
     assert row["arr_ids"] == {}
+
+
+async def test_an_arr_entry_with_no_path_is_counted_not_dropped(client, auth_headers, wire):
+    """A Radarr/Sonarr entry with a falsy ``path`` cannot be paired with
+    anything on disk, so it cannot be reported in any of the three groups --
+    but it must not simply vanish from the totals either, the same principle
+    that keeps a Plex item outside the configured root out of ``plex_only``
+    while still landing in ``unmapped`` rather than nowhere at all."""
+    wire(
+        movies=[movie(tmdb="438631")],
+        radarr=[
+            {"title": "Dune", "path": "/mnt/media/Movies/Dune (2021)", "tmdbId": 438631},
+            {"title": "No Folder Yet", "path": "", "tmdbId": 999999},
+        ],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert body["arr_unmapped"] == 1
+    # The pathed entry is unaffected -- it still matches normally.
+    assert body["counts"]["mismatched"] == 0
+    assert body["counts"]["arr_only"] == 0
 
 
 async def test_a_plex_item_outside_the_configured_root_is_not_reported(
@@ -360,6 +441,52 @@ async def test_a_service_that_does_not_answer_is_a_502_naming_it(
 
     assert response.status_code == 502
     assert "radarr" in response.json()["detail"]
+
+
+# --- an arr instance that is not this library's ------------------------------
+
+
+async def test_an_arr_instance_managing_a_different_tree_is_refused(
+    client, auth_headers, wire
+):
+    """Root folders that share no tree with the configured arr path mean this
+    instance is not the one the mapping was configured for -- the same guard
+    ``sync_section`` runs before ever comparing anything. Without it, every
+    item in the library would be reported twice over: once as arr_only,
+    because this (wrong) instance has never heard of any of it, and once as
+    plex_only for the same reason, drowning any real mismatch in noise that
+    is actually just a bad base_url or the wrong instance."""
+    wire(
+        movies=[movie(tmdb="438631")],
+        radarr=[{"title": "Dune", "path": "/mnt/media/Movies/Dune (2021)", "tmdbId": 438631}],
+        # Miscased -- case-sensitive matching means this shares no tree with
+        # the configured /mnt/media/Movies.
+        radarr_roots=["/mnt/media/MOVIES"],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert "radarr" in body["refused"]
+    assert "/mnt/media/Movies" in body["refused"]["radarr"]
+    assert body["counts"]["mismatched"] == 0
+    assert body["counts"]["arr_only"] == 0
+    assert body["counts"]["plex_only"] == 0
+    assert body["total"] == 0
+
+
+async def test_an_arr_instance_that_overlaps_is_not_refused(client, auth_headers, wire):
+    """A root folder that is a parent or child of the configured arr path --
+    not only an exact match -- still counts as the same tree."""
+    wire(
+        movies=[movie(tmdb="438631")],
+        radarr=[{"title": "Dune", "path": "/mnt/media/Movies/Dune (2021)", "tmdbId": 841}],
+        radarr_roots=["/mnt/media"],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert body["refused"] == {}
+    assert body["counts"]["mismatched"] == 1
 
 
 # --- what must never be in the response --------------------------------------

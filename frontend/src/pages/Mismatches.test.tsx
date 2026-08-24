@@ -52,7 +52,9 @@ function body(overrides: Record<string, unknown> = {}) {
     total: 0,
     limit: 500,
     skipped: [],
+    refused: {},
     unmapped: 0,
+    arr_unmapped: 0,
     ...overrides,
   };
   return new Response(JSON.stringify(base), {
@@ -135,6 +137,48 @@ describe("Mismatches", () => {
     const agreeing = screen.getAllByText("tt1160419");
     expect(agreeing).toHaveLength(2);
     for (const chip of agreeing) expect(chip.parentElement).not.toHaveClass("differs");
+  });
+
+  it("marks a matched pair with no ids on one side as a mismatch, not a blank", async () => {
+    // A path-matched pair where Plex found no ids at all still lands in
+    // `mismatched`, with a marker in `differing` rather than a per-agent
+    // disagreement -- the empty side must not read as the plain "—" an
+    // arr_only/plex_only row's genuinely absent counterpart uses.
+    const noIdsOnPlex = { ...MISMATCHED, plex_ids: {}, differing: ["no_ids_on_plex"] };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        body({
+          mismatched: [noIdsOnPlex],
+          counts: { mismatched: 1, arr_only: 0, plex_only: 0 },
+          total: 1,
+        }),
+      ),
+    );
+
+    render(<Mismatches />);
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+
+    const marker = await screen.findByText("no ids");
+    expect(marker).toHaveClass("differs");
+    // The arr side still renders its real ids normally, unmarked.
+    expect(screen.getByText("841").parentElement).not.toHaveClass("differs");
+  });
+
+  it("names a service refused for managing a different tree", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        body({ refused: { radarr: "configured arr path shares no tree with any root folder" } }),
+      ),
+    );
+
+    render(<Mismatches />);
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+
+    // Otherwise an empty result reads as "Radarr is clean" when it was refused
+    // rather than actually compared.
+    expect(await screen.findByText(/Refused: radarr/)).toBeInTheDocument();
   });
 
   it("shows an empty state when the scan found nothing", async () => {

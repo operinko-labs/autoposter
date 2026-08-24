@@ -362,7 +362,22 @@ class PlexClient:
     def _list_items_sync(self, wanted_type: str) -> list[SectionItem]:
         items = []
         for section in self._sections(wanted_type):
-            for item in section.all():
+            # ``includeGuids`` is plexapi's default for `.search()`/`.all()`
+            # already (pinned in tests/test_plexapi_list_items_contract.py),
+            # so this asks for nothing the listing would not have carried
+            # anyway -- it just says so at the call site rather than relying
+            # on an upstream default holding. Guids and locations both come
+            # back inline in this one request for any item that has them.
+            #
+            # The residual risk is the item that has *neither*: plexapi's
+            # partial-object reload trips on any falsy attribute value, not
+            # only an unset one, so a genuinely empty `.guids` (an unmatched
+            # Plex item -- exactly the case this endpoint's zero-ids row
+            # exists to catch) or `.locations` still costs one extra
+            # synchronous HTTP round trip per such item. No listing parameter
+            # closes that gap; a real Plex library with unmatched items should
+            # get a live timing check post-deploy.
+            for item in section.all(includeGuids=True):
                 items.append(
                     SectionItem(
                         rating_key=str(item.ratingKey),

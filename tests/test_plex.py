@@ -40,9 +40,11 @@ class FakeSection:
         # movie library about a show-shaped intent at all.
         self.getguid_calls = []
 
-    def all(self):
+    def all(self, **kwargs):
         # plexapi's section listing. `list_items` walks it; the resolver never
-        # does, which is why this arrived with that method.
+        # does, which is why this arrived with that method. Real plexapi
+        # accepts `libtype`/`includeGuids`/etc as kwargs here -- accepted and
+        # ignored, since this fake already returns every item's real data.
         return list(self._items)
 
     def getGuid(self, guid):

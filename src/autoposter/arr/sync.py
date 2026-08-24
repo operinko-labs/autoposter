@@ -110,9 +110,13 @@ def norm_path(path: str) -> str:
     return path.replace("\\", "/").rstrip("/")
 
 
-def _shares_tree(path: str, other: str) -> bool:
+def shares_tree(path: str, other: str) -> bool:
     """True when two normalised paths are the same directory, or one holds
     the other. Segment-wise, so ``/mnt/media2`` does not match ``/mnt/media``.
+
+    Public because the id-mismatch view (api/mismatches.py) uses it for the
+    same root-folder sanity check ``sync_section``'s guard below runs, before
+    it, too, trusts an arr instance's answers.
     """
     return path == other or path.startswith(other + "/") or other.startswith(path + "/")
 
@@ -207,7 +211,7 @@ async def sync_section(
 
     arr_root = norm_path(settings.arr_root)
     root_folders = [norm_path(path) for path in await client.root_folders()]
-    if not any(_shares_tree(arr_root, folder) for folder in root_folders):
+    if not any(shares_tree(arr_root, folder) for folder in root_folders):
         raise ArrSyncRefused(
             f"configured arr path {settings.arr_root!r} shares no tree with any root "
             f"folder {kind.name} manages ({root_folders or 'none reported'}) -- probably "

@@ -150,7 +150,10 @@ export interface CancelJobResponse {
  * `arr_ids`/`plex_ids` are keyed by agent (`tmdb`, `tvdb`, `imdb`) and hold
  * only the ids that side actually has. `differing` names the agents both sides
  * hold and disagree about -- an id only one side carries is not a
- * disagreement, so it is never listed there.
+ * disagreement, so it is never listed there. In `mismatched`, `differing` can
+ * also carry `"no_ids_on_plex"` or `"no_ids_on_arr"`: a path-matched pair
+ * where one side has no comparable ids at all, which is not a per-agent
+ * disagreement but is exactly the mismatch this view exists to surface.
  */
 export interface IdMismatchRow {
   service: string;
@@ -172,8 +175,13 @@ export interface IdMismatchRow {
  * reports everything found, so a remount that moved every path shows its true
  * size without serialising the whole library. `skipped` names the services
  * that were not asked at all (disabled, or without a base URL or api key);
- * `unmapped` counts Plex items outside the configured root, which the service
- * does not manage and whose absence there is therefore not a finding. */
+ * `refused` names a service whose own root folders share no tree with the
+ * configured arr path -- the wrong instance or a bad base URL -- mapped to a
+ * message naming why, with that service excluded from every group rather than
+ * reporting its whole library as arr_only and plex_only at once. `unmapped`
+ * counts Plex items outside the configured root, which the service does not
+ * manage and whose absence there is therefore not a finding; `arr_unmapped`
+ * is the same idea from the other side -- arr entries with no path at all. */
 export interface IdMismatchesResponse {
   mismatched: IdMismatchRow[];
   arr_only: IdMismatchRow[];
@@ -182,7 +190,9 @@ export interface IdMismatchesResponse {
   total: number;
   limit: number;
   skipped: string[];
+  refused: Record<string, string>;
   unmapped: number;
+  arr_unmapped: number;
 }
 
 /** GET /api/collections.

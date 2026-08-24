@@ -43,7 +43,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from autoposter.api.auth import require_session
 from autoposter.arr.client import RADARR, SONARR, ArrClient, ArrKind
 from autoposter.arr.paths import map_path
-from autoposter.arr.sync import norm_path, source_path
+from autoposter.arr.sync import ArrSyncRefused, norm_path, shares_tree, source_path
 from autoposter.db.models import Session as SessionModel
 from autoposter.plex.client import SectionItem
 
@@ -155,9 +155,17 @@ def _row(
 
 
 async def _compare(service: str, kind: ArrKind, service_cfg, api_key: str, http, plex) -> dict:
-    """One service against its Plex sections."""
+    """One service against its Plex sections.
+
+    Raises ``ArrSyncRefused`` when the service's own root folders share no
+    tree with the configured arr path -- the same sanity check
+    ``arr/sync.py``'s ``sync_section`` runs before comparing anything, so a
+    wrong instance or a bad ``base_url`` is reported as a wiring mistake
+    rather than as this library's entire contents going missing from Radarr.
+    """
     client = ArrClient(http, service_cfg.base_url, api_key, kind)
     try:
+        root_folders = [norm_path(path) for path in await client.root_folders()]
         entries = await client.listing()
     except httpx.HTTPError as exc:
         # Contained and named: an operator has to be able to tell "Radarr is
@@ -166,13 +174,28 @@ async def _compare(service: str, kind: ArrKind, service_cfg, api_key: str, http,
         logger.warning("id-mismatches: %s did not answer", service, exc_info=True)
         raise HTTPException(status_code=502, detail=f"{service} did not answer: {exc}") from exc
 
+    arr_root = norm_path(service_cfg.arr_path)
+    if not any(shares_tree(arr_root, folder) for folder in root_folders):
+        raise ArrSyncRefused(
+            f"configured arr path {service_cfg.arr_path!r} shares no tree with any root "
+            f"folder {service} manages ({root_folders or 'none reported'}) -- probably "
+            f"the wrong instance or a bad base_url; nothing was compared for this library"
+        )
+
     items = await plex.list_items(PLEX_TYPE[service])
 
     by_path: dict[str, dict] = {}
+    arr_unmapped = 0
     for entry in entries:
         path = entry.get("path")
         if path:
             by_path[norm_path(path)] = entry
+        else:
+            # No path at all -- cannot be paired with anything on disk. Counted
+            # rather than dropped, for the same reason a Plex item outside the
+            # configured root is counted below: a total that silently excludes
+            # some items is a total that lies.
+            arr_unmapped += 1
 
     mismatched: list[dict] = []
     plex_only: list[dict] = []
@@ -203,6 +226,20 @@ async def _compare(service: str, kind: ArrKind, service_cfg, api_key: str, http,
         arr_ids = _arr_ids(service, entry)
         plex_ids = _plex_ids(service, item)
         differing = _differing(service, arr_ids, plex_ids)
+        if not differing:
+            # `_differing` only compares ids both sides hold, so a side with
+            # *no* comparable ids at all never disagrees -- and a matched pair
+            # would otherwise land in no group whatsoever. "Plex has no ids for
+            # this item" is exactly the symptom this view exists to surface, so
+            # it is reported as a mismatch in its own right rather than going
+            # missing.
+            markers = []
+            if not plex_ids:
+                markers.append("no_ids_on_plex")
+            if not arr_ids:
+                markers.append("no_ids_on_arr")
+            if markers:
+                differing = markers
         if differing:
             mismatched.append(
                 _row(
@@ -225,6 +262,7 @@ async def _compare(service: str, kind: ArrKind, service_cfg, api_key: str, http,
         "arr_only": arr_only,
         "plex_only": plex_only,
         "unmapped": unmapped,
+        "arr_unmapped": arr_unmapped,
     }
 
 
@@ -238,7 +276,10 @@ async def id_mismatches(request: Request, _: SessionModel = Depends(require_sess
 
     A service that is disabled, has no ``base_url`` or has no api key is named
     in ``skipped`` rather than guessed at: an empty listing from a service that
-    was never asked would report the entire library as ``plex_only``.
+    was never asked would report the entire library as ``plex_only``. A service
+    whose root folders share no tree with the configured arr path is named in
+    ``refused`` for the same reason: comparing against the wrong instance would
+    report the whole library as arr_only and plex_only at once.
     """
     plex = request.app.state.plex
     http = request.app.state.http
@@ -250,7 +291,9 @@ async def id_mismatches(request: Request, _: SessionModel = Depends(require_sess
 
     groups: dict[str, list[dict]] = {"mismatched": [], "arr_only": [], "plex_only": []}
     skipped: list[str] = []
+    refused: dict[str, str] = {}
     unmapped = 0
+    arr_unmapped = 0
 
     for kind, service_cfg, api_key in (
         (RADARR, config.radarr, secrets.radarr_apikey),
@@ -259,10 +302,16 @@ async def id_mismatches(request: Request, _: SessionModel = Depends(require_sess
         if not service_cfg.enabled or not service_cfg.base_url or not api_key:
             skipped.append(kind.name)
             continue
-        result = await _compare(kind.name, kind, service_cfg, api_key, http, plex)
+        try:
+            result = await _compare(kind.name, kind, service_cfg, api_key, http, plex)
+        except ArrSyncRefused as exc:
+            logger.warning("id-mismatches: %s refused: %s", kind.name, exc)
+            refused[kind.name] = str(exc)
+            continue
         for group in groups:
             groups[group].extend(result[group])
         unmapped += result["unmapped"]
+        arr_unmapped += result["arr_unmapped"]
 
     counts = {group: len(rows) for group, rows in groups.items()}
     total = sum(counts.values())
@@ -282,5 +331,7 @@ async def id_mismatches(request: Request, _: SessionModel = Depends(require_sess
         "total": total,
         "limit": ROW_LIMIT,
         "skipped": skipped,
+        "refused": refused,
         "unmapped": unmapped,
+        "arr_unmapped": arr_unmapped,
     }
