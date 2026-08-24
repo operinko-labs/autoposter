@@ -13,6 +13,10 @@ and an id the library does not own is already an ordinary outcome the engine
 reports as a count rather than an error. So a namespace mix-up would build a
 smaller collection every pass and never say why. Each model therefore refuses
 the *shape* of the other namespace's ids, and says which one it wanted.
+
+The same argument one step further out is why ``tmdb_movie`` and ``tmdb_show``
+also refuse the wrong *library*: TMDb's two id kinds share one namespace, so
+nothing about the ids themselves could catch it.
 """
 import re
 
@@ -22,6 +26,7 @@ from autoposter.collections.builders.base import (
     BuilderContext,
     BuilderResult,
     PlexIdBuilder,
+    require_library_type,
 )
 
 __all__ = [
@@ -92,33 +97,45 @@ class ImdbIdBuilder:
         return BuilderResult(ids=[("imdb", value) for value in params.ids])
 
 
-class TmdbMovieBuilder:
+class _TmdbIdBuilder:
+    """What ``tmdb_movie`` and ``tmdb_show`` share, which is everything except
+    the library each name claims to be for.
+
+    They produce the same thing -- TMDb's movie and TV ids live in one
+    namespace -- and the two names exist because Kometa has two, so an
+    operator porting a config writes whichever their Kometa config used. That
+    makes the library type the only difference there *can* be, and it is a
+    difference worth enforcing: a show id typed under ``tmdb_movie``, or a
+    ``tmdb_show`` definition reaching the Movie library (which any definition
+    without a ``libraries:`` key does), resolves to nothing and is reported as
+    a count -- indistinguishable from a correct collection of titles the
+    library does not own. The shared ``require_library_type`` guard, built for
+    the TMDb charts, refuses it instead.
+    """
+
+    params_model = TmdbIdParams
+    library_types: tuple[str, ...]
+
+    async def build(self, ctx: BuilderContext) -> BuilderResult:
+        params = TmdbIdParams.model_validate(ctx.config)
+        require_library_type(
+            f"the {self.type_name!r} builder", ctx.library_type, self.library_types
+        )
+        return BuilderResult(ids=[("tmdb", value) for value in params.ids])
+
+
+class TmdbMovieBuilder(_TmdbIdBuilder):
     """A hand-picked collection, by TMDb movie id."""
 
     type_name = "tmdb_movie"
-    params_model = TmdbIdParams
-
-    async def build(self, ctx: BuilderContext) -> BuilderResult:
-        params = TmdbIdParams.model_validate(ctx.config)
-        return BuilderResult(ids=[("tmdb", value) for value in params.ids])
+    library_types = ("Movie",)
 
 
-class TmdbShowBuilder:
-    """A hand-picked collection, by TMDb show id.
-
-    Identical to ``tmdb_movie`` in what it produces -- TMDb movie and TV ids
-    share the ``tmdb`` namespace, and the library the pass is running against
-    already decides which kind of item an id can resolve to. The two names
-    exist because Kometa has two, and an operator porting a config writes the
-    one their Kometa config used.
-    """
+class TmdbShowBuilder(_TmdbIdBuilder):
+    """A hand-picked collection, by TMDb show id."""
 
     type_name = "tmdb_show"
-    params_model = TmdbIdParams
-
-    async def build(self, ctx: BuilderContext) -> BuilderResult:
-        params = TmdbIdParams.model_validate(ctx.config)
-        return BuilderResult(ids=[("tmdb", value) for value in params.ids])
+    library_types = ("Show",)
 
 
 class PlexRatingKeyBuilder(PlexIdBuilder):

@@ -28,6 +28,7 @@ from autoposter.collections.sources import default_definitions
 from autoposter.config.schema import Config, Secrets
 from autoposter.facts.mdblist import MDBListClient
 from autoposter.providers.cache import ProviderCache
+from autoposter.providers.tmdb_lists import TmdbListClient
 from autoposter.providers.tvdb import TVDBClient
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,17 @@ def build_source_clients(
     """
     ttl = config.providers.cache_ttl_seconds
     return SourceClients(
+        # TMDb's token is a hard secret (``Secrets.tmdb_token``) so it is
+        # normally present -- but a blank one is still checked here rather
+        # than trusted, because a client holding "" would turn every TMDb
+        # definition into a 401 the operator has to read out of a log instead
+        # of "TMDb is not configured".
+        tmdb=(
+            TmdbListClient(
+                secrets.tmdb_token, http, cache=cache, cache_ttl_seconds=ttl
+            )
+            if secrets.tmdb_token else None
+        ),
         # MDBList: None rather than the ``NullMDBListClient`` app.py falls
         # back to. That stand-in exists so one metadata field can go missing
         # quietly; a list builder handed one would fail on a missing attribute

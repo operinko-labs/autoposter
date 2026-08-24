@@ -39,6 +39,7 @@ if TYPE_CHECKING:  # imported for annotations only -- see the module docstring
 
     from autoposter.arr.client import ArrClient
     from autoposter.facts.mdblist import MDBListClient
+    from autoposter.providers.tmdb_lists import TmdbListClient
     from autoposter.providers.tvdb import TVDBClient
 
 __all__ = ["PlexSectionAccess", "SourceClients"]
@@ -85,11 +86,10 @@ class SourceClients:
     checks the one client it needs and nothing else.
     """
 
-    # Task 3's ``providers.tmdb_lists.TmdbListClient``. Typed loosely until
-    # that module exists rather than named in an annotation nothing can
-    # resolve; the field name and the None-when-absent contract are what the
-    # builders are written against.
-    tmdb: object | None = None
+    # None when no TMDb read access token is configured. Unlike the artwork
+    # and facts clients, which degrade to "no images"/"no rating", a list
+    # client with no token could only produce an empty collection.
+    tmdb: "TmdbListClient | None" = None
     # None -- not ``NullMDBListClient`` -- when no API key is configured. The
     # Null client exists so *one metadata field* can go missing quietly; a
     # list builder given one would fail on an attribute instead of saying

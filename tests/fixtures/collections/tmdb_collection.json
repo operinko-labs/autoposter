@@ -1,0 +1,12 @@
+{
+  "id": 10,
+  "name": "Star Wars Collection",
+  "overview": "An epic space opera.",
+  "poster_path": "/iUFRXqxYqoVeWK4Rv1yqEJqSSmz.jpg",
+  "backdrop_path": "/d8duYyyC9J5T825Hg7grmaabfxQ.jpg",
+  "parts": [
+    {"id": 11, "media_type": "movie", "title": "Star Wars"},
+    {"id": 1891, "media_type": "movie", "title": "The Empire Strikes Back"},
+    {"id": 1892, "media_type": "movie", "title": "Return of the Jedi"}
+  ]
+}

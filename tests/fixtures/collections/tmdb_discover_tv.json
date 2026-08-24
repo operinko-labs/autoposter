@@ -1,0 +1,9 @@
+{
+  "page": 1,
+  "results": [
+    {"id": 95396, "name": "Severance", "first_air_date": "2022-02-18"},
+    {"id": 1416, "name": "Grey's Anatomy", "first_air_date": "2005-03-27"}
+  ],
+  "total_pages": 1,
+  "total_results": 2
+}

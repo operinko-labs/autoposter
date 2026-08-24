@@ -14,12 +14,14 @@ from autoposter.collections.builders.base import (
     BuilderContext,
     BuilderResult,
     ExternalId,
+    LibraryTypeMismatch,
     Namespace,
     PlexIdBuilder,
     PlexSectionAccess,
     SmartContext,
     SourceClients,
     register,
+    require_library_type,
 )
 from autoposter.collections.builders.arr import (
     RadarrAllBuilder,
@@ -40,6 +42,14 @@ from autoposter.collections.builders.simple_ids import (
     TmdbShowBuilder,
 )
 from autoposter.collections.builders.text_file import TextFileBuilder
+from autoposter.collections.builders.tmdb import (
+    TmdbChartBuilder,
+    TmdbCollectionBuilder,
+    TmdbCompanyBuilder,
+    TmdbKeywordBuilder,
+    TmdbListBuilder,
+    TmdbNetworkBuilder,
+)
 
 register(PlexIdBuilder())
 # Kometa's second name for the same builder -- see ``PlexRatingKeyBuilder``
@@ -54,6 +64,12 @@ register(RadarrTagListBuilder())
 register(SonarrAllBuilder())
 register(SonarrTagListBuilder())
 register(ImdbChartBuilder())
+register(TmdbChartBuilder())
+register(TmdbListBuilder())
+register(TmdbCollectionBuilder())
+register(TmdbCompanyBuilder())
+register(TmdbNetworkBuilder())
+register(TmdbKeywordBuilder())
 register(ImdbAwardBuilder())
 register(ImdbAwardYearsBuilder())
 register(CsBucketBuilder())
@@ -65,9 +81,11 @@ __all__ = [
     "BuilderContext",
     "BuilderResult",
     "ExternalId",
+    "LibraryTypeMismatch",
     "Namespace",
     "PlexSectionAccess",
     "SmartContext",
     "SourceClients",
     "register",
+    "require_library_type",
 ]

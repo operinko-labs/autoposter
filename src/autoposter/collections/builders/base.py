@@ -45,6 +45,7 @@ __all__ = [
     "BuilderContext",
     "BuilderResult",
     "ExternalId",
+    "LibraryTypeMismatch",
     "Namespace",
     "PlexIdBuilder",
     "PlexIdParams",
@@ -54,6 +55,7 @@ __all__ = [
     "SmartContext",
     "SourceClients",
     "register",
+    "require_library_type",
 ]
 
 
@@ -205,6 +207,41 @@ def register(builder: Builder | SmartBuilder) -> Builder | SmartBuilder:
         )
     REGISTRY[builder.type_name] = builder
     return builder
+
+
+class LibraryTypeMismatch(Exception):
+    """This builder cannot mean anything for the library it is being run on.
+
+    Its own class rather than a ``ValueError`` so the engine's log line -- which
+    carries the exception class name and nothing else -- says what kind of
+    failure this was.
+    """
+
+
+def require_library_type(subject: str, library_type: str, allowed) -> None:
+    """Refuse a source whose media type is not this library's.
+
+    A build-time check rather than a load-time one, and that is forced rather
+    than chosen: a definition with no ``libraries:`` key applies to *every*
+    library in the pass, so the library type is only known here. The refusal
+    matters because the alternative is invisible -- a TV chart resolved against
+    a Movie library does not error, it simply matches nothing, and "matched
+    nothing" is what a correct collection of titles the library does not own
+    looks like too.
+
+    ``subject`` is the phrase that goes in front of the message ("the TMDb
+    'airing_today' chart"), and ``allowed`` is any collection of library types
+    -- including a ``CHART_ENDPOINTS`` row, whose keys *are* the library types
+    that chart has an endpoint for.
+    """
+    if library_type in allowed:
+        return
+    kinds = " or ".join(sorted(allowed))
+    raise LibraryTypeMismatch(
+        f"{subject} builds {kinds} collections, but this pass is running against "
+        f"a {library_type} library, where it would match nothing at all. Narrow "
+        f"the definition with `libraries:` so it only targets {kinds} libraries."
+    )
 
 
 class PlexIdParams(BaseModel):

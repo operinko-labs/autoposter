@@ -12,11 +12,13 @@ import pytest
 from pydantic import ValidationError
 
 from autoposter.collections.builders import NAMESPACES, REGISTRY, BuilderContext
+from autoposter.collections.builders.base import LibraryTypeMismatch
 
 
-def _ctx(**params) -> BuilderContext:
+def _ctx(library_type: str = "Movie", **params) -> BuilderContext:
     """A context for a builder that needs neither HTTP nor a client."""
-    return BuilderContext(library="Movies", library_type="Movie", config=params)
+    library = "Movies" if library_type == "Movie" else "TV Shows"
+    return BuilderContext(library=library, library_type=library_type, config=params)
 
 
 async def test_imdb_id_returns_the_ids_in_the_order_they_were_written():
@@ -81,14 +83,44 @@ async def test_tmdb_movie_refuses_an_empty_list():
 
 
 async def test_tmdb_show_returns_the_ids_in_order():
-    result = await REGISTRY["tmdb_show"].build(_ctx(ids=["95396", 1396]))
+    result = await REGISTRY["tmdb_show"].build(
+        _ctx(library_type="Show", ids=["95396", 1396])
+    )
 
     assert result.ids == [("tmdb", "95396"), ("tmdb", "1396")]
 
 
 async def test_tmdb_show_refuses_params_it_does_not_understand():
     with pytest.raises(ValidationError):
-        await REGISTRY["tmdb_show"].build(_ctx(ids=["95396"], tmdb_ids=["1396"]))
+        await REGISTRY["tmdb_show"].build(
+            _ctx(library_type="Show", ids=["95396"], tmdb_ids=["1396"])
+        )
+
+
+async def test_tmdb_show_refuses_a_movie_library():
+    """TMDb's movie and TV ids share one namespace, so nothing about the ids
+    themselves can catch this: on the wrong library they simply resolve to
+    nothing, which is what a correct collection of unowned titles looks like.
+    A definition with no ``libraries:`` key runs against every library in the
+    pass, so this is the only place it can be caught."""
+    with pytest.raises(LibraryTypeMismatch, match="Show"):
+        await REGISTRY["tmdb_show"].build(_ctx(ids=["95396"]))
+
+
+async def test_tmdb_movie_refuses_a_show_library():
+    with pytest.raises(LibraryTypeMismatch, match="Movie"):
+        await REGISTRY["tmdb_movie"].build(_ctx(library_type="Show", ids=["438631"]))
+
+
+async def test_imdb_id_is_at_home_on_either_library():
+    """The mirror of the two above: an IMDb id says nothing about media type
+    and resolves on whichever library owns the title, so guarding it would
+    refuse a definition that is perfectly correct."""
+    result = await REGISTRY["imdb_id"].build(
+        _ctx(library_type="Show", ids=["tt0903747"])
+    )
+
+    assert result.ids == [("imdb", "tt0903747")]
 
 
 async def test_plex_rating_key_is_kometas_other_name_for_plex_id():

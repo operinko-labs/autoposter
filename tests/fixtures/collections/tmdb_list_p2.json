@@ -1,0 +1,14 @@
+{
+  "created_by": "an-operator",
+  "description": "The saga, in order.",
+  "favorite_count": 0,
+  "id": "7096",
+  "items": [
+    {"id": 1892, "media_type": "movie", "title": "Return of the Jedi"},
+    {"id": 95396, "media_type": "tv", "name": "Severance"}
+  ],
+  "item_count": 4,
+  "iso_639_1": "en",
+  "name": "Saga",
+  "poster_path": null
+}

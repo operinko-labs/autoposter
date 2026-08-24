@@ -1,0 +1,14 @@
+{
+  "created_by": "an-operator",
+  "description": "The saga, in order.",
+  "favorite_count": 0,
+  "id": "7096",
+  "items": [
+    {"id": 11, "media_type": "movie", "title": "Star Wars"},
+    {"id": 1891, "media_type": "movie", "title": "The Empire Strikes Back"}
+  ],
+  "item_count": 4,
+  "iso_639_1": "en",
+  "name": "Saga",
+  "poster_path": null
+}
