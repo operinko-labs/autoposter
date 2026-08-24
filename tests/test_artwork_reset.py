@@ -1,11 +1,11 @@
-"""ResetMode: unlock the poster and hand the field back to Plex's own agent art.
+"""ResetMode: unlock our artwork and hand the fields back to Plex's own agent art.
 
 Fake Plex throughout. The provenance read is the real one -- ``artwork_provenance``
 over a ``MockTransport`` serving real EXIF-stamped JPEGs -- because "is this
-poster ours?" is the whole decision the mode makes; faking it would fake the
+artwork ours?" is the whole decision the mode makes; faking it would fake the
 test. The write side is a ``FakeItem`` carrying ``unlockPoster``/``posters``/
-``setPoster`` spies, plus a ``refresh`` that exists only to prove nothing calls
-it.
+``setPoster`` spies and their ``unlockArt``/``arts``/``setArt`` mirrors, plus a
+``refresh`` that exists only to prove nothing calls it.
 """
 import io
 from pathlib import Path
@@ -25,6 +25,11 @@ PLEX_URL = "http://plex.local"
 PLEX_TOKEN = "plex-token"
 AGENT_KEY = "metadata://posters/tmdb_12345"
 UPLOAD_KEY = "upload://posters/7f3c9a"
+AGENT_ART_KEY = "metadata://art/tmdb_12345"
+UPLOAD_ART_KEY = "upload://art/1b2c3d"
+# What the select spies record when handed a listing entry with no ``ratingKey``
+# -- an entry nothing can prove came from an agent, so nothing may select it.
+NO_RATING_KEY = "<no rating key>"
 
 
 def _stamped_jpeg(fingerprint: str) -> bytes:
@@ -44,20 +49,27 @@ def _plain_jpeg() -> bytes:
 
 
 class FakePoster:
-    """One entry of a plexapi ``posters()`` listing, told apart from the others
-    by its rating key: anything pushed to the server is keyed ``upload://``."""
+    """One entry of a plexapi ``posters()`` or ``arts()`` listing, told apart
+    from the others by its rating key: anything pushed to the server is keyed
+    ``upload://``. A ``None`` key builds an entry with no ``ratingKey`` attribute
+    at all -- the listing shape neither half can prove is agent art."""
 
     def __init__(self, rating_key):
-        self.ratingKey = rating_key  # noqa: N815 - plexapi name
+        if rating_key is not None:
+            self.ratingKey = rating_key  # noqa: N815 - plexapi name
 
 
 class FakeItem:
-    """The plexapi surface reset touches: the ``thumb`` the provenance probe
-    reads, and the unlock/select spies the reset itself drives."""
+    """The plexapi surface reset touches: the ``thumb`` and ``art`` the
+    provenance probes read, and the unlock/select spies the reset itself drives
+    for each of those two fields."""
 
-    def __init__(self, thumb="/thumb", posters=(AGENT_KEY, UPLOAD_KEY)):
+    def __init__(self, thumb="/thumb", art=None, posters=(AGENT_KEY, UPLOAD_KEY),
+                 arts=(AGENT_ART_KEY, UPLOAD_ART_KEY)):
         self.thumb = thumb
+        self.art = art
         self._posters = [FakePoster(key) for key in posters]
+        self._arts = [FakePoster(key) for key in arts]
         self.unlocked = []
         self.selected = []
         self.refreshed = False
@@ -72,7 +84,19 @@ class FakeItem:
         return list(self._posters)
 
     def setPoster(self, poster):  # noqa: N802 - plexapi name
-        self.selected.append(poster.ratingKey)
+        # getattr, not attribute access: a keyless entry must show up as a
+        # recorded selection rather than as an AttributeError the mode's
+        # per-item guard would swallow into the same tally as "skipped it".
+        self.selected.append(getattr(poster, "ratingKey", NO_RATING_KEY))
+
+    def unlockArt(self):  # noqa: N802 - plexapi name
+        self.unlocked.append("art")
+
+    def arts(self):
+        return list(self._arts)
+
+    def setArt(self, art):  # noqa: N802 - plexapi name
+        self.selected.append(getattr(art, "ratingKey", NO_RATING_KEY))
 
 
 class FakePlexClient:
@@ -151,11 +175,13 @@ async def test_dry_run_changes_nothing(session, config, serving):
     result = await ResetMode(config, plex, http, _headers(), apply=False).run(session)
 
     assert result.dry_run is True
-    assert (result.items, result.items_with_our_art) == (1, 1)
+    assert (result.items, result.items_with_our_art, result.fields) == (1, 1, 1)
     assert item.unlocked == [] and item.selected == []
     response = result.as_response()
     assert response["status"] == "dry run"
     assert (response["items"], response["items_with_our_art"]) == (1, 1)
+    # One field of the one item is ours: its poster, not its (absent) background.
+    assert response["fields"] == 1
     # The operator has to be told the replaced upload stays on the server.
     assert "orphan" in response["note"]
 
@@ -225,6 +251,76 @@ async def test_reset_counts_an_item_with_no_agent_art_as_failed(session, config,
     assert item.selected == []
 
 
+async def test_reset_counts_a_listing_without_rating_keys_as_failed(session, config, serving):
+    """A listing entry with no ``ratingKey`` is not something we can prove came
+    from an agent, so it must be skipped rather than selected. Turn the guard
+    back into ``if rating_key.startswith(UPLOADED_ARTWORK_PREFIX)`` and the
+    keyless entry is returned as the agent default and handed to ``setPoster``,
+    reddening both assertions below."""
+    await _add_item(session, rating_key="rk1")
+    item = FakeItem(thumb="/ours", posters=(None, None))
+    plex = FakePlexClient({"rk1": item})
+    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+
+    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+
+    # Same accounting as "Plex holds no agent art": unlocked, nothing selected.
+    assert (result.reset, result.failed) == (0, 1)
+    assert item.unlocked == ["poster"]
+    assert item.selected == []  # not [NO_RATING_KEY]: nothing was handed over
+
+
+async def test_apply_resets_the_background_as_well_as_the_poster(session, config, serving):
+    """Reset is a complete undo of what ``upload_artwork`` locked, and it locks
+    the background too -- so both fields are unlocked and handed back to the
+    agent, and both count."""
+    await _add_item(session, rating_key="rk1")
+    item = FakeItem(thumb="/ours-poster", art="/ours-art")
+    plex = FakePlexClient({"rk1": item})
+    http = serving({
+        "/ours-poster": _stamped_jpeg("fp-poster"),
+        "/ours-art": _stamped_jpeg("fp-art"),
+    })
+
+    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+
+    # One item, two fields: the cap still counts items, the tally counts fields.
+    assert (result.items, result.items_with_our_art, result.fields) == (1, 1, 2)
+    assert (result.reset, result.failed) == (2, 0)
+    assert item.unlocked == ["poster", "art"]
+    assert item.selected == [AGENT_KEY, AGENT_ART_KEY]
+
+
+async def test_reset_leaves_a_hand_set_background_alone(session, config, serving):
+    """The provenance rule holds per field: an item whose poster is ours but
+    whose background an operator set by hand has only its poster reset."""
+    await _add_item(session, rating_key="rk1")
+    item = FakeItem(thumb="/ours", art="/theirs")
+    plex = FakePlexClient({"rk1": item})
+    http = serving({"/ours": _stamped_jpeg("fp-abc"), "/theirs": _plain_jpeg()})
+
+    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+
+    assert (result.items_with_our_art, result.fields) == (1, 1)
+    assert (result.reset, result.failed) == (1, 0)
+    assert item.unlocked == ["poster"] and item.selected == [AGENT_KEY]
+
+
+async def test_reset_counts_an_item_with_no_agent_background_as_failed(session, config, serving):
+    """The art half of the no-agent-art accounting: the field is unlocked, but
+    Plex holds nothing but uploads to hand it back to."""
+    await _add_item(session, rating_key="rk1")
+    item = FakeItem(thumb=None, art="/ours-art", arts=(UPLOAD_ART_KEY,))
+    plex = FakePlexClient({"rk1": item})
+    http = serving({"/ours-art": _stamped_jpeg("fp-art")})
+
+    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+
+    assert (result.reset, result.failed) == (0, 1)
+    assert item.unlocked == ["art"]
+    assert item.selected == []
+
+
 async def test_apply_resets_exactly_the_filtered_set(session, config, serving):
     """A Movies-only reset must not touch the show, even though the show's
     poster is just as much ours."""
@@ -286,12 +382,15 @@ async def test_reset_never_refreshes_the_plex_object(session, config, serving):
     the guard cannot see ``getattr(item, "refresh")()`` alias evasion, and a
     refresh here would have Plex re-pull metadata and undo the unlock."""
     await _add_item(session, rating_key="rk1")
-    item = FakeItem(thumb="/ours")
+    item = FakeItem(thumb="/ours", art="/ours-art")
     plex = FakePlexClient({"rk1": item})
-    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+    http = serving({
+        "/ours": _stamped_jpeg("fp-abc"), "/ours-art": _stamped_jpeg("fp-art"),
+    })
 
     await ResetMode(config, plex, http, _headers(), apply=True).run(session)
 
+    assert item.unlocked == ["poster", "art"]  # both halves actually ran
     assert item.refreshed is False
 
 
@@ -304,7 +403,7 @@ async def test_reset_refuses_an_empty_table(session, config, serving):
     # apply=True was requested, so dry_run mirrors the success paths: False.
     assert result.as_response() == {
         "mode": "reset", "status": "refused", "reason": result.refused,
-        "dry_run": False, "items": 0, "items_with_our_art": 0,
+        "dry_run": False, "items": 0, "items_with_our_art": 0, "fields": 0,
     }
 
 

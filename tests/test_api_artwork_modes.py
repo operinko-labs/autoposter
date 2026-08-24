@@ -29,6 +29,7 @@ PLEX_URL = "http://plex.local"
 PLEX_TOKEN = "plex-token-for-this-test"
 POSTER_BYTES = b"\xff\xd8 poster bytes from plex"
 AGENT_KEY = "metadata://posters/tmdb_12345"
+AGENT_ART_KEY = "metadata://art/tmdb_12345"
 
 
 class FakePoster:
@@ -44,11 +45,13 @@ class FakeItem:
     spies. ``refresh`` exists to prove nothing calls it; ``pause`` lets a write
     record whether the worker fence was raised at that instant."""
 
-    def __init__(self, thumb=None, art=None, pause=None, posters=(AGENT_KEY,)):
+    def __init__(self, thumb=None, art=None, pause=None, posters=(AGENT_KEY,),
+                 arts=(AGENT_ART_KEY,)):
         self.thumb = thumb
         self.art = art
         self._pause = pause
         self._posters = [FakePoster(key) for key in posters]
+        self._arts = [FakePoster(key) for key in arts]
         self.uploaded = []
         self.locked = []
         self.unlocked = []
@@ -89,6 +92,16 @@ class FakeItem:
 
     def setPoster(self, poster):  # noqa: N802 - plexapi name
         self.selected.append(poster.ratingKey)
+
+    def unlockArt(self):  # noqa: N802 - plexapi name
+        self._note_pause()
+        self.unlocked.append("art")
+
+    def arts(self):
+        return list(self._arts)
+
+    def setArt(self, art):  # noqa: N802 - plexapi name
+        self.selected.append(art.ratingKey)
 
 
 class FakePlexClient:
@@ -447,9 +460,10 @@ async def test_apply_reset_selects_the_agent_default_with_the_pool_paused(
     client, auth_headers, session, wire, app
 ):
     """The pause mutation-proof for reset: the unlock/select is a Plex write, so
-    the fence must be up while it happens, and released afterwards."""
+    the fence must be up while it happens, and released afterwards. Both fields
+    are ours here, so the fence has to cover the background half too."""
     await _add_item(session, rating_key="rk1")
-    item = FakeItem(thumb="/thumb", pause=app.state.worker_pause)
+    item = FakeItem(thumb="/thumb", art="/art", pause=app.state.worker_pause)
     wire({"rk1": item}, handler=_serves_ranged(_stamped_jpeg("fp-abc")))
 
     response = await client.post(
@@ -458,8 +472,10 @@ async def test_apply_reset_selects_the_agent_default_with_the_pool_paused(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["dry_run"] is False and body["reset"] == 1 and body["failed"] == 0
-    assert item.unlocked == ["poster"] and item.selected == [AGENT_KEY]
-    assert item.paused_during_write == [True]
+    assert body["dry_run"] is False and body["reset"] == 2 and body["failed"] == 0
+    assert body["fields"] == 2
+    assert item.unlocked == ["poster", "art"]
+    assert item.selected == [AGENT_KEY, AGENT_ART_KEY]
+    assert item.paused_during_write == [True, True]
     assert app.state.worker_pause.is_paused is False
     assert item.refreshed is False

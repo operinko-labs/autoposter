@@ -947,11 +947,14 @@ async def run_artwork_revert(
 async def run_artwork_reset(
     body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
-    """Unlock our posters and hand the field back to Plex's agent (roadmap row 66).
+    """Unlock our artwork and hand the fields back to Plex's agent (roadmap row 66).
 
-    Acts only on items currently showing a poster this service uploaded, told
-    apart from a hand-set one by its EXIF provenance -- so "reset everything"
-    never means "undo the operator's own choices". Dry-run by default
+    Poster *and* background, because the pipeline uploads and locks both, so a
+    complete undo has to release both. Acts only on fields currently showing
+    artwork this service uploaded, told apart from a hand-set one by its EXIF
+    provenance -- so "reset everything" never means "undo the operator's own
+    choices". ``reset``/``failed`` therefore count fields, not items, and
+    ``fields`` reports how many a dry run would touch. Dry-run by default
     (``config.artwork_modes.reset_apply``). The response carries a ``note``
     saying the replaced upload stays on the Plex server: nothing here can delete
     it, and the UI has to say so.

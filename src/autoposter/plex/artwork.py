@@ -44,10 +44,10 @@ PLEX_ART_FIELDS = {
 ARTWORK_FETCH_TIMEOUT = 15.0
 
 # How Plex keys an image somebody pushed to the server -- this service's own
-# uploads included. Everything else a ``posters()`` listing returns came from a
-# metadata agent, so this prefix is what separates "art we (or an operator) put
-# there" from "art Plex found for itself".
-UPLOADED_POSTER_PREFIX = "upload://"
+# uploads included. Everything else a ``posters()`` or ``arts()`` listing returns
+# came from a metadata agent, so this prefix is what separates "art we (or an
+# operator) put there" from "art Plex found for itself".
+UPLOADED_ARTWORK_PREFIX = "upload://"
 
 
 def upload_artwork(plex_item, data: bytes, art_kind: str, lock: bool = True) -> None:
@@ -82,50 +82,65 @@ def upload_artwork(plex_item, data: bytes, art_kind: str, lock: bool = True) -> 
             logger.warning("could not remove temporary upload file %s", handle.name)
 
 
-def _agent_default_poster(posters):
-    """The entry in a ``posters()`` listing that is Plex's own agent art.
+def _agent_default(listing):
+    """The entry in a ``posters()``/``arts()`` listing that is Plex's own agent art.
 
-    ``None`` when the listing holds nothing but uploads -- an item whose agents
-    never found a poster, so there is no default to hand the field back to.
+    ``None`` when the listing holds nothing provably from an agent -- an item
+    whose agents never found an image, so there is no default to hand the field
+    back to.
 
     Plex returns uploaded and agent-supplied images from the one call and tells
     them apart by rating key (``upload://...`` vs the agent's own), listing the
     agent's in the agent's preference order. So the first non-upload entry *is*
-    the default Plex would pick for itself. ``ratingKey`` is read defensively:
-    a listing entry without one is not something we can prove is agent art.
+    the default Plex would pick for itself. ``ratingKey`` is read defensively
+    and an entry without one is *skipped*, not returned: a listing entry with no
+    key is not something we can prove is agent art, and selecting it would hand
+    the field an image of unknown origin. Skipping costs the caller a ``False``
+    -- field unlocked, nothing selected -- which is the safe direction.
     """
-    for poster in posters:
-        rating_key = getattr(poster, "ratingKey", "") or ""
-        if rating_key.startswith(UPLOADED_POSTER_PREFIX):
+    for entry in listing:
+        rating_key = getattr(entry, "ratingKey", "") or ""
+        if not rating_key or rating_key.startswith(UPLOADED_ARTWORK_PREFIX):
             continue
-        return poster
+        return entry
     return None
 
 
-def reset_poster_to_agent_default(plex_item) -> bool:
-    """Unlock ``plex_item``'s poster and hand the field back to Plex's agent art.
+def reset_artwork_to_agent_default(plex_item, art_kind: str = "poster") -> bool:
+    """Unlock one artwork field on ``plex_item`` and hand it back to Plex's agent.
 
     The inverse of what ``upload_artwork`` does: that uploads and *locks* so the
     agent cannot reclaim the field, and this unlocks and re-selects the agent's
-    own image. ``True`` when an agent poster was found and selected, ``False``
+    own image. ``True`` when an agent image was found and selected, ``False``
     when Plex holds none.
+
+    Routed on ``art_kind`` exactly as ``upload_artwork`` routes, and it has to
+    stay the inverse of it: ``background`` is Plex's ``art`` field, and every
+    other kind -- an episode's title card included -- is its poster. The three
+    calls are picked up front so the unlock/select sequence itself is written
+    once rather than per field.
 
     The unlock happens first and unconditionally, so an item with no agent art
     still ends up unlocked -- that half is what the operator asked for, and it
     lets the agent fill the field on its own next pass. The caller counts the
-    ``False`` as a failed reset even so, because the visible poster did not
+    ``False`` as a failed reset even so, because the visible artwork did not
     change.
 
     Never ``.refresh()``, which the project-wide AST guard forbids: it would
     have Plex re-pull from its agents, reverting locked fields elsewhere.
-    ``setPoster`` is a targeted select and needs no reload afterwards -- nothing
-    reads this object again once the selection is made.
+    ``setPoster``/``setArt`` are targeted selects and need no reload afterwards
+    -- nothing reads this object again once the selection is made.
     """
-    plex_item.unlockPoster()
-    poster = _agent_default_poster(plex_item.posters())
-    if poster is None:
+    is_background = art_kind == "background"
+    unlock = plex_item.unlockArt if is_background else plex_item.unlockPoster
+    listing = plex_item.arts if is_background else plex_item.posters
+    select = plex_item.setArt if is_background else plex_item.setPoster
+
+    unlock()
+    chosen = _agent_default(listing())
+    if chosen is None:
         return False
-    plex_item.setPoster(poster)
+    select(chosen)
     return True
 
 
@@ -177,16 +192,22 @@ async def fetch_artwork(
     return response.content, response.headers.get("content-type", "")
 
 
-async def artwork_provenance(http, plex_item, base_url: str, headers: dict) -> str | None:
+async def artwork_provenance(
+    http, plex_item, base_url: str, headers: dict, art_kind: str = "poster"
+) -> str | None:
     """The fingerprint recorded in ``plex_item``'s currently-selected artwork.
 
-    ``None`` if the item has no artwork, the request fails, or what is there
-    was never stamped by us. A format-aware range read via ``probe_exif`` --
-    see ``autoposter.plex.exif`` -- rather than a full download: one request
-    for a JPEG or an unstamped WebP, two only when the WebP header says there
-    is an EXIF chunk at the end worth fetching.
+    ``None`` if the item has no artwork of that kind, the request fails, or what
+    is there was never stamped by us. A format-aware range read via
+    ``probe_exif`` -- see ``autoposter.plex.exif`` -- rather than a full
+    download: one request for a JPEG or an unstamped WebP, two only when the
+    WebP header says there is an EXIF chunk at the end worth fetching.
 
-    ``.thumb`` is read in a thread -- see ``_artwork_url`` -- because on a
+    ``art_kind`` picks the field, through the same ``PLEX_ART_FIELDS`` map the
+    rest of this module routes on, and defaults to the poster -- which is what
+    the badge stage's probe asks about. Reset asks about the background too.
+
+    The field is read in a thread -- see ``_artwork_url`` -- because on a
     partial ``plexapi`` object attribute access can trigger a blocking
     ``_reload()`` HTTP GET, and this is called per item across a whole library.
 
@@ -195,7 +216,7 @@ async def artwork_provenance(http, plex_item, base_url: str, headers: dict) -> s
     redundant upload rather than an exception out of the badge stage.
     """
     try:
-        url = await _artwork_url(plex_item, base_url)
+        url = await _artwork_url(plex_item, base_url, art_kind)
         if url is None:
             return None
         tags = await probe_exif(http, url, headers)
