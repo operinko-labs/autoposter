@@ -55,9 +55,11 @@ this deployment's networking does not have -- so, like DNS rebinding above,
 this is named rather than range-checked: an untested check against a residual
 nothing here can trigger is worse than an honest docstring.
 
-**``100.64.0.0/10`` (RFC 6598, "shared address space" -- CGNAT, and this
-deployment's own Tailscale range) is checked, not left as a residual like the
-two ranges above.** Unlike NAT64 and 6to4, this needs no translator on the
+**``100.64.0.0/10`` (RFC 6598, "shared address space" -- the CGNAT range) is
+checked, not left as a residual like the two ranges above.** It is reserved
+and not globally routable, so a defense-in-depth guard should refuse to fetch
+into it regardless of whether any specific host lives there. Unlike NAT64 and
+6to4, this needs no translator on the
 path: a service listening on a ``100.64.0.0/10`` address is a direct fetch
 target the moment ``getaddrinfo`` resolves a name onto it, or an operator
 types the literal. ``ipaddress`` classifies neither ``is_private`` nor
