@@ -16,10 +16,21 @@ from autoposter.collections.builders.base import (
     ExternalId,
     Namespace,
     PlexIdBuilder,
+    SmartContext,
     register,
 )
+from autoposter.collections.builders.cs_bucket import CsBucketBuilder
+from autoposter.collections.builders.imdb_award import (
+    ImdbAwardBuilder,
+    ImdbAwardYearsBuilder,
+)
+from autoposter.collections.builders.imdb_chart import ImdbChartBuilder
 
 register(PlexIdBuilder())
+register(ImdbChartBuilder())
+register(ImdbAwardBuilder())
+register(ImdbAwardYearsBuilder())
+register(CsBucketBuilder())
 
 __all__ = [
     "NAMESPACES",
@@ -29,5 +40,6 @@ __all__ = [
     "BuilderResult",
     "ExternalId",
     "Namespace",
+    "SmartContext",
     "register",
 ]

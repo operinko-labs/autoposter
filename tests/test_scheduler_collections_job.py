@@ -128,6 +128,9 @@ def _config(libraries=("Movies", "TV Shows"), enabled=True, apply_to_plex=True):
             # Posters are exercised in test_collection_poster_wiring.py; off
             # here for the same reason charts/awards/separators are.
             posters=False,
+            # No operator-configured definitions: this test is about the
+            # shipped inventory, which is what an empty list leaves.
+            definitions=[],
         ),
         scheduler=SimpleNamespace(collections_hours=24),
     )

@@ -2,8 +2,9 @@
 
 ``reconcile_libraries`` is the reconciliation sequence both
 ``python -m autoposter.collections`` and the scheduled collections job run:
-for each configured library, bring the Common Sense rating buckets in line
-and, if enabled, do the same for the IMDb chart / Oscars list collections.
+for each configured library, run every collection definition -- the shipped
+Common Sense buckets, IMDb charts and Oscars collections, plus whatever the
+operator has configured -- through the builder engine.
 Two copies of this sequence would drift apart, so both callers use this one.
 
 Committing per library -- rather than once at the end -- means a failure
@@ -14,31 +15,18 @@ library it happened on, rather than letting it end the pass, means one bad
 library cannot stop the rest of the configured libraries from being tried.
 """
 import logging
-import re
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.collections.buckets import derive_buckets
-from autoposter.collections.reconcile import (
-    SEPARATOR_TITLE,
-    load_labels,
-    protected_label,
-    reconcile_content_ratings,
-)
-from autoposter.collections.sources import AWARD_COLLECTIONS, CHART_COLLECTIONS, build_all
+from autoposter.collections.engine import definition_titles, run_definitions
+from autoposter.collections.reconcile import load_labels, protected_label
+from autoposter.collections.sources import default_definitions
 from autoposter.config.schema import Config
 
 logger = logging.getLogger(__name__)
 
 LIBRARY_TYPES = {"movie": "Movie", "show": "Show"}
-
-# Oscar year collections are named dynamically ("Oscars Winners 2026"), so
-# unlike every other title this service manages they cannot be listed
-# statically. Recognise them by the pattern ``build_all`` always names them
-# with, rather than re-fetching the award dataset here a second time just to
-# learn which years it produced this pass.
-_OSCAR_YEAR_TITLE = re.compile(r"^Oscars Winners \d{4}$")
 
 # How a failed library is written into the summary. Kept as a constant because
 # ``summary_has_failure`` reads it back out: the one-shot CLI must exit
@@ -57,34 +45,32 @@ def summary_has_failure(summary: str) -> bool:
     return FAILURE_MARKER in summary
 
 
+def _library_definitions(config: Config, library_type: str) -> list:
+    """Everything a pass over this library reconciles: defaults, then config.
+
+    The operator's definitions are appended rather than merged, so an empty
+    ``definitions:`` list is exactly what shipped.
+    """
+    return [*default_definitions(config, library_type), *config.collections.definitions]
+
+
 def _managed_titles(collections, library_type: str, config: Config) -> set[str]:
     """Every title this service manages for one library.
 
-    ``derive_buckets`` only varies a bucket's *filter values* by the ratings
-    actually present in the library -- its titles come from the key/library-type
-    pair alone -- so an empty ``present`` set recovers every bucket title
-    without another Plex round trip.
+    Enumerated from the same definitions the pass runs, so a collection cannot
+    be built by one and called abandoned by the other. ``collections`` is only
+    read to recover dynamically-named titles (the Oscars years), so the caller
+    may pass the subset it is about to test rather than the whole library: a
+    title absent from that subset cannot be reported.
 
-    ``collections`` is only read to recover the dynamically-named Oscars year
-    titles, so the caller may pass the subset it is about to test rather than
-    the whole library: a title absent from that subset cannot be reported.
+    A definition targeting *another* library still contributes its title here.
+    That is the safe direction: the cost is a same-named collection in this
+    library going unreported, where the alternative is inviting the operator to
+    delete something a sibling library manages.
     """
-    titles = {bucket.title for bucket in derive_buckets(set(), library_type)}
-
-    if config.collections.separators:
-        titles.add(SEPARATOR_TITLE)
-
-    if config.collections.charts:
-        titles.update(title for title, _ in CHART_COLLECTIONS.get(library_type, []))
-
-    if config.collections.awards and library_type == "Movie":
-        titles.update(title for title, _, _ in AWARD_COLLECTIONS)
-        titles.update(
-            collection.title for collection in collections
-            if _OSCAR_YEAR_TITLE.match(collection.title)
-        )
-
-    return titles
+    return definition_titles(
+        _library_definitions(config, library_type), collections, library_type, config
+    )
 
 
 def unmanaged_prior_collections(section, library_type: str, config: Config) -> list[str]:
@@ -132,7 +118,11 @@ def unmanaged_prior_collections(section, library_type: str, config: Config) -> l
 
 
 async def reconcile_libraries(
-    session: AsyncSession, server, config: Config, http: httpx.AsyncClient
+    session: AsyncSession,
+    server,
+    config: Config,
+    http: httpx.AsyncClient,
+    run_index: int = 0,
 ) -> str:
     """Reconcile every configured library, committing after each one.
 
@@ -140,6 +130,10 @@ async def reconcile_libraries(
     action(s)"``. A library that fails is logged and recorded as ``"<name>:
     failed (<error>)"`` in the summary rather than aborting the remaining
     libraries.
+
+    ``run_index`` is which pass this is, for definitions gated to every Nth --
+    the scheduler derives it (``scheduler/jobs.py``). A hand-run pass leaves it
+    at 0, which runs everything: someone who ran the CLI meant to.
     """
     summaries: list[str] = []
     for name in config.collections.libraries:
@@ -150,24 +144,11 @@ async def reconcile_libraries(
                 logger.info("skipping %r: unsupported library type %r", name, section.type)
                 continue
 
-            actions = await reconcile_content_ratings(
+            actions = await run_definitions(
                 session, section, name, library_type,
-                config.collections.ownership_label,
-                dry_run=not config.collections.apply_to_plex,
-                adopt=config.collections.adopt,
-                adopt_from=config.collections.adopt_from,
-                adopt_removes_prior_label=config.collections.adopt_removes_prior_label,
-                separators=config.collections.separators,
-                protect_labels=config.collections.protect_labels,
-                http=http,
-                config=config,
+                _library_definitions(config, library_type),
+                config, http=http, run_index=run_index,
             )
-
-            if config.collections.charts or config.collections.awards:
-                actions += await build_all(
-                    http, session, section, name, library_type,
-                    config.collections.ownership_label, config,
-                )
 
             logger.info("%s: %d action(s)", name, len(actions))
             for action in actions:

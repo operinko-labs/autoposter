@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 _LANG_RE = re.compile(r"^[a-z]{2}$")
 
@@ -285,6 +285,30 @@ class CollectionDefinition(BaseModel):
                 + ", ".join(sorted(REGISTRY))
             )
         return v
+
+    @model_validator(mode="after")
+    def _membership_knobs_need_a_membership(self) -> "CollectionDefinition":
+        """A smart builder has no membership to cap or to append to.
+
+        Plex evaluates a smart collection's filter live, so ``limit`` and
+        ``sync_mode`` have nothing to act on there. Accepting them silently
+        would be the worst outcome: the operator would see a setting that reads
+        as applied and never is.
+        """
+        from autoposter.collections.builders import REGISTRY
+
+        builder = REGISTRY.get(self.builder)
+        if not getattr(builder, "smart", False):
+            return self
+        for field, value, default in (
+            ("limit", self.limit, None), ("sync_mode", self.sync_mode, "sync")
+        ):
+            if value != default:
+                raise ValueError(
+                    f"{field!r} does not apply to {self.builder!r}: it builds smart "
+                    "collections, whose membership Plex evaluates from a filter"
+                )
+        return self
 
 
 def definition_config_hash(definition: CollectionDefinition) -> str:

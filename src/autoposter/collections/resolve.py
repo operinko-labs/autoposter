@@ -20,7 +20,7 @@ Two rules the engine above depends on:
 import logging
 from typing import NamedTuple
 
-from autoposter.collections.builders.base import NAMESPACES, ExternalId
+from autoposter.collections.ids import NAMESPACES, ExternalId
 
 logger = logging.getLogger(__name__)
 

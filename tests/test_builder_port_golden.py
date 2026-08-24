@@ -34,8 +34,8 @@ import httpx
 from PIL import Image
 from plexapi.exceptions import NotFound
 
-from autoposter.collections.reconcile import reconcile_content_ratings
-from autoposter.collections.sources import build_all
+from autoposter.collections.engine import run_definitions
+from autoposter.collections.sources import default_definitions
 
 GOLDEN = Path("tests/fixtures/collections/golden_port.json")
 
@@ -279,29 +279,17 @@ def _config(config_factory, tmp_path, *, charts=True, awards=True, apply_to_plex
 async def _library_pass(session, section, library, library_type, config, http):
     """The per-library sequence ``service.reconcile_libraries`` runs.
 
-    THE SEAM. Pre-port that sequence is the smart Common Sense reconciler
-    followed by ``build_all``; the port replaces both with one
-    ``engine.run_definitions`` call over the same definitions. The recorded
-    strings must not move when it does.
+    THE SEAM. Pre-port that sequence was the smart Common Sense reconciler
+    followed by ``build_all``; the port replaced both with this one
+    ``engine.run_definitions`` call over the same definitions -- which is
+    exactly what ``reconcile_libraries`` now does per library. The recorded
+    strings did not move.
     """
-    actions = await reconcile_content_ratings(
+    return await run_definitions(
         session, section, library, library_type,
-        config.collections.ownership_label,
-        dry_run=not config.collections.apply_to_plex,
-        adopt=config.collections.adopt,
-        adopt_from=config.collections.adopt_from,
-        adopt_removes_prior_label=config.collections.adopt_removes_prior_label,
-        separators=config.collections.separators,
-        protect_labels=config.collections.protect_labels,
-        http=http,
-        config=config,
+        [*default_definitions(config, library_type), *config.collections.definitions],
+        config, http=http,
     )
-    if config.collections.charts or config.collections.awards:
-        actions += await build_all(
-            http, session, section, library, library_type,
-            config.collections.ownership_label, config,
-        )
-    return actions
 
 
 def _state(section) -> dict:

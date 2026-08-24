@@ -11,6 +11,7 @@ import itertools
 import logging
 import os
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -67,7 +68,14 @@ def make_collections_job(
         if not config.collections.enabled:
             return "skipped: collections disabled"
         server = await asyncio.to_thread(server_factory)
-        return await reconcile_libraries(session, server, config, http)
+        # Which pass this is, for definitions gated to every Nth run. Derived
+        # from the clock rather than counted in the database: it needs no
+        # schema, survives restarts and cannot drift between replicas, and the
+        # cost -- a skipped pass shifts which runs a gated definition lands on
+        # -- does not matter to something asking to run every other pass.
+        interval = max(config.scheduler.collections_hours * 3600, 1)
+        run_index = int(time.time() // interval)
+        return await reconcile_libraries(session, server, config, http, run_index=run_index)
 
     return Job(
         name="collections_reconcile",

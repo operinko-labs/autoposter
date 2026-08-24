@@ -27,7 +27,7 @@ from autoposter.collections.builders import (
     BuilderResult,
     register,
 )
-from autoposter.collections.builders.base import PlexIdBuilder
+from autoposter.collections.builders.base import PlexIdBuilder, SmartBuilder
 
 
 class _FakeBuilder:
@@ -65,8 +65,15 @@ def test_importing_the_package_is_enough_to_populate_the_registry():
 
 
 def test_every_registered_builder_satisfies_the_protocol():
+    """Either protocol: a builder produces ids for the engine to resolve, or --
+    the Common Sense buckets being the only family -- it is a smart builder that
+    applies itself. Nothing may be in the registry as neither, since the engine
+    dispatches on exactly this distinction."""
     for type_name, builder in REGISTRY.items():
-        assert isinstance(builder, Builder), type_name
+        if getattr(builder, "smart", False):
+            assert isinstance(builder, SmartBuilder), type_name
+        else:
+            assert isinstance(builder, Builder), type_name
         assert builder.type_name == type_name
 
 

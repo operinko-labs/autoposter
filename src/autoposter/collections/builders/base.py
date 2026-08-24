@@ -23,20 +23,33 @@ pydantic model for them (the ``params_model`` convention below) and validates
 silently-applied default. ``plex_id`` below is the worked example.
 """
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.collections.ids import NAMESPACES, ExternalId, Namespace
 from autoposter.providers.cache import ProviderCache
 
-# The id namespaces the resolver understands. "plex" is a rating key, which is
-# already the identity of an owned item -- it needs no external lookup, which is
-# what makes ``plex_id`` the trivial builder.
-Namespace = Literal["imdb", "tmdb", "tvdb", "plex"]
-NAMESPACES: frozenset[str] = frozenset({"imdb", "tmdb", "tvdb", "plex"})
-
-ExternalId = tuple[Namespace, str]
+# ``Namespace``/``NAMESPACES``/``ExternalId`` moved to ``collections/ids.py``:
+# ``resolve.py`` needs the same vocabulary, and importing it from here made the
+# resolver depend on the builder package it sits underneath. Re-exported so
+# nothing that reads them from the builder contract has to care.
+__all__ = [
+    "NAMESPACES",
+    "Builder",
+    "BuilderContext",
+    "BuilderResult",
+    "ExternalId",
+    "Namespace",
+    "PlexIdBuilder",
+    "PlexIdParams",
+    "REGISTRY",
+    "SmartBuilder",
+    "SmartContext",
+    "register",
+]
 
 
 @dataclass(frozen=True)
@@ -48,10 +61,19 @@ class BuilderResult:
     ``summary`` is a summary the builder itself derives -- the chart and award
     sources take theirs from Kometa's translations -- and is only used when the
     definition does not set one.
+
+    ``poster_kind``/``poster_key`` name the collection's default artwork
+    (``collections/posters.py``). They belong to the builder because the hosted
+    default is keyed by what the *source* calls the collection -- Kometa's chart
+    name, the award, the ceremony year -- not by whatever an operator titled it.
+    A builder that has no artwork to offer leaves both None and the collection
+    simply keeps no poster.
     """
 
     ids: list[ExternalId]
     summary: str | None = None
+    poster_kind: str | None = None
+    poster_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +86,12 @@ class BuilderContext:
     None because a builder like ``plex_id`` needs neither, and one that does
     need them fails loudly rather than fetching un-cached.
 
+    ``run_cache`` is scratch shared by every builder in one pass over one
+    library, and it exists for exactly one reason: the seven Oscars collections
+    all read the same ceremony dataset, which is one file and must stay one
+    fetch. A builder that memoises there must memoise the *failure* too, or a
+    dead source is re-fetched once per collection.
+
     Deliberately absent: the Plex section. Builders do not resolve, do not read
     the library and do not write.
     """
@@ -73,6 +101,34 @@ class BuilderContext:
     http: httpx.AsyncClient | None = None
     config: dict[str, Any] = field(default_factory=dict)
     cache: ProviderCache | None = None
+    run_cache: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SmartContext:
+    """What a *smart* builder gets instead of ``BuilderContext``.
+
+    The deliberate exception to "builders never touch Plex". A Plex-native smart
+    collection has no membership to produce -- Plex evaluates its filter live --
+    so there is no id list for the engine to resolve and apply, and the whole
+    reconcile is the builder's. The Common Sense age buckets are the only such
+    family (``collections/reconcile.py``), and 9c decides whether operators ever
+    get to define more; until then this stays a two-implementation escape hatch
+    rather than a second builder ecosystem.
+
+    A smart builder returns action strings from ``apply`` and ignores the
+    membership knobs -- ``limit`` and ``sync_mode`` are rejected on its
+    definitions at config load rather than silently doing nothing.
+    """
+
+    session: AsyncSession
+    section: object
+    library: str
+    library_type: str
+    label: str
+    config: Any
+    http: httpx.AsyncClient | None = None
+    dry_run: bool = True
 
 
 @runtime_checkable
@@ -89,10 +145,29 @@ class Builder(Protocol):
     async def build(self, ctx: BuilderContext) -> BuilderResult: ...
 
 
-REGISTRY: dict[str, Builder] = {}
+@runtime_checkable
+class SmartBuilder(Protocol):
+    """The other kind of registry entry: one that applies itself.
+
+    Marked by ``smart = True``, which is what the engine dispatches on. It
+    produces no ids -- see ``SmartContext`` for why -- so it gets the reconcile
+    context instead and returns the action strings itself, and it lists the
+    titles it manages so the leftovers report can enumerate definitions
+    uniformly.
+    """
+
+    type_name: str
+    smart: bool
+
+    async def apply(self, ctx: SmartContext) -> list[str]: ...
+
+    def titles(self, library_type: str, config: Any) -> set[str]: ...
 
 
-def register(builder: Builder) -> Builder:
+REGISTRY: dict[str, Builder | SmartBuilder] = {}
+
+
+def register(builder: Builder | SmartBuilder) -> Builder | SmartBuilder:
     """Add a builder under its ``type_name``. Returns it, for use as a decorator
     on a class that is instantiated at registration.
 
