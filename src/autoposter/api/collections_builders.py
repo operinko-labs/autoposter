@@ -49,7 +49,11 @@ from autoposter.collections.reconcile import (
     load_labels,
     protected_label,
 )
-from autoposter.collections.service import LIBRARY_TYPES, library_definitions
+from autoposter.collections.service import (
+    LIBRARY_TYPES,
+    build_source_clients,
+    library_definitions,
+)
 from autoposter.db.models import EventLog, ManagedCollection
 from autoposter.db.models import Session as SessionModel
 
@@ -152,6 +156,14 @@ async def preview_collections(
     server = await _connect(request)
     http = request.app.state.http
     summaries = getattr(request.app.state, "tmdb_facts", None)
+    cache = getattr(request.app.state, "provider_cache", None)
+    # Built per request, as the scheduled pass builds it per run: a preview
+    # whose source clients were fixed at startup would answer for a
+    # configuration the next real pass is not going to run.
+    secrets = getattr(request.app.state, "secrets", None)
+    sources = (
+        build_source_clients(config, secrets, http, cache) if secrets is not None else None
+    )
 
     definitions_out: list[dict] = []
     actions: list[str] = []
@@ -176,7 +188,7 @@ async def preview_collections(
                 run = await run_library(
                     session, section, name, library_type, definitions, config,
                     http=http, dry_run=True, sweep=body.title is None, preview=True,
-                    summaries=summaries,
+                    summaries=summaries, sources=sources, cache=cache,
                 )
             except Exception as error:
                 logger.exception("could not preview %r", name)

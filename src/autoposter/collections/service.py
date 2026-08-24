@@ -20,10 +20,15 @@ from dataclasses import dataclass, field
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.arr.client import RADARR, SONARR, ArrClient
+from autoposter.collections.builders import SourceClients
 from autoposter.collections.engine import definition_titles, run_library
 from autoposter.collections.reconcile import load_labels, protected_label
 from autoposter.collections.sources import default_definitions
-from autoposter.config.schema import Config
+from autoposter.config.schema import Config, Secrets
+from autoposter.facts.mdblist import MDBListClient
+from autoposter.providers.cache import ProviderCache
+from autoposter.providers.tvdb import TVDBClient
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +196,76 @@ def unmanaged_prior_collections(section, library_type: str, config: Config) -> l
     return sorted(leftovers)
 
 
+def build_source_clients(
+    config: Config,
+    secrets: Secrets,
+    http: httpx.AsyncClient,
+    cache: ProviderCache | None = None,
+) -> SourceClients:
+    """The pass's clients, built where the config and the secrets both are.
+
+    Called once per pass rather than once per process, unlike the artwork
+    providers: ``radarr``/``sonarr`` are live-editable config (they are not in
+    ``config/live.py``'s ``FROZEN_SECTIONS``), so a bundle built at startup
+    would tell an operator who just enabled Radarr that Radarr is not
+    configured until the next restart. Building it costs no network -- every
+    client here defers its first request, and ``plex_account`` is a factory
+    precisely because ``MyPlexAccount`` does not.
+
+    Absent means None: an unconfigured service is not a stand-in that answers
+    nothing, it is nothing, and the builder that needed it raises. See
+    ``SourceClients``.
+    """
+    ttl = config.providers.cache_ttl_seconds
+    return SourceClients(
+        # MDBList: None rather than the ``NullMDBListClient`` app.py falls
+        # back to. That stand-in exists so one metadata field can go missing
+        # quietly; a list builder handed one would fail on a missing attribute
+        # instead of reporting that MDBList is not configured.
+        mdblist=(
+            MDBListClient(
+                secrets.mdblist_apikey, http, cache=cache, cache_ttl_seconds=ttl
+            )
+            if secrets.mdblist_apikey else None
+        ),
+        tvdb=TVDBClient(secrets.tvdb_apikey, http, cache=cache, cache_ttl_seconds=ttl),
+        radarr=_arr_client(config.radarr, secrets.radarr_apikey, RADARR, http),
+        sonarr=_arr_client(config.sonarr, secrets.sonarr_apikey, SONARR, http),
+        plex_account=_plex_account_factory(secrets.plex_account_token),
+    )
+
+
+def _arr_client(service, api_key: str, kind, http: httpx.AsyncClient) -> ArrClient | None:
+    """One Radarr/Sonarr client, or None if this deployment has no such service.
+
+    Both halves matter: ``enabled`` is the operator's switch, and a blank
+    ``base_url`` or api key is a half-configured service whose every request
+    would fail with a confusing error rather than "not configured".
+    """
+    if not (service.enabled and service.base_url and api_key):
+        return None
+    return ArrClient(http, service.base_url, api_key, kind)
+
+
+def _plex_account_factory(token: str):
+    """A callable that connects to plex.tv, or None when there is no token.
+
+    Lazy on purpose. ``MyPlexAccount(token=...)`` performs the request in its
+    constructor, so building it here would put a plex.tv round trip -- and a
+    plex.tv outage -- in the path of every pass, including passes with no
+    account-scoped definition in them at all.
+    """
+    if not token:
+        return None
+
+    def account():
+        from plexapi.myplex import MyPlexAccount
+
+        return MyPlexAccount(token=token)
+
+    return account
+
+
 async def reconcile_libraries(
     session: AsyncSession,
     server,
@@ -198,6 +273,8 @@ async def reconcile_libraries(
     http: httpx.AsyncClient,
     run_index: int = 0,
     summaries=None,
+    sources: SourceClients | None = None,
+    cache: ProviderCache | None = None,
 ) -> ReconcileResult:
     """Reconcile every configured library, committing after each one.
 
@@ -217,6 +294,11 @@ async def reconcile_libraries(
     borrows its summary through. Optional everywhere: without it such a
     definition reports that it could not, and every other definition is
     unaffected.
+
+    ``sources`` and ``cache`` are threaded the same way and for the same
+    reason -- see ``build_source_clients``, which is what the callers with
+    secrets in hand build the bundle with. Both are optional here so a caller
+    that has neither still reconciles everything that needs neither.
     """
     result = ReconcileResult()
     for name in config.collections.libraries:
@@ -231,7 +313,7 @@ async def reconcile_libraries(
                 session, section, name, library_type,
                 library_definitions(config, library_type),
                 config, http=http, run_index=run_index, sweep=True,
-                summaries=summaries,
+                summaries=summaries, sources=sources, cache=cache,
             )
             actions = run.actions
 

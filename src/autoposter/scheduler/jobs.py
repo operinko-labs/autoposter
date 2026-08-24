@@ -27,7 +27,11 @@ from autoposter.arr.sync import (
     enqueue_unknown_items,
     sync_section,
 )
-from autoposter.collections.service import CollectionsPassFailed, reconcile_libraries
+from autoposter.collections.service import (
+    CollectionsPassFailed,
+    build_source_clients,
+    reconcile_libraries,
+)
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.schema import RadarrConfig, Secrets, SonarrConfig
 from autoposter.db.models import ItemFacts, MediaItem, Render
@@ -43,6 +47,8 @@ def make_collections_job(
     server_factory: Callable[[], object],
     http: httpx.AsyncClient,
     summaries=None,
+    secrets: Secrets | None = None,
+    cache=None,
 ) -> Job:
     """Build the scheduled collections-reconcile job.
 
@@ -69,6 +75,13 @@ def make_collections_job(
     configured with ``tmdb_summary:`` borrows its summary through. Closured
     rather than read per run: it wraps the process's HTTP client and provider
     cache, neither of which a config swap replaces.
+
+    ``secrets`` and ``cache`` are what the builders' own clients are built
+    from -- per run, not closured, because the config half of that (whether
+    Radarr is enabled, and at which URL) is live-editable. Without ``secrets``
+    the pass still runs, with every source client absent: the shipped
+    definitions need none of them, and a definition that does reports itself
+    failed rather than taking the pass down.
     """
 
     async def run(session: AsyncSession) -> str:
@@ -83,8 +96,13 @@ def make_collections_job(
         # -- does not matter to something asking to run every other pass.
         interval = max(config.scheduler.collections_hours * 3600, 1)
         run_index = int(time.time() // interval)
+        sources = (
+            build_source_clients(config, secrets, http, cache)
+            if secrets is not None else None
+        )
         result = await reconcile_libraries(
             session, server, config, http, run_index=run_index, summaries=summaries,
+            sources=sources, cache=cache,
         )
         # Raised, not returned, because ``last_status`` is decided by whether
         # this coroutine raised (scheduler/core.py). Returning the summary of a

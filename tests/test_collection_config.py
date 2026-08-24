@@ -12,6 +12,8 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from autoposter.collections.builders import REGISTRY, BuilderResult, register
+from autoposter.collections.sources import AWARD_YEARS_TITLE
 from autoposter.config.live import frozen_reason
 from autoposter.config.loader import build_config, load_config, read_config_document
 from autoposter.config.schema import (
@@ -21,6 +23,29 @@ from autoposter.config.schema import (
 )
 
 EXAMPLE_CONFIG = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+
+
+class _FreeFormBuilder:
+    """A builder that declares no ``params_model``.
+
+    Params are the builder's own business, and a builder with no model has
+    made no claim about them -- so the load-time check has nothing to check
+    and must let anything through.
+    """
+
+    type_name = "config_tests_free_form"
+
+    async def build(self, ctx) -> BuilderResult:
+        return BuilderResult(ids=[])
+
+
+@pytest.fixture
+def free_form_builder():
+    register(_FreeFormBuilder())
+    try:
+        yield _FreeFormBuilder.type_name
+    finally:
+        del REGISTRY[_FreeFormBuilder.type_name]
 
 
 def test_collections_default_to_reporting_without_writing():
@@ -139,14 +164,18 @@ def test_a_schedule_window_outside_the_calendar_is_rejected(month):
         )
 
 
-def test_the_definition_hash_ignores_key_order():
+def test_the_definition_hash_ignores_key_order(free_form_builder):
     """The hash detects edits to a definition. YAML key order is not an edit --
-    re-ordering keys in the file must not orphan the live collection."""
+    re-ordering keys in the file must not orphan the live collection.
+
+    Built on a builder with no ``params_model``: two keys are what makes this
+    test mean anything, and a params model that accepted a second, arbitrary
+    key would not be doing its job (see the load-time checks below)."""
     one = CollectionDefinition(
-        title="X", builder="plex_id", params={"ids": ["1", "2"], "extra": 1}
+        title="X", builder=free_form_builder, params={"ids": ["1", "2"], "extra": 1}
     )
     other = CollectionDefinition(
-        builder="plex_id", params={"extra": 1, "ids": ["1", "2"]}, title="X"
+        builder=free_form_builder, params={"extra": 1, "ids": ["1", "2"]}, title="X"
     )
 
     assert definition_config_hash(one) == definition_config_hash(other)
@@ -169,6 +198,81 @@ def test_the_definition_hash_changes_when_a_setting_changes():
 
     hashes = {definition_config_hash(d) for d in [base, *changed]}
     assert len(hashes) == len(changed) + 1
+
+
+# --- the builder's own params, checked at config load ----------------------
+#
+# `builder:` has been validated here since the beginning, for the reason in
+# the block comment above: a typo that surfaced inside a scheduled reconcile
+# reads as "that collection stopped updating", hours later. A mis-spelled
+# *param* was exactly the same failure one level down -- the builder rejected
+# it mid-pass, the engine contained it as a dead source, and the operator saw
+# one collection quietly not built. The builder's `params_model` says what it
+# takes, so the config can be held to it at load.
+
+
+def test_a_definition_whose_params_the_builder_rejects_fails_at_config_load():
+    document = _document_with_definitions([
+        {"title": "Hand Picked", "builder": "plex_id",
+         "params": {"ids": ["1"], "colour": "red"}}
+    ])
+
+    with pytest.raises(ValidationError, match="Hand Picked"):
+        build_config(document)
+
+
+def test_the_params_error_names_the_offending_field():
+    """The definition's title says which collection, the field says which key.
+    Neither alone is enough to fix a config with twenty definitions in it."""
+    document = _document_with_definitions([
+        {"title": "Hand Picked", "builder": "plex_id",
+         "params": {"ids": ["1"], "colour": "red"}}
+    ])
+
+    with pytest.raises(ValidationError, match="colour"):
+        build_config(document)
+
+
+def test_a_param_of_the_wrong_type_fails_at_config_load():
+    document = _document_with_definitions(
+        [{"title": "Hand Picked", "builder": "plex_id", "params": {"ids": "tt0000001"}}]
+    )
+
+    with pytest.raises(ValidationError, match="ids"):
+        build_config(document)
+
+
+def test_a_definition_missing_a_required_param_fails_at_config_load():
+    """``plex_id`` with no ids builds nothing, and nothing is the reconciler's
+    "make no changes" -- so without this it would not even fail visibly."""
+    document = _document_with_definitions(
+        [{"title": "Hand Picked", "builder": "plex_id", "params": {}}]
+    )
+
+    with pytest.raises(ValidationError, match="ids"):
+        build_config(document)
+
+
+def test_a_builder_with_no_params_model_takes_any_params(free_form_builder):
+    """Params are the builder's business; a builder that declares no model has
+    claimed nothing for the config to check."""
+    definition = CollectionDefinition(
+        title="Anything", builder=free_form_builder, params={"whatever": [1, 2]}
+    )
+
+    assert definition.params == {"whatever": [1, 2]}
+
+
+def test_an_expanding_definitions_placeholder_is_not_held_to_the_params_model():
+    """The placeholder an expanding builder stands behind is never a collection
+    and never carries the params of one -- ``imdb_award_years`` takes a year,
+    and the year is only known once the dataset has been read. Holding the
+    placeholder to that model would refuse the shipped default config."""
+    definition = CollectionDefinition(
+        title=AWARD_YEARS_TITLE, builder="imdb_award_years"
+    )
+
+    assert definition.params == {}
 
 
 def test_the_example_config_declares_definitions_as_a_real_key():

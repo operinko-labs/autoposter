@@ -16,7 +16,9 @@ from autoposter.collections.builders.base import (
     ExternalId,
     Namespace,
     PlexIdBuilder,
+    PlexSectionAccess,
     SmartContext,
+    SourceClients,
     register,
 )
 from autoposter.collections.builders.cs_bucket import CsBucketBuilder
@@ -40,6 +42,8 @@ __all__ = [
     "BuilderResult",
     "ExternalId",
     "Namespace",
+    "PlexSectionAccess",
     "SmartContext",
+    "SourceClients",
     "register",
 ]

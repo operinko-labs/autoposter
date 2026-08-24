@@ -23,10 +23,16 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from autoposter.collections.builders import REGISTRY, BuilderContext, BuilderResult, register
-from autoposter.collections.engine import definition_titles, run_definitions
+from autoposter.collections.builders import (
+    REGISTRY,
+    BuilderContext,
+    BuilderResult,
+    SourceClients,
+    register,
+)
+from autoposter.collections.engine import _expand, definition_titles, run_definitions
 from autoposter.collections.service import _managed_titles
-from autoposter.collections.sources import default_definitions
+from autoposter.collections.sources import AWARD_YEARS_TITLE, default_definitions
 from autoposter.config.schema import CollectionDefinition
 
 LABEL = "autoposter"
@@ -401,3 +407,230 @@ async def test_a_dead_oscars_dataset_is_asked_for_once_too(session):
         "'Oscars Best Director Winners': source returned no items; "
         "leaving the collection untouched",
     ], "a dead dataset names no year collections -- it does not know the years"
+
+
+# --- what the engine puts on a context ------------------------------------
+#
+# The bundle and the cache are threaded exactly the way ``summaries`` already
+# is: built where config, secrets and the HTTP client all exist, handed down
+# per pass. These pin that they arrive, because a builder reaching for a
+# client the engine forgot to pass would report "not configured" against a
+# service that is.
+
+
+class _Probe:
+    """A builder that records the context it was handed and builds nothing."""
+
+    def __init__(self, type_name="test_probe"):
+        self.type_name = type_name
+        self.ctx = None
+
+    async def build(self, ctx: BuilderContext) -> BuilderResult:
+        self.ctx = ctx
+        return BuilderResult(ids=[])
+
+
+class _CountingSection(FakeSection):
+    """A section that counts the full walks ``section.all()`` costs."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.walks = 0
+
+    def all(self):
+        self.walks += 1
+        return super().all()
+
+
+class _PlexReader:
+    """A builder that reads the library through the bundle's Plex accessor."""
+
+    def __init__(self, type_name):
+        self.type_name = type_name
+        self.index = None
+        self.section = None
+
+    async def build(self, ctx: BuilderContext) -> BuilderResult:
+        self.index = ctx.sources.plex.owned_index()
+        self.section = ctx.sources.plex.section()
+        return BuilderResult(ids=[("plex", "m1")])
+
+
+async def test_the_engine_hands_every_builder_the_source_bundle(session, registry_entry):
+    """One bundle per pass reaches the builder, clients and all."""
+    probe = registry_entry(_Probe())
+    bundle = SourceClients(mdblist=object(), tvdb=object(), radarr=object())
+    section = FakeSection([("m1", ["imdb://tt1"])])
+
+    await _run(
+        session, section,
+        [CollectionDefinition(title="Probe", builder="test_probe")],
+        _config(), sources=bundle,
+    )
+
+    assert probe.ctx.sources.mdblist is bundle.mdblist
+    assert probe.ctx.sources.tvdb is bundle.tvdb
+    assert probe.ctx.sources.radarr is bundle.radarr
+
+
+async def test_a_builder_gets_a_bundle_even_when_the_caller_passed_none(
+    session, registry_entry
+):
+    """A direct caller with no clients to offer must not hand builders a None
+    bundle: the "is this client configured" check belongs to one field, not to
+    the bundle and then the field."""
+    probe = registry_entry(_Probe("test_probe_no_bundle"))
+    section = FakeSection([("m1", ["imdb://tt1"])])
+
+    await _run(
+        session, section,
+        [CollectionDefinition(title="Probe", builder="test_probe_no_bundle")],
+        _config(),
+    )
+
+    assert isinstance(probe.ctx.sources, SourceClients)
+    assert probe.ctx.sources.mdblist is None
+
+
+async def test_the_engine_hands_every_builder_the_provider_cache(session, registry_entry):
+    """``ctx.cache`` was documented as never populated. It is now the process's
+    real cache, which is what makes a list fetch through ``fetch_json`` cached
+    and credential-stripped rather than raw."""
+    probe = registry_entry(_Probe("test_probe_cache"))
+    cache = object()
+    section = FakeSection([("m1", ["imdb://tt1"])])
+
+    await _run(
+        session, section,
+        [CollectionDefinition(title="Probe", builder="test_probe_cache")],
+        _config(), cache=cache,
+    )
+
+    assert probe.ctx.cache is cache
+
+
+async def test_the_plex_accessor_shares_the_engines_owned_index(session, registry_entry):
+    """The index costs a full ``section.all()``. Two builders reading it, plus
+    the engine resolving both their results, is still one walk -- an accessor
+    that built its own would double the most expensive call in a pass."""
+    first = registry_entry(_PlexReader("test_plex_reader_one"))
+    second = registry_entry(_PlexReader("test_plex_reader_two"))
+    section = _CountingSection([("m1", ["imdb://tt1"])])
+
+    await _run(
+        session, section,
+        [
+            CollectionDefinition(title="One", builder="test_plex_reader_one"),
+            CollectionDefinition(title="Two", builder="test_plex_reader_two"),
+        ],
+        _config(),
+    )
+
+    assert section.walks == 1, "the accessor must reuse the engine's lazy index"
+    assert first.index is second.index
+    assert first.section is section
+    assert "m1" in first.index["plex"]
+
+
+# --- roadmap row 141: expansion drops the placeholder's settings -----------
+#
+# An expanding definition is the only definition an operator writes for a
+# family of collections, so every per-collection setting on it -- labels, the
+# sort title, the member cap -- is a setting for the whole family. Rebuilding
+# the units as bare definitions silently dropped all of them.
+
+_RIDE_ALONGS = {
+    "labels": ["Awards"],
+    "label_sync": True,
+    "item_label": ["Oscar Winner"],
+    "sort_title": "!110_Oscars",
+    "collection_mode": "hide",
+    "visible_library": True,
+    "visible_home": False,
+    "visible_shared": False,
+    "hub_priority": 0,
+    "limit": 25,
+    "sync_mode": "append",
+    "tmdb_summary": 42,
+}
+
+
+class _Expander:
+    """An expanding builder returning whatever units the test gave it."""
+
+    def __init__(self, units, type_name="test_expander"):
+        self.type_name = type_name
+        self._units = units
+
+    async def expand(self, ctx: BuilderContext) -> list[CollectionDefinition]:
+        return list(self._units)
+
+    async def build(self, ctx: BuilderContext) -> BuilderResult:
+        return BuilderResult(ids=[])
+
+
+def _unit(**overrides) -> CollectionDefinition:
+    return CollectionDefinition(
+        title="Unit", builder="plex_id", params={"ids": ["1"]}, **overrides
+    )
+
+
+async def test_expanded_definitions_inherit_the_placeholders_settings():
+    """Row 141. Every field that describes the *collection* rather than its
+    membership source rides along; the expander still owns its own title,
+    params and summary."""
+    placeholder = CollectionDefinition(
+        title="Placeholder", builder="plex_id", params={"ids": ["1"]},
+        summary="the placeholder's own", **_RIDE_ALONGS,
+    )
+
+    [expanded] = await _expand(
+        _Expander([_unit(summary="the unit's own")]), placeholder,
+        BuilderContext(library="Movies", library_type="Movie"),
+    )
+
+    assert {name: getattr(expanded, name) for name in _RIDE_ALONGS} == _RIDE_ALONGS
+    assert expanded.title == "Unit"
+    assert expanded.summary == "the unit's own"
+
+
+async def test_an_expander_that_sets_a_field_itself_keeps_its_own_value():
+    """Inheritance fills gaps; it never overrides. A builder that names a sort
+    title per unit knows something the placeholder does not."""
+    placeholder = CollectionDefinition(
+        title="Placeholder", builder="plex_id", params={"ids": ["1"]},
+        sort_title="!110_Placeholder", limit=25, labels=["Awards"],
+    )
+
+    [expanded] = await _expand(
+        _Expander([_unit(sort_title="!110_Unit", limit=5)]), placeholder,
+        BuilderContext(library="Movies", library_type="Movie"),
+    )
+
+    assert expanded.sort_title == "!110_Unit"
+    assert expanded.limit == 5
+    assert expanded.labels == ["Awards"], "the fields it did not set still ride along"
+
+
+async def test_the_oscars_year_collections_inherit_the_placeholders_settings():
+    """The live case: ``imdb_award_years`` is the one shipped expanding
+    builder, and an operator labelling or capping it means all of its year
+    collections. Its own per-year summary and sort are untouched."""
+    placeholder = CollectionDefinition(
+        title=AWARD_YEARS_TITLE, builder="imdb_award_years",
+        labels=["Awards"], sort_title="!110_Oscars", limit=25,
+    )
+
+    async with httpx.AsyncClient(transport=_requests_for([])) as http:
+        units = await _expand(
+            REGISTRY["imdb_award_years"], placeholder,
+            BuilderContext(library="Movies", library_type="Movie", http=http),
+        )
+
+    assert units, "the fixture holds at least one recent ceremony"
+    for unit in units:
+        assert unit.labels == ["Awards"]
+        assert unit.sort_title == "!110_Oscars"
+        assert unit.limit == 25
+        assert unit.sort == "release", "the builder's own choice survives"
+        assert unit.summary.startswith("Academy Awards")

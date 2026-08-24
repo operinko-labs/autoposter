@@ -31,7 +31,7 @@ sweep (``_sweep``) -- the only code in this service that deletes a collection,
 off by default, capped, and refused outright past the cap.
 """
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 import httpx
@@ -42,13 +42,16 @@ from autoposter.collections.builders import REGISTRY
 from autoposter.collections.builders.base import (
     BuilderContext,
     BuilderResult,
+    PlexSectionAccess,
     SmartContext,
+    SourceClients,
 )
 from autoposter.collections.lists import member_diff, reconcile_list_collection
 from autoposter.collections.reconcile import has_label, load_labels, protected_label
 from autoposter.collections.resolve import build_owned_index, resolve_external
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import EventLog, ManagedCollection
+from autoposter.providers.cache import ProviderCache
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +121,32 @@ def _due(definition: CollectionDefinition, run_index: int, now: datetime) -> boo
     return not (schedule.months and now.month not in schedule.months)
 
 
+# The fields an expanded definition inherits from the placeholder it came
+# from (roadmap row 141). Every one of them describes the *collection* -- how
+# it is labelled, sorted, capped, pinned -- rather than where its membership
+# comes from, and an expanding definition is the only definition an operator
+# gets to write for the family, so a setting on it is a setting for all of
+# them. Deliberately not here: ``title``, ``builder``, ``params``, ``summary``,
+# ``sort``, ``libraries`` and ``schedule``. The first five are what the
+# expander exists to decide per unit; the last two were already honoured on
+# the placeholder before expansion ever happened, and re-applying them would
+# be a second, differently-scoped gate.
+_INHERITED_BY_EXPANSION = (
+    "labels",
+    "label_sync",
+    "item_label",
+    "sort_title",
+    "collection_mode",
+    "visible_library",
+    "visible_home",
+    "visible_shared",
+    "hub_priority",
+    "limit",
+    "sync_mode",
+    "tmdb_summary",
+)
+
+
 async def _expand(
     builder, definition: CollectionDefinition, ctx: BuilderContext
 ) -> list[CollectionDefinition]:
@@ -126,10 +155,40 @@ async def _expand(
     Almost always itself. A builder whose collections are named at run time --
     the Oscars years -- implements ``expand`` instead, and its own definition is
     a placeholder that never becomes a collection.
+
+    What the expander returns is completed from the placeholder rather than
+    taken as the whole truth: an expanding builder knows the title, the params
+    and the summary of each unit, and knows nothing about how the operator
+    wanted the family labelled or capped. Before this, those settings were
+    silently dropped -- the definition loaded, the collections were built, and
+    every per-collection setting on it did nothing (roadmap row 141).
     """
     if not hasattr(builder, "expand"):
         return [definition]
-    return await builder.expand(ctx)
+    return [_completed(definition, unit) for unit in await builder.expand(ctx)]
+
+
+def _completed(
+    placeholder: CollectionDefinition, unit: CollectionDefinition
+) -> CollectionDefinition:
+    """One expanded unit, with the placeholder's settings filled in.
+
+    "Set by the expander" is ``model_fields_set``, not "differs from the
+    default": a builder that deliberately expands to ``sync_mode: sync`` under
+    a placeholder asking for ``append`` means it, and comparing against
+    defaults could not tell that from silence.
+
+    ``model_copy`` rather than a re-validated construction, because both
+    halves are already-validated models and re-running the definition
+    validators here would hold an expanded unit to rules that were checked on
+    the placeholder at config load.
+    """
+    update = {
+        name: getattr(placeholder, name)
+        for name in _INHERITED_BY_EXPANSION
+        if name not in unit.model_fields_set
+    }
+    return unit.model_copy(update=update) if update else unit
 
 
 async def run_definitions(
@@ -145,12 +204,14 @@ async def run_definitions(
     run_index: int = 0,
     now: datetime | None = None,
     summaries=None,
+    sources: SourceClients | None = None,
+    cache: ProviderCache | None = None,
 ) -> list[str]:
     """``run_library``'s action strings, for callers that want only those."""
     run = await run_library(
         session, section, library, library_type, definitions, config,
         http=http, label=label, dry_run=dry_run, run_index=run_index, now=now,
-        summaries=summaries,
+        summaries=summaries, sources=sources, cache=cache,
     )
     return run.actions
 
@@ -170,6 +231,8 @@ async def run_library(
     sweep: bool = False,
     preview: bool = False,
     summaries=None,
+    sources: SourceClients | None = None,
+    cache: ProviderCache | None = None,
 ) -> LibraryRun:
     """Reconcile every definition that applies to this library, in order.
 
@@ -188,6 +251,12 @@ async def run_library(
     ``summaries`` is the TMDB facts client a ``tmdb_summary:`` definition
     borrows its summary through (roadmap row 30). Optional, and its absence is
     reported rather than raised: every other part of a pass works without it.
+
+    ``sources`` is the pass's ``SourceClients`` bundle and ``cache`` the
+    process's provider cache, both threaded in the same way and for the same
+    reason as ``summaries``: they are built where the config and the secrets
+    are, which is not here. Omitting ``sources`` is a bundle with nothing
+    configured, not a missing one -- see ``BuilderContext.sources``.
     """
     label = config.collections.ownership_label if label is None else label
     if dry_run is None:
@@ -212,13 +281,25 @@ async def run_library(
             existing = {c.title: c for c in section.collections()}
         return existing
 
+    # The pass's bundle, with this library's Plex accessor bound onto it. The
+    # accessor closes over ``owned_index`` above rather than over ``section``
+    # alone, which is the whole point: a builder listing what the library owns
+    # reads the index the engine was going to build anyway, so it costs no
+    # second ``section.all()``.
+    bound_sources = replace(
+        sources or SourceClients(),
+        plex=PlexSectionAccess(section, owned_index),
+    )
+
     def context(definition: CollectionDefinition) -> BuilderContext:
         return BuilderContext(
             library=library,
             library_type=library_type,
             http=http,
             config=definition.params,
+            cache=cache,
             run_cache=run_cache,
+            sources=bound_sources,
         )
 
     for definition in definitions:

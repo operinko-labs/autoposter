@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 _LANG_RE = re.compile(r"^[a-z]{2}$")
 
@@ -52,6 +52,17 @@ class Secrets(BaseModel):
     # newer. Already base64 of `robot$name:secret`, ready to be the value of an
     # `Authorization: Basic` header; see api/version.py.
     harbor_token: str = ""
+    # Soft secret, same reasoning as mdblist_apikey: only the collection
+    # builders that ask plex.tv about the *account* (the watchlist) need it,
+    # and a deployment that builds no such collection must still boot.
+    #
+    # Deliberately a second token rather than reusing plex_token: that one is
+    # the server's, and a server-scoped token is perfectly valid for every
+    # other thing this service does while being rejected by plex.tv -- which
+    # is exactly why plex/health.py's refresh is written never to let a
+    # plex.tv failure touch anything. Minted by the PIN CLI
+    # (``python -m autoposter.plex.auth``).
+    plex_account_token: str = ""
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -66,6 +77,7 @@ class Secrets(BaseModel):
         values["sonarr_apikey"] = os.environ.get("AUTOPOSTER_SONARR_APIKEY", "")
         values["admin_password_hash"] = os.environ.get("AUTOPOSTER_ADMIN_PASSWORD_HASH", "")
         values["harbor_token"] = os.environ.get("AUTOPOSTER_HARBOR_TOKEN", "")
+        values["plex_account_token"] = os.environ.get("AUTOPOSTER_PLEX_ACCOUNT_TOKEN", "")
         return cls(**values)
 
 
@@ -329,6 +341,53 @@ class CollectionDefinition(BaseModel):
                 + ", ".join(sorted(REGISTRY))
             )
         return v
+
+    @model_validator(mode="after")
+    def _params_must_satisfy_the_builders_own_model(self) -> "CollectionDefinition":
+        """A builder that declares ``params_model`` is held to it here.
+
+        Same argument as ``builder`` above, one level down: a mis-spelled
+        param used to be caught by the builder itself, mid-pass, hours after
+        the edit -- where the engine contains it as a dead source and the only
+        symptom is one collection quietly not being built. The model is a
+        statement of what the builder takes, so the config can be checked
+        against it at the moment it loads.
+
+        The builders keep validating ``ctx.config`` themselves. This is not a
+        replacement for that: a builder is also called directly (tests, and
+        the expanded definitions an expanding builder constructs), and
+        defence in depth is cheap when the check is a model that already
+        exists.
+
+        Two things are deliberately not checked. A builder with no
+        ``params_model`` has made no claim about its params, so there is
+        nothing to hold it to. And an *expanding* builder's model describes
+        the units it expands into, not the placeholder an operator writes --
+        ``imdb_award_years`` takes a year, and no placeholder can name one,
+        which is the whole reason it expands.
+        """
+        from autoposter.collections.builders import REGISTRY
+
+        builder = REGISTRY.get(self.builder)
+        model = getattr(builder, "params_model", None)
+        if model is None or hasattr(builder, "expand"):
+            return self
+        try:
+            model.model_validate(self.params)
+        except ValidationError as error:
+            # The title says which collection and the field says which key.
+            # An operator with twenty definitions needs both to fix one.
+            details = "; ".join(
+                "%s: %s" % (
+                    ".".join(str(part) for part in item["loc"]) or "params", item["msg"]
+                )
+                for item in error.errors()
+            )
+            raise ValueError(
+                f"{self.title!r} does not configure the {self.builder!r} builder "
+                f"correctly -- {details}"
+            ) from error
+        return self
 
     @model_validator(mode="after")
     def _membership_knobs_need_a_membership(self) -> "CollectionDefinition":

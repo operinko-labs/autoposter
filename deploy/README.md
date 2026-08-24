@@ -113,6 +113,14 @@ variables:
   401s.
 - `AUTOPOSTER_HARBOR_TOKEN` — optional, same posture as the MDBList key. See
   "The sidebar's update check" below.
+- `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` — optional, same posture as the MDBList key.
+  A plex.tv *account* token, for the collection builders whose source is the
+  account rather than the server. Deliberately not `AUTOPOSTER_PLEX_TOKEN`:
+  that one may be scoped to the server, which is fine for everything else this
+  service does and is rejected by plex.tv. Mint one with
+  `python -m autoposter.plex.auth`, which prints it exactly once and persists
+  it nowhere. Unset, only those definitions report themselves failed; the rest
+  of the pass is unaffected.
 
 ### The sidebar's update check
 

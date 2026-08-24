@@ -123,6 +123,10 @@ def create_app(
         # None (rather than a cache with ttl_seconds=0) when caching is disabled, so
         # _build_providers never issues a DB round trip for a config that opted out.
         cache = ProviderCache(session_factory) if config.providers.cache_ttl_seconds > 0 else None
+        # Published because the collections preview endpoint builds that
+        # pass's source clients per request, the way the scheduled job builds
+        # them per run -- see collections.service.build_source_clients.
+        app.state.provider_cache = cache
         app.state.providers = _build_providers(config, secrets, http, cache)
         app.state.tmdb_facts = TMDBFactsClient(
             secrets.tmdb_token, http, cache=cache,
@@ -225,6 +229,7 @@ def create_app(
             if config.collections.enabled:
                 scheduler_jobs.append(make_collections_job(
                     holder, server_factory, http, summaries=app.state.tmdb_facts,
+                    secrets=secrets, cache=cache,
                 ))
             scheduler_jobs.append(make_drift_job(holder))
             scheduler_jobs.append(make_cleanup_job(holder))

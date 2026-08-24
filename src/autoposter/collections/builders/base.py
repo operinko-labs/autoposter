@@ -1,9 +1,11 @@
 """The builder contract: what produces a collection's membership.
 
 A builder answers one question -- "which titles belong in this collection?" --
-and answers it as an ordered list of namespaced external ids. It never sees a
-Plex section: turning ids into owned items is the engine's job, so a builder is
-a pure fetch-and-translate step that can be tested without a server.
+and answers it as an ordered list of namespaced external ids. Turning those ids
+into owned items is the engine's job, so a builder is a fetch-and-translate
+step that can be tested without a server -- the few builders whose source *is*
+the library read it through ``SourceClients.plex``, read-only and through the
+engine's own index, and still hand back ids for the engine to resolve.
 
 Two rules the rest of the engine depends on:
 
@@ -29,6 +31,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.collections.builders.sources_bundle import PlexSectionAccess, SourceClients
 from autoposter.collections.ids import NAMESPACES, ExternalId, Namespace
 from autoposter.providers.cache import ProviderCache
 
@@ -45,9 +48,11 @@ __all__ = [
     "Namespace",
     "PlexIdBuilder",
     "PlexIdParams",
+    "PlexSectionAccess",
     "REGISTRY",
     "SmartBuilder",
     "SmartContext",
+    "SourceClients",
     "register",
 ]
 
@@ -82,14 +87,17 @@ class BuilderContext:
 
     ``config`` is the definition's ``params`` block, not the application config.
     ``http`` is the shared client, passed through by every ``engine.py`` call
-    site. ``cache`` names the provider response cache ``providers.fetch.fetch_json``
-    takes alongside it -- but unlike ``http``, nothing populates it: the engine
-    itself holds no ``ProviderCache``, only ``summaries``
-    (a ``TMDBFactsClient`` used solely for ``tmdb_summary:``, not this cache),
-    so every ``BuilderContext`` gets ``cache=None`` regardless of what a
-    builder asks for, and no builder reads ``ctx.cache`` today. Wiring a real
-    cache through here is future work, not a promise this field currently
-    keeps.
+    site. ``cache`` is the process's ``ProviderCache``, the one
+    ``providers.fetch.fetch_json`` takes alongside ``http`` -- so a list fetch
+    written through ``fetch_json`` is cached and credential-stripped for free.
+    None means "do not cache", which is what a direct caller gets and what the
+    process itself has when ``providers.cache_ttl_seconds`` is 0.
+
+    ``sources`` is the bundle of constructed clients (``SourceClients``),
+    never None: a builder checks the one client it needs, not the bundle and
+    then the client. This is the deliberate relaxation of the rule the rest of
+    this docstring keeps -- what a builder reaches is a client that already
+    holds its credential, never the credential, never the application config.
 
     ``run_cache`` is scratch shared by every builder in one pass over one
     library, and it exists for exactly one reason: the seven Oscars collections
@@ -97,8 +105,11 @@ class BuilderContext:
     fetch. A builder that memoises there must memoise the *failure* too, or a
     dead source is re-fetched once per collection.
 
-    Deliberately absent: the Plex section. Builders do not resolve, do not read
-    the library and do not write.
+    Still absent: application config, raw secrets, and any way to *write*.
+    Builders do not resolve and do not apply. The library itself is reachable
+    only through ``sources.plex`` (``PlexSectionAccess``), read-only and
+    sharing the engine's one index, for the handful of builders whose source
+    *is* the library.
     """
 
     library: str
@@ -107,6 +118,7 @@ class BuilderContext:
     config: dict[str, Any] = field(default_factory=dict)
     cache: ProviderCache | None = None
     run_cache: dict[str, Any] = field(default_factory=dict)
+    sources: SourceClients = field(default_factory=SourceClients)
 
 
 @dataclass(frozen=True)

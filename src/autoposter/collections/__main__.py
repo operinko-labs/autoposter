@@ -22,7 +22,7 @@ from pathlib import Path
 import httpx
 from plexapi.server import PlexServer
 
-from autoposter.collections.service import reconcile_libraries
+from autoposter.collections.service import build_source_clients, reconcile_libraries
 from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
@@ -66,8 +66,14 @@ async def main() -> None:
                     secrets.tmdb_token, http, cache=cache,
                     cache_ttl_seconds=config.providers.cache_ttl_seconds,
                 )
+                # The builders' own clients, built here for the same reason as
+                # the cache above: this process has no lifespan to build them,
+                # and a definition backed by MDBList or Radarr must work from
+                # the CLI exactly as it does from the scheduled pass.
+                sources = build_source_clients(config, secrets, http, cache)
                 result = await reconcile_libraries(
-                    session, server, config, http, summaries=summaries
+                    session, server, config, http, summaries=summaries,
+                    sources=sources, cache=cache,
                 )
             logger.info(result.summary)
     finally:

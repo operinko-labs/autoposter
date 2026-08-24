@@ -211,7 +211,7 @@ async def test_the_cli_exits_non_zero_when_a_library_failed(monkeypatch):
     """The exit code itself, not just the predicate behind it."""
     import autoposter.collections.__main__ as cli
 
-    async def fake_reconcile(session, server, config, http, summaries=None):
+    async def fake_reconcile(session, server, config, http, summaries=None, **kwargs):
         return ReconcileResult(libraries=[
             LibraryOutcome(library="Movies", actions=["a", "b", "c"]),
             LibraryOutcome(library="TV Shows", error="simulated"),
@@ -227,7 +227,7 @@ async def test_the_cli_exits_non_zero_when_a_library_failed(monkeypatch):
 async def test_the_cli_exits_zero_when_every_library_succeeded(monkeypatch):
     import autoposter.collections.__main__ as cli
 
-    async def fake_reconcile(session, server, config, http, summaries=None):
+    async def fake_reconcile(session, server, config, http, summaries=None, **kwargs):
         return ReconcileResult(libraries=[
             LibraryOutcome(library="Movies", actions=["a", "b", "c"]),
             LibraryOutcome(library="TV Shows"),
@@ -262,6 +262,11 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile):
             # ``tmdb_summary:`` definitions a pass may carry -- so the stub
             # config needs the section that decides whether to cache.
             providers=SimpleNamespace(cache_ttl_seconds=0),
+            # ...and its own SourceClients bundle, which reads whether either
+            # arr service is configured. Both off: this test is about what
+            # ``main()`` does with the summary, not about the clients.
+            radarr=SimpleNamespace(enabled=False, base_url=""),
+            sonarr=SimpleNamespace(enabled=False, base_url=""),
         )
 
     monkeypatch.setattr(cli, "load_effective_config", fake_load_effective_config)
@@ -269,7 +274,11 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile):
         cli, "Secrets",
         SimpleNamespace(
             from_env=lambda: SimpleNamespace(
-                plex_token="t", tmdb_token="t", database_url="postgresql://x"
+                plex_token="t", tmdb_token="t", database_url="postgresql://x",
+                # The soft secrets the bundle reads. Empty is the real default
+                # for every one of them, and means "not configured".
+                tvdb_apikey="t", mdblist_apikey="", radarr_apikey="",
+                sonarr_apikey="", plex_account_token="",
             )
         ),
     )

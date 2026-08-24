@@ -25,6 +25,7 @@ from autoposter.collections.builders import (
     Builder,
     BuilderContext,
     BuilderResult,
+    SourceClients,
     register,
 )
 from autoposter.collections.builders.base import PlexIdBuilder, SmartBuilder
@@ -101,6 +102,28 @@ async def test_the_plex_id_builder_refuses_an_empty_id_list():
     which would quietly mask a mis-typed definition."""
     with pytest.raises(ValidationError):
         await REGISTRY["plex_id"].build(_ctx(ids=[]))
+
+
+def test_a_context_always_carries_a_bundle_of_source_clients():
+    """``ctx.sources`` is never None, so a builder that needs a client checks
+    *that client* rather than the bundle. A context nobody handed a bundle to
+    -- a direct caller, every test here -- gets one with every client absent,
+    which is the same "this client is not configured" answer the engine's own
+    bundle gives for a service the deployment never set up."""
+    sources = _ctx().sources
+
+    assert isinstance(sources, SourceClients)
+    assert (sources.tmdb, sources.mdblist, sources.tvdb) == (None, None, None)
+    assert (sources.radarr, sources.sonarr) == (None, None)
+    assert sources.plex_account is None
+    assert sources.plex is None
+
+
+def test_a_context_carries_no_provider_cache_by_default():
+    """The engine wires the process's real ``ProviderCache`` through (see
+    ``test_builder_engine.py``); a direct caller that has none still gets a
+    usable context, because ``fetch_json`` takes None as "do not cache"."""
+    assert _ctx().cache is None
 
 
 async def test_the_plex_id_builder_refuses_params_it_does_not_understand():
