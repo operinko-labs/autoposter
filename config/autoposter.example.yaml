@@ -57,6 +57,26 @@ collections:
   adopt_removes_prior_label: false # strip the prior label once claimed; keeping it is reversible, this isn't
   protect_labels: # labels of other tools' collections, e.g. Maintainerr; never touched, even if also adopt_from-labelled
     - Collection managed by Maintainerr
+  # Operator-configured collections, each built by a registered builder. An
+  # unknown `builder:` is rejected when the config loads, not hours later in a
+  # reconcile. Empty by default; the toggles above are unaffected. Example:
+  #   definitions:
+  #     - title: Hand Picked
+  #       builder: plex_id # registry key; plex_id takes rating keys verbatim
+  #       params:
+  #         ids: ["12345", "67890"] # in the order they should appear
+  #       libraries: [Movies] # omit to use collections.libraries above
+  #       summary: A few favourites.
+  #       sync_mode: sync # the collection is exactly this list; `append` only ever adds
+  #       limit: 50 # cap on members, applied after resolution
+  #       sort: custom
+  #       labels: [Favourites] # extra Plex labels, beyond ownership_label
+  #       sort_title: "!010_Hand Picked"
+  #       collection_mode: hide
+  #       schedule:
+  #         every_n_runs: 1 # run on every Nth collections pass
+  #         months: [7, 8] # ...and only during these months
+  definitions: []
 
 cleanup:
   apply: false # dry run by default: report what would move, change nothing

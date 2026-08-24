@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -206,6 +208,100 @@ class BadgesConfig(BaseModel):
     adopt_from_plex: bool = True
 
 
+class ScheduleGate(BaseModel):
+    """When a definition is allowed to run, inside the one collections pass.
+
+    Deliberately not a second scheduler: the reconcile job keeps its single
+    cadence and a gated definition is simply skipped on the runs it does not
+    match, leaving its collection untouched.
+    """
+
+    # Run on every Nth collections pass. 1 = every pass, the default.
+    every_n_runs: int = Field(default=1, ge=1)
+    # ...and only during these calendar months, for seasonal collections
+    # (Kometa's date-window idiom). None = every month.
+    months: list[int] | None = None
+
+    @field_validator("months")
+    @classmethod
+    def _valid_months(cls, v: list[int] | None) -> list[int] | None:
+        for month in v or []:
+            if not 1 <= month <= 12:
+                raise ValueError(
+                    f"month {month} is not a calendar month: use 1-12 "
+                    "(1 = January)"
+                )
+        return v
+
+
+class CollectionDefinition(BaseModel):
+    """One operator-configured collection: a builder plus how to apply it.
+
+    ``builder`` is a registry key, validated against the live registry here --
+    at config load -- rather than when the reconcile job eventually runs. A
+    typo that only surfaced at run time would look like "that collection just
+    stopped updating", hours later and in a log nobody is reading.
+    """
+
+    title: str
+    builder: str
+    # The builder's own params. Untyped here on purpose: each builder validates
+    # this through its own pydantic model (see collections/builders/base.py), so
+    # the schema does not have to know every builder's shape.
+    params: dict = Field(default_factory=dict)
+    # None = every library in collections.libraries. An explicit list narrows
+    # this definition to those; [] would mean "no library at all", which is why
+    # the default is None rather than [].
+    libraries: list[str] | None = None
+    # Overrides the summary the builder derives, when set.
+    summary: str | None = None
+    sort: str = "custom"
+    # sync = the collection is exactly the builder's output; append only ever
+    # adds, never removes. sync is the default, matching the shipped sources.
+    sync_mode: Literal["sync", "append"] = "sync"
+    # Cap on members, applied after resolution. ge=1: a limit that could only
+    # ever produce an empty collection is a mistake, and empty means "make no
+    # changes" downstream, so it would not even fail visibly.
+    limit: int | None = Field(default=None, ge=1)
+    schedule: ScheduleGate | None = None
+    # Extra Plex labels, beyond collections.ownership_label.
+    labels: list[str] = Field(default_factory=list)
+    sort_title: str | None = None
+    collection_mode: str | None = None
+
+    @field_validator("builder")
+    @classmethod
+    def _must_be_a_registered_builder(cls, v: str) -> str:
+        # Imported here, not at module scope: the builders package reaches into
+        # the rest of the collections package, which imports this module, so a
+        # module-level import would be a cycle. Importing at validation time
+        # also means the registry is populated by this very lookup -- no other
+        # module has to have been imported first for `builder:` to resolve.
+        from autoposter.collections.builders import REGISTRY
+
+        if v not in REGISTRY:
+            raise ValueError(
+                f"unknown collection builder {v!r}: known builders are "
+                + ", ".join(sorted(REGISTRY))
+            )
+        return v
+
+
+def definition_config_hash(definition: CollectionDefinition) -> str:
+    """A content hash of one definition, for detecting edits.
+
+    Distinct from the members hash ``lists.py`` stores: this one changes when
+    the *definition* changes (a new limit, a different param, a switch to
+    append), not when the underlying list does. Taken over the validated
+    model's canonical dump with sorted keys, so re-ordering keys in the YAML --
+    which is not an edit -- does not read as one.
+    """
+    payload = json.dumps(
+        definition.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class CollectionsConfig(BaseModel):
     """Common Sense age-bucket smart collections, replacing Kometa's."""
 
@@ -254,6 +350,11 @@ class CollectionsConfig(BaseModel):
     # approved the collection, so a conflicting or protected one is never
     # reached.
     posters: bool = True
+    # Operator-configured collections, each built by a registered builder. The
+    # three shipped sources above (charts, awards, separators) are unaffected
+    # by this list; it is additive. Live like the rest of this section, so a
+    # definition added in Settings applies on the next reconcile.
+    definitions: list[CollectionDefinition] = Field(default_factory=list)
 
 
 class CleanupConfig(BaseModel):
