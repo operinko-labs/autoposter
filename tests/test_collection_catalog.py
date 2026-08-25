@@ -187,7 +187,7 @@ CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "awards": (15, 0, 1),
     "charts": (8, 0, 1),
     "content": (1, 3, 0),
-    "content_ratings": (1, 0, 1),
+    "content_ratings": (2, 0, 1),
     "location": (0, 3, 0),
     "media": (1, 3, 0),
     "people": (1, 4, 0),
@@ -630,6 +630,27 @@ def test_the_transcribed_kometa_tables_checksum():
     assert "TV-14" in ratings["PG-13 Movies"]
     assert "gb/U" in ratings["G Movies"]
     assert "TV-MA" in ratings["R Movies"]
+
+    # The Show half of the same pack -- a separate upstream file with its own
+    # include list, checksummed the same way. Five buckets, 73 values, and no
+    # bucket lists its own key upstream, so these counts are the file's own
+    # addon counts plus one for the prepended key.
+    show_ratings = {
+        definition.title: definition.filters["content_rating"]
+        for definition in catalog.BY_KEY["content_ratings_us_show"].definitions("Show")
+    }
+    assert list(show_ratings) == [
+        "TV-G Shows", "TV-Y Shows", "TV-PG Shows", "TV-14 Shows", "TV-MA Shows",
+    ]
+    assert [len(values) for values in show_ratings.values()] == [20, 15, 13, 14, 11]
+    # Spot-checked addons, in the three directions the bucket names do not
+    # predict: the film certifications Kometa folds into the TV buckets, the
+    # British ones, and the TV-Y7 pair that belongs to TV-Y rather than to a
+    # bucket of its own. Getting these wrong is invisible until an operator
+    # wonders why a PG-13-tagged series landed nowhere.
+    assert "PG-13" in show_ratings["TV-14 Shows"]
+    assert "gb/18" in show_ratings["TV-MA Shows"]
+    assert "TV-Y7-FV" in show_ratings["TV-Y Shows"]
 
     resolutions = {
         definition.title: definition.filters["resolution"]

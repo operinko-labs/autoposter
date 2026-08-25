@@ -561,6 +561,7 @@ _KOMETA_DEFAULTS: frozenset[str] = frozenset(
         "defaults/movie/region.yml",
         "defaults/movie/seasonal.yml",
         "defaults/movie/writer.yml",
+        "defaults/show/content_rating_us.yml",
         "defaults/show/network.yml",
     ]
 )
@@ -786,9 +787,9 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
 # builds a collection under that exact title (``buckets.derive_buckets``), so
 # building it here would be the duplicate-title collision twice over. And the
 # Show form lives in ``defaults/show/content_rating_us.yml`` with a different
-# include list (TV-Y..TV-MA); it is a separate transcription, not this one, so
-# this row is Movie-only rather than quietly reusing film certifications for
-# television.
+# include list (TV-G..TV-MA); it is a separate transcription -- the table
+# below this one -- so this row is Movie-only rather than quietly reusing film
+# certifications for television.
 _US_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("G", (
         "G", "gb/U", "gb/0+", "U", "TV-Y", "TV-G", "E", "gb/E",
@@ -811,6 +812,44 @@ _US_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "no/15", "no/16", "no/18",
     )),
     ("NC-17", ("NC-17", "gb/R18", "gb/X", "R18", "X", "Rx - Hentai")),
+)
+
+# The Show half of the same pack, ``defaults/show/content_rating_us.yml``: the
+# same fixed-include shape as the table above, over the US TV Parental
+# Guidelines instead of the MPA's film certifications. Five buckets, 73 values
+# with each key prepended to its own addon list -- and no bucket lists its own
+# key, so nothing de-duplicates away and the counts below are the file's.
+#
+# Kometa's ``other_name`` bucket ("Not Rated Shows") is omitted for the reason
+# it is omitted above: a set complement the engine owns, under a title the
+# Common Sense family already builds on Show libraries.
+#
+# These titles need no disambiguating prefix. TV-G..TV-MA share no name with
+# anything else the catalog builds -- the Movie table's G/PG/PG-13/R/NC-17 are
+# a different alphabet -- so unlike a regional family this row can carry
+# Kometa's titles bare, and the all-presets-on collision test proves it.
+_US_SHOW_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("TV-G", (
+        "TV-G", "gb/U", "gb/0+", "U", "G", "1", "2", "3", "4", "5", "6", "01",
+        "02", "03", "04", "05", "06", "G - All Ages", "A", "no/A",
+    )),
+    ("TV-Y", (
+        "TV-Y", "TV-Y7", "TV-Y7-FV", "7", "8", "9", "07", "08", "09", "no/5",
+        "no/05", "no/6", "no/06", "no/7", "no/07",
+    )),
+    ("TV-PG", (
+        "TV-PG", "gb/PG", "gb/9+", "10", "11", "12", "13", "PG - Children",
+        "no/9", "no/09", "no/10", "no/11", "no/12",
+    )),
+    ("TV-14", (
+        "TV-14", "gb/12A", "12+", "PG-13", "TV-13", "gb/14+", "gb/15", "14",
+        "15", "16", "17", "PG-13 - Teens 13 or older", "no/15", "no/16",
+    )),
+    ("TV-MA", (
+        "TV-MA", "18", "gb/18", "MA-17", "NC-17", "R", "TVMA",
+        "R - 17+ (violence & profanity)", "R+ - Mild Nudity", "Rx - Hentai",
+        "no/18",
+    )),
 )
 
 CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
@@ -836,6 +875,34 @@ CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
                 filters=(("content_rating", values),),
             )
             for key, values in _US_CONTENT_RATINGS
+        ),
+    ),
+    Preset(
+        key="content_ratings_us_show",
+        category="content_ratings",
+        name="US TV ratings",
+        description=(
+            "Five collections -- %s -- grouping the library's series by their "
+            "TV Parental Guidelines rating. Each bucket carries Kometa's own "
+            "addon list, so a series certified PG-13 or gb/12A lands in TV-14 "
+            "rather than in nothing. The television counterpart of the US "
+            "certifications row above, which is Movie-only: Kometa ships the "
+            "two as separate files with separate include lists, and so does "
+            "this catalog rather than reusing film certifications for "
+            "television."
+            % ", ".join(
+                "%s Shows" % key for key, _values in _US_SHOW_CONTENT_RATINGS
+            )
+        ),
+        kometa_source="defaults/show/content_rating_us.yml",
+        library_types=_SHOW,
+        collections=tuple(
+            PresetCollection(
+                title="%s %%ss" % key,
+                builder="plex_all",
+                filters=(("content_rating", values),),
+            )
+            for key, values in _US_SHOW_CONTENT_RATINGS
         ),
     ),
 )
@@ -1237,12 +1304,12 @@ TIME_PRESETS: tuple[Preset, ...] = (
 # setting-backed):
 #
 #   awards           15 / 0 / 1     charts            8 / 0 / 1
-#   content           1 / 3 / 0     content_ratings   1 / 0 / 1
+#   content           1 / 3 / 0     content_ratings   2 / 0 / 1
 #   location          0 / 3 / 0     media             1 / 3 / 0
 #   people            1 / 4 / 0     production        1 / 2 / 0
 #   time              0 / 3 / 0
 #
-# -- 49 rows: 28 presets an operator can switch on today, 18 that name what
+# -- 50 rows: 29 presets an operator can switch on today, 18 that name what
 # they would build and the roadmap row that would let them, and 3 rendered
 # switches for families that already ship behind a boolean.
 CATALOG: tuple[Preset, ...] = (
