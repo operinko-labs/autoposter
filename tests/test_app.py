@@ -534,8 +534,9 @@ async def test_the_lifespan_fills_the_dict_the_broadcaster_holds_rather_than_reb
     has to fill it in place. Rebinding it (``= {...}``) would leave
     ``/api/status`` reporting the real cadences while the live stream reported
     null intervals forever -- and no test that builds its own dict can tell
-    the difference, so the identity the broadcaster holds is captured here
-    before the lifespan runs and asserted through it.
+    the difference, so this asserts the identity itself: that the lifespan
+    fills the published mapping in place, and that the broadcaster the
+    lifespan leaves behind holds that very mapping.
     """
     app = _background_app(load_config(EXAMPLE), session_factory, secrets)
     held = app.state.dashboard_broadcaster._scheduler_intervals
@@ -550,12 +551,23 @@ async def test_the_lifespan_fills_the_dict_the_broadcaster_holds_rather_than_reb
         assert "plex_prune" in app.state.scheduler_intervals, (
             "the boot registration in app.py did not append the prune job"
         )
-        assert held == app.state.scheduler_intervals, (
-            "the lifespan rebound app.state.scheduler_intervals; the broadcaster "
-            f"still holds the mapping it was given ({held!r}) and the stream "
-            "would report null intervals forever"
+        assert held is app.state.scheduler_intervals, (
+            "the lifespan rebound app.state.scheduler_intervals rather than "
+            f"filling it in place; it still holds {held!r}"
         )
-        assert held is app.state.scheduler_intervals
+        # The lifespan discards the broadcaster create_app built and puts a
+        # new one in its place, so `held` -- captured from the discarded one
+        # -- says nothing about what the app actually serves from. The live
+        # broadcaster is the one that has to hold the mapping itself: hand it
+        # a copy here and the stream reports null intervals forever.
+        assert (
+            app.state.dashboard_broadcaster._scheduler_intervals
+            is app.state.scheduler_intervals
+        ), (
+            "the broadcaster the lifespan serves from holds a copy of "
+            "app.state.scheduler_intervals, not the mapping itself; the "
+            "stream would report null intervals forever"
+        )
 
 
 async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_processes(

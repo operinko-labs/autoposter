@@ -46,7 +46,7 @@ def _run_status(row: ScheduledRun, started_at: datetime) -> str | None:
     ``last_status`` as-is -- ``"ok"``, ``"failed"``, or ``None`` for a row
     that has never run, which the frontend already renders as such.
 
-    ``started_at >= started`` only proves what it claims to when both sides
+    ``started >= started_at`` only proves what it claims to when both sides
     come from the same clock: ``started`` (``row.last_started_at``) is
     stamped by Postgres's own ``now()`` (``scheduler/core.py``'s
     ``claim_due``), so ``started_at`` must be a database-clock reading too,
