@@ -147,7 +147,7 @@ def _config(**overrides):
         "ownership_label": LABEL, "apply_to_plex": True, "adopt": False,
         "adopt_from": ["Kometa"], "adopt_removes_prior_label": False,
         "protect_labels": [], "posters": False, "charts": True, "awards": True,
-        "separators": False, "definitions": [],
+        "separators": False, "definitions": [], "presets": [],
     }
     options.update(overrides)
     return SimpleNamespace(collections=SimpleNamespace(**options))

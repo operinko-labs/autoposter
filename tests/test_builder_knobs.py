@@ -146,7 +146,7 @@ def _config(**overrides):
         "ownership_label": LABEL, "apply_to_plex": True, "adopt": False,
         "adopt_from": ["Kometa"], "adopt_removes_prior_label": False,
         "protect_labels": [], "posters": False, "charts": False, "awards": False,
-        "separators": False, "definitions": [], "libraries": ["Movies"],
+        "separators": False, "definitions": [], "presets": [], "libraries": ["Movies"],
         "delete_unconfigured": False, "max_deletes": 5, "enabled": True,
     }
     options.update(overrides)

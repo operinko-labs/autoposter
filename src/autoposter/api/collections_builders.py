@@ -1,4 +1,10 @@
-"""The collections engine's operator surface: preview, and the lifecycle ops.
+"""The collections engine's operator surface: the catalog, preview, and the ops.
+
+``GET /api/collections/catalog`` is the odd one out and says so in its own
+docstring: it touches neither Plex nor the database, because it answers "what
+could this service build" -- a question about a table, not about a server. It
+lives here rather than in ``routes.py`` because it is part of this surface: the
+picker it feeds sits beside the preview an operator runs next.
 
 ``POST /api/collections/preview`` runs the real engine over the real
 definitions with ``dry_run`` forced on, and answers with the counts and the
@@ -40,6 +46,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from autoposter.api.auth import require_session
+from autoposter.collections.catalog import catalog_listing
 from autoposter.collections.engine import run_library
 from autoposter.collections.reconcile import (
     LIBTYPES,
@@ -121,6 +128,32 @@ def _library_failure(library: str, error: Exception) -> dict:
         "actions": [
             "%s: could not be previewed (%s)" % (library, type(error).__name__)
         ],
+    }
+
+
+@router.get("/collections/catalog")
+async def collections_catalog(
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """The preset catalog: every collection this service can build, by category.
+
+    The one endpoint in this module that touches neither Plex nor the database.
+    It is a dump of a pure table (``collections/catalog.py``) plus which keys
+    the live config has switched on, and that is deliberate: choosing which
+    collections to build is not a question about a server, so the picker has to
+    work on a replica with no Plex connection -- where every other handler here
+    answers 503.
+
+    It is also not behind ``_enabled``. That guard exists because the endpoints
+    below it read and write a Plex library, and switching ``collections.enabled``
+    off is how an operator stops this service touching collections at all.
+    Reading the catalog changes nothing; an operator about to switch the section
+    back on would otherwise be shown an empty page instead of the thing they
+    came to configure.
+    """
+    return {
+        "categories": catalog_listing(request.app.state.config_holder.current)
     }
 
 

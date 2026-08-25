@@ -4,7 +4,10 @@
 the IMDb charts, the Oscars collections -- expressed as builder definitions
 rather than as three hardcoded loops. An operator's own ``definitions:`` list is
 *additional*: an empty one leaves exactly what shipped, which is what the golden
-port fixture pins (``tests/test_builder_port_golden.py``).
+port fixture pins (``tests/test_builder_port_golden.py``). ``collections.presets``
+is additional in exactly the same way and for the same reason -- the catalog
+(``collections/catalog.py``) expands the keys it names into definitions here,
+and an empty list expands into none.
 
 Two things the definitions deliberately do not decide:
 
@@ -18,6 +21,7 @@ Two things the definitions deliberately do not decide:
 """
 from autoposter.collections.builders.imdb_award import EVENTS
 from autoposter.collections.builders.imdb_chart import CHART_TITLES, CHARTS_FOR
+from autoposter.collections.catalog import preset_definitions
 from autoposter.config.schema import CollectionDefinition
 
 # The chart inventory as ``{library type: [(collection title, chart key), ...]}``
@@ -72,9 +76,15 @@ def default_definitions(config, library_type: str) -> list[CollectionDefinition]
     """Everything this service builds for one library, before operator config.
 
     Order is the order a pass runs them in, and it is the order the shipped code
-    ran: the Common Sense family first, then the charts, then the awards.
+    ran: the Common Sense family first, then the charts, then the awards. The
+    catalog presets are a third term APPENDED after those two, never mixed into
+    them: an empty ``collections.presets`` -- the default, and what every
+    deployment that has not opened the picker has -- makes it an empty list, so
+    the order above and the list itself are exactly what they were before the
+    catalog existed.
     """
     return [
         CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket"),
         *chart_and_award_definitions(config, library_type),
+        *preset_definitions(config, library_type),
     ]

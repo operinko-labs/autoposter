@@ -38,10 +38,10 @@ BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master"
         # the full file listing of Kometa-Team/Default-Images at ``master``
         # (the git trees API, recursive, 5 028 entries under ``award/``) --
         # every static stem and every year image the committed fixtures cover.
-        # The year folder is NOT the static folder for eleven of these: only
-        # the Oscars, the Golden Globes and the Emmys keep year images under
-        # ``winner/``, and ``nfr`` has no ``winner/`` folder at all, so the
-        # older single-derivation rule would have 404'd for it.
+        # The year folder is NOT the static folder for three of the sixteen:
+        # only the Oscars, the Golden Globes and the Emmys keep year images
+        # under ``winner/``, and ``nfr`` has no ``winner/`` folder at all, so
+        # the older single-derivation rule would have 404'd for it.
         ("award_static", "bafta:winner", f"{BASE}/award/bafta/winner.jpg"),
         ("award_year", "bafta:2026", f"{BASE}/award/bafta/2026.jpg"),
         ("award_static", "berlinale:winner", f"{BASE}/award/berlinale/winner.jpg"),

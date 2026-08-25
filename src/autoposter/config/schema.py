@@ -557,7 +557,8 @@ class CollectionsConfig(BaseModel):
 
     The Common Sense age-bucket smart collections that replace Kometa's are
     one source among several: the built-in IMDb charts and Oscars awards
-    (``charts``/``awards``), the blank divider (``separators``), and any
+    (``charts``/``awards``), the blank divider (``separators``), whichever
+    catalog ``presets`` an operator has switched on, and any
     number of operator ``definitions`` built by a registered builder
     (``collections/builders``). All of them share the same ownership,
     adoption, protection, poster and delete-sweep rules configured below.
@@ -608,6 +609,14 @@ class CollectionsConfig(BaseModel):
     # approved the collection, so a conflicting or protected one is never
     # reached.
     posters: bool = True
+    # Preset collections switched on by key, from the catalog
+    # (``collections/catalog.py``). A key rather than a copy of the
+    # definitions it stands for: the expansion happens on the server, on every
+    # pass, so a correction to the catalog reaches every deployment instead of
+    # having to be migrated into each operator's file. Empty by default, and an
+    # empty list expands to nothing at all -- which is what keeps an untouched
+    # config building exactly what it built before the catalog existed.
+    presets: list[str] = Field(default_factory=list)
     # Operator-configured collections, each built by a registered builder. The
     # three shipped sources above (charts, awards, separators) are unaffected
     # by this list; it is additive. Live like the rest of this section, so a
@@ -626,6 +635,61 @@ class CollectionsConfig(BaseModel):
     # that drops every definition cannot cascade into a wiped library. ge=0
     # because 0 is a meaningful setting -- opted in, but nothing this pass.
     max_deletes: int = Field(default=5, ge=0)
+
+    @model_validator(mode="after")
+    def _presets_must_be_known_and_ready(self) -> "CollectionsConfig":
+        """Every key in ``presets`` names a READY row of the catalog.
+
+        This is the *only* thing that makes a bad key an error. The collision
+        validator below runs ``sources.default_definitions`` -- which expands
+        these very keys -- during validation of this same model, and that
+        expansion is written as a scan of the catalog rather than a lookup of
+        this list precisely so it cannot raise on a key nobody knows (a
+        ``KeyError`` from inside validation is a 500 on a settings save). So an
+        unknown key does not fail there; it expands to nothing at all, and
+        without the refusals below a mis-typed preset would be a checkbox an
+        operator believed they had ticked.
+
+        Three refusals:
+
+        - **unknown**, with the catalog listed, exactly as ``builder:`` lists
+          the registry one field along. A mis-typed key is otherwise a
+          checkbox an operator believes they ticked.
+        - **not ready**, naming the roadmap row the preset waits on. The
+          catalog carries rows whose builders have not been written; the
+          picker shows them disabled, and a key copied out of it by hand is
+          refused here in the same words rather than accepted as a key that
+          would quietly build nothing. (The Phase 9a deferred-attribute
+          refusal above is the same shape, one section along.)
+        - **duplicated**, because twice in the list is not twice the
+          collections -- the expansion is a membership test -- so a repeated
+          key is a config that does not mean what it reads as.
+        """
+        from autoposter.collections.catalog import BY_KEY, GATED
+
+        seen: set[str] = set()
+        for key in self.presets:
+            if key in seen:
+                raise ValueError(
+                    f"collection preset {key!r} is listed twice in 'presets': a "
+                    "preset is either switched on or it is not, so a repeated "
+                    "key builds nothing extra and means less than it looks like"
+                )
+            seen.add(key)
+            preset = BY_KEY.get(key)
+            if preset is None:
+                raise ValueError(
+                    f"unknown collection preset {key!r}: the catalog's keys are "
+                    + ", ".join(sorted(BY_KEY))
+                )
+            if preset.readiness == GATED:
+                raise ValueError(
+                    f"the {key!r} preset is in the catalog but is not ready to "
+                    f"build: it needs roadmap row {preset.gated_row}, which has "
+                    "not landed. Refused here rather than accepted as a key that "
+                    "would silently build no collections at all"
+                )
+        return self
 
     @model_validator(mode="after")
     def _titles_must_not_collide(self) -> "CollectionsConfig":

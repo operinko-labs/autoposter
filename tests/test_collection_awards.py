@@ -20,6 +20,7 @@ nothing (Emmys 2026, Venice 2026 and TIFF 2026 have nominees but no recorded
 winner yet, and People's Choice 2024 awarded nothing this collection's
 categories name).
 """
+import inspect
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -283,8 +284,12 @@ def test_a_year_collection_reads_every_award_group():
     """
     assert winners_for_year(TWO_GROUP_EVENT, "2026") == ["ttFilm2026", "ttTv2026"]
 
-    with pytest.raises(TypeError):
-        winners_for_year(TWO_GROUP_EVENT, "2026", ("bafta tv award",))
+    # By parameter NAME rather than by arity. This guard used to be a
+    # positional call in ``pytest.raises(TypeError)``, which a keyword-only
+    # reintroduction -- ``winners_for_year(event, year, *, award_filter=None)``
+    # -- would have satisfied: the positional call still raises, so the
+    # parameter could come back with the guard staying green.
+    assert "award_filter" not in inspect.signature(winners_for_year).parameters
 
 
 async def test_the_static_builder_applies_its_awards_group_filter(monkeypatch):
@@ -772,11 +777,15 @@ async def test_every_ceremonys_year_collections_expand_and_build(key):
 
 
 def test_every_ceremony_maps_to_a_default_images_folder():
-    """Both folders, because they are not the same one. Kometa keeps the
-    Oscars', Golden Globes' and Emmys' year images under a ``winner/``
-    subfolder and the other thirteen ceremonies' beside the static image --
-    and the National Film Registry has no ``winner/`` folder at all, so the
-    single derivation this used to make would 404 for it."""
+    """Both kinds of poster resolve to a URL for every ceremony, which is
+    exactly two claims and no more: the event has an ``AWARD_SEGMENTS`` row
+    (without one ``hosted_poster_url`` returns None for both kinds), and every
+    award row carries a ``poster_stem``.
+
+    That the URLs this builds actually EXIST in Default-Images is a different
+    claim, and this loop cannot see the repository to make it. It is pinned
+    path by path, against the fetched file listing, in
+    ``tests/test_collection_posters.py``."""
     for key, event in EVENTS.items():
         assert hosted_poster_url("award_year", "%s:2026" % key), key
         for award_key, award in event.awards.items():
