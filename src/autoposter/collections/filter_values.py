@@ -110,18 +110,31 @@ def _listing_value(item: object, name: str) -> object | None:
         return None
 
 
-def _duration_minutes(item: object) -> int | None:
-    """Plex's milliseconds as Kometa's minutes.
+def _duration_minutes(item: object) -> float | None:
+    """Plex's milliseconds as Kometa's minutes -- the exact quotient, NOT
+    rounded (SETTLED-BY-ORACLE).
 
-    Rounded here, once, because the table pins the view's duration to ``int``:
-    ``ms / 60000`` lands on a whole number for almost no real runtime, and
-    handing the float onwards would leave ``duration.eq`` comparing floats for
-    exact equality across a division this layer owns.
+    This rounded at first, on the argument that ``ms / 60000`` lands on a whole
+    number for almost no real runtime and that handing the float onwards leaves
+    ``duration.eq`` comparing floats for exact equality. Both halves of that are
+    true and it is still the wrong call, because rounding moves the RANGE
+    operators: Kometa's own conversion is ``test_number /= 60000`` with nothing
+    after it (plex.py:2923-2926), so a 149.7-minute film passes
+    ``duration.lt: 150`` there and failed here. Task 4's oracle found exactly
+    that item. Every runtime within half a minute of a threshold was answered
+    wrongly -- roughly one item in a hundred and twenty for an integer
+    threshold, always at the boundary, which is the least visible place to be
+    wrong.
+
+    So ``duration.eq: 90`` is now a float-equality test against a value almost
+    no film has, and that is Kometa's behaviour too (``value != data`` over the
+    same quotient, util.py:626). The table's row says so; an operator who wants
+    "about 90 minutes" writes a range.
     """
     milliseconds = _listing_value(item, "duration")
     if milliseconds is None:
         return None
-    return round(milliseconds / 60000)
+    return milliseconds / 60000
 
 
 def _resolutions(item: object) -> tuple[str, ...] | None:

@@ -32,7 +32,7 @@ off by default, capped, and refused outright past the cap.
 """
 import logging
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 import httpx
 from sqlalchemy import select
@@ -562,22 +562,27 @@ def _passing(definition: CollectionDefinition, items: list, library: str) -> lis
     """
     try:
         parsed = parse_filters(definition.filters)
-        # One date for the whole collection. ``evaluate`` would otherwise read
-        # the clock per item, and a pass that crossed midnight would measure
-        # the first half of a relative window (``added: 30``) against one day
-        # and the second half against the next -- a membership no single day
+        # One moment for the whole collection. ``evaluate`` would otherwise
+        # read the clock per item, and a long pass would measure the first half
+        # of a relative window (``added: 30``) against one instant and the
+        # second half against a later one -- a membership no single instant
         # would have produced.
         #
-        # The runner's local date rather than this pass's ``now``, which is
+        # The runner's LOCAL clock rather than this pass's ``now``, which is
         # UTC: plexapi hands back ``addedAt`` as a naive datetime in the
-        # RUNNER's clock (``filters._as_calendar_date``), so the local date is
-        # the one that shares a basis with the values being compared. That
-        # whole runner-dependence is roadmap row 154's open question; this line
+        # runner's clock (``filters._as_moment``), so the local clock is the
+        # one that shares a basis with the values being compared. That whole
+        # runner-dependence is roadmap row 154's open question; this line
         # deliberately does not pre-empt its answer.
-        today = date.today()
+        #
+        # A datetime, not a date: Kometa's own ``current_time`` is
+        # ``datetime.now()`` and its date filters compare against it with the
+        # time of day intact (Task 4's oracle). Passing midnight here would
+        # widen every relative window by up to a day against Kometa's.
+        now = datetime.now()
         return [
             item for item in items
-            if evaluate(parsed, PlexItemView(item), today=today)
+            if evaluate(parsed, PlexItemView(item), now=now)
         ]
     except Exception:
         # The class name and traceback go to the log; nothing derived from the

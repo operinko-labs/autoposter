@@ -27,14 +27,27 @@ That transcription is fallible in a way a wrong TMDb parameter is not: a filter
 with the wrong meaning still loads, still runs, and produces a full, plausible,
 wrong collection. Two things are done about it. Every judgement call carries its
 reasoning on the row, and the ones this transcription was **not** confident
-about are marked in the note. A fresh call is ``UNVERIFIED-TRANSCRIPTION`` --
-Task 4's Kometa oracle adjudicates those against Kometa's own code. A call this
-module's own fix round has already checked against named Kometa evidence reads
+about are marked in the note. A fresh call is ``UNVERIFIED-TRANSCRIPTION``. A
+call this module's own fix round checked against named Kometa evidence reads
 ``SETTLED-BY-REVIEW`` (the code changed to match) or ``SETTLED-IN-FAVOR`` (the
-original transcription was already right); a note with none of the three is a
-claim this module has stood behind since Task 1.
+original transcription was already right); a note with none of these is a claim
+this module has stood behind since Task 1.
 
-**The missing-value rule splits by value-type family (SETTLED-BY-REVIEW).** For
+``SETTLED-BY-ORACLE`` outranks all of them. Task 4 ran a Kometa oracle: 120
+listing-shaped items and two filter configs, evaluated by this module and by
+**Kometa 2.4.8's own filter code**, fetched and transcribed standalone
+(``modules/util.py``'s ``is_date_filter``/``is_number_filter``/
+``is_string_filter``, ``modules/plex.py``'s ``check_filter``/``split``,
+``modules/builder.py``'s ``check_filters``), member list against member list.
+Its verdicts are the ones marked that way below, and they OVERRULE an earlier
+``SETTLED-BY-REVIEW`` where the two disagree -- one such marker cited a
+comparison that is not in Kometa's source at all, which is the failure mode a
+recollection has and a fetched file does not. The procedure, the transcription
+and every adjudication are in ``.superpowers/sdd/task-4-report.md``; the
+comparison itself is ``tests/test_collection_filter_oracle.py``, which pins
+Kometa's member lists as data.
+
+**The missing-value rule splits by value-type family (SETTLED-BY-ORACLE).** For
 ``tag``/``str`` attributes: an item with no value for the attribute is EXCLUDED
 by a positive filter and INCLUDED by a negative one (``.not``, ``.isnot``). So
 ``genre: Horror`` drops an item with no genres at all, and ``genre.not: Horror``
@@ -45,19 +58,30 @@ attributes the missing item is EXCLUDED under EVERY operator, including
 ``.not`` -- so ``audience_rating.not: 8`` on an unrated item still drops it,
 same as ``audience_rating: 8`` would. This was originally shipped uniform
 (a single rule, no type exception) and marked ``UNVERIFIED-TRANSCRIPTION``
-because a per-type exception is a rule nobody remembers; the fix round's review
-settled it against Kometa's own number/date filter, whose check opens with
-``if value is None: return True`` (filtered out) *before* it even looks at the
-modifier -- the short-circuit ignores the operator entirely for these four
-types, where only the tag intersection has no such short-circuit. Both halves
-are applied in exactly one place, ``_matches`` below, so that every operator
-gets the rule for its type and no operator can quietly opt out.
+because a per-type exception is a rule nobody remembers; a fix round then
+settled it on a recollection, and the ORACLE confirmed the recollection against
+the source. ``is_number_filter`` (util.py:623-632) opens the disjunction it
+returns with a bare ``value is None``, and ``is_date_filter``
+(util.py:598-600) opens with ``if value is None: return True`` -- both return
+"filter this item out" *before* looking at the modifier, so the short-circuit
+ignores the operator entirely for these four types. Only the tag/string paths
+have no such short-circuit: ``is_string_filter`` (util.py:639-656) is driven by
+a ``values`` list that is empty when the item has no value, and its final
+expression then reads False (keep) for ``.not``/``.isnot`` and True (drop) for
+the positive modifiers -- which is the tag half of the rule, falling out of
+Kometa's own code rather than being asserted about it. This is the rule the
+brief named as the oracle's first target, and it holds. Both halves are applied
+in exactly one place, ``_matches`` below, so that every operator gets the rule
+for its type and no operator can quietly opt out.
 
 **What tier 1 deliberately does not have**, so that each is a refusal naming the
 field rather than a silent gap: Kometa's tag ``.count_gt``/``.count_gte``/
 ``.count_lt``/``.count_lte`` modifiers, its ``.regex`` on *date* attributes,
-its relative-date spellings beyond the bare ``today``, and its special ``year``
-words (``current_year`` and its offsets). Each is a tier-2 row, not a bug.
+its relative-date spellings beyond the bare ``today``, its special ``year``
+words (``current_year`` and its offsets), and -- SETTLED-BY-ORACLE, see
+``OPERATORS_BY_TYPE`` -- the four range modifiers on a date, which Kometa
+accepts and silently rewrites to the strict ``.after``/``.before``. Each is a
+tier-2 row, not a bug.
 """
 import datetime as dt
 import re
@@ -109,12 +133,21 @@ OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "int": ("eq", "not", "gt", "gte", "lt", "lte"),
     "float": ("eq", "not", "gt", "gte", "lt", "lte"),
     "duration": ("eq", "not", "gt", "gte", "lt", "lte"),
-    # ``.before``/``.after`` are Kometa's spellings and are STRICT. ``.gte``/
-    # ``.lte`` are the inclusive-boundary forms Kometa has no spelling for,
-    # added because a range like "released on or after 2000-01-01" is otherwise
-    # unwritable. ``.gt``/``.lt`` are deliberately absent: they would be second
-    # spellings of ``.after``/``.before``.
-    "date": ("eq", "not", "before", "after", "gte", "lte"),
+    # ``.before``/``.after`` are Kometa's spellings and are STRICT, and they
+    # are the ONLY absolute date operators. ``.gt``/``.gte``/``.lt``/``.lte``
+    # are all deliberately absent, and the reason is a correction
+    # (SETTLED-BY-ORACLE): this module shipped ``.gte``/``.lte`` as inclusive-
+    # boundary forms on the stated grounds that "Kometa has no spelling for
+    # them". It has. ``Plex.split`` (plex.py:2735-2747) rewrites ``.gt`` AND
+    # ``.gte`` to ``.after``, and ``.lt`` AND ``.lte`` to ``.before``, for
+    # every date attribute -- so Kometa accepts all four and every one of them
+    # means the STRICT comparison. Keeping our inclusive reading would have
+    # made ``release.gte: 2000-01-01`` a different membership under the same
+    # name in the two systems, which is the same-name-different-filter class
+    # the plan's item_facts adjudication already ruled out. Refusing at load
+    # says so; silently disagreeing would not. A tier-2 row is filed for a
+    # real inclusive-boundary date operator under a name Kometa does not use.
+    "date": ("eq", "not", "before", "after"),
 }
 
 # What a bare ``genre: Horror`` means. Note that ``str`` defaults to *contains*
@@ -177,8 +210,6 @@ PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
     ("date", "not"): None,
     ("date", "before"): "lt",
     ("date", "after"): "gt",
-    ("date", "gte"): "gte",
-    ("date", "lte"): "lte",
 }
 
 # The negative operators, and the positive one each negates. Every negative is
@@ -348,10 +379,11 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "`datetime.fromtimestamp(value)` -- no `tz` argument, because "
         "plexapi's own `DATETIME_TIMEZONE` is `None` -- so the result is a "
         "naive datetime in the RUNNER's local clock, not the Plex server's. "
-        "Compared date-granularly -- see the date convention in "
-        "`_as_calendar_date` -- so two runs of the same collection in "
-        "different timezones can disagree on which calendar date an item was "
-        "added.",
+        "Compared at the MOMENT, time of day included -- see the date "
+        "convention in `_as_moment` -- so `added.after: 2026-06-01` keeps "
+        "something added at 09:15 that day, and two runs of the same "
+        "collection in different timezones can disagree about an item added "
+        "near midnight (roadmap row 154).",
     ),
     FilterAttribute(
         "release", "date", _BOTH, "listing",
@@ -364,12 +396,17 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "duration", "duration", _BOTH, "listing",
         "The listing attrib `duration` (video.py:394) is MILLISECONDS; Kometa's "
         "filter is MINUTES. The view converts, and the config is minutes -- so "
-        "`duration.gte: 90` is an hour and a half, not 90ms. Its own value type "
+        "`duration.gt: 90` is an hour and a half, not 90ms. Its own value type "
         "rather than `int` so the unit lives in the table instead of in a "
-        "comment on one row. The view must hand back an `int`, ROUNDED, not the "
-        "raw float `ms / 60000` produces -- see `ItemView.get`'s docstring; "
-        "Task 2's accessor rounds once at the boundary so `.eq`/`.not` never "
-        "compare an unrounded float for exact equality.",
+        "comment on one row. SETTLED-BY-ORACLE: the view hands back the EXACT "
+        "quotient `ms / 60000`, a float, not a rounded int. Task 2 rounded it, "
+        "to keep `.eq` off float equality; Kometa does not (`test_number /= "
+        "60000`, plex.py:2923-2926), and rounding silently moved every RANGE "
+        "comparison for runtimes within half a minute of the threshold -- the "
+        "oracle's 149.7-minute film passed `duration.lt: 150` in Kometa and "
+        "failed here. The cost of the correction is that `duration.eq: 90` is "
+        "now a float-equality test almost nothing satisfies, which is exactly "
+        "what it is in Kometa; write a range instead.",
     ),
     FilterAttribute(
         "studio", "str", _BOTH, "listing",
@@ -426,17 +463,19 @@ class ItemView(Protocol):
     ``get`` is keyed on the TABLE's attribute name -- ``release``, not
     ``originallyAvailableAt`` -- and returns the value in the type the row
     declares: a sequence of strings (or one bare string) for ``tag``, a string
-    for ``str``, a number for ``int``/``float``, an ``int`` of MINUTES,
-    ROUNDED, for ``duration``, a ``date`` or ``datetime`` for ``date``.
-    ``None`` means the item has no value, which is the missing-value rule's
-    input.
+    for ``str``, a number for ``int``/``float``, a ``float`` of MINUTES for
+    ``duration``, a ``date`` or ``datetime`` for ``date``. ``None`` means the
+    item has no value, which is the missing-value rule's input.
 
-    Duration is pinned to ``int`` deliberately: Plex's wire value is
-    milliseconds and the accessor divides by 60000, which does not land on a
-    whole number for most real runtimes. Handing back the raw float would leave
-    ``duration.eq``/``duration.not`` comparing floats for exact equality across
-    a division this module does not control -- round at the accessor, once,
-    rather than let that trap travel downstream undecided.
+    Duration is the exact quotient of Plex's milliseconds and 60000, NOT
+    rounded (SETTLED-BY-ORACLE; this said ``int``, ROUNDED, until Task 4).
+    Rounding does keep ``duration.eq`` off float equality, but it moves every
+    range comparison for a runtime within half a minute of the threshold, and
+    Kometa rounds nothing. The trap it was avoiding is real and is Kometa's
+    too: see the ``duration`` row's note.
+
+    A ``datetime`` for a ``date`` row keeps its time of day -- comparisons are
+    made at the moment, not the calendar date (``_as_moment``).
     """
 
     def get(self, attribute: str, /) -> object | None: ...
@@ -500,10 +539,25 @@ def _as_text(value: object, field: str) -> str:
 
 def _as_regex(value: object, field: str) -> re.Pattern:
     """Compiled at load, so a broken pattern is a refusal naming the field
-    rather than an exception per item, hours later, inside the run."""
+    rather than an exception per item, hours later, inside the run.
+
+    CASE-SENSITIVE, unlike every other operator here (SETTLED-BY-ORACLE). This
+    module first compiled with ``re.IGNORECASE``, on the assumption that a
+    regex should behave like the substring and tag comparisons beside it. It
+    should not: Kometa compiles a filter pattern with no flags at every one of
+    the three places it touches one -- ``util.validate_regex``
+    (util.py:310-323, plain ``re.compile(reg)``), the string comparison
+    (``re.compile(check_value).search(value)``, util.py:650) and the tag
+    comparison (``re.compile(reg).search(name)``, plex.py:2961) -- so
+    ``studio.regex: pictures$`` matches nothing at all in Kometa while our
+    version matched every Universal/Columbia/Paramount title in the library.
+    The oracle caught exactly that (six members ours-only, Task 4's report).
+    An operator who wants the old behaviour writes ``(?i)`` in the pattern,
+    which means the same thing in both.
+    """
     text = _as_text(value, field)
     try:
-        return re.compile(text, re.IGNORECASE)
+        return re.compile(text)
     except re.error as error:
         raise ValueError(
             f"{field}: {text!r} is not a valid regular expression -- {error}"
@@ -574,9 +628,14 @@ def _as_minutes(value: object, field: str) -> float:
 
 
 class _Today:
-    """The literal ``today``, resolved against the run's date rather than the
+    """The literal ``today``, resolved against the run's MOMENT rather than the
     parse's -- a config loaded once and run nightly must not freeze the day it
-    was read on."""
+    was read on.
+
+    The run's moment, not the run's midnight: Kometa resolves the same word as
+    ``datetime.now() if data == "today"`` (builder.py:4443), so
+    ``release.before: today`` keeps something released earlier today. Ours
+    agrees since Task 4's oracle."""
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
         return "today"
@@ -632,11 +691,12 @@ def _as_days(value: object, field: str) -> int:
     meant ``added.after``, and answering it with a 2024-day window would be
     worse than saying so.
 
-    SETTLED-IN-FAVOR (fix-round review): Kometa's own blank-modifier date-filter
-    comparison, ``value < data or value > current_time`` with ``data`` computed
-    as ``current_time - timedelta(days=value)``, is a day-window test, not an
-    equality test -- the same citation that fixed the window's upper edge in
-    ``_matches_one`` confirms this reading was already right.
+    SETTLED-BY-ORACLE: Kometa's blank-modifier date-filter branch is
+    ``value < current_time - timedelta(days=data)`` (util.py:601-604) -- a
+    day-window test, not an equality test, so this reading was right. The
+    *upper* half of the recollection that appeared here as a
+    ``SETTLED-IN-FAVOR`` note (``or value > current_time``) is not in Kometa's
+    code and has been retracted; see ``_matches_one``.
     """
     _boolean_is_not_a_value(value, field)
     if not isinstance(value, int):
@@ -683,11 +743,22 @@ def _split_key(key: str, field: str) -> tuple[FilterAttribute, str]:
         # so saying "which means eq" here would teach the wrong thing about
         # what a bare key does.
         bare_meaning = "within-the-last-N-days" if attribute.type == "date" else attribute.default_operator
-        raise ValueError(
+        message = (
             f"{field}: .{modifier} does not apply to {name!r}, a {attribute.type} attribute "
             "-- it takes " + ", ".join(writable)
             + f" (or no modifier at all, which means {bare_meaning})"
         )
+        if attribute.type == "date" and modifier in ("gt", "gte", "lt", "lte"):
+            # Kometa accepts all four on a date and rewrites every one of them
+            # to the STRICT form (plex.py:2735-2747). Refusing without saying
+            # so would look like a gap; the point is that the spelling means
+            # something different from what it says, in Kometa as much as here.
+            message += (
+                f". Kometa accepts .{modifier} on a date but silently rewrites it to "
+                ".after/.before, which are strict -- write the strict one you mean, so "
+                "the config says what it does"
+            )
+        raise ValueError(message)
     return attribute, modifier
 
 
@@ -769,14 +840,26 @@ def predicates(node: "FilterGroup | FilterPredicate") -> Iterator[FilterPredicat
 # --- evaluation --------------------------------------------------------------
 
 
-def _as_calendar_date(value: object, attribute: str) -> dt.date:
+def _as_moment(value: object, attribute: str) -> dt.datetime:
     """The date convention, in one place.
 
-    Every date comparison is date-granular, and an aware datetime keeps the
-    calendar date it already reads as -- ``tzinfo`` is dropped, never converted.
-    Converting to UTC or to the runner's zone would make the same library
-    filter differently depending on where the pass happened, which is not a
-    property a collection should have.
+    Every date comparison is made at the MOMENT, not the calendar date
+    (SETTLED-BY-ORACLE). This module first compared date-granularly, dropping
+    the time of day on both sides; Kometa does not. Its filter compares the
+    plexapi value as it stands -- a full datetime for ``addedAt`` -- against a
+    ``validate_date`` result, which is ``datetime.strptime`` and therefore
+    midnight (util.py:299-307), and against ``current_time``, which is
+    ``datetime.now()`` (builder.py:1165). So ``added.after: 2026-06-01`` keeps
+    an item added at 09:15 THAT DAY in Kometa and dropped it here, and the
+    oracle found three such items in a 120-item library (Task 4's report). A
+    date value (``release``, which Plex sends as a bare date) reads as that
+    day's midnight, which is what plexapi produces for it anyway, so nothing
+    about the absolute operators on ``release`` changed.
+
+    An aware datetime keeps the wall-clock reading it already has -- ``tzinfo``
+    is dropped, never converted. Converting to UTC or to the runner's zone
+    would make the same library filter differently depending on where the pass
+    happened, which is not a property a collection should have.
 
     ``added`` does not reach this function timezone-neutral, though: Plex sends
     ``addedAt`` as a unix epoch, and plexapi's ``toDatetime`` converts it with
@@ -784,12 +867,12 @@ def _as_calendar_date(value: object, attribute: str) -> dt.date:
     datetime in the RUNNER's local clock by the time this function sees it, not
     the Plex server's. This function's zone-preserving policy is correct for a
     value that already carries the right zone; it does not undo ``added``'s
-    pre-existing runner-dependence.
+    pre-existing runner-dependence (roadmap row 154).
     """
     if isinstance(value, dt.datetime):
-        return value.date()
+        return value.replace(tzinfo=None)
     if isinstance(value, dt.date):
-        return value
+        return dt.datetime(value.year, value.month, value.day)
     raise TypeError(f"the view gave {value!r} for {attribute!r}, which is not a date")
 
 
@@ -831,7 +914,7 @@ def _is_missing(value: object, value_type: str) -> bool:
 
 
 def _matches_one(
-    attribute: FilterAttribute, operator: str, have: object, want: object, today: dt.date
+    attribute: FilterAttribute, operator: str, have: object, want: object, now: dt.datetime
 ) -> bool:
     """One written value of a POSITIVE operator against the item's value.
 
@@ -865,26 +948,24 @@ def _matches_one(
         return low.endswith(wanted)
 
     if kind == "date":
-        when = _as_calendar_date(have, attribute.name)
+        when = _as_moment(have, attribute.name)
         if operator == "eq":
-            # "in the last N days", inclusive of both boundary days: on or
-            # after (today - N) and on or before today. SETTLED-BY-REVIEW: this
-            # module first shipped the lower edge only, with no upper bound, so
-            # a future date passed -- marked UNVERIFIED-TRANSCRIPTION. Kometa's
-            # own blank-modifier date-filter comparison is
-            # ``value < data or value > current_time`` (where ``data`` is
-            # ``current_time - timedelta(days=value)``): a two-sided window, so
-            # a future date FAILS. Fixed to bound at ``today``; see
-            # ``date-eq-5`` in the test module, flipped by this same citation.
-            return today - dt.timedelta(days=want) <= when <= today
-        moment = today if isinstance(want, _Today) else want
+            # "in the last N days": at or after (now - N days), with NO upper
+            # bound, so a value in the FUTURE passes (SETTLED-BY-ORACLE). The
+            # lower edge alone shipped first; a fix round then added an upper
+            # bound at today, citing Kometa's comparison as
+            # ``value < data or value > current_time``. That citation was a
+            # recollection and it is wrong. Kometa's blank-modifier branch is
+            # ``value < current_time - timedelta(days=data)`` and nothing else
+            # (util.py:601-604) -- one-sided. The oracle found two future-dated
+            # releases that Kometa keeps and the upper bound dropped, so the
+            # bound is gone and the recollection is retracted: ``release: 30``
+            # over an item Plex dates next March keeps it, in both systems.
+            return when >= now - dt.timedelta(days=want)
+        moment = now if isinstance(want, _Today) else _as_moment(want, attribute.name)
         if operator == "before":
             return when < moment
-        if operator == "after":
-            return when > moment
-        if operator == "gte":
-            return when >= moment
-        return when <= moment
+        return when > moment
 
     number = _as_number(have, attribute.name)
     if operator == "eq":
@@ -898,7 +979,7 @@ def _matches_one(
     return number <= want
 
 
-def _matches(predicate: FilterPredicate, view: ItemView, today: dt.date) -> bool:
+def _matches(predicate: FilterPredicate, view: ItemView, now: dt.datetime) -> bool:
     """One predicate against one item.
 
     The two rules that apply to every operator live here and only here, which
@@ -925,7 +1006,7 @@ def _matches(predicate: FilterPredicate, view: ItemView, today: dt.date) -> bool
     if negative:
         operator = _NEGATES[operator] or attribute.default_operator
     matched = any(
-        _matches_one(attribute, operator, have, want, today) for want in predicate.values
+        _matches_one(attribute, operator, have, want, now) for want in predicate.values
     )
     return not matched if negative else matched
 
@@ -934,22 +1015,35 @@ def evaluate(
     node: "FilterGroup | FilterPredicate",
     view: ItemView,
     *,
-    today: dt.date | None = None,
+    now: dt.datetime | dt.date | None = None,
 ) -> bool:
     """Does this item pass the filter?
 
-    ``today`` is the run's date, which the relative date operators measure
-    against; it defaults to the current date so a caller with no run date still
-    gets the documented behaviour. It is a keyword so the signature the plan
-    fixed -- ``evaluate(group, view) -> bool`` -- is the one that stays.
+    ``now`` is the run's MOMENT, which the relative date operators and the
+    literal ``today`` measure against; it defaults to the current time so a
+    caller with no run moment still gets the documented behaviour. It is a
+    keyword so the signature the plan fixed -- ``evaluate(group, view) ->
+    bool`` -- is the one that stays. A ``date`` is accepted and read as that
+    day's midnight, which is what a caller that only has a run date means.
+
+    It was called ``today`` and typed ``date`` until Task 4's oracle showed
+    that Kometa compares at the moment rather than the calendar date
+    (``current_time = datetime.now()``, builder.py:1165; see ``_as_moment``).
+    The name changed with the type so a caller cannot keep passing a date
+    while believing the old semantics.
 
     A view whose value has the wrong *type* raises rather than counting as
     missing: that is a bug in the accessor, and swallowing it would hide it
     behind a full, plausible, wrong collection. The engine stage contains the
     exception (Task 3); this layer's job is to be loud.
     """
-    when = today if today is not None else dt.date.today()
+    if now is None:
+        when = dt.datetime.now()
+    elif isinstance(now, dt.datetime):
+        when = now
+    else:
+        when = dt.datetime(now.year, now.month, now.day)
     if isinstance(node, FilterPredicate):
         return _matches(node, view, when)
-    results = (evaluate(child, view, today=when) for child in node.children)
+    results = (evaluate(child, view, now=when) for child in node.children)
     return any(results) if node.op == "any" else all(results)

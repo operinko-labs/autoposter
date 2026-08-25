@@ -44,10 +44,15 @@ from autoposter.collections.filters import (
     parse_filters,
 )
 
-# The date every date case is measured against. Pinned rather than
-# ``date.today()`` so the "in the last N days" boundaries below are arithmetic
-# a reader can check, and so the suite does not change meaning overnight.
-TODAY = dt.date(2026, 8, 25)
+# The moment every date case is measured against. Pinned rather than
+# ``datetime.now()`` so the "in the last N days" boundaries below are
+# arithmetic a reader can check, and so the suite does not change meaning
+# overnight. Midnight, so that the case table below reads as whole days: the
+# comparisons are made at the moment (``filters._as_moment``, Task 4's oracle),
+# and a run moment with a time of day would put every window's lower edge
+# part-way through a day, which is correct and unreadable.
+NOW = dt.datetime(2026, 8, 25, 0, 0)
+TODAY = NOW.date()
 
 
 def _view(attribute: str, value: object) -> dict:
@@ -343,15 +348,37 @@ def test_an_operator_the_type_does_not_have_is_refused_naming_the_field():
 
 @pytest.mark.parametrize(
     "key",
-    ["genre.gt", "studio.gte", "added.gt", "duration.regex", "content_rating.before"],
-    ids=["tag-gt", "str-gte", "date-gt", "duration-regex", "tag-before"],
+    [
+        "genre.gt", "studio.gte", "added.gt", "added.gte", "release.lt", "release.lte",
+        "duration.regex", "content_rating.before",
+    ],
+    ids=[
+        "tag-gt", "str-gte", "date-gt", "date-gte", "date-lt", "date-lte",
+        "duration-regex", "tag-before",
+    ],
 )
 def test_each_type_refuses_the_operators_it_does_not_have(key):
-    """``.gt`` on a date in particular: ``.before``/``.after`` are Kometa's
-    spellings and accepting a second one for the same meaning is how two
-    vocabularies start."""
+    """All four range modifiers on a date in particular: ``.before``/``.after``
+    are Kometa's spellings, and accepting a second one for the same meaning is
+    how two vocabularies start. ``.gte``/``.lte`` shipped here as INCLUSIVE
+    forms until Task 4's oracle read Kometa's ``split`` -- which accepts all
+    four and rewrites every one to the strict form -- so the same spelling
+    meant two different things in the two systems."""
     with pytest.raises(ValueError, match=re.escape(f"filters.{key}")):
         parse_filters({key: "x"})
+
+
+def test_a_date_range_modifiers_refusal_says_what_kometa_does_with_it():
+    """A refusal that only said "not supported" would read as a gap. The point
+    is the opposite: Kometa DOES accept it, and quietly makes it strict
+    (``plex.py:2735-2747``), so an operator who wrote ``.gte`` meaning "on or
+    after" was never getting that from Kometa either."""
+    with pytest.raises(ValueError) as caught:
+        parse_filters({"release.gte": "2000-01-01"})
+
+    message = str(caught.value)
+    assert ".after/.before" in message
+    assert "strict" in message
 
 
 def test_the_operator_refusal_for_a_date_explains_the_bare_form_correctly():
@@ -459,10 +486,15 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
         (None, "Horror", True),
         ([], "Horror", True),
     ],
+    # ``.regex`` is the one CASE-SENSITIVE operator, which is Kometa's
+    # (SETTLED-BY-ORACLE; see ``filters._as_regex``) and the opposite of every
+    # other comparison in this table. ``(?i)`` is the spelling that still works
+    # and means the same thing in both systems.
     ("tag", "regex"): [
         (["Science Fiction"], "^Science", True),
         (["Science Fiction"], "^Fiction", False),
-        (["Science Fiction"], "FICTION$", True),
+        (["Science Fiction"], "FICTION$", False),
+        (["Science Fiction"], "(?i)FICTION$", True),
         (["Horror", "Sci-Fi"], ["^Doc", "^Sci"], True),
         (["Horror"], ["^Doc", "^Sci"], False),
         (None, ".", False),
@@ -508,7 +540,8 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
     ],
     ("str", "regex"): [
         ("Warner Bros.", "^Warner", True),
-        ("Warner Bros.", "^warner", True),
+        ("Warner Bros.", "^warner", False),
+        ("Warner Bros.", "(?i)^warner", True),
         ("Warner Bros.", "^Bros", False),
         (None, ".", False),
     ],
@@ -587,9 +620,12 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
         (7.5, 7.4, False),
         (None, 8, False),
     ],
-    # -- duration: the view is minutes as an INT, ROUNDED (see ItemView.get's
-    #    docstring); the config is Kometa's minutes, plus the written forms an
-    #    operator reaches for -------------------------------------------------
+    # -- duration: the view is minutes as a FLOAT, the exact quotient of Plex's
+    #    milliseconds and 60000 (see ItemView.get's docstring); the config is
+    #    Kometa's minutes, plus the written forms an operator reaches for. The
+    #    whole numbers below are view values a caller supplies directly, so
+    #    they stay whole -- what the real accessor hands back almost never is,
+    #    which is why ``.eq`` is a float-equality test here and in Kometa -----
     ("duration", "eq"): [
         (90, 90, True),
         (90, "90m", True),
@@ -625,21 +661,25 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
         (90, 89, False),
         (None, 90, False),
     ],
-    # -- date: the bare form is a window in days, bounded at today; the rest
-    #    are absolute -----------------------------------------------------
+    # -- date: the bare form is a window in days measured back from the run
+    #    moment, with NO upper bound (a future date passes -- SETTLED-BY-ORACLE
+    #    against Kometa's one-sided ``value < current_time - timedelta(days)``,
+    #    util.py:601-604); ``.before``/``.after`` are absolute and strict.
+    #    Every comparison is made at the MOMENT, and a bare date reads as that
+    #    day's midnight -- with ``NOW`` at midnight these cases are whole days.
     ("date", "eq"): [
         (TODAY, 0, True),
         (dt.date(2026, 8, 20), 30, True),
         (dt.date(2026, 7, 26), 30, True),
         (dt.date(2026, 7, 25), 30, False),
         (dt.datetime(2026, 8, 20, 13, 5), 30, True),
-        (dt.date(2026, 9, 1), 30, False),
+        (dt.date(2026, 9, 1), 30, True),
         (None, 30, False),
     ],
     ("date", "not"): [
         (dt.date(2026, 7, 26), 30, False),
         (dt.date(2026, 7, 25), 30, True),
-        (dt.date(2026, 9, 1), 30, True),
+        (dt.date(2026, 9, 1), 30, False),
         (None, 30, False),
     ],
     ("date", "before"): [
@@ -647,6 +687,7 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
         (dt.date(2024, 1, 1), dt.date(2024, 1, 1), False),
         (dt.date(2024, 1, 2), dt.date(2024, 1, 1), False),
         (dt.date(2024, 1, 1), "2024-01-02", True),
+        (dt.datetime(2024, 1, 1, 0, 1), dt.date(2024, 1, 1), False),
         (dt.date(2026, 8, 24), "today", True),
         (TODAY, "today", False),
         (None, dt.date(2024, 1, 1), False),
@@ -654,21 +695,10 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
     ("date", "after"): [
         (dt.date(2024, 1, 2), dt.date(2024, 1, 1), True),
         (dt.date(2024, 1, 1), dt.date(2024, 1, 1), False),
+        (dt.datetime(2024, 1, 1, 0, 1), dt.date(2024, 1, 1), True),
         (dt.date(2024, 1, 1), dt.date(2024, 1, 2), False),
         (dt.date(2026, 8, 26), "today", True),
         (TODAY, "today", False),
-        (None, dt.date(2024, 1, 1), False),
-    ],
-    ("date", "gte"): [
-        (dt.date(2024, 1, 1), dt.date(2024, 1, 1), True),
-        (dt.date(2024, 1, 2), dt.date(2024, 1, 1), True),
-        (dt.date(2023, 12, 31), dt.date(2024, 1, 1), False),
-        (None, dt.date(2024, 1, 1), False),
-    ],
-    ("date", "lte"): [
-        (dt.date(2024, 1, 1), dt.date(2024, 1, 1), True),
-        (dt.date(2023, 12, 31), dt.date(2024, 1, 1), True),
-        (dt.date(2024, 1, 2), dt.date(2024, 1, 1), False),
         (None, dt.date(2024, 1, 1), False),
     ],
 }
@@ -701,7 +731,7 @@ def test_operator_semantics(value_type, operator, have, written, expected):
 
     group = parse_filters({key: written})
 
-    assert evaluate(group, _view(attribute, have), today=TODAY) is expected
+    assert evaluate(group, _view(attribute, have), now=NOW) is expected
 
 
 def test_every_operator_has_a_case_set_including_a_missing_value():
@@ -744,34 +774,60 @@ def test_the_missing_value_rule_splits_by_type_family():
 # --- dates: the convention ---------------------------------------------------
 
 
-def test_a_datetime_is_compared_as_its_own_calendar_date():
-    """Plex writes ``addedAt`` as a naive datetime in the server's own clock,
-    and every date operator here is date-granular. The time is dropped."""
+def test_a_datetime_is_compared_at_its_own_moment_not_its_calendar_date():
+    """The convention, and a correction (SETTLED-BY-ORACLE). This module
+    compared date-granularly at first -- the time of day was dropped on both
+    sides -- so ``added.after: 2024-01-01`` excluded an item added at 23:59
+    THAT DAY. Kometa compares the plexapi value as it stands against
+    ``validate_date``'s result, which is midnight, so it keeps that item; the
+    oracle found three such items in one 120-item library. The bare date on
+    the config side still reads as midnight, which is the only thing that
+    makes ``.after: <the day itself>`` mean anything at all.
+    """
     group = parse_filters({"added.after": dt.date(2024, 1, 1)})
 
-    assert evaluate(group, _view("added", dt.datetime(2024, 1, 1, 23, 59)), today=TODAY) is False
-    assert evaluate(group, _view("added", dt.datetime(2024, 1, 2, 0, 0)), today=TODAY) is True
+    assert evaluate(group, _view("added", dt.datetime(2024, 1, 1, 0, 0)), now=NOW) is False
+    assert evaluate(group, _view("added", dt.datetime(2024, 1, 1, 0, 1)), now=NOW) is True
+    assert evaluate(group, _view("added", dt.datetime(2024, 1, 1, 23, 59)), now=NOW) is True
 
 
-def test_an_aware_datetime_keeps_its_own_calendar_date_and_is_not_converted():
-    """The convention, stated: an aware value is reduced to the calendar date
-    it already reads as, with no conversion to UTC or to this machine's zone.
-    Converting would make the same library filter differently depending on
-    where the run happens, which is not a property a collection should have.
+def test_an_aware_datetime_keeps_its_own_wall_clock_and_is_not_converted():
+    """The other half of the convention, unchanged by the oracle: an aware
+    value keeps the wall-clock reading it already has, with no conversion to
+    UTC or to this machine's zone. Converting would make the same library
+    filter differently depending on where the run happens, which is not a
+    property a collection should have.
 
-    2026-08-20 23:00-08:00 is 2026-08-21 07:00 UTC. It filters as the 20th.
+    2026-08-20 23:00-08:00 is 2026-08-21 07:00 UTC. It filters as 23:00 on the
+    20th, so it is before the 21st.
     """
     aware = dt.datetime(2026, 8, 20, 23, 0, tzinfo=dt.timezone(dt.timedelta(hours=-8)))
     group = parse_filters({"added.before": dt.date(2026, 8, 21)})
 
-    assert evaluate(group, _view("added", aware), today=TODAY) is True
+    assert evaluate(group, _view("added", aware), now=NOW) is True
 
 
-def test_today_resolves_against_the_run_date_not_the_wall_clock():
+def test_today_resolves_against_the_run_moment_not_the_wall_clock():
+    """``today`` is the run's moment, which is Kometa's reading of the same
+    word (``datetime.now() if data == "today"``, builder.py:4443) -- so
+    ``release.before: today`` keeps something released earlier today, and a
+    run at midnight is the degenerate case where it does not."""
     group = parse_filters({"release.before": "today"})
 
-    assert evaluate(group, _view("release", dt.date(2026, 8, 24)), today=TODAY) is True
-    assert evaluate(group, _view("release", dt.date(2026, 8, 25)), today=TODAY) is False
+    assert evaluate(group, _view("release", dt.date(2026, 8, 24)), now=NOW) is True
+    assert evaluate(group, _view("release", dt.date(2026, 8, 25)), now=NOW) is False
+    afternoon = dt.datetime(2026, 8, 25, 14, 30)
+    assert evaluate(group, _view("release", dt.date(2026, 8, 25)), now=afternoon) is True
+
+
+def test_a_run_date_is_accepted_and_read_as_that_days_midnight():
+    """``evaluate`` takes a moment, but a caller that only has a run date is
+    not made to invent a time: a ``date`` reads as midnight, which is what it
+    means."""
+    group = parse_filters({"added.before": dt.date(2026, 8, 25)})
+
+    assert evaluate(group, _view("added", dt.datetime(2026, 8, 24, 23, 59)), now=TODAY) is True
+    assert evaluate(group, _view("added", dt.datetime(2026, 8, 25, 0, 1)), now=TODAY) is False
 
 
 # --- nesting -----------------------------------------------------------------
@@ -780,17 +836,17 @@ def test_today_resolves_against_the_run_date_not_the_wall_clock():
 def test_an_all_block_needs_every_child():
     group = parse_filters({"genre": "Horror", "year.gte": 2000})
 
-    assert evaluate(group, {"genre": ["Horror"], "year": 2001}, today=TODAY) is True
-    assert evaluate(group, {"genre": ["Horror"], "year": 1999}, today=TODAY) is False
-    assert evaluate(group, {"genre": ["Comedy"], "year": 2001}, today=TODAY) is False
+    assert evaluate(group, {"genre": ["Horror"], "year": 2001}, now=NOW) is True
+    assert evaluate(group, {"genre": ["Horror"], "year": 1999}, now=NOW) is False
+    assert evaluate(group, {"genre": ["Comedy"], "year": 2001}, now=NOW) is False
 
 
 def test_an_any_block_needs_one_child():
     group = parse_filters({"any": {"genre": "Horror", "year.gte": 2000}})
 
-    assert evaluate(group, {"genre": ["Comedy"], "year": 2001}, today=TODAY) is True
-    assert evaluate(group, {"genre": ["Horror"], "year": 1999}, today=TODAY) is True
-    assert evaluate(group, {"genre": ["Comedy"], "year": 1999}, today=TODAY) is False
+    assert evaluate(group, {"genre": ["Comedy"], "year": 2001}, now=NOW) is True
+    assert evaluate(group, {"genre": ["Horror"], "year": 1999}, now=NOW) is True
+    assert evaluate(group, {"genre": ["Comedy"], "year": 1999}, now=NOW) is False
 
 
 def test_any_of_all_of_nests_both_ways():
@@ -799,9 +855,9 @@ def test_any_of_all_of_nests_both_ways():
         {"any": [{"genre": "Horror", "year.gte": 2000}, {"label": "keep"}]}
     )
 
-    assert evaluate(group, {"genre": ["Horror"], "year": 2001, "label": []}, today=TODAY) is True
-    assert evaluate(group, {"genre": ["Horror"], "year": 1999, "label": []}, today=TODAY) is False
-    assert evaluate(group, {"genre": ["Comedy"], "year": 1999, "label": ["keep"]}, today=TODAY) is True
+    assert evaluate(group, {"genre": ["Horror"], "year": 2001, "label": []}, now=NOW) is True
+    assert evaluate(group, {"genre": ["Horror"], "year": 1999, "label": []}, now=NOW) is False
+    assert evaluate(group, {"genre": ["Comedy"], "year": 1999, "label": ["keep"]}, now=NOW) is True
 
 
 def test_a_deeply_nested_group_evaluates_all_the_way_down():
@@ -816,14 +872,14 @@ def test_a_deeply_nested_group_evaluates_all_the_way_down():
     )
     horror = {"genre": ["Horror"], "label": []}
 
-    assert evaluate(group, {**horror, "year": 2005}, today=TODAY) is True
-    assert evaluate(group, {**horror, "year": 2015}, today=TODAY) is False
-    assert evaluate(group, {**horror, "year": 2015, "label": ["keep"]}, today=TODAY) is True
-    assert evaluate(group, {"genre": ["Comedy"], "year": 2005, "label": []}, today=TODAY) is False
+    assert evaluate(group, {**horror, "year": 2005}, now=NOW) is True
+    assert evaluate(group, {**horror, "year": 2015}, now=NOW) is False
+    assert evaluate(group, {**horror, "year": 2015, "label": ["keep"]}, now=NOW) is True
+    assert evaluate(group, {"genre": ["Comedy"], "year": 2005, "label": []}, now=NOW) is False
 
 
-def test_evaluate_defaults_today_to_the_current_date():
-    """``today`` is a keyword with a default so callers that have no run date
+def test_evaluate_defaults_now_to_the_current_moment():
+    """``now`` is a keyword with a default so callers that have no run moment
     still get the documented behaviour rather than a TypeError."""
     group = parse_filters({"added.before": "today"})
 
@@ -841,7 +897,7 @@ def test_a_view_value_of_the_wrong_type_is_loud_rather_than_silently_missing():
     group = parse_filters({"year.gte": 2000})
 
     with pytest.raises(TypeError, match="year"):
-        evaluate(group, {"year": "2001"}, today=TODAY)
+        evaluate(group, {"year": "2001"}, now=NOW)
 
 
 # --- the model never touches plexapi ------------------------------------------

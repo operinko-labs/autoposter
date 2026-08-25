@@ -168,8 +168,9 @@ def test_the_nine_shipped_families_are_named():
 # within a couple of hours of midnight, a different calendar DATE -- depending
 # on where the pass runs. Pinning the literal here would have pinned this
 # machine's offset (it did, in this test's first run: +2 against the container's
-# UTC). See the Task 2 report; the date-granular comparison in
-# ``filters._as_calendar_date`` is where it would show.
+# UTC). See the Task 2 report; the moment comparison in ``filters._as_moment``
+# is where it would show -- and since Task 4 made that comparison keep the time
+# of day, it now shows at any hour, not only near midnight.
 @pytest.mark.parametrize(
     "attribute,expected",
     [
@@ -188,14 +189,35 @@ def test_each_shipped_family_reads_its_listing_value(attribute, expected):
     assert PlexItemView(a_movie()).get(attribute) == expected
 
 
-def test_duration_is_whole_minutes_and_an_int_not_raw_milliseconds():
+def test_duration_is_the_exact_quotient_in_minutes_not_raw_milliseconds():
     """The table pins this: Plex's wire value is milliseconds, Kometa's filter
-    is minutes, and the view rounds once here so ``duration.eq`` never compares
-    an unrounded float. 6_353_000ms is 105.883... minutes."""
+    is minutes, and the view divides -- WITHOUT rounding. 6_353_000ms is
+    105.8833... minutes and stays that.
+
+    It was rounded until Task 4's oracle (see
+    ``tests/test_collection_filter_oracle.py``). Rounding kept ``duration.eq``
+    off float equality, but it moved every range comparison for a runtime
+    within half a minute of the threshold: Kometa's conversion is
+    ``test_number /= 60000`` with nothing after it, so a 149.7-minute film
+    passes ``duration.lt: 150`` there and failed here. The oracle's library
+    carries exactly that film.
+    """
     value = PlexItemView(a_movie()).get("duration")
 
-    assert value == 106
-    assert isinstance(value, int) and not isinstance(value, bool)
+    assert value == pytest.approx(105.88333333)
+    assert isinstance(value, float)
+
+
+def test_a_rounded_duration_would_answer_a_boundary_range_wrongly():
+    """The reason the line above is not just a type assertion, stated as the
+    behaviour it protects. 8_982_000ms is 149.7 minutes; rounded it is 150,
+    and ``duration.lt: 150`` then drops a film Kometa keeps."""
+    xml = MOVIE_XML.replace('duration="6353000"', 'duration="8982000"')
+    view = PlexItemView(a_movie(xml))
+
+    assert view.get("duration") == pytest.approx(149.7)
+    assert evaluate(parse_filters({"duration.lt": 150}), view) is True
+    assert round(view.get("duration")) == 150
 
 
 def test_resolution_reads_every_version_of_a_multi_version_movie():

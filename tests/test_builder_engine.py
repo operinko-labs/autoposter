@@ -16,7 +16,7 @@ are ``tests/test_builder_knobs.py``'s.
 The Oscars memoisation is here too: seven collections, one dataset, one request
 -- and one request when it fails, not seven.
 """
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -903,18 +903,28 @@ async def test_a_relative_date_filter_measures_every_item_against_one_date(
     session, registry_entry, monkeypatch
 ):
     """A relative window (``added: 30`` is "in the last 30 days") reads the
-    clock once per definition, not once per item: a pass that crossed midnight
-    would otherwise measure the first half of a collection against one day and
-    the rest against the next, and produce a membership no single day would."""
+    clock once per definition, not once per item: a long pass would otherwise
+    measure the first half of a collection against one instant and the rest
+    against a later one, and produce a membership no single instant would.
+
+    The clock read is ``datetime.now()`` with no timezone -- the run's MOMENT
+    in the runner's local clock, which since Task 4's oracle is what the date
+    operators compare against (Kometa's ``current_time`` is the same call).
+    ``_Clock`` subclasses ``datetime`` and intercepts only the no-argument
+    form, so the engine's own ``datetime.now(UTC)`` pass timestamp is
+    untouched and this test cannot pass by breaking that instead.
+    """
     reads = []
 
-    class _Clock:
+    class _Clock(datetime):
         @staticmethod
-        def today():
+        def now(tz=None):
+            if tz is not None:
+                return datetime.now(tz)
             reads.append(1)
-            return date(2026, 8, 25)
+            return datetime(2026, 8, 25, 14, 30)
 
-    monkeypatch.setattr("autoposter.collections.engine.date", _Clock)
+    monkeypatch.setattr("autoposter.collections.engine.datetime", _Clock)
     registry_entry(_Listing(
         "test_filter_recent", [("imdb", "tt1"), ("imdb", "tt2"), ("imdb", "tt3")]
     ))
@@ -936,7 +946,7 @@ async def test_a_relative_date_filter_measures_every_item_against_one_date(
         i.ratingKey for i in section._existing["Recently Added"]._live
     ] == ["m1", "m2"]
     assert run.definitions[0].filtered == 1
-    assert reads == [1], "one date for the collection, not one per item"
+    assert reads == [1], "one moment for the collection, not one per item"
 
 
 def test_no_shipped_definition_carries_a_filter():
