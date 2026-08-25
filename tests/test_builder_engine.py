@@ -769,6 +769,60 @@ async def test_a_definition_whose_filter_excludes_everything_is_skipped(
     assert result.failed is False, "a filter that matches nothing is not a failure"
 
 
+async def test_a_filter_excluding_every_member_says_so_not_the_source(
+    session, registry_entry
+):
+    """The action string is the operator's report of what happened. The
+    source did return an item here -- the filter is what emptied the
+    collection -- so the message must name the filter, not repeat the
+    dead-source wording (roadmap: filter outcomes misattributed)."""
+    registry_entry(_Listing("test_filter_all_out_msg", [("imdb", "tt1")]))
+    kept = FakeItem("m9", ["imdb://tt9"])
+    live = FakeCollection("Nothing Left Msg", [kept], labels=[LABEL])
+    section = FakeSection([("m1", ["imdb://tt1"], {"year": 1994})], existing=[live])
+
+    actions = await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Nothing Left Msg", builder="test_filter_all_out_msg",
+            filters={"year.gte": 2000},
+        )],
+        _config(),
+    )
+
+    assert actions == [
+        "'Nothing Left Msg': the filter excluded every member; "
+        "leaving the collection untouched"
+    ]
+
+
+async def test_a_filter_that_cannot_evaluate_says_so_not_the_source(
+    session, registry_entry
+):
+    """Same report discipline for the failure path: the message must say the
+    filter could not be evaluated, not that the source returned nothing."""
+    registry_entry(_Listing("test_filter_broken_msg", [("imdb", "tt1")]))
+    kept = FakeItem("m9", ["imdb://tt9"])
+    live = FakeCollection("Broken Filter Msg", [kept], labels=[LABEL])
+    section = FakeSection([
+        ("m1", ["imdb://tt1"], {"year": "nineteen ninety-four"}),
+    ], existing=[live])
+
+    actions = await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Broken Filter Msg", builder="test_filter_broken_msg",
+            filters={"year.gte": 2000},
+        )],
+        _config(),
+    )
+
+    assert actions == [
+        "'Broken Filter Msg': the filter could not be evaluated; "
+        "leaving the collection untouched"
+    ]
+
+
 async def test_the_preview_diff_is_taken_against_the_filtered_set(
     session, registry_entry
 ):

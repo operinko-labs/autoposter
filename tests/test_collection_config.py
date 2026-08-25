@@ -470,7 +470,7 @@ def test_a_filter_naming_a_deferred_attribute_refuses_at_config_load():
     "attribute", ["genre", "label", "collection", "network",
                   "audio_language", "subtitle_language"],
 )
-def test_every_deferred_attribute_refuses_at_config_load(attribute):
+def test_every_deferred_filter_attribute_refuses_at_config_load(attribute):
     """All six of them, by name. A row moved back to `listing` without an
     accessor -- or an accessor added without the row moving -- fails here."""
     with pytest.raises(ValidationError, match="tier2-deferred"):

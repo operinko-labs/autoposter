@@ -501,11 +501,13 @@ class CollectionDefinition(BaseModel):
           exists to prevent, and the engine would contain it into a collection
           that quietly stopped updating.
 
-        Checked against the accessors rather than against the row's tier
-        directly, so that the config refuses exactly what the run cannot read:
-        the two can only disagree if someone moves a row without an accessor or
-        adds an accessor without moving the row, and ``filter_values``'s own
-        tests already fail on either.
+        Checked against ``SHIPPED_ATTRIBUTES`` -- the tier-derived set (rows in
+        ``FILTER_ATTRIBUTES`` whose ``source`` is ``"listing"``), not against
+        the runtime accessor map itself. The two are pinned equal by a separate
+        test, ``filter_values``'s own
+        ``test_the_runtime_accessor_map_matches_the_listing_rows``, not by this
+        check introspecting ``_ACCESSORS`` directly -- so a row moved between
+        tiers without the matching accessor work fails there, not here.
         """
         if self.filters is None:
             return self

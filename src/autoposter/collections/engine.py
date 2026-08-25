@@ -109,8 +109,9 @@ class LibraryRun:
 
     @property
     def failures(self) -> list[str]:
-        """The titles whose builder failed. A pass with any of these is not a
-        success, whatever the action count says (roadmap row 115)."""
+        """The titles whose builder failed, or whose filter stage could not be
+        evaluated. A pass with any of these is not a success, whatever the
+        action count says (roadmap row 115)."""
         return [result.title for result in self.definitions if result.failed]
 
 
@@ -454,14 +455,23 @@ async def _run_one(
         )
 
     items = resolved.items
+    filter_failed = False
+    filter_emptied_a_non_empty_set = False
     if definition.filters is not None:
+        had_items = bool(items)
         kept = _passing(definition, items, library)
         if kept is None:
             outcome.failed = True
+            filter_failed = True
             items = []
         else:
             outcome.filtered = len(items) - len(kept)
             items = kept
+        # The source did return items here -- the filter is what emptied the
+        # set (or could not run at all) -- so the action string below must
+        # say that, not repeat the "source returned no items" wording, which
+        # would misattribute the filter's outcome to the source.
+        filter_emptied_a_non_empty_set = had_items and not items
 
     if definition.limit is not None:
         # After resolution -- and, since row 96, after the filter -- so a limit
@@ -483,23 +493,39 @@ async def _run_one(
     if summary_action:
         outcome.actions.append(summary_action)
 
-    outcome.actions += await reconcile_list_collection(
-        session, section, library, definition.title, items, label,
-        summary=summary,
-        sort=definition.sort,
-        dry_run=dry_run,
-        existing=listing(),
-        adopt=config.collections.adopt,
-        adopt_from=config.collections.adopt_from,
-        adopt_removes_prior_label=config.collections.adopt_removes_prior_label,
-        protect_labels=config.collections.protect_labels,
-        kind=result.poster_kind,
-        key=result.poster_key,
-        http=http,
-        config=config,
-        sync_mode=definition.sync_mode,
-        settings=definition,
-    )
+    if filter_emptied_a_non_empty_set:
+        # ``reconcile_list_collection`` would report this as "source returned
+        # no items", which is true of its own ``items`` argument but false of
+        # what actually happened -- the source returned items, and the filter
+        # is why none reached here. Report the filter instead of calling in.
+        if filter_failed:
+            outcome.actions.append(
+                "%r: the filter could not be evaluated; leaving the collection "
+                "untouched" % definition.title
+            )
+        else:
+            outcome.actions.append(
+                "%r: the filter excluded every member; leaving the collection "
+                "untouched" % definition.title
+            )
+    else:
+        outcome.actions += await reconcile_list_collection(
+            session, section, library, definition.title, items, label,
+            summary=summary,
+            sort=definition.sort,
+            dry_run=dry_run,
+            existing=listing(),
+            adopt=config.collections.adopt,
+            adopt_from=config.collections.adopt_from,
+            adopt_removes_prior_label=config.collections.adopt_removes_prior_label,
+            protect_labels=config.collections.protect_labels,
+            kind=result.poster_kind,
+            key=result.poster_key,
+            http=http,
+            config=config,
+            sync_mode=definition.sync_mode,
+            settings=definition,
+        )
     return outcome
 
 
