@@ -252,8 +252,6 @@ def _handler(charts_ok=True, awards_ok=True, posters="none"):
                 return httpx.Response(500, text="boom")
             return httpx.Response(200, text=CHART_FIXTURE)
         if "IMDb-Awards" in url:
-            if not awards_ok:
-                return httpx.Response(500, text="boom")
             # Added when the award builders started checking the event id
             # against the dataset's own validation list -- a second file from
             # the same host, fetched before the event file. THE ONLY CHANGE to
@@ -262,6 +260,8 @@ def _handler(charts_ok=True, awards_ok=True, posters="none"):
             # strings and section state below are the capture's, unchanged.
             if "event_validation" in url:
                 return httpx.Response(200, text=VALIDATION_FIXTURE)
+            if not awards_ok:
+                return httpx.Response(500, text="boom")
             return httpx.Response(200, text=AWARD_FIXTURE)
         if "Default-Images" in url:
             if posters == "missing":

@@ -302,6 +302,30 @@ async def test_a_ceremonys_own_pattern_cannot_claim_another_ceremonys_titles():
     }
 
 
+async def test_every_events_year_pattern_only_matches_its_own_year_title():
+    """The test above pins pattern isolation by name, for the two ceremonies
+    shipped today. This is the general form, over the registry itself: a
+    third ceremony added later without a pattern distinct from the existing
+    ones would silently reintroduce the sweep-eats-our-collections bug, and
+    this is what would catch it without anyone having to remember to extend
+    the named test above."""
+    for key, event in EVENTS.items():
+        title = event.year_title % "2026"
+        for other_key, other in EVENTS.items():
+            if other_key == key:
+                assert other.year_pattern.match(title), key
+            else:
+                assert not other.year_pattern.match(title), (key, other_key)
+
+
+async def test_every_events_years_builder_is_registered():
+    """``years_builder`` names the registry entry that expands this
+    ceremony's year collections; an event pointing at a builder that was
+    never registered would fail silently at expand-time rather than here."""
+    for key, event in EVENTS.items():
+        assert event.years_builder in REGISTRY, key
+
+
 async def test_each_ceremony_expands_into_its_own_titles_and_summaries():
     """Kometa's ``title_format`` and its ``golden_year`` translation, both
     transcribed: the year collections are "Golden Globe 2026", and the summary
