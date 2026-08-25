@@ -421,9 +421,10 @@ See `config/autoposter.example.yaml` for the full block.
 
 ## Periodic scheduler
 
-The `scheduler:` block in `autoposter.yaml` controls four periodic passes —
+The `scheduler:` block in `autoposter.yaml` controls five periodic passes —
 the Common Sense collections reconcile, the ratings-drift sweep, the
-orphaned-asset cleanup, and the Radarr/Sonarr sync with its safety net (see
+orphaned-asset cleanup, the `media_items` prune, and the Radarr/Sonarr sync
+with its safety net (see
 "Radarr and Sonarr sync" below) — each run by a single background task (the same `run(stop_event)` shape as
 the Plex health probe) started from the app lifespan. Their schedule lives in
 the database, not process memory: `scheduled_runs` records each job's last
@@ -437,7 +438,7 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   FROM scheduled_runs;
 ```
 
-- `enabled` (default `true`) — master switch for all four passes. Off means
+- `enabled` (default `true`) — master switch for all five passes. Off means
   none of them run at all, including as a dry run — **including the
   Radarr/Sonarr sync and its safety net**: an operator turning the scheduler
   off to silence the collections or cleanup passes also stops the Arr sync,
@@ -464,6 +465,11 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   `backup_root`. **Whether it writes is not a `scheduler` setting** — see
   `cleanup.apply` above, which already defaults to `false` (dry run: report
   what would move) because this pass moves the operator's files.
+- `prune_days` (default `7`) — cadence for the `media_items` prune: a walk of
+  every row asking whether the render pipeline can still resolve it, retiring
+  the ones it cannot. **Whether it deletes is not a `scheduler` setting** —
+  see `prune.apply` below, which defaults to `false` (dry run: report which
+  rows would go).
 
 ### Orphaned-asset cleanup: what it can and cannot find
 
@@ -504,6 +510,85 @@ Nothing is ever deleted: orphans move to `backup_root` keeping their path
 relative to `assets_root`. If a destination already exists there from an
 earlier pass, the new copy lands beside it with a `.1`, `.2` … suffix rather
 than being moved *inside* it.
+
+### Pruning `media_items` rows Plex can no longer resolve
+
+An item that leaves Plex — deleted, moved into a library you excluded, or
+re-matched under a new rating key — leaves its `media_items` row behind.
+Nothing else removes it, so every full pass re-enqueues that row, the job
+cannot find the item, and it parks. Forever, and once per pass. The
+`plex_prune` job retires those rows.
+
+**What "gone" means here is wider than "deleted from Plex."** A row is
+prunable when the *render pipeline* cannot resolve it, and the pipeline never
+looks inside `plex.excluded_libraries`. So **excluding a library makes its
+rows prunable**, and an applied prune after an exclusion retires them. That is
+deliberate — you exclude a library to stop processing those items — but know
+it before switching `prune.apply` on. No files are touched either way, and
+re-including the library re-creates the rows on the next pass.
+
+A row that Plex *has* but has not finished scanning is never pruned: the probe
+asks only whether the item can be found, not whether it is usable yet.
+
+- `prune.apply` (default `false`) — dry run: report which rows would go and
+  delete nothing. Unlike the asset cleanup, whose mistake is a folder that
+  moved to `backup_root`, this one's mistake is a row that is gone, so leave
+  it off until a dry-run report reads the way you expect.
+- `prune.max_prunes` (default `500`) — refuse the pass if more than this many
+  rows look unresolvable.
+- `prune.max_prune_share` (default `0.25`) — refuse if more than this share of
+  the library does, which catches the same failure on a library too small for
+  the absolute cap to fire. Only applied once there are at least 20 rows.
+
+Four more things bound what one pass can do:
+
+1. **An unhealthy Plex refuses the whole pass.** A server that answers nothing
+   would make every row look gone. The liveness state (the same one that gates
+   job claiming) is checked before the table is even read.
+2. **Any probe error refuses the whole pass**, and is recorded as `failed`
+   rather than `ok` in `scheduled_runs`. The detail names the exception class
+   only, never the server address.
+3. **A parent is pruned only when it and every descendant are individually
+   gone.** `media_items.parent_id` cascades, so deleting a show removes its
+   seasons and episodes; one episode that still resolves holds the whole show.
+   The summary reports how many rows were held that way. A gone episode under
+   a surviving show is still pruned on its own — that is the re-match case.
+4. **The empty-table guard**: an empty `media_items` refuses, because that
+   means a restore has not finished.
+
+Each deleted row leaves one `events_log` row (`source = 'prune'`,
+`event_type = 'media_item_pruned'`) carrying its whole identity — rating key,
+kind, library, title, external ids, how many `renders` rows went with it, and
+its `logo_upload_key`. That last one matters: a pruned item's uploaded
+clearlogo can no longer be reverted by the logo-revert mode, because the marker
+that made the revert safe dies with the row. The key is written into the audit
+so it is recoverable by hand. `renders` and `item_facts` rows cascade away with
+the item; pending and parked `process_item` jobs for the pruned rating keys are
+dismissed in the same run (running ones park themselves and are dismissed by
+the next pass).
+
+```sql
+SELECT payload->>'rating_key', payload->>'title', received_at
+  FROM events_log WHERE event_type = 'media_item_pruned' ORDER BY received_at DESC;
+```
+
+**Interaction with the asset cleanup.** The prune touches no files. Each pruned
+movie or show leaves its asset directory unreferenced — as with the cleanup
+above, only the `library_folders: true` layout has a per-item directory to
+leave behind; under the flat layout there is nothing there for a prune to
+orphan, and the directory counts below refer to the foldered layout — and the
+orphaned-asset cleanup above then moves it to `backup_root` on its own
+cadence, which is safer than anything the prune could do, since that sweep
+never deletes. The prune's summary says how many directories it is handing
+over. Watch for one edge: past `cleanup.max_orphans` the cleanup pass refuses
+**entirely**, so a large prune can leave the next cleanup pass doing nothing at
+all, including the orphans it would otherwise have handled. The prune summary
+warns when its own count exceeds that cap; it cannot check
+`cleanup.max_orphan_share`, which needs a scan of the whole asset tree, so
+consider that one yourself before a large applied prune. Pruning only some
+episodes of a surviving show leaves no orphaned directory at all — those
+artifacts live under the show's folder, and in the re-match case the new rows
+reuse the same paths.
 
 The IMDb dataset refresh (`operations.imdb_refresh_hours`) deliberately does
 **not** run on this scheduler — it keeps its own separate background loop.

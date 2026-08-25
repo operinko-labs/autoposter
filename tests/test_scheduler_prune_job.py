@@ -774,6 +774,17 @@ async def test_an_applied_pass_counts_directories_off_what_it_actually_pruned(se
     )
 
 
+def test_the_job_name_is_in_the_hand_trigger_allowlist():
+    """``SCHEDULED_JOB_NAMES`` is spelled out in api/routes.py rather than
+    imported from the factories, so the two can drift and a job silently
+    becomes untriggerable. This is the check that they have not."""
+    from autoposter.api.routes import SCHEDULED_JOB_NAMES
+
+    job = make_prune_job(ConfigHolder(_config()), lambda: FakePlex(), lambda: True)
+
+    assert job.name in SCHEDULED_JOB_NAMES
+
+
 async def test_a_skipped_rows_queued_job_is_not_dismissed(session):
     """Why the disposal is keyed on ``outcome.pruned`` and not on the candidate
     list, said at the job level. The row was re-upserted between this pass's

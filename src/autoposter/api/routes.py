@@ -67,16 +67,18 @@ from autoposter.render.pipeline import ART_KINDS_FOR, manual_override_path
 
 logger = logging.getLogger(__name__)
 
-# The names of the four periodic jobs, from the Job(name=...) literals in
-# scheduler/jobs.py (:63, :157, :291, :517). Spelled out rather than imported
+# The names of the five periodic jobs, from the Job(name=...) literals in
+# scheduler/jobs.py and scheduler/prune.py. Spelled out rather than imported
 # from the job factories: importing those would pull plexapi and the arr/http
 # client machinery into this module, which no request handler here needs. A
-# name added there and not here can simply not be triggered by hand.
+# name added there and not here can simply not be triggered by hand, which is
+# what tests/test_scheduler_prune_job.py's allowlist check exists to catch.
 SCHEDULED_JOB_NAMES = frozenset({
     "collections_reconcile",
     "ratings_drift_sweep",
     "arr_sync",
     "asset_cleanup",
+    "plex_prune",
 })
 
 DEFAULT_EVENTS_LIMIT = 50

@@ -45,6 +45,7 @@ from autoposter.scheduler.jobs import (
     make_collections_job,
     make_drift_job,
 )
+from autoposter.scheduler.prune import make_prune_job
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,23 @@ def create_app(
                 ))
             scheduler_jobs.append(make_drift_job(holder))
             scheduler_jobs.append(make_cleanup_job(holder))
+            # The prune sweep needs a PlexClient rather than a raw PlexServer:
+            # "gone" here means "the pipeline cannot resolve it", which is
+            # PlexClient's section-constrained search and its library
+            # exclusions, not a bare fetchItem. Built inside the factory so
+            # that both the connect and the client construction happen on the
+            # thread the job offloads to, and read off the holder so a changed
+            # exclusion list is honoured per run. `health.healthy` is passed as
+            # a deref for the same reason the worker pool takes one: an
+            # unhealthy Plex must be seen at the moment the pass starts, and
+            # for THIS job it means refuse, not wait.
+            scheduler_jobs.append(make_prune_job(
+                holder,
+                lambda: PlexClient(
+                    server_factory(), holder.current.plex.excluded_libraries
+                ),
+                lambda: health.healthy,
+            ))
             if config.arr_sync.enabled:
                 scheduler_jobs.append(make_arr_sync_job(holder, server_factory, http, secrets))
         # Published so config.live.swap_config can recompute the cadences

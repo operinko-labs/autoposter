@@ -126,3 +126,16 @@ async def test_asking_twice_leaves_exactly_one_row(client, auth_headers, session
     rows = (await session.execute(select(ScheduledRun))).scalars().all()
     assert len(rows) == 1
     assert rows[0].last_started_at is None
+
+
+async def test_the_prune_job_can_be_triggered_by_hand(client, auth_headers, session):
+    """The prune sweep's operator story is "run it as a dry run, read the
+    report, then decide" -- which needs the button, not a week's wait."""
+    response = await client.post(
+        "/api/scheduled-runs/plex_prune/run", headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    row = (await session.execute(select(ScheduledRun))).scalars().one()
+    assert row.name == "plex_prune"
+    assert row.last_started_at is None

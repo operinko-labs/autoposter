@@ -122,7 +122,19 @@ class PruneScan:
         of their own. Reported because those directories become the existing
         ``asset_cleanup`` sweep's work -- this module touches no files at all.
         """
-        return sum(1 for candidate in self.prunable if candidate.kind in ("movie", "show"))
+        return _directory_count(self.prunable)
+
+
+def _directory_count(candidates: list[PruneCandidate]) -> int:
+    """How many asset directories these candidates would orphan.
+
+    One per movie or show: seasons and episodes keep their artwork under the
+    show's folder (``render/naming.py``), so they orphan nothing of their own.
+    Shared by ``PruneScan.directories`` (the scan-time count) and the
+    applied-pass recount in ``make_prune_job`` (which counts off what was
+    actually deleted, not off the candidates offered).
+    """
+    return sum(1 for candidate in candidates if candidate.kind in ("movie", "show"))
 
 
 def intent_for(candidate: PruneCandidate) -> RenderIntent:
@@ -576,10 +588,8 @@ def make_prune_job(
         # threshold this prune never crossed. The dry run has no such
         # distinction to make -- there, the candidates are the whole story.
         pruned_keys = set(outcome.pruned)
-        directories = sum(
-            1
-            for candidate in scan.prunable
-            if candidate.rating_key in pruned_keys and candidate.kind in ("movie", "show")
+        directories = _directory_count(
+            [c for c in scan.prunable if c.rating_key in pruned_keys]
         )
         summary = (
             f"pruned {len(outcome.pruned)} of {scan.total} media_items row(s); "
