@@ -53,10 +53,10 @@ def chart_and_award_definitions(config, library_type: str) -> list[CollectionDef
         # shipped -- adding a ceremony here would create collections in every
         # deployment that had never asked for them.
         oscars = EVENTS["oscars"]
-        for award, (title, _, _, _) in oscars.awards.items():
+        for award, spec in oscars.awards.items():
             definitions.append(
                 CollectionDefinition(
-                    title=title, builder="imdb_award", params={"award": award}
+                    title=spec.title, builder="imdb_award", params={"award": award}
                 )
             )
         definitions.append(

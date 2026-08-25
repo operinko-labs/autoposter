@@ -31,10 +31,13 @@ from autoposter.collections.awards import (
     winners_for_year,
 )
 from autoposter.collections.builders import REGISTRY, BuilderContext
+from autoposter.collections.builders.base import LibraryTypeMismatch
 from autoposter.collections.builders.imdb_award import (
     EVENTS,
+    Award,
     ImdbAwardBuilder,
     ImdbAwardParams,
+    ImdbAwardYearsBuilder,
     _event,
 )
 from autoposter.collections.engine import definition_titles
@@ -84,9 +87,9 @@ def _events_client(requests=None):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-def _ctx(http, config=None, run_cache=None):
+def _ctx(http, config=None, run_cache=None, library_type="Movie"):
     return BuilderContext(
-        library="Movies", library_type="Movie", http=http,
+        library="Movies", library_type=library_type, http=http,
         config=config or {}, run_cache=run_cache if run_cache is not None else {},
     )
 
@@ -188,6 +191,105 @@ async def test_duplicates_are_removed_keeping_first_occurrence():
                            "best motion picture of the year": {"winner": ["ttX"]}}},
     }
     assert winners_for_categories(event, BEST_PICTURE) == ["ttX"]
+
+
+# --------------------------------------------------------------------------
+# The award group -- Kometa's outer filter (roadmap row 149).
+# --------------------------------------------------------------------------
+#
+# One ceremony's file can hold several award *groups*: BAFTA (``ev0000123``)
+# splits film, television and games under one event id. Kometa filters twice,
+# group then category (``modules/imdb.py`` ``_award``, transcribed in
+# ``.superpowers/sdd/archive/p8c-task-4-report.md``); until now this service
+# read every group. The fixture below gives two groups the *same* category
+# name, so a filter that silently did nothing would show up as extra ids
+# rather than as the same answer.
+
+TWO_GROUP_EVENT = {
+    "2026": {
+        "bafta film award": {
+            "best film": {"winner": ["ttFilm2026"], "nominee": ["ttFilmNominee"]}
+        },
+        "bafta tv award": {"best film": {"winner": ["ttTv2026"]}},
+    },
+    "2025": {
+        "bafta film award": {"best film": {"winner": ["ttFilm2025"]}},
+        "bafta tv award": {"best film": {"winner": ["ttTv2025"]}},
+    },
+}
+
+
+def test_an_award_filter_keeps_only_its_own_group():
+    """Both directions, because a filter that matched nothing and a filter
+    that matched everything would each pass one of them alone."""
+    assert winners_for_categories(
+        TWO_GROUP_EVENT, ("best film",), ("bafta film award",)
+    ) == ["ttFilm2026", "ttFilm2025"]
+    assert winners_for_categories(
+        TWO_GROUP_EVENT, ("best film",), ("bafta tv award",)
+    ) == ["ttTv2026", "ttTv2025"]
+
+
+def test_no_award_filter_reads_every_group_in_the_datasets_own_order():
+    """The default is the behaviour every shipped collection already has:
+    every group, newest year first, in the order the file lists them. The
+    Oscars and Golden Globes oracle pins below say the same thing about real
+    data; this says it about a file that has more than one group to get wrong.
+    """
+    unfiltered = winners_for_categories(TWO_GROUP_EVENT, ("best film",))
+
+    assert unfiltered == ["ttFilm2026", "ttTv2026", "ttFilm2025", "ttTv2025"]
+    assert winners_for_categories(TWO_GROUP_EVENT, ("best film",), None) == unfiltered
+
+
+def test_the_two_filters_are_not_one_filter():
+    """Group and category narrow independently: the right group with a
+    category it does not award is empty, not that group's other winners."""
+    assert winners_for_categories(
+        TWO_GROUP_EVENT, ("best director",), ("bafta film award",)
+    ) == []
+    assert winners_for_categories(TWO_GROUP_EVENT, ("best film",), ("bafta games award",)) == []
+
+
+def test_a_year_collection_can_be_narrowed_to_one_group_too():
+    """``winners_for_year`` reads every category of one year, so on a
+    multi-medium ceremony it is the function that would otherwise put
+    television winners in a film library's year collection."""
+    assert winners_for_year(TWO_GROUP_EVENT, "2026") == ["ttFilm2026", "ttTv2026"]
+    assert winners_for_year(TWO_GROUP_EVENT, "2026", ("bafta tv award",)) == ["ttTv2026"]
+
+
+async def test_the_static_builder_applies_its_awards_group_filter(monkeypatch):
+    """The filter has to travel from the registry row to the resolver. The
+    Oscars fixture's one group is ``oscar``: an award filtered to it builds
+    exactly what the unfiltered Oscars collection builds, and the same award
+    filtered to a group this ceremony does not have builds nothing -- which is
+    a filter that is being read rather than a default that is being ignored.
+    """
+    monkeypatch.setitem(EVENTS, "filtered_to_its_own_group", replace(
+        EVENTS["oscars"], key="filtered_to_its_own_group",
+        awards={"best_picture": Award(
+            "Filtered Best Picture", BEST_PICTURE, None, None, ("oscar",)
+        )},
+    ))
+    monkeypatch.setitem(EVENTS, "filtered_to_a_missing_group", replace(
+        EVENTS["oscars"], key="filtered_to_a_missing_group",
+        awards={"best_picture": Award(
+            "Missing Best Picture", BEST_PICTURE, None, None, ("bafta film award",)
+        )},
+    ))
+
+    async with _events_client() as http:
+        unfiltered = await ImdbAwardBuilder().build(_ctx(http, {"award": "best_picture"}))
+        matching = await ImdbAwardBuilder().build(
+            _ctx(http, {"event": "filtered_to_its_own_group", "award": "best_picture"})
+        )
+        missing = await ImdbAwardBuilder().build(
+            _ctx(http, {"event": "filtered_to_a_missing_group", "award": "best_picture"})
+        )
+
+    assert matching.ids == unfiltered.ids
+    assert missing.ids == []
 
 
 # --------------------------------------------------------------------------
@@ -377,6 +479,81 @@ def test_an_award_is_only_known_within_its_ceremony():
         ImdbAwardParams.model_validate({"event": "golden_globes", "award": "best_song"})
     with pytest.raises(ValueError, match="unknown Oscars award 'best_song'"):
         ImdbAwardParams.model_validate({"award": "best_song"})
+
+
+# --------------------------------------------------------------------------
+# Which libraries a ceremony can mean anything for (roadmap row 150).
+# --------------------------------------------------------------------------
+#
+# A definition with no ``libraries:`` key runs against every library in the
+# pass, so an award definition reaches Show libraries too, where a film
+# ceremony's ids resolve to nothing at all -- indistinguishable from a
+# ceremony that had no winners. ``require_library_type`` is the same guard the
+# charts and the TMDb builders already carry; the ceremony declares its own
+# types because that is what differs between them.
+
+
+def test_the_two_shipped_ceremonies_are_movie_ceremonies():
+    """Pinned rather than assumed: the Golden Globes award television and
+    their *year* collections carry those ids (Kometa's dynamic year block sets
+    no ``allowed_libraries`` and we match it), but the ceremony is still a film
+    ceremony -- the ids land in a Movie library, and the gate is what keeps the
+    definitions off Show libraries entirely."""
+    assert EVENTS["oscars"].library_types == ("Movie",)
+    assert EVENTS["golden_globes"].library_types == ("Movie",)
+
+
+async def test_a_movie_ceremony_is_refused_on_a_show_library_before_any_fetch():
+    """Before, not after: the refusal is worth nothing if the pass has already
+    spent the request. The transport asserts on any request at all here."""
+    requests: list[str] = []
+
+    async with _events_client(requests) as http:
+        with pytest.raises(LibraryTypeMismatch, match="Movie"):
+            await ImdbAwardBuilder().build(
+                _ctx(http, {"award": "best_picture"}, library_type="Show")
+            )
+
+    assert requests == [], "a refused definition must not fetch the dataset"
+
+
+async def test_the_year_collections_are_refused_on_a_show_library_before_any_fetch():
+    """The expanding builder is gated in ``expand`` rather than in ``build``:
+    that is the earliest point that has a library type, it is above the fetch,
+    and ``build`` is only ever reached through units ``expand`` returned
+    (``engine._expand`` :188-190, ``engine._run_one`` :431)."""
+    requests: list[str] = []
+
+    async with _events_client(requests) as http:
+        with pytest.raises(LibraryTypeMismatch, match="Movie"):
+            await REGISTRY["imdb_award_years"].expand(_ctx(http, library_type="Show"))
+
+    assert requests == [], "a refused definition must not fetch the dataset"
+
+
+async def test_a_show_ceremony_builds_on_a_show_library(monkeypatch):
+    """The gate is the ceremony's own declaration, not a hardcoded "Movie":
+    an Emmys-shaped event -- everything else identical -- builds on Show and is
+    refused on Movie, which is the inverse of the two tests above."""
+    monkeypatch.setitem(EVENTS, "emmys_shaped", replace(
+        EVENTS["oscars"], key="emmys_shaped", library_types=("Show",)
+    ))
+
+    async with _events_client() as http:
+        static = await ImdbAwardBuilder().build(
+            _ctx(http, {"event": "emmys_shaped", "award": "best_picture"},
+                 library_type="Show")
+        )
+        units = await ImdbAwardYearsBuilder("emmys_shaped").expand(
+            _ctx(http, library_type="Show")
+        )
+        with pytest.raises(LibraryTypeMismatch, match="Show"):
+            await ImdbAwardBuilder().build(
+                _ctx(http, {"event": "emmys_shaped", "award": "best_picture"})
+            )
+
+    assert static.ids, "a Show ceremony must resolve on a Show library"
+    assert units, "and its year collections must expand there"
 
 
 # --------------------------------------------------------------------------

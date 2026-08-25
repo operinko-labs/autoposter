@@ -144,23 +144,65 @@ def _dedupe(ids: list[str]) -> list[str]:
     return [i for i in ids if not (i in seen or seen.add(i))]
 
 
-def winners_for_categories(event: dict, categories: tuple[str, ...]) -> list[str]:
-    """Winners of the given categories across every year, newest first."""
+def _wanted_groups(award_filter: tuple[str, ...] | None) -> set[str] | None:
+    """The award groups to read, or ``None`` for all of them.
+
+    Kometa filters a ceremony's data at two levels -- the award group first,
+    the category within it second (``modules/imdb.py`` ``_award``: ``if
+    award_filter and award not in award_filter: continue``) -- and until this
+    existed we read every group. It matters for the ceremonies that award more
+    than one medium under one event id: BAFTA's ``ev0000123`` holds film,
+    television and games, and its film collections must not pick up a
+    television category that happens to share a name.
+
+    Lower-cased on both sides, as the category filter already is: the dataset's
+    keys are lower-cased today but nothing upstream promises that, and a
+    capitalised group key would otherwise turn a filtered collection empty
+    rather than wrong -- the silent failure this whole module is careful about.
+    """
+    return {a.lower() for a in award_filter} if award_filter else None
+
+
+def winners_for_categories(
+    event: dict,
+    categories: tuple[str, ...],
+    award_filter: tuple[str, ...] | None = None,
+) -> list[str]:
+    """Winners of the given categories across every year, newest first.
+
+    ``award_filter`` narrows to one or more of the ceremony's award groups;
+    the default reads all of them, which is what every single-medium ceremony
+    means and what this function did before the argument existed.
+    """
     wanted = {c.lower() for c in categories}
+    groups = _wanted_groups(award_filter)
     years = _by_year(event)
     ids: list[str] = []
     for year in sorted((y for y in years if years[y]), reverse=True):
-        for group in years[year].values():
+        for award, group in years[year].items():
+            if groups is not None and award.lower() not in groups:
+                continue
             for category, entry in group.items():
                 if category.lower() in wanted:
                     ids.extend(entry.get("winner") or [])
     return _dedupe(ids)
 
 
-def winners_for_year(event: dict, year: str) -> list[str]:
-    """Every category's winners for one ceremony year."""
+def winners_for_year(
+    event: dict, year: str, award_filter: tuple[str, ...] | None = None
+) -> list[str]:
+    """Every category's winners for one ceremony year.
+
+    Group-filterable for the same reason as ``winners_for_categories``: this
+    is the function behind the year collections, so on a multi-medium ceremony
+    it is the one that would otherwise put television winners in a film
+    ceremony's year collection.
+    """
+    groups = _wanted_groups(award_filter)
     ids: list[str] = []
-    for group in (_by_year(event).get(str(year)) or {}).values():
+    for award, group in (_by_year(event).get(str(year)) or {}).items():
+        if groups is not None and award.lower() not in groups:
+            continue
         for entry in group.values():
             ids.extend(entry.get("winner") or [])
     return _dedupe(ids)

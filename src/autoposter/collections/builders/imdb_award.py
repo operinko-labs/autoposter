@@ -39,6 +39,7 @@ between the two builders is the engine's requirement rather than a preference.
 """
 import re
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -55,7 +56,11 @@ from autoposter.collections.awards import (
     winners_for_categories,
     winners_for_year,
 )
-from autoposter.collections.builders.base import BuilderContext, BuilderResult
+from autoposter.collections.builders.base import (
+    BuilderContext,
+    BuilderResult,
+    require_library_type,
+)
 from autoposter.config.schema import CollectionDefinition
 
 _OSCAR_SUMMARY = (
@@ -65,16 +70,47 @@ _OSCAR_SUMMARY = (
 )
 
 
+class Award(NamedTuple):
+    """One static winners collection of one ceremony.
+
+    ``poster_stem`` is the file name under this event's ``Default-Images``
+    folder, or ``None`` when the repository has no image for it -- in which
+    case the collection keeps no poster rather than being pointed at a guessed
+    path (``collections/posters.AWARD_SEGMENTS`` maps the folder).
+
+    ``award_filter`` is the ceremony's *award group*, Kometa's outer filter
+    (roadmap row 149). One event file can hold several groups -- BAFTA's
+    ``ev0000123`` splits film, television and games -- and a collection of the
+    film ceremony's best picture wants only the film group's categories, even
+    where the television group spells a category the same way. ``None`` is
+    every group, which is what a single-medium ceremony means and what both
+    shipped ones did before the field existed.
+
+    A named record rather than the 4-tuple this was, because the fifth element
+    would have been a second ``... | None`` next to ``poster_stem``, positional,
+    in every one of the rows the next task adds.
+    """
+
+    title: str
+    categories: tuple[str, ...]
+    summary: str | None
+    poster_stem: str | None
+    award_filter: tuple[str, ...] | None = None
+
+
 @dataclass(frozen=True)
 class AwardEvent:
     """One ceremony: everything that differs between them, in one place.
 
-    ``awards`` is ``award key -> (collection title, categories, summary,
-    poster stem)``, the static winner collections. The poster stem is the file
-    name under this event's ``Default-Images`` folder, or ``None`` when the
-    repository has no image for it -- in which case the collection keeps no
-    poster rather than being pointed at a guessed path
-    (``collections/posters.AWARD_SEGMENTS`` maps the folder).
+    ``awards`` is ``award key -> Award``, the static winner collections.
+
+    ``library_types`` is which kinds of library this ceremony's collections
+    can mean anything for (roadmap row 150). A definition with no
+    ``libraries:`` key runs against every library in the pass, so without this
+    an Oscars definition reaches Show libraries too -- where every id resolves
+    to nothing, which looks exactly like a ceremony that had no winners. It is
+    per ceremony rather than per collection because it is the ceremony that
+    awards films, or television, or both.
 
     ``year_pattern`` must not be able to match another ceremony's year titles;
     ``tests/test_collection_awards.py`` holds both directions of that to the
@@ -84,7 +120,7 @@ class AwardEvent:
     key: str
     name: str
     event_id: str
-    awards: dict[str, tuple[str, tuple[str, ...], str | None, str | None]]
+    awards: dict[str, Award]
     year_title: str
     year_summary: str | None
     year_pattern: re.Pattern[str]
@@ -92,6 +128,7 @@ class AwardEvent:
     # §2.4: the dynamic year collections override collection_order to release;
     # only the static winner collections keep the custom order.
     year_sort: str = field(default="release")
+    library_types: tuple[str, ...] = ("Movie",)
 
 
 # Kometa sources, all fetched 2026-08-25:
@@ -103,13 +140,13 @@ EVENTS: dict[str, AwardEvent] = {
         name="Oscars",
         event_id=EVENT_ID,
         awards={
-            "best_picture": (
+            "best_picture": Award(
                 "Oscars Best Picture Winners",
                 BEST_PICTURE,
                 _OSCAR_SUMMARY % "Picture",
                 "best_picture_winner",
             ),
-            "best_director": (
+            "best_director": Award(
                 "Oscars Best Director Winners",
                 BEST_DIRECTOR,
                 _OSCAR_SUMMARY % "Director",
@@ -129,13 +166,13 @@ EVENTS: dict[str, AwardEvent] = {
         name="Golden Globes",
         event_id="ev0000292",
         awards={
-            "best_picture": (
+            "best_picture": Award(
                 "Golden Globes Best Picture Winners",
                 GOLDEN_GLOBES_BEST_PICTURE,
                 "Golden Globes Best Picture Winners.",
                 "best_picture_winner",
             ),
-            "best_director": (
+            "best_director": Award(
                 "Golden Globes Best Director Winners",
                 GOLDEN_GLOBES_BEST_DIRECTOR,
                 "Golden Globes Best Director Winners.",
@@ -241,12 +278,24 @@ class ImdbAwardBuilder:
     async def build(self, ctx: BuilderContext) -> BuilderResult:
         params = ImdbAwardParams.model_validate(ctx.config)
         event = EVENTS[params.event]
-        _, categories, summary, stem = event.awards[params.award]
+        award = event.awards[params.award]
+        # Above the fetch: a refusal that has already spent the request has
+        # only told the operator something a wasted round trip taught it.
+        require_library_type(
+            "the %s %r collection" % (event.name, params.award),
+            ctx.library_type,
+            event.library_types,
+        )
         data = await _event(ctx, event)
-        poster_key = _poster(event, stem)
+        poster_key = _poster(event, award.poster_stem)
         return BuilderResult(
-            ids=[("imdb", imdb_id) for imdb_id in winners_for_categories(data, categories)],
-            summary=summary,
+            ids=[
+                ("imdb", imdb_id)
+                for imdb_id in winners_for_categories(
+                    data, award.categories, award.award_filter
+                )
+            ],
+            summary=award.summary,
             # Both or neither: ``lists.reconcile_list_collection`` runs the
             # poster step only when it has a kind *and* a key.
             poster_kind="award_static" if poster_key else None,
@@ -285,6 +334,19 @@ class ImdbAwardYearsBuilder:
 
     async def expand(self, ctx: BuilderContext) -> list[CollectionDefinition]:
         event = self.event
+        # The whole family is gated here rather than per unit in ``build``:
+        # this is the earliest point that knows the library type, it is above
+        # the fetch, and ``build`` is only ever reached through the units this
+        # returns (``engine._expand`` calls it for any builder that has it, and
+        # ``engine._run_one`` builds only what came back). Refusing here also
+        # leaves nothing half-done -- the engine logs the expansion failure and
+        # the pass carries on, which is what a definition aimed at the wrong
+        # kind of library deserves.
+        require_library_type(
+            "the %s year collections" % event.name,
+            ctx.library_type,
+            event.library_types,
+        )
         data = await _event(ctx, event)
         return [
             CollectionDefinition(
