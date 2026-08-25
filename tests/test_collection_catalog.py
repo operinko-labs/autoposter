@@ -20,6 +20,7 @@ Three properties carry this phase, and every test here is one of them:
 """
 import ast
 import pathlib
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +31,7 @@ from pydantic import ValidationError
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.collections import catalog
+from autoposter.collections.builders import REGISTRY
 from autoposter.collections.builders.imdb_award import EVENTS
 from autoposter.collections.catalog import (
     CATALOG,
@@ -50,9 +52,66 @@ from autoposter.config.loader import build_config, load_config, read_config_docu
 from autoposter.config.schema import CollectionDefinition, Secrets
 
 EXAMPLE = pathlib.Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+ROADMAP = (
+    pathlib.Path(__file__).parent.parent
+    / "docs" / "superpowers" / "specs" / "2026-08-22-full-parity-roadmap.md"
+)
 PASSWORD = "correct horse battery staple"
 
 LIBRARY_TYPES = ("Movie", "Show")
+
+# The rows an operator can actually switch on: everything READY that is not a
+# setting-backed display row. Built once, at collection time, because the
+# expand-and-validate tests below are parametrized over it -- one case per
+# preset, so a single bad row names itself in the failure instead of hiding
+# inside a loop over forty.
+READY_PRESETS = [
+    preset for preset in CATALOG if preset.readiness == READY and preset.setting is None
+]
+
+
+def _by_key(preset) -> str:
+    return preset.key
+
+
+def _roadmap_rows() -> set[int]:
+    """Every numbered row of the parity roadmap's gap table.
+
+    Read out of the document rather than listed here: the point of
+    ``Preset.gated_row`` is that it names a row somebody can go and read, and a
+    hand-kept copy of the row numbers would let a typo'd citation stay green.
+    """
+    rows = set()
+    for line in ROADMAP.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^\|\s*(\d+)\s*\|", line)
+        if match:
+            rows.add(int(match.group(1)))
+    return rows
+
+
+def _managed_titles(config, library_type: str) -> list[str]:
+    """Every collection title ``default_definitions`` would manage, as a LIST.
+
+    A list and not a set, because the question these tests ask is whether a
+    title appears TWICE -- which is the one collision ``_titles_must_not_collide``
+    cannot catch (it compares operator definitions against the built-ins, never
+    the built-ins against each other). Two built-in definitions sharing a title
+    overwrite each other on every pass.
+
+    The three kinds of definition are handled the way ``engine.definition_titles``
+    handles them: a smart builder lists its own family, an expanding builder's
+    titles are dynamic and are not claimed here, everything else is its title.
+    """
+    titles: list[str] = []
+    for definition in default_definitions(config, library_type):
+        builder = REGISTRY[definition.builder]
+        if getattr(builder, "smart", False):
+            titles += sorted(builder.titles(library_type, config))
+        elif getattr(builder, "TITLE_PATTERN", None) is not None:
+            continue
+        else:
+            titles.append(definition.title)
+    return titles
 
 
 def _config(presets: list[str], **collections):
@@ -110,19 +169,49 @@ def test_the_awards_category_is_every_ceremony_but_the_oscars():
     assert oscars_row.award_event == "oscars"
 
 
-def test_the_catalog_table_checksum():
-    """15 award presets + 3 setting-backed rows (Oscars, the IMDb charts
-    family, the Common Sense divider) = 18. See ``catalog.py``'s own
-    count-checksum comment above ``CATALOG``."""
-    presets = [preset for preset in CATALOG if preset.setting is None]
-    settings = [preset for preset in CATALOG if preset.setting is not None]
+# category -> (READY presets, GATED presets, setting-backed rows). The
+# transcription's checksum, per category rather than as one total: a row added
+# to the wrong tab, or a GATED row quietly flipped READY without its builder,
+# moves exactly one number here. See ``catalog.py``'s count-checksum comment
+# above ``CATALOG``.
+CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
+    "awards": (15, 0, 1),
+    "charts": (8, 0, 1),
+    "content": (1, 3, 0),
+    "content_ratings": (1, 0, 1),
+    "location": (0, 3, 0),
+    "media": (1, 3, 0),
+    "people": (1, 4, 0),
+    "production": (1, 2, 0),
+    "time": (0, 3, 0),
+}
 
-    assert len(CATALOG) == 18
-    assert len(presets) == 15
-    assert len(settings) == 3
-    assert {preset.category for preset in settings} == {
+
+def test_the_catalog_table_checksum():
+    counted = {
+        category: (
+            len([
+                p for p in CATALOG
+                if p.category == category and p.setting is None and p.readiness == READY
+            ]),
+            len([
+                p for p in CATALOG
+                if p.category == category and p.setting is None and p.readiness == GATED
+            ]),
+            len([p for p in CATALOG if p.category == category and p.setting is not None]),
+        )
+        for category in CATEGORIES
+    }
+
+    assert counted == CATALOG_CHECKSUM
+    assert len(CATALOG) == sum(sum(row) for row in CATALOG_CHECKSUM.values())
+    assert {preset.category for preset in CATALOG if preset.setting is not None} == {
         "awards", "charts", "content_ratings",
     }
+    # Every tab has something in it. The nine categories were declared by Task
+    # 3 with eight of them empty and the frontend's honest "nothing here yet"
+    # copy behind them; this is the assertion that they are no longer empty.
+    assert all(sum(row) for row in counted.values())
 
 
 def test_every_event_has_a_kometa_file_entry():
@@ -201,8 +290,8 @@ def test_the_years_placeholder_derivation_matches_the_shipped_oscars_one():
 def test_every_ready_preset_actually_builds_something():
     """A READY preset that expands to nothing on every library type is a
     checkbox that does nothing -- the failure mode a table of rows with no
-    producer behind them has. Task 5's categories are held to this the moment
-    their rows land.
+    producer behind them has. Every category is held to it; the parametrized
+    expansion tests below say the same thing one row at a time.
 
     Setting-backed rows are the deliberate exception: they are switches for a
     family that already builds through its own boolean, not presets with a
@@ -231,6 +320,293 @@ def test_every_preset_definition_is_a_definition_the_config_would_accept():
                 assert CollectionDefinition.model_validate(
                     definition.model_dump()
                 ) == definition
+
+
+# --- every READY preset, one parametrized case each --------------------------
+
+
+def test_there_are_ready_presets_to_parametrize_over():
+    """The guard the two parametrized tests below need: an empty parameter
+    list is a pass that proves nothing, and pytest reports it as a pass."""
+    assert len(READY_PRESETS) == sum(ready for ready, _, _ in CATALOG_CHECKSUM.values())
+
+
+@pytest.mark.parametrize("preset", READY_PRESETS, ids=_by_key)
+def test_a_ready_presets_expansion_is_definitions_the_config_would_accept(preset):
+    """Expand-and-validate, one case per row.
+
+    ``CollectionDefinition`` checks the builder against the registry, the
+    params against that builder's own model and the ``filters`` block against
+    the tier-1 attribute table as it is constructed -- so a preset naming a
+    builder that does not exist, passing a param it does not take, or filtering
+    on an attribute Phase 9a deferred cannot even be expanded. Round-tripped
+    through ``model_validate`` so the claim is a test rather than a side effect
+    of construction, and asserted non-empty so a row that expands to nothing on
+    every library type fails here rather than shipping as a dead checkbox.
+    """
+    produced = []
+    for library_type in LIBRARY_TYPES:
+        definitions = preset.definitions(library_type)
+        for definition in definitions:
+            assert CollectionDefinition.model_validate(definition.model_dump()) == definition
+        # Within ONE library type: two definitions of one preset sharing a
+        # title is the same overwrite-every-pass collision the whole-table test
+        # below looks for, caught at the row that causes it. Across library
+        # types it is normal -- a ceremony's year placeholder is the same title
+        # in both, and they are different libraries.
+        titles = [definition.title for definition in definitions]
+        assert len(titles) == len(set(titles)), (preset.key, library_type)
+        produced += definitions
+
+    assert produced, preset.key
+
+
+@pytest.mark.parametrize("preset", READY_PRESETS, ids=_by_key)
+def test_a_ready_preset_loads_and_reaches_default_definitions(preset):
+    """The whole path, per row: the key loads through the real config loader
+    -- which runs ``_presets_must_be_known_and_ready`` AND the collision
+    validator, and therefore this expansion, for every library type -- and the
+    definitions it stands for come out of ``default_definitions``."""
+    config = build_config(_document([preset.key]))
+
+    assert config.collections.presets == [preset.key]
+    for library_type in LIBRARY_TYPES:
+        expected = preset.definitions(library_type)
+        produced = default_definitions(config, library_type)
+        assert produced[len(produced) - len(expected):] == expected
+
+
+def test_every_ready_preset_at_once_never_builds_one_title_twice():
+    """The collision the validator cannot catch, asserted over the whole table.
+
+    ``_titles_must_not_collide`` compares an operator's ``definitions:`` against
+    the built-ins; it does not compare the built-ins against each other. Two
+    catalog rows -- or one catalog row and a shipped family -- naming the same
+    title in one library would overwrite each other on every pass and the
+    members hash would flap between them forever. Every switch is on here, which
+    is the worst case an operator can reach.
+    """
+    keys = [preset.key for preset in READY_PRESETS]
+    document = _document(keys)
+    document["collections"].update({"charts": True, "awards": True, "separators": True})
+    config = build_config(document)
+
+    for library_type in LIBRARY_TYPES:
+        titles = _managed_titles(config, library_type)
+        repeated = sorted({title for title in titles if titles.count(title) > 1})
+        assert not repeated, (library_type, repeated)
+
+
+# --- the gated rows ----------------------------------------------------------
+
+
+def test_every_gated_row_cites_a_roadmap_row_that_exists():
+    """"Not yet" without a number is a shrug (``Preset.gated_row``'s docstring),
+    and a number nobody can look up is worse than none -- so the citation is
+    checked against the roadmap document itself."""
+    rows = _roadmap_rows()
+    # The parse works: two rows this catalog cites, and one it does not.
+    assert {70, 96, 102, 155} <= rows
+    assert 999999 not in rows
+
+    gated = [preset for preset in CATALOG if preset.readiness == GATED]
+    assert len(gated) == sum(gated_count for _, gated_count, _ in CATALOG_CHECKSUM.values())
+    for preset in gated:
+        assert preset.gated_row in rows, (preset.key, preset.gated_row)
+
+
+def test_every_gated_key_is_refused_at_load_naming_its_row():
+    """The refusal the picker's disabled state is backed by, over every gated
+    row rather than one injected double: a key copied out of the picker by hand
+    is refused, and the refusal says which roadmap row it waits on."""
+    for preset in CATALOG:
+        if preset.readiness != GATED:
+            continue
+        with pytest.raises(ValidationError, match=str(preset.gated_row)):
+            build_config(_document([preset.key]))
+
+
+def test_a_gated_row_expands_to_nothing_even_though_it_is_in_the_catalog():
+    for preset in CATALOG:
+        if preset.readiness != GATED:
+            continue
+        for library_type in LIBRARY_TYPES:
+            assert preset.definitions(library_type) == [], preset.key
+
+
+# --- provenance --------------------------------------------------------------
+
+
+def test_every_row_cites_a_real_kometa_defaults_file_or_says_it_has_none():
+    """``_KOMETA_DEFAULTS`` is strict, the way ``_KOMETA_FILES`` already was: a
+    row's ``kometa_source`` is either a path in the pinned set of Kometa
+    defaults files this catalog transcribes, or a sentence that starts by
+    saying it has no Kometa source at all. There is no third case -- an
+    invented "defaults/both/whatever.yml" is what this refuses."""
+    for preset in CATALOG:
+        if preset.kometa_source.startswith(catalog.NOT_KOMETA):
+            assert len(preset.kometa_source) > len(catalog.NOT_KOMETA), preset.key
+            continue
+        assert preset.kometa_source in catalog._KOMETA_DEFAULTS, preset.key
+
+
+def test_a_row_citing_a_defaults_file_nobody_pinned_raises(monkeypatch):
+    """The strictness proven directly, the shape
+    ``test_a_kometa_file_missing_for_a_real_event_raises`` already has: the
+    import-time check is what makes a mistyped path fail loudly instead of
+    shipping a provenance line that points at nothing."""
+    fake = Preset(
+        key="content_invented",
+        category="content",
+        name="Invented",
+        description="test double",
+        kometa_source="defaults/both/not_a_real_defaults_file.yml",
+        library_types=("Movie",),
+    )
+    monkeypatch.setattr(catalog, "CATALOG", catalog.CATALOG + (fake,))
+
+    with pytest.raises(AssertionError, match="not_a_real_defaults_file"):
+        catalog._check_kometa_sources()
+
+
+def test_the_pinned_set_holds_no_path_nothing_cites():
+    """The check reads only one way on its own -- it refuses a row citing an
+    unpinned path, and says nothing about a pinned path no row cites. A leftover
+    entry is a Kometa file somebody meant to transcribe and did not, and it
+    would silently license a future typo that happened to match it."""
+    cited = {preset.kometa_source for preset in CATALOG}
+
+    assert catalog._KOMETA_DEFAULTS <= cited, sorted(catalog._KOMETA_DEFAULTS - cited)
+
+
+def test_a_row_carrying_both_producers_raises(monkeypatch):
+    """``Preset.definitions`` asks ``award_event`` first, so a row with both
+    families' producer would expand the ceremony and silently drop its table.
+    The import-time guard proven directly, against a double that carries
+    both."""
+    fake = Preset(
+        key="award_cannes_and_a_table",
+        category="awards",
+        name="Cannes (two-producer test double)",
+        description="test double",
+        kometa_source="defaults/award/cannes.yml",
+        library_types=("Movie",),
+        award_event="cannes",
+        collections=(catalog.PresetCollection(
+            title="Cannes, again", builder="tmdb_chart", params=(("chart", "popular"),)
+        ),),
+    )
+    monkeypatch.setattr(catalog, "CATALOG", catalog.CATALOG + (fake,))
+
+    with pytest.raises(AssertionError, match="both an award_event"):
+        catalog._check_one_producer_per_row()
+
+
+def test_the_award_paths_are_in_the_pinned_set_rather_than_a_second_copy():
+    """``_KOMETA_DEFAULTS`` derives the fifteen award paths from
+    ``_KOMETA_FILES`` instead of restating them, so a ceremony whose file name
+    is corrected in one place cannot be left stale in the other."""
+    for key, stem in catalog._KOMETA_FILES.items():
+        assert "defaults/award/%s.yml" % stem in catalog._KOMETA_DEFAULTS, key
+
+
+# --- the transcriptions ------------------------------------------------------
+
+
+def test_the_transcribed_kometa_tables_checksum():
+    """Row counts, and the individual values a wrong transcription hides.
+
+    Deliberately not a second copy of the tables: a test restating every
+    provider id would only fail once somebody edited the two copies apart,
+    which is not a failure worth catching. What is pinned is the SHAPE -- how
+    many collections each Kometa table contributes -- plus the values whose
+    corruption is INVISIBLE. A watch-provider id off by one builds a full,
+    plausible collection of the wrong service's catalogue; a dropped
+    content-rating addon quietly leaves a third of a bucket out. Neither shows
+    up as an error anywhere downstream.
+
+    Read off the expansion rather than out of the module's private tables, so
+    what is checked is what a deployment would actually build.
+    """
+    streaming = {
+        library_type: {
+            definition.title: definition.params
+            for definition in catalog.BY_KEY["production_streaming"].definitions(library_type)
+        }
+        for library_type in LIBRARY_TYPES
+    }
+    # Fifteen services, three of them (Crunchyroll, discovery+, hayu) offered
+    # for Show libraries only, as Kometa's allowed_libraries has them.
+    assert len(streaming["Show"]) == 15
+    assert len(streaming["Movie"]) == 12
+    assert set(streaming["Show"]) - set(
+        title.replace(" Movies", " Shows") for title in streaming["Movie"]
+    ) == {"Crunchyroll Shows", "discovery+ Shows", "hayu Shows"}
+    assert streaming["Movie"]["Netflix Movies"]["with_watch_providers"] == "8"
+    assert streaming["Movie"]["Prime Video Movies"]["with_watch_providers"] == "9"
+    assert streaming["Movie"]["Disney+ Movies"]["with_watch_providers"] == "337"
+    # The two pipe forms, which are TMDb's "either of these" and the reason the
+    # column is a string rather than an int.
+    assert streaming["Movie"]["Paramount+ Movies"]["with_watch_providers"] == "531|1770"
+    assert streaming["Movie"]["AMC+ Movies"]["with_watch_providers"] == "528|1854"
+    # Without the region TMDb ignores the provider filter and answers the
+    # UNFILTERED query -- every title instead of the service's.
+    assert {params["watch_region"] for params in streaming["Show"].values()} == {"US"}
+
+    ratings = {
+        definition.title: definition.filters["content_rating"]
+        for definition in catalog.BY_KEY["content_ratings_us"].definitions("Movie")
+    }
+    assert list(ratings) == [
+        "G Movies", "PG Movies", "PG-13 Movies", "R Movies", "NC-17 Movies",
+    ]
+    assert [len(values) for values in ratings.values()] == [23, 21, 19, 12, 6]
+    # One addon per bucket, spot-checked: these are the certifications that
+    # make the bucket more than its own name, and the ones an operator would
+    # never notice missing.
+    assert "TV-14" in ratings["PG-13 Movies"]
+    assert "gb/U" in ratings["G Movies"]
+    assert "TV-MA" in ratings["R Movies"]
+
+    resolutions = {
+        definition.title: definition.filters["resolution"]
+        for definition in catalog.BY_KEY["media_resolution"].definitions("Movie")
+    }
+    assert resolutions == {
+        "4k Movies": ["4k", "8k"],
+        "1080 Movies": ["1080", "2k"],
+        "720 Movies": ["720"],
+        "480 Movies": ["480", "144", "240", "360", "sd", "576"],
+    }
+
+    universes = catalog.BY_KEY["content_universes"]
+    assert len(universes.definitions("Movie")) == 9
+    # The three Kometa restricts to film libraries.
+    assert {d.title for d in universes.definitions("Movie")} - {
+        d.title for d in universes.definitions("Show")
+    } == {"Alien / Predator", "Conjuring Universe", "Fast & Furious"}
+    assert all(
+        d.params["list"].startswith("ls") for d in universes.definitions("Movie")
+    )
+
+    directors = catalog.BY_KEY["people_directors"].definitions("Movie")
+    assert len(directors) == 6
+    assert directors[0].title == "Steven Spielberg (Director)"
+    assert directors[0].params == {"id": 488}
+
+
+def test_the_starter_director_pack_says_the_people_are_not_kometas():
+    """The one row in the table that names things Kometa's defaults do not.
+
+    Kometa's four people packs enumerate a library rather than listing names,
+    so there is nothing there to transcribe -- and a row that borrowed
+    ``defaults/movie/director.yml`` as its provenance would be claiming an
+    upstream source for six choices made here."""
+    preset = catalog.BY_KEY["people_directors"]
+
+    assert preset.kometa_source.startswith(catalog.NOT_KOMETA)
+    assert "ours" in preset.kometa_source
+    assert "OUR choice" in preset.description
 
 
 # --- the expansion ----------------------------------------------------------
@@ -519,13 +895,15 @@ def test_a_duplicated_preset_key_is_refused():
 
 
 def test_a_gated_preset_key_is_refused_at_load_naming_its_roadmap_row(monkeypatch):
-    """No shipped row is GATED yet -- the eight other categories arrive with
-    Task 5, and the gated ones among them cite the roadmap row they wait on.
-    The refusal is machinery the config field needs from its first day, so it
-    is tested against a row injected here rather than left unproven until
-    there is one."""
-    monkeypatch.setitem(catalog.BY_KEY, "media_aspect", Preset(
-        key="media_aspect",
+    """The refusal itself, against a row injected here.
+
+    ``test_every_gated_key_is_refused_at_load_naming_its_row`` above now covers
+    every shipped GATED row; this one stays because it pins the refusal to the
+    *mechanism* rather than to the table -- it would still fail if the last
+    GATED row were ever switched READY, which is exactly when the machinery
+    would otherwise stop being tested."""
+    monkeypatch.setitem(catalog.BY_KEY, "media_aspect_double", Preset(
+        key="media_aspect_double",
         category="media",
         name="Aspect ratio",
         description="One collection per aspect ratio.",
@@ -536,7 +914,7 @@ def test_a_gated_preset_key_is_refused_at_load_naming_its_roadmap_row(monkeypatc
     ))
 
     with pytest.raises(ValidationError, match="155"):
-        build_config(_document(["media_aspect"]))
+        build_config(_document(["media_aspect_double"]))
 
 
 def test_the_expansion_cannot_raise_on_a_key_the_catalog_does_not_have():

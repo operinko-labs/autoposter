@@ -58,6 +58,7 @@ from dataclasses import dataclass
 
 from autoposter.collections.builders.imdb_award import EVENTS
 from autoposter.config.schema import CollectionDefinition
+from autoposter.providers.tmdb_lists import CHART_ENDPOINTS
 
 # The nine categories, in the order the picker shows them: Kometa's own
 # defaults taxonomy, which is what an operator arriving from Kometa is looking
@@ -100,6 +101,70 @@ def award_years_title(event) -> str:
     return event.year_title % YEARS_PLACEHOLDER
 
 
+def collection_title(template: str, library_type: str) -> str:
+    """One collection's title for one library type.
+
+    Kometa's packs title a collection either after the thing itself
+    (``Arrowverse``) or after the thing AND the library kind
+    (``<<key_name>> <<library_typeU>>s`` -> ``Netflix Movies``,
+    ``Netflix Shows``). Both shapes live in the same column here, and a ``%s``
+    in the template is the second one -- the same ``%``-templating
+    ``AwardEvent.year_title`` already uses for a ceremony's year titles, rather
+    than a second convention next to it.
+
+    The membership under those two titles is genuinely different (a Movie
+    library resolves the movie half of the query, a Show library the show
+    half), so they are two collections and not one title used twice.
+    """
+    return template % library_type if "%s" in template else template
+
+
+@dataclass(frozen=True)
+class PresetCollection:
+    """One collection a list-family preset builds.
+
+    The award families derive everything from ``imdb_award.EVENTS`` and need no
+    rows like this. The eight other categories have no such registry to derive
+    from -- Kometa's packs are YAML tables of ids, provider keys and filter
+    values -- so those tables are transcribed here, one row per collection, and
+    the transcription is the deliverable the way ``filters.FILTER_ATTRIBUTES``
+    and ``tmdb_discover.DISCOVER_PARAMS`` are.
+
+    ``title`` is the template ``collection_title`` reads. ``params`` and
+    ``filters`` are pairs rather than dicts so a row stays hashable like the
+    rest of a frozen dataclass; a filter value that is a tuple becomes the list
+    ``collections.filters`` parses as an any-of.
+
+    ``library_types`` narrows a SINGLE collection below its preset's own -- the
+    streaming pack is offered for both kinds of library and three of its
+    services carry only shows (Kometa's ``allowed_libraries``), exactly the
+    relationship ``Preset.award_library_types`` has to a ceremony. ``None``
+    means "the preset's own", which is the common case.
+    """
+
+    title: str
+    builder: str
+    params: tuple[tuple[str, object], ...] = ()
+    filters: tuple[tuple[str, object], ...] = ()
+    library_types: tuple[str, ...] | None = None
+
+    def definition(self, library_type: str) -> CollectionDefinition:
+        """This row as a definition. Constructing it is validating it: see
+        ``CollectionDefinition``'s builder, params and filters validators."""
+        return CollectionDefinition(
+            title=collection_title(self.title, library_type),
+            builder=self.builder,
+            params=dict(self.params),
+            # None rather than {} for a row with no filters: an empty mapping
+            # is a block an operator wrote and left empty, and the parser
+            # refuses that (``CollectionDefinition.filters``).
+            filters={
+                key: list(value) if isinstance(value, tuple) else value
+                for key, value in self.filters
+            } or None,
+        )
+
+
 @dataclass(frozen=True)
 class Preset:
     """One catalog entry: a key an operator can switch on, and what it builds.
@@ -120,7 +185,12 @@ class Preset:
     The definition-producing fields are deliberately per-family rather than a
     generic ``builder``/``params`` pair. One award preset produces several
     definitions of two different builders, and the count depends on the
-    library type -- a single params dict could not have said that.
+    library type -- a single params dict could not have said that. There are
+    two families: ``award_event``, which derives everything from
+    ``imdb_award.EVENTS``, and ``collections``, which is a transcribed table
+    for the packs that have no such registry behind them. A row carries one or
+    neither -- neither is what a GATED row is, and a row that carried both
+    would be two presets wearing one key.
 
     ``setting`` marks a different kind of row: not a preset an operator
     switches on by listing its key in ``presets:``, but a *display* of a
@@ -157,6 +227,11 @@ class Preset:
     # rather than a dict so the row stays hashable like the rest of a frozen
     # dataclass. Empty for every ceremony but one.
     award_library_types: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # The other families' producer: the collections this preset builds, one row
+    # each. Empty for an award preset (which derives its own from EVENTS) and
+    # for every GATED row -- a gated row knows what it WOULD build and has no
+    # way to build it, which is the whole point of the readiness column.
+    collections: tuple[PresetCollection, ...] = ()
 
     def definitions(self, library_type: str) -> list[CollectionDefinition]:
         """This preset's definitions for one library type. Pure; no I/O.
@@ -173,11 +248,11 @@ class Preset:
             return []
         if self.award_event is not None:
             return self._award_definitions(library_type)
-        # No other family exists yet -- the eight other categories are Task 5's
-        # to populate, and each brings its own producer here. A READY preset
-        # that produces nothing for any library type is a preset that does
-        # nothing at all, which ``test_collection_catalog.py`` refuses.
-        return []
+        return [
+            collection.definition(library_type)
+            for collection in self.collections
+            if library_type in (collection.library_types or self.library_types)
+        ]
 
     def _award_definitions(self, library_type: str) -> list[CollectionDefinition]:
         event = EVENTS[self.award_event]
@@ -209,10 +284,22 @@ class Preset:
         the year, and neither this module nor the picker can know which years
         the dataset currently carries -- so ``years_title`` below reports the
         shape instead, and no title is claimed that might not appear.
+
+        A GATED row claims nothing at all: its collections are named by a
+        builder that has not been written, and a list of titles it cannot
+        produce would read as a promise.
         """
-        if self.award_event is None:
-            return []
-        return [award.title for award in EVENTS[self.award_event].awards.values()]
+        if self.award_event is not None:
+            return [award.title for award in EVENTS[self.award_event].awards.values()]
+        titles: list[str] = []
+        for library_type in self.library_types:
+            for collection in self.collections:
+                if library_type not in (collection.library_types or self.library_types):
+                    continue
+                title = collection_title(collection.title, library_type)
+                if title not in titles:
+                    titles.append(title)
+        return titles
 
     def years_title(self) -> str | None:
         """The shape of this preset's dynamic titles, or None if it has none."""
@@ -421,15 +508,779 @@ SETTING_PRESETS: tuple[Preset, ...] = (
     ),
 )
 
-# The whole table, in picker order. The eight other categories are Task 5's:
-# they are absent rather than present-and-empty, because a category with no
-# rows is a tab with nothing in it, and an empty placeholder row would be the
-# invented content this table exists to avoid.
+# --- provenance, for every row that is not an award ---------------------------
 #
-# Count checksum: 18 rows -- 15 award presets, one per ceremony in EVENTS
-# except the Oscars, plus the three setting-backed rows above (one each in
-# AWARDS, CHARTS and CONTENT_RATINGS).
-CATALOG: tuple[Preset, ...] = AWARD_PRESETS + SETTING_PRESETS
+# Every Kometa defaults file this catalog reproduces, pinned. A row's
+# ``kometa_source`` is checked against this set at import
+# (``_check_kometa_sources`` below), so a mistyped path fails at startup rather
+# than shipping a provenance line that points at a file nobody can open -- the
+# strictness ``_KOMETA_FILES`` already gives the fifteen ceremonies, widened to
+# the whole table. The fifteen award paths are DERIVED from ``_KOMETA_FILES``
+# rather than written out again: a second copy of the same file names is
+# exactly the drift this module refuses everywhere else.
+#
+# Paths are relative to the Kometa repository root
+# (github.com/Kometa-Team/Kometa, ``defaults/``). Every file listed here was
+# fetched and read while these rows were written; the ids, provider keys, list
+# ids and filter values below are transcriptions of those files, not
+# recollections of them.
+#
+# ``NOT_KOMETA`` is the other half of the same discipline and the reason this
+# check can be strict at all: a row with no upstream file says so in its own
+# words instead of borrowing a neighbour's citation. An invented
+# ``defaults/both/something.yml`` is what the check refuses, and a
+# "reproduces Kometa's X" on a row that reproduces nothing is what the prefix
+# makes impossible to write by accident.
+NOT_KOMETA = "no Kometa defaults file -- "
+
+_KOMETA_DEFAULTS: frozenset[str] = frozenset(
+    ["defaults/award/%s.yml" % stem for stem in _KOMETA_FILES.values()]
+    + [
+        "defaults/award/oscars.yml",
+        "defaults/both/actor.yml",
+        "defaults/both/aspect.yml",
+        "defaults/both/audio_language.yml",
+        "defaults/both/based.yml",
+        "defaults/both/content_rating_cs.yml",
+        "defaults/both/genre.yml",
+        "defaults/both/resolution.yml",
+        "defaults/both/streaming.yml",
+        "defaults/both/studio.yml",
+        "defaults/both/subtitle_language.yml",
+        "defaults/both/universe.yml",
+        "defaults/both/year.yml",
+        "defaults/chart/imdb.yml",
+        "defaults/chart/tmdb.yml",
+        "defaults/movie/content_rating_us.yml",
+        "defaults/movie/continent.yml",
+        "defaults/movie/country.yml",
+        "defaults/movie/decade.yml",
+        "defaults/movie/director.yml",
+        "defaults/movie/franchise.yml",
+        "defaults/movie/producer.yml",
+        "defaults/movie/region.yml",
+        "defaults/movie/seasonal.yml",
+        "defaults/movie/writer.yml",
+        "defaults/show/network.yml",
+    ]
+)
+
+# The roadmap rows a GATED row waits on, named. Bare integers on eighteen rows
+# would hide the fact that most of them are waiting on ONE thing, and which
+# one; a reader of the table should be able to see the blockers group.
+#
+# ``docs/superpowers/specs/2026-08-22-full-parity-roadmap.md`` is the document,
+# and a test reads the row numbers out of it rather than trusting these -- a
+# citation nobody can look up is worse than no citation at all.
+DYNAMIC_ENGINE_ROW = 102   # phase 10a: one collection per distinct value
+PERSON_DYNAMIC_ROW = 83    # phase 10c: the dynamic half of the person builders
+STRANDED_FILTER_ROW = 155  # the six tier-1 filter attributes the listing strands
+FILTER_TIER_TWO_ROW = 96   # the filters subsystem; tier 1 shipped, tier 2 did not
+DATE_WINDOW_ROW = 70       # per-collection cadence and date windows
+
+_BOTH = ("Movie", "Show")
+_MOVIE = ("Movie",)
+_SHOW = ("Show",)
+
+
+# --- the CHARTS category ------------------------------------------------------
+#
+# One preset per chart ``tmdb_chart`` knows. The library types are the endpoint
+# table's (``providers/tmdb_lists.CHART_ENDPOINTS``) rather than a
+# transcription of Kometa's ``allowed_libraries``: a chart with no form for a
+# library type has no endpoint entry for it either, so the two say the same
+# thing and only one of them can go stale.
+#
+# Five of the eight are ``defaults/chart/tmdb.yml``, titles verbatim. The other
+# three are charts this service's builder has and that file does not
+# (``/movie/now_playing``, ``/movie/upcoming``, ``/trending/*/day``); their
+# titles are ours and they say so, because inventing a Kometa attribution is
+# worse than admitting there is none.
+#
+# The IMDb charts are deliberately NOT presets here. They ship behind
+# ``collections.charts`` and have a setting-backed row above; a preset key next
+# to that boolean would be a second way to build "IMDb Popular", and two
+# built-in definitions sharing one title is precisely the collision
+# ``_titles_must_not_collide`` cannot catch (module docstring).
+
+# chart key -> (title, kometa_source, what the chart is)
+_TMDB_CHARTS: tuple[tuple[str, str, str, str], ...] = (
+    ("popular", "TMDb Popular", "defaults/chart/tmdb.yml",
+     "what TMDb's audience is looking at right now"),
+    ("top_rated", "TMDb Top Rated", "defaults/chart/tmdb.yml",
+     "TMDb's highest-scored titles, by its own weighted rating"),
+    ("trending_week", "TMDb Trending", "defaults/chart/tmdb.yml",
+     "TMDb's trending list over the past week"),
+    ("airing_today", "TMDb Airing Today", "defaults/chart/tmdb.yml",
+     "series with an episode airing today"),
+    ("on_the_air", "TMDb On The Air", "defaults/chart/tmdb.yml",
+     "series airing an episode in the next week"),
+    ("now_playing", "TMDb Now Playing", NOT_KOMETA + "the title is ours",
+     "films in cinemas now. TMDb publishes this chart and this service's "
+     "builder reads it; Kometa's chart defaults do not include it, so the "
+     "title above was written here rather than transcribed"),
+    ("upcoming", "TMDb Upcoming", NOT_KOMETA + "the title is ours",
+     "films with a release date still ahead. Not in Kometa's chart defaults "
+     "either, so the title is ours, as with TMDb Now Playing"),
+    ("trending_day", "TMDb Trending Daily", NOT_KOMETA + "the title is ours",
+     "TMDb's trending list over the past day. Kometa's TMDb Trending is the "
+     "WEEKLY list, which has its own row above; this is the daily one, which "
+     "its chart defaults do not include"),
+)
+
+def _tmdb_chart_preset(chart: str, title: str, source: str, note: str) -> Preset:
+    # KeyError on a chart the endpoint table does not have, deliberately: a row
+    # here naming one would otherwise ship a preset whose definition fails its
+    # own params model at the first config load.
+    library_types = tuple(CHART_ENDPOINTS[chart])
+    return Preset(
+        key="chart_tmdb_%s" % chart,
+        category="charts",
+        name=title,
+        description="%s: %s, re-read from TMDb on every pass." % (title, note),
+        kometa_source=source,
+        library_types=library_types,
+        collections=(
+            PresetCollection(
+                title=title, builder="tmdb_chart", params=(("chart", chart),)
+            ),
+        ),
+    )
+
+
+CHART_PRESETS: tuple[Preset, ...] = tuple(
+    _tmdb_chart_preset(*row) for row in _TMDB_CHARTS
+)
+
+
+# --- the CONTENT category -----------------------------------------------------
+#
+# ``defaults/both/universe.yml`` is the one Content pack that reproduces
+# exactly: Kometa builds each universe from a hand-maintained list, and nine of
+# its sixteen are public IMDb lists whose ids are written out in the file
+# (``imdb_url``). Those nine are transcribed here as ``imdb_list`` definitions
+# and the titles are the file's own ``data`` names.
+#
+# The other seven universes are MDBList-hosted, and five of those five URLs are
+# of the ``mdblist.com/lists/<user>/external/<id>`` shape -- a reference
+# ``MdblistListParams`` cannot take, and guessing that the trailing number is
+# the numeric list id is the kind of guess this table exists not to make. They
+# are left out rather than approximated, and the description says so.
+_UNIVERSE_LISTS: tuple[tuple[str, str, tuple[str, ...] | None], ...] = (
+    ("Alien / Predator", "ls543971628", _MOVIE),
+    ("Arrowverse", "ls566667558", None),
+    ("Conjuring Universe", "ls068768438", _MOVIE),
+    ("DC Universe", "ls524274984", None),
+    ("Fast & Furious", "ls4102351575", _MOVIE),
+    ("Marvel Cinematic Universe", "ls539646485", None),
+    ("Star Trek", "ls547463722", None),
+    ("Star Wars Universe", "ls501373412", None),
+    ("X-Men Universe", "ls567618635", None),
+)
+
+CONTENT_PRESETS: tuple[Preset, ...] = (
+    Preset(
+        key="content_universes",
+        category="content",
+        name="Universes",
+        description=(
+            "Nine cross-franchise universes -- %s -- each built from the public "
+            "IMDb list Kometa's own defaults name for it. The three that are "
+            "film-only are offered for Movie libraries only, as Kometa's "
+            "allowed_libraries has them. Kometa's remaining seven universes are "
+            "MDBList-hosted under a URL shape this service's mdblist_list "
+            "builder cannot address, so they are absent rather than guessed at."
+            % ", ".join(title for title, _list, _types in _UNIVERSE_LISTS)
+        ),
+        kometa_source="defaults/both/universe.yml",
+        library_types=_BOTH,
+        collections=tuple(
+            PresetCollection(
+                title=title,
+                builder="imdb_list",
+                params=(("list", list_id),),
+                library_types=library_types,
+            )
+            for title, list_id, library_types in _UNIVERSE_LISTS
+        ),
+    ),
+    Preset(
+        key="content_genres",
+        category="content",
+        name="Genres",
+        description=(
+            "One collection per genre the library actually holds -- Kometa's "
+            "largest pack. Waiting on two things at once: the per-value engine "
+            "that enumerates a library's genres, and the genre attribute "
+            "itself, which Phase 9a's probe found the Plex section listing "
+            "truncates to two tags per item (row %d) -- so even with the engine "
+            "a genre collection built from the listing would be full, "
+            "plausible and wrong." % STRANDED_FILTER_ROW
+        ),
+        kometa_source="defaults/both/genre.yml",
+        library_types=_BOTH,
+        readiness=GATED,
+        gated_row=DYNAMIC_ENGINE_ROW,
+    ),
+    Preset(
+        key="content_franchises",
+        category="content",
+        name="Franchises",
+        description=(
+            "One collection per TMDb franchise collection the library holds, "
+            "with Kometa's addon merges (Prometheus into Alien, Minions into "
+            "Despicable Me) and its 'Collection' suffix removed. The pack is a "
+            "per-value enumeration of what the library owns, not a fixed list "
+            "of franchises, so it needs the dynamic engine rather than a "
+            "transcription -- the tmdb_collection builder it would call is "
+            "already here."
+        ),
+        kometa_source="defaults/movie/franchise.yml",
+        library_types=_MOVIE,
+        readiness=GATED,
+        gated_row=DYNAMIC_ENGINE_ROW,
+    ),
+    Preset(
+        key="content_based_on",
+        category="content",
+        name="Based on...",
+        description=(
+            "Based on a Book, a Comic, a True Story, a Video Game. Kometa "
+            "builds these from TMDb keyword NAMES ('based on novel', 'based on "
+            "comic book'), which it resolves to ids by searching TMDb at run "
+            "time; the tmdb_keyword builder here takes an id, and the expansion "
+            "is pure and cannot search. A keyword id written out here from "
+            "memory is exactly the invention this table refuses, so the pack "
+            "waits for the engine that can resolve a name."
+        ),
+        kometa_source="defaults/both/based.yml",
+        library_types=_BOTH,
+        readiness=GATED,
+        gated_row=DYNAMIC_ENGINE_ROW,
+    ),
+)
+
+
+# --- the CONTENT RATINGS category ---------------------------------------------
+#
+# ``defaults/movie/content_rating_us.yml`` is a per-value pack whose values are
+# a FIXED include list, so unlike the genre and country packs it does not need
+# the enumeration engine: five buckets, each a ``plex_all`` definition filtered
+# to the certifications Kometa's ``addons`` table folds into that bucket. The
+# value lists below are that table, verbatim -- Kometa's own answer to "which
+# of the world's certifications count as PG-13 here".
+#
+# Two deliberate omissions. Kometa's ``other_name`` bucket ("Not Rated Movies")
+# is everything the five did not claim, which is a set complement the engine
+# owns and this expansion cannot compute -- and the Common Sense family already
+# builds a collection under that exact title (``buckets.derive_buckets``), so
+# building it here would be the duplicate-title collision twice over. And the
+# Show form lives in ``defaults/show/content_rating_us.yml`` with a different
+# include list (TV-Y..TV-MA); it is a separate transcription, not this one, so
+# this row is Movie-only rather than quietly reusing film certifications for
+# television.
+_US_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("G", (
+        "G", "gb/U", "gb/0+", "U", "TV-Y", "TV-G", "E", "gb/E",
+        "1", "2", "3", "4", "5", "6", "01", "02", "03", "04", "05", "06",
+        "G - All Ages", "A", "no/A",
+    )),
+    ("PG", (
+        "PG", "gb/PG", "gb/9+", "TV-PG", "TV-Y7", "TV-Y7-FV",
+        "7", "8", "9", "07", "08", "09", "10", "11", "PG - Children",
+        "no/5", "no/05", "no/6", "no/06", "no/7", "no/07",
+    )),
+    ("PG-13", (
+        "PG-13", "gb/12A", "gb/12", "12+", "TV-13", "gb/14+", "gb/15", "TV-14",
+        "12", "13", "14", "15", "16", "PG-13 - Teens 13 or older",
+        "no/9", "no/09", "no/10", "no/11", "no/12",
+    )),
+    ("R", (
+        "R", "17", "18", "gb/18", "MA-17", "TVMA", "TV-MA",
+        "R - 17+ (violence & profanity)", "R+ - Mild Nudity",
+        "no/15", "no/16", "no/18",
+    )),
+    ("NC-17", ("NC-17", "gb/R18", "gb/X", "R18", "X", "Rx - Hentai")),
+)
+
+CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
+    Preset(
+        key="content_ratings_us",
+        category="content_ratings",
+        name="US certifications",
+        description=(
+            "Five collections -- %s -- grouping the library's films by MPA "
+            "certification. Each bucket carries Kometa's own addon list, so a "
+            "film certified TV-14 or gb/12A lands in PG-13 rather than in "
+            "nothing. Plex's own contentRating, deliberately distinct from the "
+            "Common Sense age buckets in this same tab: same idea, different "
+            "rating system, and the two never share a title."
+            % ", ".join("%s Movies" % key for key, _values in _US_CONTENT_RATINGS)
+        ),
+        kometa_source="defaults/movie/content_rating_us.yml",
+        library_types=_MOVIE,
+        collections=tuple(
+            PresetCollection(
+                title="%s %%ss" % key,
+                builder="plex_all",
+                filters=(("content_rating", values),),
+            )
+            for key, values in _US_CONTENT_RATINGS
+        ),
+    ),
+)
+
+
+# --- the LOCATION category ----------------------------------------------------
+#
+# Three packs, one blocker: each is one collection per distinct value of an
+# attribute nothing enumerates yet. Kometa reads the values off TMDb's
+# origin-country data through its own dynamic engine, and the include/exclude,
+# addon-merge and title-format machinery each of these three files configures
+# IS that engine -- there is nothing to transcribe until it exists.
+_LOCATION_PACKS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    ("location_country", "Countries", "defaults/movie/country.yml",
+     "One collection per country of origin, with Kometa's per-country name and "
+     "flag styling.", _MOVIE),
+    ("location_region", "Regions", "defaults/movie/region.yml",
+     "One collection per world region (Nordic, Balkan, Southeast Asia and the "
+     "rest of Kometa's grouping).", _MOVIE),
+    ("location_continent", "Continents", "defaults/movie/continent.yml",
+     "One collection per continent -- the coarsest of the three location "
+     "packs.", _MOVIE),
+)
+
+LOCATION_PRESETS: tuple[Preset, ...] = tuple(
+    Preset(
+        key=key,
+        category="location",
+        name=name,
+        description=(
+            "%s Waiting on the per-value engine: the values are whatever the "
+            "library turns out to hold, which nothing here can enumerate "
+            "without scanning it." % description
+        ),
+        kometa_source=source,
+        library_types=library_types,
+        readiness=GATED,
+        gated_row=DYNAMIC_ENGINE_ROW,
+    )
+    for key, name, source, description, library_types in _LOCATION_PACKS
+)
+
+
+# --- the MEDIA category -------------------------------------------------------
+#
+# ``defaults/both/resolution.yml`` reproduces exactly, and it is the one pack
+# here that does: its ``include`` list is fixed (4k, 1080, 720, 480) and its
+# ``addons`` fold the neighbouring resolutions into each bucket, so four
+# ``plex_all`` definitions filtered on ``resolution`` say the same thing.
+#
+# Movie libraries only, and not because Kometa says so -- it offers the pack
+# for both. A show's resolution is a property of its episodes, and the tier-1
+# ``resolution`` accessor reads ``<Media videoResolution>`` off the section
+# listing, which on a Show library lists shows (``filters.FILTER_ATTRIBUTES``,
+# the resolution row). A Show form would need per-episode traversal, so the
+# preset narrows rather than shipping a filter that answers nothing.
+_RESOLUTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("4k", ("4k", "8k")),
+    ("1080", ("1080", "2k")),
+    ("720", ("720",)),
+    ("480", ("480", "144", "240", "360", "sd", "576")),
+)
+
+MEDIA_PRESETS: tuple[Preset, ...] = (
+    Preset(
+        key="media_resolution",
+        category="media",
+        name="Resolutions",
+        description=(
+            "Four collections -- %s -- grouping films by video resolution, with "
+            "Kometa's addon merges (8k into 4k, and 576/360/240/144/sd into "
+            "480). Movie libraries only: a show's resolution belongs to its "
+            "episodes, which the one library walk this service pays for does "
+            "not reach."
+            % ", ".join("%s Movies" % key for key, _values in _RESOLUTIONS)
+        ),
+        kometa_source="defaults/both/resolution.yml",
+        library_types=_MOVIE,
+        collections=tuple(
+            PresetCollection(
+                title="%s %%ss" % key,
+                builder="plex_all",
+                filters=(("resolution", values),),
+            )
+            for key, values in _RESOLUTIONS
+        ),
+    ),
+    Preset(
+        key="media_aspect",
+        category="media",
+        name="Aspect ratios",
+        description=(
+            "Eight collections, one per aspect ratio Kometa names -- 1.33 "
+            "Academy Aperture through 2.77 Cinerama. The values are a fixed "
+            "list and would need no enumeration; what is missing is the "
+            "attribute. `aspect` is not one of the fifteen tier-1 rows in "
+            "collections/filters.py, so there is nothing to filter on yet."
+        ),
+        kometa_source="defaults/both/aspect.yml",
+        library_types=_BOTH,
+        readiness=GATED,
+        gated_row=FILTER_TIER_TWO_ROW,
+    ),
+    Preset(
+        key="media_audio_language",
+        category="media",
+        name="Audio languages",
+        description=(
+            "One collection per audio language in the library. Stranded rather "
+            "than merely unbuilt: audio languages live on the streams under "
+            "<Media><Part>, and Phase 9a's probe found the section listing "
+            "stops at Part -- zero stream elements across 200 movies, against "
+            "four for the same film from the metadata endpoint."
+        ),
+        kometa_source="defaults/both/audio_language.yml",
+        library_types=_BOTH,
+        readiness=GATED,
+        gated_row=STRANDED_FILTER_ROW,
+    ),
+    Preset(
+        key="media_subtitle_language",
+        category="media",
+        name="Subtitle languages",
+        description=(
+            "One collection per subtitle language, and stranded on exactly the "
+            "same probe finding as the audio-language pack: no stream element "
+            "reaches the section listing at all."
+        ),
+        kometa_source="defaults/both/subtitle_language.yml",
+        library_types=_BOTH,
+        readiness=GATED,
+        gated_row=STRANDED_FILTER_ROW,
+    ),
+)
+
+
+# --- the PEOPLE category ------------------------------------------------------
+#
+# Kometa's four people packs name NO people. Every one of them is a dynamic
+# collection that scans the library, counts credits and keeps the twenty-five
+# names with at least five appearances (``data: {depth: 5, limit: 25}``) -- so
+# there is no list of directors in Kometa's defaults to transcribe, and writing
+# one and calling it Kometa's would be a fabricated attribution.
+#
+# What ships instead is a starter set that says whose opinion it is: six
+# directors, chosen here, built by the ``tmdb_director`` builder Phase 8c
+# delivered. The only thing borrowed from Kometa is the title SHAPE
+# (``<<key_name>> (Director)``), and the row's provenance says exactly that.
+# Every id below was checked against themoviedb.org while this table was
+# written; a TMDb person id recalled rather than looked up resolves to a
+# different person and builds a plausible, wrong collection.
+_STARTER_DIRECTORS: tuple[tuple[str, int], ...] = (
+    ("Steven Spielberg", 488),
+    ("Christopher Nolan", 525),
+    ("Quentin Tarantino", 138),
+    ("Martin Scorsese", 1032),
+    ("Stanley Kubrick", 240),
+    ("Hayao Miyazaki", 608),
+)
+
+_PERSON_PACKS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    ("people_top_actors", "Top actors", "defaults/both/actor.yml",
+     "the twenty-five actors with the most appearances in the library", _BOTH),
+    ("people_top_directors", "Top directors", "defaults/movie/director.yml",
+     "the twenty-five directors with the most films in the library", _MOVIE),
+    ("people_top_writers", "Top writers", "defaults/movie/writer.yml",
+     "the twenty-five writers with the most films in the library", _MOVIE),
+    ("people_top_producers", "Top producers", "defaults/movie/producer.yml",
+     "the twenty-five producers with the most films in the library", _MOVIE),
+)
+
+PEOPLE_PRESETS: tuple[Preset, ...] = (
+    Preset(
+        key="people_directors",
+        category="people",
+        name="Director starter set",
+        description=(
+            "One filmography collection for each of six directors -- %s -- read "
+            "from TMDb's credits. The six are OUR choice, not Kometa's: "
+            "defaults/movie/director.yml names no directors at all, it "
+            "enumerates them from the library, which needs the credit scan the "
+            "Top directors row below waits on. The only thing borrowed from "
+            "that file is the '<name> (Director)' title shape."
+            % ", ".join(name for name, _id in _STARTER_DIRECTORS)
+        ),
+        kometa_source=NOT_KOMETA + "the six people are ours",
+        library_types=_MOVIE,
+        collections=tuple(
+            PresetCollection(
+                title="%s (Director)" % name,
+                builder="tmdb_director",
+                params=(("id", tmdb_id),),
+            )
+            for name, tmdb_id in _STARTER_DIRECTORS
+        ),
+    ),
+) + tuple(
+    Preset(
+        key=key,
+        category="people",
+        name=name,
+        description=(
+            "One collection per person: %s, with a poster and biography from "
+            "TMDb. Waiting on the credit scan -- naming the people means "
+            "reading every credit of every item, which is the expensive walk "
+            "phase 10c is scoped around." % what
+        ),
+        kometa_source=source,
+        library_types=library_types,
+        readiness=GATED,
+        gated_row=PERSON_DYNAMIC_ROW,
+    )
+    for key, name, source, what, library_types in _PERSON_PACKS
+)
+
+
+# --- the PRODUCTION category --------------------------------------------------
+#
+# ``defaults/both/streaming.yml`` reproduces, and it is the most valuable row
+# in this task: Kometa builds each service's collection from a TMDb
+# ``/discover`` query filtered by watch provider, and the provider ids are
+# written out in the file (``tmdb_key``). Transcribed below with Kometa's own
+# default ``region: US``, which is also what decides WHICH services are in the
+# pack -- the file's ``allowed_streaming`` conditionals switch Channel 4, ITVX
+# and NOW off outside GB, Movistar/Atresplayer/Filmin outside ES and Crave
+# outside CA, so a US deployment gets these fifteen. A deployment elsewhere
+# wants a different fifteen; that is a per-region variant of this row and not
+# something to fake by shipping every service and hoping.
+#
+# ``watch_region`` is not optional decoration: TMDb ignores a watch-provider
+# filter that arrives without it and answers the UNFILTERED query, which
+# ``tmdb_discover.COMPANION_RULES`` refuses at load. ``sort_by`` is the file's
+# own ``popularity.desc``.
+_STREAMING_REGION = "US"
+
+# key_name -> (TMDb watch provider id(s), library types). The ids are
+# ``tmdb_key`` verbatim, pipe forms included -- TMDb reads ``531|1770`` as
+# "either of these", which is why the column is a string.
+_STREAMING_SERVICES: tuple[tuple[str, str, tuple[str, ...] | None], ...] = (
+    ("Apple TV", "350", None),
+    ("BET+", "1759", None),
+    ("Crunchyroll", "283", _SHOW),
+    ("discovery+", "510", _SHOW),
+    ("Disney+", "337", None),
+    ("HBO Max", "1899", None),
+    ("hayu", "223", _SHOW),
+    ("Hulu", "15", None),
+    ("Netflix", "8", None),
+    ("Paramount+", "531|1770", None),
+    ("Peacock", "387", None),
+    ("Prime Video", "9", None),
+    ("AMC+", "528|1854", None),
+    ("YouTube", "188", None),
+    ("tubi", "73", None),
+)
+
+PRODUCTION_PRESETS: tuple[Preset, ...] = (
+    Preset(
+        key="production_streaming",
+        category="production",
+        name="Streaming services",
+        description=(
+            "One collection per streaming service -- %s -- built from TMDb's "
+            "watch-provider data for the %s region, which is Kometa's own "
+            "default. Three of them (Crunchyroll, discovery+, hayu) are offered "
+            "for Show libraries only, as Kometa has them. The seven services "
+            "Kometa switches off outside GB, ES and CA are not in this row; a "
+            "non-US deployment wants a different set, and shipping all of them "
+            "would build empty collections nobody asked for."
+            % (
+                ", ".join(name for name, _id, _types in _STREAMING_SERVICES),
+                _STREAMING_REGION,
+            )
+        ),
+        kometa_source="defaults/both/streaming.yml",
+        library_types=_BOTH,
+        collections=tuple(
+            PresetCollection(
+                title="%s %%ss" % name,
+                builder="tmdb_discover",
+                params=(
+                    ("with_watch_providers", provider),
+                    ("watch_region", _STREAMING_REGION),
+                    ("sort_by", "popularity.desc"),
+                ),
+                library_types=library_types,
+            )
+            for name, provider, library_types in _STREAMING_SERVICES
+        ),
+    ),
+    Preset(
+        key="production_studio",
+        category="production",
+        name="Studios",
+        description=(
+            "One collection per studio, over the several hundred Kometa's "
+            "include list names -- the animation studios above all. The studio "
+            "attribute itself IS filterable here (it is one of the nine tier-1 "
+            "rows that ship), but the pack is a per-value enumeration with "
+            "per-studio name overrides and addon merges, and that machinery is "
+            "the engine, not a transcription."
+        ),
+        kometa_source="defaults/both/studio.yml",
+        library_types=_BOTH,
+        readiness=GATED,
+        gated_row=DYNAMIC_ENGINE_ROW,
+    ),
+    Preset(
+        key="production_network",
+        category="production",
+        name="Networks",
+        description=(
+            "One collection per television network. Stranded, not queued: Phase "
+            "9a's probe found Plex 1.43.4 does not emit `network` anywhere at "
+            "all -- zero of 284 shows carry it in the section listing AND it is "
+            "absent from the per-item metadata endpoint, so no request budget "
+            "buys it. What those shows carry is a `studio` naming the network, "
+            "which is a different attribute with different semantics; "
+            "substituting one for the other silently is what the filter table "
+            "refused to do."
+        ),
+        kometa_source="defaults/show/network.yml",
+        library_types=_SHOW,
+        readiness=GATED,
+        gated_row=STRANDED_FILTER_ROW,
+    ),
+)
+
+
+# --- the TIME category --------------------------------------------------------
+TIME_PRESETS: tuple[Preset, ...] = (
+    Preset(
+        key="time_year",
+        category="time",
+        name="Best of each year",
+        description=(
+            "Kometa's 'Best of <year>' for the last ten years: one collection "
+            "per year, each the ten highest-rated titles released in it. Needs "
+            "the per-value engine for two reasons -- the years are counted "
+            "relative to today, and the membership is a top-N by rating within "
+            "each value, which is the engine's per-key sort and limit rather "
+            "than a filter."
+        ),
+        kometa_source="defaults/both/year.yml",
+        library_types=_BOTH,
+        readiness=GATED,
+        gated_row=DYNAMIC_ENGINE_ROW,
+    ),
+    Preset(
+        key="time_decade",
+        category="time",
+        name="Best of each decade",
+        description=(
+            "'Best of the 1980s' and its neighbours: one collection per decade "
+            "the library covers, each the hundred highest-rated films in it. "
+            "The same per-key top-N the year pack needs, over decades the "
+            "library turns out to hold."
+        ),
+        kometa_source="defaults/movie/decade.yml",
+        library_types=_MOVIE,
+        readiness=GATED,
+        gated_row=DYNAMIC_ENGINE_ROW,
+    ),
+    Preset(
+        key="time_seasonal",
+        category="time",
+        name="Seasonal",
+        description=(
+            "Nineteen date-windowed collections -- Christmas, Halloween, "
+            "Valentine's Day, Black History Month and the rest -- each visible "
+            "only around its own date. Two halves are missing and the second is "
+            "the harder one. Kometa windows these by DAY (range(03/20-04/30) "
+            "for Easter), where the schedule gate delivered by row %d is whole "
+            "calendar months; and most of these collections are fed by SEVERAL "
+            "sources at once (Halloween is three IMDb lists, ten TMDb franchise "
+            "collections and one film), which one definition, being one "
+            "builder, cannot express." % DATE_WINDOW_ROW
+        ),
+        kometa_source="defaults/movie/seasonal.yml",
+        library_types=_MOVIE,
+        readiness=GATED,
+        gated_row=DATE_WINDOW_ROW,
+    ),
+)
+
+
+# The whole table, in picker order: the awards, the three setting-backed rows,
+# then the eight other categories in the order ``CATEGORIES`` declares them.
+#
+# Count checksum, per category rather than as one total (the same shape
+# ``tests/test_collection_catalog.py``'s CATALOG_CHECKSUM pins, READY / GATED /
+# setting-backed):
+#
+#   awards           15 / 0 / 1     charts            8 / 0 / 1
+#   content           1 / 3 / 0     content_ratings   1 / 0 / 1
+#   location          0 / 3 / 0     media             1 / 3 / 0
+#   people            1 / 4 / 0     production        1 / 2 / 0
+#   time              0 / 3 / 0
+#
+# -- 49 rows: 28 presets an operator can switch on today, 18 that name what
+# they would build and the roadmap row that would let them, and 3 rendered
+# switches for families that already ship behind a boolean.
+CATALOG: tuple[Preset, ...] = (
+    AWARD_PRESETS
+    + SETTING_PRESETS
+    + CHART_PRESETS
+    + CONTENT_PRESETS
+    + CONTENT_RATING_PRESETS
+    + LOCATION_PRESETS
+    + MEDIA_PRESETS
+    + PEOPLE_PRESETS
+    + PRODUCTION_PRESETS
+    + TIME_PRESETS
+)
+
+
+def _check_kometa_sources() -> None:
+    """Every row's ``kometa_source`` is a pinned path or an honest disclaimer.
+
+    Called at import, not left to a test: a provenance line is only worth
+    anything if it points at a file that exists, and the failure mode of a
+    typo -- a citation nobody can follow -- is silent forever otherwise.
+    """
+    for preset in CATALOG:
+        if preset.kometa_source.startswith(NOT_KOMETA):
+            continue
+        if preset.kometa_source not in _KOMETA_DEFAULTS:
+            raise AssertionError(
+                "%r cites %r, which is not one of the Kometa defaults files "
+                "_KOMETA_DEFAULTS pins. Add the path there if the file is "
+                "real and was read, or say so with the NOT_KOMETA prefix."
+                % (preset.key, preset.kometa_source)
+            )
+
+
+def _check_one_producer_per_row() -> None:
+    """No row carries both families' producer.
+
+    ``Preset.definitions`` asks ``award_event`` first and falls through to
+    ``collections``, so a row carrying both would build the ceremony and
+    silently drop the table -- half a preset, with nothing to say so. Checked
+    at import rather than left to the fall-through's ordering, which is not a
+    decision anybody made.
+    """
+    for preset in CATALOG:
+        if preset.award_event is not None and preset.collections:
+            raise AssertionError(
+                "%r carries both an award_event and a collections table; a row "
+                "is one family or the other, and Preset.definitions would "
+                "expand only the first" % preset.key
+            )
+
+
+_check_kometa_sources()
+_check_one_producer_per_row()
 
 # Key -> row, for the config validator's presets: lookup only. Setting-backed
 # rows are deliberately absent: they are not something ``presets:`` can name,
