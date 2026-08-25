@@ -1,0 +1,97 @@
+# Golden Raspberry Awards (ev0000558), years 2026, 2025, 2024 cut verbatim from
+# https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master/events/ev0000558.yml
+'2026':  # https://www.imdb.com/event/ev0000558/2026/1/
+  razzie award:
+    worst actor:
+      nominee: [tt13186306, tt26927452, tt31456973, tt4419684, tt6604188]
+      winner: [tt13186306]
+    worst actress:
+      nominee: [tt21317634, tt27075958, tt30788842, tt4419684, tt9603060]
+      winner: [tt21317634]
+    worst director:
+      nominee: [tt13186306, tt26927452, tt6208148, tt7766378, tt9603060]
+      winner: [tt13186306]
+    worst picture:
+      nominee: [tt13186306, tt26927452, tt6208148, tt7766378, tt9603060]
+      winner: [tt13186306]
+    worst remake, rip-off or sequel:
+      nominee: [tt13186306, tt18069420, tt30274401, tt4045450, tt6208148]
+      winner: [tt13186306]
+    worst screen combo:
+      nominee: [tt13186306, tt18069420, tt21815562, tt26927452, tt6208148]
+      winner: [tt6208148]
+    worst screenplay:
+      nominee: [tt13186306, tt26927452, tt6208148, tt7766378, tt9603060]
+      winner: [tt13186306]
+    worst supporting actor:
+      nominee: [tt21317634, tt24850708, tt27424511, tt31456973, tt6208148]
+      winner: [tt6208148]
+    worst supporting actress:
+      nominee: [tt21317634, tt24850708, tt28671344, tt31456973, tt9603060]
+      winner: [tt24850708]
+  redeemer award:
+    redeemer award:
+      nominee: [tt30343021]
+      winner: [tt30343021]
+'2025': # https://www.imdb.com/event/ev0000558/2025/1/
+  razzie award:
+    worst actor:
+      nominee: [tt11315808, tt14914430, tt1609486, tt1723808, tt2396431]
+      winner: [tt14914430]
+    worst actress:
+      nominee: [tt11057302, tt11315808, tt14856980, tt15009428, tt21235248, tt4978420]
+      winner: [tt11057302, tt21235248]
+    worst director:
+      nominee: [tt10128846, tt11057302, tt11315808, tt14914430, tt4978420]
+      winner: [tt10128846]
+    worst picture:
+      nominee: [tt10128846, tt11057302, tt11315808, tt1723808, tt4978420]
+      winner: [tt11057302]
+    worst remake, rip-off or sequel:
+      nominee: [tt11315808, tt13186482, tt1340094, tt23137904, tt8790086]
+      winner: [tt11315808]
+    worst screen combo:
+      nominee: [tt10128846, tt11315808, tt14914430, tt1723808, tt4978420]
+      winner: [tt11315808]
+    worst screenplay:
+      nominee: [tt10128846, tt11057302, tt11315808, tt1723808, tt8790086]
+      winner: [tt11057302]
+    worst supporting actor:
+      nominee: [tt10128846, tt11057302, tt1723808, tt31956123, tt32001482, tt4978420]
+      winner: [tt10128846, tt1723808, tt31956123, tt32001482]
+    worst supporting actress:
+      nominee: [tt11057302, tt1340094, tt14914430, tt15009428, tt1723808, tt8790086]
+      winner: [tt14914430]
+  redeemer award:
+    redeemer award:
+      nominee: [tt17526714, tt24871974, tt31193791]
+      winner: [tt31193791]
+'2024': # https://www.imdb.com/event/ev0000558/2024/1/
+  razzie award:
+    worst actor:
+      nominee: [tt13375076, tt15326988, tt26439204, tt5433140, tt9224104]
+      winner: [tt26439204]
+    worst actress:
+      nominee: [tt10151854, tt14875820, tt15326988, tt16280138, tt6968614]
+      winner: [tt14875820]
+    worst director:
+      nominee: [tt10954600, tt12921446, tt19623240, tt3291150, tt9224104]
+      winner: [tt19623240]
+    worst picture:
+      nominee: [tt10151854, tt12921446, tt19623240, tt3291150, tt9224104]
+      winner: [tt19623240]
+    worst prequel, remake, rip-off or sequel:
+      nominee: [tt10954600, tt12921446, tt1462764, tt19623240, tt3291150]
+      winner: [tt19623240]
+    worst screen couple:
+      nominee: [tt12921446, tt15326988, tt16280138, tt19623240, tt3291150]
+      winner: [tt19623240]
+    worst screenplay:
+      nominee: [tt10151854, tt12921446, tt1462764, tt19623240, tt3291150]
+      winner: [tt19623240]
+    worst supporting actor:
+      nominee: [tt10954600, tt13375076, tt21391242, tt3291150]
+      winner: [tt3291150]
+    worst supporting actress:
+      nominee: [tt10151854, tt14875820, tt3291150, tt4589218, tt8373206]
+      winner: [tt3291150]

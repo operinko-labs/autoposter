@@ -1,0 +1,213 @@
+# Toronto International Film Festival (ev0000659), years 2025, 2024, 2023 cut verbatim from
+# https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master/events/ev0000659.yml
+'2025': # https://www.imdb.com/event/ev0000659/2025/1/
+  people's choice award:
+    best film:
+      nominee: [tt1312221, tt14364480, tt14905854]
+      winner: [tt14905854]
+    documentary:
+      nominee: [tt31726535, tt33350479, tt35003538]
+      winner: [tt33350479]
+    midnight madness:
+      nominee: [tt33311069, tt35522483, tt37287335]
+      winner: [tt35522483]
+  discovery award:
+    best film:
+      nominee: [tt13597298, tt35375401, tt37674996]
+      winner: []
+  best canadian feature film:
+    best canadian feature film:
+      nominee: [tt35449355]
+      winner: [tt35449355]
+  international critics' award:
+    critic's choice award:
+      nominee: [tt23787976]
+      winner: [tt23787976]
+  netpac award:
+    netpac award:
+      nominee: [tt36390021]
+      winner: [tt36390021]
+  short cuts award - honorable mention:
+    short cuts award - honorable mention:
+      nominee: [tt36724191]
+      winner: [tt36724191]
+  imdbpro short cuts:
+    imdbpro short cuts award best canadian film - honorable mention:
+      nominee: [tt37844412]
+      winner: [tt37844412]
+    imdbpro short cuts award for best animated film:
+      nominee: [tt36592131, tt36724193, tt36956820, tt37505195, tt37507660, tt37673263, tt37844385, tt37844425]
+      winner: [tt36592131]
+    imdbpro short cuts award for best canadian film:
+      nominee: [tt32516461, tt32740047, tt33307473, tt34615501, tt36022809, tt36956820, tt37599545, tt37834734, tt37835848, tt37835851, tt37842648, tt37842711, tt37843082, tt37843479, tt37843939, tt37844412, tt37844416, tt37844437]
+      winner: [tt36956820]
+    imdbpro short cuts award for best film:
+      nominee: [tt31834881, tt32986823, tt34365258, tt34798924, tt35598137, tt36582083, tt36590525, tt36671959, tt36693324, tt36724188, tt36724190, tt36724191, tt37502882, tt37513534, tt37798645, tt37842632, tt37842647, tt37843166, tt37843742, tt37843932, tt37844247, tt37844421, tt37844422]
+      winner: [tt36671959]
+  fipresci prize:
+    fipresci prize:
+      nominee: [tt32126595]
+      winner: [tt32126595]
+  best canadian feature film - honourable mention:
+    best canadian feature film - honourable mention:
+      nominee: [tt37816113]
+      winner: [tt37816113]
+  international people’s choice award:
+    best film:
+      nominee: [tt1527793, tt26733325, tt27714581]
+      winner: [tt1527793]
+  best canadian discovery award:
+    best canadian discovery award:
+      nominee: [tt32252801]
+      winner: [tt32252801]
+  platform award:
+    platform award:
+      nominee: [tt29283995, tt30235784, tt32352280, tt32985279, tt35519445, tt35746682, tt36543744, tt37661864, tt37661885, tt37661902]
+      winner: [tt37661902]
+  platform award - honourable mention:
+    platform award - honourable mention:
+      nominee: [tt29283995]
+      winner: [tt29283995]
+  best canadian discovery award - honourable mention:
+    best canadian discovery award - honourable mention:
+      nominee: [tt37343128]
+      winner: [tt37343128]
+'2024': # https://www.imdb.com/event/ev0000659/2024/1/
+  people's choice award:
+    best film:
+      nominee: [tt12908150, tt18691614, tt19783734, tt20221436, tt22023622, tt28607951, tt31350080, tt32890130]
+      winner: [tt12908150]
+    documentary:
+      nominee: [tt17044840, tt30321133, tt33084872, tt33312360]
+      winner: [tt33312360]
+    midnight madness:
+      nominee: [tt17079606, tt17526714, tt30505698]
+      winner: [tt17526714]
+  discovery award:
+    best film:
+      nominee: [tt32424927, tt33035283, tt33035860]
+      winner: []
+  best canadian feature film:
+    best canadian feature film:
+      nominee: [tt29634258, tt32424927]
+      winner: [tt29634258]
+  international critics' award:
+    best actress:
+      nominee: [tt33292146]
+      winner: [tt33292146]
+  netpac award:
+    netpac award:
+      nominee: [tt14093994, tt22208340, tt31464877, tt32238611]
+      winner: [tt14093994]
+  short cuts award - honorable mention:
+    best international short film:
+      nominee: [tt33317291]
+      winner: [tt33317291]
+  imdbpro short cuts:
+    imdbpro short cuts award for best canadian film:
+      nominee: [tt12429712, tt29520774, tt30495767, tt32144500, tt32205767, tt32444952, tt32480506, tt32601294, tt33015167, tt33086973, tt33087322, tt33096238, tt33099535, tt33317081, tt33317127, tt33317303]
+      winner: [tt33087322]
+    imdbpro short cuts award for best film:
+      nominee: [tt20519854, tt28632018, tt29869027, tt30751010, tt32144480, tt32205738, tt32205774, tt32342056, tt32365707, tt32560209, tt32810843, tt32875105, tt32897626, tt32923607, tt32989921, tt33091593, tt33131401, tt33202234, tt33202250, tt33317061, tt33317291]
+      winner: [tt33317061]
+  wavelengths section:
+    shorts:
+      nominee: [tt30207757]
+      winner: []
+  fipresci prize:
+    discovery:
+      nominee: [tt31464877]
+      winner: []
+    fipresci prize:
+      nominee: [tt14778372]
+      winner: [tt14778372]
+  tiff variety artisan award:
+    tiff variety artisan award:
+      nominee: [tt20221436]
+      winner: [tt20221436]
+  jury prize:
+    best american writer:
+      nominee: [tt27434692]
+      winner: [tt27434692]
+    best director:
+      nominee: [tt33292146]
+      winner: [tt33292146]
+  best canadian discovery award:
+    best canadian discovery award:
+      nominee: [tt31691389, tt32424927]
+      winner: [tt31691389]
+  platform award:
+    platform award:
+      nominee: [tt21905244, tt26676914, tt27142003, tt27170114, tt27717667, tt29271889, tt30519830, tt30768181, tt33034110, tt7972570]
+      winner: [tt27142003]
+  platform award - honourable mention:
+    platform award - honourable mention:
+      nominee: [tt29271889]
+      winner: [tt29271889]
+  best canadian discovery award - honourable mention:
+    best canadian discovery award - honourable mention:
+      nominee: [tt7264528]
+      winner: [tt7264528]
+'2023': # https://www.imdb.com/event/ev0000659/2023/1/
+  people's choice award:
+    best film:
+      nominee: [tt14849194, tt23561236, tt6587046]
+      winner: [tt23561236]
+    documentary:
+      nominee: [tt12277540, tt21806358, tt27531514, tt28448182, tt28581313]
+      winner: [tt12277540]
+    midnight madness:
+      nominee: [tt11678912, tt21267296, tt28259207, tt28554013, tt7130916]
+      winner: [tt7130916]
+  discovery award:
+    best film:
+      nominee: [tt15495540, tt28534120]
+      winner: []
+  best canadian feature film:
+    best canadian feature film:
+      nominee: [tt27715185]
+      winner: [tt27715185]
+  netpac award:
+    netpac award:
+      nominee: [tt26248528]
+      winner: [tt26248528]
+  platform prize:
+    platform prize:
+      nominee: [tt13866710, tt18233134, tt21909836, tt21920634, tt21942866, tt26006816, tt26542557, tt28542205, tt28568332, tt6632018]
+      winner: [tt26542557]
+  imdbpro short cuts:
+    imdbpro short cuts award for best canadian film:
+      nominee: [tt26818913, tt27051815, tt27159536, tt27304412, tt28207603, tt28285666, tt28298460, tt28320453, tt28624863, tt28667868, tt28669515, tt28670290, tt28670305, tt28670320, tt28670486, tt28670609, tt28670680, tt28670721]
+      winner: [tt28624863]
+    imdbpro short cuts award for best film:
+      nominee: [tt13021784, tt23742932, tt24656910, tt27658383, tt27683631, tt27689988, tt27770907, tt27803294, tt28101297, tt28293679, tt28294769, tt28326526, tt28365411, tt28500137, tt28667599, tt28667608, tt28669319, tt28669414, tt28669570, tt28670255, tt28670268, tt28670453, tt28670640, tt28670766]
+      winner: [tt27683631]
+    imdbpro short cuts share her journey award:
+      nominee: [tt24656910]
+      winner: [tt24656910]
+    imdbpro short cuts share her journey award - honourable mention:
+      nominee: [tt27051815]
+      winner: [tt27051815]
+  fipresci prize:
+    fipresci prize:
+      nominee: [tt23642420]
+      winner: [tt23642420]
+  best canadian feature film - honourable mention:
+    best canadian feature film - honourable mention:
+      nominee: [tt18688552]
+      winner: [tt18688552]
+  changemaker award:
+    shawn mendes foundation changemaker award:
+      nominee: [tt28639049]
+      winner: [tt28639049]
+  amplify voices award:
+    amplify voices award - best bipoc canadian feature:
+      nominee: [tt18688552]
+      winner: [tt18688552]
+    amplify voices award for best bipoc canadian first feature award:
+      nominee: [tt28679280]
+      winner: [tt28679280]
+  industry selects:
+    industry selects:
+      nominee: [tt26594993]
+      winner: []

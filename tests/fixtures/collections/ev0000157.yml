@@ -1,0 +1,224 @@
+# César Awards, France (ev0000157), years 2026, 2025, 2024 cut verbatim from
+# https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master/events/ev0000157.yml
+'2026':  # https://www.imdb.com/event/ev0000157/2026/1/
+  césar:
+    best actor (meilleur acteur):
+      nominee: [tt32398150, tt32759477, tt33030403, tt35453969, tt36243564]
+      winner: [tt32759477]
+    best actress (meilleure actrice):
+      nominee: [tt26656750, tt29927144, tt32759477, tt33030403, tt34794183]
+      winner: [tt34794183]
+    best adapted screenplay (meilleure adaptation):
+      nominee: [tt28326501, tt32398150, tt33030403]
+      winner: [tt33030403]
+    best animated film (meilleur film d'animation):
+      nominee: [tt14883538, tt29313285, tt37436610]
+      winner: [tt14883538]
+    best animated short film (meilleur court métrage d'animation):
+      nominee: [tt32205725, tt36724193, tt37675860]
+      winner: [tt36724193]
+    best cinematography (meilleure photo):
+      nominee: [tt31287262, tt31688586, tt33030403, tt34794183, tt36243564]
+      winner: [tt31688586]
+    best costume design (meilleurs costumes):
+      nominee: [tt31411349, tt31434030, tt31688586, tt32759477, tt35465655]
+      winner: [tt31688586]
+    best director (meilleure réalisation):
+      nominee: [tt28326501, tt31688586, tt32398150, tt33030403, tt34794183]
+      winner: [tt31688586]
+    best documentary film (meilleur film documentaire):
+      nominee: [tt32134829, tt32368068, tt33298226, tt34726237, tt36598711]
+      winner: [tt32368068]
+    best documentary short film (meilleur film de court métrage documentaire):
+      nominee: [tt35720261, tt37749776, tt38715634]
+      winner: [tt38715634]
+    best editing (meilleur montage):
+      nominee: [tt28291010, tt28326501, tt31688586, tt33030403, tt34794183]
+      winner: [tt31688586]
+    best female hope (meilleur espoir féminin):
+      nominee: [tt28326501, tt31112509, tt31411349, tt33400055, tt37051267]
+      winner: [tt28326501]
+    best film (meilleur film):
+      nominee: [tt28326501, tt31688586, tt33030403, tt34794183, tt36491653]
+      winner: [tt33030403]
+    best first film (meilleur premier film):
+      nominee: [tt14883538, tt32119317, tt35453969, tt35519445, tt37051267]
+      winner: [tt35519445]
+    best foreign film (meilleur film étranger):
+      nominee: [tt27714581, tt27847051, tt28131427, tt30144839, tt32298285]
+      winner: [tt30144839]
+    best male hope (meilleur espoir masculin):
+      nominee: [tt31688586, tt32119317, tt33772384, tt35519445, tt37051267]
+      winner: [tt35519445]
+    best original music (meilleure musique originale):
+      nominee: [tt14883538, tt28326501, tt32759477, tt34794183, tt36243564]
+      winner: [tt14883538]
+    best original screenplay (meilleur scénario original):
+      nominee: [tt31688586, tt33984333, tt34794183, tt35519445, tt36491653]
+      winner: [tt33984333]
+    best production design (meilleurs décors):
+      nominee: [tt29927144, tt31411349, tt31688586, tt32398150, tt33255286]
+      winner: [tt32398150]
+    best short fiction film (meilleur film de court métrage de fiction):
+      nominee: [tt33365259, tt35329512, tt35397068, tt38057919]
+      winner: [tt35329512]
+    best sound (meilleur son):
+      nominee: [tt14883538, tt31688586, tt32368068, tt34794183, tt35453969]
+      winner: [tt32368068]
+    best supporting actor (meilleur acteur dans un second rôle):
+      nominee: [tt32398150, tt32759477, tt36243564]
+      winner: [tt36243564]
+    best supporting actress (meilleure actrice dans un second rôle):
+      nominee: [tt28326501, tt32759477, tt33030403, tt35453969, tt35519445]
+      winner: [tt33030403]
+    best visual effects (meilleurs effets visuels):
+      nominee: [tt31688586, tt32398150, tt32642156, tt33255286]
+      winner: [tt32398150]
+'2025': # https://www.imdb.com/event/ev0000157/2025/1/
+  césar:
+    best actor (meilleur acteur):
+      nominee: [tt26446278, tt26743414, tt27490099, tt27811096, tt30327451]
+      winner: [tt27811096]
+    best actress (meilleure actrice):
+      nominee: [tt19121072, tt20221436, tt27490099, tt29482291]
+      winner: [tt19121072]
+    best adapted screenplay (meilleure adaptation):
+      nominee: [tt10462154, tt20221436, tt26446278]
+      winner: [tt20221436]
+    best animated film (meilleur film d'animation):
+      nominee: [tt10462154, tt10695672, tt4772188]
+      winner: [tt4772188]
+    best animated short film (meilleur court métrage d'animation):
+      nominee: [tt28356173, tt30970587, tt31579612]
+      winner: [tt28356173]
+    best cinematography (meilleure photographie):
+      nominee: [tt20221436, tt26446278, tt27490099, tt32085997, tt32086046]
+      winner: [tt20221436]
+    best costume design (meilleurs costumes):
+      nominee: [tt20221436, tt26446278, tt26743414, tt27490099, tt33298403]
+      winner: [tt26446278]
+    best director (meilleure réalisation):
+      nominee: [tt20221436, tt26446278, tt27490099, tt32085997, tt32086046]
+      winner: [tt20221436]
+    best documentary film (meilleur film documentaire):
+      nominee: [tt22857256, tt27760132, tt28359245, tt31015216, tt31551124, tt32019423]
+      winner: [tt28359245]
+    best documentary short film (meilleur film de court métrage documentaire):
+      nominee: [tt27158671, tt29432480, tt32146402]
+      winner: [tt32146402]
+    best editing (meilleur montage):
+      nominee: [tt20221436, tt26446278, tt27490099, tt30327451, tt32086046]
+      winner: [tt32086046]
+    best female revelation (meilleure révélation féminine):
+      nominee: [tt27490099, tt28319139, tt28636876, tt32086034, tt33298252]
+      winner: [tt32086034]
+    best film (meilleur film):
+      nominee: [tt20221436, tt26446278, tt30327451, tt32085997, tt32086046]
+      winner: [tt20221436]
+    best first film (meilleur premier film):
+      nominee: [tt28319139, tt30135174, tt30795948, tt32086032, tt32086034]
+      winner: [tt32086034]
+    best foreign film (meilleur film étranger):
+      nominee: [tt17526714, tt28607951, tt32178949, tt7160372, tt8368368]
+      winner: [tt7160372]
+    best male revelation (meilleure révélation masculine):
+      nominee: [tt27490099, tt30135174, tt30327451, tt32085997, tt32086046]
+      winner: [tt32086046]
+    best original music (meilleure musique originale):
+      nominee: [tt10462154, tt20221436, tt26446278, tt27490099, tt32086034]
+      winner: [tt20221436]
+    best original screenplay (meilleur scénario original):
+      nominee: [tt19121072, tt30327451, tt32085997, tt32086034, tt32086046]
+      winner: [tt32086046]
+    best production design (meilleurs décors):
+      nominee: [tt20221436, tt26446278, tt26743414, tt27490099, tt33298403]
+      winner: [tt26446278]
+    best short fiction film (meilleur film de court métrage de fiction):
+      nominee: [tt20519854, tt29432470, tt32623852, tt34382199]
+      winner: [tt20519854]
+    best sound (meilleur son):
+      nominee: [tt20221436, tt26446278, tt27490099, tt30327451, tt32086046]
+      winner: [tt20221436]
+    best supporting actor (meilleur acteur dans un second rôle):
+      nominee: [tt26446278, tt27490099, tt32085997]
+      winner: [tt27490099]
+    best supporting actress (meilleure actrice dans un second rôle):
+      nominee: [tt26446278, tt27490099, tt30327451, tt32085997, tt32086046]
+      winner: [tt32086046]
+    best visual effects (meilleurs effets visuels):
+      nominee: [tt14407336, tt20221436, tt26446278, tt26743414]
+      winner: [tt20221436]
+'2024': # https://www.imdb.com/event/ev0000157/2024/1/
+  césar:
+    best actor (meilleur acteur):
+      nominee: [tt15789074, tt16160622, tt16606592, tt23049206, tt28236368]
+      winner: [tt16160622]
+    best actress (meilleure actrice):
+      nominee: [tt14550346, tt17009710, tt23049206, tt26714897, tt27531109]
+      winner: [tt17009710]
+    best adapted screenplay (meilleure adaptation):
+      nominee: [tt14550346, tt23049206, tt26255020]
+      winner: [tt23049206]
+    best animated film (meilleur film d'animation):
+      nominee: [tt12826598, tt21042126, tt26915336]
+      winner: [tt21042126]
+    best animated short film (meilleur court métrage d'animation):
+      nominee: [tt27688625, tt28106821, tt31033834]
+      winner: [tt31033834]
+    best cinematography (meilleure photographie):
+      nominee: [tt12672536, tt12672620, tt16160622, tt16606592, tt17009710, tt19760052]
+      winner: [tt16606592]
+    best costume design (meilleurs costumes):
+      nominee: [tt12672536, tt12672620, tt16606592, tt17277414, tt19760052, tt20330434]
+      winner: [tt16606592]
+    best director (meilleure réalisation):
+      nominee: [tt14550346, tt16160622, tt16606592, tt17009710, tt24070754]
+      winner: [tt17009710]
+    best documentary film (meilleur film documentaire):
+      nominee: [tt20226766, tt26347358, tt26448811, tt26714897, tt27502426]
+      winner: [tt27502426]
+    best documentary short film (meilleur film de court métrage documentaire):
+      nominee: [tt29432865, tt30807319, tt30971581]
+      winner: [tt29432865]
+    best editing (meilleur montage):
+      nominee: [tt16160622, tt16606592, tt17009710, tt24070754, tt26714897]
+      winner: [tt17009710]
+    best film (meilleur film):
+      nominee: [tt16160622, tt16606592, tt17009710, tt18550220, tt24070754]
+      winner: [tt17009710]
+    best first film (meilleur premier film):
+      nominee: [tt18550220, tt19858184, tt23790924, tt26744289, tt27531109]
+      winner: [tt18550220]
+    best foreign film (meilleur film étranger):
+      nominee: [tt14137416, tt15398776, tt21027780, tt22487338, tt27503384]
+      winner: [tt22487338]
+    best original music (meilleure musique originale):
+      nominee: [tt12672536, tt12672620, tt16606592, tt18550220, tt22180518, tt23049206]
+      winner: [tt16606592]
+    best original screenplay (meilleur scénario original):
+      nominee: [tt16160622, tt16606592, tt17009710, tt18550220, tt24070754]
+      winner: [tt17009710]
+    best production design (meilleurs décors):
+      nominee: [tt12672536, tt12672620, tt16606592, tt17009710, tt17277414, tt19760052]
+      winner: [tt12672536, tt12672620]
+    best short film (meilleur film de court métrage de fiction):
+      nominee: [tt19783692, tt22023962, tt22054360, tt27549515]
+      winner: [tt19783692]
+    best sound (meilleur son):
+      nominee: [tt12672536, tt12672620, tt16160622, tt16606592, tt17009710, tt24070754]
+      winner: [tt16606592]
+    best supporting actor (meilleur acteur dans un second rôle):
+      nominee: [tt16160622, tt17009710, tt18550220, tt28236368]
+      winner: [tt17009710]
+    best supporting actress (meilleure actrice dans un second rôle):
+      nominee: [tt18550220, tt24070754]
+      winner: [tt24070754]
+    best visual effects (meilleurs effets visuels):
+      nominee: [tt12672536, tt12672620, tt16606592, tt16909478, tt17569526, tt26744289]
+      winner: [tt16606592]
+    most promising actor (meilleur espoir masculin):
+      nominee: [tt14550346, tt16606592, tt17009710, tt18550220, tt26699529]
+      winner: [tt18550220]
+    most promising actress (meilleur espoir féminin):
+      nominee: [tt23647880, tt26255020, tt26256216, tt26699529, tt27372066]
+      winner: [tt26699529]

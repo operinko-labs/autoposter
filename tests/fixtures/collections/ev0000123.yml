@@ -1,0 +1,815 @@
+# BAFTA Awards (ev0000123), years 2026, 2025, 2024 cut verbatim from
+# https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master/events/ev0000123.yml
+'2026':  # https://www.imdb.com/event/ev0000123/2026/1/
+  bafta film award:
+    best achievement in special visual effects:
+      nominee: [tt1312221, tt16311594, tt1757678, tt21103218, tt26743210]
+      winner: [tt1757678]
+    best animated feature film:
+      nominee: [tt26443597, tt29313285, tt4900148]
+      winner: [tt26443597]
+    best british short animation:
+      nominee: [tt27449033, tt36152000, tt36214704]
+      winner: [tt27449033]
+    best british short film:
+      nominee: [tt29335806, tt31499504, tt34572866, tt35875811, tt38119159]
+      winner: [tt35875811]
+    best casting:
+      nominee: [tt27714581, tt30144839, tt31193180, tt31514146, tt32916440]
+      winner: [tt31514146]
+    best children's & family film:
+      nominee: [tt11655566, tt14883538, tt26443597, tt33035197]
+      winner: [tt33035197]
+    best cinematography:
+      nominee: [tt1312221, tt29768334, tt30144839, tt31193180, tt32916440]
+      winner: [tt30144839]
+    best costume design:
+      nominee: [tt1312221, tt14905854, tt19847976, tt31193180, tt32916440]
+      winner: [tt1312221]
+    best director:
+      nominee: [tt12300742, tt14905854, tt27714581, tt30144839, tt31193180, tt32916440]
+      winner: [tt30144839]
+    best documentary:
+      nominee: [tt30012657, tt34962891, tt34964205, tt34965515, tt37660887]
+      winner: [tt34965515]
+    best editing:
+      nominee: [tt16311594, tt30144839, tt31193180, tt32376165, tt32916440]
+      winner: [tt30144839]
+    best film:
+      nominee: [tt14905854, tt27714581, tt30144839, tt31193180, tt32916440]
+      winner: [tt30144839]
+    best film not in the english language:
+      nominee: [tt27714581, tt27847051, tt32298285, tt36491653, tt36943034]
+      winner: [tt27714581]
+    best leading actor:
+      nominee: [tt12300742, tt30144839, tt31193180, tt31514146, tt32536315, tt32916440]
+      winner: [tt31514146]
+    best leading actress:
+      nominee: [tt12300742, tt14905854, tt18382850, tt27714581, tt30144839, tt30343021]
+      winner: [tt14905854]
+    best make up & hair:
+      nominee: [tt1312221, tt14905854, tt19847976, tt31193180, tt32916440]
+      winner: [tt1312221]
+    best production design:
+      nominee: [tt1312221, tt14905854, tt30144839, tt31193180, tt32916440]
+      winner: [tt1312221]
+    best screenplay (adapted):
+      nominee: [tt12300742, tt14905854, tt27674982, tt30144839, tt32321317]
+      winner: [tt30144839]
+    best screenplay (original):
+      nominee: [tt27714581, tt27847051, tt31193180, tt31514146, tt32916440]
+      winner: [tt31193180]
+    best sound:
+      nominee: [tt1312221, tt16311594, tt30144839, tt31193180, tt31434639]
+      winner: [tt16311594]
+    best supporting actor:
+      nominee: [tt1312221, tt14905854, tt27714581, tt30144839, tt31514146]
+      winner: [tt30144839]
+    best supporting actress:
+      nominee: [tt14905854, tt27674982, tt27714581, tt30144839, tt31193180, tt32916440]
+      winner: [tt31193180]
+    original score:
+      nominee: [tt12300742, tt1312221, tt14905854, tt30144839, tt31193180]
+      winner: [tt31193180]
+    outstanding british film of the year:
+      nominee: [tt10329560, tt10548174, tt14905854, tt27674982, tt31514146, tt32063050, tt32321317, tt32985279, tt5171016, tt9362736]
+      winner: [tt14905854]
+    outstanding debut by a british writer, director, or producer:
+      nominee: [tt26691106, tt29028515, tt32321317, tt33567409, tt35695538]
+      winner: [tt35695538]
+  bafta tv award:
+    actor in a comedy:
+      nominee: [tt13683866, tt13684264, tt15792042, tt20449596, tt23576878, tt32410998]
+      winner: [tt32410998]
+    actress in a comedy:
+      nominee: [tt10692232, tt13684264, tt32660361, tt33305711]
+      winner: [tt13684264]
+    children’s craft team award:
+      nominee: [tt26930503, tt27568682, tt36985473, tt37442492]
+      winner: [tt27568682]
+    children’s non-scripted:
+      nominee: [tt11608566, tt13919000, tt1692560, tt26930503]
+      winner: [tt11608566]
+    children’s scripted:
+      nominee: [tt0983983, tt31190108, tt36985473, tt37443457]
+      winner: [tt31190108]
+    costume design:
+      nominee: [tt21874900, tt31029686, tt33059458, tt9253284]
+      winner: [tt21874900]
+    current affairs:
+      nominee: [tt0199257, tt2433324, tt37504739]
+      winner: [tt37504739]
+    daytime:
+      nominee: [tt0298674, tt1502749, tt19359688, tt7316998]
+      winner: [tt19359688]
+    director, factual:
+      nominee: [tt35407689, tt37024060, tt37504739, tt39151138]
+      winner: [tt35407689]
+    director, fiction:
+      nominee: [tt11280740, tt31806037, tt33059458, tt9253284]
+      winner: [tt31806037]
+    director, multi-camera:
+      nominee: [tt33248156, tt35050741, tt41070842, tt41236384]
+      winner: [tt41236384]
+    drama series:
+      nominee: [tt14466018, tt21874900, tt30249123, tt31438328]
+      winner: [tt30249123]
+    editing, factual:
+      nominee: [tt36640622, tt37024060, tt37182077, tt37504739]
+      winner: [tt37504739]
+    editing, fiction:
+      nominee: [tt32750053, tt3581920, tt5875444, tt9253284]
+      winner: [tt32750053]
+    emerging talent, factual:
+      nominee: [tt35882698, tt36956555, tt37024060]
+      winner: [tt37024060]
+    emerging talent, fiction:
+      nominee: [tt15792042, tt20449596, tt28510783, tt36592872]
+      winner: [tt36592872]
+    entertainment:
+      nominee: [tt0924651, tt1055238, tt35050741, tt6276100]
+      winner: [tt35050741]
+    entertainment craft team:
+      nominee: [tt28104766, tt33248156, tt38608937, tt9663964]
+      winner: [tt33248156]
+    entertainment performance:
+      nominee: [tt19386374, tt33248156, tt35050741, tt38514597, tt38692796, tt9663964]
+      winner: [tt35050741]
+    factual entertainment:
+      nominee: [tt35622414, tt36935784, tt8064568, tt9909248]
+      winner: [tt35622414]
+    factual series:
+      nominee: [tt3153520, tt36334448, tt37542405, tt4189570]
+      winner: [tt4189570]
+    international:
+      nominee: [tt11280740, tt13406094, tt14452776, tt17491088, tt22202452, tt23649128]
+      winner: [tt23649128]
+    leading actor:
+      nominee: [tt0808224, tt24163532, tt28131282, tt31029686, tt31438328, tt31806037]
+      winner: [tt31806037]
+    leading actress:
+      nominee: [tt14466018, tt21874900, tt28631067, tt32263148, tt32750053, tt33335242]
+      winner: [tt32750053]
+    limited drama:
+      nominee: [tt28131282, tt31806037, tt32263148, tt33059458]
+      winner: [tt31806037]
+    live event coverage:
+      nominee: [tt41070837, tt41070840, tt41070842]
+      winner: [tt41070842]
+    make up & hair design:
+      nominee: [tt21874900, tt31029686, tt32061880, tt5875444]
+      winner: [tt32061880]
+    news coverage:
+      nominee: [tt0163471, tt0239164, tt29432967]
+      winner: [tt0239164]
+    original music, factual:
+      nominee: [tt27931052, tt35916200, tt39222473, tt39286501]
+      winner: [tt35916200]
+    original music, fiction:
+      nominee: [tt0808224, tt19386538, tt2085059, tt21874900]
+      winner: [tt19386538]
+    photography & lighting, fiction:
+      nominee: [tt11280740, tt31806037, tt33059458, tt3581920]
+      winner: [tt33059458]
+    photography, factual:
+      nominee: [tt2433324, tt26351137, tt35435624, tt36777907]
+      winner: [tt36777907]
+    production design:
+      nominee: [tt20449596, tt21874900, tt33059458, tt9253284]
+      winner: [tt20449596]
+    reality:
+      nominee: [tt28104766, tt28615598, tt33248156, tt36953849]
+      winner: [tt33248156]
+    scripted casting:
+      nominee: [tt16369304, tt28131282, tt29768339, tt31806037]
+      winner: [tt29768339]
+    scripted comedy:
+      nominee: [tt13683866, tt29427309, tt32410998, tt33305711]
+      winner: [tt33305711]
+    short form:
+      nominee: [tt37025704, tt38235199, tt41070827, tt41070830]
+      winner: [tt38235199]
+    single documentary:
+      nominee: [tt34750677, tt36640622, tt37024060, tt37677470]
+      winner: [tt37024060]
+    soap:
+      nominee: [tt0053494, tt0088512, tt0096555]
+      winner: [tt0088512]
+    sound, factual:
+      nominee: [tt33248156, tt35531705, tt35916200, tt8289930]
+      winner: [tt33248156]
+    sound, fiction:
+      nominee: [tt31029686, tt31806037, tt5875444, tt9253284]
+      winner: [tt31806037]
+    special, visual & graphic effects:
+      nominee: [tt10324164, tt2085059, tt5180504, tt9253284]
+      winner: [tt9253284]
+    specialist factual:
+      nominee: [tt35407689, tt35435624, tt36455190, tt36460263]
+      winner: [tt36455190]
+    sports coverage:
+      nominee: [tt32918601, tt3588244, tt3770700, tt41069958]
+      winner: [tt32918601]
+    supporting actor:
+      nominee: [tt0808224, tt14063678, tt31510819, tt31806037, tt32132630]
+      winner: [tt31806037]
+    supporting actress:
+      nominee: [tt13406094, tt16369304, tt28013708, tt29768339, tt31806037]
+      winner: [tt31806037]
+    titles & graphic identity:
+      nominee: [tt0808224, tt21874900, tt30249123, tt32918601]
+      winner: [tt32918601]
+    writer, comedy:
+      nominee: [tt13683866, tt15792042, tt18974452, tt32410998]
+      winner: [tt13683866]
+    writer, drama:
+      nominee: [tt28131282, tt31806037, tt33059458, tt5875444]
+      winner: [tt5875444]
+  bafta games award:
+    audio achievement:
+      nominee: [tt34996965]
+      winner: [tt34996965]
+    best animation:
+      nominee: [tt34996965]
+      winner: [tt34996965]
+    best debut game:
+      nominee: [tt34996965]
+      winner: []
+    best game:
+      nominee: [tt34996965]
+      winner: []
+    best music:
+      nominee: [tt34996965]
+      winner: []
+    new intellectual property:
+      nominee: [tt34996965]
+      winner: []
+    performer in a leading role:
+      nominee: [tt13860172, tt32149577, tt32591698, tt33488900, tt34996965]
+      winner: [tt32591698]
+    performer in a supporting role:
+      nominee: [tt24179294, tt32591698, tt34996965, tt35889980, tt37762716]
+      winner: [tt34996965]
+  p&o cruises memorable moment:
+    p&o cruises memorable moment:
+      nominee: [tt13683866, tt14466018, tt28131282, tt31806037, tt33248156, tt35050741]
+      winner: [tt33248156]
+'2025': # https://www.imdb.com/event/ev0000123/2025/1/
+  bafta film award:
+    best achievement in special visual effects:
+      nominee: [tt11389872, tt1262426, tt14260836, tt15239678, tt9218128]
+      winner: [tt15239678]
+    best animated feature film:
+      nominee: [tt17163970, tt22022452, tt29623480, tt4772188]
+      winner: [tt17163970]
+    best british short animation:
+      nominee: [tt27836891, tt28768679, tt32611458]
+      winner: [tt28768679]
+    best british short film:
+      nominee: [tt27895331, tt28632018, tt31615906, tt32989921, tt33014334]
+      winner: [tt27895331]
+    best casting:
+      nominee: [tt11563598, tt20215234, tt27367464, tt28607951, tt8368368]
+      winner: [tt28607951]
+    best children's & family film:
+      nominee: [tt17163970, tt29623480, tt4772188, tt5674658]
+      winner: [tt17163970]
+    best cinematography:
+      nominee: [tt15239678, tt20215234, tt20221436, tt5040012, tt8999762]
+      winner: [tt8999762]
+    best costume design:
+      nominee: [tt11563598, tt1262426, tt15939198, tt20215234, tt5040012]
+      winner: [tt1262426]
+    best director:
+      nominee: [tt15239678, tt17526714, tt20215234, tt20221436, tt28607951, tt8999762]
+      winner: [tt8999762]
+    best documentary:
+      nominee: [tt12336480, tt27902121, tt30227076, tt30321133, tt30953759]
+      winner: [tt27902121]
+    best editing:
+      nominee: [tt15239678, tt20215234, tt20221436, tt27367464, tt28607951]
+      winner: [tt20215234]
+    best film:
+      nominee: [tt11563598, tt20215234, tt20221436, tt28607951, tt8999762]
+      winner: [tt20215234]
+    best film not in the english language:
+      nominee: [tt14961016, tt20221436, tt27367464, tt32086077, tt32178949]
+      winner: [tt20221436]
+    best leading actor:
+      nominee: [tt11563598, tt20215234, tt28015403, tt28479262, tt8368368, tt8999762]
+      winner: [tt8999762]
+    best leading actress:
+      nominee: [tt11687002, tt11891850, tt1262426, tt17526714, tt20221436, tt28607951]
+      winner: [tt28607951]
+    best make up & hair:
+      nominee: [tt1262426, tt15239678, tt17526714, tt20221436, tt5040012]
+      winner: [tt17526714]
+    best production design:
+      nominee: [tt1262426, tt15239678, tt20215234, tt5040012, tt8999762]
+      winner: [tt1262426]
+    best screenplay (adapted):
+      nominee: [tt11563598, tt20215234, tt20221436, tt23055660, tt28479262]
+      winner: [tt20215234]
+    best screenplay (original):
+      nominee: [tt17526714, tt21823606, tt27367464, tt28607951, tt8999762]
+      winner: [tt21823606]
+    best sound:
+      nominee: [tt1262426, tt15239678, tt15939198, tt17526714, tt9218128]
+      winner: [tt15239678]
+    best supporting actor:
+      nominee: [tt11563598, tt21823606, tt28479262, tt28607951, tt8368368, tt8999762]
+      winner: [tt21823606]
+    best supporting actress:
+      nominee: [tt1262426, tt20215234, tt20221436, tt31193791, tt8999762]
+      winner: [tt20221436]
+    original score:
+      nominee: [tt20215234, tt20221436, tt29623480, tt5040012, tt8999762]
+      winner: [tt8999762]
+    outstanding british film of the year:
+      nominee: [tt11687002, tt11891850, tt15939198, tt17163970, tt19637052, tt20215234, tt27367464, tt28277817, tt5112584, tt9218128]
+      winner: [tt20215234]
+    outstanding debut by a british writer, director, or producer:
+      nominee: [tt20729172, tt27367464, tt30444418, tt32060445, tt9214772]
+      winner: [tt27367464]
+  bafta tv award:
+    children’s craft team award:
+      nominee: [tt1400819, tt26930503, tt4291050, tt9900816]
+      winner: [tt9900816]
+    children’s non-scripted:
+      nominee: [tt11608566, tt26930503, tt28020282, tt4401960]
+      winner: [tt11608566]
+    children’s scripted:
+      nominee: [tt1400819, tt29248214, tt29818188, tt9113476]
+      winner: [tt9113476]
+    costume design:
+      nominee: [tt16283824, tt26246248, tt27995113, tt9022422]
+      winner: [tt16283824]
+    current affairs:
+      nominee: [tt31410442, tt32595456, tt34001166, tt35726387]
+      winner: [tt34001166]
+    daytime:
+      nominee: [tt0217211, tt13368492, tt32544262, tt7316998]
+      winner: [tt32544262]
+    director, factual:
+      nominee: [tt31189897, tt32362334, tt34475652, tt35726387]
+      winner: [tt31189897]
+    director, fiction:
+      nominee: [tt10846104, tt13649112, tt16283804, tt3556920]
+      winner: [tt13649112]
+    director, multi-camera:
+      nominee: [tt0411027, tt32843252, tt36563506, tt36564052]
+      winner: [tt36564052]
+    drama series:
+      nominee: [tt13994572, tt14466018, tt16283758, tt3556920]
+      winner: [tt14466018]
+    editing, factual:
+      nominee: [tt30844092, tt31852716, tt31908384, tt35726387]
+      winner: [tt35726387]
+    editing, fiction:
+      nominee: [tt13649112, tt24053860, tt27867155, tt5875444]
+      winner: [tt5875444]
+    emerging talent, factual:
+      nominee: [tt1043090, tt26765185, tt4116046]
+      winner: [tt1043090]
+    emerging talent, fiction:
+      nominee: [tt28184314, tt29427309, tt32315886, tt8852990]
+      winner: [tt29427309]
+    entertainment:
+      nominee: [tt1055238, tt19386374, tt4934214, tt6276100]
+      winner: [tt1055238]
+    entertainment craft team:
+      nominee: [tt0411027, tt15557874, tt35258525, tt4934214]
+      winner: [tt4934214]
+    entertainment performance:
+      nominee: [tt0324692, tt0924651, tt14254752, tt23743442, tt26687060, tt9663964]
+      winner: [tt26687060]
+    factual entertainment:
+      nominee: [tt28060907, tt28338483, tt9909248]
+      winner: [tt28060907]
+    factual series:
+      nominee: [tt22797582, tt31106703, tt36351855, tt8583604]
+      winner: [tt31106703]
+    female performance in a comedy:
+      nominee: [tt0908454, tt10846104, tt12106710, tt19889996, tt21614420, tt26765082]
+      winner: [tt0908454]
+    international:
+      nominee: [tt18228732, tt2356777, tt23845296, tt2788316, tt31122777, tt31410930]
+      winner: [tt2788316]
+    leading actor:
+      nominee: [tt11899030, tt13649112, tt16493232, tt21906238, tt27867155, tt5875444]
+      winner: [tt16493232]
+    leading actress:
+      nominee: [tt16493232, tt21279806, tt26738706, tt27867155, tt31122777, tt7671070]
+      winner: [tt7671070]
+    limited drama:
+      nominee: [tt13649112, tt16283804, tt21084712, tt27867155]
+      winner: [tt27867155]
+    live event coverage:
+      nominee: [tt36563506, tt36564052, tt36564066]
+      winner: [tt36564052]
+    make up & hair design:
+      nominee: [tt21906238, tt23541316, tt26246248, tt8740790]
+      winner: [tt21906238]
+    male performance in a comedy:
+      nominee: [tt14531842, tt23576878, tt28510783, tt30226479, tt32315886, tt8550732]
+      winner: [tt30226479]
+    news coverage:
+      nominee: [tt0239164, tt0262152]
+      winner: [tt0262152]
+    original music, factual:
+      nominee: [tt22797582, tt31497750, tt33535536, tt36217295]
+      winner: [tt36217295]
+    original music, fiction:
+      nominee: [tt15469618, tt21906238, tt26738706, tt5875444]
+      winner: [tt15469618]
+    photography & lighting, fiction:
+      nominee: [tt11218290, tt16283824, tt2788316, tt31122777]
+      winner: [tt2788316]
+    photography, factual:
+      nominee: [tt30210397, tt31189897, tt34001166, tt35726387]
+      winner: [tt34001166]
+    production design:
+      nominee: [tt21906238, tt24053860, tt2640044, tt28509857]
+      winner: [tt21906238]
+    reality:
+      nominee: [tt0443370, tt23743442, tt26675358, tt28615598]
+      winner: [tt28615598]
+    scripted casting:
+      nominee: [tt16283758, tt21084712, tt21906238, tt27867155]
+      winner: [tt16283758]
+    scripted comedy:
+      nominee: [tt12106710, tt27846061, tt28510783, tt9174582]
+      winner: [tt12106710]
+    short form:
+      nominee: [tt31389354, tt31540576, tt33368507, tt36351715]
+      winner: [tt31389354]
+    single documentary:
+      nominee: [tt28089851, tt29142525, tt31908384, tt34192088]
+      winner: [tt31908384]
+    soap:
+      nominee: [tt0053494, tt0088512, tt0096555]
+      winner: [tt0088512]
+    sound, factual:
+      nominee: [tt13276218, tt31186319, tt31852716, tt36744208]
+      winner: [tt31186319]
+    sound, fiction:
+      nominee: [tt11198330, tt13649112, tt2356777, tt5875444]
+      winner: [tt5875444]
+    special award:
+      nominee: [tt0088512]
+      winner: [tt0088512]
+    special, visual & graphic effects:
+      nominee: [tt11198330, tt14688458, tt2640044, tt7631058]
+      winner: [tt7631058]
+    specialist factual:
+      nominee: [tt30844092, tt31189897, tt33049440, tt33360799]
+      winner: [tt33049440]
+    sports coverage:
+      nominee: [tt12752438, tt32551602, tt3770700]
+      winner: [tt12752438]
+    supporting actor:
+      nominee: [tt16283824, tt16493232, tt28501949, tt3556920, tt5875444]
+      winner: [tt16493232]
+    supporting actress:
+      nominee: [tt13649112, tt13994572, tt20453286, tt21906238, tt31122777]
+      winner: [tt13649112]
+    titles & graphic identity:
+      nominee: [tt11218290, tt12752438, tt27846061, tt8230448]
+      winner: [tt11218290]
+    writer, comedy:
+      nominee: [tt10846104, tt15677150, tt2674806, tt32315886]
+      winner: [tt2674806]
+    writer, drama:
+      nominee: [tt13649112, tt16283804, tt27867155, tt7671070]
+      winner: [tt13649112]
+  bafta games award:
+    artistic achievement:
+      nominee: [tt12969320, tt16386018, tt27917048, tt28060137, tt32200024, tt32501467]
+      winner: [tt27917048]
+    audio achievement:
+      nominee: [tt16386018, tt27671044, tt27916646, tt28054906, tt28060137, tt32501467]
+      winner: [tt32501467]
+    best animation:
+      nominee: [tt16386018, tt30334760, tt32421375, tt32501467, tt32501530, tt32632231]
+      winner: [tt32501467]
+    best british game:
+      nominee: [tt16386018, tt28060137, tt30786083, tt32421375, tt32632231, tt33255564]
+      winner: [tt32632231]
+    best debut game:
+      nominee: [tt21990830, tt27671044, tt30624820, tt31242194, tt31521616, tt32632231]
+      winner: [tt31521616]
+    best evolving game:
+      nominee: [tt0433664, tt11261148, tt1737166, tt21030326, tt3819090, tt4780496]
+      winner: [tt21030326]
+    best family game:
+      nominee: [tt21990830, tt27554360, tt27917050, tt32421375, tt32441214, tt32501467]
+      winner: [tt32501467]
+    best game:
+      nominee: [tt12969320, tt27916646, tt31521616, tt32379265, tt32501467, tt32632231]
+      winner: [tt32501467]
+    best multiplayer:
+      nominee: [tt22051736, tt27916646, tt30334760, tt32421375, tt32441214, tt32501530]
+      winner: [tt27916646]
+    best music:
+      nominee: [tt12969320, tt16386018, tt21066342, tt27916646, tt28054906, tt32501467]
+      winner: [tt27916646]
+    best narrative:
+      nominee: [tt12969320, tt16386018, tt21066342, tt27510763, tt28060137, tt6724294]
+      winner: [tt6724294]
+    game beyond entertainment:
+      nominee: [tt16386018, tt30624820, tt32160893, tt32480146, tt34180572]
+      winner: [tt30624820]
+    game design:
+      nominee: [tt27671044, tt27916646, tt31521616, tt32379265, tt32501467, tt34971211]
+      winner: [tt32501467]
+    new intellectual property:
+      nominee: [tt12969320, tt27671044, tt28060137, tt31521616, tt32632231, tt6724294]
+      winner: [tt28060137]
+    performer in a leading role:
+      nominee: [tt16386018, tt22892938, tt28054906, tt28060137, tt32277412, tt32501530]
+      winner: [tt28060137]
+    performer in a supporting role:
+      nominee: [tt16386018, tt28060137, tt32632231]
+      winner: [tt28060137]
+    technical achievement:
+      nominee: [tt12969320, tt16386018, tt30334760, tt32501467, tt32501530]
+      winner: [tt16386018]
+  p&o cruises memorable moment:
+    p&o cruises memorable moment:
+      nominee: [tt0411027, tt0908454, tt21906238, tt23743442, tt27867155, tt8740790]
+      winner: [tt0411027]
+'2024': # https://www.imdb.com/event/ev0000123/2024/1/
+  bafta film award:
+    best achievement in special visual effects:
+      nominee: [tt11858890, tt13287846, tt14230458, tt6791350, tt9603212]
+      winner: [tt14230458]
+    best animated feature film:
+      nominee: [tt15789038, tt6587046, tt8337264, tt9362722]
+      winner: [tt6587046]
+    best british short animation:
+      nominee: [tt26899410, tt27658326, tt30023166]
+      winner: [tt26899410]
+    best british short film:
+      nominee: [tt20779716, tt23836912, tt26769826, tt27727876, tt29228169]
+      winner: [tt26769826]
+    best casting:
+      nominee: [tt14849194, tt17009710, tt21192142, tt22890246, tt5537002]
+      winner: [tt14849194]
+    best cinematography:
+      nominee: [tt14230458, tt15398776, tt5535276, tt5537002, tt7160372]
+      winner: [tt15398776]
+    best costume design:
+      nominee: [tt13287846, tt14230458, tt1517268, tt15398776, tt5537002]
+      winner: [tt14230458]
+    best director:
+      nominee: [tt14849194, tt15398776, tt17009710, tt21192142, tt5535276, tt7160372]
+      winner: [tt15398776]
+    best documentary:
+      nominee: [tt19853258, tt24082438, tt25470468, tt27726927, tt28865980]
+      winner: [tt24082438]
+    best editing:
+      nominee: [tt14230458, tt15398776, tt17009710, tt5537002, tt7160372]
+      winner: [tt15398776]
+    best film:
+      nominee: [tt14230458, tt14849194, tt15398776, tt17009710, tt5537002]
+      winner: [tt15398776]
+    best film not in the english language:
+      nominee: [tt13238346, tt16277242, tt17009710, tt24082438, tt7160372]
+      winner: [tt7160372]
+    best leading actor:
+      nominee: [tt13238346, tt14160834, tt14849194, tt15398776, tt17351924, tt5535276]
+      winner: [tt15398776]
+    best leading actress:
+      nominee: [tt1200263, tt14230458, tt1517268, tt15893750, tt17009710, tt5535276]
+      winner: [tt14230458]
+    best make up & hair:
+      nominee: [tt13287846, tt14230458, tt15398776, tt5535276, tt5537002]
+      winner: [tt14230458]
+    best production design:
+      nominee: [tt14230458, tt1517268, tt15398776, tt5537002, tt7160372]
+      winner: [tt14230458]
+    best screenplay (adapted):
+      nominee: [tt14230458, tt15398776, tt21192142, tt23561236, tt7160372]
+      winner: [tt23561236]
+    best screenplay (original):
+      nominee: [tt13238346, tt14849194, tt1517268, tt17009710, tt5535276]
+      winner: [tt17009710]
+    best sound:
+      nominee: [tt15398776, tt3758542, tt5535276, tt7160372, tt9603212]
+      winner: [tt7160372]
+    best supporting actor:
+      nominee: [tt14849194, tt1517268, tt15398776, tt17351924, tt21192142, tt5537002]
+      winner: [tt15398776]
+    best supporting actress:
+      nominee: [tt1200263, tt14849194, tt15398776, tt17351924, tt21192142, tt7160372]
+      winner: [tt14849194]
+    original score:
+      nominee: [tt14230458, tt15398776, tt17351924, tt5537002, tt9362722]
+      winner: [tt15398776]
+    outstanding british film of the year:
+      nominee: [tt13287846, tt14230458, tt15893750, tt17351924, tt19883634, tt21192142, tt22890246, tt6166392, tt7160372, tt8649252]
+      winner: [tt7160372]
+    outstanding debut by a british writer, director, or producer:
+      nominee: [tt14065578, tt18382328, tt21376900, tt22052280, tt22890246]
+      winner: [tt18382328]
+  bafta tv award:
+    comedy entertainment programme:
+      nominee: [tt0924651, tt1055238, tt26687060, tt9663964]
+      winner: [tt9663964]
+    costume design:
+      nominee: [tt14688458, tt2085059, tt2235759, tt4786824]
+      winner: [tt2235759]
+    current affairs:
+      nominee: [tt1043090, tt1597701, tt26548545, tt4397866]
+      winner: [tt1597701]
+    daytime:
+      nominee: [tt0217211, tt0298674, tt19359688, tt21257260]
+      winner: [tt19359688]
+    director, factual:
+      nominee: [tt23850840, tt2433324, tt27837209, tt30320447]
+      winner: [tt23850840]
+    director, fiction:
+      nominee: [tt13323596, tt1830379, tt27541315, tt3581920]
+      winner: [tt3581920]
+    director, multi-camera:
+      nominee: [tt20243990, tt30421495, tt31845376, tt31845725]
+      winner: [tt20243990]
+    drama series:
+      nominee: [tt14063678, tt1830379, tt3428912, tt5875444]
+      winner: [tt1830379]
+    editing, factual:
+      nominee: [tt14524712, tt27837209, tt30320447, tt8289930]
+      winner: [tt27837209]
+    editing, fiction:
+      nominee: [tt13138834, tt3428912, tt5875444]
+      winner: [tt5875444]
+    emerging talent, factual:
+      nominee: [tt28313786, tt29331887, tt29925747, tt31845164]
+      winner: [tt31845164]
+    emerging talent, fiction:
+      nominee: [tt18347622, tt18974452, tt20449596, tt29516306]
+      winner: [tt18974452]
+    entertainment craft team:
+      nominee: [tt20243990, tt28104766, tt29714497, tt31845376]
+      winner: [tt20243990]
+    entertainment performance:
+      nominee: [tt0338616, tt0924651, tt11847234, tt20243990, tt26687060, tt9663964]
+      winner: [tt26687060]
+    entertainment programme:
+      nominee: [tt0103469, tt0411027, tt27558577, tt6276100]
+      winner: [tt0411027]
+    factual entertainment:
+      nominee: [tt11076876, tt11098386, tt30228385, tt4445396]
+      winner: [tt11098386]
+    factual series:
+      nominee: [tt27217899, tt27837209, tt28279011, tt30320447]
+      winner: [tt30320447]
+    female performance in a comedy programme:
+      nominee: [tt14531842, tt15056674, tt15296862, tt21282348, tt26115810]
+      winner: [tt15296862]
+    international:
+      nominee: [tt14403178, tt14452776, tt14586350, tt27921612, tt3581920, tt7660850]
+      winner: [tt27921612]
+    leading actor:
+      nominee: [tt13355234, tt14190592, tt1830379, tt20916306, tt4786824, tt7660850]
+      winner: [tt20916306]
+    leading actress:
+      nominee: [tt10714820, tt16233462, tt2085059, tt20916306, tt3428912, tt3581920]
+      winner: [tt3428912]
+    limited drama:
+      nominee: [tt10714820, tt13323596, tt2085059, tt20916306]
+      winner: [tt20916306]
+    live event coverage:
+      nominee: [tt20243990, tt30210296, tt31845376]
+      winner: [tt20243990]
+    make up & hair design:
+      nominee: [tt13323596, tt13678006, tt4786824, tt5875444]
+      winner: [tt13323596]
+    male performance in a comedy programme:
+      nominee: [tt14488438, tt15296862, tt1869454, tt20449596, tt26008888, tt9174582]
+      winner: [tt20449596]
+    news coverage:
+      nominee: [tt0239164, tt29432967]
+      winner: [tt0239164]
+    original music, factual:
+      nominee: [tt23844450, tt23850840, tt27837209, tt31849211]
+      winner: [tt27837209]
+    original music, fiction:
+      nominee: [tt10638036, tt14688458, tt16233462, tt9140554]
+      winner: [tt14688458]
+    photography & lighting, fiction:
+      nominee: [tt13323596, tt2085059, tt20916306, tt3581920]
+      winner: [tt2085059]
+    photography, factual:
+      nominee: [tt27217899, tt27766537, tt28550655, tt31187266]
+      winner: [tt31187266]
+    production design:
+      nominee: [tt13323596, tt14688458, tt16233462, tt2085059]
+      winner: [tt14688458]
+    reality:
+      nominee: [tt27153473, tt28104766, tt29714497, tt5434216]
+      winner: [tt28104766]
+    scripted casting:
+      nominee: [tt13138834, tt13678006, tt2085059, tt30412431]
+      winner: [tt13678006]
+    scripted comedy:
+      nominee: [tt13683866, tt14488438, tt14531842, tt18974452]
+      winner: [tt18974452]
+    short form programme:
+      nominee: [tt28053736, tt28053768, tt31845081, tt31845116]
+      winner: [tt28053736]
+    single documentary:
+      nominee: [tt21364768, tt29274601, tt29491918, tt31846918]
+      winner: [tt31846918]
+    soap:
+      nominee: [tt0068069, tt0088512, tt0096555]
+      winner: [tt0096555]
+    sound, factual:
+      nominee: [tt13943546, tt21377088, tt22736788, tt8289930]
+      winner: [tt22736788]
+    sound, fiction:
+      nominee: [tt22889176, tt4786824, tt5180504, tt5875444]
+      winner: [tt5875444]
+    special, visual & graphic effects:
+      nominee: [tt14688458, tt4786824, tt5180504, tt7462410]
+      winner: [tt5180504]
+    specialist factual:
+      nominee: [tt21377088, tt27205918, tt28037290, tt29666745]
+      winner: [tt29666745]
+    sports coverage:
+      nominee: [tt28693392, tt31848311, tt3770700]
+      winner: [tt31848311]
+    supporting actor:
+      nominee: [tt15227418, tt20916306, tt3428912, tt4786824, tt5875444, tt7660850]
+      winner: [tt7660850]
+    supporting actress:
+      nominee: [tt1830379, tt3428912, tt3581920, tt4786824, tt7660850]
+      winner: [tt1830379]
+    titles & graphic identity:
+      nominee: [tt14661396, tt15426714, tt1869454, tt31433814]
+      winner: [tt15426714]
+    writer, comedy:
+      nominee: [tt13683866, tt18974452, tt20449596, tt26008888]
+      winner: [tt13683866]
+    writer, drama:
+      nominee: [tt2085059, tt20916306, tt3428912, tt7660850]
+      winner: [tt2085059]
+  bafta games award:
+    artistic achievement:
+      nominee: [tt11261148, tt13103328, tt13258344, tt16385682, tt26453303, tt27850694]
+      winner: [tt16385682]
+    audio achievement:
+      nominee: [tt10471854, tt15399898, tt16385682, tt20672830, tt26453303, tt28630698]
+      winner: [tt16385682]
+    best animation:
+      nominee: [tt13107970, tt15399898, tt16385682, tt20672830, tt26453303, tt28144737]
+      winner: [tt26453303]
+    best british game:
+      nominee: [tt27446030, tt28016225, tt28517727, tt29865872, tt29865900, tt3807580]
+      winner: [tt28016225]
+    best debut game:
+      nominee: [tt18394974, tt26771295, tt27831224, tt27850694, tt27864795, tt28016225]
+      winner: [tt18394974]
+    best evolving game:
+      nominee: [tt11585486, tt14870662, tt1737166, tt3810192, tt3819090, tt8020008]
+      winner: [tt3810192]
+    best family game:
+      nominee: [tt13107970, tt26453303, tt27850694, tt27864795, tt28144737, tt28517727]
+      winner: [tt28144737]
+    best game:
+      nominee: [tt10471854, tt13258344, tt15399898, tt16385682, tt27864795, tt28144737]
+      winner: [tt13258344]
+    best multiplayer:
+      nominee: [tt11261148, tt13258344, tt27907506, tt28144737, tt28630698, tt29951882]
+      winner: [tt28144737]
+    best music:
+      nominee: [tt10471854, tt13258344, tt15399898, tt16385682, tt20672830, tt22029092]
+      winner: [tt13258344]
+    best narrative:
+      nominee: [tt10471854, tt13103328, tt13258344, tt16385682, tt20672830, tt27831224]
+      winner: [tt13258344]
+    ee players' choice:
+      nominee: [tt10471854, tt13258344, tt15399898, tt25808274, tt29995475, tt30272445]
+      winner: [tt13258344]
+    game beyond entertainment:
+      nominee: [tt12497076, tt15410002, tt18394974, tt21065626, tt28265817, tt29951857]
+      winner: [tt15410002]
+    game design:
+      nominee: [tt10471854, tt15399898, tt27831224, tt27850694, tt27864795, tt28016225]
+      winner: [tt27864795]
+    new intellectual property:
+      nominee: [tt26453303, tt27831224, tt27864795, tt28016225, tt28060289, tt29951857]
+      winner: [tt28016225]
+    performer in a leading role:
+      nominee: [tt13258344, tt15399898, tt20672830]
+      winner: [tt15399898]
+    performer in a supporting role:
+      nominee: [tt13103328, tt13258344, tt15399898, tt16385682, tt20672830]
+      winner: [tt13258344]
+    technical achievement:
+      nominee: [tt10471854, tt13103328, tt15399898, tt16385682, tt16901232, tt8545540]
+      winner: [tt10471854]
+  p&o cruises memorable moment:
+    p&o cruises memorable moment:
+      nominee: [tt14524712, tt26894667, tt31433814, tt3428912, tt3581920, tt7660850]
+      winner: [tt3428912]

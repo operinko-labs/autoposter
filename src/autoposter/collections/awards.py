@@ -59,6 +59,109 @@ GOLDEN_GLOBES_BEST_DIRECTOR = (
     "best director - motion picture",
 )
 
+# ---------------------------------------------------------------------------
+# The other fourteen ceremonies, all transcribed 2026-08-26 from the
+# ``imdb_award:`` block of Kometa's own ``defaults/award/<file>.yml`` -- its
+# ``category_filter`` below, its ``award_filter`` further down. Kometa parses
+# both with ``util.parse(..., datatype="lowerlist")`` (``modules/builder.py``
+# :2321,:2327), so a scalar is a one-item list and every item is lower-cased;
+# these are recorded already-lowered, in Kometa's own order, which is why
+# ``César`` appears here as ``césar``.
+#
+# Four ceremonies set no ``category_filter`` at all -- Berlinale, Cannes, the
+# National Film Registry and Sundance -- and for them Kometa reads every
+# category of the groups it kept (``if data["category_filter"] and ...``).
+# That is ``categories=None`` on the row, not a constant here.
+# ---------------------------------------------------------------------------
+
+BAFTA_BEST_FILM = (
+    "best film",
+    "best film from any source",
+)
+CESAR_BEST_FILM = ("best film (meilleur film)",)
+CRITICS_CHOICE_BEST_PICTURE = ("best picture",)
+# The Emmys have renamed their top series awards in every decade since 1949,
+# and Kometa's list carries all of it -- including five spellings of the
+# animated-programme award that differ only in their parenthetical.
+EMMY_BEST_IN_CATEGORY = (
+    "best comedy series",
+    "best comedy show",
+    "best dramatic anthology series",
+    "best dramatic program",
+    "best dramatic series",
+    "best dramatic series - less than one hour",
+    "best dramatic series - one hour or longer",
+    "best series - half hour or less",
+    "best series - one hour or more",
+    "outstanding animated program",
+    "outstanding animated program (for programming less than one hour)",
+    "outstanding animated program (for programming more than one hour)",
+    "outstanding animated program (for programming one hour or less)",
+    "outstanding animated program (for programming one hour or more)",
+    "outstanding animated programming",
+    "outstanding comedy series",
+    "outstanding drama series",
+    "outstanding drama series - continuing",
+    "outstanding drama/comedy - limited episodes",
+    "outstanding dramatic program",
+    "outstanding dramatic series",
+    "outstanding miniseries",
+    "outstanding series - comedy",
+    "outstanding series - drama",
+)
+# Two of these name a single year ("the movie of 2022", "the show of 2021"):
+# the ceremony renamed its top award for one edition each time, and Kometa's
+# list follows. They are transcribed rather than tidied away.
+PEOPLES_CHOICE_FAVOURITE = (
+    "all-time favorite tv program",
+    "favorite all-time motion picture",
+    "favorite motion picture",
+    "favorite movie",
+    "favorite non-musical motion picture",
+    "favorite overall motion picture",
+    "favorite tv show",
+    "the movie of 2022",
+    "the show of 2021",
+)
+RAZZIE_WORST_PICTURE = ("worst picture",)
+SAG_BEST_ENSEMBLE = (
+    "outstanding performance by a cast",
+    "outstanding performance by a cast in a motion picture",
+    "outstanding performance by a cast in a theatrical motion picture",
+    "outstanding performance by an ensemble in a comedy series",
+    "outstanding performance by an ensemble in a drama series",
+    "outstanding performance by the cast of a theatrical motion picture",
+)
+SPIRIT_BEST_FEATURE = ("best feature",)
+TIFF_PEOPLES_CHOICE = (
+    "best film",
+    "people's choice award",
+    "grolsch people's choice award",
+    "gala or special presentations",
+)
+VENICE_GOLDEN_LION = (
+    "golden lion",
+    "best feature film",
+    "best film",
+    "grand international award",
+)
+
+# The ``award_filter`` halves -- award *groups* rather than categories. Six
+# ceremonies use one; the other ten read every group, which is ``None``.
+BERLINALE_GOLDEN_BEAR_AWARDS = ("golden berlin bear",)
+CANNES_PALME_DOR_AWARDS = ("palme d'or",)
+CESAR_AWARDS = ("césar",)
+SUNDANCE_GRAND_JURY_AWARDS = ("grand jury prize",)
+TIFF_PEOPLES_CHOICE_AWARDS = (
+    "people's choice award",
+    "grolsch people's choice award",
+)
+VENICE_GOLDEN_LION_AWARDS = (
+    "golden lion",
+    "international critics award",
+    "grand international award",
+)
+
 
 class UnknownAwardEvent(Exception):
     """An event id the community dataset does not cover.
@@ -165,7 +268,7 @@ def _wanted_groups(award_filter: tuple[str, ...] | None) -> set[str] | None:
 
 def winners_for_categories(
     event: dict,
-    categories: tuple[str, ...],
+    categories: tuple[str, ...] | None,
     award_filter: tuple[str, ...] | None = None,
 ) -> list[str]:
     """Winners of the given categories across every year, newest first.
@@ -173,8 +276,16 @@ def winners_for_categories(
     ``award_filter`` narrows to one or more of the ceremony's award groups;
     the default reads all of them, which is what every single-medium ceremony
     means and what this function did before the argument existed.
+
+    ``categories`` is ``None`` for every category of whatever groups survived
+    the award filter. That is not a convenience: it is what four of Kometa's
+    own ceremonies configure -- Berlinale, Cannes, Sundance and the National
+    Film Registry set no ``category_filter``, and Kometa reads a missing
+    filter as "no filter" (``if data["category_filter"] and cat not in ...``,
+    ``modules/imdb.py`` ``_award``). Cannes' whole collection is one *group*,
+    the Palme d'Or, whose categories nobody enumerates.
     """
-    wanted = {c.lower() for c in categories}
+    wanted = {c.lower() for c in categories} if categories else None
     groups = _wanted_groups(award_filter)
     years = _by_year(event)
     ids: list[str] = []
@@ -183,26 +294,25 @@ def winners_for_categories(
             if groups is not None and award.lower() not in groups:
                 continue
             for category, entry in group.items():
-                if category.lower() in wanted:
+                if wanted is None or category.lower() in wanted:
                     ids.extend(entry.get("winner") or [])
     return _dedupe(ids)
 
 
-def winners_for_year(
-    event: dict, year: str, award_filter: tuple[str, ...] | None = None
-) -> list[str]:
-    """Every category's winners for one ceremony year.
+def winners_for_year(event: dict, year: str) -> list[str]:
+    """Every award group's every category's winners for one ceremony year.
 
-    Group-filterable for the same reason as ``winners_for_categories``: this
-    is the function behind the year collections, so on a multi-medium ceremony
-    it is the one that would otherwise put television winners in a film
-    ceremony's year collection.
+    Deliberately *not* group-filterable, though it briefly was. Not one of the
+    sixteen ceremonies Kometa ships a default for narrows its year collections
+    by award group: ``award_filter`` appears only under ``collections:`` in
+    ``defaults/award/*.yml``, never under ``dynamic_collections:`` -- so the
+    parameter had no caller and no ceremony that wanted one. A multi-medium
+    ceremony's year collection therefore carries that year's television
+    winners alongside its film ones, which is Kometa's own behaviour and the
+    reason ``AwardEvent.library_types`` is the gate rather than this.
     """
-    groups = _wanted_groups(award_filter)
     ids: list[str] = []
-    for award, group in (_by_year(event).get(str(year)) or {}).items():
-        if groups is not None and award.lower() not in groups:
-            continue
+    for group in (_by_year(event).get(str(year)) or {}).values():
         for entry in group.values():
             ids.extend(entry.get("winner") or [])
     return _dedupe(ids)

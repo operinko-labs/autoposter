@@ -23,6 +23,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import quote
 
 import httpx
@@ -38,14 +39,50 @@ DEFAULT_IMAGES_BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Ima
 
 _LOCAL_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
 
-# Award event key -> its folder under ``award/`` in ``Default-Images``. Kometa's
-# own folder names, read off its defaults (``image: award/oscars/...``,
-# ``image: award/golden/...``) and confirmed to exist in the repository, not
-# derived from the event key -- "golden_globes" would have been ``golden``
-# wrong. An event missing here keeps no poster at all: a guessed path either
-# 404s (a poster nobody notices is missing) or, worse, resolves to some other
-# ceremony's artwork.
-AWARD_SEGMENTS = {"oscars": "oscars", "golden_globes": "golden"}
+
+class AwardImages(NamedTuple):
+    """Where one ceremony's two kinds of poster live under ``award/``.
+
+    Both are Kometa's own folder names, read off the two ``image:`` values in
+    its ``defaults/award/<file>.yml`` -- the ``collections:`` block's for the
+    static winners collection, the ``dynamic_collections:`` block's for the
+    year ones -- and each confirmed to exist in ``Default-Images``. Neither is
+    derived from the event key: "golden_globes" would have been ``golden``
+    wrong, and "emmy" would have been ``emmys`` wrong.
+
+    They are two fields because they are genuinely two folders. Only the
+    Oscars, the Golden Globes and the Emmys keep their year images under a
+    ``winner/`` subfolder; the other thirteen ceremonies keep them beside the
+    static image, and the National Film Registry has no ``winner/`` folder at
+    all -- so deriving one path from the other would 404 in one direction for
+    thirteen ceremonies and in the other for one.
+    """
+
+    static: str
+    year: str
+
+
+# Award event key -> its folders. An event missing here keeps no poster at
+# all: a guessed path either 404s (a poster nobody notices is missing) or,
+# worse, resolves to some other ceremony's artwork.
+AWARD_SEGMENTS = {
+    "oscars": AwardImages("oscars", "oscars/winner"),
+    "golden_globes": AwardImages("golden", "golden/winner"),
+    "bafta": AwardImages("bafta", "bafta"),
+    "berlinale": AwardImages("berlinale", "berlinale"),
+    "cannes": AwardImages("cannes", "cannes"),
+    "cesar": AwardImages("cesar", "cesar"),
+    "choice": AwardImages("choice", "choice"),
+    "emmy": AwardImages("emmys", "emmys/winner"),
+    "nfr": AwardImages("nfr", "nfr"),
+    "pca": AwardImages("pca", "pca"),
+    "razzie": AwardImages("razzie", "razzie"),
+    "sag": AwardImages("sag", "sag"),
+    "spirit": AwardImages("spirit", "spirit"),
+    "sundance": AwardImages("sundance", "sundance"),
+    "tiff": AwardImages("tiff", "tiff"),
+    "venice": AwardImages("venice", "venice"),
+}
 
 
 class PosterPathRefused(Exception):
@@ -76,12 +113,11 @@ def hosted_poster_url(kind: str, key: str) -> str | None:
     """
     if kind in ("award_static", "award_year"):
         event, _, stem = key.partition(":")
-        segment = AWARD_SEGMENTS.get(event)
-        if segment is None or not stem:
+        images = AWARD_SEGMENTS.get(event)
+        if images is None or not stem:
             return None
-        if kind == "award_static":
-            return f"{DEFAULT_IMAGES_BASE}/award/{segment}/{stem}.jpg"
-        return f"{DEFAULT_IMAGES_BASE}/award/{segment}/winner/{stem}.jpg"
+        folder = images.static if kind == "award_static" else images.year
+        return f"{DEFAULT_IMAGES_BASE}/award/{folder}/{stem}.jpg"
     if kind == "chart":
         return f"{DEFAULT_IMAGES_BASE}/chart/color/{quote(key, safe='')}.jpg"
     if kind == "content_rating":

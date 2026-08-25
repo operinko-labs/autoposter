@@ -1,8 +1,11 @@
 """Choosing a collection's poster.
 
-The URLs here were each fetched and confirmed to return 200; they are not
-guesses. A wrong URL 404s and the collection quietly keeps no poster, which
-is harder to spot than an error.
+The URLs here were each confirmed to exist upstream; they are not guesses. A
+wrong URL 404s and the collection quietly keeps no poster, which is harder to
+spot than an error. The original rows were checked by fetching them and
+seeing a 200; the fourteen ceremonies added later were checked against the
+recursive file listing of ``Kometa-Team/Default-Images`` at ``master``, which
+answers the same question for 5 028 paths in one request.
 """
 import pytest
 
@@ -31,6 +34,44 @@ BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master"
         ("award_static", "golden_globes:best_director_winner",
          f"{BASE}/award/golden/best_director_winner.jpg"),
         ("award_year", "golden_globes:2026", f"{BASE}/award/golden/winner/2026.jpg"),
+        # The other fourteen ceremonies. Each path below was checked against
+        # the full file listing of Kometa-Team/Default-Images at ``master``
+        # (the git trees API, recursive, 5 028 entries under ``award/``) --
+        # every static stem and every year image the committed fixtures cover.
+        # The year folder is NOT the static folder for eleven of these: only
+        # the Oscars, the Golden Globes and the Emmys keep year images under
+        # ``winner/``, and ``nfr`` has no ``winner/`` folder at all, so the
+        # older single-derivation rule would have 404'd for it.
+        ("award_static", "bafta:winner", f"{BASE}/award/bafta/winner.jpg"),
+        ("award_year", "bafta:2026", f"{BASE}/award/bafta/2026.jpg"),
+        ("award_static", "berlinale:winner", f"{BASE}/award/berlinale/winner.jpg"),
+        ("award_year", "berlinale:2026", f"{BASE}/award/berlinale/2026.jpg"),
+        ("award_static", "cannes:winner", f"{BASE}/award/cannes/winner.jpg"),
+        ("award_year", "cannes:2026", f"{BASE}/award/cannes/2026.jpg"),
+        ("award_static", "cesar:winner", f"{BASE}/award/cesar/winner.jpg"),
+        ("award_year", "cesar:2026", f"{BASE}/award/cesar/2026.jpg"),
+        ("award_static", "choice:winner", f"{BASE}/award/choice/winner.jpg"),
+        ("award_year", "choice:2026", f"{BASE}/award/choice/2026.jpg"),
+        # ``emmy`` is Kometa's ``emmys`` folder, and it keeps ``winner/``.
+        ("award_static", "emmy:winner", f"{BASE}/award/emmys/winner.jpg"),
+        ("award_year", "emmy:2025", f"{BASE}/award/emmys/winner/2025.jpg"),
+        ("award_static", "nfr:all_time", f"{BASE}/award/nfr/all_time.jpg"),
+        ("award_year", "nfr:2025", f"{BASE}/award/nfr/2025.jpg"),
+        ("award_static", "pca:winner", f"{BASE}/award/pca/winner.jpg"),
+        ("award_year", "pca:2022", f"{BASE}/award/pca/2022.jpg"),
+        ("award_static", "razzie:winner", f"{BASE}/award/razzie/winner.jpg"),
+        ("award_year", "razzie:2026", f"{BASE}/award/razzie/2026.jpg"),
+        ("award_static", "sag:winner", f"{BASE}/award/sag/winner.jpg"),
+        ("award_year", "sag:2026", f"{BASE}/award/sag/2026.jpg"),
+        ("award_static", "spirit:winner", f"{BASE}/award/spirit/winner.jpg"),
+        ("award_year", "spirit:2026", f"{BASE}/award/spirit/2026.jpg"),
+        ("award_static", "sundance:grand_jury_winner",
+         f"{BASE}/award/sundance/grand_jury_winner.jpg"),
+        ("award_year", "sundance:2026", f"{BASE}/award/sundance/2026.jpg"),
+        ("award_static", "tiff:winner", f"{BASE}/award/tiff/winner.jpg"),
+        ("award_year", "tiff:2025", f"{BASE}/award/tiff/2025.jpg"),
+        ("award_static", "venice:winner", f"{BASE}/award/venice/winner.jpg"),
+        ("award_year", "venice:2025", f"{BASE}/award/venice/2025.jpg"),
         ("chart", "IMDb Popular", f"{BASE}/chart/color/IMDb%20Popular.jpg"),
         ("chart", "IMDb Top 250", f"{BASE}/chart/color/IMDb%20Top%20250.jpg"),
         ("chart", "IMDb Lowest Rated", f"{BASE}/chart/color/IMDb%20Lowest%20Rated.jpg"),
@@ -55,7 +96,7 @@ def test_an_unknown_kind_yields_no_url():
     assert hosted_poster_url("something_else", "x") is None
 
 
-@pytest.mark.parametrize("key", ["berlinale:best_picture_winner", "2026", ""])
+@pytest.mark.parametrize("key", ["filmfare:best_picture_winner", "2026", ""])
 def test_an_award_key_without_a_known_event_yields_no_url(key):
     """A ceremony ``Default-Images`` has no folder for keeps no poster.
 

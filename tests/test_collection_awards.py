@@ -2,13 +2,23 @@
 
 Never fetches the real dataset -- MockTransport and committed fixtures.
 
-Two of those fixtures are real upstream data rather than hand-written:
+All but one of those fixtures are real upstream data rather than hand-written:
 ``ev0000292.yml`` is five ceremony years cut verbatim out of the community
-dataset's Golden Globes file, and ``event_validation.yml`` is the two events
-this service knows cut out of the dataset's own validation list. Both are
-public award data (IMDb title ids and category names). The Oscars fixture is
-the older, synthetic one and stays as it is -- the golden gate is recorded
-against it.
+dataset's Golden Globes file, the fourteen ``ev*.yml`` added with the other
+ceremonies are three years each cut the same way, and ``event_validation.yml``
+is the sixteen events this service knows cut out of the dataset's own
+validation list. All of it is public award data (IMDb title ids and category
+names). The Oscars fixture is the older, synthetic one and stays as it is --
+the golden gate is recorded against it.
+
+**The trim rule for the fourteen**: the three most recent ceremony years, taken
+in the event file's own descending order, in which that ceremony's Kometa
+filters resolve at least one *winner*. Three years is what the coverage
+assertion below needs and no more; the "resolves a winner" clause is what
+skips the four years that would otherwise have made the cut and carried
+nothing (Emmys 2026, Venice 2026 and TIFF 2026 have nominees but no recorded
+winner yet, and People's Choice 2024 awarded nothing this collection's
+categories name).
 """
 from dataclasses import replace
 from pathlib import Path
@@ -44,17 +54,24 @@ from autoposter.collections.engine import definition_titles
 from autoposter.collections.posters import hosted_poster_url
 from autoposter.config.schema import CollectionDefinition
 
-FIXTURE = Path("tests/fixtures/collections/ev0000003.yml").read_text(encoding="utf-8")
-MIXED_KEYS_FIXTURE = Path(
-    "tests/fixtures/collections/ev0000003_mixed_year_keys.yml"
-).read_text(encoding="utf-8")
-GLOBES_FIXTURE = Path("tests/fixtures/collections/ev0000292.yml").read_text(encoding="utf-8")
-VALIDATION_FIXTURE = Path(
-    "tests/fixtures/collections/event_validation.yml"
-).read_text(encoding="utf-8")
+FIXTURES = Path("tests/fixtures/collections")
+FIXTURE = (FIXTURES / "ev0000003.yml").read_text(encoding="utf-8")
+MIXED_KEYS_FIXTURE = (FIXTURES / "ev0000003_mixed_year_keys.yml").read_text(encoding="utf-8")
+GLOBES_FIXTURE = (FIXTURES / "ev0000292.yml").read_text(encoding="utf-8")
+VALIDATION_FIXTURE = (FIXTURES / "event_validation.yml").read_text(encoding="utf-8")
+
+# One fixture per registered ceremony, keyed by the id the builder asks for.
+# Derived from ``EVENTS`` rather than listed: a ceremony added without its
+# dataset cut fails here, at import, instead of in whichever test happened to
+# reach for it.
+EVENT_FIXTURES = {
+    event.event_id: (FIXTURES / ("%s.yml" % event.event_id)).read_text(encoding="utf-8")
+    for event in EVENTS.values()
+}
 
 BASE = "https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master"
 VALIDATION_URL = "%s/event_validation.yml" % BASE
+EVENTS_URL = "%s/events/" % BASE
 OSCARS_URL = "%s/events/ev0000003.yml" % BASE
 GLOBES_URL = "%s/events/ev0000292.yml" % BASE
 
@@ -67,7 +84,7 @@ def _client(body=None, status=200):
 
 
 def _events_client(requests=None):
-    """Both ceremonies and the validation list, each from its own URL.
+    """Every registered ceremony and the validation list, each from its own URL.
 
     Anything else is an error rather than a fixture: a builder that asked for
     the wrong event would otherwise be handed the right answer.
@@ -78,10 +95,10 @@ def _events_client(requests=None):
             requests.append(url)
         if url == VALIDATION_URL:
             return httpx.Response(200, text=VALIDATION_FIXTURE)
-        if url == OSCARS_URL:
-            return httpx.Response(200, text=FIXTURE)
-        if url == GLOBES_URL:
-            return httpx.Response(200, text=GLOBES_FIXTURE)
+        if url.startswith(EVENTS_URL) and url.endswith(".yml"):
+            event_id = url[len(EVENTS_URL):-len(".yml")]
+            if event_id in EVENT_FIXTURES:
+                return httpx.Response(200, text=EVENT_FIXTURES[event_id])
         raise AssertionError("unexpected request: %s" % url)
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -251,12 +268,23 @@ def test_the_two_filters_are_not_one_filter():
     assert winners_for_categories(TWO_GROUP_EVENT, ("best film",), ("bafta games award",)) == []
 
 
-def test_a_year_collection_can_be_narrowed_to_one_group_too():
-    """``winners_for_year`` reads every category of one year, so on a
-    multi-medium ceremony it is the function that would otherwise put
-    television winners in a film library's year collection."""
+def test_a_year_collection_reads_every_award_group():
+    """And has no way not to, deliberately.
+
+    ``winners_for_year`` briefly took an ``award_filter`` of its own. Nothing
+    ever passed one, and nothing upstream wants to: across the sixteen
+    ``defaults/award/*.yml`` files Kometa ships, ``award_filter`` appears only
+    under ``collections:``, never under ``dynamic_collections:``. So the year
+    collections of a multi-medium ceremony carry that year's television
+    winners next to its film ones -- Kometa's own behaviour -- and the gate
+    that keeps those collections off the wrong library is
+    ``AwardEvent.library_types``, not a filter here. The parameter was removed
+    rather than carried for a caller that was never going to arrive.
+    """
     assert winners_for_year(TWO_GROUP_EVENT, "2026") == ["ttFilm2026", "ttTv2026"]
-    assert winners_for_year(TWO_GROUP_EVENT, "2026", ("bafta tv award",)) == ["ttTv2026"]
+
+    with pytest.raises(TypeError):
+        winners_for_year(TWO_GROUP_EVENT, "2026", ("bafta tv award",))
 
 
 async def test_the_static_builder_applies_its_awards_group_filter(monkeypatch):
@@ -473,8 +501,11 @@ def test_an_award_is_only_known_within_its_ceremony():
     ImdbAwardParams.model_validate({"award": "best_picture"})
     ImdbAwardParams.model_validate({"event": "golden_globes", "award": "best_picture"})
 
-    with pytest.raises(ValueError, match="unknown award event 'cannes'"):
-        ImdbAwardParams.model_validate({"event": "cannes", "award": "best_picture"})
+    # A real ceremony the community dataset covers (``ev0000245``) but Kometa
+    # ships no award default for, so this service has no row for it either --
+    # 15 of the dataset's 31 events are in that position.
+    with pytest.raises(ValueError, match="unknown award event 'filmfare'"):
+        ImdbAwardParams.model_validate({"event": "filmfare", "award": "best_picture"})
     with pytest.raises(ValueError, match="unknown Golden Globes award 'best_song'"):
         ImdbAwardParams.model_validate({"event": "golden_globes", "award": "best_song"})
     with pytest.raises(ValueError, match="unknown Oscars award 'best_song'"):
@@ -491,6 +522,31 @@ def test_an_award_is_only_known_within_its_ceremony():
 # ceremony that had no winners. ``require_library_type`` is the same guard the
 # charts and the TMDb builders already carry; the ceremony declares its own
 # types because that is what differs between them.
+
+
+def test_each_ceremonys_library_types_are_the_media_it_awards():
+    """A checksum over the whole table, so a row added with the default
+    ``("Movie",)`` because nobody looked at its ``allowed_libraries`` shows up
+    here rather than as a Show library quietly building nothing.
+
+    The four that are not Movie-only, and why (Kometa's own
+    ``defaults/award/*.yml``, fetched 2026-08-26):
+
+    - ``emmy`` -- ``allowed_libraries: show``; the one television-only row.
+    - ``choice``, ``pca``, ``sag`` -- ceremonies that award both. Kometa sets
+      no ``allowed_libraries`` on their year blocks, and the People's Choice
+      and Screen Actors Guild collections' own category lists mix film and
+      television outright ("favorite movie" beside "favorite tv show").
+    """
+    both = ("Movie", "Show")
+    assert EVENTS["emmy"].library_types == ("Show",)
+    assert EVENTS["choice"].library_types == both
+    assert EVENTS["pca"].library_types == both
+    assert EVENTS["sag"].library_types == both
+    assert {key for key, event in EVENTS.items() if event.library_types == ("Movie",)} == {
+        "oscars", "golden_globes", "bafta", "berlinale", "cannes", "cesar",
+        "nfr", "razzie", "spirit", "sundance", "tiff", "venice",
+    }
 
 
 def test_the_two_shipped_ceremonies_are_movie_ceremonies():
@@ -653,3 +709,231 @@ async def test_the_globes_winner_collections_match_kometas_members(award, oracle
         )
 
     assert [imdb_id for _, imdb_id in result.ids] == oracle
+
+
+# --------------------------------------------------------------------------
+# All sixteen ceremonies: the category coverage assertion (roadmap row 153).
+# --------------------------------------------------------------------------
+#
+# The failure this catches is the quiet one. A category vocabulary that names
+# nothing the dataset has -- a typo, a rename we transcribed from the wrong
+# ceremony, an award group spelled the way IMDb prints it rather than the way
+# the dataset keys it -- produces a collection with no members, which is
+# indistinguishable from a ceremony that had no winners. Nothing else in this
+# file would notice it for fourteen of the sixteen rows.
+#
+# One case per (ceremony, award), derived from ``EVENTS``, so a row added
+# later is covered without anyone extending a list.
+
+AWARD_CASES = [
+    (key, award_key)
+    for key, event in sorted(EVENTS.items())
+    for award_key in sorted(event.awards)
+]
+
+
+@pytest.mark.parametrize("key,award_key", AWARD_CASES)
+async def test_every_awards_filters_resolve_winners_in_its_own_dataset(key, award_key):
+    """Built end to end rather than by calling the resolver directly: this way
+    the award group, the category vocabulary, the event id, the library gate
+    and the poster key all have to be right together, which is the same set of
+    things a row gets wrong."""
+    event = EVENTS[key]
+
+    async with _events_client() as http:
+        result = await ImdbAwardBuilder().build(
+            _ctx(http, {"event": key, "award": award_key},
+                 library_type=event.library_types[0])
+        )
+
+    assert result.ids, "%s/%s resolved no winners at all" % (key, award_key)
+    assert all(namespace == "imdb" for namespace, _ in result.ids)
+
+
+@pytest.mark.parametrize("key", sorted(EVENTS))
+async def test_every_ceremonys_year_collections_expand_and_build(key):
+    """The other half of a ceremony. An event whose year block is wrong -- a
+    title format that cannot be filled, a builder name nothing registered, a
+    dataset whose recent years are all empty -- fails here."""
+    event = EVENTS[key]
+    library_type = event.library_types[0]
+
+    async with _events_client() as http:
+        units = await REGISTRY[event.years_builder].expand(
+            _ctx(http, library_type=library_type)
+        )
+        first = await REGISTRY[event.years_builder].build(
+            _ctx(http, {"year": units[0].params["year"]}, library_type=library_type)
+        )
+
+    assert units, key
+    assert all(event.year_pattern.match(unit.title) for unit in units), key
+    assert first.ids, "%s built an empty year collection" % key
+
+
+def test_every_ceremony_maps_to_a_default_images_folder():
+    """Both folders, because they are not the same one. Kometa keeps the
+    Oscars', Golden Globes' and Emmys' year images under a ``winner/``
+    subfolder and the other thirteen ceremonies' beside the static image --
+    and the National Film Registry has no ``winner/`` folder at all, so the
+    single derivation this used to make would 404 for it."""
+    for key, event in EVENTS.items():
+        assert hosted_poster_url("award_year", "%s:2026" % key), key
+        for award_key, award in event.awards.items():
+            assert award.poster_stem, (key, award_key)
+            assert hosted_poster_url(
+                "award_static", "%s:%s" % (key, award.poster_stem)
+            ), (key, award_key)
+
+
+async def test_a_ceremony_with_no_category_filter_reads_every_category():
+    """Four ceremonies are configured that way upstream, and Cannes is the
+    clearest: its collection *is* the ``palme d'or`` award group, whose
+    categories nobody enumerates. ``categories=None`` has to mean "every
+    category of the groups that survived", not "no categories" -- the second
+    reading builds an empty collection and looks like a quiet ceremony."""
+    assert EVENTS["cannes"].awards["palm"].categories is None
+
+    async with _events_client() as http:
+        event = await fetch_event(http, "ev0000147")
+
+    everything = winners_for_categories(event, None, ("palme d'or",))
+    assert everything
+    # ...and it is the group filter doing the narrowing, not nothing at all.
+    assert len(winners_for_categories(event, None)) > len(everything)
+    # An empty tuple reads every category too, because Kometa's rule is
+    # falsiness rather than None-ness (``if data["category_filter"] and ...``).
+    # No row spells it that way, but the two must not disagree.
+    assert winners_for_categories(event, (), ("palme d'or",)) == everything
+
+
+# --------------------------------------------------------------------------
+# THE THREE ORACLES: BAFTA, the Emmys, Cannes.
+# --------------------------------------------------------------------------
+#
+# Produced exactly as the Golden Globes lists above were, and by the same
+# procedure: Kometa's ``modules/imdb.py`` ``_award`` (:1110-1135) and the two
+# filter parses of its ``modules/builder.py`` (:2317-2327, ``datatype=
+# "lowerlist"``) transcribed into a standalone script, driven with the
+# ``imdb_award:`` block of Kometa's OWN ``defaults/award/{bafta,emmy,
+# cannes}.yml``, over the upstream ``event_validation.yml`` and event files.
+# Nothing from this repository ran in that script. Its output is deduped
+# first-occurrence-first -- Kometa appends per category and lets Plex collapse
+# repeats -- and that is the only adjustment. Full procedure and transcript:
+# ``.superpowers/sdd/task-2-report.md``.
+#
+# Why these three: the Emmys are the only Show-gated ceremony; Cannes is the
+# festival shape, an ``award_filter`` and no ``category_filter`` at all; BAFTA
+# is the multi-group event (film, television, games and three more under one
+# id) that Kometa does NOT filter by group, so it is the row where reading
+# every group is the correct answer rather than the lazy one.
+#
+# The static lists are restricted to the three ceremony years each committed
+# fixture carries; the unrestricted counts are recorded beside them so the
+# size of what is not pinned is visible rather than implied. The year lists
+# are unrestricted: a year collection reads exactly one ceremony year.
+
+ORACLE_BAFTA_BEST_FILMS = ["tt30144839", "tt20215234", "tt15398776"]  # all years: 79
+ORACLE_BAFTA_2026 = [
+    "tt1757678", "tt26443597", "tt27449033", "tt35875811", "tt31514146",
+    "tt33035197", "tt30144839", "tt1312221", "tt34965515", "tt27714581",
+    "tt14905854", "tt31193180", "tt16311594", "tt35695538", "tt32410998",
+    "tt13684264", "tt27568682", "tt11608566", "tt31190108", "tt21874900",
+    "tt37504739", "tt19359688", "tt35407689", "tt31806037", "tt41236384",
+    "tt30249123", "tt32750053", "tt37024060", "tt36592872", "tt35050741",
+    "tt33248156", "tt35622414", "tt4189570", "tt23649128", "tt41070842",
+    "tt32061880", "tt0239164", "tt35916200", "tt19386538", "tt33059458",
+    "tt36777907", "tt20449596", "tt29768339", "tt33305711", "tt38235199",
+    "tt0088512", "tt9253284", "tt36455190", "tt32918601", "tt13683866",
+    "tt5875444", "tt34996965", "tt32591698",
+]
+ORACLE_EMMY_BEST_IN_CATEGORY = [  # all years: 152
+    "tt11126994", "tt23649128", "tt31938062", "tt13309742", "tt11815682",
+    "tt2788316", "tt0096697", "tt14452776", "tt7660850",
+]
+ORACLE_EMMY_2025 = [
+    "tt30342963", "tt11126994", "tt23649128", "tt31938062", "tt31806037",
+    "tt19037550", "tt8740790", "tt27613329", "tt34510105", "tt14126234",
+    "tt15557874", "tt11280740", "tt37593384", "tt15435876", "tt35144655",
+    "tt14419140", "tt5875444", "tt3697842", "tt35469118", "tt9253284",
+    "tt0159881", "tt11815682", "tt12057284", "tt27790101", "tt9561862",
+    "tt38203330", "tt0072562", "tt35984846", "tt33332486", "tt33354100",
+    "tt23181400", "tt13406094", "tt1190634", "tt0115147", "tt11198330",
+    "tt13207736", "tt14124236", "tt14674086", "tt34874258", "tt33552770",
+    "tt3530232", "tt37594665", "tt3581920", "tt26420234", "tt33986138",
+    "tt7259746", "tt8634332", "tt12759100", "tt11301886", "tt35445387",
+    "tt36986906",
+]
+ORACLE_CANNES_GOLDEN_PALM = ["tt35410859", "tt36491653", "tt28607951"]  # all years: 80
+ORACLE_CANNES_2026 = [
+    "tt35410859", "tt37118301", "tt21188986", "tt39328391", "tt36834996",
+    "tt35511966", "tt37304295", "tt41593304", "tt38820979", "tt42006686",
+    "tt41592057", "tt36639956", "tt29279937", "tt41592086", "tt41592077",
+    "tt38765198", "tt39172310", "tt42082777", "tt38841455", "tt32459280",
+    "tt34459901", "tt42004508", "tt35298123", "tt38468551", "tt38991615",
+    "tt42029134", "tt41593500", "tt42053546", "tt36822560", "tt30495381",
+    "tt39121543", "tt35495082",
+]
+
+
+@pytest.mark.parametrize(
+    "event,award,library_type,oracle",
+    [
+        ("bafta", "best", "Movie", ORACLE_BAFTA_BEST_FILMS),
+        ("emmy", "best", "Show", ORACLE_EMMY_BEST_IN_CATEGORY),
+        ("cannes", "palm", "Movie", ORACLE_CANNES_GOLDEN_PALM),
+    ],
+)
+async def test_the_winner_collections_match_kometas_members(
+    event, award, library_type, oracle
+):
+    async with _events_client() as http:
+        result = await ImdbAwardBuilder().build(
+            _ctx(http, {"event": event, "award": award}, library_type=library_type)
+        )
+
+    assert [imdb_id for _, imdb_id in result.ids] == oracle
+    assert all(namespace == "imdb" for namespace, _ in result.ids)
+
+
+@pytest.mark.parametrize(
+    "event,year,library_type,oracle",
+    [
+        ("bafta", "2026", "Movie", ORACLE_BAFTA_2026),
+        ("emmy", "2025", "Show", ORACLE_EMMY_2025),
+        ("cannes", "2026", "Movie", ORACLE_CANNES_2026),
+    ],
+)
+async def test_the_year_collections_match_kometas_members(
+    event, year, library_type, oracle
+):
+    async with _events_client() as http:
+        result = await REGISTRY["%s_award_years" % event].build(
+            _ctx(http, {"year": year}, library_type=library_type)
+        )
+
+    assert [imdb_id for _, imdb_id in result.ids] == oracle
+
+
+async def test_baftas_film_categories_belong_to_the_film_group_alone():
+    """Why the multi-group ceremony still needs no ``award_filter``.
+
+    ``ev0000123`` holds six award groups in a recent year -- film, television,
+    games, children's and two named sponsorships -- so this is the row where
+    an unfiltered read *could* pick up another medium's winner. Kometa sets no
+    filter here, and this is the fact that makes that safe: the two category
+    names it does filter on occur only inside ``bafta film award``. If a
+    television category were ever spelled "best film", the first two
+    assertions would stop agreeing and the oracle above would move with them.
+    """
+    assert EVENTS["bafta"].awards["best"].award_filter is None
+    categories = EVENTS["bafta"].awards["best"].categories
+
+    async with _events_client() as http:
+        event = await fetch_event(http, "ev0000123")
+
+    assert winners_for_categories(event, categories) == ORACLE_BAFTA_BEST_FILMS
+    assert winners_for_categories(
+        event, categories, ("bafta film award",)
+    ) == ORACLE_BAFTA_BEST_FILMS
+    assert winners_for_categories(event, categories, ("bafta tv award",)) == []

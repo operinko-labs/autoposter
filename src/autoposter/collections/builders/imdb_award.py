@@ -44,11 +44,27 @@ from typing import NamedTuple
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from autoposter.collections.awards import (
+    BAFTA_BEST_FILM,
+    BERLINALE_GOLDEN_BEAR_AWARDS,
     BEST_DIRECTOR,
     BEST_PICTURE,
+    CANNES_PALME_DOR_AWARDS,
+    CESAR_AWARDS,
+    CESAR_BEST_FILM,
+    CRITICS_CHOICE_BEST_PICTURE,
+    EMMY_BEST_IN_CATEGORY,
     EVENT_ID,
     GOLDEN_GLOBES_BEST_DIRECTOR,
     GOLDEN_GLOBES_BEST_PICTURE,
+    PEOPLES_CHOICE_FAVOURITE,
+    RAZZIE_WORST_PICTURE,
+    SAG_BEST_ENSEMBLE,
+    SPIRIT_BEST_FEATURE,
+    SUNDANCE_GRAND_JURY_AWARDS,
+    TIFF_PEOPLES_CHOICE,
+    TIFF_PEOPLES_CHOICE_AWARDS,
+    VENICE_GOLDEN_LION,
+    VENICE_GOLDEN_LION_AWARDS,
     fetch_event,
     fetch_event_validation,
     recent_years,
@@ -86,13 +102,21 @@ class Award(NamedTuple):
     every group, which is what a single-medium ceremony means and what both
     shipped ones did before the field existed.
 
+    ``categories`` is ``None`` for every category of whatever the award filter
+    kept. Four of the sixteen ceremonies are configured that way upstream --
+    Cannes' collection *is* the Palme d'Or group, and nobody enumerates its
+    categories; the National Film Registry filters on neither axis because its
+    event has one group and one category. Spelled ``None`` rather than ``()``
+    because it is a row saying "no filter here", not a row with an empty one;
+    the resolver follows Kometa's falsiness rule and reads both the same way.
+
     A named record rather than the 4-tuple this was, because the fifth element
     would have been a second ``... | None`` next to ``poster_stem``, positional,
     in every one of the rows the next task adds.
     """
 
     title: str
-    categories: tuple[str, ...]
+    categories: tuple[str, ...] | None
     summary: str | None
     poster_stem: str | None
     award_filter: tuple[str, ...] | None = None
@@ -131,9 +155,31 @@ class AwardEvent:
     library_types: tuple[str, ...] = ("Movie",)
 
 
-# Kometa sources, all fetched 2026-08-25:
-#   Oscars      defaults/award/oscars.yml + translations en.yml (oscars_*)
-#   Golden Globes defaults/award/golden.yml + translations en.yml (golden_*)
+# Every ceremony Kometa ships an award default for, and only those. Its
+# ``defaults/award/`` holds sixteen ``<ceremony>.yml`` files plus
+# ``separator_award.yml`` -- which builds no collection of members at all, only
+# the section separator, so it is not an event and has no row here.
+#
+# Kometa sources, oscars and golden fetched 2026-08-25, the other fourteen
+# 2026-08-26, all from ``master``:
+#   filters (event id, category_filter, award_filter, allowed_libraries)
+#     defaults/award/<file>.yml
+#   titles and summaries
+#     Kometa-Team/Translations defaults/en.yml, at the ``translation_key`` the
+#     defaults file names -- which is why two collection titles here are not
+#     the key Kometa's own yml files use (``Spirit Best Feature Winners``, not
+#     ``Independent Spirit Best Feature Winners``; ``People's Choice Award
+#     Winners``, not ``Peoples Choice Award Winners``). The translation is what
+#     Kometa actually names the collection.
+#   year title format
+#     ``title_format:`` of the ceremony's ``dynamic_collections:`` block
+#   poster folders and stems
+#     ``image:`` of both blocks -- see ``posters.AWARD_SEGMENTS``, which needs
+#     both because they are not the same folder for thirteen of the sixteen.
+#   the award key of each row (``params: {event: venice, award: golden}``)
+#     the collection's own ``variables: key:``. Opaque on its own, but it is
+#     Kometa's name for that collection and the two shipped rows already use
+#     it (``best_picture``, ``best_director``).
 EVENTS: dict[str, AwardEvent] = {
     "oscars": AwardEvent(
         key="oscars",
@@ -188,6 +234,312 @@ EVENTS: dict[str, AwardEvent] = {
         year_summary="%s Golden Globe Winners.",
         year_pattern=re.compile(r"^Golden Globe \d{4}$"),
         years_builder="golden_globes_award_years",
+    ),
+    "bafta": AwardEvent(
+        key="bafta",
+        name="BAFTA",
+        event_id="ev0000123",
+        awards={
+            "best": Award(
+                "BAFTA Best Films",
+                BAFTA_BEST_FILM,
+                "British Academy of Film and Television Arts Best Film Winners.",
+                "winner",
+            ),
+        },
+        year_title="BAFTA %s",
+        year_summary="%s BAFTA Awards.",
+        year_pattern=re.compile(r"^BAFTA \d{4}$"),
+        years_builder="bafta_award_years",
+        # ``allowed_libraries: movie`` on both of Kometa's blocks, and no
+        # ``award_filter`` on either. That is worth stating because the event
+        # is the multi-medium one -- ``ev0000123`` holds ``bafta film award``,
+        # ``bafta tv award``, ``bafta games award`` and three more groups --
+        # and it would be reasonable to expect the film collections to be
+        # narrowed to the film group. Kometa does not narrow them; the two
+        # category names it filters on are film-award names, so reading every
+        # group costs nothing, and inventing a filter it does not have would
+        # be the invention this table exists to avoid.
+        library_types=("Movie",),
+    ),
+    "berlinale": AwardEvent(
+        key="berlinale",
+        name="Berlinale",
+        event_id="ev0000091",
+        awards={
+            "golden": Award(
+                "Berlinale Golden Bears",
+                # No ``category_filter``: the Golden Bear *is* an award group,
+                # and Kometa takes every category inside it.
+                None,
+                "Up to 400 films are shown every year as part of the Berlinale's "
+                "(Berlin International Film Festival) public programme, the vast "
+                "majority of which are world or European premieres. Films of every "
+                "genre, length and format can be submitted for consideration. The "
+                "Golden Bear (German Goldener Bär) is the highest prize awarded "
+                "for the best film shown during this festival.",
+                "winner",
+                BERLINALE_GOLDEN_BEAR_AWARDS,
+            ),
+        },
+        year_title="Berlinale %s",
+        year_summary="%s Berlinale Award Winners.",
+        year_pattern=re.compile(r"^Berlinale \d{4}$"),
+        years_builder="berlinale_award_years",
+    ),
+    "cannes": AwardEvent(
+        key="cannes",
+        name="Cannes",
+        event_id="ev0000147",
+        awards={
+            "palm": Award(
+                "Cannes Golden Palm Winners",
+                None,
+                "Cannes Golden Palm Winners.",
+                "winner",
+                CANNES_PALME_DOR_AWARDS,
+            ),
+        },
+        year_title="Cannes %s",
+        year_summary="%s Cannes Awards.",
+        year_pattern=re.compile(r"^Cannes \d{4}$"),
+        years_builder="cannes_award_years",
+    ),
+    "cesar": AwardEvent(
+        key="cesar",
+        name="César",
+        event_id="ev0000157",
+        awards={
+            "best": Award(
+                "César Best Film Winners",
+                CESAR_BEST_FILM,
+                "The César Award is the national film award of France, first "
+                "given out in 1975. The nominations are selected by the members of "
+                "the Académie des Arts et Techniques du Cinéma. The name of "
+                "the award comes from the sculptor César Baldaccini. They are "
+                "considered to be the French equivalent of the American Academy "
+                "Awards.",
+                "winner",
+                CESAR_AWARDS,
+            ),
+        },
+        year_title="César %s",
+        year_summary="%s César Award Winners.",
+        year_pattern=re.compile(r"^César \d{4}$"),
+        years_builder="cesar_award_years",
+    ),
+    "choice": AwardEvent(
+        key="choice",
+        name="Critics Choice",
+        event_id="ev0000133",
+        awards={
+            "best": Award(
+                "Critics Choice Best Picture Winners",
+                CRITICS_CHOICE_BEST_PICTURE,
+                "Critics Choice Best Picture Winners.",
+                "winner",
+            ),
+        },
+        year_title="Critics Choice Awards %s",
+        year_summary="%s Critics Choice Awards.",
+        year_pattern=re.compile(r"^Critics Choice Awards \d{4}$"),
+        years_builder="choice_award_years",
+        # The ceremony awards both: 40 of the 103 categories ``ev0000133``
+        # carries are television ones, and Kometa's year block sets no
+        # ``allowed_libraries`` (its static one says ``movie``). This is the
+        # one row where the event's types are wider than one of its own
+        # collections wants -- "best picture" is a film award, so on a Show
+        # library that collection resolves nothing. TASK 3: the ``best``
+        # preset needs ``Preset.library_types = ("Movie",)``; the year
+        # collections keep both.
+        library_types=("Movie", "Show"),
+    ),
+    "emmy": AwardEvent(
+        key="emmy",
+        name="Emmys",
+        event_id="ev0000223",
+        awards={
+            "best": Award(
+                "Emmys Best in Category Winners",
+                EMMY_BEST_IN_CATEGORY,
+                "Emmys Best in Category Winners.",
+                "winner",
+            ),
+        },
+        year_title="Emmys %s",
+        year_summary="%s Emmy Winners.",
+        year_pattern=re.compile(r"^Emmys \d{4}$"),
+        years_builder="emmy_award_years",
+        # ``allowed_libraries: show``, and the only ceremony here that is
+        # television alone. The gate is the point of the row: without it these
+        # definitions would also run against Movie libraries, where every id
+        # resolves to nothing.
+        library_types=("Show",),
+    ),
+    "nfr": AwardEvent(
+        key="nfr",
+        name="National Film Registry",
+        event_id="ev0000468",
+        awards={
+            "all_time": Award(
+                "National Film Registry All Time",
+                # Neither filter: ``ev0000468`` has one award group and one
+                # category, so Kometa configures no narrowing at all.
+                None,
+                "National Film Registry All Time.",
+                "all_time",
+            ),
+        },
+        year_title="National Film Registry %s",
+        year_summary="%s National Film Registry.",
+        year_pattern=re.compile(r"^National Film Registry \d{4}$"),
+        years_builder="nfr_award_years",
+    ),
+    "pca": AwardEvent(
+        key="pca",
+        name="People's Choice",
+        event_id="ev0000530",
+        awards={
+            "best": Award(
+                "People's Choice Award Winners",
+                PEOPLES_CHOICE_FAVOURITE,
+                "People's Choice Award Winners.",
+                "winner",
+            ),
+        },
+        year_title="People's Choice Awards %s",
+        year_summary="%s People's Choice Award Winners.",
+        year_pattern=re.compile(r"^People's Choice Awards \d{4}$"),
+        years_builder="pca_award_years",
+        # Kometa sets no ``allowed_libraries`` on either block, and the
+        # collection's own category list is why: "favorite movie" and
+        # "favorite tv show" are both in it. Unlike ``choice`` this needs no
+        # per-collection narrowing later -- the one static collection really
+        # does span both media.
+        library_types=("Movie", "Show"),
+    ),
+    "razzie": AwardEvent(
+        key="razzie",
+        name="Razzies",
+        event_id="ev0000558",
+        awards={
+            "golden": Award(
+                "Razzies Golden Raspberry Winners",
+                RAZZIE_WORST_PICTURE,
+                "The Golden Raspberry Award for Worst Picture is an award given out "
+                "at the annual Golden Raspberry Awards to the worst film of the past "
+                "year.",
+                "winner",
+            ),
+        },
+        year_title="Razzie %s",
+        year_summary="%s Razzie Award Winners.",
+        year_pattern=re.compile(r"^Razzie \d{4}$"),
+        years_builder="razzie_award_years",
+    ),
+    "sag": AwardEvent(
+        key="sag",
+        name="Screen Actors Guild",
+        event_id="ev0000598",
+        awards={
+            "best": Award(
+                "Screen Actors Guild Award Winners",
+                SAG_BEST_ENSEMBLE,
+                "Screen Actors Guild Award Winners.",
+                "winner",
+            ),
+        },
+        year_title="Screen Actors Guild Awards %s",
+        year_summary="%s Screen Actors Guild Award Winners.",
+        year_pattern=re.compile(r"^Screen Actors Guild Awards \d{4}$"),
+        years_builder="sag_award_years",
+        # As ``pca``: no ``allowed_libraries`` upstream, and the collection's
+        # own categories mix the theatrical cast award with the comedy- and
+        # drama-series ensembles.
+        library_types=("Movie", "Show"),
+    ),
+    "spirit": AwardEvent(
+        key="spirit",
+        name="Independent Spirit",
+        event_id="ev0000349",
+        awards={
+            "best": Award(
+                "Spirit Best Feature Winners",
+                SPIRIT_BEST_FEATURE,
+                "Spirit Best Feature Winners.",
+                "winner",
+            ),
+        },
+        year_title="Independent Spirit Awards %s",
+        year_summary="%s Independent Spirit Awards.",
+        year_pattern=re.compile(r"^Independent Spirit Awards \d{4}$"),
+        years_builder="spirit_award_years",
+    ),
+    "sundance": AwardEvent(
+        key="sundance",
+        name="Sundance",
+        event_id="ev0000631",
+        awards={
+            "grand": Award(
+                "Sundance Grand Jury Winners",
+                None,
+                "The Sundance Film Festival is a film festival that takes place "
+                "annually in the state of Utah, in the United States. It is the "
+                "largest independent cinema festival in the U.S. Held in January, "
+                "the festival is the premier showcase for new work from American and "
+                "international independent filmmakers. The festival comprises "
+                "competitive sections for American and international dramatic and "
+                "documentary films, both feature-length films and short films, and a "
+                "group of non-competitive showcase sections.",
+                "grand_jury_winner",
+                SUNDANCE_GRAND_JURY_AWARDS,
+            ),
+        },
+        year_title="Sundance Film Festival %s",
+        year_summary="Sundance Film Festival of %s.",
+        year_pattern=re.compile(r"^Sundance Film Festival \d{4}$"),
+        years_builder="sundance_award_years",
+    ),
+    "tiff": AwardEvent(
+        key="tiff",
+        name="Toronto International Film Festival",
+        event_id="ev0000659",
+        awards={
+            "best": Award(
+                "Toronto People's Choice Award Winners",
+                TIFF_PEOPLES_CHOICE,
+                "Toronto International Film Festival People's Choice Award Winners.",
+                "winner",
+                TIFF_PEOPLES_CHOICE_AWARDS,
+            ),
+        },
+        year_title="Toronto International Film Festival %s",
+        year_summary="%s Toronto International Film Festival Award Winners.",
+        year_pattern=re.compile(r"^Toronto International Film Festival \d{4}$"),
+        years_builder="tiff_award_years",
+    ),
+    "venice": AwardEvent(
+        key="venice",
+        name="Venice",
+        event_id="ev0000681",
+        awards={
+            "golden": Award(
+                "Venice Golden Lions",
+                VENICE_GOLDEN_LION,
+                "The Venice Film Festival is the oldest film festival in the world. "
+                "Founded 1932, the festival has since taken place every year in "
+                "Venice, Italy. It is part of the Venice Biennale, a major biennial "
+                "exhibition and festival for contemporary art. The festival's Leone "
+                "d'Oro (Golden Lion) prize is awarded to the best film screened at "
+                "the festival.",
+                "winner",
+                VENICE_GOLDEN_LION_AWARDS,
+            ),
+        },
+        year_title="Venice %s",
+        year_summary="%s Venice Award Winners.",
+        year_pattern=re.compile(r"^Venice \d{4}$"),
+        years_builder="venice_award_years",
     ),
 }
 

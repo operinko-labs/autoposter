@@ -1,0 +1,375 @@
+# Sundance Film Festival (ev0000631), years 2026, 2025, 2024 cut verbatim from
+# https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master/events/ev0000631.yml
+'2026':  # https://www.imdb.com/event/ev0000631/2026/1/
+  grand jury prize:
+    documentary:
+      nominee: [tt33035557, tt34577866, tt38952225, tt39132432, tt39149951, tt39150003, tt39150008, tt39150019, tt39150038, tt39150922]
+      winner: [tt39150922]
+    dramatic:
+      nominee: [tt28144668, tt30833294, tt32321285, tt35504660, tt36981462, tt37263549, tt37775809, tt38626943, tt38980819, tt39149197]
+      winner: [tt32321285]
+    world cinema - documentary:
+      nominee: [tt36966956, tt37405791, tt38390390, tt38983842, tt39026593, tt39075417, tt39087873, tt39149574, tt39149925, tt39150043]
+      winner: [tt39150043]
+    world cinema - dramatic:
+      nominee: [tt29009930, tt31382021, tt34798706, tt34916741, tt36840995, tt36867663, tt38111477, tt38268539, tt39140264, tt39149971]
+      winner: [tt39140264]
+  directing award:
+    u.s. documentary:
+      nominee: [tt38952225]
+      winner: [tt38952225]
+    u.s. dramatic:
+      nominee: [tt39149197]
+      winner: [tt39149197]
+    world cinema, documentary:
+      nominee: [tt38983842]
+      winner: [tt38983842]
+    world cinema, dramatic:
+      nominee: [tt29009930]
+      winner: [tt29009930]
+  waldo salt screenwriting award:
+    u.s. dramatic:
+      nominee: [tt37263549]
+      winner: [tt37263549]
+  audience award:
+    next:
+      nominee: [tt39150051]
+      winner: [tt39150051]
+    u.s. documentary:
+      nominee: [tt39150003]
+      winner: [tt39150003]
+    u.s. dramatic:
+      nominee: [tt32321285]
+      winner: [tt32321285]
+    world cinema - documentary:
+      nominee: [tt38983842]
+      winner: [tt38983842]
+    world cinema - dramatic:
+      nominee: [tt36840995]
+      winner: [tt36840995]
+  alfred p. sloan feature film prize:
+    alfred p. sloan feature film prize:
+      nominee: [tt6341826]
+      winner: [tt6341826]
+  nhk award:
+    nhk award:
+      nominee: [tt39486281]
+      winner: [tt39486281]
+  short film grand jury prize:
+    best short film:
+      nominee: [tt30826002, tt35295381, tt36111783, tt36582063, tt36724190, tt37421234, tt37507660, tt37538169, tt37603775, tt37673190, tt37673380, tt37842711, tt37844425, tt37937314, tt38071033, tt38124330, tt38652331, tt38676721, tt38681657, tt38807500, tt39010000, tt39026969, tt39026975, tt39099364, tt39141722, tt39142054, tt39161293, tt39183773, tt39183787, tt39184394, tt39184415, tt39184533, tt39186119, tt39188807, tt39188809, tt39192415, tt39193518, tt39194159, tt39194434, tt39195649, tt39196087, tt39196096, tt39196097, tt39196105, tt39196179, tt39196252, tt39196471, tt39196672, tt39196741, tt39196834, tt39197121, tt39197159, tt39197176, tt39197208]
+      winner: [tt39196105]
+  short film jury award:
+    animation:
+      nominee: [tt39183787]
+      winner: [tt39183787]
+    international fiction:
+      nominee: [tt37842711]
+      winner: [tt37842711]
+    non-fiction:
+      nominee: [tt37937314]
+      winner: [tt37937314]
+    u.s. fiction:
+      nominee: [tt39142054]
+      winner: [tt39142054]
+  world cinema dramatic special jury award:
+    acting ensemble:
+      nominee: [tt38111477]
+      winner: [tt38111477]
+    creative vision:
+      nominee: [tt38268539]
+      winner: [tt38268539]
+  short film special jury award:
+    acting:
+      nominee: [tt39367300]
+      winner: [tt39367300]
+    creative vision:
+      nominee: [tt39183773]
+      winner: [tt39183773]
+  next innovator award:
+    next innovator award:
+      nominee: [tt36980182, tt38589440, tt38906892, tt39150051, tt39150067, tt39150080, tt39150095, tt39150111, tt39151344]
+      winner: [tt36980182]
+  u.s. dramatic special jury award:
+    debut feature:
+      nominee: [tt35504660]
+      winner: [tt35504660]
+    ensemble:
+      nominee: [tt38980819]
+      winner: [tt38980819]
+  world cinema documentary special jury award:
+    civil resistance:
+      nominee: [tt36966956]
+      winner: [tt36966956]
+    journalistic impact:
+      nominee: [tt39026593]
+      winner: [tt39026593]
+  u.s. documentary special jury award:
+    impact for change:
+      nominee: [tt34577866]
+      winner: [tt34577866]
+    journalistic excellence:
+      nominee: [tt39150038]
+      winner: [tt39150038]
+  sundance institute/amazon studios non-fiction producers award:
+    sundance institute/amazon studios non-fiction producers award:
+      nominee: [tt39150038]
+      winner: [tt39150038]
+  jonathan oppenheim editing award:
+    u.s. documentary:
+      nominee: [tt39150008]
+      winner: [tt39150008]
+  next special jury award presented by adobe:
+    next special jury award presented by adobe:
+      nominee: [tt39150095]
+      winner: [tt39150095]
+'2025': # https://www.imdb.com/event/ev0000631/2025/1/
+  grand jury prize:
+    documentary:
+      nominee: [tt26784676, tt28718656, tt33322301, tt34565168, tt34962891, tt34963034, tt34963731, tt34963732, tt34963797, tt34963844]
+      winner: [tt34963731]
+    dramatic:
+      nominee: [tt13650578, tt27550504, tt27827635, tt28618542, tt29253299, tt31122579, tt31322753, tt32843349, tt33998099, tt34880924]
+      winner: [tt31122579]
+    world cinema - documentary:
+      nominee: [tt10196414, tt21104356, tt34909040, tt34964205, tt34964219, tt34965172, tt34965481, tt34965506, tt34965515, tt34965625]
+      winner: [tt10196414]
+    world cinema - dramatic:
+      nominee: [tt13289160, tt15460036, tt29310002, tt31066723, tt31140176, tt31392191, tt32367116, tt32605679, tt34964187, tt9853664]
+      winner: [tt29310002]
+  directing award:
+    u.s. documentary:
+      nominee: [tt34962891]
+      winner: [tt34962891]
+    u.s. dramatic:
+      nominee: [tt27827635]
+      winner: [tt27827635]
+    world cinema, documentary:
+      nominee: [tt34964205]
+      winner: [tt34964205]
+    world cinema, dramatic:
+      nominee: [tt32367116]
+      winner: [tt32367116]
+  waldo salt screenwriting award:
+    u.s. dramatic:
+      nominee: [tt32843349]
+      winner: [tt32843349]
+  audience award:
+    next:
+      nominee: [tt21349688]
+      winner: [tt21349688]
+    u.s. documentary:
+      nominee: [tt34963034]
+      winner: [tt34963034]
+    u.s. dramatic:
+      nominee: [tt31322753]
+      winner: [tt31322753]
+    world cinema - documentary:
+      nominee: [tt34965625]
+      winner: [tt34965625]
+    world cinema - dramatic:
+      nominee: [tt34964187]
+      winner: [tt34964187]
+  alfred p. sloan feature film prize:
+    alfred p. sloan feature film prize:
+      nominee: [tt31193771]
+      winner: [tt31193771]
+  short film grand jury prize:
+    best short film:
+      nominee: [tt14176748, tt27730375, tt28713718, tt30816249, tt31024223, tt31037397, tt31548153, tt31937601, tt31995855, tt32215973, tt32494012, tt32499941, tt32559910, tt32852151, tt32896558, tt33014334, tt33087322, tt33092232, tt33202250, tt33317127, tt33423159, tt34244844, tt34674511, tt34696740, tt34719395, tt34875273, tt35002936, tt35047945, tt35048460, tt35050166, tt35050390, tt35050508, tt35050536, tt35050565, tt35050636, tt35050670, tt35051271, tt35051289, tt35051308, tt35051320, tt35051330, tt35051335, tt35051351, tt35051372, tt35051383, tt35051387, tt35051402, tt35051404, tt35051417, tt35051422, tt35051430, tt35051434, tt35051436, tt35051445, tt35051462, tt35051470, tt35051482]
+      winner: [tt33014334]
+  short film jury award:
+    animation:
+      nominee: [tt35051462]
+      winner: [tt35051462]
+    international fiction:
+      nominee: [tt35002936]
+      winner: [tt35002936]
+    non-fiction:
+      nominee: [tt35051434]
+      winner: [tt35051434]
+    u.s. fiction:
+      nominee: [tt35050636]
+      winner: [tt35050636]
+  world cinema dramatic special jury award:
+    creative vision:
+      nominee: [tt34964187]
+      winner: [tt34964187]
+    writing:
+      nominee: [tt31066723]
+      winner: [tt31066723]
+  short film special jury award:
+    animation directing:
+      nominee: [tt35051470]
+      winner: [tt35051470]
+    directing:
+      nominee: [tt34719395]
+      winner: [tt34719395]
+  sundance institute/amazon studios producers award:
+    sundance institute/amazon studios producers award:
+      nominee: [tt32214413]
+      winner: [tt32214413]
+  next innovator award:
+    next innovator award:
+      nominee: [tt17497960, tt21349688, tt29544916, tt32808757, tt33365660, tt33430448, tt33562917, tt34965959]
+      winner: [tt34965959]
+  u.s. dramatic special jury award:
+    acting:
+      nominee: [tt31322753]
+      winner: [tt31322753]
+    ensemble:
+      nominee: [tt27550504]
+      winner: [tt27550504]
+  world cinema documentary special jury award:
+    freedom of expression:
+      nominee: [tt34964219]
+      winner: [tt34964219]
+    world cinema documentary special jury award:
+      nominee: [tt34965515]
+      winner: [tt34965515]
+  u.s. documentary special jury award:
+    archival storytelling:
+      nominee: [tt34963797]
+      winner: [tt34963797]
+    u.s. documentary special jury award:
+      nominee: [tt28718656]
+      winner: [tt28718656]
+  festival favorite award:
+    festival favorite award:
+      nominee: [tt34966013]
+      winner: [tt34966013]
+  jonathan oppenheim editing award:
+    u.s. documentary:
+      nominee: [tt34963034]
+      winner: [tt34963034]
+  next special jury award presented by adobe:
+    next special jury award presented by adobe:
+      nominee: [tt33562917]
+      winner: [tt33562917]
+'2024': # https://www.imdb.com/event/ev0000631/2024/1/
+  grand jury prize:
+    documentary:
+      nominee: [tt12336480, tt30134880, tt30291991, tt30294282, tt30319555, tt30319823, tt30319825, tt30319830, tt30319854, tt30319916]
+      winner: [tt30294282]
+    dramatic:
+      nominee: [tt13650742, tt21375602, tt21823606, tt23939106, tt24805832, tt27722375, tt28523838, tt30319503, tt30319516, tt30319533]
+      winner: [tt24805832]
+    world cinema - documentary:
+      nominee: [tt14452174, tt16732698, tt19811010, tt21224854, tt30227076, tt30320463, tt30320493, tt30320521, tt30320576, tt30320605]
+      winner: [tt30320576]
+    world cinema - dramatic:
+      nominee: [tt11220024, tt18277182, tt2118648, tt23888758, tt26006472, tt26749327, tt28500076, tt30141676, tt30317033, tt30320410]
+      winner: [tt30320410]
+  directing award:
+    u.s. documentary:
+      nominee: [tt30319854]
+      winner: [tt30319854]
+    u.s. dramatic:
+      nominee: [tt24805832]
+      winner: [tt24805832]
+    world cinema, documentary:
+      nominee: [tt19811010]
+      winner: [tt19811010]
+    world cinema, dramatic:
+      nominee: [tt30141676]
+      winner: [tt30141676]
+  waldo salt screenwriting award:
+    u.s. dramatic:
+      nominee: [tt21823606]
+      winner: [tt21823606]
+  audience award:
+    next:
+      nominee: [tt27367464]
+      winner: [tt27367464]
+    u.s. documentary:
+      nominee: [tt12336480]
+      winner: [tt12336480]
+    u.s. dramatic:
+      nominee: [tt30319503]
+      winner: [tt30319503]
+    world cinema - documentary:
+      nominee: [tt19811010]
+      winner: [tt19811010]
+    world cinema - dramatic:
+      nominee: [tt18277182]
+      winner: [tt18277182]
+  alfred p. sloan feature film prize:
+    alfred p. sloan feature film prize:
+      nominee: [tt21375602]
+      winner: [tt21375602]
+  short film grand jury prize:
+    best short film:
+      nominee: [tt13021784, tt13162310, tt19889406, tt21650346, tt23039638, tt23768110, tt24656910, tt26007706, tt26256574, tt26451699, tt27612246, tt27661652, tt28350115, tt28355685, tt28670320, tt28670640, tt28671712, tt28755203, tt29134283, tt29346140, tt29549406, tt29579095, tt29897029, tt30052206, tt30062682, tt30069369, tt30098567, tt30146387, tt30252620, tt30253429, tt30420138, tt30420185, tt30420685, tt30420719, tt30420743, tt30420749, tt30420791, tt30420986, tt30420991, tt30420996, tt30421207, tt30421211, tt30421212, tt30421215, tt30421218, tt30421224, tt30421226, tt30421231, tt30421233, tt30421235, tt30421250]
+      winner: [tt30069369]
+  short film jury award:
+    animation:
+      nominee: [tt30421212]
+      winner: [tt30421212]
+    international fiction:
+      nominee: [tt29549406]
+      winner: [tt29549406]
+    non-fiction:
+      nominee: [tt30421222]
+      winner: [tt30421222]
+    u.s. fiction:
+      nominee: [tt30420986]
+      winner: [tt30420986]
+  world cinema dramatic special jury award:
+    acting:
+      nominee: [tt18277182]
+      winner: [tt18277182]
+    original music:
+      nominee: [tt2118648]
+      winner: [tt2118648]
+  short film special jury award:
+    directing, international:
+      nominee: [tt30421207]
+      winner: [tt30421207]
+    directing, u.s.:
+      nominee: [tt29579095]
+      winner: [tt29579095]
+  next innovator award:
+    next innovator award:
+      nominee: [tt12309944, tt18322912, tt21740488, tt27367464, tt28510594, tt30320639]
+      winner: [tt21740488]
+  u.s. dramatic special jury award:
+    breakthrough performance:
+      nominee: [tt13650742]
+      winner: [tt13650742]
+    ensemble:
+      nominee: [tt30319503]
+      winner: [tt30319503]
+  world cinema documentary special jury award:
+    cinematic innovation:
+      nominee: [tt14452174]
+      winner: [tt14452174]
+    craft:
+      nominee: [tt30320605]
+      winner: [tt30320605]
+  u.s. documentary special jury award:
+    art of change:
+      nominee: [tt30319916]
+      winner: [tt30319916]
+    sound:
+      nominee: [tt30319823]
+      winner: [tt30319823]
+  festival favorite award:
+    festival favorite award:
+      nominee: [tt12336480]
+      winner: [tt12336480]
+  jonathan oppenheim editing award:
+    u.s. documentary:
+      nominee: [tt30319555]
+      winner: [tt30319555]
+  amazon studios nonfiction producers award:
+    amazon studios nonfiction producers award:
+      nominee: [tt30320463]
+      winner: [tt30320463]
+  amazon studios fiction producers award:
+    amazon studios fiction producers award:
+      nominee: [tt30319533]
+      winner: [tt30319533]
+  next special jury award presented by adobe:
+    next special jury award presented by adobe:
+      nominee: [tt28510594]
+      winner: [tt28510594]
