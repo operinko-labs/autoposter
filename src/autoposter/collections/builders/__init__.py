@@ -58,6 +58,13 @@ from autoposter.collections.builders.tmdb import (
     TmdbNetworkBuilder,
 )
 from autoposter.collections.builders.tmdb_discover import TmdbDiscoverBuilder
+from autoposter.collections.builders.tmdb_person import (
+    TmdbActorBuilder,
+    TmdbCrewBuilder,
+    TmdbDirectorBuilder,
+    TmdbProducerBuilder,
+    TmdbWriterBuilder,
+)
 from autoposter.collections.builders.tvdb import (
     TvdbListBuilder,
     TvdbMovieBuilder,
@@ -88,6 +95,13 @@ register(TmdbCompanyBuilder())
 register(TmdbNetworkBuilder())
 register(TmdbKeywordBuilder())
 register(TmdbDiscoverBuilder())
+# Kometa's five names for one filmography, five registrations of one build
+# path -- see ``tmdb_person.ROLES``, the only thing that differs between them.
+register(TmdbActorBuilder())
+register(TmdbDirectorBuilder())
+register(TmdbWriterBuilder())
+register(TmdbProducerBuilder())
+register(TmdbCrewBuilder())
 register(MdblistListBuilder())
 register(TvdbListBuilder())
 register(TvdbMovieBuilder())

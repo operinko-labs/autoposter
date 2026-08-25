@@ -1,0 +1,39 @@
+{
+  "id": 4242,
+  "cast": [
+    {
+      "id": 95396,
+      "name": "The show they acted in",
+      "character": "Themselves",
+      "credit_id": "tv-cast-1",
+      "episode_count": 9,
+      "first_air_date": "2022-02-18",
+      "adult": false,
+      "popularity": 41.0
+    }
+  ],
+  "crew": [
+    {
+      "id": 1396,
+      "name": "The show they directed an episode of",
+      "job": "Director",
+      "department": "Directing",
+      "credit_id": "tv-crew-1",
+      "episode_count": 3,
+      "first_air_date": "2008-01-20",
+      "adult": false,
+      "popularity": 88.2
+    },
+    {
+      "id": 1416,
+      "name": "The show they executive-produced",
+      "job": "Executive Producer",
+      "department": "Production",
+      "credit_id": "tv-crew-2",
+      "episode_count": 40,
+      "first_air_date": "2005-03-27",
+      "adult": false,
+      "popularity": 55.6
+    }
+  ]
+}

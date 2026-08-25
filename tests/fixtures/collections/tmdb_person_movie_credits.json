@@ -1,0 +1,109 @@
+{
+  "id": 4242,
+  "cast": [
+    {
+      "id": 11,
+      "title": "The one they starred in",
+      "character": "Lead",
+      "credit_id": "cast-1",
+      "order": 0,
+      "adult": false,
+      "popularity": 12.5,
+      "release_date": "1977-05-25"
+    },
+    {
+      "id": 1891,
+      "title": "The one they directed and also appeared in",
+      "character": "Man at Bar",
+      "credit_id": "cast-2",
+      "order": 27,
+      "adult": false,
+      "popularity": 9.1,
+      "release_date": "1980-05-17"
+    },
+    {
+      "id": 11,
+      "title": "The one they starred in",
+      "character": "Lead's Twin",
+      "credit_id": "cast-3",
+      "order": 1,
+      "adult": false,
+      "popularity": 12.5,
+      "release_date": "1977-05-25"
+    }
+  ],
+  "crew": [
+    {
+      "id": 1891,
+      "title": "The one they directed and also appeared in",
+      "job": "Director",
+      "department": "Directing",
+      "credit_id": "crew-1",
+      "adult": false,
+      "popularity": 9.1
+    },
+    {
+      "id": 1891,
+      "title": "The one they directed and also appeared in",
+      "job": "Producer",
+      "department": "Production",
+      "credit_id": "crew-2",
+      "adult": false,
+      "popularity": 9.1
+    },
+    {
+      "id": 1892,
+      "title": "The one they wrote and executive-produced",
+      "job": "Screenplay",
+      "department": "Writing",
+      "credit_id": "crew-3",
+      "adult": false,
+      "popularity": 7.4
+    },
+    {
+      "id": 1892,
+      "title": "The one they wrote and executive-produced",
+      "job": "Executive Producer",
+      "department": "Production",
+      "credit_id": "crew-4",
+      "adult": false,
+      "popularity": 7.4
+    },
+    {
+      "id": 27205,
+      "title": "The other one they directed",
+      "job": "Director",
+      "department": "Directing",
+      "credit_id": "crew-5",
+      "adult": false,
+      "popularity": 20.2
+    },
+    {
+      "id": 49026,
+      "title": "The one they assisted on",
+      "job": "First Assistant Director",
+      "department": "Directing",
+      "credit_id": "crew-6",
+      "adult": false,
+      "popularity": 15.0
+    },
+    {
+      "id": 122,
+      "title": "The one they cast and wrote",
+      "job": "Casting",
+      "department": "Production",
+      "credit_id": "crew-7",
+      "adult": false,
+      "popularity": 30.8
+    },
+    {
+      "id": 122,
+      "title": "The one they cast and wrote",
+      "job": "Writer",
+      "department": "Writing",
+      "credit_id": "crew-8",
+      "adult": false,
+      "popularity": 30.8
+    }
+  ]
+}

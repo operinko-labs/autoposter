@@ -46,6 +46,7 @@ One shape, one paging rule, and the filter name is the only thing that varies.
 """
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import httpx
 
@@ -94,9 +95,38 @@ __all__ = [
     "CHART_ENDPOINTS",
     "CHART_ENDPOINTS_ACCEPTING_REGION",
     "MAX_PAGES",
+    "PersonCredit",
     "TmdbListClient",
     "TmdbListRefused",
 ]
+
+
+@dataclass(frozen=True)
+class PersonCredit:
+    """One entry of ``/person/{id}/{movie,tv}_credits``, reduced to four fields.
+
+    The one method here that does not hand back bare ids, and the reason is
+    that its endpoint answers a question this client cannot finish: it returns
+    *every* credit a person holds, and which of them a collection means is the
+    builder's role table, not the transport's. So the shape is
+    ``collection_parts``' -- one request, no pager, the array validated here --
+    with a richer element.
+
+    Four fields and no more, deliberately. ``kind`` is ``"cast"`` or
+    ``"crew"``, which is the array the credit came out of; ``job`` and
+    ``department`` are TMDb's own strings (``"Director"``, ``"Writing"``) and
+    are ``None`` on cast credits, which carry a ``character`` instead. Nothing
+    else crosses: the payload also holds profile paths, characters, episode
+    counts and popularity, and every one of those is a *10c* feature
+    (``tmdb_person`` summaries and posters, appearance thresholds). Returning
+    the raw payload would put them one attribute access away from a builder
+    that must not grow them yet.
+    """
+
+    tmdb_id: str
+    kind: str
+    job: str | None
+    department: str | None
 
 
 class TmdbListRefused(Exception):
@@ -273,6 +303,57 @@ class TmdbListClient:
         if not isinstance(parts, list):
             raise TmdbListRefused(f"{subject}: TMDb's response carries no 'parts' array")
         return _ids(parts, subject)
+
+    async def person_credits(self, person_id: int, media_type: str) -> list[PersonCredit]:
+        """Every credit one person holds on ``media_type``, in TMDb's order.
+
+        ``media_type`` is TMDb's own word (``"movie"``/``"tv"``) and picks the
+        endpoint -- ``/person/{id}/movie_credits`` or ``/tv_credits`` -- rather
+        than filtering a response, because TMDb splits a person's filmography
+        across two of them. That is what lets one definition serve a Movie and
+        a Show library, and it is also why the credit filters on
+        ``/discover/movie`` (``with_cast``, ``with_crew``, ``with_people``) are
+        not the route taken: they are paged, and they have no ``/discover/tv``
+        form at all.
+
+        Not paged -- one response carries the whole filmography, as
+        ``/collection/{id}`` carries a whole franchise -- so this sends no
+        ``page`` and costs one cache entry per person per media type.
+
+        **The order.** TMDb documents none for these arrays, and what it
+        actually returns is its own internal credit order: broadly
+        relevance/popularity-weighted, neither chronological nor alphabetical,
+        and not promised to be stable between reads. It is preserved exactly
+        as sent, cast entries then crew entries, because order becomes the
+        collection's custom order one layer down and a sort invented here
+        would be a decision TMDb did not make and the operator did not ask
+        for. A definition that wants a different order says so with its own
+        knobs.
+        """
+        subject = f"TMDb person {person_id}"
+        payload = await self._get(f"/person/{person_id}/{media_type}_credits", {}, subject)
+        credits: list[PersonCredit] = []
+        for kind in ("cast", "crew"):
+            entries = payload.get(kind)
+            if not isinstance(entries, list):
+                raise TmdbListRefused(
+                    f"{subject}: TMDb's response carries no {kind!r} array. Reading "
+                    "that as 'no credits of that kind' would build an empty "
+                    "collection out of a broken response."
+                )
+            # ``_ids`` is what refuses an entry with no id, and it is also what
+            # guarantees every entry is a dict, so the two ``.get``s below are
+            # safe by the time they run.
+            credits += [
+                PersonCredit(
+                    tmdb_id=value,
+                    kind=kind,
+                    job=entry.get("job"),
+                    department=entry.get("department"),
+                )
+                for entry, value in zip(entries, _ids(entries, subject), strict=True)
+            ]
+        return credits
 
     async def discover(self, media_type: str, filters: Mapping[str, object]) -> list[str]:
         """``/discover/{movie,tv}`` under an arbitrary filter map.
