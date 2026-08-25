@@ -1,0 +1,2259 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Tracearr Public API",
+    "version": "1.0.0",
+    "description": "External API for third-party integrations.\n\nAvailable in Tracearr 1.4.6 and later.\n\n## Authentication\n\nAll endpoints require Bearer token authentication:\n\n```\nAuthorization: Bearer trr_pub_<your_token>\n```\n\nGenerate your API key in **Settings > General**.\n\n## Pagination\n\nPaginated endpoints support `page` (1-indexed) and `pageSize` (max 100, default 25).\n\n## Filtering\n\nMost endpoints support `serverId` to filter by media server.",
+    "contact": {
+      "name": "Tracearr",
+      "url": "https://github.com/connorgallopo/Tracearr"
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API key format: trr_pub_<token>. Generate in Settings > General."
+      }
+    },
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "description": "Tracearr server version",
+            "example": "1.4.22"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-15T12:00:00.000Z"
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerStatus"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "version",
+          "timestamp",
+          "servers"
+        ]
+      },
+      "ServerStatus": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Main Plex Server"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "plex",
+              "jellyfin",
+              "emby"
+            ]
+          },
+          "online": {
+            "type": "boolean"
+          },
+          "activeStreams": {
+            "type": "integer",
+            "example": 3
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "type",
+          "online",
+          "activeStreams"
+        ]
+      },
+      "StatsResponse": {
+        "type": "object",
+        "properties": {
+          "activeStreams": {
+            "type": "integer",
+            "example": 5
+          },
+          "totalUsers": {
+            "type": "integer",
+            "example": 24
+          },
+          "totalSessions": {
+            "type": "integer",
+            "description": "Sessions in last 30 days",
+            "example": 1847
+          },
+          "recentViolations": {
+            "type": "integer",
+            "description": "Violations in last 7 days",
+            "example": 3
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "activeStreams",
+          "totalUsers",
+          "totalSessions",
+          "recentViolations",
+          "timestamp"
+        ]
+      },
+      "StatsTodayResponse": {
+        "type": "object",
+        "properties": {
+          "activeStreams": {
+            "type": "integer",
+            "example": 5
+          },
+          "todayPlays": {
+            "type": "integer",
+            "description": "Validated plays (>= 2 min)",
+            "example": 47
+          },
+          "watchTimeHours": {
+            "type": "number",
+            "description": "Hours watched today",
+            "example": 12.5
+          },
+          "alertsLast24h": {
+            "type": "integer",
+            "example": 3
+          },
+          "activeUsersToday": {
+            "type": "integer",
+            "example": 8
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "activeStreams",
+          "todayPlays",
+          "watchTimeHours",
+          "alertsLast24h",
+          "activeUsersToday",
+          "timestamp"
+        ]
+      },
+      "ActivityResponse": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string",
+            "enum": [
+              "week",
+              "month",
+              "year"
+            ]
+          },
+          "range": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "string",
+                "format": "date-time",
+                "example": "2026-02-08T05:00:00.000Z"
+              },
+              "end": {
+                "type": "string",
+                "format": "date-time",
+                "example": "2026-03-10T14:30:00.000Z"
+              }
+            },
+            "required": [
+              "start",
+              "end"
+            ]
+          },
+          "plays": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "description": "Bucket start time",
+                  "example": "2026-02-08 00:00:00"
+                },
+                "count": {
+                  "type": "integer",
+                  "example": 45
+                }
+              },
+              "required": [
+                "date",
+                "count"
+              ]
+            },
+            "description": "Play counts bucketed over time. Engagement-based: only sessions >= 2 min. Bucket size is 6 hours for week, 1 day for month/year."
+          },
+          "concurrent": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "description": "Bucket start time",
+                  "example": "2026-02-08 00:00:00"
+                },
+                "total": {
+                  "type": "integer",
+                  "example": 7
+                },
+                "direct": {
+                  "type": "integer",
+                  "description": "Direct play streams",
+                  "example": 4
+                },
+                "directStream": {
+                  "type": "integer",
+                  "description": "Direct stream (remux)",
+                  "example": 1
+                },
+                "transcode": {
+                  "type": "integer",
+                  "example": 2
+                }
+              },
+              "required": [
+                "date",
+                "total",
+                "direct",
+                "directStream",
+                "transcode"
+              ]
+            },
+            "description": "Peak concurrent streams per time bucket, broken down by playback type."
+          },
+          "byDayOfWeek": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "day": {
+                  "type": "integer",
+                  "description": "0 = Sunday, 6 = Saturday",
+                  "example": 5
+                },
+                "name": {
+                  "type": "string",
+                  "example": "Fri"
+                },
+                "count": {
+                  "type": "integer",
+                  "example": 120
+                }
+              },
+              "required": [
+                "day",
+                "name",
+                "count"
+              ]
+            },
+            "description": "Play distribution across days of the week. Always 7 entries."
+          },
+          "byHourOfDay": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "hour": {
+                  "type": "integer",
+                  "description": "0-23",
+                  "example": 20
+                },
+                "count": {
+                  "type": "integer",
+                  "example": 35
+                }
+              },
+              "required": [
+                "hour",
+                "count"
+              ]
+            },
+            "description": "Play distribution across hours of the day. Always 24 entries."
+          },
+          "platforms": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "platform": {
+                  "type": "string",
+                  "nullable": true,
+                  "example": "Chrome"
+                },
+                "count": {
+                  "type": "integer",
+                  "example": 89
+                }
+              },
+              "required": [
+                "platform",
+                "count"
+              ]
+            },
+            "description": "Session counts by client platform, sorted by count descending."
+          },
+          "quality": {
+            "$ref": "#/components/schemas/QualityBreakdown"
+          }
+        },
+        "required": [
+          "period",
+          "range",
+          "plays",
+          "concurrent",
+          "byDayOfWeek",
+          "byHourOfDay",
+          "platforms",
+          "quality"
+        ]
+      },
+      "QualityBreakdown": {
+        "type": "object",
+        "properties": {
+          "directPlay": {
+            "type": "integer",
+            "example": 234
+          },
+          "directStream": {
+            "type": "integer",
+            "example": 56
+          },
+          "transcode": {
+            "type": "integer",
+            "example": 120
+          },
+          "total": {
+            "type": "integer",
+            "example": 410
+          },
+          "directPlayPercent": {
+            "type": "integer",
+            "description": "Rounded percentage",
+            "example": 57
+          },
+          "directStreamPercent": {
+            "type": "integer",
+            "example": 14
+          },
+          "transcodePercent": {
+            "type": "integer",
+            "example": 29
+          }
+        },
+        "required": [
+          "directPlay",
+          "directStream",
+          "transcode",
+          "total",
+          "directPlayPercent",
+          "directStreamPercent",
+          "transcodePercent"
+        ]
+      },
+      "StreamsResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Stream"
+            }
+          },
+          "summary": {
+            "$ref": "#/components/schemas/StreamsSummary"
+          }
+        },
+        "required": [
+          "data",
+          "summary"
+        ]
+      },
+      "Stream": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "serverId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "serverName": {
+            "type": "string",
+            "example": "Main Plex Server"
+          },
+          "username": {
+            "type": "string",
+            "example": "John Doe"
+          },
+          "userThumb": {
+            "type": "string",
+            "nullable": true
+          },
+          "userAvatarUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "mediaTitle": {
+            "type": "string",
+            "example": "Inception"
+          },
+          "mediaType": {
+            "type": "string",
+            "enum": [
+              "movie",
+              "episode",
+              "track",
+              "live",
+              "photo",
+              "unknown"
+            ]
+          },
+          "showTitle": {
+            "type": "string",
+            "nullable": true,
+            "description": "Show name (episodes only)",
+            "example": "Breaking Bad"
+          },
+          "seasonNumber": {
+            "type": "integer",
+            "nullable": true,
+            "example": 5
+          },
+          "episodeNumber": {
+            "type": "integer",
+            "nullable": true,
+            "example": 16
+          },
+          "year": {
+            "type": "integer",
+            "nullable": true,
+            "example": 2010
+          },
+          "artistName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Artist name (music tracks only)",
+            "example": "Pink Floyd"
+          },
+          "albumName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Album name (music tracks only)",
+            "example": "The Dark Side of the Moon"
+          },
+          "trackNumber": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Track number (music tracks only)",
+            "example": 3
+          },
+          "discNumber": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Disc number (music tracks only)",
+            "example": 1
+          },
+          "thumbPath": {
+            "type": "string",
+            "nullable": true,
+            "description": "Poster path"
+          },
+          "posterUrl": {
+            "type": "string",
+            "nullable": true,
+            "description": "Proxied poster URL"
+          },
+          "durationMs": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Total media length",
+            "example": 8880000
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "playing",
+              "paused",
+              "stopped"
+            ]
+          },
+          "progressMs": {
+            "type": "integer",
+            "example": 3600000
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "isTranscode": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "videoDecision": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "directplay",
+              "copy",
+              "transcode",
+              null
+            ]
+          },
+          "audioDecision": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "directplay",
+              "copy",
+              "transcode",
+              null
+            ]
+          },
+          "bitrate": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Bitrate in kbps",
+            "example": 20000
+          },
+          "sourceVideoCodec": {
+            "type": "string",
+            "nullable": true,
+            "example": "hevc"
+          },
+          "sourceAudioCodec": {
+            "type": "string",
+            "nullable": true,
+            "example": "truehd"
+          },
+          "sourceAudioChannels": {
+            "type": "integer",
+            "nullable": true,
+            "example": 8
+          },
+          "sourceVideoWidth": {
+            "type": "integer",
+            "nullable": true,
+            "example": 3840
+          },
+          "sourceVideoHeight": {
+            "type": "integer",
+            "nullable": true,
+            "example": 2160
+          },
+          "sourceVideoDetails": {
+            "$ref": "#/components/schemas/SourceVideoDetails"
+          },
+          "sourceAudioDetails": {
+            "$ref": "#/components/schemas/SourceAudioDetails"
+          },
+          "streamVideoCodec": {
+            "type": "string",
+            "nullable": true,
+            "example": "h264"
+          },
+          "streamAudioCodec": {
+            "type": "string",
+            "nullable": true,
+            "example": "aac"
+          },
+          "streamVideoDetails": {
+            "$ref": "#/components/schemas/StreamVideoDetails"
+          },
+          "streamAudioDetails": {
+            "$ref": "#/components/schemas/StreamAudioDetails"
+          },
+          "transcodeInfo": {
+            "$ref": "#/components/schemas/TranscodeInfo"
+          },
+          "subtitleInfo": {
+            "$ref": "#/components/schemas/SubtitleInfo"
+          },
+          "resolution": {
+            "type": "string",
+            "nullable": true,
+            "description": "4K, 1080p, 720p, etc.",
+            "example": "4K"
+          },
+          "sourceVideoCodecDisplay": {
+            "type": "string",
+            "nullable": true,
+            "example": "HEVC"
+          },
+          "sourceAudioCodecDisplay": {
+            "type": "string",
+            "nullable": true,
+            "example": "TrueHD"
+          },
+          "audioChannelsDisplay": {
+            "type": "string",
+            "nullable": true,
+            "example": "7.1"
+          },
+          "streamVideoCodecDisplay": {
+            "type": "string",
+            "nullable": true,
+            "example": "H.264"
+          },
+          "streamAudioCodecDisplay": {
+            "type": "string",
+            "nullable": true,
+            "example": "AAC"
+          },
+          "device": {
+            "type": "string",
+            "nullable": true,
+            "example": "Apple TV"
+          },
+          "player": {
+            "type": "string",
+            "nullable": true,
+            "example": "Plex for Apple TV"
+          },
+          "product": {
+            "type": "string",
+            "nullable": true,
+            "example": "Plex for Apple TV"
+          },
+          "platform": {
+            "type": "string",
+            "nullable": true,
+            "example": "tvOS"
+          }
+        },
+        "required": [
+          "id",
+          "serverId",
+          "serverName",
+          "username",
+          "userThumb",
+          "userAvatarUrl",
+          "mediaTitle",
+          "mediaType",
+          "showTitle",
+          "seasonNumber",
+          "episodeNumber",
+          "year",
+          "artistName",
+          "albumName",
+          "trackNumber",
+          "discNumber",
+          "thumbPath",
+          "posterUrl",
+          "durationMs",
+          "state",
+          "progressMs",
+          "startedAt",
+          "isTranscode",
+          "videoDecision",
+          "audioDecision",
+          "bitrate",
+          "sourceVideoCodec",
+          "sourceAudioCodec",
+          "sourceAudioChannels",
+          "sourceVideoWidth",
+          "sourceVideoHeight",
+          "sourceVideoDetails",
+          "sourceAudioDetails",
+          "streamVideoCodec",
+          "streamAudioCodec",
+          "streamVideoDetails",
+          "streamAudioDetails",
+          "transcodeInfo",
+          "subtitleInfo",
+          "resolution",
+          "sourceVideoCodecDisplay",
+          "sourceAudioCodecDisplay",
+          "audioChannelsDisplay",
+          "streamVideoCodecDisplay",
+          "streamAudioCodecDisplay",
+          "device",
+          "player",
+          "product",
+          "platform"
+        ]
+      },
+      "SourceVideoDetails": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "bitrate": {
+            "type": "number"
+          },
+          "framerate": {
+            "type": "string",
+            "example": "23.976"
+          },
+          "dynamicRange": {
+            "type": "string",
+            "example": "HDR10"
+          },
+          "aspectRatio": {
+            "type": "number",
+            "example": 1.78
+          },
+          "profile": {
+            "type": "string",
+            "example": "main 10"
+          },
+          "level": {
+            "type": "string",
+            "example": "5.1"
+          },
+          "colorSpace": {
+            "type": "string",
+            "example": "bt2020nc"
+          },
+          "colorDepth": {
+            "type": "number",
+            "example": 10
+          }
+        }
+      },
+      "SourceAudioDetails": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "bitrate": {
+            "type": "number"
+          },
+          "channelLayout": {
+            "type": "string",
+            "example": "7.1"
+          },
+          "language": {
+            "type": "string",
+            "example": "eng"
+          },
+          "sampleRate": {
+            "type": "number",
+            "example": 48000
+          }
+        }
+      },
+      "StreamVideoDetails": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "bitrate": {
+            "type": "number"
+          },
+          "width": {
+            "type": "number",
+            "example": 1920
+          },
+          "height": {
+            "type": "number",
+            "example": 1080
+          },
+          "framerate": {
+            "type": "string",
+            "example": "23.976"
+          },
+          "dynamicRange": {
+            "type": "string",
+            "example": "SDR"
+          }
+        }
+      },
+      "StreamAudioDetails": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "bitrate": {
+            "type": "number"
+          },
+          "channels": {
+            "type": "number",
+            "example": 2
+          },
+          "language": {
+            "type": "string",
+            "example": "eng"
+          }
+        }
+      },
+      "TranscodeInfo": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "containerDecision": {
+            "type": "string",
+            "enum": [
+              "directplay",
+              "copy",
+              "transcode"
+            ]
+          },
+          "sourceContainer": {
+            "type": "string",
+            "example": "mkv"
+          },
+          "streamContainer": {
+            "type": "string",
+            "example": "mpegts"
+          },
+          "hwRequested": {
+            "type": "boolean"
+          },
+          "hwDecoding": {
+            "type": "string",
+            "example": "videotoolbox"
+          },
+          "hwEncoding": {
+            "type": "string",
+            "example": "videotoolbox"
+          },
+          "speed": {
+            "type": "number",
+            "description": "Transcode speed multiplier",
+            "example": 2.5
+          },
+          "throttled": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SubtitleInfo": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "decision": {
+            "type": "string",
+            "example": "burn"
+          },
+          "codec": {
+            "type": "string",
+            "example": "srt"
+          },
+          "language": {
+            "type": "string",
+            "example": "eng"
+          },
+          "forced": {
+            "type": "boolean"
+          }
+        }
+      },
+      "StreamsSummary": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "example": 5
+          },
+          "transcodes": {
+            "type": "integer",
+            "example": 2
+          },
+          "directStreams": {
+            "type": "integer",
+            "example": 1
+          },
+          "directPlays": {
+            "type": "integer",
+            "example": 2
+          },
+          "totalBitrate": {
+            "type": "string",
+            "example": "45.2 Mbps"
+          },
+          "byServer": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServerStreamSummary"
+            }
+          }
+        },
+        "required": [
+          "total",
+          "transcodes",
+          "directStreams",
+          "directPlays",
+          "totalBitrate",
+          "byServer"
+        ]
+      },
+      "ServerStreamSummary": {
+        "type": "object",
+        "properties": {
+          "serverId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "serverName": {
+            "type": "string",
+            "example": "Main Plex Server"
+          },
+          "total": {
+            "type": "integer",
+            "example": 3
+          },
+          "transcodes": {
+            "type": "integer",
+            "example": 1
+          },
+          "directStreams": {
+            "type": "integer",
+            "example": 1
+          },
+          "directPlays": {
+            "type": "integer",
+            "example": 1
+          },
+          "totalBitrate": {
+            "type": "string",
+            "example": "22.5 Mbps"
+          }
+        },
+        "required": [
+          "serverId",
+          "serverName",
+          "total",
+          "transcodes",
+          "directStreams",
+          "directPlays",
+          "totalBitrate"
+        ]
+      },
+      "StreamsSummaryOnlyResponse": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "$ref": "#/components/schemas/StreamsSummary"
+          }
+        },
+        "required": [
+          "summary"
+        ]
+      },
+      "TerminateStreamResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "terminationLogId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "message": {
+            "type": "string",
+            "example": "Stream termination command sent successfully"
+          }
+        },
+        "required": [
+          "success",
+          "terminationLogId",
+          "message"
+        ]
+      },
+      "TerminateStreamErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          },
+          "error": {
+            "type": "string"
+          },
+          "terminationLogId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "success",
+          "error",
+          "terminationLogId"
+        ]
+      },
+      "TerminateStreamBody": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Message to display to user before termination"
+          }
+        }
+      },
+      "UsersResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/User"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PaginationMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ]
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "username": {
+            "type": "string",
+            "example": "john_doe"
+          },
+          "displayName": {
+            "type": "string",
+            "example": "John Doe"
+          },
+          "thumbUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "avatarUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "viewer",
+              "member",
+              "disabled",
+              "pending"
+            ]
+          },
+          "trustScore": {
+            "type": "integer",
+            "description": "0-100",
+            "example": 95
+          },
+          "totalViolations": {
+            "type": "integer",
+            "example": 2
+          },
+          "serverId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "serverName": {
+            "type": "string",
+            "example": "Main Plex Server"
+          },
+          "lastActivityAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "sessionCount": {
+            "type": "integer",
+            "example": 147
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "displayName",
+          "thumbUrl",
+          "avatarUrl",
+          "role",
+          "trustScore",
+          "totalViolations",
+          "serverId",
+          "serverName",
+          "lastActivityAt",
+          "sessionCount",
+          "createdAt"
+        ]
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "example": 42
+          },
+          "page": {
+            "type": "integer",
+            "example": 1
+          },
+          "pageSize": {
+            "type": "integer",
+            "example": 25
+          }
+        },
+        "required": [
+          "total",
+          "page",
+          "pageSize"
+        ]
+      },
+      "ViolationsResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Violation"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PaginationMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ]
+      },
+      "Violation": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "serverId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "serverName": {
+            "type": "string",
+            "example": "Main Plex Server"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "warning",
+              "high"
+            ]
+          },
+          "acknowledged": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": {
+              "nullable": true
+            },
+            "description": "Rule-specific violation data"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "rule": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "type": {
+                "type": "string",
+                "example": "concurrent_streams"
+              },
+              "name": {
+                "type": "string",
+                "example": "Max 2 concurrent streams"
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "name"
+            ]
+          },
+          "user": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "username": {
+                "type": "string",
+                "example": "john_doe"
+              },
+              "thumbUrl": {
+                "type": "string",
+                "nullable": true,
+                "description": "Avatar path from media server"
+              },
+              "avatarUrl": {
+                "type": "string",
+                "nullable": true,
+                "description": "Proxied avatar URL"
+              }
+            },
+            "required": [
+              "id",
+              "username",
+              "thumbUrl",
+              "avatarUrl"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "serverId",
+          "serverName",
+          "severity",
+          "acknowledged",
+          "data",
+          "createdAt",
+          "rule",
+          "user"
+        ]
+      },
+      "HistoryResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionHistory"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PaginationMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ]
+      },
+      "SessionHistory": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "serverId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "serverName": {
+            "type": "string",
+            "example": "Main Plex Server"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "playing",
+              "paused",
+              "stopped"
+            ]
+          },
+          "mediaTitle": {
+            "type": "string",
+            "example": "Inception"
+          },
+          "mediaType": {
+            "type": "string",
+            "enum": [
+              "movie",
+              "episode",
+              "track",
+              "live",
+              "photo",
+              "unknown"
+            ]
+          },
+          "showTitle": {
+            "type": "string",
+            "nullable": true,
+            "description": "Show name (episodes only)",
+            "example": "Breaking Bad"
+          },
+          "seasonNumber": {
+            "type": "integer",
+            "nullable": true,
+            "example": 5
+          },
+          "episodeNumber": {
+            "type": "integer",
+            "nullable": true,
+            "example": 16
+          },
+          "year": {
+            "type": "integer",
+            "nullable": true,
+            "example": 2010
+          },
+          "artistName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Artist name (music tracks only)",
+            "example": "Pink Floyd"
+          },
+          "albumName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Album name (music tracks only)",
+            "example": "The Dark Side of the Moon"
+          },
+          "trackNumber": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Track number (music tracks only)",
+            "example": 3
+          },
+          "discNumber": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Disc number (music tracks only)",
+            "example": 1
+          },
+          "thumbPath": {
+            "type": "string",
+            "nullable": true,
+            "description": "Poster path"
+          },
+          "posterUrl": {
+            "type": "string",
+            "nullable": true,
+            "description": "Proxied poster URL"
+          },
+          "durationMs": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Total watch time across segments"
+          },
+          "progressMs": {
+            "type": "integer",
+            "nullable": true
+          },
+          "totalDurationMs": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Media length"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stoppedAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "watched": {
+            "type": "boolean",
+            "description": "True if watched 85%+"
+          },
+          "segmentCount": {
+            "type": "integer",
+            "description": "Pause/resume segment count",
+            "example": 1
+          },
+          "device": {
+            "type": "string",
+            "nullable": true,
+            "example": "Apple TV"
+          },
+          "player": {
+            "type": "string",
+            "nullable": true,
+            "example": "Plex for Apple TV"
+          },
+          "product": {
+            "type": "string",
+            "nullable": true,
+            "example": "Plex for Apple TV"
+          },
+          "platform": {
+            "type": "string",
+            "nullable": true,
+            "example": "tvOS"
+          },
+          "isTranscode": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "videoDecision": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "directplay",
+              "copy",
+              "transcode",
+              null
+            ]
+          },
+          "audioDecision": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "directplay",
+              "copy",
+              "transcode",
+              null
+            ]
+          },
+          "bitrate": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Bitrate in kbps",
+            "example": 20000
+          },
+          "sourceVideoCodec": {
+            "type": "string",
+            "nullable": true,
+            "example": "hevc"
+          },
+          "sourceAudioCodec": {
+            "type": "string",
+            "nullable": true,
+            "example": "truehd"
+          },
+          "sourceAudioChannels": {
+            "type": "integer",
+            "nullable": true,
+            "example": 8
+          },
+          "sourceVideoWidth": {
+            "type": "integer",
+            "nullable": true,
+            "example": 3840
+          },
+          "sourceVideoHeight": {
+            "type": "integer",
+            "nullable": true,
+            "example": 2160
+          },
+          "sourceVideoDetails": {
+            "$ref": "#/components/schemas/SourceVideoDetails"
+          },
+          "sourceAudioDetails": {
+            "$ref": "#/components/schemas/SourceAudioDetails"
+          },
+          "streamVideoCodec": {
+            "type": "string",
+            "nullable": true,
+            "example": "h264"
+          },
+          "streamAudioCodec": {
+            "type": "string",
+            "nullable": true,
+            "example": "aac"
+          },
+          "streamVideoDetails": {
+            "$ref": "#/components/schemas/StreamVideoDetails"
+          },
+          "streamAudioDetails": {
+            "$ref": "#/components/schemas/StreamAudioDetails"
+          },
+          "transcodeInfo": {
+            "$ref": "#/components/schemas/TranscodeInfo"
+          },
+          "subtitleInfo": {
+            "$ref": "#/components/schemas/SubtitleInfo"
+          },
+          "resolution": {
+            "type": "string",
+            "nullable": true,
+            "description": "4K, 1080p, 720p, etc.",
+            "example": "4K"
+          },
+          "sourceVideoCodecDisplay": {
+            "type": "string",
+            "nullable": true,
+            "example": "HEVC"
+          },
+          "sourceAudioCodecDisplay": {
+            "type": "string",
+            "nullable": true,
+            "example": "TrueHD"
+          },
+          "audioChannelsDisplay": {
+            "type": "string",
+            "nullable": true,
+            "example": "7.1"
+          },
+          "streamVideoCodecDisplay": {
+            "type": "string",
+            "nullable": true,
+            "example": "H.264"
+          },
+          "streamAudioCodecDisplay": {
+            "type": "string",
+            "nullable": true,
+            "example": "AAC"
+          },
+          "user": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "username": {
+                "type": "string",
+                "example": "john_doe"
+              },
+              "thumbUrl": {
+                "type": "string",
+                "nullable": true,
+                "description": "Avatar path from media server"
+              },
+              "avatarUrl": {
+                "type": "string",
+                "nullable": true,
+                "description": "Proxied avatar URL"
+              }
+            },
+            "required": [
+              "id",
+              "username",
+              "thumbUrl",
+              "avatarUrl"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "serverId",
+          "serverName",
+          "state",
+          "mediaTitle",
+          "mediaType",
+          "showTitle",
+          "seasonNumber",
+          "episodeNumber",
+          "year",
+          "artistName",
+          "albumName",
+          "trackNumber",
+          "discNumber",
+          "thumbPath",
+          "posterUrl",
+          "durationMs",
+          "progressMs",
+          "totalDurationMs",
+          "startedAt",
+          "stoppedAt",
+          "watched",
+          "segmentCount",
+          "device",
+          "player",
+          "product",
+          "platform",
+          "isTranscode",
+          "videoDecision",
+          "audioDecision",
+          "bitrate",
+          "sourceVideoCodec",
+          "sourceAudioCodec",
+          "sourceAudioChannels",
+          "sourceVideoWidth",
+          "sourceVideoHeight",
+          "sourceVideoDetails",
+          "sourceAudioDetails",
+          "streamVideoCodec",
+          "streamAudioCodec",
+          "streamVideoDetails",
+          "streamAudioDetails",
+          "transcodeInfo",
+          "subtitleInfo",
+          "resolution",
+          "sourceVideoCodecDisplay",
+          "sourceAudioCodecDisplay",
+          "audioChannelsDisplay",
+          "streamVideoCodecDisplay",
+          "streamAudioCodecDisplay",
+          "user"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/api/v1/public/health": {
+      "get": {
+        "tags": [
+          "Public API"
+        ],
+        "summary": "Check server connectivity",
+        "description": "Returns connection status for all configured media servers.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Health check successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          }
+        }
+      }
+    },
+    "/api/v1/public/stats": {
+      "get": {
+        "tags": [
+          "Public API"
+        ],
+        "summary": "Dashboard statistics",
+        "description": "Aggregate counts for dashboard display. Optionally filter by server.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter by server",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": false,
+            "description": "Filter by server",
+            "name": "serverId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Statistics retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          }
+        }
+      }
+    },
+    "/api/v1/public/stats/today": {
+      "get": {
+        "tags": [
+          "Public API"
+        ],
+        "summary": "Today's dashboard statistics",
+        "description": "Dashboard metrics for \"today\" in the specified timezone. Includes active streams, validated plays (>= 2 min), watch time, alerts, and active users.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter by server",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": false,
+            "description": "Filter by server",
+            "name": "serverId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "default": "UTC",
+              "description": "IANA timezone for \"today\" calculation",
+              "example": "America/New_York"
+            },
+            "required": false,
+            "description": "IANA timezone for \"today\" calculation",
+            "name": "timezone",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Statistics retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsTodayResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid timezone or serverId"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          }
+        }
+      }
+    },
+    "/api/v1/public/activity": {
+      "get": {
+        "tags": [
+          "Public API"
+        ],
+        "summary": "Playback activity trends",
+        "description": "Consolidated activity data across six dimensions: plays over time, concurrent streams, day-of-week and hour-of-day distributions, platform usage, and playback quality. Time-series data is bucketed by 6 hours (week) or 1 day (month/year). Play counts use engagement-based filtering (sessions >= 2 minutes).",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "week",
+                "month",
+                "year"
+              ],
+              "default": "month",
+              "description": "Time range for activity data",
+              "example": "month"
+            },
+            "required": false,
+            "description": "Time range for activity data",
+            "name": "period",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter by server",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": false,
+            "description": "Filter by server",
+            "name": "serverId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "default": "UTC",
+              "description": "IANA timezone for date bucketing",
+              "example": "America/New_York"
+            },
+            "required": false,
+            "description": "IANA timezone for date bucketing",
+            "name": "timezone",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Activity data retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/api/v1/public/streams": {
+      "get": {
+        "tags": [
+          "Public API"
+        ],
+        "summary": "Active playback sessions",
+        "description": "Real-time active streams with codec and quality details. Use summary=true for lightweight dashboard polling (omits data array).",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter by server",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": false,
+            "description": "Filter by server",
+            "name": "serverId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "nullable": true,
+              "description": "Return only summary (omit data array)",
+              "example": false
+            },
+            "required": false,
+            "description": "Return only summary (omit data array)",
+            "name": "summary",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active streams retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/StreamsResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/StreamsSummaryOnlyResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          }
+        }
+      }
+    },
+    "/api/v1/public/streams/{id}/terminate": {
+      "post": {
+        "tags": [
+          "Public API"
+        ],
+        "summary": "Terminate active stream",
+        "description": "Stop an active playback session. Optionally display a message to the user (supported on all platforms).",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Session ID from /streams"
+            },
+            "required": true,
+            "description": "Session ID from /streams",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminateStreamBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Termination successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminateStreamResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session ID or request body"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "404": {
+            "description": "Session not found"
+          },
+          "409": {
+            "description": "Session already ended"
+          },
+          "500": {
+            "description": "Termination failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminateStreamErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/public/users": {
+      "get": {
+        "tags": [
+          "Public API"
+        ],
+        "summary": "User list with activity metrics",
+        "description": "Paginated users with session counts and trust scores. Users with accounts on multiple servers appear once per server.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "default": 1,
+              "example": 1
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 100,
+              "default": 25,
+              "example": 25
+            },
+            "required": false,
+            "name": "pageSize",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter by server",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": false,
+            "description": "Filter by server",
+            "name": "serverId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Users retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsersResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          }
+        }
+      }
+    },
+    "/api/v1/public/violations": {
+      "get": {
+        "tags": [
+          "Public API"
+        ],
+        "summary": "Rule violations",
+        "description": "Paginated violations in descending order. Filter by server, severity, or acknowledged status.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "default": 1,
+              "example": 1
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 100,
+              "default": 25,
+              "example": 25
+            },
+            "required": false,
+            "name": "pageSize",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter by server",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": false,
+            "description": "Filter by server",
+            "name": "serverId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "low",
+                "warning",
+                "high"
+              ]
+            },
+            "required": false,
+            "name": "severity",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "nullable": true
+            },
+            "required": false,
+            "name": "acknowledged",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Violations retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViolationsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          }
+        }
+      }
+    },
+    "/api/v1/public/history": {
+      "get": {
+        "tags": [
+          "Public API"
+        ],
+        "summary": "Session history",
+        "description": "Paginated session history grouped by unique plays. Multiple pause/resume cycles are aggregated into a single entry with combined duration and segment count.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "default": 1,
+              "example": 1
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 100,
+              "default": 25,
+              "example": 25
+            },
+            "required": false,
+            "name": "pageSize",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter by server",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": false,
+            "description": "Filter by server",
+            "name": "serverId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "playing",
+                "paused",
+                "stopped"
+              ]
+            },
+            "required": false,
+            "name": "state",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "movie",
+                "episode",
+                "track",
+                "live",
+                "photo",
+                "unknown"
+              ]
+            },
+            "required": false,
+            "name": "mediaType",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "nullable": true,
+              "format": "date-time",
+              "description": "Sessions on or after this date (start of day in timezone)"
+            },
+            "required": false,
+            "description": "Sessions on or after this date (start of day in timezone)",
+            "name": "startDate",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "nullable": true,
+              "format": "date-time",
+              "description": "Sessions on or before this date (end of day in timezone)"
+            },
+            "required": false,
+            "description": "Sessions on or before this date (end of day in timezone)",
+            "name": "endDate",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "default": "UTC",
+              "description": "IANA timezone for date interpretation",
+              "example": "America/New_York"
+            },
+            "required": false,
+            "description": "IANA timezone for date interpretation",
+            "name": "timezone",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "History retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          }
+        }
+      }
+    }
+  }
+}

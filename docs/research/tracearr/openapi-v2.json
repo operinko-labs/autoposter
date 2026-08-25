@@ -1,0 +1,3032 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Tracearr Public API",
+    "version": "2.0.0",
+    "description": "External API for third-party integrations (version 2).\n\nAvailable in Tracearr 2.0.0 and later. Earlier versions serve API v1 only.\n\n## Authentication\n\nAll endpoints require Bearer token authentication:\n\n```\nAuthorization: Bearer trr_pub_<your_token>\n```\n\nGenerate your API key in **Settings > General**.\n\n## Pagination\n\nThe history, users, and recently-added endpoints use cursor pagination via `cursor` and\n`pageSize` (max 100, default 25). Each paginated response carries a `meta.nextCursor` to\nfetch the following page. Streams and libraries return the full set in one response.\n\n## Filtering\n\nHistory, streams, watchers, and recently-added accept `server_id` to filter by media server.",
+    "contact": {
+      "name": "Tracearr",
+      "url": "https://github.com/connorgallopo/Tracearr"
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API key format: trr_pub_<token>. Generate in Settings > General."
+      }
+    },
+    "schemas": {
+      "OpenApiDocument": {
+        "type": "object",
+        "properties": {}
+      },
+      "HistoryResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HistoryRecord"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/CursorMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ]
+      },
+      "HistoryRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Chain id: the id of the first session in the play"
+          },
+          "server_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "server_type": {
+            "type": "string",
+            "enum": [
+              "plex",
+              "jellyfin",
+              "emby"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "playing",
+              "paused",
+              "stopped"
+            ],
+            "description": "The most recent segment's state",
+            "example": "stopped"
+          },
+          "media_type": {
+            "type": "string",
+            "enum": [
+              "movie",
+              "episode",
+              "track",
+              "live",
+              "photo",
+              "trailer",
+              "unknown"
+            ]
+          },
+          "media_title": {
+            "type": "string",
+            "example": "Inception"
+          },
+          "show_title": {
+            "type": "string",
+            "nullable": true,
+            "description": "Show name (episodes only)"
+          },
+          "season_number": {
+            "type": "integer",
+            "nullable": true
+          },
+          "episode_number": {
+            "type": "integer",
+            "nullable": true
+          },
+          "year": {
+            "type": "integer",
+            "nullable": true,
+            "example": 2010
+          },
+          "artist_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Music tracks only"
+          },
+          "album_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Music tracks only"
+          },
+          "track_number": {
+            "type": "integer",
+            "nullable": true
+          },
+          "disc_number": {
+            "type": "integer",
+            "nullable": true
+          },
+          "thumb_path": {
+            "type": "string",
+            "nullable": true,
+            "description": "Poster path"
+          },
+          "poster_url": {
+            "type": "string",
+            "nullable": true,
+            "description": "Proxied poster URL"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "description": "Watch time summed across all in-window segments of the play"
+          },
+          "progress_ms": {
+            "type": "integer",
+            "nullable": true
+          },
+          "total_duration_ms": {
+            "type": "integer",
+            "nullable": true
+          },
+          "percent_complete": {
+            "type": "number",
+            "nullable": true,
+            "description": "Playback progress as 0-100 with 1 decimal",
+            "example": 95.8
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stopped_at": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "watched": {
+            "type": "boolean"
+          },
+          "segment_count": {
+            "type": "integer",
+            "description": "Number of sessions in the resume chain",
+            "example": 2
+          },
+          "device": {
+            "type": "string",
+            "nullable": true,
+            "example": "Apple TV"
+          },
+          "player": {
+            "type": "string",
+            "nullable": true,
+            "example": "Plex for Apple TV"
+          },
+          "product": {
+            "type": "string",
+            "nullable": true,
+            "example": "Plex for Apple TV"
+          },
+          "platform": {
+            "type": "string",
+            "nullable": true,
+            "example": "tvOS"
+          },
+          "is_transcode": {
+            "type": "boolean"
+          },
+          "video_decision": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "directplay",
+              "copy",
+              "transcode",
+              null
+            ]
+          },
+          "audio_decision": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "directplay",
+              "copy",
+              "transcode",
+              null
+            ]
+          },
+          "bitrate": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Bitrate in kbps"
+          },
+          "source_video_codec": {
+            "type": "string",
+            "nullable": true,
+            "example": "hevc"
+          },
+          "source_audio_codec": {
+            "type": "string",
+            "nullable": true,
+            "example": "truehd"
+          },
+          "source_audio_channels": {
+            "type": "integer",
+            "nullable": true,
+            "example": 8
+          },
+          "source_video_width": {
+            "type": "integer",
+            "nullable": true,
+            "example": 3840
+          },
+          "source_video_height": {
+            "type": "integer",
+            "nullable": true,
+            "example": 2160
+          },
+          "source_video_details": {
+            "$ref": "#/components/schemas/SourceVideoDetails"
+          },
+          "source_audio_details": {
+            "$ref": "#/components/schemas/SourceAudioDetails"
+          },
+          "stream_video_codec": {
+            "type": "string",
+            "nullable": true,
+            "example": "h264"
+          },
+          "stream_audio_codec": {
+            "type": "string",
+            "nullable": true,
+            "example": "aac"
+          },
+          "stream_video_details": {
+            "$ref": "#/components/schemas/StreamVideoDetails"
+          },
+          "stream_audio_details": {
+            "$ref": "#/components/schemas/StreamAudioDetails"
+          },
+          "transcode_info": {
+            "$ref": "#/components/schemas/TranscodeInfo"
+          },
+          "subtitle_info": {
+            "$ref": "#/components/schemas/SubtitleInfo"
+          },
+          "resolution": {
+            "type": "string",
+            "nullable": true,
+            "example": "4K"
+          },
+          "source_video_codec_display": {
+            "type": "string",
+            "nullable": true,
+            "example": "HEVC"
+          },
+          "source_audio_codec_display": {
+            "type": "string",
+            "nullable": true,
+            "example": "TrueHD"
+          },
+          "audio_channels_display": {
+            "type": "string",
+            "nullable": true,
+            "example": "7.1"
+          },
+          "stream_video_codec_display": {
+            "type": "string",
+            "nullable": true,
+            "example": "H.264"
+          },
+          "stream_audio_codec_display": {
+            "type": "string",
+            "nullable": true,
+            "example": "AAC"
+          },
+          "media_id": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid",
+            "description": "Canonical media id, shared across servers"
+          },
+          "show_media_id": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid",
+            "description": "Canonical id of the parent show (episodes only)"
+          },
+          "imdb_id": {
+            "type": "string",
+            "nullable": true,
+            "example": "tt1375666"
+          },
+          "tmdb_id": {
+            "type": "integer",
+            "nullable": true,
+            "example": 27205
+          },
+          "tvdb_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "rating_key": {
+            "type": "string",
+            "nullable": true,
+            "description": "Server-specific media id; null when the server never provided one"
+          },
+          "parent_rating_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "grandparent_rating_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "library_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "The server's library identifier when the item is in a synced library"
+          },
+          "genres": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "Action",
+              "Sci-Fi"
+            ]
+          },
+          "reference_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Chain key shared by all segments of this play (equals id)"
+          },
+          "user": {
+            "$ref": "#/components/schemas/HistoryUser"
+          }
+        },
+        "required": [
+          "id",
+          "server_id",
+          "server_name",
+          "server_type",
+          "state",
+          "media_type",
+          "media_title",
+          "show_title",
+          "season_number",
+          "episode_number",
+          "year",
+          "artist_name",
+          "album_name",
+          "track_number",
+          "disc_number",
+          "thumb_path",
+          "poster_url",
+          "duration_ms",
+          "progress_ms",
+          "total_duration_ms",
+          "percent_complete",
+          "started_at",
+          "stopped_at",
+          "watched",
+          "segment_count",
+          "device",
+          "player",
+          "product",
+          "platform",
+          "is_transcode",
+          "video_decision",
+          "audio_decision",
+          "bitrate",
+          "source_video_codec",
+          "source_audio_codec",
+          "source_audio_channels",
+          "source_video_width",
+          "source_video_height",
+          "source_video_details",
+          "source_audio_details",
+          "stream_video_codec",
+          "stream_audio_codec",
+          "stream_video_details",
+          "stream_audio_details",
+          "transcode_info",
+          "subtitle_info",
+          "resolution",
+          "source_video_codec_display",
+          "source_audio_codec_display",
+          "audio_channels_display",
+          "stream_video_codec_display",
+          "stream_audio_codec_display",
+          "media_id",
+          "show_media_id",
+          "imdb_id",
+          "tmdb_id",
+          "tvdb_id",
+          "rating_key",
+          "parent_rating_key",
+          "grandparent_rating_key",
+          "library_id",
+          "genres",
+          "reference_id",
+          "user"
+        ]
+      },
+      "SourceVideoDetails": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "bitrate": {
+            "type": "number"
+          },
+          "framerate": {
+            "type": "string",
+            "example": "23.976"
+          },
+          "dynamicRange": {
+            "type": "string",
+            "example": "HDR10"
+          },
+          "aspectRatio": {
+            "type": "number",
+            "example": 1.78
+          },
+          "profile": {
+            "type": "string",
+            "example": "main 10"
+          },
+          "level": {
+            "type": "string",
+            "example": "5.1"
+          },
+          "colorSpace": {
+            "type": "string",
+            "example": "bt2020nc"
+          },
+          "colorDepth": {
+            "type": "number",
+            "example": 10
+          }
+        }
+      },
+      "SourceAudioDetails": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "bitrate": {
+            "type": "number"
+          },
+          "channelLayout": {
+            "type": "string",
+            "example": "7.1"
+          },
+          "language": {
+            "type": "string",
+            "example": "eng"
+          },
+          "sampleRate": {
+            "type": "number",
+            "example": 48000
+          }
+        }
+      },
+      "StreamVideoDetails": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "bitrate": {
+            "type": "number"
+          },
+          "width": {
+            "type": "number",
+            "example": 1920
+          },
+          "height": {
+            "type": "number",
+            "example": 1080
+          },
+          "framerate": {
+            "type": "string",
+            "example": "23.976"
+          },
+          "dynamicRange": {
+            "type": "string",
+            "example": "SDR"
+          }
+        }
+      },
+      "StreamAudioDetails": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "bitrate": {
+            "type": "number"
+          },
+          "channels": {
+            "type": "number",
+            "example": 2
+          },
+          "language": {
+            "type": "string",
+            "example": "eng"
+          }
+        }
+      },
+      "TranscodeInfo": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "containerDecision": {
+            "type": "string",
+            "enum": [
+              "directplay",
+              "copy",
+              "transcode"
+            ]
+          },
+          "sourceContainer": {
+            "type": "string",
+            "example": "mkv"
+          },
+          "streamContainer": {
+            "type": "string",
+            "example": "mpegts"
+          },
+          "hwRequested": {
+            "type": "boolean"
+          },
+          "hwDecoding": {
+            "type": "string",
+            "example": "videotoolbox"
+          },
+          "hwEncoding": {
+            "type": "string",
+            "example": "videotoolbox"
+          },
+          "speed": {
+            "type": "number",
+            "description": "Transcode speed multiplier"
+          },
+          "throttled": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SubtitleInfo": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "decision": {
+            "type": "string",
+            "example": "burn"
+          },
+          "codec": {
+            "type": "string",
+            "example": "srt"
+          },
+          "language": {
+            "type": "string",
+            "example": "eng"
+          },
+          "forced": {
+            "type": "boolean"
+          }
+        }
+      },
+      "HistoryUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Tracearr identity id"
+          },
+          "server_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Tracearr's id for this per-server account"
+          },
+          "username": {
+            "type": "string",
+            "nullable": true
+          },
+          "thumb_url": {
+            "type": "string",
+            "nullable": true
+          },
+          "avatar_url": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "server_user_id",
+          "username",
+          "thumb_url",
+          "avatar_url"
+        ]
+      },
+      "CursorMeta": {
+        "type": "object",
+        "properties": {
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Opaque cursor for the next page; null when no further pages"
+          },
+          "pageSize": {
+            "type": "integer",
+            "example": 25
+          }
+        },
+        "required": [
+          "nextCursor",
+          "pageSize"
+        ]
+      },
+      "StreamsResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActiveStream"
+            },
+            "description": "Omitted when summary=true"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/StreamsSummary"
+          }
+        },
+        "required": [
+          "summary"
+        ]
+      },
+      "ActiveStream": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Session id"
+          },
+          "server_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "server_type": {
+            "type": "string",
+            "enum": [
+              "plex",
+              "jellyfin",
+              "emby"
+            ]
+          },
+          "username": {
+            "type": "string",
+            "description": "Identity display name when linked, else the server account's username"
+          },
+          "user_thumb": {
+            "type": "string",
+            "nullable": true
+          },
+          "user_avatar_url": {
+            "type": "string",
+            "nullable": true
+          },
+          "media_type": {
+            "type": "string",
+            "enum": [
+              "movie",
+              "episode",
+              "track",
+              "live",
+              "photo",
+              "trailer",
+              "unknown"
+            ]
+          },
+          "media_title": {
+            "type": "string",
+            "example": "Inception"
+          },
+          "show_title": {
+            "type": "string",
+            "nullable": true,
+            "description": "Show name (episodes only)"
+          },
+          "season_number": {
+            "type": "integer",
+            "nullable": true
+          },
+          "episode_number": {
+            "type": "integer",
+            "nullable": true
+          },
+          "year": {
+            "type": "integer",
+            "nullable": true,
+            "example": 2010
+          },
+          "artist_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Music tracks only"
+          },
+          "album_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Music tracks only"
+          },
+          "track_number": {
+            "type": "integer",
+            "nullable": true
+          },
+          "disc_number": {
+            "type": "integer",
+            "nullable": true
+          },
+          "thumb_path": {
+            "type": "string",
+            "nullable": true,
+            "description": "Poster path"
+          },
+          "poster_url": {
+            "type": "string",
+            "nullable": true,
+            "description": "Proxied poster URL"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Total media length"
+          },
+          "state": {
+            "type": "string",
+            "example": "playing"
+          },
+          "progress_ms": {
+            "type": "integer"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "is_transcode": {
+            "type": "boolean"
+          },
+          "video_decision": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "directplay",
+              "copy",
+              "transcode",
+              null
+            ]
+          },
+          "audio_decision": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "directplay",
+              "copy",
+              "transcode",
+              null
+            ]
+          },
+          "bitrate": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Bitrate in kbps"
+          },
+          "source_video_codec": {
+            "type": "string",
+            "nullable": true,
+            "example": "hevc"
+          },
+          "source_audio_codec": {
+            "type": "string",
+            "nullable": true,
+            "example": "truehd"
+          },
+          "source_audio_channels": {
+            "type": "integer",
+            "nullable": true,
+            "example": 8
+          },
+          "source_video_width": {
+            "type": "integer",
+            "nullable": true,
+            "example": 3840
+          },
+          "source_video_height": {
+            "type": "integer",
+            "nullable": true,
+            "example": 2160
+          },
+          "source_video_details": {
+            "$ref": "#/components/schemas/SourceVideoDetails"
+          },
+          "source_audio_details": {
+            "$ref": "#/components/schemas/SourceAudioDetails"
+          },
+          "stream_video_codec": {
+            "type": "string",
+            "nullable": true,
+            "example": "h264"
+          },
+          "stream_audio_codec": {
+            "type": "string",
+            "nullable": true,
+            "example": "aac"
+          },
+          "stream_video_details": {
+            "$ref": "#/components/schemas/StreamVideoDetails"
+          },
+          "stream_audio_details": {
+            "$ref": "#/components/schemas/StreamAudioDetails"
+          },
+          "transcode_info": {
+            "$ref": "#/components/schemas/TranscodeInfo"
+          },
+          "subtitle_info": {
+            "$ref": "#/components/schemas/SubtitleInfo"
+          },
+          "resolution": {
+            "type": "string",
+            "nullable": true,
+            "example": "4K"
+          },
+          "source_video_codec_display": {
+            "type": "string",
+            "nullable": true,
+            "example": "HEVC"
+          },
+          "source_audio_codec_display": {
+            "type": "string",
+            "nullable": true,
+            "example": "TrueHD"
+          },
+          "audio_channels_display": {
+            "type": "string",
+            "nullable": true,
+            "example": "7.1"
+          },
+          "stream_video_codec_display": {
+            "type": "string",
+            "nullable": true,
+            "example": "H.264"
+          },
+          "stream_audio_codec_display": {
+            "type": "string",
+            "nullable": true,
+            "example": "AAC"
+          },
+          "device": {
+            "type": "string",
+            "nullable": true,
+            "example": "Apple TV"
+          },
+          "player": {
+            "type": "string",
+            "nullable": true,
+            "example": "Plex for Apple TV"
+          },
+          "product": {
+            "type": "string",
+            "nullable": true,
+            "example": "Plex for Apple TV"
+          },
+          "platform": {
+            "type": "string",
+            "nullable": true,
+            "example": "tvOS"
+          },
+          "media_id": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid",
+            "description": "Canonical media id, shared across servers"
+          },
+          "show_media_id": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid",
+            "description": "Canonical id of the parent show (episodes only)"
+          },
+          "imdb_id": {
+            "type": "string",
+            "nullable": true,
+            "example": "tt1375666"
+          },
+          "tmdb_id": {
+            "type": "integer",
+            "nullable": true,
+            "example": 27205
+          },
+          "tvdb_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "rating_key": {
+            "type": "string",
+            "nullable": true,
+            "description": "Server-specific media id; null when the server never provided one"
+          },
+          "parent_rating_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "grandparent_rating_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "library_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "The server's library identifier when the item is in a synced library"
+          },
+          "genres": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "Action",
+              "Sci-Fi"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "server_id",
+          "server_name",
+          "server_type",
+          "username",
+          "user_thumb",
+          "user_avatar_url",
+          "media_type",
+          "media_title",
+          "show_title",
+          "season_number",
+          "episode_number",
+          "year",
+          "artist_name",
+          "album_name",
+          "track_number",
+          "disc_number",
+          "thumb_path",
+          "poster_url",
+          "duration_ms",
+          "state",
+          "progress_ms",
+          "started_at",
+          "is_transcode",
+          "video_decision",
+          "audio_decision",
+          "bitrate",
+          "source_video_codec",
+          "source_audio_codec",
+          "source_audio_channels",
+          "source_video_width",
+          "source_video_height",
+          "source_video_details",
+          "source_audio_details",
+          "stream_video_codec",
+          "stream_audio_codec",
+          "stream_video_details",
+          "stream_audio_details",
+          "transcode_info",
+          "subtitle_info",
+          "resolution",
+          "source_video_codec_display",
+          "source_audio_codec_display",
+          "audio_channels_display",
+          "stream_video_codec_display",
+          "stream_audio_codec_display",
+          "device",
+          "player",
+          "product",
+          "platform",
+          "media_id",
+          "show_media_id",
+          "imdb_id",
+          "tmdb_id",
+          "tvdb_id",
+          "rating_key",
+          "parent_rating_key",
+          "grandparent_rating_key",
+          "library_id",
+          "genres"
+        ]
+      },
+      "StreamsSummary": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "transcodes": {
+            "type": "integer"
+          },
+          "direct_streams": {
+            "type": "integer"
+          },
+          "direct_plays": {
+            "type": "integer"
+          },
+          "total_bitrate": {
+            "type": "string",
+            "description": "Human-formatted bitrate; an idle server reports '—'",
+            "example": "45.2 Mbps"
+          },
+          "by_server": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StreamsServerSummary"
+            },
+            "description": "Only servers with at least one active session appear"
+          }
+        },
+        "required": [
+          "total",
+          "transcodes",
+          "direct_streams",
+          "direct_plays",
+          "total_bitrate",
+          "by_server"
+        ]
+      },
+      "StreamsServerSummary": {
+        "type": "object",
+        "properties": {
+          "server_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "transcodes": {
+            "type": "integer"
+          },
+          "direct_streams": {
+            "type": "integer"
+          },
+          "direct_plays": {
+            "type": "integer"
+          },
+          "total_bitrate": {
+            "type": "string",
+            "description": "Human-formatted bitrate; an idle server reports '—'",
+            "example": "45.2 Mbps"
+          }
+        },
+        "required": [
+          "server_id",
+          "server_name",
+          "total",
+          "transcodes",
+          "direct_streams",
+          "direct_plays",
+          "total_bitrate"
+        ]
+      },
+      "MediaResource": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Canonical media id"
+          },
+          "media_type": {
+            "type": "string",
+            "example": "movie"
+          },
+          "title": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer",
+            "nullable": true
+          },
+          "imdb_id": {
+            "type": "string",
+            "nullable": true,
+            "example": "tt1375666"
+          },
+          "tmdb_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "tvdb_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "genres": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "show_media_id": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid",
+            "description": "Canonical id of the parent show (seasons and episodes)"
+          },
+          "merged_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Other media ids that were merged into this one"
+          },
+          "availability": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MediaAvailability"
+            },
+            "description": "One entry per server library row, tombstones included"
+          },
+          "season_count": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Shows only: seasons with at least one non-removed library item"
+          },
+          "episode_count": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Shows only: episodes with at least one non-removed library item"
+          }
+        },
+        "required": [
+          "id",
+          "media_type",
+          "title",
+          "year",
+          "imdb_id",
+          "tmdb_id",
+          "tvdb_id",
+          "genres",
+          "show_media_id",
+          "merged_ids",
+          "availability",
+          "season_count",
+          "episode_count"
+        ]
+      },
+      "MediaAvailability": {
+        "type": "object",
+        "properties": {
+          "server_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "server_type": {
+            "type": "string",
+            "enum": [
+              "plex",
+              "jellyfin",
+              "emby"
+            ]
+          },
+          "library_id": {
+            "type": "string",
+            "description": "The server's library identifier"
+          },
+          "rating_key": {
+            "type": "string",
+            "description": "Server-specific media id"
+          },
+          "added_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Server-reported added date"
+          },
+          "removed_at": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time",
+            "description": "Set when the item was removed from the server; null when present"
+          },
+          "video_resolution": {
+            "type": "string",
+            "nullable": true,
+            "description": "The best version's resolution as a lowercase token (8k, 4k, 1440p, 1080p, 720p, 480p, sd; unrecognized server labels pass through verbatim). Null on show rows, which carry no file of their own",
+            "example": "4k"
+          },
+          "file_size": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Bytes, summed across the copy's active versions. Null on show rows. A removed copy (removed_at set) keeps its last-known size while its versions list is empty"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MediaVersion"
+            },
+            "description": "Physical files of this copy, largest first. A freshly-migrated item shows one placeholder version mirroring the flat fields until its next full library sync"
+          }
+        },
+        "required": [
+          "server_id",
+          "server_type",
+          "library_id",
+          "rating_key",
+          "added_at",
+          "removed_at",
+          "video_resolution",
+          "file_size",
+          "versions"
+        ]
+      },
+      "MediaVersion": {
+        "type": "object",
+        "properties": {
+          "resolution": {
+            "type": "string",
+            "nullable": true,
+            "example": "1080p"
+          },
+          "video_codec": {
+            "type": "string",
+            "nullable": true,
+            "example": "HEVC"
+          },
+          "audio_codec": {
+            "type": "string",
+            "nullable": true,
+            "example": "EAC3"
+          },
+          "dynamic_range": {
+            "type": "string",
+            "nullable": true,
+            "example": "hdr10"
+          },
+          "container": {
+            "type": "string",
+            "nullable": true,
+            "example": "mkv"
+          },
+          "file_size": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Bytes for this file"
+          }
+        },
+        "required": [
+          "resolution",
+          "video_codec",
+          "audio_codec",
+          "dynamic_range",
+          "container",
+          "file_size"
+        ]
+      },
+      "MediaChildrenResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MediaChild"
+            }
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "MediaChild": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "media_type": {
+            "type": "string",
+            "enum": [
+              "season",
+              "episode"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "season_number": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Seasons only"
+          },
+          "episode_count": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Seasons only"
+          },
+          "episode_number": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Episodes only"
+          },
+          "imdb_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "Episodes only"
+          },
+          "tmdb_id": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Episodes only"
+          },
+          "tvdb_id": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Episodes only"
+          },
+          "show_media_id": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "genres": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "media_type",
+          "title",
+          "season_number",
+          "episode_count",
+          "episode_number",
+          "imdb_id",
+          "tmdb_id",
+          "tvdb_id",
+          "show_media_id",
+          "genres"
+        ]
+      },
+      "MediaStatsResponse": {
+        "type": "object",
+        "properties": {
+          "media_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "media_type": {
+            "type": "string",
+            "example": "movie"
+          },
+          "windows": {
+            "type": "object",
+            "properties": {
+              "all_time": {
+                "$ref": "#/components/schemas/StatWindow"
+              },
+              "last_30": {
+                "$ref": "#/components/schemas/StatWindow"
+              },
+              "last_7": {
+                "$ref": "#/components/schemas/StatWindow"
+              }
+            },
+            "required": [
+              "all_time",
+              "last_30",
+              "last_7"
+            ]
+          }
+        },
+        "required": [
+          "media_id",
+          "media_type",
+          "windows"
+        ]
+      },
+      "StatWindow": {
+        "type": "object",
+        "properties": {
+          "combined": {
+            "type": "object",
+            "properties": {
+              "plays": {
+                "type": "integer",
+                "description": "Resume chains whose first session reached 2 minutes, from the daily rollup. Plays on media Tracearr could not identify are not counted. Season refs compute live from sessions instead and count a chain when ANY segment reaches 2 minutes, so a season total can exceed the sum of its episodes"
+              },
+              "watch_time_ms": {
+                "type": "integer",
+                "description": "Milliseconds summed across sessions that individually reached 2 minutes"
+              },
+              "unique_users": {
+                "type": "integer",
+                "description": "Distinct Tracearr identities with at least 2 minutes watched; one person on many servers counts once. Can exceed what plays implies, since a chain only counts as a play when its first session qualifies"
+              }
+            },
+            "required": [
+              "plays",
+              "watch_time_ms",
+              "unique_users"
+            ]
+          },
+          "per_server": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StatServerMeasures"
+            }
+          }
+        },
+        "required": [
+          "combined",
+          "per_server"
+        ]
+      },
+      "StatServerMeasures": {
+        "type": "object",
+        "properties": {
+          "server_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "server_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "plays": {
+            "type": "integer"
+          },
+          "watch_time_ms": {
+            "type": "integer"
+          },
+          "unique_users": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "server_id",
+          "server_name",
+          "plays",
+          "watch_time_ms",
+          "unique_users"
+        ]
+      },
+      "MediaWatchersResponse": {
+        "type": "object",
+        "properties": {
+          "media_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "window": {
+            "type": "string",
+            "enum": [
+              "all_time",
+              "last_30",
+              "last_7"
+            ]
+          },
+          "watchers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Watcher"
+            }
+          }
+        },
+        "required": [
+          "media_id",
+          "media_type",
+          "window",
+          "watchers"
+        ]
+      },
+      "Watcher": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/WatcherUser"
+          },
+          "plays": {
+            "type": "integer"
+          },
+          "watch_time_ms": {
+            "type": "integer"
+          },
+          "completion_pct": {
+            "type": "number",
+            "nullable": true,
+            "description": "Max progress vs content duration, 0-100, capped",
+            "example": 96.4
+          },
+          "last_watched_day": {
+            "type": "string",
+            "nullable": true,
+            "description": "UTC date, YYYY-MM-DD"
+          },
+          "distinct_episodes_watched": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Shows and seasons only; null for movies and episodes"
+          }
+        },
+        "required": [
+          "user",
+          "plays",
+          "watch_time_ms",
+          "completion_pct",
+          "last_watched_day",
+          "distinct_episodes_watched"
+        ]
+      },
+      "WatcherUser": {
+        "type": "object",
+        "properties": {
+          "server_user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Tracearr identity id"
+          },
+          "username": {
+            "type": "string",
+            "nullable": true,
+            "description": "Account name on the server"
+          },
+          "identity_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Identity display name"
+          }
+        },
+        "required": [
+          "server_user_id",
+          "user_id",
+          "username",
+          "identity_name"
+        ]
+      },
+      "UsersResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserIdentity"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/CursorMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ]
+      },
+      "UserIdentity": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Tracearr identity id"
+          },
+          "username": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "nullable": true,
+            "description": "Tracearr identity email"
+          },
+          "plex_account_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "Linked Plex.tv account id"
+          },
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserAccount"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "email",
+          "plex_account_id",
+          "accounts"
+        ]
+      },
+      "UserAccount": {
+        "type": "object",
+        "properties": {
+          "server_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "server_type": {
+            "type": "string",
+            "enum": [
+              "plex",
+              "jellyfin",
+              "emby"
+            ]
+          },
+          "server_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Tracearr's id for this per-server account"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "The media server's own user identifier",
+            "example": "1234567"
+          },
+          "username": {
+            "type": "string",
+            "description": "Account name on that server"
+          },
+          "removed_at": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time",
+            "description": "Set when the account no longer exists on the server"
+          }
+        },
+        "required": [
+          "server_id",
+          "server_type",
+          "server_user_id",
+          "external_user_id",
+          "username",
+          "removed_at"
+        ]
+      },
+      "UserStatsResponse": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "windows": {
+            "type": "object",
+            "properties": {
+              "all_time": {
+                "type": "object",
+                "properties": {
+                  "plays": {
+                    "type": "integer",
+                    "description": "Resume chains whose first session reached 2 minutes, from the daily rollup. Plays on media Tracearr could not identify are not counted"
+                  },
+                  "watch_time_ms": {
+                    "type": "integer",
+                    "description": "Milliseconds summed across sessions that individually reached 2 minutes"
+                  }
+                },
+                "required": [
+                  "plays",
+                  "watch_time_ms"
+                ]
+              },
+              "last_30": {
+                "type": "object",
+                "properties": {
+                  "plays": {
+                    "type": "integer",
+                    "description": "Resume chains whose first session reached 2 minutes, from the daily rollup. Plays on media Tracearr could not identify are not counted"
+                  },
+                  "watch_time_ms": {
+                    "type": "integer",
+                    "description": "Milliseconds summed across sessions that individually reached 2 minutes"
+                  }
+                },
+                "required": [
+                  "plays",
+                  "watch_time_ms"
+                ]
+              },
+              "last_7": {
+                "type": "object",
+                "properties": {
+                  "plays": {
+                    "type": "integer",
+                    "description": "Resume chains whose first session reached 2 minutes, from the daily rollup. Plays on media Tracearr could not identify are not counted"
+                  },
+                  "watch_time_ms": {
+                    "type": "integer",
+                    "description": "Milliseconds summed across sessions that individually reached 2 minutes"
+                  }
+                },
+                "required": [
+                  "plays",
+                  "watch_time_ms"
+                ]
+              }
+            },
+            "required": [
+              "all_time",
+              "last_30",
+              "last_7"
+            ]
+          },
+          "top_genres": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserGenre"
+            },
+            "description": "Most-played genres across the identity, top 10 by play count. All-time regardless of the windows; a multi-genre title contributes its plays to each of its genres"
+          }
+        },
+        "required": [
+          "user_id",
+          "windows",
+          "top_genres"
+        ]
+      },
+      "UserGenre": {
+        "type": "object",
+        "properties": {
+          "genre": {
+            "type": "string",
+            "example": "Action"
+          },
+          "plays": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "genre",
+          "plays"
+        ]
+      },
+      "RecentlyAddedResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecentlyAddedRecord"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/CursorMeta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ]
+      },
+      "RecentlyAddedRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Library item id"
+          },
+          "server_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "server_type": {
+            "type": "string",
+            "enum": [
+              "plex",
+              "jellyfin",
+              "emby"
+            ]
+          },
+          "library_id": {
+            "type": "string",
+            "description": "The server's library identifier"
+          },
+          "media_type": {
+            "type": "string",
+            "example": "movie"
+          },
+          "title": {
+            "type": "string",
+            "example": "Inception"
+          },
+          "year": {
+            "type": "integer",
+            "nullable": true,
+            "example": 2010
+          },
+          "added_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Server-reported added date"
+          },
+          "removed_at": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time",
+            "description": "Set when the item was removed from the server; null when present"
+          },
+          "media_id": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid",
+            "description": "Canonical media id, shared across servers"
+          },
+          "imdb_id": {
+            "type": "string",
+            "nullable": true,
+            "example": "tt1375666"
+          },
+          "tmdb_id": {
+            "type": "integer",
+            "nullable": true,
+            "example": 27205
+          },
+          "tvdb_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "rating_key": {
+            "type": "string",
+            "nullable": true,
+            "description": "Server-specific media id; null when the server never provided one"
+          },
+          "parent_rating_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "grandparent_rating_key": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "server_id",
+          "server_type",
+          "library_id",
+          "media_type",
+          "title",
+          "year",
+          "added_at",
+          "removed_at",
+          "media_id",
+          "imdb_id",
+          "tmdb_id",
+          "tvdb_id",
+          "rating_key",
+          "parent_rating_key",
+          "grandparent_rating_key"
+        ]
+      },
+      "LibrariesResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LibraryRollup"
+            }
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "LibraryRollup": {
+        "type": "object",
+        "properties": {
+          "server_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "server_type": {
+            "type": "string",
+            "enum": [
+              "plex",
+              "jellyfin",
+              "emby"
+            ]
+          },
+          "library_id": {
+            "type": "string",
+            "description": "The server's library identifier"
+          },
+          "item_count": {
+            "type": "integer",
+            "description": "Total items in the library; season container rows are excluded"
+          },
+          "movie_count": {
+            "type": "integer"
+          },
+          "episode_count": {
+            "type": "integer"
+          },
+          "show_count": {
+            "type": "integer"
+          },
+          "track_count": {
+            "type": "integer"
+          },
+          "total_file_size": {
+            "type": "integer",
+            "description": "Bytes across every version of every title: a title held in both 4K and 1080p contributes both files"
+          },
+          "resolutions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Titles per resolution, each counted once at its best version (a 4K+1080p pair lands only in 4k). Keys are lowercase tokens; containers and items with no recorded resolution key as \"unknown\""
+          }
+        },
+        "required": [
+          "server_id",
+          "server_type",
+          "library_id",
+          "item_count",
+          "movie_count",
+          "episode_count",
+          "show_count",
+          "track_count",
+          "total_file_size",
+          "resolutions"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/api/v2/public/docs": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "OpenAPI specification",
+        "description": "Returns the OpenAPI 3.0 specification for the v2 public API.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Specification retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenApiDocument"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/history": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Watch history as plays",
+        "description": "Cursor-paginated watch history, newest first, one record per play with canonical media identity on every record. A play is one resume chain: sessions are grouped by COALESCE(reference_id, id), where reference_id IS NULL marks the chain start. Chains where no session reaches 2 minutes are excluded (COALESCE(duration_ms, 0) >= 120000). Rating keys the media server never provided are returned as null. The cursor operates on whole plays, so a chain never splits across pages; pass meta.nextCursor as cursor to fetch the next page. An unreadable cursor returns 400.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque cursor from meta.nextCursor"
+            },
+            "required": false,
+            "description": "Opaque cursor from meta.nextCursor",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 100,
+              "default": 25
+            },
+            "required": false,
+            "name": "pageSize",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter by Tracearr user id; matches every account linked to that identity"
+            },
+            "required": false,
+            "description": "Filter by Tracearr user id; matches every account linked to that identity",
+            "name": "user_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter to specific server"
+            },
+            "required": false,
+            "description": "Filter to specific server",
+            "name": "server_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter by canonical media id; ids merged into it are matched too. A show id matches all of its episodes and a season id matches that season, so hierarchy refs scope naturally. An id that resolves to nothing yields an empty page, not an error"
+            },
+            "required": false,
+            "description": "Filter by canonical media id; ids merged into it are matched too. A show id matches all of its episodes and a season id matches that season, so hierarchy refs scope naturally. An id that resolves to nothing yields an empty page, not an error",
+            "name": "media_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "description": "Filter by server rating key"
+            },
+            "required": false,
+            "description": "Filter by server rating key",
+            "name": "rating_key",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20,
+              "example": "tt1375666"
+            },
+            "required": false,
+            "name": "imdb_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "nullable": true
+            },
+            "required": false,
+            "name": "tmdb_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "nullable": true
+            },
+            "required": false,
+            "name": "tvdb_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "movie",
+                "episode",
+                "track",
+                "live",
+                "photo",
+                "unknown"
+              ]
+            },
+            "required": false,
+            "name": "media_type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "Filter by watched state of the play. A play is watched once it crosses the per-media-type completion threshold (default 85%, configurable in settings)"
+            },
+            "required": false,
+            "description": "Filter by watched state of the play. A play is watched once it crosses the per-media-type completion threshold (default 85%, configurable in settings)",
+            "name": "watched",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              ],
+              "description": "Plays with a session starting at or after this instant. Accepts a date-only string (midnight UTC) or a full ISO datetime. The window also scopes the aggregation: duration_ms, segment_count and percent_complete cover only in-window segments"
+            },
+            "required": false,
+            "description": "Plays with a session starting at or after this instant. Accepts a date-only string (midnight UTC) or a full ISO datetime. The window also scopes the aggregation: duration_ms, segment_count and percent_complete cover only in-window segments",
+            "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              ],
+              "description": "Plays with a session starting at or before this instant. Accepts a date-only string (midnight UTC) or a full ISO datetime. Must not precede since, or the request 400s"
+            },
+            "required": false,
+            "description": "Plays with a session starting at or before this instant. Accepts a date-only string (midnight UTC) or a full ISO datetime. Must not precede since, or the request 400s",
+            "name": "until",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "History retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters or cursor, or since is after until"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/streams": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Active streams",
+        "description": "Currently active playback sessions, each carrying the same media identity block as history records (canonical media id, provider ids, rating keys, library id, genres). Stopped streams later appear in /history grouped into plays. A play is one resume chain: sessions are grouped by COALESCE(reference_id, id), where reference_id IS NULL marks the chain start. Chains where no session reaches 2 minutes are excluded (COALESCE(duration_ms, 0) >= 120000). Rating keys the media server never provided are returned as null.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter to specific server"
+            },
+            "required": false,
+            "description": "Filter to specific server",
+            "name": "server_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "If true, returns only summary stats (omits the data array)"
+            },
+            "required": false,
+            "description": "If true, returns only summary stats (omits the data array)",
+            "name": "summary",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active streams retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/media/{ref}": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Media identity and availability",
+        "description": "Resolves a media ref to its canonical identity, the ids merged into it, and per-server availability (including removed copies). Shows also carry season and episode counts. ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "movie:tmdb:584",
+              "description": "ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404."
+            },
+            "required": true,
+            "description": "ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404.",
+            "name": "ref",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Media resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaResource"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "404": {
+            "description": "No media matches the ref"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/media/{ref}/children": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Media children",
+        "description": "Lists a show's seasons (with per-season episode counts) or a season's episodes. Season refs are uuid-only, so a script goes show ref → children → season uuid → children. Movie and episode refs have no children and return 404. ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "movie:tmdb:584",
+              "description": "ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404."
+            },
+            "required": true,
+            "description": "ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404.",
+            "name": "ref",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Children retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaChildrenResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "404": {
+            "description": "Ref is unknown or has no children. A season whose number cannot be derived returns 200 with an empty list instead"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/media/{ref}/stats": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Media play statistics",
+        "description": "Play counts, watch time, and distinct viewers for a media item across all_time, last_30, and last_7 windows, each with a combined total and a per-server breakdown. Movies and episodes roll up by canonical media id; shows roll up their episodes; seasons compute live from raw sessions. Windows are UTC calendar days: `last_7` and `last_30` cover the 7 or 30 most recent UTC days including today (day >= current UTC date - N + 1). Responses are cached for 60 seconds. ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "movie:tmdb:584",
+              "description": "ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404."
+            },
+            "required": true,
+            "description": "ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404.",
+            "name": "ref",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Statistics retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaStatsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "404": {
+            "description": "No media matches the ref"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/media/{ref}/watchers": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Media watchers",
+        "description": "One entry per server account that watched the item, ordered by watch time. Movies and episodes roll up by canonical media id; shows roll up their episodes; seasons compute live from raw sessions. Windows are UTC calendar days: `last_7` and `last_30` cover the 7 or 30 most recent UTC days including today (day >= current UTC date - N + 1). Responses are cached for 60 seconds. ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "movie:tmdb:584",
+              "description": "ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404."
+            },
+            "required": true,
+            "description": "ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404.",
+            "name": "ref",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all_time",
+                "last_30",
+                "last_7"
+              ],
+              "default": "all_time",
+              "description": "UTC calendar window (default all_time)"
+            },
+            "required": false,
+            "description": "UTC calendar window (default all_time)",
+            "name": "window",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter to a single server"
+            },
+            "required": false,
+            "description": "Filter to a single server",
+            "name": "server_id",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Watchers retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaWatchersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "404": {
+            "description": "No media matches the ref"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/media/{ref}/history": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Media watch history",
+        "description": "Cursor-paginated watch history for a single media item, newest first, one record per play. Scoped to the item and any ids merged into it; shows include every episode, seasons the episodes of that season. A play is one resume chain: sessions are grouped by COALESCE(reference_id, id), where reference_id IS NULL marks the chain start. Chains where no session reaches 2 minutes are excluded (COALESCE(duration_ms, 0) >= 120000). Rating keys the media server never provided are returned as null. ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "movie:tmdb:584",
+              "description": "ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404."
+            },
+            "required": true,
+            "description": "ref is a canonical media uuid or a type-qualified provider ref: `{movie|show|episode}:{imdb|tmdb|tvdb}:{id}` (e.g. `movie:tmdb:584`, `show:tvdb:81189`). Seasons have no provider ref; reach a season uuid through a show's children, then pass that uuid here. A uuid that was merged into another id resolves to the canonical winner. An unparseable ref, an unknown provider id, or a missing uuid returns 404.",
+            "name": "ref",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque cursor from meta.nextCursor"
+            },
+            "required": false,
+            "description": "Opaque cursor from meta.nextCursor",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 100,
+              "default": 25
+            },
+            "required": false,
+            "name": "pageSize",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "History retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters or cursor"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "404": {
+            "description": "No media matches the ref"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/users": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Identities with account correlation",
+        "description": "Cursor-paginated Tracearr identities, newest first, each with the media-server accounts it owns. Correlation is Tracearr-side. Media servers do not expose their users' email addresses, so `email` here is the email held on the Tracearr identity (null when unset). `external_user_id` is the media server's own user identifier (Plex numeric account id, Emby/Jellyfin user GUID); it is the stable key integrators should correlate on. One identity can own accounts on several servers; those rows are collapsed to a single identity here.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque cursor from meta.nextCursor"
+            },
+            "required": false,
+            "description": "Opaque cursor from meta.nextCursor",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 100,
+              "default": 25
+            },
+            "required": false,
+            "name": "pageSize",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "default": false,
+              "description": "Include identities whose every account has been removed. Defaults to false. Identities with no media-server account at all never appear here (fetch them by id instead)"
+            },
+            "required": false,
+            "description": "Include identities whose every account has been removed. Defaults to false. Identities with no media-server account at all never appear here (fetch them by id instead)",
+            "name": "include_removed",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Identities retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters or cursor"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/users/{id}": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "One identity",
+        "description": "Resolves a Tracearr identity id to its correlation block. Correlation is Tracearr-side. Media servers do not expose their users' email addresses, so `email` here is the email held on the Tracearr identity (null when unset). `external_user_id` is the media server's own user identifier (Plex numeric account id, Emby/Jellyfin user GUID); it is the stable key integrators should correlate on. One identity can own accounts on several servers; those rows are collapsed to a single identity here.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Tracearr identity id"
+            },
+            "required": true,
+            "description": "Tracearr identity id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Identity retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserIdentity"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id is not a valid uuid"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "404": {
+            "description": "No identity matches the id"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/users/{id}/stats": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Identity play statistics",
+        "description": "Plays and watch time for an identity, summed across every account it owns, over all_time, last_30, and last_7 UTC-day windows, plus its top genres by play count. Windows are UTC calendar days: `last_7` and `last_30` cover the 7 or 30 most recent UTC days including today (day >= current UTC date - N + 1). Responses are cached for 60 seconds.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Tracearr identity id"
+            },
+            "required": true,
+            "description": "Tracearr identity id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Statistics retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserStatsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id is not a valid uuid"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "404": {
+            "description": "No identity matches the id"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/users/{id}/history": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Identity watch history",
+        "description": "Cursor-paginated watch history for an identity, newest first, one record per play, scoped to every account the identity owns. A play is one resume chain: sessions are grouped by COALESCE(reference_id, id), where reference_id IS NULL marks the chain start. Chains where no session reaches 2 minutes are excluded (COALESCE(duration_ms, 0) >= 120000). Rating keys the media server never provided are returned as null.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Tracearr identity id"
+            },
+            "required": true,
+            "description": "Tracearr identity id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque cursor from meta.nextCursor"
+            },
+            "required": false,
+            "description": "Opaque cursor from meta.nextCursor",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 100,
+              "default": 25
+            },
+            "required": false,
+            "name": "pageSize",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "History retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters or cursor"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "404": {
+            "description": "No identity matches the id"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/recently-added": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Recently added library items",
+        "description": "Cursor-paginated library items ordered by server-reported added date, newest first, each with its media identity block. Removed items are excluded unless include_removed is set. The cursor pages on the whole (added_at, id) tuple, so items sharing an added timestamp (the common case after a bulk sync) page without skips or duplicates.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque cursor from meta.nextCursor"
+            },
+            "required": false,
+            "description": "Opaque cursor from meta.nextCursor",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 100,
+              "default": 25
+            },
+            "required": false,
+            "name": "pageSize",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Filter to specific server"
+            },
+            "required": false,
+            "description": "Filter to specific server",
+            "name": "server_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "Filter to a server's library id"
+            },
+            "required": false,
+            "description": "Filter to a server's library id",
+            "name": "library_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "movie",
+                "episode",
+                "season",
+                "show",
+                "artist",
+                "album",
+                "track",
+                "photo"
+              ],
+              "description": "Filter by library item type"
+            },
+            "required": false,
+            "description": "Filter by library item type",
+            "name": "media_type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "Include items removed from the server (tombstones)"
+            },
+            "required": false,
+            "description": "Include items removed from the server (tombstones)",
+            "name": "include_removed",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Items retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecentlyAddedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters or cursor"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    },
+    "/api/v2/public/libraries": {
+      "get": {
+        "tags": [
+          "Public API v2"
+        ],
+        "summary": "Per-library rollups",
+        "description": "Item, movie, episode, show, and track counts, total file size, and per-resolution counts for each server library. Items removed from the server are excluded. Cached for 60 seconds.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rollups retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibrariesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "API key is not associated with an owner account"
+          },
+          "429": {
+            "description": "Rate limit exceeded for this key's shared budget across the whole v2 surface"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,165 @@
+[
+  {
+    "name": "health-unauth",
+    "request": {
+      "method": "GET",
+      "path": "/health",
+      "headers": {}
+    },
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "rate_limit_headers": {
+      "x-ratelimit-limit": "1000",
+      "x-ratelimit-remaining": "999",
+      "x-ratelimit-reset": "60"
+    },
+    "body": {
+      "status": "ok",
+      "mode": "ready",
+      "db": true,
+      "redis": true,
+      "geoip": true,
+      "tailscale": "disabled",
+      "timescale": {
+        "installed": true,
+        "hypertable": true,
+        "compression": true,
+        "aggregates": 3,
+        "chunks": 58,
+        "compressionDegraded": false
+      }
+    }
+  },
+  {
+    "name": "v1-health-noauth",
+    "request": {
+      "method": "GET",
+      "path": "/api/v1/public/health",
+      "headers": {}
+    },
+    "status": 401,
+    "content_type": "application/json; charset=utf-8",
+    "rate_limit_headers": {
+      "x-ratelimit-limit": "1000",
+      "x-ratelimit-remaining": "998",
+      "x-ratelimit-reset": "60"
+    },
+    "body": {
+      "statusCode": 401,
+      "error": "UnauthorizedError",
+      "message": "Missing or invalid Authorization header"
+    }
+  },
+  {
+    "name": "v1-health-badkey",
+    "request": {
+      "method": "GET",
+      "path": "/api/v1/public/health",
+      "headers": {
+        "authorization": "Bearer <REDACTED>"
+      }
+    },
+    "status": 401,
+    "content_type": "application/json; charset=utf-8",
+    "rate_limit_headers": {
+      "x-ratelimit-limit": "1000",
+      "x-ratelimit-remaining": "997",
+      "x-ratelimit-reset": "60"
+    },
+    "body": {
+      "statusCode": 401,
+      "error": "UnauthorizedError",
+      "message": "Invalid API key"
+    }
+  },
+  {
+    "name": "v1-health-badformat",
+    "request": {
+      "method": "GET",
+      "path": "/api/v1/public/health",
+      "headers": {
+        "authorization": "Bearer <REDACTED>"
+      }
+    },
+    "status": 401,
+    "content_type": "application/json; charset=utf-8",
+    "rate_limit_headers": {
+      "x-ratelimit-limit": "1000",
+      "x-ratelimit-remaining": "996",
+      "x-ratelimit-reset": "60"
+    },
+    "body": {
+      "statusCode": 401,
+      "error": "UnauthorizedError",
+      "message": "Invalid API key format"
+    }
+  },
+  {
+    "name": "v2-history-noauth",
+    "request": {
+      "method": "GET",
+      "path": "/api/v2/public/history?pageSize=5",
+      "headers": {}
+    },
+    "status": 401,
+    "content_type": "application/json; charset=utf-8",
+    "rate_limit_headers": {
+      "x-ratelimit-limit": "240",
+      "x-ratelimit-remaining": "239",
+      "x-ratelimit-reset": "60"
+    },
+    "body": {
+      "statusCode": 401,
+      "error": "UnauthorizedError",
+      "message": "Missing or invalid Authorization header"
+    }
+  },
+  {
+    "name": "v2-docs-noauth",
+    "request": {
+      "method": "GET",
+      "path": "/api/v2/public/docs",
+      "headers": {}
+    },
+    "status": 401,
+    "content_type": "application/json; charset=utf-8",
+    "rate_limit_headers": {
+      "x-ratelimit-limit": "240",
+      "x-ratelimit-remaining": "238",
+      "x-ratelimit-reset": "60"
+    },
+    "body": {
+      "statusCode": 401,
+      "error": "UnauthorizedError",
+      "message": "Missing or invalid Authorization header"
+    }
+  },
+  {
+    "name": "unknown-api-path-404",
+    "request": {
+      "method": "GET",
+      "path": "/api/v1/public/does-not-exist",
+      "headers": {}
+    },
+    "status": 404,
+    "content_type": "application/json; charset=utf-8",
+    "rate_limit_headers": {},
+    "body": {
+      "error": "Not Found"
+    }
+  },
+  {
+    "name": "unknown-version-404",
+    "request": {
+      "method": "GET",
+      "path": "/api/v3/public/history",
+      "headers": {}
+    },
+    "status": 404,
+    "content_type": "application/json; charset=utf-8",
+    "rate_limit_headers": {},
+    "body": {
+      "error": "Not Found"
+    }
+  }
+]
