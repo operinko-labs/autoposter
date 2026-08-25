@@ -183,6 +183,17 @@ export function Mismatches() {
             no path on disk and could not be compared.
           </p>
         )}
+        {result !== null && result.arr_unreleased > 0 && (
+          <p className="mismatch-note">
+            {result.arr_unreleased} Radarr/Sonarr entr{result.arr_unreleased === 1 ? "y has" : "ies have"}{" "}
+            no file on disk yet and {result.arr_unreleased === 1 ? "was" : "were"} not compared.
+          </p>
+        )}
+        {result !== null && result.excluded_libraries.length > 0 && (
+          <p className="mismatch-note">
+            Excluded from the Plex walk: {result.excluded_libraries.join(", ")}.
+          </p>
+        )}
       </div>
 
       {error !== null && <p className="page-error">{error}</p>}

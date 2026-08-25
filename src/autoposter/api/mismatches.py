@@ -19,12 +19,21 @@ misassignment guard already uses, through the same ``source_path``/``map_path``
 Three groups come out of it:
 
 * ``mismatched`` -- one folder, both records, at least one id disagreeing.
-* ``arr_only`` -- a folder the service manages and Plex has nothing for. At
-  series level this is the unmatched-episode-family catcher: every episode
-  under such a folder fails to resolve, one job at a time.
+* ``arr_only`` -- a folder the service manages, has media on disk for, and
+  Plex has nothing for. At series level this is the unmatched-episode-family
+  catcher: every episode under such a folder fails to resolve, one job at a
+  time. An entry the service manages but has not downloaded yet (an upcoming
+  movie, a season that has not aired) is not reported here -- Plex cannot
+  possibly have it either, so it is not a disagreement. It is counted in
+  ``arr_unreleased`` instead, the same "counted, not dropped" principle as
+  ``unmapped``/``arr_unmapped`` below. A path-matched pair is unaffected by
+  this check either way -- an unreleased item that somehow matched a Plex
+  item is still exactly the disagreement this view exists to surface.
 * ``plex_only`` -- a Plex item under the configured root that the service has
   never registered. (An item *outside* that root is not something the service
-  manages at all, so it is counted in ``unmapped`` rather than reported.)
+  manages at all, so it is counted in ``unmapped`` rather than reported.) A
+  library named in ``config.plex.excluded_libraries`` is not walked at all --
+  those are deliberately out of scope, not a finding.
 
 Everything is computed live, per request: two listings and one walk per Plex
 type, which is seconds. There is deliberately no cache and no background job --
@@ -69,6 +78,29 @@ ID_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
 # The item kind each service is about, and the Plex section type holding it.
 ITEM_KIND = {"radarr": "movie", "sonarr": "series"}
 PLEX_TYPE = {"radarr": "movie", "sonarr": "show"}
+
+
+def _arr_has_media(service: str, entry: dict) -> bool:
+    """Whether the service actually holds a file for this entry, not merely
+    a tracked id.
+
+    An operator adds upcoming movies and shows to Radarr/Sonarr routinely --
+    that is the whole point of the services -- and Plex cannot possibly have
+    matched something that has not been downloaded yet. Reporting such an
+    entry as ``arr_only`` would flag ordinary future scheduling as a fault.
+
+    Radarr's movie listing carries ``hasFile`` directly. Sonarr's series
+    listing has no single flag -- a series can be partly aired -- so
+    ``statistics.episodeFileCount`` (present whenever the instance has
+    computed statistics for the series) stands in: any file at all means the
+    service has *something* on disk for it.
+    """
+    if service == "radarr":
+        return bool(entry.get("hasFile"))
+    if service == "sonarr":
+        stats = entry.get("statistics") or {}
+        return bool(stats.get("episodeFileCount"))
+    return False
 
 
 def _normalise(agent: str, value) -> str | None:
@@ -154,7 +186,9 @@ def _row(
     }
 
 
-async def _compare(service: str, kind: ArrKind, service_cfg, api_key: str, http, plex) -> dict:
+async def _compare(
+    service: str, kind: ArrKind, service_cfg, api_key: str, http, plex, excluded_libraries: set[str]
+) -> dict:
     """One service against its Plex sections.
 
     Raises ``ArrSyncRefused`` when the service's own root folders share no
@@ -203,6 +237,12 @@ async def _compare(service: str, kind: ArrKind, service_cfg, api_key: str, http,
     unmapped = 0
 
     for item in items:
+        if item.library in excluded_libraries:
+            # Deliberately out of scope -- mirrors the same check
+            # `make_arr_sync_job` runs before syncing a section, so a library
+            # an operator excluded there (a DVR library, say) does not
+            # reappear here as `plex_only` noise.
+            continue
         mapped = map_path(source_path(item, kind), service_cfg.plex_path, service_cfg.arr_path)
         if mapped is None:
             # Under some other root entirely -- another mount, another library.
@@ -248,14 +288,23 @@ async def _compare(service: str, kind: ArrKind, service_cfg, api_key: str, http,
                 )
             )
 
-    arr_only = [
-        _row(
-            service, path, item=None, entry=entry,
-            arr_ids=_arr_ids(service, entry), plex_ids={}, differing=[],
+    arr_only: list[dict] = []
+    arr_unreleased = 0
+    for path, entry in by_path.items():
+        if path in matched:
+            continue
+        if not _arr_has_media(service, entry):
+            # Counted rather than dropped, same principle as arr_unmapped and
+            # unmapped: an upcoming movie or an unaired season is not a
+            # disagreement, but it must not vanish from the totals either.
+            arr_unreleased += 1
+            continue
+        arr_only.append(
+            _row(
+                service, path, item=None, entry=entry,
+                arr_ids=_arr_ids(service, entry), plex_ids={}, differing=[],
+            )
         )
-        for path, entry in by_path.items()
-        if path not in matched
-    ]
 
     return {
         "mismatched": mismatched,
@@ -263,6 +312,7 @@ async def _compare(service: str, kind: ArrKind, service_cfg, api_key: str, http,
         "plex_only": plex_only,
         "unmapped": unmapped,
         "arr_unmapped": arr_unmapped,
+        "arr_unreleased": arr_unreleased,
     }
 
 
@@ -279,7 +329,11 @@ async def id_mismatches(request: Request, _: SessionModel = Depends(require_sess
     was never asked would report the entire library as ``plex_only``. A service
     whose root folders share no tree with the configured arr path is named in
     ``refused`` for the same reason: comparing against the wrong instance would
-    report the whole library as arr_only and plex_only at once.
+    report the whole library as arr_only and plex_only at once. A library named
+    in ``config.plex.excluded_libraries`` is never walked at all -- deliberately
+    out of scope, not a finding -- and the configured list is echoed back as
+    ``excluded_libraries`` so the page can say why it went unmentioned rather
+    than reading as clean.
     """
     plex = request.app.state.plex
     http = request.app.state.http
@@ -288,12 +342,14 @@ async def id_mismatches(request: Request, _: SessionModel = Depends(require_sess
 
     config = request.app.state.config_holder.current
     secrets = request.app.state.secrets
+    excluded_libraries = set(config.plex.excluded_libraries)
 
     groups: dict[str, list[dict]] = {"mismatched": [], "arr_only": [], "plex_only": []}
     skipped: list[str] = []
     refused: dict[str, str] = {}
     unmapped = 0
     arr_unmapped = 0
+    arr_unreleased = 0
 
     for kind, service_cfg, api_key in (
         (RADARR, config.radarr, secrets.radarr_apikey),
@@ -303,7 +359,7 @@ async def id_mismatches(request: Request, _: SessionModel = Depends(require_sess
             skipped.append(kind.name)
             continue
         try:
-            result = await _compare(kind.name, kind, service_cfg, api_key, http, plex)
+            result = await _compare(kind.name, kind, service_cfg, api_key, http, plex, excluded_libraries)
         except ArrSyncRefused as exc:
             logger.warning("id-mismatches: %s refused: %s", kind.name, exc)
             refused[kind.name] = str(exc)
@@ -312,6 +368,7 @@ async def id_mismatches(request: Request, _: SessionModel = Depends(require_sess
             groups[group].extend(result[group])
         unmapped += result["unmapped"]
         arr_unmapped += result["arr_unmapped"]
+        arr_unreleased += result["arr_unreleased"]
 
     counts = {group: len(rows) for group, rows in groups.items()}
     total = sum(counts.values())
@@ -334,4 +391,6 @@ async def id_mismatches(request: Request, _: SessionModel = Depends(require_sess
         "refused": refused,
         "unmapped": unmapped,
         "arr_unmapped": arr_unmapped,
+        "arr_unreleased": arr_unreleased,
+        "excluded_libraries": sorted(excluded_libraries),
     }

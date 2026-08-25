@@ -53,20 +53,20 @@ class FakePlexClient:
 
 def movie(
     rating_key="1", title="Dune", year=2021,
-    location="/mnt/Media/Movies/Dune (2021)/dune.mkv", **guids,
+    location="/mnt/Media/Movies/Dune (2021)/dune.mkv", library="Movies", **guids,
 ) -> SectionItem:
     return SectionItem(
-        rating_key=rating_key, library="Movies", title=title, year=year,
+        rating_key=rating_key, library=library, title=title, year=year,
         locations=[location], guids=guids,
     )
 
 
 def show(
     rating_key="9", title="Severance", year=2022,
-    location="/mnt/Media/TV/Severance", **guids,
+    location="/mnt/Media/TV/Severance", library="TV", **guids,
 ) -> SectionItem:
     return SectionItem(
-        rating_key=rating_key, library="TV", title=title, year=year,
+        rating_key=rating_key, library=library, title=title, year=year,
         locations=[location], guids=guids,
     )
 
@@ -311,7 +311,10 @@ async def test_an_arr_entry_with_no_plex_item_is_arr_only(client, auth_headers, 
         shows=[show(location="/mnt/Media/TV/Severance", tvdb="371980")],
         sonarr=[
             {"title": "Severance", "path": "/mnt/media/TV/Severance", "tvdbId": 371980},
-            {"title": "Andor", "path": "/mnt/media/TV/Andor", "tvdbId": 393199},
+            {
+                "title": "Andor", "path": "/mnt/media/TV/Andor", "tvdbId": 393199,
+                "statistics": {"episodeFileCount": 12},
+            },
         ],
     )
 
@@ -324,6 +327,86 @@ async def test_an_arr_entry_with_no_plex_item_is_arr_only(client, auth_headers, 
     assert row["path"] == "/mnt/media/TV/Andor"
     assert row["rating_key"] is None
     assert row["plex_ids"] == {}
+
+
+async def test_a_released_radarr_entry_with_no_plex_item_is_arr_only(
+    client, auth_headers, wire
+):
+    """The ordinary case, pinning ``hasFile`` as the field that gates it:
+    Radarr already has the file on disk, so its absence from Plex is a real
+    finding."""
+    wire(
+        radarr=[{
+            "title": "Dune", "path": "/mnt/media/Movies/Dune (2021)",
+            "tmdbId": 438631, "hasFile": True,
+        }],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert body["counts"]["arr_only"] == 1
+    assert body["arr_unreleased"] == 0
+    row = body["arr_only"][0]
+    assert row["arr_title"] == "Dune"
+
+
+async def test_an_unreleased_radarr_entry_with_no_plex_item_is_counted_not_listed(
+    client, auth_headers, wire
+):
+    """An operator adds upcoming movies to Radarr routinely -- Plex cannot
+    possibly have matched something that has not been downloaded yet, so this
+    must not surface as an ``arr_only`` finding. It is still counted, the
+    same "counted, not dropped" principle as ``arr_unmapped``."""
+    wire(
+        radarr=[{
+            "title": "Dune: Part Three", "path": "/mnt/media/Movies/Dune Part Three",
+            "tmdbId": 1234567, "hasFile": False,
+        }],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert body["counts"]["arr_only"] == 0
+    assert body["arr_only"] == []
+    assert body["arr_unreleased"] == 1
+
+
+async def test_a_sonarr_entry_missing_statistics_entirely_is_treated_as_unreleased(
+    client, auth_headers, wire
+):
+    """Defensive default: an entry with no ``statistics`` key at all (an
+    unusual instance, or a field renamed upstream) must not be assumed
+    available -- the safe default is "not on disk", not "arr_only"."""
+    wire(
+        sonarr=[{"title": "Andor", "path": "/mnt/media/TV/Andor", "tvdbId": 393199}],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert body["counts"]["arr_only"] == 0
+    assert body["arr_unreleased"] == 1
+
+
+async def test_an_unreleased_arr_entry_that_matches_a_plex_item_is_unaffected(
+    client, auth_headers, wire
+):
+    """Path-matched pairs are unaffected by the availability check either
+    way: an unreleased movie that somehow matched a Plex item is still
+    exactly the disagreement (or agreement) this view exists to surface, not
+    something the availability gate should hide or double-count."""
+    wire(
+        movies=[movie(tmdb="438631")],
+        radarr=[{
+            "title": "Dune", "path": "/mnt/media/Movies/Dune (2021)",
+            "tmdbId": 438631, "hasFile": False,
+        }],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert body["mismatched"] == []
+    assert body["counts"]["arr_only"] == 0
+    assert body["arr_unreleased"] == 0
 
 
 async def test_a_plex_item_with_no_arr_entry_is_plex_only(client, auth_headers, wire):
@@ -489,6 +572,46 @@ async def test_an_arr_instance_that_overlaps_is_not_refused(client, auth_headers
     assert body["counts"]["mismatched"] == 1
 
 
+# --- excluded Plex libraries --------------------------------------------------
+
+
+async def test_an_excluded_plex_library_is_not_reported_as_plex_only(
+    client, auth_headers, wire, app
+):
+    """Mirrors ``make_arr_sync_job``'s own exclusion check: a library an
+    operator has deliberately excluded (a DVR library, say) must not surface
+    its unregistered items as ``plex_only`` noise."""
+    app.state.config_holder.current.plex.excluded_libraries = ["DVR"]
+    wire(
+        movies=[
+            movie(rating_key="1", title="Dune"),
+            movie(
+                rating_key="2", title="Recording", library="DVR",
+                location="/mnt/Media/Movies/Recording (2025)/r.mkv", tmdb="999999",
+            ),
+        ],
+        radarr=[{"title": "Dune", "path": "/mnt/media/Movies/Dune (2021)", "tmdbId": 438631}],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert body["counts"]["plex_only"] == 0
+    assert body["plex_only"] == []
+    assert body["excluded_libraries"] == ["DVR"]
+
+
+async def test_no_excluded_libraries_echoes_an_empty_list(client, auth_headers, wire, app):
+    app.state.config_holder.current.plex.excluded_libraries = []
+    wire(
+        movies=[movie(tmdb="438631")],
+        radarr=[{"title": "Dune", "path": "/mnt/media/Movies/Dune (2021)", "tmdbId": 438631}],
+    )
+
+    body = await get(client, auth_headers)
+
+    assert body["excluded_libraries"] == []
+
+
 # --- what must never be in the response --------------------------------------
 
 
@@ -534,6 +657,7 @@ async def test_rows_are_capped_while_the_counts_report_everything(
         if group != "plex_only":
             entries.append({
                 "title": f"Film {index}", "path": arr_path, "tmdbId": 900000 + index,
+                "hasFile": True,
             })
     wire(movies=movies, radarr=entries)
 

@@ -181,7 +181,13 @@ export interface IdMismatchRow {
  * reporting its whole library as arr_only and plex_only at once. `unmapped`
  * counts Plex items outside the configured root, which the service does not
  * manage and whose absence there is therefore not a finding; `arr_unmapped`
- * is the same idea from the other side -- arr entries with no path at all. */
+ * is the same idea from the other side -- arr entries with no path at all.
+ * `arr_unreleased` counts arr entries the service manages but has not
+ * downloaded yet (an upcoming movie, an unaired season) -- Plex cannot
+ * possibly have matched those either, so they are not `arr_only` findings,
+ * just a count. `excluded_libraries` echoes `config.plex.excluded_libraries`
+ * -- those libraries are never walked, so their absence from `plex_only` is
+ * deliberate rather than a sign everything there is registered. */
 export interface IdMismatchesResponse {
   mismatched: IdMismatchRow[];
   arr_only: IdMismatchRow[];
@@ -193,6 +199,8 @@ export interface IdMismatchesResponse {
   refused: Record<string, string>;
   unmapped: number;
   arr_unmapped: number;
+  arr_unreleased: number;
+  excluded_libraries: string[];
 }
 
 /** GET /api/collections.

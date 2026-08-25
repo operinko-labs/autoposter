@@ -55,6 +55,8 @@ function body(overrides: Record<string, unknown> = {}) {
     refused: {},
     unmapped: 0,
     arr_unmapped: 0,
+    arr_unreleased: 0,
+    excluded_libraries: [],
     ...overrides,
   };
   return new Response(JSON.stringify(base), {
@@ -199,6 +201,31 @@ describe("Mismatches", () => {
     // Otherwise an empty result reads as "Sonarr is clean" when Sonarr was
     // never asked.
     expect(await screen.findByText(/Not scanned: sonarr/)).toBeInTheDocument();
+  });
+
+  it("names Radarr/Sonarr entries with no file on disk yet", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(body({ arr_unreleased: 2 })));
+
+    render(<Mismatches />);
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+
+    expect(
+      await screen.findByText(/2 Radarr\/Sonarr entries have no file on disk yet/),
+    ).toBeInTheDocument();
+  });
+
+  it("names the Plex libraries excluded from the walk", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(body({ excluded_libraries: ["DVR", "Home Videos"] })),
+    );
+
+    render(<Mismatches />);
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+
+    expect(
+      await screen.findByText(/Excluded from the Plex walk: DVR, Home Videos/),
+    ).toBeInTheDocument();
   });
 
   it("disables the button while the scan is running", async () => {
