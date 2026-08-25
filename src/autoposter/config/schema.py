@@ -685,9 +685,9 @@ class CollectionsConfig(BaseModel):
             if preset.readiness == GATED:
                 raise ValueError(
                     f"the {key!r} preset is in the catalog but is not ready to "
-                    f"build: it needs roadmap row {preset.gated_row}, which has "
-                    "not landed. Refused here rather than accepted as a key that "
-                    "would silently build no collections at all"
+                    f"build: it needs roadmap row {preset.gated_row}. Refused "
+                    "here rather than accepted as a key that would silently "
+                    "build no collections at all"
                 )
         return self
 

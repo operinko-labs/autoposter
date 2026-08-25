@@ -105,9 +105,18 @@ def _managed_titles(config, library_type: str) -> list[str]:
     titles: list[str] = []
     for definition in default_definitions(config, library_type):
         builder = REGISTRY[definition.builder]
-        if getattr(builder, "smart", False):
+        smart = getattr(builder, "smart", False)
+        pattern = getattr(builder, "TITLE_PATTERN", None)
+        if not smart and pattern is None:
+            # Both reads have a default, so a builder that owns a FAMILY of
+            # titles but has lost its ``smart`` flag would be probed as a
+            # single title and could hide a collision -- the one way this
+            # helper can be silently weakened. A family builder is
+            # recognisable without the flag: it carries ``titles``.
+            assert not hasattr(builder, "titles"), definition.builder
+        if smart:
             titles += sorted(builder.titles(library_type, config))
-        elif getattr(builder, "TITLE_PATTERN", None) is not None:
+        elif pattern is not None:
             continue
         else:
             titles.append(definition.title)
@@ -247,6 +256,52 @@ def test_award_narrowing_keys_must_be_real_awards_of_their_event(monkeypatch):
         catalog._check_award_narrowing()
 
 
+def test_a_collection_may_not_widen_its_presets_library_types(monkeypatch):
+    """Import-time guard (``catalog._check_collection_library_types``), proven
+    on a table written for it, because no shipped row violates it.
+
+    The invariant matters because ``Preset.definitions`` reads
+    ``collection.library_types or self.library_types`` -- bypassing the
+    preset's own types -- while ``titles()`` and the picker payload iterate
+    the preset's. The two assertions below are that bypass happening: the
+    widened collection IS built for Show, and the preset's own title list
+    never mentions it. The check is what stops such a row shipping.
+    """
+    widened = Preset(
+        key="widened_row",
+        category="media",
+        name="Widened",
+        description="A Show collection under a Movie-only preset.",
+        kometa_source=catalog.NOT_KOMETA + "written for this test",
+        library_types=("Movie",),
+        collections=(
+            catalog.PresetCollection(
+                title="Widened Shows", builder="plex_all", library_types=("Show",)
+            ),
+        ),
+    )
+    assert [d.title for d in widened.definitions("Show")] == ["Widened Shows"]
+    assert widened.titles() == []
+
+    monkeypatch.setattr(catalog, "CATALOG", (widened,))
+    with pytest.raises(AssertionError, match="widened_row"):
+        catalog._check_collection_library_types()
+
+
+def test_the_shipped_table_only_ever_narrows():
+    """The same check over the real catalog, so the guard is not only proven
+    against a synthetic row: every collection that sets its own library types
+    (the three show-only streaming services) is inside its preset's."""
+    catalog._check_collection_library_types()
+    narrowing = [
+        (preset.key, collection.title)
+        for preset in CATALOG
+        for collection in preset.collections
+        if collection.library_types is not None
+    ]
+    assert narrowing, "no row narrows, so the check above proved nothing"
+
+
 def test_every_preset_row_is_internally_consistent():
     keys = [preset.key for preset in CATALOG]
     assert len(keys) == len(set(keys)), "duplicate preset key"
@@ -372,6 +427,13 @@ def test_a_ready_preset_loads_and_reaches_default_definitions(preset):
     assert config.collections.presets == [preset.key]
     for library_type in LIBRARY_TYPES:
         expected = preset.definitions(library_type)
+        if not expected:
+            # A tail comparison against an empty expectation is ``[] == []``,
+            # which passes whatever the loader did. The only correct reason
+            # for an empty expansion is that the row does not cover this kind
+            # of library at all, so that is what gets asserted instead.
+            assert library_type not in preset.library_types, (preset.key, library_type)
+            continue
         produced = default_definitions(config, library_type)
         assert produced[len(produced) - len(expected):] == expected
 
@@ -405,8 +467,9 @@ def test_every_gated_row_cites_a_roadmap_row_that_exists():
     and a number nobody can look up is worse than none -- so the citation is
     checked against the roadmap document itself."""
     rows = _roadmap_rows()
-    # The parse works: two rows this catalog cites, and one it does not.
-    assert {70, 96, 102, 155} <= rows
+    # The parse works: rows this catalog cites -- including the two filed for
+    # it (160, 161) -- and one it does not.
+    assert {96, 102, 155, 160, 161} <= rows
     assert 999999 not in rows
 
     gated = [preset for preset in CATALOG if preset.readiness == GATED]

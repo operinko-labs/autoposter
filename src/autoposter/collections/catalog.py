@@ -576,7 +576,11 @@ DYNAMIC_ENGINE_ROW = 102   # phase 10a: one collection per distinct value
 PERSON_DYNAMIC_ROW = 83    # phase 10c: the dynamic half of the person builders
 STRANDED_FILTER_ROW = 155  # the six tier-1 filter attributes the listing strands
 FILTER_TIER_TWO_ROW = 96   # the filters subsystem; tier 1 shipped, tier 2 did not
-DATE_WINDOW_ROW = 70       # per-collection cadence and date windows
+DATE_WINDOW_ROW = 70       # per-collection cadence and date windows: DELIVERED
+SEASONAL_WINDOW_ROW = 160  # day-level windows, and a collection fed by several
+                           # builders -- filed out of 70, which delivered a
+                           # whole-month gate and one builder per definition
+KEYWORD_RESOLUTION_ROW = 161  # TMDb keyword name -> id, which no earlier row owns
 
 _BOTH = ("Movie", "Show")
 _MOVIE = ("Movie",)
@@ -628,6 +632,7 @@ _TMDB_CHARTS: tuple[tuple[str, str, str, str], ...] = (
      "its chart defaults do not include"),
 )
 
+
 def _tmdb_chart_preset(chart: str, title: str, source: str, note: str) -> Preset:
     # KeyError on a chart the endpoint table does not have, deliberately: a row
     # here naming one would otherwise ship a preset whose definition fails its
@@ -661,11 +666,12 @@ CHART_PRESETS: tuple[Preset, ...] = tuple(
 # (``imdb_url``). Those nine are transcribed here as ``imdb_list`` definitions
 # and the titles are the file's own ``data`` names.
 #
-# The other seven universes are MDBList-hosted, and five of those five URLs are
-# of the ``mdblist.com/lists/<user>/external/<id>`` shape -- a reference
-# ``MdblistListParams`` cannot take, and guessing that the trailing number is
-# the numeric list id is the kind of guess this table exists not to make. They
-# are left out rather than approximated, and the description says so.
+# The other seven universes are MDBList-hosted, and six of those seven URLs are
+# of the ``mdblist.com/lists/k0meta/external/<id>`` shape (the seventh is
+# ``johnfawkes/dca``) -- a reference ``MdblistListParams`` cannot take, and
+# guessing that the trailing number is the numeric list id is the kind of guess
+# this table exists not to make. They are left out rather than approximated,
+# and the description says so.
 _UNIVERSE_LISTS: tuple[tuple[str, str, tuple[str, ...] | None], ...] = (
     ("Alien / Predator", "ls543971628", _MOVIE),
     ("Arrowverse", "ls566667558", None),
@@ -751,12 +757,16 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
             "time; the tmdb_keyword builder here takes an id, and the expansion "
             "is pure and cannot search. A keyword id written out here from "
             "memory is exactly the invention this table refuses, so the pack "
-            "waits for the engine that can resolve a name."
+            "waits for the resolution step, which is row %d. Not the per-value "
+            "engine: based.yml is a FIXED four-collection pack, so row %d "
+            "landing would not close this one." % (
+                KEYWORD_RESOLUTION_ROW, DYNAMIC_ENGINE_ROW
+            )
         ),
         kometa_source="defaults/both/based.yml",
         library_types=_BOTH,
         readiness=GATED,
-        gated_row=DYNAMIC_ENGINE_ROW,
+        gated_row=KEYWORD_RESOLUTION_ROW,
     ),
 )
 
@@ -921,8 +931,10 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
             "Eight collections, one per aspect ratio Kometa names -- 1.33 "
             "Academy Aperture through 2.77 Cinerama. The values are a fixed "
             "list and would need no enumeration; what is missing is the "
-            "attribute. `aspect` is not one of the fifteen tier-1 rows in "
-            "collections/filters.py, so there is nothing to filter on yet."
+            "attribute. Row %d shipped its tier-1 half, and `aspect` is not "
+            "one of the fifteen tier-1 rows in collections/filters.py -- it "
+            "sits in the ~45-attribute residue that row hands to 9b, so there "
+            "is nothing to filter on yet." % FILTER_TIER_TWO_ROW
         ),
         kometa_source="defaults/both/aspect.yml",
         library_types=_BOTH,
@@ -934,11 +946,14 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
         category="media",
         name="Audio languages",
         description=(
-            "One collection per audio language in the library. Stranded rather "
-            "than merely unbuilt: audio languages live on the streams under "
+            "One collection per audio language in the library. Not merely "
+            "unbuilt: it needs a metadata-prefetch budget the one library walk "
+            "does not pay for. Audio languages live on the streams under "
             "<Media><Part>, and Phase 9a's probe found the section listing "
             "stops at Part -- zero stream elements across 200 movies, against "
-            "four for the same film from the metadata endpoint."
+            "four for the same film from the metadata endpoint. Row %d calls "
+            "this readable-but-not-for-free, unlike `network`, which it calls "
+            "stranded outright." % STRANDED_FILTER_ROW
         ),
         kometa_source="defaults/both/audio_language.yml",
         library_types=_BOTH,
@@ -950,9 +965,10 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
         category="media",
         name="Subtitle languages",
         description=(
-            "One collection per subtitle language, and stranded on exactly the "
-            "same probe finding as the audio-language pack: no stream element "
-            "reaches the section listing at all."
+            "One collection per subtitle language, held up by exactly the same "
+            "probe finding as the audio-language pack: no stream element "
+            "reaches the section listing at all, so the values are readable "
+            "only at the same per-item metadata cost."
         ),
         kometa_source="defaults/both/subtitle_language.yml",
         library_types=_BOTH,
@@ -1198,16 +1214,17 @@ TIME_PRESETS: tuple[Preset, ...] = (
             "Valentine's Day, Black History Month and the rest -- each visible "
             "only around its own date. Two halves are missing and the second is "
             "the harder one. Kometa windows these by DAY (range(03/20-04/30) "
-            "for Easter), where the schedule gate delivered by row %d is whole "
+            "for Easter), where the schedule gate row %d DELIVERED is whole "
             "calendar months; and most of these collections are fed by SEVERAL "
             "sources at once (Halloween is three IMDb lists, ten TMDb franchise "
             "collections and one film), which one definition, being one "
-            "builder, cannot express." % DATE_WINDOW_ROW
+            "builder, cannot express. Both are row %d, filed out of 70 for "
+            "exactly this pack." % (DATE_WINDOW_ROW, SEASONAL_WINDOW_ROW)
         ),
         kometa_source="defaults/movie/seasonal.yml",
         library_types=_MOVIE,
         readiness=GATED,
-        gated_row=DATE_WINDOW_ROW,
+        gated_row=SEASONAL_WINDOW_ROW,
     ),
 )
 
@@ -1279,8 +1296,45 @@ def _check_one_producer_per_row() -> None:
             )
 
 
+def _check_collection_library_types() -> None:
+    """A collection's own library types narrow its preset's; they never widen.
+
+    ``Preset.definitions`` filters on ``collection.library_types or
+    self.library_types``, which BYPASSES the preset's own types for a row that
+    sets its own -- while ``Preset.titles`` and the picker's payload both
+    iterate ``self.library_types``. So a collection naming a library type its
+    preset does not would be BUILT there and neither listed among the preset's
+    titles nor covered by the library types the picker says the row touches: a
+    collection nothing in the UI admits to, which is the failure mode
+    ``_check_one_producer_per_row`` exists to prevent one row along.
+
+    Subset and not equality, because narrowing is the whole point of the field
+    -- three of the fifteen streaming services are show-only inside a
+    both-libraries preset.
+    """
+    for preset in CATALOG:
+        for collection in preset.collections:
+            if collection.library_types is None:
+                continue
+            widened = sorted(set(collection.library_types) - set(preset.library_types))
+            if widened:
+                raise AssertionError(
+                    "%r's %r collection is for %s, which its preset is not "
+                    "(%s): a collection narrows its preset's library types and "
+                    "never widens them, or it builds a collection the picker "
+                    "neither lists nor claims to touch"
+                    % (
+                        preset.key,
+                        collection.title,
+                        widened,
+                        list(preset.library_types),
+                    )
+                )
+
+
 _check_kometa_sources()
 _check_one_producer_per_row()
+_check_collection_library_types()
 
 # Key -> row, for the config validator's presets: lookup only. Setting-backed
 # rows are deliberately absent: they are not something ``presets:`` can name,
