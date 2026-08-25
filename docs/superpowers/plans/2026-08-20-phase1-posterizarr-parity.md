@@ -478,7 +478,7 @@ magick_binary: magick
 skip_tba: true
 
 plex:
-  url: https://plex.vaderrp.com
+  url: https://<plex-host>
   excluded_libraries: [Muskarit, Photos]
   resolve_max_attempts: 10
 

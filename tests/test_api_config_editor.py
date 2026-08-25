@@ -634,7 +634,7 @@ async def test_a_rejected_apply_neither_saves_nor_queues(client, auth_headers, s
 
 
 def _seed_document(body: dict) -> dict:
-    """The overrides document `Settings.tsx::documentFromConfig` builds.
+    """The overrides document `api/overrides.ts::documentFromConfig` builds.
 
     Mirrored here rather than imagined, because the corruption this section
     guards against is a property of that seeding meeting this response. Kept
