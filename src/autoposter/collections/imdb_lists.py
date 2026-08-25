@@ -1,4 +1,4 @@
-"""Public IMDb lists and public watchlists, over the endpoint ``charts.py`` uses.
+"""Public IMDb lists, watchlists and advanced search, over ``charts.py``'s endpoint.
 
 Same transport as the charts: the same ``api.graphql.imdb.com`` endpoint, the
 same mandatory ``x-imdb-client-name`` header (without it the endpoint answers
@@ -35,6 +35,16 @@ exception class name and nothing else: ``ImdbListRefused`` is IMDb answering
 "no such list" or "that watchlist is private", which an operator fixes in
 their config or their IMDb privacy settings, and ``ImdbListDrift`` is this
 module's pins no longer matching IMDb, which only a code change fixes.
+
+**Three roots, one walker.** 8c added ``advancedTitleSearch`` (row 81), whose
+connection sits directly under ``data`` rather than under a named list object,
+and whose edges are ``{node: {title: {id}}}`` rather than ``{title: {id}}``.
+Both differences are data now -- ``_connection`` takes the path from ``data``
+down to the connection and ``_ids`` takes the path from an edge down to the
+id -- so the level-by-level validation, the excerpting, the errors-before-
+status check, the cursor loop and the page cap are written once and every root
+gets the same loud failure. The alternative, a second copy of that walk for the
+search root, is exactly the copy that would drift into being defensive.
 """
 import logging
 import re
@@ -49,10 +59,12 @@ __all__ = [
     "LIST_QUERY",
     "MAX_PAGES",
     "PAGE_SIZE",
+    "SEARCH_QUERY",
     "WATCHLIST_QUERY",
     "ImdbListDrift",
     "ImdbListRefused",
     "fetch_list",
+    "fetch_search",
     "fetch_watchlist",
 ]
 
@@ -87,7 +99,34 @@ WATCHLIST_QUERY = (
     " total pageInfo { hasNextPage endCursor } edges { title { id } } } } }"
 )
 
+# ``constraints`` and ``sort`` travel as variables rather than inline literals
+# so the query text stays one constant: an inline-literal query would be a
+# different string per definition, which is a contract nothing can assert on.
+# Both are declared non-null although the arguments are nullable -- a search
+# this module builds always carries a title-type constraint and a sort, and a
+# null arriving there is a bug worth a validator error rather than a silently
+# unfiltered 31-million-title result. ``$after`` is ``String``, as on the list
+# roots; the endpoint rejects the ``ID`` form.
+#
+# The connection is ``data.advancedTitleSearch`` itself -- there is no named
+# search object in between, which is why ``_connection`` takes a path -- and the
+# edge is ``{node: {title: {id}}}``, one level deeper than a list's ``{title:
+# {id}}``. Verified live 2026-08-25; see this task's report for the walk.
+SEARCH_QUERY = (
+    "query AdvancedTitleSearch($constraints: AdvancedTitleSearchConstraints!,"
+    " $sort: AdvancedTitleSearchSort!, $first: Int!, $after: String) {"
+    " advancedTitleSearch(constraints: $constraints, sort: $sort, first: $first,"
+    " after: $after) { total pageInfo { hasNextPage endCursor }"
+    " edges { node { title { id } } } } }"
+)
+
 _IMDB_ID = re.compile(r"^tt\d+$")
+
+# What ``_connection`` says when the root node came back null with no ``errors``
+# array. The lists' wording, because for them that is IMDb's way of saying "no
+# such list"; the search root passes its own, where "does not exist" would be
+# nonsense.
+_NULL_ROOT = "does not exist, or is not public -- IMDb answered null"
 
 # How much of an unexpected value goes in the message. Enough to recognise the
 # shape, bounded so a drifted response cannot put a megabyte in a log line.
@@ -118,48 +157,59 @@ def _excerpt(value: object) -> str:
     return text if len(text) <= _EXCERPT else text[:_EXCERPT] + "…"
 
 
-def _connection(payload: object, root: str, subject: str) -> tuple[list, dict]:
-    """``(edges, pageInfo)`` out of one response, or a raise naming the shape."""
+def _connection(
+    payload: object,
+    path: tuple[str, ...],
+    subject: str,
+    null_root: str = _NULL_ROOT,
+) -> tuple[list, dict]:
+    """``(edges, pageInfo)`` out of one response, or a raise naming the shape.
+
+    ``path`` is the field names from ``data`` down to the connection object:
+    ``("list", "titleListItemSearch")`` for a list, ``("advancedTitleSearch",)``
+    for the search root, whose connection has no wrapper.
+    """
     if not isinstance(payload, dict):
         raise ImdbListDrift(
             f"{subject}: IMDb answered {_excerpt(payload)}, not a JSON object"
         )
     errors = payload.get("errors")
     if errors:
-        # IMDb reports a private watchlist as HTTP 200 with an ``errors`` array
-        # and ``data.<root>: null``, so the status code alone never sees it.
-        # The message is IMDb's own and carries no credential -- this endpoint
-        # is unauthenticated, which is the whole reason it is public-only.
+        # IMDb reports a private watchlist -- and a search constraint it will
+        # not accept -- as HTTP 200 with an ``errors`` array and a null node, so
+        # the status code alone never sees it. The message is IMDb's own and
+        # carries no credential: this endpoint is unauthenticated, which is the
+        # whole reason it is public-only.
         raise ImdbListRefused(f"{subject}: IMDb refused the request -- {_excerpt(errors)}")
-    data = payload.get("data")
-    if not isinstance(data, dict):
+    node = payload.get("data")
+    if not isinstance(node, dict):
         raise ImdbListDrift(
             f"{subject}: the response carried no 'data' object -- got {_excerpt(payload)}"
         )
-    if root not in data:
+    root, *rest = path
+    if root not in node:
         raise ImdbListDrift(
             f"{subject}: the response has no {root!r} field; 'data' carried "
-            f"{sorted(data)}"
+            f"{sorted(node)}"
         )
-    node = data[root]
+    node = node[root]
     if node is None:
-        raise ImdbListRefused(
-            f"{subject} does not exist, or is not public -- IMDb answered null"
-        )
+        raise ImdbListRefused(f"{subject} {null_root}")
     if not isinstance(node, dict):
         raise ImdbListDrift(f"{subject}: {root!r} was {_excerpt(node)}, not an object")
-    search = node.get("titleListItemSearch")
-    if not isinstance(search, dict):
-        raise ImdbListDrift(
-            f"{subject}: expected an object under 'titleListItemSearch', got "
-            f"{_excerpt(search)}"
-        )
-    edges = search.get("edges")
+    for field in rest:
+        child = node.get(field)
+        if not isinstance(child, dict):
+            raise ImdbListDrift(
+                f"{subject}: expected an object under {field!r}, got {_excerpt(child)}"
+            )
+        node = child
+    edges = node.get("edges")
     if not isinstance(edges, list):
         raise ImdbListDrift(
             f"{subject}: 'edges' was {_excerpt(edges)}, not a list"
         )
-    page_info = search.get("pageInfo")
+    page_info = node.get("pageInfo")
     if not isinstance(page_info, dict):
         raise ImdbListDrift(
             f"{subject}: 'pageInfo' was {_excerpt(page_info)}, not an object"
@@ -167,31 +217,52 @@ def _connection(payload: object, root: str, subject: str) -> tuple[list, dict]:
     return edges, page_info
 
 
-def _ids(edges: list, subject: str, offset: int) -> list[str]:
+def _shape(path: tuple[str, ...]) -> str:
+    """``("node", "title", "id")`` as ``{'node': {'title': {'id': 'tt…'}}}``.
+
+    The drift message quotes the shape it demanded next to the one it got, and
+    building that literal from the path is what keeps the two in step: a
+    hand-written literal would keep naming the old shape after a path change.
+    """
+    text = "'tt…'"
+    for field in reversed(path):
+        text = "{%r: %s}" % (field, text)
+    return text
+
+
+def _ids(edges: list, path: tuple[str, ...], subject: str, offset: int) -> list[str]:
     """The title ids of one page, in page order.
 
-    Every edge must be the pinned ``{"title": {"id": "tt…"}}``. An edge that
-    is not is a raise rather than a skip: one skipped entry is a title
-    silently missing from the collection, and a shape change would skip all of
-    them at once.
+    Every edge must be exactly the pinned shape -- ``{"title": {"id": "tt…"}}``
+    on the list roots, ``{"node": {"title": {"id": "tt…"}}}`` on the search
+    root. An edge that is not is a raise rather than a skip: one skipped entry
+    is a title silently missing from the collection, and a shape change would
+    skip all of them at once.
     """
     ids: list[str] = []
     for position, edge in enumerate(edges, start=offset + 1):
-        title = edge.get("title") if isinstance(edge, dict) else None
-        value = title.get("id") if isinstance(title, dict) else None
+        value: object = edge
+        for field in path:
+            value = value.get(field) if isinstance(value, dict) else None
         if not isinstance(value, str) or not _IMDB_ID.match(value):
             raise ImdbListDrift(
-                f"{subject}: entry {position} is not the {{'title': {{'id': "
-                f"'tt…'}}}} shape this module pins -- got {_excerpt(edge)}"
+                f"{subject}: entry {position} is not the {_shape(path)} shape "
+                f"this module pins -- got {_excerpt(edge)}"
             )
         ids.append(value)
     return ids
 
 
 async def _fetch(
-    http: httpx.AsyncClient, query: str, root: str, variables: dict, subject: str
+    http: httpx.AsyncClient,
+    query: str,
+    path: tuple[str, ...],
+    edge_path: tuple[str, ...],
+    variables: dict,
+    subject: str,
+    null_root: str = _NULL_ROOT,
 ) -> list[str]:
-    """Walk one list's cursor pages and return its ids in list order."""
+    """Walk one connection's cursor pages and return its ids in source order."""
     ids: list[str] = []
     after: str | None = None
     for page in range(1, MAX_PAGES + 1):
@@ -202,8 +273,8 @@ async def _fetch(
             GRAPHQL_URL, headers=HEADERS, json={"query": query, "variables": page_variables}
         )
         response.raise_for_status()
-        edges, page_info = _connection(response.json(), root, subject)
-        ids += _ids(edges, subject, len(ids))
+        edges, page_info = _connection(response.json(), path, subject, null_root)
+        ids += _ids(edges, edge_path, subject, len(ids))
         if not page_info.get("hasNextPage"):
             return ids
         after = page_info.get("endCursor")
@@ -222,7 +293,12 @@ async def _fetch(
 async def fetch_list(http: httpx.AsyncClient, list_id: str) -> list[str]:
     """The public list's IMDb ids, in list order."""
     return await _fetch(
-        http, LIST_QUERY, "list", {"id": list_id}, f"IMDb list {list_id!r}"
+        http,
+        LIST_QUERY,
+        ("list", "titleListItemSearch"),
+        ("title", "id"),
+        {"id": list_id},
+        f"IMDb list {list_id!r}",
     )
 
 
@@ -236,7 +312,33 @@ async def fetch_watchlist(http: httpx.AsyncClient, user_id: str) -> list[str]:
     return await _fetch(
         http,
         WATCHLIST_QUERY,
-        "predefinedList",
+        ("predefinedList", "titleListItemSearch"),
+        ("title", "id"),
         {"user": user_id},
         f"the public IMDb watchlist of {user_id!r}",
+    )
+
+
+async def fetch_search(
+    http: httpx.AsyncClient, constraints: dict, sort: dict, subject: str
+) -> list[str]:
+    """One ``advancedTitleSearch``'s ids, in the order the sort produced them.
+
+    ``constraints`` and ``sort`` are already in IMDb's own vocabulary -- built
+    by ``builders/imdb_search.py``, which owns the operator-facing names and the
+    validation that keeps a typo from reaching the wire. That split matters
+    here: IMDb answers an unknown genre or title-type id with ``total: 0``
+    rather than an error, so a constraint value this repository has not pinned
+    is indistinguishable from an honest empty result, and an empty result one
+    layer down removes every member.
+    """
+    return await _fetch(
+        http,
+        SEARCH_QUERY,
+        ("advancedTitleSearch",),
+        ("node", "title", "id"),
+        {"constraints": constraints, "sort": sort},
+        subject,
+        null_root="came back null with no error, which is not a shape IMDb has "
+        "ever answered this query with",
     )

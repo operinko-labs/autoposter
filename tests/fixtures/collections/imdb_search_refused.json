@@ -1,0 +1,16 @@
+{
+  "errors": [
+    {
+      "message": "Encountered error statusCode [400] in Lambda response from graphlet [search]: [{\"message\":\"Variable \\\"$constraints\\\" got invalid value \\\"not-a-date\\\" at \\\"constraints.releaseDateConstraint.releaseDateRange.start\\\"; Expected type Date. Not a valid Date: not-a-date\",\"locations\":[{\"line\":1,\"column\":38}],\"extensions\":{\"errorType\":\"CLIENT\",\"isRetryable\":false,\"symbol\":\"Date\",\"code\":\"BAD_USER_INPUT\",\"exception\":{\"errorType\":\"CLIENT\",\"isRetryable\":false,\"symbol\":\"Date\"}}}]",
+      "extensions": {
+        "code": "BAD_USER_INPUT",
+        "errorType": "CLIENT",
+        "isRetryable": false,
+        "symbol": "search"
+      }
+    }
+  ],
+  "data": {
+    "advancedTitleSearch": null
+  }
+}

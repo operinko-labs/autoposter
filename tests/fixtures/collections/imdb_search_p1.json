@@ -1,0 +1,27 @@
+{
+  "data": {
+    "advancedTitleSearch": {
+      "total": 3,
+      "pageInfo": {
+        "hasNextPage": true,
+        "endCursor": "eyJlc1Rva2VuIjpbIjguMyIsIjM3NTgiLCJ0dDAwMzY3NzUiXSwiZmlsdGVyIjoie1wiY29uc3RyYWludHNcIjp7XCJnZW5yZUNvbnN0cmFpbnRcIjp7XCJhbGxHZW5yZUlkc1wiOltcIkZpbG0tTm9pclwiXX0sXCJyZWxlYXNlRGF0ZUNvbnN0cmFpbnRcIjp7XCJyZWxlYXNlRGF0ZVJhbmdlXCI6e1wiZW5kXCI6XCIxOTU5LTEyLTMxXCIsXCJzdGFydFwiOlwiMTk0MC0wMS0wMVwifX0sXCJ0aXRsZVR5cGVDb25zdHJhaW50XCI6e1wiYW55VGl0bGVUeXBlSWRzXCI6W1wibW92aWVcIl19LFwidXNlclJhdGluZ3NDb25zdHJhaW50XCI6e1wiYWdncmVnYXRlUmF0aW5nUmFuZ2VcIjp7XCJtYXhcIjoxMCxcIm1pblwiOjh9LFwicmF0aW5nc0NvdW50UmFuZ2VcIjp7XCJtaW5cIjo1MDAwMH19fSxcImxhbmd1YWdlXCI6XCJlbi1VU1wiLFwic29ydFwiOntcInNvcnRCeVwiOlwiVVNFUl9SQVRJTkdcIixcInNvcnRPcmRlclwiOlwiREVTQ1wifSxcInJlc3VsdEluZGV4XCI6MX0iLCJzaWciOiJjMjgxOTBmOTJhOTRiYzkxMzkwZTdlNjgwZTU5NWY0YmFmN2IyMjcxMmM5Y2Y4ZjhlMzJkNTM5OGY3MWI3ZmU0In0="
+      },
+      "edges": [
+        {
+          "node": {
+            "title": {
+              "id": "tt0043014"
+            }
+          }
+        },
+        {
+          "node": {
+            "title": {
+              "id": "tt0036775"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

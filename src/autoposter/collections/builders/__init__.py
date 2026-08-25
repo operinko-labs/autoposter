@@ -39,6 +39,7 @@ from autoposter.collections.builders.imdb_lists import (
     ImdbListBuilder,
     ImdbWatchlistBuilder,
 )
+from autoposter.collections.builders.imdb_search import ImdbSearchBuilder
 from autoposter.collections.builders.mdblist import MdblistListBuilder
 from autoposter.collections.builders.plex_trivial import PlexAllBuilder
 from autoposter.collections.builders.plex_watchlist import PlexWatchlistBuilder
@@ -87,6 +88,7 @@ register(SonarrTagListBuilder())
 register(ImdbChartBuilder())
 register(ImdbListBuilder())
 register(ImdbWatchlistBuilder())
+register(ImdbSearchBuilder())
 register(PlexWatchlistBuilder())
 register(TmdbChartBuilder())
 register(TmdbListBuilder())
