@@ -541,7 +541,12 @@ _KOMETA_DEFAULTS: frozenset[str] = frozenset(
         "defaults/both/aspect.yml",
         "defaults/both/audio_language.yml",
         "defaults/both/based.yml",
+        "defaults/both/content_rating_au.yml",
         "defaults/both/content_rating_cs.yml",
+        "defaults/both/content_rating_de.yml",
+        "defaults/both/content_rating_mal.yml",
+        "defaults/both/content_rating_nz.yml",
+        "defaults/both/content_rating_uk.yml",
         "defaults/both/genre.yml",
         "defaults/both/resolution.yml",
         "defaults/both/streaming.yml",
@@ -852,6 +857,272 @@ _US_SHOW_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
 )
 
+# The five REGIONAL families, ``defaults/both/content_rating_{uk,de,au,nz,
+# mal}.yml``: the same fixed-include shape as the two US tables above, over
+# five other certification systems. Kometa ships each as ONE ``both`` file
+# rather than a movie/show pair, so each row here is a both-libraries row and
+# the same bucket builds ``UK 12 Movies`` on a film library and ``UK 12
+# Shows`` on a television one.
+#
+# **These titles carry a region prefix and the US ones do not.** Upstream
+# titles all seven families identically (``<<key_name>> <<library_typeU>>s``),
+# which across six co-enabled families collides eight ways: AU, NZ and MAL all
+# have a ``G`` bucket and so does the US movie table, and ``PG``, ``M``, ``R``,
+# ``PG-13``, ``18`` and ``R18`` repeat likewise. Two built-in definitions
+# sharing one title overwrite each other on every pass and the members hash
+# flaps between them forever -- and that is exactly the collision
+# ``_titles_must_not_collide`` structurally cannot catch (module docstring),
+# because it compares operator definitions against the built-ins and never the
+# built-ins against each other. So every regional bucket carries its country
+# code, which is upstream's OWN answer to the same problem one object along:
+# Kometa's separator collection for each of these files is region-prefixed
+# (``UK Ratings Collections``, ``DE Ratings Collections``) while the US pack's
+# is bare. The US buckets stay bare for that reason and a harder one -- the
+# ``G Movies`` row shipped, deployments already build it, and renaming it here
+# would strand the collection already sitting in their library.
+#
+# Four transcription details below, each deliberate:
+#
+# - AU's ``G`` and ``PG`` and NZ's ``G``, ``PG`` and ``R18`` addon lists
+#   already contain their own bucket key, which the ``(key,) + addons``
+#   prepend the US tables use would duplicate. De-duped order-preserving, so
+#   the stored counts are BELOW the files': AU 100 values of 102, NZ 108 of
+#   111.
+# - MAL's ``G`` lists both ``0`` and ``"0"`` -- a YAML int and a YAML string
+#   for one certification -- which is one value once Plex sees it, so MAL
+#   stores 73 of its file's 74.
+# - DE's and UK's bucket keys are YAML integers (``0:``, ``12:``). They are
+#   certifications rather than numbers and are stored as strings.
+# - UK's ``18`` bucket carries ``gb/18+ `` with a trailing space in the raw
+#   file. YAML strips it and so does this table: a filter value with a
+#   trailing space matches nothing.
+#
+# Kometa's ``other_name`` bucket is omitted for all five, for the reason it is
+# omitted for the US tables: a set complement the engine owns, under a title
+# the Common Sense family already builds on both kinds of library.
+_UK_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("U", (
+        "U", "gb/U", "gb/Uc", "gb/0+", "gb/6+", "gb/Kids & Family", "G",
+        "TV-Y", "TV-G", "E", "gb/E", "0", "1", "2", "3", "4", "5", "6", "01",
+        "02", "03", "04", "05", "06", "G - All Ages", "A", "no/A",
+    )),
+    ("PG", (
+        "PG", "gb/PG", "gb/9+", "gb/7", "gb/7+", "TV-PG", "TV-Y7", "TV-Y7-FV",
+        "7", "8", "9", "10", "11", "07", "08", "09", "PG - Children", "no/5",
+        "no/05", "no/6", "no/06", "no/7", "no/07",
+    )),
+    ("12", (
+        "12", "gb/12", "gb/A", "gb/Caution", "gb/G",
+        "PG-13 - Teens 13 or older", "no/9", "no/09", "no/10", "no/11",
+        "no/12",
+    )),
+    ("12A", (
+        "12A", "gb/12A", "12+", "PG-13", "TV-13", "12",
+        "PG-13 - Teens 13 or older", "no/9", "no/09", "no/10", "no/11",
+        "no/12",
+    )),
+    ("15", (
+        "15", "gb/15", "gb/14+", "gb/16", "gb/16+", "gb/AA", "TV-14", "13",
+        "14", "PG-13 - Teens 13 or older", "no/15", "no/16",
+    )),
+    ("18", (
+        "18", "gb/18", "gb/18+", "MA-17", "TVMA", "TV-MA", "R", "16", "17",
+        "NC-17", "R - 17+ (violence & profanity)", "gb/X", "no/18",
+    )),
+    ("R18", ("R18", "gb/R18", "X", "R+ - Mild Nudity", "Rx - Hentai")),
+)
+
+_DE_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("0", (
+        "0", "de/0", "U", "1", "2", "3", "4", "5", "01", "02", "03", "04",
+        "05", "G", "TV-G", "TV-Y", "G - All Ages", "gb/U", "gb/0+", "E",
+        "gb/E", "A", "no/A", "no/5", "no/05",
+    )),
+    ("6", (
+        "6", "de/6", "gb/9+", "TV-PG", "TV-Y7", "TV-Y7-FV", "PG", "7", "8",
+        "9", "10", "11", "07", "08", "09", "PG - Children", "no/6", "no/06",
+        "no/7", "no/07", "no/9", "no/09", "no/10", "no/11",
+    )),
+    ("12", (
+        "12", "de/12", "gb/12", "no/12", "gb/15", "gb/14+", "TV-14", "13",
+        "14", "15", "PG-13 - Teens 13 or older", "PG-13", "no/15",
+    )),
+    ("16", (
+        "16", "de/16", "no/16", "A-17", "TVMA", "TV-MA", "R", "17", "M/PG",
+    )),
+    ("18", (
+        "18", "de/18", "gb/18", "M", "no/18", "R18", "gb/R18", "gb/X", "X",
+        "NC-17", "R+ - Mild Nudity", "Rx - Hentai",
+    )),
+    ("BPjM", ("BPjM", "de/BPjM Restricted", "BPjM Restricted")),
+)
+
+# ``G`` and ``PG`` each list their own key upstream: 102 values in the file,
+# 100 here.
+_AU_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("G", (
+        "G", "au/G", "de/0", "U", "0", "1", "2", "3", "4", "5", "6", "01",
+        "02", "03", "04", "05", "06", "TV-G", "TV-Y", "G - All Ages", "gb/U",
+        "gb/0+", "E", "gb/E", "A", "no/A", "no/5", "no/05",
+    )),
+    ("PG", (
+        "PG", "au/PG", "de/6", "gb/9+", "TV-PG", "TV-Y7", "TV-Y7-FV", "7",
+        "8", "9", "10", "11", "07", "08", "09", "PG - Children", "no/6",
+        "no/06", "no/7", "no/07", "no/9", "no/09", "no/10", "no/11",
+    )),
+    ("M", (
+        "M", "au/M", "de/12", "gb/12", "no/12", "gb/15", "gb/14+", "TV-14",
+        "12", "13", "14", "15", "PG-13 - Teens 13 or older", "PG-13", "no/15",
+    )),
+    ("MA15+", (
+        "MA15+", "au/MA15+", "au/MA 15+", "de/16", "no/16", "A-17", "TVMA",
+        "TV-MA", "R", "16", "17", "M/PG",
+    )),
+    ("R18+", (
+        "R18+", "au/R 18+", "au/R18+", "de/18", "gb/18", "M", "18",
+        "R - 17+ (violence & profanity)", "no/18", "R18", "gb/X", "X",
+        "NC-17", "R+ - Mild Nudity", "Rx - Hentai",
+    )),
+    ("X18+", (
+        "X18+", "gb/R18", "au/X 18+", "au/X18+", "de/BPjM Restricted",
+        "BPjM Restricted",
+    )),
+)
+
+# ``G``, ``PG`` and ``R18`` each list their own key upstream: 111 values in the
+# file, 108 here. The R13/RP13, R16/RP16 and R18/RP18 pairs overlap on purpose
+# -- Kometa's own tables, transcribed as they are.
+_NZ_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("G", (
+        "G", "au/G", "de/0", "U", "0", "1", "2", "3", "4", "5", "6", "01",
+        "02", "03", "04", "05", "06", "TV-G", "TV-Y", "G - All Ages", "gb/U",
+        "gb/0+", "E", "gb/E", "A", "no/A", "no/5", "no/05",
+    )),
+    ("PG", (
+        "PG", "au/PG", "de/6", "gb/9+", "TV-PG", "TV-Y7", "TV-Y7-FV", "7",
+        "8", "9", "10", "11", "07", "08", "09", "PG - Children", "no/6",
+        "no/06", "no/7", "no/07", "no/9", "no/09", "no/10", "no/11",
+    )),
+    ("M", (
+        "M", "au/M", "de/12", "gb/12", "no/12", "gb/15", "gb/14+", "TV-14",
+        "12", "13", "14", "15", "PG-13 - Teens 13 or older", "PG-13", "no/15",
+    )),
+    ("R13", ("R13", "13", "14")),
+    ("RP13", ("RP13", "14")),
+    ("R15", (
+        "R15", "au/MA15+", "de/16", "no/16", "A-17", "TVMA", "TV-MA", "R",
+        "16", "17", "M/PG",
+    )),
+    ("R16", ("R16", "16", "17")),
+    ("RP16", ("RP16", "17")),
+    ("R18", (
+        "R18", "au/R 18+", "de/18", "gb/18", "M", "18",
+        "R - 17+ (violence & profanity)", "no/18", "gb/R18", "gb/X", "X",
+        "NC-17", "R+ - Mild Nudity", "Rx - Hentai",
+    )),
+    ("RP18", ("RP18", "18")),
+    ("R", ("R", "au/X 18+", "de/BPjM Restricted", "BPjM Restricted")),
+)
+
+# ``G`` lists ``0`` twice, once as a YAML int and once as a string: 74 values
+# in the file, 73 here.
+_MAL_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("G", (
+        "G", "gb/U", "gb/0+", "U", "0", "1", "2", "3", "4", "5", "6", "01",
+        "02", "03", "04", "05", "06", "G - All Ages", "TV-G", "A", "no/A",
+    )),
+    ("PG", (
+        "PG", "TV-Y7", "TV-Y7-FV", "7", "8", "9", "07", "08", "09", "gb/PG",
+        "gb/9+", "10", "11", "12", "PG - Children", "no/5", "no/05", "no/6",
+        "no/06", "no/7", "no/07",
+    )),
+    ("PG-13", (
+        "PG-13", "13", "gb/12A", "12+", "TV-13", "gb/14+", "gb/15", "14",
+        "15", "16", "PG-13 - Teens 13 or older", "no/9", "no/09", "no/10",
+        "no/11", "no/12",
+    )),
+    ("R", (
+        "R", "17", "18", "gb/18", "MA-17", "NC-17", "TVMA",
+        "R - 17+ (violence & profanity)", "no/15", "no/16", "no/18",
+    )),
+    ("R+", ("R+", "R+ - Mild Nudity")),
+    ("Rx", ("Rx", "Rx - Hentai")),
+)
+
+# One row per regional family: the country code (which is both the key suffix
+# and the title prefix), the picker's label, the table, the sentence naming
+# the rating system, and the note its semantics need. The trap notes are the
+# point of the last column -- a bucket whose letter means something else in
+# another country is a collection an operator would only find wrong by opening
+# it.
+_REGIONAL_RATINGS: tuple[
+    tuple[str, str, str, tuple[tuple[str, tuple[str, ...]], ...], str, str],
+    ...,
+] = (
+    ("uk", "UK", "UK certificates", _UK_CONTENT_RATINGS,
+     "Seven collections -- %s -- grouping the library by its BBFC "
+     "certificate.",
+     "'UK 12' and 'UK 12A' are two buckets rather than one because Kometa "
+     "keeps the video certificate and the cinema one apart."),
+    ("de", "DE", "German FSK ratings", _DE_CONTENT_RATINGS,
+     "Six collections -- %s -- grouping the library by its FSK age rating.",
+     "'DE BPjM' is not an age band: it is the bucket for titles on the German "
+     "restricted index, which is a different kind of classification."),
+    ("au", "AU", "Australian classifications", _AU_CONTENT_RATINGS,
+     "Six collections -- %s -- grouping the library by its Australian "
+     "Classification Board rating.",
+     "'AU M' is the Australian advisory rating and NOT the US 'M'; the two "
+     "systems happen to share a letter and mean different things."),
+    ("nz", "NZ", "New Zealand classifications", _NZ_CONTENT_RATINGS,
+     "Eleven collections -- %s -- grouping the library by its New Zealand "
+     "classification.",
+     "Three things worth knowing, all Kometa's own and all kept verbatim: "
+     "'NZ R' is the X-rated RESTRICTED bucket rather than anything "
+     "R-for-mature; 'NZ M' is not the US 'M'; and the RP buckets overlap the "
+     "R ones by design, so a title rated 14 lands in 'NZ R13' AND in "
+     "'NZ RP13'."),
+    ("mal", "MAL", "MyAnimeList ratings", _MAL_CONTENT_RATINGS,
+     "Six collections -- %s -- grouping the library by its MyAnimeList "
+     "rating.",
+     "MyAnimeList's own scale rather than a national board's, which is why "
+     "'MAL Rx' exists and why an anime library is the one this row is for."),
+)
+
+_REGIONAL_RATING_PRESETS: tuple[Preset, ...] = tuple(
+    Preset(
+        key="content_ratings_%s" % code,
+        category="content_ratings",
+        name=name,
+        description=(
+            "%s Each bucket carries Kometa's own addon list, so a title "
+            "certified under a neighbouring country's system lands in the "
+            "matching bucket rather than in nothing. %s The titles carry the "
+            "'%s' prefix -- unlike the US rows, which shipped bare -- because "
+            "these families share bucket letters with each other and switching "
+            "two of them on would otherwise build two collections under one "
+            "title."
+            % (
+                headline % ", ".join(
+                    "%s %s" % (prefix, key) for key, _values in table
+                ),
+                note,
+                prefix,
+            )
+        ),
+        kometa_source="defaults/both/content_rating_%s.yml" % code,
+        library_types=_BOTH,
+        collections=tuple(
+            PresetCollection(
+                title="%s %s %%ss" % (prefix, key),
+                builder="plex_all",
+                filters=(("content_rating", values),),
+            )
+            for key, values in table
+        ),
+    )
+    for code, prefix, name, table, headline, note in _REGIONAL_RATINGS
+)
+
 CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
     Preset(
         key="content_ratings_us",
@@ -885,11 +1156,13 @@ CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
             "Five collections -- %s -- grouping the library's series by their "
             "TV Parental Guidelines rating. Each bucket carries Kometa's own "
             "addon list, so a series certified PG-13 or gb/12A lands in TV-14 "
-            "rather than in nothing. The television counterpart of the US "
-            "certifications row above, which is Movie-only: Kometa ships the "
-            "two as separate files with separate include lists, and so does "
-            "this catalog rather than reusing film certifications for "
-            "television."
+            "rather than in nothing. The television counterpart of "
+            "'content_ratings_us', which is Movie-only: Kometa ships the two "
+            "as separate files with separate include lists, and so does this "
+            "catalog rather than reusing film certifications for television. "
+            "Plex's own contentRating, deliberately distinct from the Common "
+            "Sense age buckets in this same tab: same idea, different rating "
+            "system, and the two never share a title."
             % ", ".join(
                 "%s Shows" % key for key, _values in _US_SHOW_CONTENT_RATINGS
             )
@@ -905,7 +1178,7 @@ CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
             for key, values in _US_SHOW_CONTENT_RATINGS
         ),
     ),
-)
+) + _REGIONAL_RATING_PRESETS
 
 
 # --- the LOCATION category ----------------------------------------------------
@@ -1304,12 +1577,12 @@ TIME_PRESETS: tuple[Preset, ...] = (
 # setting-backed):
 #
 #   awards           15 / 0 / 1     charts            8 / 0 / 1
-#   content           1 / 3 / 0     content_ratings   2 / 0 / 1
+#   content           1 / 3 / 0     content_ratings   7 / 0 / 1
 #   location          0 / 3 / 0     media             1 / 3 / 0
 #   people            1 / 4 / 0     production        1 / 2 / 0
 #   time              0 / 3 / 0
 #
-# -- 50 rows: 29 presets an operator can switch on today, 18 that name what
+# -- 55 rows: 34 presets an operator can switch on today, 18 that name what
 # they would build and the roadmap row that would let them, and 3 rendered
 # switches for families that already ship behind a boolean.
 CATALOG: tuple[Preset, ...] = (

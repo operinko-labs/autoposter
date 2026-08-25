@@ -19,6 +19,8 @@ Three properties carry this phase, and every test here is one of them:
   title is not.
 """
 import ast
+import hashlib
+import json
 import pathlib
 import re
 from types import SimpleNamespace
@@ -187,7 +189,7 @@ CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "awards": (15, 0, 1),
     "charts": (8, 0, 1),
     "content": (1, 3, 0),
-    "content_ratings": (2, 0, 1),
+    "content_ratings": (7, 0, 1),
     "location": (0, 3, 0),
     "media": (1, 3, 0),
     "people": (1, 4, 0),
@@ -574,23 +576,261 @@ def test_the_award_paths_are_in_the_pinned_set_rather_than_a_second_copy():
 
 
 # --- the transcriptions ------------------------------------------------------
+#
+# One test per transcribed table rather than one test over all of them: a
+# single failing assertion in a combined test hid which pack had moved behind
+# whichever one happened to be asserted first, and there are now eleven of
+# them.
+#
+# What each of these pins is the SHAPE -- how many collections a Kometa table
+# contributes, under which titles -- plus, for the content-rating families, a
+# DIGEST over the whole expansion. The shape alone is not enough for a rating
+# family: a watch-provider id off by one builds a full, plausible collection of
+# the wrong service's catalogue, and a dropped or mistyped content-rating addon
+# quietly leaves part of a bucket out. Neither shows up as an error anywhere
+# downstream, and a count checksum cannot see a value that was mistyped rather
+# than dropped.
+#
+# The digests were computed at transcription time from the upstream files
+# themselves (``yaml.safe_load`` over each ``defaults/.../content_rating_*.yml``,
+# key prepended, de-duped, exactly as the tables are built), NOT copied off the
+# module -- so they are an independent second opinion about the transcription
+# rather than a restatement of it.
+#
+# Everything here is read off the expansion rather than out of the module's
+# private tables, so what is checked is what a deployment would actually build.
 
 
-def test_the_transcribed_kometa_tables_checksum():
-    """Row counts, and the individual values a wrong transcription hides.
+def _rating_buckets(key: str, library_type: str) -> dict[str, list[str]]:
+    """One content-rating family's expansion, as ``title -> filter values``."""
+    return {
+        definition.title: definition.filters["content_rating"]
+        for definition in catalog.BY_KEY[key].definitions(library_type)
+    }
 
-    Deliberately not a second copy of the tables: a test restating every
-    provider id would only fail once somebody edited the two copies apart,
-    which is not a failure worth catching. What is pinned is the SHAPE -- how
-    many collections each Kometa table contributes -- plus the values whose
-    corruption is INVISIBLE. A watch-provider id off by one builds a full,
-    plausible collection of the wrong service's catalogue; a dropped
-    content-rating addon quietly leaves a third of a bucket out. Neither shows
-    up as an error anywhere downstream.
 
-    Read off the expansion rather than out of the module's private tables, so
-    what is checked is what a deployment would actually build.
+def _digest(buckets: dict[str, list[str]]) -> str:
+    """A stable checksum over the WHOLE of one family's expansion.
+
+    A canonical JSON dump (insertion order, no whitespace) hashed with sha256:
+    titles, bucket order, value order and every value itself. One character
+    changed anywhere in a hundred-value table moves it.
     """
+    return hashlib.sha256(
+        json.dumps(buckets, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+# family key -> (the library type its expansion is digested on, the digest).
+# All seven families, the two US ones retrofitted onto tables that were already
+# shipped and verbatim-reviewed.
+CONTENT_RATING_DIGESTS: dict[str, tuple[str, str]] = {
+    "content_ratings_us": (
+        "Movie", "628aa7c65766c5d8e58f7547befe5703039b5ca4c7ce645a166fcc8b47e0d51f",
+    ),
+    "content_ratings_us_show": (
+        "Show", "0f48210982cc4ff5115370e6d8e06a14e9bbc2ba901e0261ef9f335b053cc55b",
+    ),
+    "content_ratings_uk": (
+        "Movie", "03b3e84aa790f2a55cfbd49a6f11828226c27df98acf363594b691a59d7eb26b",
+    ),
+    "content_ratings_de": (
+        "Movie", "9c4df7cff8130240d0797010d80803fc98a76355253a7746c26b5db52d03bad3",
+    ),
+    "content_ratings_au": (
+        "Movie", "40a982de35db92a10de56fa9de999ec204ae5cb1a7db56fa21a1f6d7a84332f8",
+    ),
+    "content_ratings_nz": (
+        "Movie", "dbcf55f688ddb64e6447bae6cc7e2e737f20f401c9654e1cb24821fe1f676616",
+    ),
+    "content_ratings_mal": (
+        "Movie", "a6f5fcf91e8f97b29e4c0b5d69cd9e9827e82a9faa36fc10c9f4e29f048ba418",
+    ),
+}
+
+# The five regional families -> (the bucket titles WITHOUT the library-type
+# suffix, in Kometa's own include order; the stored value count of each bucket;
+# the file's own raw value count; how many of those the de-dupe drops).
+#
+# The last two columns are the interesting ones. Three of these files list a
+# bucket's own key among its addons, and MAL's G lists ``0`` as both a YAML int
+# and a YAML string -- so for those families the STORED count is deliberately
+# below the file's, and the delta is stated here rather than left to look like
+# a dropped value.
+_REGIONAL_RATING_CHECKSUMS: dict[str, tuple[list[str], list[int], int, int]] = {
+    "content_ratings_uk": (
+        ["UK U", "UK PG", "UK 12", "UK 12A", "UK 15", "UK 18", "UK R18"],
+        [27, 23, 11, 12, 12, 13, 5],
+        103, 0,
+    ),
+    "content_ratings_de": (
+        ["DE 0", "DE 6", "DE 12", "DE 16", "DE 18", "DE BPjM"],
+        [25, 24, 13, 9, 12, 3],
+        86, 0,
+    ),
+    "content_ratings_au": (
+        ["AU G", "AU PG", "AU M", "AU MA15+", "AU R18+", "AU X18+"],
+        [28, 24, 15, 12, 15, 6],
+        102, 2,
+    ),
+    "content_ratings_nz": (
+        ["NZ G", "NZ PG", "NZ M", "NZ R13", "NZ RP13", "NZ R15", "NZ R16",
+         "NZ RP16", "NZ R18", "NZ RP18", "NZ R"],
+        [28, 24, 15, 3, 2, 11, 3, 2, 14, 2, 4],
+        111, 3,
+    ),
+    "content_ratings_mal": (
+        ["MAL G", "MAL PG", "MAL PG-13", "MAL R", "MAL R+", "MAL Rx"],
+        [21, 21, 16, 11, 2, 2],
+        74, 1,
+    ),
+}
+
+
+def test_the_us_certifications_transcription():
+    """The Movie half of the US pack -- and the titles it must keep.
+
+    ``G Movies`` and its four neighbours shipped before the regional families
+    existed; deployments already build them. The regional rows gained a country
+    prefix precisely so these five would not have to change, so this title list
+    is an operator-facing contract and not just a checksum.
+    """
+    ratings = _rating_buckets("content_ratings_us", "Movie")
+
+    assert list(ratings) == [
+        "G Movies", "PG Movies", "PG-13 Movies", "R Movies", "NC-17 Movies",
+    ]
+    assert [len(values) for values in ratings.values()] == [23, 21, 19, 12, 6]
+    # One addon per bucket, spot-checked: these are the certifications that
+    # make the bucket more than its own name, and the ones an operator would
+    # never notice missing.
+    assert "TV-14" in ratings["PG-13 Movies"]
+    assert "gb/U" in ratings["G Movies"]
+    assert "TV-MA" in ratings["R Movies"]
+    assert _digest(ratings) == CONTENT_RATING_DIGESTS["content_ratings_us"][1]
+
+
+def test_the_us_tv_ratings_transcription():
+    """The Show half of the same pack -- a separate upstream file with its own
+    include list. Five buckets, 73 values, and no bucket lists its own key
+    upstream, so these counts are the file's own addon counts plus one for the
+    prepended key."""
+    show_ratings = _rating_buckets("content_ratings_us_show", "Show")
+
+    assert list(show_ratings) == [
+        "TV-G Shows", "TV-Y Shows", "TV-PG Shows", "TV-14 Shows", "TV-MA Shows",
+    ]
+    assert [len(values) for values in show_ratings.values()] == [20, 15, 13, 14, 11]
+    assert sum(len(values) for values in show_ratings.values()) == 73
+    # Spot-checked addons, in the three directions the bucket names do not
+    # predict: the film certifications Kometa folds into the TV buckets, the
+    # British ones, and the TV-Y7 pair that belongs to TV-Y rather than to a
+    # bucket of its own. Getting these wrong is invisible until an operator
+    # wonders why a PG-13-tagged series landed nowhere.
+    assert "PG-13" in show_ratings["TV-14 Shows"]
+    assert "gb/18" in show_ratings["TV-MA Shows"]
+    assert "TV-Y7-FV" in show_ratings["TV-Y Shows"]
+    assert _digest(show_ratings) == CONTENT_RATING_DIGESTS["content_ratings_us_show"][1]
+
+
+@pytest.mark.parametrize("key", sorted(_REGIONAL_RATING_CHECKSUMS))
+def test_a_regional_content_rating_family_transcribes_its_kometa_file(key):
+    """Each regional family, against its own upstream file.
+
+    One case per family so a single mistyped certification names its country
+    in the failure. Both library types are checked because these are single
+    ``defaults/both`` files: the same buckets build ``UK 12 Movies`` on a film
+    library and ``UK 12 Shows`` on a television one, with identical values.
+    """
+    titles, counts, raw_total, deduped = _REGIONAL_RATING_CHECKSUMS[key]
+    library_type, expected_digest = CONTENT_RATING_DIGESTS[key]
+    assert library_type == "Movie"
+
+    movies = _rating_buckets(key, "Movie")
+    assert list(movies) == ["%s Movies" % title for title in titles]
+    assert [len(values) for values in movies.values()] == counts
+    # The de-dupe delta, stated rather than inferred: what is stored plus what
+    # the de-dupe dropped is exactly what the upstream file lists.
+    assert sum(counts) + deduped == raw_total
+    assert _digest(movies) == expected_digest
+
+    shows = _rating_buckets(key, "Show")
+    assert list(shows) == ["%s Shows" % title for title in titles]
+    assert list(shows.values()) == list(movies.values())
+
+
+def test_the_regional_buckets_that_list_their_own_key_store_it_once():
+    """Three upstream files put a bucket's key in its own addon list, and MAL
+    lists ``0`` twice in two YAML types. The tables prepend the key the way the
+    US ones do, so without an order-preserving de-dupe these buckets would
+    carry a duplicate filter value -- harmless to Plex, and a silent divergence
+    from every count this file pins."""
+    au = _rating_buckets("content_ratings_au", "Movie")
+    nz = _rating_buckets("content_ratings_nz", "Movie")
+    mal = _rating_buckets("content_ratings_mal", "Movie")
+
+    assert au["AU G Movies"].count("G") == 1
+    assert au["AU PG Movies"].count("PG") == 1
+    assert nz["NZ G Movies"].count("G") == 1
+    assert nz["NZ PG Movies"].count("PG") == 1
+    assert nz["NZ R18 Movies"].count("R18") == 1
+    # The int/string pair, one certification once ``str()`` has been applied.
+    assert mal["MAL G Movies"].count("0") == 1
+    # De-duped, not re-ordered: the key still leads its bucket, as it does in
+    # the US tables.
+    assert au["AU G Movies"][0] == "G"
+    assert nz["NZ R18 Movies"][0] == "R18"
+
+
+def test_the_regional_values_are_strings_without_stray_whitespace():
+    """Two transcription traps at once.
+
+    DE's and UK's bucket keys are YAML INTEGERS upstream (``0:``, ``12:``);
+    they are certifications rather than numbers and are stored as strings, or
+    the filter would compare an int against Plex's text. And UK's ``18`` bucket
+    carries ``gb/18+`` with a trailing space in the raw file -- YAML strips it,
+    and a value that kept it would match nothing at all.
+    """
+    de = _rating_buckets("content_ratings_de", "Movie")
+    uk = _rating_buckets("content_ratings_uk", "Movie")
+
+    assert list(de)[:2] == ["DE 0 Movies", "DE 6 Movies"]
+    assert "gb/18+" in uk["UK 18 Movies"]
+    for key in _REGIONAL_RATING_CHECKSUMS:
+        for title, values in _rating_buckets(key, "Movie").items():
+            for value in values:
+                assert isinstance(value, str), (title, value)
+                assert value == value.strip(), (title, value)
+
+
+def test_no_content_rating_family_builds_a_not_rated_bucket():
+    """Kometa's ``other_name`` bucket is omitted by all seven, deliberately: it
+    is the set complement of the buckets that DID match, which this expansion
+    cannot compute without scanning the library -- and the Common Sense family
+    already builds a collection under that exact title on both kinds of
+    library, so building one here would collide with it seven times over."""
+    for key, (library_type, _digest_value) in CONTENT_RATING_DIGESTS.items():
+        titles = list(_rating_buckets(key, library_type))
+        assert not [title for title in titles if title.startswith("Not Rated")], key
+
+
+def test_the_regional_rows_say_where_their_letters_mislead():
+    """A bucket whose letter means something else in another country is a
+    collection an operator only finds wrong by opening it, so the rows say so
+    in the description the picker shows."""
+    nz = catalog.BY_KEY["content_ratings_nz"].description
+    au = catalog.BY_KEY["content_ratings_au"].description
+
+    # NZ's R is the X-rated restricted bucket, not "R-rated".
+    assert "RESTRICTED" in nz
+    # The RP buckets overlap the R ones by Kometa's own design, kept verbatim.
+    assert "'NZ RP13'" in nz
+    # AU/NZ M is not the US M.
+    assert "NOT the US 'M'" in au
+    assert "'NZ M' is not the US 'M'" in nz
+
+
+def test_the_streaming_transcription():
     streaming = {
         library_type: {
             definition.title: definition.params
@@ -616,42 +856,8 @@ def test_the_transcribed_kometa_tables_checksum():
     # UNFILTERED query -- every title instead of the service's.
     assert {params["watch_region"] for params in streaming["Show"].values()} == {"US"}
 
-    ratings = {
-        definition.title: definition.filters["content_rating"]
-        for definition in catalog.BY_KEY["content_ratings_us"].definitions("Movie")
-    }
-    assert list(ratings) == [
-        "G Movies", "PG Movies", "PG-13 Movies", "R Movies", "NC-17 Movies",
-    ]
-    assert [len(values) for values in ratings.values()] == [23, 21, 19, 12, 6]
-    # One addon per bucket, spot-checked: these are the certifications that
-    # make the bucket more than its own name, and the ones an operator would
-    # never notice missing.
-    assert "TV-14" in ratings["PG-13 Movies"]
-    assert "gb/U" in ratings["G Movies"]
-    assert "TV-MA" in ratings["R Movies"]
 
-    # The Show half of the same pack -- a separate upstream file with its own
-    # include list, checksummed the same way. Five buckets, 73 values, and no
-    # bucket lists its own key upstream, so these counts are the file's own
-    # addon counts plus one for the prepended key.
-    show_ratings = {
-        definition.title: definition.filters["content_rating"]
-        for definition in catalog.BY_KEY["content_ratings_us_show"].definitions("Show")
-    }
-    assert list(show_ratings) == [
-        "TV-G Shows", "TV-Y Shows", "TV-PG Shows", "TV-14 Shows", "TV-MA Shows",
-    ]
-    assert [len(values) for values in show_ratings.values()] == [20, 15, 13, 14, 11]
-    # Spot-checked addons, in the three directions the bucket names do not
-    # predict: the film certifications Kometa folds into the TV buckets, the
-    # British ones, and the TV-Y7 pair that belongs to TV-Y rather than to a
-    # bucket of its own. Getting these wrong is invisible until an operator
-    # wonders why a PG-13-tagged series landed nowhere.
-    assert "PG-13" in show_ratings["TV-14 Shows"]
-    assert "gb/18" in show_ratings["TV-MA Shows"]
-    assert "TV-Y7-FV" in show_ratings["TV-Y Shows"]
-
+def test_the_resolution_transcription():
     resolutions = {
         definition.title: definition.filters["resolution"]
         for definition in catalog.BY_KEY["media_resolution"].definitions("Movie")
@@ -663,6 +869,8 @@ def test_the_transcribed_kometa_tables_checksum():
         "480 Movies": ["480", "144", "240", "360", "sd", "576"],
     }
 
+
+def test_the_universes_transcription():
     universes = catalog.BY_KEY["content_universes"]
     assert len(universes.definitions("Movie")) == 9
     # The three Kometa restricts to film libraries.
@@ -673,6 +881,8 @@ def test_the_transcribed_kometa_tables_checksum():
         d.params["list"].startswith("ls") for d in universes.definitions("Movie")
     )
 
+
+def test_the_starter_director_transcription():
     directors = catalog.BY_KEY["people_directors"].definitions("Movie")
     assert len(directors) == 6
     assert directors[0].title == "Steven Spielberg (Director)"
