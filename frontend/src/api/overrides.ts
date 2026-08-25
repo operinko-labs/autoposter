@@ -77,7 +77,7 @@ export function withoutPath(
     : { ...document, [head]: pruned };
 }
 
-export function stringList(value: unknown): string[] {
+function stringList(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];

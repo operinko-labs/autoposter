@@ -13,7 +13,7 @@ skip_tba: true
 api_docs_enabled: false
 
 plex:
-  url: https://plex.vaderrp.com
+  url: https://<plex-host>
   excluded_libraries: [Muskarit, Photos]
   resolve_max_attempts: 10
   liveness_interval_seconds: 60

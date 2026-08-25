@@ -28,7 +28,7 @@ const PRESETS_PATH = "collections.presets";
  * and Diff now on this page is how an operator makes that immediate. Saying
  * "saved" without saying that leaves them watching Plex for a collection that
  * is not coming until the hour turns. */
-export const APPLIES_NOTE =
+const APPLIES_NOTE =
   "The change is live in the running process, and the collections themselves " +
   "appear at the next reconcile — use Diff now above to run one immediately.";
 
@@ -39,7 +39,7 @@ export const APPLIES_NOTE =
  * invalidate" does not apply to a collection's membership, because no image
  * changes. An operator who read the null as a broken preview would file a bug
  * against correct behaviour, so the panel says which it is. */
-export const NO_IMPACT_NOTE =
+const NO_IMPACT_NOTE =
   "Switching a preset on or off changes no rendered artwork, so the settings " +
   "page's preview reports no artwork impact for a change made here — by " +
   "design, not a missing number.";
@@ -68,15 +68,22 @@ function allRows(categories: CatalogCategory[]): CatalogPreset[] {
  * click would show up as a spurious diff in the operator's overrides file.
  *
  * Setting-backed rows are excluded because they are not preset keys at all --
- * the server refuses `presets: [oscars]` as unknown. A gated row cannot reach
- * here either: its checkbox is disabled, and the config refuses its key, so it
- * is never on. */
+ * the server refuses `presets: [oscars]` as unknown. Gated rows are excluded
+ * for the same reason -- the config loader refuses a gated key, naming its
+ * roadmap row -- and the exclusion is stated here rather than left to the
+ * disabled checkbox two hundred lines away: this is the function that builds
+ * the document the server would refuse, so this is where the invariant belongs. */
 function presetKeys(
   categories: CatalogCategory[],
   chosen: Record<string, boolean>,
 ): string[] {
   return allRows(categories)
-    .filter((preset) => preset.setting === null && chosen[preset.key])
+    .filter(
+      (preset) =>
+        preset.setting === null &&
+        preset.readiness !== GATED &&
+        chosen[preset.key],
+    )
     .map((preset) => preset.key);
 }
 
@@ -214,6 +221,15 @@ function CatalogRow({
  * The strip is a single tab stop (roving tabindex): Tab reaches the selected
  * tab and then leaves the strip for the panel, rather than walking through
  * nine buttons. The arrow keys move within it, and they wrap.
+ *
+ * The panel itself is NOT a tab stop. WAI-ARIA only asks for one when the
+ * panel holds nothing focusable (so a keyboard user could otherwise never
+ * reach its content); here Tab lands on the first row's checkbox, and a
+ * `tabIndex={0}` on the panel would only add a stop in front of it. A future
+ * panel of read-only text -- or one the CSS actually gives an `overflow` to --
+ * is the case that wants the tab stop back, and this is where that is
+ * recorded. Only the selected panel is rendered, so only the selected tab
+ * carries `aria-controls`.
  */
 export function CatalogPanel() {
   const [categories, setCategories] = useState<CatalogCategory[] | null>(null);
@@ -225,6 +241,10 @@ export function CatalogPanel() {
   const [stored, setStored] = useState<OverridesDocument>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Separate from `saveError` on purpose: a re-read that fails after the store
+  // succeeded did not unsave anything, and reporting it as a save failure would
+  // put a red error beside "Saved."
+  const [reloadError, setReloadError] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [result, setResult] = useState<ConfigSaveResponse | null>(null);
   const [saving, setSaving] = useState(false);
@@ -322,8 +342,13 @@ export function CatalogPanel() {
 
   function toggle(key: string, next: boolean) {
     // A stale save panel beside a changed set of choices would read as though
-    // that save had accounted for the change.
+    // that save had accounted for the change. The errors go for the same
+    // reason, and they are worse: a 422 pinned to a row the operator has since
+    // unchecked is a refusal of a document nobody is proposing any more.
     setResult(null);
+    setReloadError(null);
+    setErrors({});
+    setSaveError(null);
     setChosen((previous) => ({ ...previous, [key]: next }));
   }
 
@@ -331,7 +356,9 @@ export function CatalogPanel() {
     setSaving(true);
     setErrors({});
     setSaveError(null);
+    setReloadError(null);
     setResult(null);
+    let saved = false;
     try {
       const response = await apiFetch<ConfigSaveResponse>("/api/config/overrides", {
         method: "PUT",
@@ -340,21 +367,35 @@ export function CatalogPanel() {
         }),
       });
       if (live.current) setResult(response);
-      // Re-read rather than assume: the catalog's `active` states are the
-      // config's answer to what was just stored, and the document has to be
-      // re-seeded from the paths the server now says are overridden.
-      await reload();
+      saved = true;
     } catch (caught) {
-      if (!live.current) return;
-      if (caught instanceof ApiError && caught.status === 422) {
-        setErrors(fieldErrors(caught.detail));
-        setSaveError("The server rejected these choices.");
-      } else {
-        setSaveError((caught as Error).message);
+      if (live.current) {
+        if (caught instanceof ApiError && caught.status === 422) {
+          setErrors(fieldErrors(caught.detail));
+          setSaveError("The server rejected these choices.");
+        } else {
+          setSaveError((caught as Error).message);
+        }
       }
-    } finally {
-      if (live.current) setSaving(false);
     }
+    // Re-read rather than assume: the catalog's `active` states are the
+    // config's answer to what was just stored, and the document has to be
+    // re-seeded from the paths the server now says are overridden. Outside the
+    // save's own try on purpose -- the store already succeeded, so a failure
+    // here means the panel is showing stale state, not that nothing was saved.
+    if (saved) {
+      try {
+        await reload();
+      } catch (caught) {
+        if (live.current) {
+          setReloadError(
+            `Saved, but the catalog could not be re-read (${(caught as Error).message}). ` +
+              "What is shown below may be stale — reload the page.",
+          );
+        }
+      }
+    }
+    if (live.current) setSaving(false);
   }
 
   /** A field error whose path names this row: the setting-backed row's own
@@ -402,7 +443,13 @@ export function CatalogPanel() {
             id={`catalog-tab-${category.key}`}
             className="catalog-tab"
             aria-selected={category.key === selected}
-            aria-controls={`catalog-tabpanel-${category.key}`}
+            // Only the selected tab claims a panel, because only the selected
+            // panel is rendered. An `aria-controls` on all nine would point
+            // eight of them at ids that are not in the document, which is an
+            // invalid IDREF rather than a harmless extra attribute.
+            aria-controls={
+              category.key === selected ? `catalog-tabpanel-${category.key}` : undefined
+            }
             // One tab stop for the whole strip; the arrow keys move within it.
             tabIndex={category.key === selected ? 0 : -1}
             ref={(element) => {
@@ -422,9 +469,6 @@ export function CatalogPanel() {
           id={`catalog-tabpanel-${current.key}`}
           aria-labelledby={`catalog-tab-${current.key}`}
           className="catalog-tabpanel"
-          // The panel is the strip's next tab stop, and it scrolls, so it has
-          // to be reachable by keyboard in its own right.
-          tabIndex={0}
         >
           {current.presets.length === 0 ? (
             <p className="empty">{EMPTY_CATEGORY_NOTE}</p>
@@ -462,6 +506,7 @@ export function CatalogPanel() {
             {`Saved. Config ${result.version_before} → ${result.version_after}.`}
           </p>
           <p className="muted">{APPLIES_NOTE}</p>
+          {reloadError !== null && <p className="catalog-stale">{reloadError}</p>}
           {result.restart_required.length > 0 && (
             <p className="muted">
               {`Needs a restart: ${result.restart_required.join(", ")}.`}

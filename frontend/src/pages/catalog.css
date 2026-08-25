@@ -80,12 +80,6 @@
   box-shadow: inset 0 -2px 0 0 var(--accent);
 }
 
-.catalog-tabpanel {
-  /* Focusable (it is the strip's next tab stop), so it must show where the
-     focus went. */
-  outline-offset: 2px;
-}
-
 .catalog-rows {
   list-style: none;
   margin: 0;
@@ -192,6 +186,13 @@
 
 .catalog-saved p:last-child {
   margin-bottom: 0;
+}
+
+/* "Saved, but the re-read failed" -- a warning inside the success panel rather
+ * than a page error beside it, because the save itself did succeed. */
+.catalog-stale {
+  color: var(--warn);
+  font-size: 13px;
 }
 
 @media (max-width: 640px) {

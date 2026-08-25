@@ -222,6 +222,10 @@ describe("the catalog picker's tab strip", () => {
     // Exactly one panel is rendered: the unselected categories are absent from
     // the tree, not merely hidden, so a screen reader cannot walk into them.
     expect(screen.getAllByRole("tabpanel")).toHaveLength(1);
+    // Which is exactly why an unselected tab claims no panel: the id it would
+    // name is not in the document, and a dangling IDREF is a broken promise to
+    // the screen reader rather than an unused attribute.
+    expect(tabs()[1]).not.toHaveAttribute("aria-controls");
   });
 
   it("keeps one tab stop in the strip and moves it with the selection", async () => {
@@ -353,6 +357,30 @@ describe("saving the picker's choices", () => {
     // The whole point. `presets: [oscars]` is refused by the server as an
     // unknown key, so a document carrying one is a 422 waiting to happen --
     // and nothing else in the picker would notice.
+    expect(document.collections.presets).toBeUndefined();
+  });
+
+  it("writes an explicit false when a setting-backed row is switched off", async () => {
+    // The off direction of the same route. It cannot be expressed by dropping
+    // the key: the document is a delta, so a missing `collections.awards`
+    // reverts to whatever the config file says -- which is `true` for anyone
+    // who switched the Oscars on there. Only an explicit `false` turns them off.
+    const { puts } = await renderPanel({
+      catalog: catalog({ oscars: true }),
+      config: config({
+        collections: { enabled: true, awards: true, charts: false, presets: [] },
+        overridden_paths: ["collections.awards"],
+      }),
+    });
+
+    const box = screen.getByRole("checkbox", { name: /Academy Awards/ });
+    expect(box).toBeChecked();
+    fireEvent.click(box);
+    await save();
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    const document = sentDocument(puts);
+    expect(document.collections.awards).toBe(false);
     expect(document.collections.presets).toBeUndefined();
   });
 
