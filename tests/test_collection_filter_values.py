@@ -31,6 +31,7 @@ from autoposter.collections.filter_values import (
     SHIPPED_ATTRIBUTES,
     AttributeNotInListing,
     PlexItemView,
+    _ACCESSORS,
 )
 from autoposter.collections.filters import FILTER_ATTRIBUTES, evaluate, parse_filters
 
@@ -118,6 +119,18 @@ def test_an_accessor_exists_for_exactly_the_listing_rows():
     assert set(SHIPPED_ATTRIBUTES) & set(DEFERRED_ATTRIBUTES) == set()
     # The probe answered every row: no cell is still waiting on it.
     assert [row.name for row in FILTER_ATTRIBUTES if row.source == "probe"] == []
+
+
+def test_the_runtime_accessor_map_matches_the_listing_rows():
+    """The module docstring claims an accessor exists for exactly the families
+    the probe shipped. ``SHIPPED_ATTRIBUTES`` alone does not bind that claim --
+    it is derived from the same table ``_ACCESSORS`` is, by a separate path, so
+    the two could drift apart without either test above noticing. This checks
+    the actual runtime dict ``PlexItemView.get`` dispatches through, derived
+    fresh from the table so a future tier move is still caught."""
+    listing = {row.name for row in FILTER_ATTRIBUTES if row.source == "listing"}
+
+    assert set(_ACCESSORS) == listing
 
 
 def test_the_nine_shipped_families_are_named():
@@ -306,7 +319,10 @@ def test_a_hundred_item_library_evaluates_with_zero_plex_requests():
     items = []
     for index in range(100):
         xml = MOVIE_XML if index % 2 == 0 else BARE_MOVIE_XML
-        items.append(a_movie(xml.replace('ratingKey="158244"', 'ratingKey="%d"' % index), server))
+        source_key = "158244" if index % 2 == 0 else "2"
+        items.append(
+            a_movie(xml.replace('ratingKey="%s"' % source_key, 'ratingKey="%d"' % index), server)
+        )
 
     group = parse_filters(
         {

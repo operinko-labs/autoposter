@@ -36,8 +36,8 @@ table expected:
 
 - ``resolution`` SHIPS. ``<Media videoResolution=...>`` is on all 1955 movies
   -- 2009 Media elements, every one carrying the attrib, and the listing's
-  Media set matched ``/library/metadata`` on all 25 items sampled, including
-  the 50 multi-version ones.
+  Media set matched ``/library/metadata`` with zero disagreements on 25 items
+  sampled, including multi-version items in the sample.
 - ``genre`` DEFERS, and this is the finding worth reading twice. The listing
   *does* carry ``<Genre>`` -- but TRUNCATED to at most two per item. Never
   three, in either section. The metadata endpoint for the same items returns

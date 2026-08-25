@@ -279,11 +279,12 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "of its episodes, and per-episode traversal is not a tier-1 read. PROBE "
         "VERDICT: SHIPS -- the one row that went the opposite way to this note's "
         "original expectation. All 1955 movies carry `<Media>` in the listing, "
-        "all 2009 Media elements across them carry `videoResolution` (observed "
-        "values: 1080 x1780, sd, 4k, 480, 720), and the listing's Media set "
-        "matched the metadata endpoint's on all 25 items sampled -- including "
-        "every multi-version item found, which is why the view hands back a LIST "
-        "of resolutions rather than one. Unlike the tag families, Media is not "
+        "all 2009 Media elements across them carry `videoResolution` (a "
+        "200-item sample found 1080 on 189, sd on 7, 4k on 5, 480 on 3, 720 on "
+        "2), and the listing's Media set matched the metadata endpoint's with "
+        "zero disagreements on 25 items sampled, including multi-version items "
+        "in the sample, which is why the view hands back a LIST of resolutions "
+        "rather than one. Unlike the tag families, Media is not "
         "truncated: the per-item count histogram was {1: 1905, 2: 46, 3: 4}, "
         "which is the real distribution of file versions, not a cap.",
     ),
@@ -341,9 +342,15 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     ),
     FilterAttribute(
         "added", "date", _BOTH, "listing",
-        "The listing attrib `addedAt` (video.py:44), a naive datetime in the "
-        "Plex server's own clock. Compared date-granularly -- see the date "
-        "convention in `_as_calendar_date`.",
+        "The listing attrib `addedAt` (video.py:44). Plex sends a unix epoch, "
+        "and plexapi's `toDatetime` (utils.py) converts it with "
+        "`datetime.fromtimestamp(value)` -- no `tz` argument, because "
+        "plexapi's own `DATETIME_TIMEZONE` is `None` -- so the result is a "
+        "naive datetime in the RUNNER's local clock, not the Plex server's. "
+        "Compared date-granularly -- see the date convention in "
+        "`_as_calendar_date` -- so two runs of the same collection in "
+        "different timezones can disagree on which calendar date an item was "
+        "added.",
     ),
     FilterAttribute(
         "release", "date", _BOTH, "listing",
@@ -752,8 +759,15 @@ def _as_calendar_date(value: object, attribute: str) -> dt.date:
     calendar date it already reads as -- ``tzinfo`` is dropped, never converted.
     Converting to UTC or to the runner's zone would make the same library
     filter differently depending on where the pass happened, which is not a
-    property a collection should have. Plex writes ``addedAt`` naive in the
-    server's own clock anyway, so dropping is also the faithful reading.
+    property a collection should have.
+
+    ``added`` does not reach this function timezone-neutral, though: Plex sends
+    ``addedAt`` as a unix epoch, and plexapi's ``toDatetime`` converts it with
+    ``datetime.fromtimestamp(value)`` -- no ``tz`` -- so it is already a naive
+    datetime in the RUNNER's local clock by the time this function sees it, not
+    the Plex server's. This function's zone-preserving policy is correct for a
+    value that already carries the right zone; it does not undo ``added``'s
+    pre-existing runner-dependence.
     """
     if isinstance(value, dt.datetime):
         return value.date()
