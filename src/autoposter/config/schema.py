@@ -63,6 +63,12 @@ class Secrets(BaseModel):
     # plex.tv failure touch anything. Minted by the PIN CLI
     # (``python -m autoposter.plex.auth``).
     plex_account_token: str = ""
+    # Soft secret, same reasoning as mdblist_apikey: ``tracearr.enabled``
+    # defaults to false, so a deployment that never configures Tracearr must
+    # still boot. Left empty, ``build_source_clients`` builds no client at all
+    # and every tracearr_most_watched definition reports itself failed while
+    # the rest of the pass proceeds.
+    tracearr_apikey: str = ""
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -78,6 +84,7 @@ class Secrets(BaseModel):
         values["admin_password_hash"] = os.environ.get("AUTOPOSTER_ADMIN_PASSWORD_HASH", "")
         values["harbor_token"] = os.environ.get("AUTOPOSTER_HARBOR_TOKEN", "")
         values["plex_account_token"] = os.environ.get("AUTOPOSTER_PLEX_ACCOUNT_TOKEN", "")
+        values["tracearr_apikey"] = os.environ.get("AUTOPOSTER_TRACEARR_APIKEY", "")
         return cls(**values)
 
 
@@ -950,6 +957,26 @@ class SonarrConfig(BaseModel):
     series_type: str = "standard"
 
 
+class TracearrConfig(BaseModel):
+    """Where the watch-history collections read their plays from.
+
+    ``api_key`` is deliberately not a field here -- it comes from
+    ``Secrets.tracearr_apikey`` (``AUTOPOSTER_TRACEARR_APIKEY``), the same
+    pattern ``RadarrConfig`` records and every other credential in this project
+    follows. ``base_url`` may be a cluster-internal hostname, which is why
+    ``providers/tracearr.py`` keeps it out of every log line and every
+    exception message.
+
+    Not in ``config/live.FROZEN_SECTIONS``, for the radarr/sonarr reason: the
+    client is built once per collections pass rather than once per process, so
+    switching Tracearr on takes effect at the next pass rather than at the next
+    restart.
+    """
+
+    enabled: bool = False
+    base_url: str = ""
+
+
 class ArrSyncConfig(BaseModel):
     """The safety net that catches any Plex item this service has never
     processed, plus the cadence for the Radarr/Sonarr registration pass.
@@ -1041,6 +1068,7 @@ class Config(BaseModel):
     adopt: AdoptConfig = Field(default_factory=AdoptConfig)
     radarr: RadarrConfig = Field(default_factory=RadarrConfig)
     sonarr: SonarrConfig = Field(default_factory=SonarrConfig)
+    tracearr: TracearrConfig = Field(default_factory=TracearrConfig)
     arr_sync: ArrSyncConfig = Field(default_factory=ArrSyncConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     version_check: VersionCheckConfig = Field(default_factory=VersionCheckConfig)

@@ -297,6 +297,7 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, mdblist_apikey=""):
             # ``main()`` does with the summary, not about the clients.
             radarr=SimpleNamespace(enabled=False, base_url=""),
             sonarr=SimpleNamespace(enabled=False, base_url=""),
+            tracearr=SimpleNamespace(enabled=False, base_url=""),
             # ...and the manual assets mount, which the bundle carries for
             # ``text_file``. A path, not a client: the value is irrelevant
             # here, its presence is what a real ``Config`` guarantees.
@@ -312,7 +313,7 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, mdblist_apikey=""):
                 # The soft secrets the bundle reads. Empty is the real default
                 # for every one of them, and means "not configured".
                 tvdb_apikey="t", mdblist_apikey=mdblist_apikey, radarr_apikey="",
-                sonarr_apikey="", plex_account_token="",
+                sonarr_apikey="", plex_account_token="", tracearr_apikey="",
             )
         ),
     )

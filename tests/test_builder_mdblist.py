@@ -395,6 +395,7 @@ def _bundle_config():
         providers=SimpleNamespace(cache_ttl_seconds=3600),
         radarr=SimpleNamespace(enabled=False, base_url=""),
         sonarr=SimpleNamespace(enabled=False, base_url=""),
+        tracearr=SimpleNamespace(enabled=False, base_url=""),
         manual_assets_root="/manual",
     )
 

@@ -29,6 +29,7 @@ from autoposter.config.schema import Config, Secrets
 from autoposter.facts.mdblist import MDBListClient
 from autoposter.providers.cache import ProviderCache
 from autoposter.providers.tmdb_lists import TmdbListClient
+from autoposter.providers.tracearr import TracearrClient
 from autoposter.providers.tvdb import TVDBClient
 
 logger = logging.getLogger(__name__)
@@ -249,6 +250,7 @@ def build_source_clients(
         ),
         radarr=_arr_client(config.radarr, secrets.radarr_apikey, RADARR, http),
         sonarr=_arr_client(config.sonarr, secrets.sonarr_apikey, SONARR, http),
+        tracearr=_tracearr_client(config.tracearr, secrets.tracearr_apikey, http),
         plex_account=_plex_account_factory(secrets.plex_account_token),
         # Config, not a client -- ``text_file`` resolves its ``path`` under
         # this root and contains it there. Taken from the config here for the
@@ -267,6 +269,19 @@ def _arr_client(service, api_key: str, kind, http: httpx.AsyncClient) -> ArrClie
     if not (service.enabled and service.base_url and api_key):
         return None
     return ArrClient(http, service.base_url, api_key, kind)
+
+
+def _tracearr_client(service, api_key: str, http: httpx.AsyncClient):
+    """One Tracearr client, or None if this deployment has no such service.
+
+    The ``_arr_client`` triple, for the same reasons: ``enabled`` is the
+    operator's switch, and a blank ``base_url`` or api key is a half-configured
+    service whose every request would fail with a confusing error rather than
+    with "not configured".
+    """
+    if not (service.enabled and service.base_url and api_key):
+        return None
+    return TracearrClient(http, service.base_url, api_key)
 
 
 def _plex_account_factory(token: str):

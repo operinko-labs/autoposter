@@ -265,6 +265,7 @@ async def test_the_bundle_does_not_repr_the_account_token():
         providers=SimpleNamespace(cache_ttl_seconds=3600),
         radarr=SimpleNamespace(enabled=False, base_url=""),
         sonarr=SimpleNamespace(enabled=False, base_url=""),
+        tracearr=SimpleNamespace(enabled=False, base_url=""),
         manual_assets_root="/manual",
     )
     secrets = Secrets(

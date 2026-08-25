@@ -40,6 +40,7 @@ if TYPE_CHECKING:  # imported for annotations only -- see the module docstring
     from autoposter.arr.client import ArrClient
     from autoposter.facts.mdblist import MDBListClient
     from autoposter.providers.tmdb_lists import TmdbListClient
+    from autoposter.providers.tracearr import TracearrClient
     from autoposter.providers.tvdb import TVDBClient
 
 __all__ = ["PlexSectionAccess", "SourceClients"]
@@ -99,6 +100,12 @@ class SourceClients:
     # None when that service is disabled or has no base URL configured.
     radarr: "ArrClient | None" = None
     sonarr: "ArrClient | None" = None
+    # None when Tracearr is disabled, has no base URL, or no
+    # AUTOPOSTER_TRACEARR_APIKEY is set. Absent means None and None means the
+    # builder raises: a watch-history ranking with no history to read could
+    # only produce an empty collection, which one layer down means "remove
+    # every member".
+    tracearr: "TracearrClient | None" = None
     # A factory, not an account: see the module docstring. None when
     # ``AUTOPOSTER_PLEX_ACCOUNT_TOKEN`` is unset -- the configured
     # ``plex_token`` may be server-scoped and must never be assumed to work

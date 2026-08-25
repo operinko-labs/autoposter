@@ -1,0 +1,40 @@
+{
+  "id": "79e224e2-5dd6-447f-9ebc-c9e798300128",
+  "media_type": "movie",
+  "title": "Blade: Trinity",
+  "year": 2004,
+  "imdb_id": "tt0359013",
+  "tmdb_id": 36648,
+  "tvdb_id": 1700,
+  "genres": [
+    "Action",
+    "Science Fiction"
+  ],
+  "show_media_id": null,
+  "merged_ids": [],
+  "availability": [
+    {
+      "server_id": "11111111-1111-4111-8111-000000000001",
+      "server_type": "plex",
+      "library_id": "1",
+      "rating_key": "72073",
+      "added_at": "2025-01-08T10:22:04.000Z",
+      "removed_at": null,
+      "video_resolution": "1080p",
+      "file_size": 16590034523,
+      "versions": [
+        {
+          "resolution": "1080p",
+          "video_codec": "HEVC",
+          "audio_codec": "DCA-MA",
+          "dynamic_range": null,
+          "container": "mkv",
+          "file_size": 16590034523
+        }
+      ],
+      "replaces": null
+    }
+  ],
+  "season_count": null,
+  "episode_count": null
+}
