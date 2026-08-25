@@ -341,6 +341,13 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
     descendant holds every ancestor), applied again at delete time, where the
     evidence is a row that changed rather than an item that resolved.
 
+    A row inserted under a gone parent between the candidate SELECT and that
+    parent's delete sits outside both guards -- it was never a candidate, so
+    nothing shields the parent, and the cascade removes it with no audit row
+    of its own -- but no live row is lost (such a row is itself unresolvable
+    and rating keys are not reused), only its audit, and the next pass would
+    have pruned it anyway.
+
     **The audit is flushed per row, before the next row's delete**, the way
     ``collections/engine.py`` flushes its ``collection_deleted`` rows. The
     flush is an ordering, not a commit -- audits and deletes commit or roll
