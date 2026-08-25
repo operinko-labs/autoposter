@@ -36,14 +36,19 @@ Three properties this module has to keep, none of them optional:
   switched on creates collections in deployments that never asked for them.
   Everything here is off until a key names it.
 
-**The Oscars are deliberately not a row.** They are ``collections.awards``,
-the boolean that shipped, and they stay it -- an ``award_oscars`` preset would
-be a second way to switch on the same four collections, and switching on both
-would put two definitions with identical titles into one library's list. (That
-is the one collision ``_titles_must_not_collide`` cannot catch: it compares
-operator definitions against the built-ins, not the built-ins against each
-other.) The picker renders the Oscars from the boolean; this table holds the
-fifteen ceremonies that have no boolean of their own.
+**The Oscars are deliberately not a preset.** They are ``collections.awards``,
+the boolean that shipped, and they stay it -- an ``award_oscars`` *preset*
+would be a second way to switch on the same four collections, and switching on
+both would put two definitions with identical titles into one library's list.
+(That is the one collision ``_titles_must_not_collide`` cannot catch: it
+compares operator definitions against the built-ins, not the built-ins against
+each other.) They still get a row -- an operator looking for the Oscars in the
+Awards tab should find one -- but it carries ``Preset.setting`` instead of
+being a member of ``BY_KEY``, so it reads ``collections.awards`` for its
+``active`` state and can never be listed in ``presets:``. The charts family
+and the Common Sense divider get the same treatment, one each, for the same
+reason: each already has its own boolean, and a preset key next to it would be
+a second way to flip a switch that already exists.
 
 Key naming: ``<category-ish prefix>_<thing>``, ``award_cannes``. The prefix is
 not parsed anywhere -- ``category`` is a field -- it is there so a key reads on
@@ -116,6 +121,16 @@ class Preset:
     generic ``builder``/``params`` pair. One award preset produces several
     definitions of two different builders, and the count depends on the
     library type -- a single params dict could not have said that.
+
+    ``setting`` marks a different kind of row: not a preset an operator
+    switches on by listing its key in ``presets:``, but a *display* of a
+    setting that already exists and already has its own wiring -- a dotted
+    config path (``"collections.awards"``) the listing reads to answer
+    ``active``. Rows like this are never in ``BY_KEY`` and their
+    ``definitions()`` always returns ``[]``: the picker shows them so the
+    Oscars, the charts and the Common Sense divider have a row next to the
+    presets that switch on their neighbours, but flipping them happens
+    through the boolean they name, not through this table.
     """
 
     key: str
@@ -130,6 +145,10 @@ class Preset:
     library_types: tuple[str, ...]
     readiness: str = READY
     gated_row: int | None = None
+    # A dotted config path (``"collections.awards"``) for a row that is a
+    # rendered switch rather than a preset -- see the class docstring. None
+    # for every ordinary preset.
+    setting: str | None = None
     # --- the definition-producing fields -----------------------------------
     # An award preset is one ceremony of ``imdb_award.EVENTS``: every static
     # winners collection it has, plus its year-collections placeholder.
@@ -145,6 +164,13 @@ class Preset:
         Empty is a real answer: a Movie-only ceremony asked for its Show
         definitions has none, and the caller appends nothing.
         """
+        if self.setting is not None:
+            # A rendered switch, not a preset -- its family already builds
+            # through the boolean it names (``sources.chart_and_award_
+            # definitions``, ``cs_bucket``). Explicit rather than left to
+            # ``award_event`` being unset, so a row that someday carries both
+            # a ``setting`` and a producer still expands to nothing.
+            return []
         if self.award_event is not None:
             return self._award_definitions(library_type)
         # No other family exists yet -- the eight other categories are Task 5's
@@ -206,8 +232,28 @@ class Preset:
 
 # The Kometa defaults file each ceremony reproduces. The file name is the event
 # key for fourteen of the fifteen; the Golden Globes' file is ``golden.yml``,
-# transcribed in ``collections/awards.py`` when that ceremony shipped.
-_KOMETA_FILES = {"golden_globes": "golden"}
+# transcribed in ``collections/awards.py`` when that ceremony shipped. Every
+# key is spelled out, none derived from ``event_key`` by falling back to it --
+# a ceremony added to ``EVENTS`` without an entry here raises ``KeyError`` at
+# import, the same loud-failure shape ``_AWARD_NOTES`` already had, rather than
+# inventing a file name nobody checked.
+_KOMETA_FILES: dict[str, str] = {
+    "golden_globes": "golden",
+    "bafta": "bafta",
+    "berlinale": "berlinale",
+    "cannes": "cannes",
+    "cesar": "cesar",
+    "choice": "choice",
+    "emmy": "emmy",
+    "nfr": "nfr",
+    "pca": "pca",
+    "razzie": "razzie",
+    "sag": "sag",
+    "spirit": "spirit",
+    "sundance": "sundance",
+    "tiff": "tiff",
+    "venice": "venice",
+}
 
 # The sentence a row needs beyond its derived description, for the rows where
 # something is not obvious from the title. Empty string = nothing to add, and
@@ -250,6 +296,29 @@ _AWARD_NARROWING: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
 }
 
 
+def _check_award_narrowing() -> None:
+    """Every ``_AWARD_NARROWING`` key names an award its own ceremony has.
+
+    ``_award_definitions``'s ``narrowed.get(award_key, event.library_types)``
+    looks a mistyped key up the same way it looks up a real one -- silently --
+    so a typo here would not narrow the wrong award, it would narrow nothing
+    and never say why. Called at import, not left to a test to catch.
+    """
+    for event_key, narrowed in _AWARD_NARROWING.items():
+        for award_key, _library_types in narrowed:
+            if award_key not in EVENTS[event_key].awards:
+                raise AssertionError(
+                    "_AWARD_NARROWING[%r] names %r, which is not one of "
+                    "%r's awards (%s)" % (
+                        event_key, award_key, event_key,
+                        ", ".join(sorted(EVENTS[event_key].awards)),
+                    )
+                )
+
+
+_check_award_narrowing()
+
+
 def _award_description(event, note: str) -> str:
     """One ceremony's description, derived from the registry row.
 
@@ -275,8 +344,7 @@ def _award_preset(event_key: str) -> Preset:
         category="awards",
         name=event.name,
         description=_award_description(event, note),
-        kometa_source="defaults/award/%s.yml"
-        % _KOMETA_FILES.get(event_key, event_key),
+        kometa_source="defaults/award/%s.yml" % _KOMETA_FILES[event_key],
         library_types=event.library_types,
         award_event=event_key,
         award_library_types=_AWARD_NARROWING.get(event_key, ()),
@@ -287,18 +355,89 @@ AWARD_PRESETS: tuple[Preset, ...] = tuple(
     _award_preset(key) for key in EVENTS if key != "oscars"
 )
 
+# --- the setting-backed rows -------------------------------------------------
+#
+# Three families that already shipped, each behind its own boolean, before
+# this catalog existed: the Oscars (``collections.awards``), the IMDb charts
+# (``collections.charts``) and the Common Sense age-rating family's blank
+# divider (``collections.separators``). The picker needs a row for each so an
+# operator sees them next to the presets that switch on their neighbours --
+# but flipping one is not a ``presets:`` key, it is the boolean the row names,
+# so these carry ``setting`` and nothing about them is a preset: ``BY_KEY``
+# below excludes them (a mistyped ``presets: [oscars]`` is refused as unknown,
+# not accepted as a no-op) and ``Preset.definitions`` refuses to expand them.
+#
+# The Common Sense age-rating collections themselves have **no boolean of
+# their own** -- ``sources.default_definitions`` builds the ``cs_bucket``
+# family unconditionally (roadmap: none filed). Only the divider inside that
+# family is a real, named setting, so that is what this row's ``setting``
+# names; it does not claim to switch the age buckets off, because nothing
+# does.
+_oscars = EVENTS["oscars"]
+CONTENT_RATINGS_DIVIDER_TITLE = "Ratings Collections"
+
+SETTING_PRESETS: tuple[Preset, ...] = (
+    Preset(
+        key="oscars",
+        category="awards",
+        name=_oscars.name,
+        description=_award_description(
+            _oscars,
+            "Switched on by the collections.awards setting, not by a preset "
+            "key -- it is these collections' original, shipped toggle.",
+        ),
+        kometa_source="defaults/award/oscars.yml",
+        library_types=_oscars.library_types,
+        award_event="oscars",
+        setting="collections.awards",
+    ),
+    Preset(
+        key="imdb_charts",
+        category="charts",
+        name="IMDb Charts",
+        description=(
+            "IMDb Popular, IMDb Top 250, and IMDb Lowest Rated (Movie "
+            "libraries only) -- the chart family collections.charts already "
+            "builds, refreshed from IMDb on every pass."
+        ),
+        kometa_source="defaults/chart/imdb.yml",
+        library_types=("Movie", "Show"),
+        setting="collections.charts",
+    ),
+    Preset(
+        key="content_ratings_divider",
+        category="content_ratings",
+        name="%s divider" % CONTENT_RATINGS_DIVIDER_TITLE,
+        description=(
+            "The blank %r section divider that belongs to the Common Sense "
+            "age-rating family. The age-rating collections themselves are "
+            "always built and have no switch of their own; this divider is "
+            "the one part of the family collections.separators turns off."
+            % CONTENT_RATINGS_DIVIDER_TITLE
+        ),
+        kometa_source="defaults/both/content_rating_cs.yml",
+        library_types=("Movie", "Show"),
+        setting="collections.separators",
+    ),
+)
+
 # The whole table, in picker order. The eight other categories are Task 5's:
 # they are absent rather than present-and-empty, because a category with no
 # rows is a tab with nothing in it, and an empty placeholder row would be the
 # invented content this table exists to avoid.
 #
-# Count checksum: 15 presets, all in AWARDS -- one per ceremony in EVENTS
-# except the Oscars, which are ``collections.awards``.
-CATALOG: tuple[Preset, ...] = AWARD_PRESETS
+# Count checksum: 18 rows -- 15 award presets, one per ceremony in EVENTS
+# except the Oscars, plus the three setting-backed rows above (one each in
+# AWARDS, CHARTS and CONTENT_RATINGS).
+CATALOG: tuple[Preset, ...] = AWARD_PRESETS + SETTING_PRESETS
 
-# Key -> row. Built once; every lookup goes through it, including the config
-# validator's.
-BY_KEY: dict[str, Preset] = {preset.key: preset for preset in CATALOG}
+# Key -> row, for the config validator's presets: lookup only. Setting-backed
+# rows are deliberately absent: they are not something ``presets:`` can name,
+# so a key like "oscars" typed there is refused as unknown, the same as any
+# other typo, rather than accepted as a no-op nobody asked for.
+BY_KEY: dict[str, Preset] = {
+    preset.key: preset for preset in CATALOG if preset.setting is None
+}
 
 
 def preset_definitions(config, library_type: str) -> list[CollectionDefinition]:
@@ -319,9 +458,27 @@ def preset_definitions(config, library_type: str) -> list[CollectionDefinition]:
     wanted = set(config.collections.presets)
     definitions: list[CollectionDefinition] = []
     for preset in CATALOG:
-        if preset.key in wanted:
-            definitions += preset.definitions(library_type)
+        if preset.key not in wanted:
+            continue
+        if preset.readiness == GATED:
+            # The validator (``schema.py``'s ``_presets_must_be_known_and_
+            # ready``) already refuses a GATED key before it can reach a
+            # validated config's ``presets`` list, so this is a second guard
+            # for a caller that built ``wanted`` some other way -- a direct
+            # call, a future one. Explicit rather than relying on no GATED row
+            # carrying a producer, which is true today by accident and not by
+            # anything this function enforces.
+            continue
+        definitions += preset.definitions(library_type)
     return definitions
+
+
+def _read_setting(config, dotted: str) -> bool:
+    """Read a ``Preset.setting`` path (``"collections.awards"``) off config."""
+    value = config
+    for part in dotted.split("."):
+        value = getattr(value, part)
+    return bool(value)
 
 
 def catalog_listing(config) -> list[dict]:
@@ -331,10 +488,11 @@ def catalog_listing(config) -> list[dict]:
     shows nine tabs, and a tab that vanished because its rows have not been
     written would read as a category this service does not have.
 
-    ``active`` is read off the config. Presets are the only source of it today;
-    the entries that read and write ``collections.charts`` and
-    ``collections.awards`` instead arrive with the rows that need them, and
-    each carries its own setting name then.
+    ``active`` is read off the config: for an ordinary preset, whether its key
+    is in ``collections.presets``; for a setting-backed row (``preset.setting``
+    not None), the boolean that path names -- ``collections.charts`` and
+    ``collections.awards`` are exactly this now, and every setting-backed row
+    after them follows the same rule rather than needing one of its own.
     """
     active = set(config.collections.presets)
     return [
@@ -352,7 +510,12 @@ def catalog_listing(config) -> list[dict]:
                     "library_types": list(preset.library_types),
                     "readiness": preset.readiness,
                     "gated_row": preset.gated_row,
-                    "active": preset.key in active,
+                    "setting": preset.setting,
+                    "active": (
+                        _read_setting(config, preset.setting)
+                        if preset.setting is not None
+                        else preset.key in active
+                    ),
                 }
                 for preset in CATALOG
                 if preset.category == category

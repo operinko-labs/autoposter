@@ -94,15 +94,68 @@ def test_the_awards_category_is_every_ceremony_but_the_oscars():
     the assertion that the catalog cannot fall behind the builders.
     """
     awards = [preset for preset in CATALOG if preset.category == "awards"]
+    presets = [preset for preset in awards if preset.setting is None]
 
-    assert len(CATALOG) == 15
-    assert len(awards) == 15
-    assert {preset.key for preset in awards} == {
+    assert len(presets) == 15
+    assert {preset.key for preset in presets} == {
         "award_%s" % key for key in EVENTS if key != "oscars"
     }
-    # The Oscars are ``collections.awards``, and a preset for them would be a
-    # second switch building the same four collections under the same titles.
-    assert "award_oscars" not in {preset.key for preset in CATALOG}
+    # The Oscars are ``collections.awards``: not a preset key an operator can
+    # list -- a preset for them would be a second switch building the same
+    # four collections under the same titles -- but they still get a row, a
+    # setting-backed one, so the Awards tab has something to show for them.
+    assert "award_oscars" not in {preset.key for preset in presets}
+    oscars_row = next(preset for preset in awards if preset.key == "oscars")
+    assert oscars_row.setting == "collections.awards"
+    assert oscars_row.award_event == "oscars"
+
+
+def test_the_catalog_table_checksum():
+    """15 award presets + 3 setting-backed rows (Oscars, the IMDb charts
+    family, the Common Sense divider) = 18. See ``catalog.py``'s own
+    count-checksum comment above ``CATALOG``."""
+    presets = [preset for preset in CATALOG if preset.setting is None]
+    settings = [preset for preset in CATALOG if preset.setting is not None]
+
+    assert len(CATALOG) == 18
+    assert len(presets) == 15
+    assert len(settings) == 3
+    assert {preset.category for preset in settings} == {
+        "awards", "charts", "content_ratings",
+    }
+
+
+def test_every_event_has_a_kometa_file_entry():
+    """``_KOMETA_FILES`` is strict, the same shape ``_AWARD_NOTES`` already
+    had -- every non-Oscars ceremony names its Kometa defaults file here, so a
+    ceremony added to ``EVENTS`` without one fails at import rather than
+    ``.get(key, key)`` inventing a file name nobody checked."""
+    for key in EVENTS:
+        if key == "oscars":
+            continue
+        assert key in catalog._KOMETA_FILES, key
+
+
+def test_a_kometa_file_missing_for_a_real_event_raises(monkeypatch):
+    """The strictness proven directly: deleting one real ceremony's entry
+    makes building its preset raise, rather than falling back to a guessed
+    file name."""
+    monkeypatch.delitem(catalog._KOMETA_FILES, "cannes")
+
+    with pytest.raises(KeyError):
+        catalog._award_preset("cannes")
+
+
+def test_award_narrowing_keys_must_be_real_awards_of_their_event(monkeypatch):
+    """Import-time guard (``catalog._check_award_narrowing``), proven
+    directly: a narrowing row naming an award its ceremony does not have
+    raises rather than silently narrowing nothing."""
+    monkeypatch.setitem(
+        catalog._AWARD_NARROWING, "cannes", (("not_a_real_award", ("Movie",)),)
+    )
+
+    with pytest.raises(AssertionError, match="not_a_real_award"):
+        catalog._check_award_narrowing()
 
 
 def test_every_preset_row_is_internally_consistent():
@@ -149,9 +202,14 @@ def test_every_ready_preset_actually_builds_something():
     """A READY preset that expands to nothing on every library type is a
     checkbox that does nothing -- the failure mode a table of rows with no
     producer behind them has. Task 5's categories are held to this the moment
-    their rows land."""
+    their rows land.
+
+    Setting-backed rows are the deliberate exception: they are switches for a
+    family that already builds through its own boolean, not presets with a
+    producer of their own -- see the setting-backed-rows tests below for what
+    they ARE held to."""
     for preset in CATALOG:
-        if preset.readiness != READY:
+        if preset.readiness != READY or preset.setting is not None:
             continue
         produced = [
             definition
@@ -338,6 +396,91 @@ def test_the_expansion_is_the_same_list_every_time_it_is_asked():
     assert first is not second
 
 
+# --- the setting-backed rows -------------------------------------------------
+
+
+def test_setting_backed_rows_are_not_in_by_key():
+    """A setting-backed row is not something ``presets:`` can name -- typing
+    it there must be refused as unknown, the same as any other typo, rather
+    than accepted as a no-op nobody asked for."""
+    setting_keys = {preset.key for preset in CATALOG if preset.setting is not None}
+
+    assert setting_keys == {"oscars", "imdb_charts", "content_ratings_divider"}
+    assert setting_keys.isdisjoint(catalog.BY_KEY)
+
+
+def test_a_setting_backed_key_is_refused_at_load_as_unknown():
+    with pytest.raises(ValidationError, match="unknown collection preset 'oscars'"):
+        build_config(_document(["oscars"]))
+
+
+def test_setting_backed_rows_never_expand_via_preset_definitions():
+    """These rows are rendered switches, not presets: even if their key ends
+    up in ``presets`` -- bypassing the real config validator, which refuses
+    them as unknown -- ``preset_definitions`` must expand them to nothing.
+    Their families already build through the booleans ``Preset.setting``
+    names (``sources.chart_and_award_definitions``, ``cs_bucket``)."""
+    setting_keys = [preset.key for preset in CATALOG if preset.setting is not None]
+    assert setting_keys  # otherwise this proves nothing
+
+    for library_type in LIBRARY_TYPES:
+        assert preset_definitions(_config(setting_keys), library_type) == []
+
+
+def test_a_gated_row_with_a_producer_still_expands_to_nothing(monkeypatch):
+    """No shipped GATED row carries a producer, so today's safety against a
+    GATED key building something is an accident of the table, not something
+    ``preset_definitions`` enforces on its own. A double built here WOULD
+    build something if its GATED guard were dropped -- ``award_event`` is a
+    real ceremony's -- which is what makes this a proof rather than a
+    tautology."""
+    fake = Preset(
+        key="award_cannes_gated_double",
+        category="awards",
+        name="Cannes (gated test double)",
+        description="test double",
+        kometa_source="defaults/award/cannes.yml",
+        library_types=("Movie",),
+        readiness=GATED,
+        gated_row=999,
+        award_event="cannes",
+    )
+    monkeypatch.setattr(catalog, "CATALOG", catalog.CATALOG + (fake,))
+
+    assert preset_definitions(_config([fake.key]), "Movie") == []
+
+
+def test_the_listings_active_reads_the_setting_for_setting_backed_rows():
+    def _row(listing, category, key):
+        found = next(c for c in listing if c["key"] == category)
+        return next(p for p in found["presets"] if p["key"] == key)
+
+    on = catalog_listing(_config([], charts=True, awards=False, separators=False))
+    off = catalog_listing(_config([], charts=False, awards=False, separators=False))
+
+    charts_on = _row(on, "charts", "imdb_charts")
+    charts_off = _row(off, "charts", "imdb_charts")
+    assert charts_on["setting"] == "collections.charts"
+    assert charts_on["active"] is True
+    assert charts_off["active"] is False
+
+    oscars = _row(on, "awards", "oscars")
+    assert oscars["setting"] == "collections.awards"
+    assert oscars["active"] is False  # awards=False in this config
+
+    divider = _row(off, "content_ratings", "content_ratings_divider")
+    assert divider["setting"] == "collections.separators"
+    assert divider["active"] is False
+
+
+def test_ordinary_preset_rows_carry_no_setting_in_the_listing():
+    listing = catalog_listing(_config(["award_venice"]))
+    awards = next(c for c in listing if c["key"] == "awards")
+    venice = next(p for p in awards["presets"] if p["key"] == "award_venice")
+
+    assert venice["setting"] is None
+
+
 # --- the config field -------------------------------------------------------
 
 
@@ -366,8 +509,12 @@ def test_the_unknown_preset_error_lists_the_keys_that_do_exist():
 def test_a_duplicated_preset_key_is_refused():
     """Twice in the list is not twice the collections -- the expansion is a
     set membership test -- so a duplicate is a config that does not mean what
-    it says. Refused rather than silently collapsed."""
-    with pytest.raises(ValidationError, match="award_cannes"):
+    it says. Refused rather than silently collapsed.
+
+    Matches "listed twice", not "award_cannes": the key appears in the
+    "unknown" refusal's message too, so pinning the key alone would stay
+    green even if this raised the wrong refusal for the wrong reason."""
+    with pytest.raises(ValidationError, match="listed twice"):
         build_config(_document(["award_cannes", "award_cannes"]))
 
 
@@ -503,7 +650,8 @@ async def test_the_catalog_endpoint_lists_every_category_and_the_awards(
 
     assert [category["key"] for category in body["categories"]] == list(CATEGORIES)
     awards = next(c for c in body["categories"] if c["key"] == "awards")
-    assert len(awards["presets"]) == 15
+    # The 15 award presets plus the Oscars' own setting-backed row.
+    assert len(awards["presets"]) == 16
     cannes = next(p for p in awards["presets"] if p["key"] == "award_cannes")
     assert cannes == {
         "key": "award_cannes",
@@ -515,6 +663,7 @@ async def test_the_catalog_endpoint_lists_every_category_and_the_awards(
         "library_types": ["Movie"],
         "readiness": READY,
         "gated_row": None,
+        "setting": None,
         "active": False,
     }
     assert cannes["description"].startswith("Cannes: 1 winners collection,")
@@ -526,11 +675,13 @@ async def test_the_catalog_endpoint_reports_which_presets_are_active(
     config = app.state.config_holder.current
     # The same swap the overrides API performs, so this reads the live config
     # rather than the one the process started with -- which is the whole point
-    # of ``collections`` being a live section.
+    # of ``collections`` being a live section. ``awards: False`` isolates the
+    # check to the preset: the Oscars' own row would otherwise also read
+    # active from the example config's default ``awards: true``.
     app.state.config_holder.swap(config.model_copy(
         update={
             "collections": config.collections.model_copy(
-                update={"presets": ["award_venice"]}
+                update={"presets": ["award_venice"], "awards": False}
             )
         }
     ))
@@ -543,8 +694,14 @@ async def test_the_catalog_endpoint_reports_which_presets_are_active(
 
 def test_the_listing_is_the_endpoints_only_source_of_truth():
     """The handler is a lookup and a dump; everything it says comes from
-    ``catalog_listing``, so the shape can be tested without a request."""
-    listing = catalog_listing(_config(["award_venice"]))
+    ``catalog_listing``, so the shape can be tested without a request.
+
+    ``charts``/``awards``/``separators`` are switched off here so the three
+    setting-backed rows do not also read active -- this test is about the
+    ONE preset key, isolated the same way the endpoint test above is."""
+    listing = catalog_listing(
+        _config(["award_venice"], charts=False, awards=False, separators=False)
+    )
 
     assert [category["key"] for category in listing] == list(CATEGORIES)
     assert sum(len(category["presets"]) for category in listing) == len(CATALOG)

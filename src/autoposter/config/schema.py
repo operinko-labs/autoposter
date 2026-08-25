@@ -707,10 +707,12 @@ class CollectionsConfig(BaseModel):
         (``engine.definition_titles`` over ``sources.default_definitions``), so
         a toggle switched off frees its titles, and the age buckets contribute
         the titles they actually create rather than their definition's
-        placeholder. The dynamic Oscars year titles are *not* enumerable
-        without the ceremony dataset, so a definition titled "Oscars Winners
-        2026" is not caught here; the reconcile leaves whichever definition
-        runs second in charge, and the roadmap has that as the known gap.
+        placeholder. The dynamic year titles are *not* enumerable without the
+        ceremony dataset -- true of the Oscars and, now that the award
+        presets ship, of all sixteen ceremonies alike -- so a definition
+        titled "Oscars Winners 2026" is not caught here; the reconcile leaves
+        whichever definition runs second in charge, and the roadmap has that
+        as the known gap.
         """
         # Imported at validation time, not module scope: both reach back into
         # this module -- the same cycle CollectionDefinition's builder

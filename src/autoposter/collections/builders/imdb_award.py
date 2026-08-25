@@ -349,9 +349,11 @@ EVENTS: dict[str, AwardEvent] = {
         # ``allowed_libraries`` (its static one says ``movie``). This is the
         # one row where the event's types are wider than one of its own
         # collections wants -- "best picture" is a film award, so on a Show
-        # library that collection resolves nothing. TASK 3: the ``best``
-        # preset needs ``Preset.library_types = ("Movie",)``; the year
-        # collections keep both.
+        # library that collection resolves nothing. Narrowed on the catalog
+        # side, not here: ``Preset.award_library_types`` in
+        # ``collections/catalog.py``'s ``_AWARD_NARROWING`` drops the
+        # ``best`` collection to ``("Movie",)`` alone while this event's own
+        # ``library_types`` -- what the year collections use -- stays both.
         library_types=("Movie", "Show"),
     ),
     "emmy": AwardEvent(
