@@ -22,7 +22,7 @@
       "would create 'Oscars Winners 2025' with 2 item(s)",
       "would create 'Oscars Winners 2024' with 1 item(s)",
       "would create 'Oscars Winners 2023' with 1 item(s)",
-      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
     ],
     "state": {}
   },
@@ -49,7 +49,7 @@
       "created 'Oscars Winners 2025' with 2 item(s)",
       "created 'Oscars Winners 2024' with 1 item(s)",
       "created 'Oscars Winners 2023' with 1 item(s)",
-      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -363,7 +363,7 @@
   },
   "movies_apply_again": {
     "actions": [
-      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -963,7 +963,7 @@
       "could not fetch a usable poster for 'Oscars Winners 2024' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2024.jpg",
       "created 'Oscars Winners 2023' with 1 item(s)",
       "could not fetch a usable poster for 'Oscars Winners 2023' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2023.jpg",
-      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -1319,7 +1319,7 @@
       "set the poster for 'Oscars Winners 2024' from the hosted default",
       "created 'Oscars Winners 2023' with 1 item(s)",
       "set the poster for 'Oscars Winners 2023' from the hosted default",
-      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -1654,7 +1654,7 @@
       "created 'Oscars Winners 2025' with 2 item(s)",
       "created 'Oscars Winners 2024' with 1 item(s)",
       "created 'Oscars Winners 2023' with 1 item(s)",
-      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -2181,16 +2181,16 @@
       "created 'Age 18+ Movies'",
       "created 'Not Rated Movies'",
       "created 'Ratings Collections'",
-      "'IMDb Popular': source returned no items; leaving the collection untouched",
-      "'IMDb Top 250': source returned no items; leaving the collection untouched",
-      "'IMDb Lowest Rated': source returned no items; leaving the collection untouched",
-      "'Oscars Best Picture Winners': source returned no items; leaving the collection untouched",
-      "'Oscars Best Director Winners': source returned no items; leaving the collection untouched",
-      "'Oscars Winners 2026': source returned no items; leaving the collection untouched",
-      "'Oscars Winners 2025': source returned no items; leaving the collection untouched",
-      "'Oscars Winners 2024': source returned no items; leaving the collection untouched",
-      "'Oscars Winners 2023': source returned no items; leaving the collection untouched",
-      "'Oscars Winners 2022': source returned no items; leaving the collection untouched"
+      "'IMDb Popular': the source returned 3 id(s), none of which this library owns; leaving the collection untouched",
+      "'IMDb Top 250': the source returned 3 id(s), none of which this library owns; leaving the collection untouched",
+      "'IMDb Lowest Rated': the source returned 3 id(s), none of which this library owns; leaving the collection untouched",
+      "'Oscars Best Picture Winners': the source returned 6 id(s), none of which this library owns; leaving the collection untouched",
+      "'Oscars Best Director Winners': the source returned 2 id(s), none of which this library owns; leaving the collection untouched",
+      "'Oscars Winners 2026': the source returned 2 id(s), none of which this library owns; leaving the collection untouched",
+      "'Oscars Winners 2025': the source returned 2 id(s), none of which this library owns; leaving the collection untouched",
+      "'Oscars Winners 2024': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
+      "'Oscars Winners 2023': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
     ],
     "state": {
       "Age 1+ Movies": {

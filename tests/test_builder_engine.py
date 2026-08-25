@@ -823,6 +823,90 @@ async def test_a_filter_that_cannot_evaluate_says_so_not_the_source(
     ]
 
 
+# --- ids returned, none of them owned -------------------------------------------
+#
+# The third way a collection ends up empty, and the third wording. "Source
+# returned no items" sends an operator looking for a dead provider; "this
+# library owns none of them" sends them to look at the definition, which is
+# where the answer is -- a list about the wrong medium, a chart of titles
+# nobody has, a universe list of episodes.
+
+
+async def test_ids_the_library_does_not_own_are_not_reported_as_no_items(
+    session, registry_entry
+):
+    """The source returned three ids here. Saying it returned none is not a
+    kinder way of putting it, it is a different diagnosis."""
+    registry_entry(_Listing(
+        "test_none_owned", [("imdb", "tt1"), ("imdb", "tt2"), ("imdb", "tt3")]
+    ))
+    kept = FakeItem("m9", ["imdb://tt9"])
+    live = FakeCollection("Owns None", [kept], labels=[LABEL])
+    section = FakeSection([("m9", ["imdb://tt9"])], existing=[live])
+
+    actions = await _run(
+        session, section,
+        [CollectionDefinition(title="Owns None", builder="test_none_owned")],
+        _config(),
+    )
+
+    assert actions == [
+        "'Owns None': the source returned 3 id(s), none of which this library "
+        "owns; leaving the collection untouched"
+    ]
+    assert [i.ratingKey for i in live._live] == ["m9"], (
+        "the wording changed; the containment did not"
+    )
+
+
+async def test_a_source_that_really_returned_nothing_still_says_so(
+    session, registry_entry
+):
+    """The old wording is not replaced, it is narrowed to the case it is true
+    of. Nothing came back here, so there is nothing this library could own."""
+    registry_entry(_Listing("test_genuinely_empty", []))
+    kept = FakeItem("m9", ["imdb://tt9"])
+    live = FakeCollection("Really Empty", [kept], labels=[LABEL])
+    section = FakeSection([("m9", ["imdb://tt9"])], existing=[live])
+
+    actions = await _run(
+        session, section,
+        [CollectionDefinition(title="Really Empty", builder="test_genuinely_empty")],
+        _config(),
+    )
+
+    assert actions == [
+        "'Really Empty': source returned no items; leaving the collection untouched"
+    ]
+
+
+async def test_a_filter_that_emptied_the_set_still_outranks_the_new_wording(
+    session, registry_entry
+):
+    """Two of the three can be true at once -- ids went unresolved AND the
+    filter excluded the rest -- and the filter is the later cause, so it is the
+    one reported. One id resolves here and the filter drops it; the other two
+    are unowned."""
+    registry_entry(_Listing(
+        "test_unowned_and_filtered", [("imdb", "tt1"), ("imdb", "tt2"), ("imdb", "tt3")]
+    ))
+    section = FakeSection([("m1", ["imdb://tt1"], {"year": 1994})])
+
+    actions = await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Both Causes", builder="test_unowned_and_filtered",
+            filters={"year.gte": 2000},
+        )],
+        _config(),
+    )
+
+    assert actions == [
+        "'Both Causes': the filter excluded every member; "
+        "leaving the collection untouched"
+    ]
+
+
 async def test_the_preview_diff_is_taken_against_the_filtered_set(
     session, registry_entry
 ):

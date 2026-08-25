@@ -508,6 +508,16 @@ async def _run_one(
                 "%r: the filter excluded every member; leaving the collection "
                 "untouched" % definition.title
             )
+    elif resolved.unresolved and not items:
+        # The same misattribution one step earlier. ``reconcile_list_collection``
+        # would say "source returned no items" here too, and the source did
+        # return items -- this library simply owns none of them, which is an
+        # operator-actionable fact ("that list is not about my library") where
+        # the source wording points at a dead provider instead.
+        outcome.actions.append(
+            "%r: the source returned %d id(s), none of which this library owns; "
+            "leaving the collection untouched" % (definition.title, len(result.ids))
+        )
     else:
         outcome.actions += await reconcile_list_collection(
             session, section, library, definition.title, items, label,
