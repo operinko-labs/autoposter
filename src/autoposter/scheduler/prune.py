@@ -23,19 +23,23 @@ unreachable to every code path in this project, which is precisely the
 condition that produced the parked-forever rows. See ``PlexClient.exists_many``.
 """
 
+import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.artwork_modes.base import SHARE_CHECK_MIN_ITEMS
+from autoposter.artwork_modes.base import SHARE_CHECK_MIN_ITEMS, refuse_if_empty
+from autoposter.config.holder import ConfigHolder
 from autoposter.db.models import EventLog, MediaItem, Render
 # Aliased: ``Job`` in this package means the scheduler's dataclass
 # (``scheduler/core.py``), and the queue row of the same name would shadow it.
 from autoposter.db.models import Job as QueuedJob
 from autoposter.intake.arr import RenderIntent
+from autoposter.scheduler.core import Job
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,19 @@ logger = logging.getLogger(__name__)
 # library's worth of them unfindable.
 PRUNE_SOURCE = "prune"
 PRUNE_EVENT = "media_item_pruned"
+
+
+class PruneRefused(Exception):
+    """A pass that could not be trusted to run at all.
+
+    Raised rather than returned, the ``CollectionsPassFailed`` precedent
+    (``scheduler/jobs.py``): ``last_status`` is decided by whether the job body
+    raised (``scheduler/core.py``), and a pass that could not probe Plex is a
+    failure an operator must see as one -- not an ``ok`` run whose detail
+    happens to say otherwise. The data-plausibility refusals stay ordinary
+    return values, because those describe a pass that ran correctly and
+    declined the work it found.
+    """
 
 
 @dataclass(frozen=True)
@@ -431,3 +448,124 @@ async def dismiss_jobs_for(session: AsyncSession, rating_keys: list[str]) -> int
         job.state = "dismissed"
     await session.flush()
     return len(jobs)
+
+
+def cleanup_cap_warning(directories: int, cleanup) -> str:
+    """The tail of the summary's file sentence when a prune would disarm the
+    asset sweep.
+
+    ``asset_cleanup`` refuses ENTIRELY past ``cleanup.max_orphans``
+    (``scheduler/jobs.py``), so a large prune does not merely make work for it:
+    it can stop that pass doing anything at all, including the orphans it would
+    otherwise have handled. Said in the summary rather than acted on -- this
+    module handles no files by design, because the cleanup sweep moves them to
+    ``backup_root`` and never deletes, which is safer than anything a pruner
+    would add.
+
+    Only the absolute cap is checked. The share cap needs the directory count
+    of the whole asset tree, which only the cleanup scan has; deploy/README.md
+    carries that caveat.
+    """
+    if directories > cleanup.max_orphans:
+        return (
+            f" -- WARNING: that is more than cleanup.max_orphans "
+            f"({cleanup.max_orphans}), so the next asset_cleanup pass will refuse "
+            "entirely and move nothing"
+        )
+    return ""
+
+
+def make_prune_job(
+    holder: ConfigHolder,
+    plex_factory: Callable[[], object],
+    is_healthy: Callable[[], bool],
+) -> Job:
+    """Build the scheduled ``media_items`` prune job.
+
+    The ``make_cleanup_job`` shape: scheduled, dry run by default, one summary
+    string per run, hand-triggerable once the name is in
+    ``SCHEDULED_JOB_NAMES``. Not a Plex-writing mode, because this writes only
+    to the database -- the mode fence machinery (``WorkerPause``, ``drain``,
+    the process-wide lock) exists to keep two writers off Plex and buys this
+    nothing, and a walk of every rating key in the library is the wrong thing
+    to hold an HTTP request open for.
+
+    ``plex_factory`` is a zero-argument callable returning a connected
+    ``PlexClient``. It runs through ``asyncio.to_thread`` because connecting
+    blocks -- the same contract ``make_collections_job``'s ``server_factory``
+    has, and for the same reason: this job shares the event loop with the
+    worker pool and the Plex liveness probe.
+
+    ``is_healthy`` is ``PlexHealth.healthy``, read per run. For every other
+    consumer an unhealthy Plex means "wait"; for this one it means "refuse",
+    and that difference is the whole safety story. A server that answers
+    nothing makes EVERY row read as gone, so a pruner running during an outage
+    would delete the library. It is checked first, before the table is read and
+    before a client is built.
+
+    Config comes off ``holder`` per run -- ``prune.apply``, both caps, the
+    cleanup caps the warning is measured against, and this job's own cadence --
+    so every one of them is live.
+    """
+
+    async def run(session: AsyncSession) -> str:
+        config = holder.current
+        if not is_healthy():
+            return (
+                "refused: Plex is unhealthy, so every row would look gone; "
+                "change nothing"
+            )
+
+        empty = await refuse_if_empty(session, MediaItem, table_name="media_items")
+        if empty is not None:
+            return empty
+
+        plex = await asyncio.to_thread(plex_factory)
+        try:
+            scan = await find_prunable(session, plex)
+        except Exception as exc:
+            # The class name only, never str(exc) and never a URL: a Plex
+            # error's message carries the server address and sometimes the
+            # token, and this string is stored in scheduled_runs.last_detail,
+            # which the dashboard renders. The full traceback goes to the log
+            # for whoever can read it.
+            logger.warning("plex_prune: probing Plex failed", exc_info=True)
+            raise PruneRefused(
+                f"refused: probing Plex failed ({type(exc).__name__}), so no row's "
+                "absence can be trusted; change nothing"
+            ) from None
+
+        refusal = implausible_prune_count(len(scan.prunable), scan.total, config.prune)
+        if refusal is not None:
+            return refusal
+
+        held = f"{scan.held} row(s) held because a descendant still resolves"
+        files = (
+            f"{scan.directories} asset director(ies) orphan for asset_cleanup to "
+            f"handle{cleanup_cap_warning(scan.directories, config.cleanup)}"
+        )
+
+        if not config.prune.apply:
+            return (
+                f"dry run: {len(scan.prunable)} of {scan.total} media_items row(s) "
+                f"would be pruned; {held}; {files}"
+            )
+
+        outcome = await retire(session, scan.prunable)
+        dismissed = await dismiss_jobs_for(session, outcome.pruned)
+        summary = (
+            f"pruned {len(outcome.pruned)} of {scan.total} media_items row(s); "
+            f"{held}; dismissed {dismissed} queued job(s); {files}"
+        )
+        if outcome.skipped:
+            summary += (
+                f"; {outcome.skipped} row(s) changed under the pass or were "
+                "shielded by one that did, and were left"
+            )
+        return summary
+
+    return Job(
+        name="plex_prune",
+        interval_seconds=lambda: holder.current.scheduler.prune_days * 24 * 3600,
+        run=run,
+    )

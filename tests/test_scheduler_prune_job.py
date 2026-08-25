@@ -18,18 +18,22 @@ The three things worth knowing before changing anything here:
 """
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select, update
 
+from autoposter.config.holder import ConfigHolder
 from autoposter.db.models import EventLog, ItemFacts, Job, MediaItem, Render
 from autoposter.plex.client import ResolvedItem
 from autoposter.render.pipeline import _upsert_media_item
 from autoposter.scheduler.prune import (
     PRUNE_EVENT,
     PRUNE_SOURCE,
+    PruneRefused,
     dismiss_jobs_for,
     find_prunable,
     implausible_prune_count,
     intent_for,
+    make_prune_job,
     retire,
 )
 
@@ -508,3 +512,188 @@ def test_an_implausible_share_refuses_on_a_library_too_small_for_the_absolute_ca
     # Below the minimum sample the share means nothing and only the absolute
     # cap applies -- "2 of 3 rows are gone" is a small library, not evidence.
     assert implausible_prune_count(2, 3, prune) is None
+
+
+def _config(*, apply=False, max_prunes=500, max_prune_share=0.25, max_orphans=500):
+    """Only what the job actually reads, the ``tests/test_scheduler_cleanup_job.py``
+    ``_config`` pattern -- a SimpleNamespace keeps each test's intent on screen."""
+    return SimpleNamespace(
+        prune=SimpleNamespace(
+            apply=apply, max_prunes=max_prunes, max_prune_share=max_prune_share
+        ),
+        cleanup=SimpleNamespace(max_orphans=max_orphans, max_orphan_share=0.25),
+        scheduler=SimpleNamespace(prune_days=7),
+    )
+
+
+def _job(config, plex, *, healthy=True):
+    return make_prune_job(ConfigHolder(config), lambda: plex, lambda: healthy)
+
+
+async def test_the_job_is_named_and_paced_off_the_holder():
+    """The cadence is a deref, not a captured number, so an edit to
+    ``scheduler.prune_days`` is live the way every other job's is."""
+    holder = ConfigHolder(_config())
+    job = make_prune_job(holder, lambda: FakePlex(), lambda: True)
+
+    assert job.name == "plex_prune"
+    assert job.current_interval() == 7 * 24 * 3600
+
+    faster = _config()
+    faster.scheduler.prune_days = 1
+    holder.swap(faster)
+
+    assert job.current_interval() == 24 * 3600
+
+
+async def test_an_unhealthy_plex_refuses_before_anything_is_probed(session):
+    """The inversion that makes this sweep dangerous: a server that answers
+    nothing makes EVERY row look gone. So this is the first check, before the
+    table is read and before a client is even built."""
+    await _add_item(session, "11")
+
+    def exploding_factory():
+        raise AssertionError("no Plex client may be built when Plex is unhealthy")
+
+    job = make_prune_job(ConfigHolder(_config(apply=True)), exploding_factory, lambda: False)
+    summary = await job.run(session)
+
+    assert "refus" in summary.lower() and "unhealthy" in summary.lower()
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 1
+
+
+async def test_an_empty_media_items_table_refuses(session):
+    """An empty table means a restore has not finished, not that the library
+    is gone -- the ``refuse_if_empty`` guard every mode and the cleanup sweep
+    already share."""
+
+    def exploding_factory():
+        raise AssertionError("no Plex client may be built for an empty table")
+
+    job = make_prune_job(ConfigHolder(_config(apply=True)), exploding_factory, lambda: True)
+    summary = await job.run(session)
+
+    assert "refus" in summary.lower() and "empty" in summary.lower()
+
+
+async def test_a_probe_failure_takes_the_pass_down_rather_than_reading_as_gone(session):
+    """The failure this sweep must never have. It raises rather than returning
+    so ``last_status`` records ``failed`` (scheduler/core.py), and the message
+    names the exception class only -- a Plex error's text carries the server
+    address, and ``last_detail`` is rendered in the dashboard."""
+    await _add_item(session, "11")
+    plex = FakePlex(error=ConnectionError("https://plex.example:32400 connection reset"))
+
+    job = _job(_config(apply=True), plex)
+
+    with pytest.raises(PruneRefused) as caught:
+        await job.run(session)
+
+    message = str(caught.value)
+    assert "ConnectionError" in message
+    assert "plex.example" not in message and "connection reset" not in message
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 1
+
+
+async def test_a_dry_run_deletes_nothing_and_reports_the_counts(session):
+    await _add_item(session, "10")
+    await _add_item(session, "11")
+
+    summary = await _job(_config(apply=False), FakePlex(live={"10"})).run(session)
+
+    assert "dry run" in summary.lower()
+    assert "1 of 2" in summary
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 2
+    assert (await session.execute(select(EventLog))).scalars().all() == []
+
+
+async def test_an_implausible_share_refuses_the_whole_pass(session):
+    """Rows exist and Plex answers, but it answers about a different library --
+    rebuilt, renamed, still loading. The health probe is happy and every row
+    reads as gone."""
+    for n in range(30):
+        await _add_item(session, str(100 + n))
+
+    summary = await _job(_config(apply=True), FakePlex(live=set())).run(session)
+
+    assert "refus" in summary.lower()
+    assert "30" in summary, f"the refusal must report the real numbers: {summary!r}"
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 30
+
+
+async def test_an_implausible_absolute_count_refuses_the_whole_pass(session):
+    for n in range(4):
+        await _add_item(session, str(100 + n))
+
+    config = _config(apply=True, max_prunes=3, max_prune_share=1.0)
+    summary = await _job(config, FakePlex(live=set())).run(session)
+
+    assert "refus" in summary.lower()
+    assert "4" in summary and "3" in summary
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 4
+
+    # One over the cap and the same library is worked normally.
+    config = _config(apply=True, max_prunes=4, max_prune_share=1.0)
+    summary = await _job(config, FakePlex(live=set())).run(session)
+    assert "pruned 4" in summary
+    session.expire_all()
+    assert (await session.execute(select(MediaItem))).scalars().all() == []
+
+
+async def test_an_applied_pass_prunes_dismisses_and_reports_the_file_consequence(session):
+    await _add_item(session, "10")
+    item = await _add_item(session, "11")
+    session.add(Render(item_id=item.id, art_kind="poster", asset_path="/assets/a.jpg"))
+    session.add(Job(
+        kind="process_item",
+        payload={"kind": "movie", "title": "Gone", "rating_key": "11"},
+        dedupe_key="process_item:movie:title gone",
+        state="parked",
+    ))
+    await session.commit()
+
+    summary = await _job(_config(apply=True), FakePlex(live={"10"})).run(session)
+
+    assert "pruned 1 of 2" in summary
+    assert "dismissed 1" in summary
+    assert "asset_cleanup" in summary
+    session.expire_all()
+    assert [i.rating_key for i in (await session.execute(select(MediaItem))).scalars()] == ["10"]
+    assert (await session.execute(select(Job))).scalar_one().state == "dismissed"
+    assert len((await session.execute(select(EventLog))).scalars().all()) == 1
+
+
+async def test_the_summary_warns_when_the_prune_would_disarm_the_asset_cleanup(session):
+    """A large prune orphans a lot of directories at once, and past
+    ``cleanup.max_orphans`` the cleanup pass refuses ENTIRELY -- so a prune can
+    silently stop the sweep that was supposed to handle its aftermath. Said in
+    the summary; this module still touches no files."""
+    for n in range(4):
+        await _add_item(session, str(100 + n))
+
+    config = _config(apply=False, max_prunes=500, max_prune_share=1.0, max_orphans=3)
+    summary = await _job(config, FakePlex(live=set())).run(session)
+
+    assert "WARNING" in summary
+    assert "cleanup.max_orphans" in summary
+    assert "4" in summary and "3" in summary
+
+
+async def test_the_summary_reports_held_parents_even_when_nothing_is_prunable(session):
+    """A held family is the interesting case, not a silent zero: it says the
+    show is gone but one of its episodes still resolves, which is a Plex-side
+    inconsistency an operator wants to see."""
+    show = await _add_item(session, "100", kind="show")
+    season = await _add_item(session, "110", kind="season", parent=show)
+    await _add_item(session, "111", kind="episode", parent=season)
+
+    summary = await _job(_config(apply=True), FakePlex(live={"111"})).run(session)
+
+    assert "2" in summary and "held" in summary.lower()
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 3
