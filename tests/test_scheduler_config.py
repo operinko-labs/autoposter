@@ -5,9 +5,15 @@ happens to carry. Loading the example and checking what came back tests the
 YAML, not the default: change a default in ``schema.py`` to whatever the
 example already says and such a test still passes, which is precisely the
 case where a deployment with no ``scheduler:`` block silently changes
-behaviour. ``SchedulerConfig()`` and ``CleanupConfig()`` construct with no
-arguments (unlike ``Config()`` -- see ``tests/test_collection_config.py``),
-so the defaults can be read straight off the models.
+behaviour. ``SchedulerConfig()``, ``CleanupConfig()`` and ``PruneConfig()``
+construct with no arguments (unlike ``Config()`` -- see
+``tests/test_collection_config.py``), so the defaults can be read straight off
+the models.
+
+The ``prune`` block is here for the same reason ``cleanup`` is: it carries an
+``apply`` switch that is off by default, and the cadence that drives it
+(``scheduler.prune_days``) lives on ``SchedulerConfig`` rather than in the
+block, so both halves are asserted together.
 
 ``test_the_example_agrees_with_the_schema_defaults`` then pins the two
 together, so the documented example cannot quietly drift away from what an

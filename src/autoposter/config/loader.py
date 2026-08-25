@@ -37,9 +37,8 @@ def render_version(config: Config) -> str:
     cannot change a rendered image is excluded -- ``adopt``, ``scheduler``,
     ``cleanup``, ``prune``, ``collections``, ``operations``, ``badges``, the
     worker and database settings, and ``plex``/``providers`` connection
-    details. Because
-    the input is the parsed model, comments, key order and whitespace are
-    irrelevant by construction.
+    details. Because the input is the parsed model, comments, key order and
+    whitespace are irrelevant by construction.
 
     Note what is deliberately *not* covered: the overlay and font *files*.
     Their bytes are hashed separately into every fingerprint by

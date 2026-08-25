@@ -216,7 +216,6 @@ async def test_the_ancestor_walk_terminates_on_a_parent_id_cycle(session):
 
     assert scan.total == 2
     assert scan.prunable == []
-    assert "100" not in {c.rating_key for c in scan.prunable}
 
 
 async def test_an_applied_retire_deletes_the_row(session):
@@ -344,6 +343,94 @@ async def test_a_row_re_upserted_under_the_pass_survives_and_is_counted_skipped(
     assert (await session.execute(select(EventLog))).scalars().all() == [], (
         "a row that was not deleted must not get a deletion audit row"
     )
+
+
+async def test_a_re_upserted_child_holds_its_whole_family_back_from_the_delete(session):
+    """The guard alone would spare the child and then lose it to the cascade.
+
+    Candidates arrive deepest-first, so the skipped episode is followed by its
+    still-gone season and show, whose ``updated_at`` the episode's upsert never
+    touched -- those deletes would match, and ``parent_id``'s ON DELETE CASCADE
+    would take the live episode with them: no audit row, absent from
+    ``pruned``, and the worker that just wrote it left holding a stale id. So a
+    skip propagates upward, and the whole chain is counted skipped.
+    """
+    show = await _add_item(session, "100", kind="show", title="A Show")
+    season = await _add_item(session, "110", kind="season", parent=show)
+    episode = await _add_item(session, "111", kind="episode", parent=season)
+    show_id, season_id, episode_id = show.id, season.id, episode.id
+    scan = await find_prunable(session, FakePlex(live=set()))
+    assert [c.rating_key for c in scan.prunable] == ["111", "110", "100"]
+
+    # parent_rating_key so the upsert keeps the episode under its season:
+    # _upsert_media_item resolves parent_id from it, and without it the row
+    # would come back detached and out of the cascade's reach, which is the
+    # very thing this test needs to stay in it.
+    resolved = ResolvedItem(
+        rating_key="111", library="TV Shows", kind="episode", title="New Title",
+        year=2001, season_number=1, episode_number=3,
+        root_folder="A Show (2001)", file_path="/mnt/Media/TV/x.mkv",
+        art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
+        parent_rating_key="110",
+    )
+    await _upsert_media_item(session, resolved)
+    await session.commit()
+
+    outcome = await retire(session, scan.prunable)
+    await session.commit()
+
+    assert outcome.pruned == []
+    assert outcome.skipped == 3
+    session.expire_all()
+    survivors = {
+        item.id
+        for item in (await session.execute(select(MediaItem))).scalars().all()
+    }
+    assert survivors == {show_id, season_id, episode_id}
+    assert (await session.execute(select(EventLog))).scalars().all() == [], (
+        "nothing was deleted, so nothing may carry a deletion audit row"
+    )
+
+
+async def test_a_blocked_family_does_not_spare_an_unrelated_gone_row(session):
+    """The block is per-chain, not a pass-wide abort. A re-upserted episode
+    holds its own ancestors and nothing else -- an unrelated movie that probed
+    gone is still deleted in the same pass, with its audit row."""
+    show = await _add_item(session, "100", kind="show", title="A Show")
+    season = await _add_item(session, "110", kind="season", parent=show)
+    await _add_item(session, "111", kind="episode", parent=season)
+    movie = await _add_item(session, "11", title="A Movie")
+    movie_id = movie.id
+    scan = await find_prunable(session, FakePlex(live=set()))
+
+    # parent_rating_key so the upsert keeps the episode under its season:
+    # _upsert_media_item resolves parent_id from it, and without it the row
+    # would come back detached and out of the cascade's reach, which is the
+    # very thing this test needs to stay in it.
+    resolved = ResolvedItem(
+        rating_key="111", library="TV Shows", kind="episode", title="New Title",
+        year=2001, season_number=1, episode_number=3,
+        root_folder="A Show (2001)", file_path="/mnt/Media/TV/x.mkv",
+        art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
+        parent_rating_key="110",
+    )
+    await _upsert_media_item(session, resolved)
+    await session.commit()
+
+    outcome = await retire(session, scan.prunable)
+    await session.commit()
+
+    assert outcome.pruned == ["11"]
+    assert outcome.skipped == 3
+    session.expire_all()
+    assert (
+        await session.execute(select(MediaItem).where(MediaItem.id == movie_id))
+    ).scalar_one_or_none() is None
+    keys = {
+        event.payload["rating_key"]
+        for event in (await session.execute(select(EventLog))).scalars().all()
+    }
+    assert keys == {"11"}
 
 
 async def test_pending_and_parked_jobs_for_a_pruned_row_are_dismissed(session):

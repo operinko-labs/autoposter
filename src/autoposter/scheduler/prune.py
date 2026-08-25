@@ -299,21 +299,47 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
     compared was written by a transaction that had already committed before
     this pass read it.)
 
+    **A row that survives its own delete shields every ancestor above it in
+    this pass.** ``media_items.parent_id`` cascades, so the guard alone would
+    protect a leaf and then lose it anyway: candidates arrive deepest-first, so
+    a skipped child is followed by its still-gone parent, whose own
+    ``updated_at`` the child's upsert never touched -- that delete matches, and
+    the cascade takes the live child with it, unaudited and absent from
+    ``pruned``. So a skip propagates upward through ``blocked``: this is the
+    same rule ``find_prunable`` applies at probe time (one resolvable
+    descendant holds every ancestor), applied again at delete time, where the
+    evidence is a row that changed rather than an item that resolved.
+
     **The audit is flushed per row, before the next row's delete**, the way
-    ``collections/engine.py`` flushes its ``collection_deleted`` rows: a
-    failure later in the loop must not cost the record of what has already
-    gone. The payload carries the row's whole identity, ``logo_upload_key``
-    included -- a pruned item's uploaded clearlogo can never be reverted again,
-    because the marker that made the revert safe dies with the row, so the key
-    is written down rather than silently lost.
+    ``collections/engine.py`` flushes its ``collection_deleted`` rows. The
+    flush is an ordering, not a commit -- audits and deletes commit or roll
+    back together -- and what it buys is that the audit can never be lost while
+    its delete survives: the ``EventLog`` is on the connection before the next
+    candidate's work begins. The payload carries the row's whole identity,
+    ``logo_upload_key`` included -- a pruned item's uploaded clearlogo can
+    never be reverted again, because the marker that made the revert safe dies
+    with the row, so the key is written down rather than silently lost.
 
     Candidates must arrive deepest-first, as ``find_prunable`` returns them:
-    ``media_items.parent_id`` cascades, so a parent deleted first would take
-    its descendants before they get audit rows of their own.
+    a parent deleted first would take its descendants before they get audit
+    rows of their own, and ``blocked`` would never see the child at all.
     """
     pruned: list[str] = []
     skipped = 0
+    blocked: set[int] = set()  # ids whose deletion a skipped descendant forbids
     for candidate in candidates:
+        # Checked before the render_count query so an inherited block costs no
+        # queries at all; a guard miss still pays one, because the count has to
+        # be taken before the delete or the cascade would empty it first.
+        if candidate.id in blocked:
+            logger.info(
+                "prune: %s (%s) held by a descendant that changed under the pass",
+                candidate.rating_key, candidate.kind,
+            )
+            if candidate.parent_id is not None:
+                blocked.add(candidate.parent_id)
+            skipped += 1
+            continue
         render_count = (
             await session.execute(
                 select(func.count())
@@ -339,6 +365,8 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
                 "prune: %s (%s) changed under the pass; left alone",
                 candidate.rating_key, candidate.kind,
             )
+            if candidate.parent_id is not None:
+                blocked.add(candidate.parent_id)
             skipped += 1
             continue
         session.add(EventLog(
