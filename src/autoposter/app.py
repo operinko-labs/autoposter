@@ -119,6 +119,18 @@ def create_app(
             app.state.started_at = (
                 await session.execute(select(func.now()))
             ).scalar_one()
+            # Permanent visibility into the real skew the comment above
+            # reasons about in the abstract: logged once, at boot, rather
+            # than re-measured periodically -- the single-clock rule doesn't
+            # need a live skew value to hold, only this one number on record
+            # for whoever is diagnosing a mislabeled run later.
+            delta_ms = round(
+                (app.state.started_at - datetime.now(UTC)).total_seconds() * 1000
+            )
+            logger.info(
+                "boot: database clock is %+dms relative to the process clock",
+                delta_ms,
+            )
         config = app.state.config_holder.current
         # create_app built the broadcaster from the placeholder above --
         # construction happens before this lifespan runs, and create_app has

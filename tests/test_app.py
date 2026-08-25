@@ -190,7 +190,7 @@ async def test_the_lifespan_boots_on_the_effective_config_not_the_file_alone(
 
 
 async def test_the_lifespan_reads_the_boot_instant_from_the_database_clock(
-    session_factory, secrets, stubbed_background_services, monkeypatch
+    session_factory, secrets, stubbed_background_services, monkeypatch, caplog
 ):
     """SCHED-UX review, Important 1: /api/status derives a scheduled job's
     status by comparing ``app.state.started_at`` against ``last_started_at``,
@@ -215,6 +215,13 @@ async def test_the_lifespan_reads_the_boot_instant_from_the_database_clock(
     value -- no `datetime.now()` and no `timedelta` in either assertion, per
     the suite's injected-time discipline (row 119; see
     tests/test_api_dashboard.py).
+
+    A third, unrelated check rides along here since this is the one place
+    already pinning the DB-clock boot source: the lifespan also logs the
+    signed delta between the database clock and the process clock at boot,
+    for permanent visibility into real skew. Assert only that the line
+    exists and carries a signed millisecond value -- never its magnitude,
+    which is timestamp-flake territory (row 119).
     """
     canary = datetime(1999, 1, 1, tzinfo=UTC)
 
@@ -230,19 +237,20 @@ async def test_the_lifespan_reads_the_boot_instant_from_the_database_clock(
     async with session_factory() as before_session:
         before = (await before_session.execute(select(func.now()))).scalar_one()
 
-    async with app.router.lifespan_context(app):
-        boot = app.state.started_at
-        assert boot != canary, (
-            "app.state.started_at is the canary datetime.now(UTC) would have "
-            "produced -- the lifespan is reading the Python clock, not the "
-            "database's"
-        )
-        assert app.state.dashboard_broadcaster._started_at == boot, (
-            "the dashboard stream's broadcaster still holds the Python-clock "
-            "placeholder create_app built it with, so the live stream would "
-            "keep deriving every run's status against the wrong clock even "
-            "though /api/status was fixed"
-        )
+    with caplog.at_level("INFO"):
+        async with app.router.lifespan_context(app):
+            boot = app.state.started_at
+            assert boot != canary, (
+                "app.state.started_at is the canary datetime.now(UTC) would have "
+                "produced -- the lifespan is reading the Python clock, not the "
+                "database's"
+            )
+            assert app.state.dashboard_broadcaster._started_at == boot, (
+                "the dashboard stream's broadcaster still holds the Python-clock "
+                "placeholder create_app built it with, so the live stream would "
+                "keep deriving every run's status against the wrong clock even "
+                "though /api/status was fixed"
+            )
 
     async with session_factory() as after_session:
         after = (await after_session.execute(select(func.now()))).scalar_one()
@@ -251,6 +259,27 @@ async def test_the_lifespan_reads_the_boot_instant_from_the_database_clock(
         f"app.state.started_at ({boot!r}) did not come from the database "
         f"clock: expected it between two SELECT now() reads bracketing the "
         f"lifespan ({before!r}, {after!r})"
+    )
+
+    # The lifespan's boot-time delta log (app.py, right after started_at is
+    # read) is this deployment's only permanent record of real clock skew --
+    # it is logged once, at boot, not re-measured. Assert the line exists and
+    # carries a signed millisecond value; never its magnitude, which is
+    # timestamp-flake territory (row 119).
+    boot_lines = [
+        r.message
+        for r in caplog.records
+        if r.message.startswith("boot: database clock is ")
+    ]
+    assert boot_lines, "no boot-time database-vs-process clock delta was logged"
+    suffix = boot_lines[0].removeprefix("boot: database clock is ")
+    assert suffix.endswith("ms relative to the process clock"), (
+        f"boot-time clock delta log line has an unexpected shape: {boot_lines[0]!r}"
+    )
+    value = suffix.removesuffix("ms relative to the process clock")
+    assert value[:1] in "+-" and value[1:].isdigit(), (
+        f"expected a signed millisecond value in the boot-time clock delta log, "
+        f"got {value!r}"
     )
 
 
