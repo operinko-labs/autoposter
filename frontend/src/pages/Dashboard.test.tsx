@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
+import type { ScheduledRun } from "../api/types";
 import { formatTime } from "../format";
 import { Dashboard } from "./Dashboard";
 
@@ -139,7 +140,7 @@ async function jobRow(name: string) {
 /** A snapshot whose scheduled-runs table is exactly `jobs` -- everything else
  * from STATUS/EVENTS. Used by the derived-status pill tests below, which
  * care about one row's shape and nothing else in the page. */
-function snapshotWithScheduledJobs(jobs: unknown[]) {
+function snapshotWithScheduledJobs(jobs: ScheduledRun[]) {
   return {
     status: { ...STATUS, scheduled_jobs: jobs },
     events: EVENTS.events,
@@ -242,6 +243,42 @@ describe("Dashboard", () => {
 
       expect(row.getByText("Running")).toHaveClass("pill", "pill-running");
       expect(row.getByText("since 5m")).toBeInTheDocument();
+    });
+
+    it("advances the since label on a 60s tick, without waiting on a new snapshot", async () => {
+      // The stream only pushes when the *encoded* snapshot changes, and
+      // nothing about this row does between claim and finish -- so a quiet
+      // 15-minute run would otherwise read "since 2m" for thirteen of those
+      // minutes. Only the bounded ticker this test pins can move the label
+      // when no new snapshot ever arrives.
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date("2026-01-02T03:09:30Z"));
+      stubFetch(undefined, undefined, async (_path, init) =>
+        ndjsonStream(
+          init!.signal as AbortSignal,
+          snapshotWithScheduledJobs([
+            {
+              name: "prune",
+              last_started_at: "2026-01-02T03:04:00Z",
+              last_finished_at: null,
+              last_status: "ok",
+              last_detail: "previous pass",
+              interval_seconds: 900,
+              status: "running",
+            },
+          ]),
+        ).response,
+      );
+
+      render(<Dashboard />);
+      const row = await jobRow("prune");
+      expect(row.getByText("since 5m")).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60000);
+      });
+
+      expect(row.getByText("since 6m")).toBeInTheDocument();
     });
 
     it("shows an Interrupted pill explaining the run died with its process", async () => {

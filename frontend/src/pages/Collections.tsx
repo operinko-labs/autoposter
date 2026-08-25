@@ -14,9 +14,10 @@ import type {
 import { formatTime } from "../format";
 import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
 import { CatalogPanel } from "./CatalogPanel";
-// The status pill is dashboard.css's, and the reconcile bar shows the same
-// job state the dashboard does -- imported rather than duplicated so the two
-// pages cannot drift apart.
+import { ScheduledRunStatusPill } from "./ScheduledRunStatus";
+// dashboard.css, not duplicated: the reconcile bar shows the same job state
+// the dashboard does, now through the same pill component -- see
+// ScheduledRunStatus.tsx.
 import "./dashboard.css";
 import "./collections.css";
 
@@ -535,12 +536,10 @@ export function Collections() {
           <span className="muted">{`Last refresh: ${formatTime(
             reconcile?.last_finished_at ?? null
           )}`}</span>
-          {reconcile?.last_status == null ? (
+          {reconcile === undefined ? (
             <span className="muted">never</span>
           ) : (
-            <span className={`pill pill-${reconcile.last_status}`} title={reconcile.last_detail ?? ""}>
-              {reconcile.last_status}
-            </span>
+            <ScheduledRunStatusPill job={reconcile} />
           )}
           <span className="muted">{`Next refresh: ${nextRefreshLabel(reconcile)}`}</span>
           <button

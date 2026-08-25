@@ -11,6 +11,7 @@ an explicit aclose().
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -87,7 +88,10 @@ async def auth_headers(client):
 @pytest_asyncio.fixture
 async def broadcaster(session_factory, config):
     """A broadcaster of this test's own, polling fast, always stopped."""
-    made = StatusBroadcaster(session_factory, ConfigHolder(config), {}, interval_seconds=FAST_POLL)
+    made = StatusBroadcaster(
+        session_factory, ConfigHolder(config), {}, started_at=datetime.now(UTC),
+        interval_seconds=FAST_POLL,
+    )
     yield made
     await stop(made)
 
@@ -261,7 +265,8 @@ async def test_a_failed_poll_does_not_end_the_loop(session_factory, config, capl
         return session_factory()
 
     broadcaster = StatusBroadcaster(
-        flaky_factory, ConfigHolder(config), {}, interval_seconds=FAST_POLL
+        flaky_factory, ConfigHolder(config), {}, started_at=datetime.now(UTC),
+        interval_seconds=FAST_POLL,
     )
     _, queue = broadcaster.subscribe()
     with caplog.at_level(logging.WARNING):
@@ -411,7 +416,8 @@ async def test_the_broadcaster_reads_scheduler_intervals_filled_after_constructi
     session.add(ScheduledRun(name="asset_cleanup"))
     await session.commit()
     broadcaster = StatusBroadcaster(
-        session_factory, ConfigHolder(config), intervals, interval_seconds=FAST_POLL
+        session_factory, ConfigHolder(config), intervals, started_at=datetime.now(UTC),
+        interval_seconds=FAST_POLL,
     )
     _, queue = broadcaster.subscribe()
     first = await asyncio.wait_for(queue.get(), timeout=10)
@@ -525,7 +531,9 @@ async def test_the_broadcaster_reports_the_holder_s_current_config(session_facto
     is what config/live.py's FROZEN_SECTIONS entry for ``workers`` is for.
     """
     holder = ConfigHolder(config)
-    broadcaster = StatusBroadcaster(session_factory, holder, {}, interval_seconds=FAST_POLL)
+    broadcaster = StatusBroadcaster(
+        session_factory, holder, {}, started_at=datetime.now(UTC), interval_seconds=FAST_POLL
+    )
     _, queue = broadcaster.subscribe()
 
     first = await asyncio.wait_for(queue.get(), timeout=10)

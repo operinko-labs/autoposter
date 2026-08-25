@@ -57,6 +57,11 @@ function status(overrides: Record<string, unknown> = {}) {
         last_status: "ok",
         last_detail: "3 updated",
         interval_seconds: 3600,
+        // The server's derived read-time field (api/snapshots.py's
+        // `_run_status`), which the reconcile bar's pill now renders instead
+        // of `last_status` directly -- see ScheduledRunStatus.tsx. Matches
+        // `last_status` by default, the same as a finished run reports both.
+        status: "ok",
         ...overrides,
       },
     ],
@@ -233,6 +238,29 @@ describe("Collections", () => {
       await screen.findByText(`Next refresh: ${formatTime("2026-01-02T04:04:05Z")}`)
     ).toBeInTheDocument();
     expect(screen.getByText("ok")).toBeInTheDocument();
+  });
+
+  it("renders the derived status pill, not the stale last_status, while a reconcile is running", async () => {
+    // last_status still says "ok" from the *previous* pass -- the exact
+    // stale-outcome shape SCHED-UX killed on the Dashboard. `status` is the
+    // server's derived field for the run actually in progress, and the
+    // reconcile bar must render that, not last_status, or a multi-minute
+    // reconcile would read "ok" for its whole duration here even though the
+    // Dashboard's own table correctly shows Running.
+    stubFetch({
+      status: status({
+        last_started_at: "2026-01-02T03:04:00Z",
+        last_finished_at: null,
+        last_status: "ok",
+        status: "running",
+      }),
+    });
+
+    render(<Collections />);
+
+    const pill = await screen.findByText("Running");
+    expect(pill).toHaveClass("pill", "pill-running");
+    expect(screen.queryByText("ok")).not.toBeInTheDocument();
   });
 
   it("cannot compute a next refresh when the job is not registered here", async () => {

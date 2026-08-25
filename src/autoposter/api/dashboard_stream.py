@@ -17,7 +17,7 @@ module follows deliberately.
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -103,7 +103,7 @@ class StatusBroadcaster:
         session_factory,
         config_holder,
         scheduler_intervals: dict,
-        started_at: datetime | None = None,
+        started_at: datetime,
         interval_seconds: float = POLL_SECONDS,
         events_limit: int = EVENTS_LIMIT,
     ):
@@ -116,12 +116,14 @@ class StatusBroadcaster:
         # fills it in place after this object is constructed (see app.py).
         self._scheduler_intervals = scheduler_intervals
         # The process boot instant status_snapshot compares a running job's
-        # last_started_at against (see api/snapshots.py). Production always
-        # passes app.state.started_at; a caller that does not -- every
-        # broadcaster this module's own tests build directly -- gets
-        # construction time, which is a harmless stand-in since none of them
-        # exercise the derived status field.
-        self._started_at = started_at if started_at is not None else datetime.now(UTC)
+        # last_started_at against (see api/snapshots.py), and it must be a
+        # database-clock reading -- see api/snapshots.py's _run_status
+        # docstring. Required rather than defaulted: a caller that forgot it
+        # would not error, it would silently derive every row started before
+        # that forgotten construction as "interrupted". Production always
+        # passes app.state.started_at; this module's own tests pass a value
+        # of their own since none of them exercise the derived status field.
+        self._started_at = started_at
         self._interval_seconds = interval_seconds
         self._events_limit = events_limit
         self._subscribers: set[asyncio.Queue] = set()

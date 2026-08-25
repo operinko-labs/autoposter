@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ import httpx
 import pytest
 import requests
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
 
 from autoposter.app import _build_mdblist, _build_providers, _handle_intent, create_app
 from autoposter.config.holder import ConfigHolder
@@ -185,6 +187,71 @@ async def test_the_lifespan_boots_on_the_effective_config_not_the_file_alone(
             "the worker pool was sized from the file config, so the overrides "
             f"swap happens after its consumers read it ({started!r})"
         )
+
+
+async def test_the_lifespan_reads_the_boot_instant_from_the_database_clock(
+    session_factory, secrets, stubbed_background_services, monkeypatch
+):
+    """SCHED-UX review, Important 1: /api/status derives a scheduled job's
+    status by comparing ``app.state.started_at`` against ``last_started_at``,
+    a column the scheduler stamps with Postgres's own ``now()``
+    (scheduler/core.py's ``claim_due``). ``create_app`` can only set a
+    Python-clock placeholder -- it is synchronous and cannot await a database
+    read -- so if nothing corrected it, a deployment where the app host's and
+    the database host's clocks disagree would mislabel a healthy first run
+    after every restart as "interrupted" for however long the skew lasts. The
+    lifespan has to replace the placeholder with a `SELECT now()` reading.
+
+    Two checks, not one. A local test database shares the runner's own clock,
+    so bracketing ``app.state.started_at`` between two of the database's own
+    `now()` reads alone would pass even for a ``datetime.now(UTC)``
+    regression -- there is no skew here to catch it with. So `datetime.now`
+    is first replaced with a canary decades away from anything the database
+    could report; a regression back to the Python clock reads the canary
+    straight through, which the second assertion below the lifespan catches
+    directly. The bracket then proves the value is not merely "not the
+    canary" but a plausible database-clock reading. Both checks are ordering
+    comparisons against an injected constant or a freshly read database
+    value -- no `datetime.now()` and no `timedelta` in either assertion, per
+    the suite's injected-time discipline (row 119; see
+    tests/test_api_dashboard.py).
+    """
+    canary = datetime(1999, 1, 1, tzinfo=UTC)
+
+    class _CanaryDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return canary
+
+    monkeypatch.setattr("autoposter.app.datetime", _CanaryDatetime)
+
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
+
+    async with session_factory() as before_session:
+        before = (await before_session.execute(select(func.now()))).scalar_one()
+
+    async with app.router.lifespan_context(app):
+        boot = app.state.started_at
+        assert boot != canary, (
+            "app.state.started_at is the canary datetime.now(UTC) would have "
+            "produced -- the lifespan is reading the Python clock, not the "
+            "database's"
+        )
+        assert app.state.dashboard_broadcaster._started_at == boot, (
+            "the dashboard stream's broadcaster still holds the Python-clock "
+            "placeholder create_app built it with, so the live stream would "
+            "keep deriving every run's status against the wrong clock even "
+            "though /api/status was fixed"
+        )
+
+    async with session_factory() as after_session:
+        after = (await after_session.execute(select(func.now()))).scalar_one()
+
+    assert before <= boot <= after, (
+        f"app.state.started_at ({boot!r}) did not come from the database "
+        f"clock: expected it between two SELECT now() reads bracketing the "
+        f"lifespan ({before!r}, {after!r})"
+    )
 
 
 async def test_the_lifespan_builds_the_plex_client_from_the_effective_config(

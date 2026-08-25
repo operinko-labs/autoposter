@@ -45,6 +45,15 @@ def _run_status(row: ScheduledRun, started_at: datetime) -> str | None:
     Anything not shaped like in-progress reports the recorded
     ``last_status`` as-is -- ``"ok"``, ``"failed"``, or ``None`` for a row
     that has never run, which the frontend already renders as such.
+
+    ``started_at >= started`` only proves what it claims to when both sides
+    come from the same clock: ``started`` (``row.last_started_at``) is
+    stamped by Postgres's own ``now()`` (``scheduler/core.py``'s
+    ``claim_due``), so ``started_at`` must be a database-clock reading too,
+    never ``datetime.now()`` -- see ``app.py``'s lifespan, which reads it via
+    ``SELECT now()`` for exactly this reason. A Python-clock ``started_at``
+    compared against a Postgres-clock column would mislabel a healthy run as
+    ``"interrupted"`` for however long the two hosts' clocks disagree.
     """
     started = row.last_started_at
     finished = row.last_finished_at
@@ -61,6 +70,8 @@ async def status_snapshot(
 
     ``started_at`` is this process's boot instant (``app.state.started_at``),
     used only to derive each scheduled job's ``status`` -- see ``_run_status``.
+    It must be a database-clock reading, not a Python-clock one -- see
+    ``_run_status``'s docstring for why.
     """
     # GROUP BY in SQL rather than fetching every job row and counting in
     # Python -- the jobs table is the hot one at this library's size.

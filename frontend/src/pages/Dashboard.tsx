@@ -9,8 +9,9 @@ import {
   type ScheduledRunRequestResponse,
   type Status,
 } from "../api/types";
-import { formatSince, formatTime } from "../format";
+import { formatTime } from "../format";
 import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
+import { ScheduledRunStatusPill } from "./ScheduledRunStatus";
 import "./dashboard.css";
 
 /** How long to wait before reconnecting a dropped stream -- the log tail's
@@ -40,6 +41,22 @@ export function Dashboard() {
       live.current = false;
     };
   }, []);
+
+  // The Running pill's "since <relative>" label is computed at render time
+  // from `formatSince`'s default `now`, so it only advances when something
+  // else re-renders the page -- and the stream only pushes a new snapshot
+  // when the *encoded* status changes, which a long run on a quiet queue does
+  // not do between claim and finish. Without this, a 15-minute run could read
+  // "since 2m" for thirteen of those minutes. Bounded to when a row is
+  // actually running, and torn down otherwise, so a quiet dashboard holds no
+  // interval.
+  const hasRunningJob = status?.scheduled_jobs.some((job) => job.status === "running") ?? false;
+  const [, forceSinceTick] = useState(0);
+  useEffect(() => {
+    if (!hasRunningJob) return;
+    const id = setInterval(() => forceSinceTick((tick) => tick + 1), 60000);
+    return () => clearInterval(id);
+  }, [hasRunningJob]);
 
   async function runFullPass() {
     setPassBusy(true);
@@ -201,30 +218,7 @@ export function Dashboard() {
                           Run now beside it a sliver wide. */}
                       <td className="muted cell-time">{formatTime(job.last_finished_at)}</td>
                       <td>
-                        {job.status === null ? (
-                          <span className="muted">never</span>
-                        ) : job.status === "running" ? (
-                          <>
-                            <span className="pill pill-running">Running</span>{" "}
-                            {job.last_started_at !== null && (
-                              <span className="muted">{formatSince(job.last_started_at)}</span>
-                            )}
-                          </>
-                        ) : job.status === "interrupted" ? (
-                          <span
-                            className="pill pill-interrupted"
-                            title="started before this instance; the run died with its process"
-                          >
-                            Interrupted
-                          </span>
-                        ) : (
-                          <span
-                            className={`pill pill-${job.status}`}
-                            title={job.last_detail ?? ""}
-                          >
-                            {job.status}
-                          </span>
-                        )}
+                        <ScheduledRunStatusPill job={job} />
                       </td>
                       <td className="scheduled-actions">
                         <button

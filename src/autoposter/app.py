@@ -10,6 +10,7 @@ import requests
 from fastapi import FastAPI
 from plexapi.server import PlexServer
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from sqlalchemy import func, select
 from starlette.responses import Response
 
 from autoposter.api.auth import LoginRateLimiter
@@ -106,7 +107,31 @@ def create_app(
         # lifespan already assumes of the schema.
         async with session_factory() as session:
             swap_config(app, await load_effective_config(app.state.config_path, session))
+            # The single-clock fix for /api/status's derived job status (see
+            # api/snapshots.py._run_status): last_started_at is stamped by
+            # Postgres's own now() (scheduler/core.py's claim_due), so the
+            # boot instant it is compared against has to come from the same
+            # clock, not the app process's -- a deployment where the two
+            # hosts' clocks disagree would otherwise mislabel the first run
+            # after every restart as "interrupted" for its whole duration.
+            # Read here, in the same session as the config swap, replacing
+            # create_app's Python-clock placeholder.
+            app.state.started_at = (
+                await session.execute(select(func.now()))
+            ).scalar_one()
         config = app.state.config_holder.current
+        # create_app built the broadcaster from the placeholder above --
+        # construction happens before this lifespan runs, and create_app has
+        # no event loop to await the database read with. Rebuilt here, before
+        # the app can have any subscribers, so the live stream's derived
+        # status agrees with /api/status instead of comparing every run's
+        # start against a stale Python-clock boot instant forever. The
+        # session factory, config holder and scheduler-intervals mapping are
+        # the same objects create_app handed the original broadcaster.
+        app.state.dashboard_broadcaster = StatusBroadcaster(
+            session_factory, app.state.config_holder, app.state.scheduler_intervals,
+            started_at=app.state.started_at,
+        )
         if plex_factory is not None:
             app.state.plex = plex_factory(config)
         # Capture the process's own log stream for /api/logs. Attached here
@@ -331,13 +356,18 @@ def create_app(
     # object the holder now holds. The two are never allowed to diverge.
     app.state.config_holder = ConfigHolder(config)
     app.state.config = config
-    # The instant this application object was built, which is process-boot
-    # time for the real deployment (main.build calls create_app first thing)
-    # and construction time for every test app. /api/status compares a
-    # scheduled job's last_started_at against this to tell a run genuinely in
-    # progress from one whose owning process no longer exists -- see
-    # api/snapshots.py. Set unconditionally, like the other state above, so
-    # an app whose lifespan never runs still has one.
+    # A placeholder boot instant -- Python-clock, because create_app is
+    # synchronous and cannot await the database read that fixes it. /api/status
+    # compares a scheduled job's last_started_at (a Postgres-stamped column,
+    # see scheduler/core.py's claim_due) against this value, and that
+    # comparison is only sound against the SAME clock the column was stamped
+    # from -- claim_due's own docstring is explicit that a due check must run
+    # "against the database clock, never datetime.now()". The lifespan below
+    # overwrites this with a `SELECT now()` read, single-clock end to end,
+    # before any request can be served; this placeholder only survives for an
+    # app whose lifespan never runs (every test app that does not opt into
+    # run_background). Set unconditionally anyway, like the other state above,
+    # so such an app still has one.
     app.state.started_at = datetime.now(UTC)
     # The *file* the config was loaded from, which a loaded Config cannot tell
     # anyone: an override is a delta over that document, so both reverting one

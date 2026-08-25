@@ -153,6 +153,7 @@ async def test_a_claimed_job_logs_that_it_started(session_factory, caplog):
     started = [r for r in caplog.records if "started" in r.message]
     assert len(started) == 1
     assert started[0].message == "scheduler: prune started"
+    assert started[0].levelno == logging.INFO
 
 
 async def test_a_failing_job_is_recorded_and_the_scheduler_survives(session_factory):

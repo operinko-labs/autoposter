@@ -38,8 +38,11 @@ export interface ScheduledRun {
    * stored: `"running"` or `"interrupted"` while a claimed run has no later
    * finish, distinguished by comparing its start against the server's own
    * boot instant; otherwise the recorded `last_status`, including null for a
-   * job that has never run. */
-  status: "running" | "interrupted" | string | null;
+   * job that has never run. The server only ever writes "ok" or "failed" to
+   * `last_status` (scheduler/core.py's `_maybe_run`), so this union is
+   * closed rather than widened with `| string` -- a real discriminated union
+   * so the pill branches that switch on it typecheck. */
+  status: "running" | "interrupted" | "ok" | "failed" | null;
 }
 
 export interface Status {
