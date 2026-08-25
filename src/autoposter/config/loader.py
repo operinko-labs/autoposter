@@ -35,8 +35,9 @@ def render_version(config: Config) -> str:
     ``library_folders`` and the asset/font/overlay roots (which decide where a
     render reads its inputs from and writes its output to). Everything that
     cannot change a rendered image is excluded -- ``adopt``, ``scheduler``,
-    ``cleanup``, ``collections``, ``operations``, ``badges``, the worker and
-    database settings, and ``plex``/``providers`` connection details. Because
+    ``cleanup``, ``prune``, ``collections``, ``operations``, ``badges``, the
+    worker and database settings, and ``plex``/``providers`` connection
+    details. Because
     the input is the parsed model, comments, key order and whitespace are
     irrelevant by construction.
 

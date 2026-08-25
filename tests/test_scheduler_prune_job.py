@@ -16,8 +16,22 @@ The three things worth knowing before changing anything here:
 * the delete is keyed on ``(id, updated_at)`` so a row a worker re-upserted
   under the pass survives it.
 """
-from autoposter.db.models import MediaItem
-from autoposter.scheduler.prune import find_prunable, intent_for
+from types import SimpleNamespace
+
+from sqlalchemy import select, update
+
+from autoposter.db.models import EventLog, ItemFacts, Job, MediaItem, Render
+from autoposter.plex.client import ResolvedItem
+from autoposter.render.pipeline import _upsert_media_item
+from autoposter.scheduler.prune import (
+    PRUNE_EVENT,
+    PRUNE_SOURCE,
+    dismiss_jobs_for,
+    find_prunable,
+    implausible_prune_count,
+    intent_for,
+    retire,
+)
 
 
 class FakePlex:
@@ -183,3 +197,227 @@ def test_intent_for_leaves_no_identity_behind():
     assert (intent.tmdb_id, intent.tvdb_id, intent.imdb_id) == (1, 2, "tt3")
     assert intent.rating_key == "9"
     assert intent.kind == "movie"
+
+
+async def test_the_ancestor_walk_terminates_on_a_parent_id_cycle(session):
+    """``parent_id`` is a self-referential FK, so a corrupted pair pointing at
+    each other is possible; the ``_ancestors`` walk must terminate rather than
+    hang the sweep, and a cycle must not get a live row misclassified as
+    prunable. Built with a direct UPDATE after both rows exist, since a mutual
+    cycle can never satisfy the FK at insert time."""
+    a = await _add_item(session, "100", kind="season")
+    b = await _add_item(session, "110", kind="season", parent=a)
+    await session.execute(
+        update(MediaItem).where(MediaItem.id == a.id).values(parent_id=b.id)
+    )
+    await session.commit()
+
+    scan = await find_prunable(session, FakePlex(live={"100"}))
+
+    assert scan.total == 2
+    assert scan.prunable == []
+    assert "100" not in {c.rating_key for c in scan.prunable}
+
+
+async def test_an_applied_retire_deletes_the_row(session):
+    item = await _add_item(session, "11")
+    item_id = item.id
+    scan = await find_prunable(session, FakePlex(live=set()))
+
+    outcome = await retire(session, scan.prunable)
+    await session.commit()
+
+    assert outcome.pruned == ["11"]
+    assert outcome.skipped == 0
+    session.expire_all()
+    assert (
+        await session.execute(select(MediaItem).where(MediaItem.id == item_id))
+    ).scalar_one_or_none() is None
+
+
+async def test_each_delete_writes_one_audit_row_carrying_the_whole_identity(session):
+    """The row is gone for good, so the audit is the only record that it ever
+    existed. ``logo_upload_key`` is in it deliberately: a pruned item's
+    uploaded clearlogo can no longer be reverted, and that loss must be written
+    down rather than discovered later."""
+    item = await _add_item(
+        session, "11", title="A Movie", tmdb_id=5, imdb_id="tt9", year=2001,
+        logo_upload_key="upload://abc123",
+    )
+    session.add(Render(item_id=item.id, art_kind="poster", asset_path="/assets/a.jpg"))
+    await session.commit()
+    scan = await find_prunable(session, FakePlex(live=set()))
+
+    await retire(session, scan.prunable)
+    await session.commit()
+
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert len(events) == 1
+    event = events[0]
+    assert (event.source, event.event_type) == (PRUNE_SOURCE, PRUNE_EVENT)
+    assert event.payload["rating_key"] == "11"
+    assert event.payload["title"] == "A Movie"
+    assert event.payload["library"] == "Movies"
+    assert event.payload["kind"] == "movie"
+    assert event.payload["tmdb_id"] == 5
+    assert event.payload["imdb_id"] == "tt9"
+    assert event.payload["year"] == 2001
+    assert event.payload["render_count"] == 1
+    assert event.payload["logo_upload_key"] == "upload://abc123"
+    assert "no Plex item" in event.outcome
+
+
+async def test_every_row_of_a_pruned_family_gets_its_own_audit_row(session):
+    """The cascade is silent. Deleting the show first would remove its season
+    and episode with no record that they had ever been there, which is why
+    ``find_prunable`` hands them over deepest-first."""
+    show = await _add_item(session, "100", kind="show")
+    season = await _add_item(session, "110", kind="season", parent=show)
+    await _add_item(session, "111", kind="episode", parent=season)
+    scan = await find_prunable(session, FakePlex(live=set()))
+
+    outcome = await retire(session, scan.prunable)
+    await session.commit()
+
+    assert outcome.pruned == ["111", "110", "100"]
+    keys = {
+        event.payload["rating_key"]
+        for event in (await session.execute(select(EventLog))).scalars().all()
+    }
+    assert keys == {"100", "110", "111"}
+    session.expire_all()
+    assert (await session.execute(select(MediaItem))).scalars().all() == []
+
+
+async def test_the_renders_and_facts_of_a_pruned_row_go_with_it(session):
+    """Both cascade at the database level (db/models.py), so this asserts the
+    schema does what the prune assumes rather than adding code to do it."""
+    item = await _add_item(session, "11")
+    session.add(Render(item_id=item.id, art_kind="poster", asset_path="/assets/a.jpg"))
+    session.add(ItemFacts(item_id=item.id))
+    await session.commit()
+    scan = await find_prunable(session, FakePlex(live=set()))
+
+    await retire(session, scan.prunable)
+    await session.commit()
+
+    session.expire_all()
+    assert (await session.execute(select(Render))).scalars().all() == []
+    assert (await session.execute(select(ItemFacts))).scalars().all() == []
+
+
+async def test_a_row_re_upserted_under_the_pass_survives_and_is_counted_skipped(session):
+    """The concurrency guard, exercised through the actual writer.
+
+    A worker can resolve and re-upsert a row between this sweep's probe and its
+    delete -- the pass is minutes long and the pool never stops. The delete is
+    keyed on ``(id, updated_at)`` and the upsert's ON CONFLICT arm stamps
+    ``updated_at=now()``, so such a row no longer matches and is left exactly
+    as the worker just wrote it. Each write is its own committed transaction,
+    which is what makes the two ``now()`` values differ; nothing here asserts
+    on a timestamp or a duration.
+    """
+    item = await _add_item(session, "11", title="Old Title")
+    item_id = item.id
+    scan = await find_prunable(session, FakePlex(live=set()))
+    assert [c.rating_key for c in scan.prunable] == ["11"]
+
+    resolved = ResolvedItem(
+        rating_key="11", library="Movies", kind="movie", title="New Title",
+        year=2001, season_number=None, episode_number=None,
+        root_folder="New Title (2001)", file_path="/mnt/Media/Movies/x.mkv",
+        art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
+    )
+    await _upsert_media_item(session, resolved)
+    await session.commit()
+
+    outcome = await retire(session, scan.prunable)
+    await session.commit()
+
+    assert outcome.pruned == []
+    assert outcome.skipped == 1
+    session.expire_all()
+    survivor = (
+        await session.execute(select(MediaItem).where(MediaItem.id == item_id))
+    ).scalar_one()
+    assert survivor.title == "New Title"
+    assert (await session.execute(select(EventLog))).scalars().all() == [], (
+        "a row that was not deleted must not get a deletion audit row"
+    )
+
+
+async def test_pending_and_parked_jobs_for_a_pruned_row_are_dismissed(session):
+    """A parked job for a pruned row is pure Failures-page noise, and a pending
+    one would park by construction -- nothing can resolve it any more."""
+    for state in ("pending", "parked"):
+        session.add(Job(
+            kind="process_item",
+            payload={"kind": "movie", "title": "Gone", "rating_key": "11"},
+            dedupe_key=f"process_item:movie:title gone:{state}",
+            state=state,
+        ))
+    await session.commit()
+
+    dismissed = await dismiss_jobs_for(session, ["11"])
+    await session.commit()
+
+    assert dismissed == 2
+    session.expire_all()
+    states = {job.state for job in (await session.execute(select(Job))).scalars().all()}
+    assert states == {"dismissed"}
+
+
+async def test_a_running_job_is_left_to_park_itself(session):
+    """A claimed job is never interrupted anywhere in this project; one running
+    against a pruned row simply parks, and the next applied pass dismisses it."""
+    session.add(Job(
+        kind="process_item",
+        payload={"kind": "movie", "title": "Gone", "rating_key": "11"},
+        dedupe_key="process_item:movie:title gone",
+        state="running",
+    ))
+    await session.commit()
+
+    dismissed = await dismiss_jobs_for(session, ["11"])
+    await session.commit()
+
+    assert dismissed == 0
+    session.expire_all()
+    assert (await session.execute(select(Job))).scalar_one().state == "running"
+
+
+async def test_jobs_for_other_rating_keys_are_untouched(session):
+    session.add(Job(
+        kind="process_item",
+        payload={"kind": "movie", "title": "Still Here", "rating_key": "22"},
+        dedupe_key="process_item:movie:title still here",
+        state="parked",
+    ))
+    await session.commit()
+
+    assert await dismiss_jobs_for(session, ["11"]) == 0
+    assert await dismiss_jobs_for(session, []) == 0
+    session.expire_all()
+    assert (await session.execute(select(Job))).scalar_one().state == "parked"
+
+
+def test_an_implausible_absolute_count_refuses_with_both_numbers():
+    prune = SimpleNamespace(max_prunes=3, max_prune_share=0.25)
+
+    refusal = implausible_prune_count(4, 100, prune)
+
+    assert refusal is not None
+    assert "4" in refusal and "3" in refusal and "100" in refusal
+    assert "refus" in refusal.lower()
+    assert implausible_prune_count(3, 100, prune) is None
+
+
+def test_an_implausible_share_refuses_on_a_library_too_small_for_the_absolute_cap():
+    prune = SimpleNamespace(max_prunes=500, max_prune_share=0.25)
+
+    refusal = implausible_prune_count(10, 20, prune)
+
+    assert refusal is not None and "refus" in refusal.lower()
+    # Below the minimum sample the share means nothing and only the absolute
+    # cap applies -- "2 of 3 rows are gone" is a small library, not evidence.
+    assert implausible_prune_count(2, 3, prune) is None

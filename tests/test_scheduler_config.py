@@ -16,7 +16,7 @@ operator who omits the block actually gets.
 from pathlib import Path
 
 from autoposter.config.loader import load_config
-from autoposter.config.schema import CleanupConfig, SchedulerConfig
+from autoposter.config.schema import CleanupConfig, PruneConfig, SchedulerConfig
 
 EXAMPLE_CONFIG = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -57,3 +57,28 @@ def test_the_example_agrees_with_the_schema_defaults():
     config = load_config(EXAMPLE_CONFIG)
     assert config.scheduler == SchedulerConfig()
     assert config.cleanup == CleanupConfig()
+
+
+def test_prune_apply_defaults_to_false():
+    """The prune sweep hard-deletes rows, so it must stay a dry run until
+    explicitly opted into -- the ``cleanup.apply`` posture, on a sweep whose
+    mistake is not recoverable by moving a folder back."""
+    assert PruneConfig().apply is False
+
+
+def test_prune_safety_caps_have_defaults():
+    """An unreachable or half-loaded Plex makes every row look gone. The caps
+    that stop that reading as a work order must apply to a deployment that
+    never sets them."""
+    defaults = PruneConfig()
+    assert defaults.max_prunes == 500
+    assert defaults.max_prune_share == 0.25
+
+
+def test_prune_days_defaults_to_weekly():
+    assert SchedulerConfig().prune_days == 7
+
+
+def test_the_example_agrees_with_the_prune_schema_defaults():
+    config = load_config(EXAMPLE_CONFIG)
+    assert config.prune == PruneConfig()

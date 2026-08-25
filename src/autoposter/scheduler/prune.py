@@ -27,13 +27,23 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import MediaItem
+from autoposter.artwork_modes.base import SHARE_CHECK_MIN_ITEMS
+from autoposter.db.models import EventLog, MediaItem, Render
+# Aliased: ``Job`` in this package means the scheduler's dataclass
+# (``scheduler/core.py``), and the queue row of the same name would shadow it.
+from autoposter.db.models import Job as QueuedJob
 from autoposter.intake.arr import RenderIntent
 
 logger = logging.getLogger(__name__)
+
+# The events_log identity of a prune. Constants because the audit row is the
+# only surviving record of a deleted item, and a typo in either would make a
+# library's worth of them unfindable.
+PRUNE_SOURCE = "prune"
+PRUNE_EVENT = "media_item_pruned"
 
 
 @dataclass(frozen=True)
@@ -199,14 +209,18 @@ async def find_prunable(session: AsyncSession, plex) -> PruneScan:
 
     resolved_flags = await plex.exists_many([intent_for(c) for c in candidates])
     by_id = {candidate.id: candidate for candidate in candidates}
+    # strict=True: a mismatched flags list would silently drop a live
+    # descendant from the held-computation and permit exactly the
+    # over-deletion the cascade guard prevents. This turns that into a loud
+    # ValueError the job layer treats as a probe failure.
     gone = {
         candidate.id
-        for candidate, resolved in zip(candidates, resolved_flags)
+        for candidate, resolved in zip(candidates, resolved_flags, strict=True)
         if not resolved
     }
 
     held: set[int] = set()
-    for candidate, resolved in zip(candidates, resolved_flags):
+    for candidate, resolved in zip(candidates, resolved_flags, strict=True):
         if resolved:
             held.update(_ancestors(candidate, by_id))
 
@@ -218,3 +232,174 @@ async def find_prunable(session: AsyncSession, plex) -> PruneScan:
         held=len(gone & held),
         total=len(candidates),
     )
+
+
+@dataclass(frozen=True)
+class RetireOutcome:
+    """What one applied pass actually removed.
+
+    ``pruned`` is the rating keys of rows that were really deleted, not the
+    candidates offered: the job disposal downstream must key off what happened,
+    or it would dismiss the queued work of a row that survived. ``skipped``
+    counts rows that changed under the pass and were therefore left alone.
+    """
+
+    pruned: list[str]
+    skipped: int
+
+
+def implausible_prune_count(prunable: int, total: int, prune) -> str | None:
+    """Return a refusal summary if this many prunable rows cannot be believed.
+
+    The ``_implausible_orphan_count`` shape (``scheduler/jobs.py``) with the
+    causes that apply to this sweep. Two caps, either of which trips: the
+    absolute one catches a large library gone wrong in bulk, the share one
+    catches a small library where any absolute cap high enough to be useful on
+    the large one would never fire. Both report the real numbers, because the
+    operator's next question is always "how far off is it".
+
+    This is a second line, not the first: the unhealthy-Plex guard catches a
+    server that does not answer. These caps catch the worse case -- one that
+    answers, wrongly, because it was rebuilt, is still loading its sections, or
+    lost the library the rows belong to.
+    """
+    if prunable and prunable > prune.max_prunes:
+        return (
+            f"refused: {prunable} of {total} media_items row(s) look unresolvable, "
+            f"more than the safety cap of {prune.max_prunes}; this usually means "
+            "Plex was rebuilt, a library was renamed or newly excluded, or the "
+            "server answered from a partly-loaded state -- change nothing"
+        )
+    share = prunable / total if total else 0.0
+    if total >= SHARE_CHECK_MIN_ITEMS and share > prune.max_prune_share:
+        return (
+            f"refused: {prunable} of {total} media_items row(s) look unresolvable "
+            f"({share:.0%}), more than the safety cap of "
+            f"{prune.max_prune_share:.0%}; this usually means Plex was rebuilt, a "
+            "library was renamed or newly excluded, or the server answered from a "
+            "partly-loaded state -- change nothing"
+        )
+    return None
+
+
+async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> RetireOutcome:
+    """Delete each candidate, with one flushed audit row per delete.
+
+    Two things make this safe to run beside a live worker pool.
+
+    **The delete is keyed on ``(id, updated_at)``, not on the id alone.** The
+    table's only writer, ``_upsert_media_item`` (``render/pipeline.py``),
+    stamps ``updated_at=now()`` on its ON CONFLICT arm, so a row a worker
+    re-resolved and re-upserted between this pass's probe and this delete no
+    longer matches and survives untouched. The probe's answer is only ever as
+    good as the row it was asked about, and a row that changed since is
+    counted as skipped rather than deleted on the strength of a stale
+    observation. (The residual window -- two writes landing in the same
+    database microsecond -- is not reachable in practice: the value being
+    compared was written by a transaction that had already committed before
+    this pass read it.)
+
+    **The audit is flushed per row, before the next row's delete**, the way
+    ``collections/engine.py`` flushes its ``collection_deleted`` rows: a
+    failure later in the loop must not cost the record of what has already
+    gone. The payload carries the row's whole identity, ``logo_upload_key``
+    included -- a pruned item's uploaded clearlogo can never be reverted again,
+    because the marker that made the revert safe dies with the row, so the key
+    is written down rather than silently lost.
+
+    Candidates must arrive deepest-first, as ``find_prunable`` returns them:
+    ``media_items.parent_id`` cascades, so a parent deleted first would take
+    its descendants before they get audit rows of their own.
+    """
+    pruned: list[str] = []
+    skipped = 0
+    for candidate in candidates:
+        render_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(Render)
+                .where(Render.item_id == candidate.id)
+            )
+        ).scalar_one()
+        # synchronize_session=False because nothing here holds ORM MediaItem
+        # objects -- the sweep reads columns -- and the default strategies have
+        # to guess at how to reconcile a criteria DELETE with an identity map
+        # that has nothing in it to reconcile.
+        removed = (
+            await session.execute(
+                delete(MediaItem)
+                .where(MediaItem.id == candidate.id)
+                .where(MediaItem.updated_at == candidate.updated_at)
+                .returning(MediaItem.id)
+                .execution_options(synchronize_session=False)
+            )
+        ).first()
+        if removed is None:
+            logger.info(
+                "prune: %s (%s) changed under the pass; left alone",
+                candidate.rating_key, candidate.kind,
+            )
+            skipped += 1
+            continue
+        session.add(EventLog(
+            source=PRUNE_SOURCE,
+            event_type=PRUNE_EVENT,
+            payload={
+                "media_item_id": candidate.id,
+                "rating_key": candidate.rating_key,
+                "kind": candidate.kind,
+                "library": candidate.library,
+                "title": candidate.title,
+                "year": candidate.year,
+                "season_number": candidate.season_number,
+                "episode_number": candidate.episode_number,
+                "tmdb_id": candidate.tmdb_id,
+                "tvdb_id": candidate.tvdb_id,
+                "imdb_id": candidate.imdb_id,
+                "render_count": render_count,
+                "logo_upload_key": candidate.logo_upload_key,
+            },
+            outcome="pruned: no Plex item resolves for this row",
+        ))
+        await session.flush()
+        pruned.append(candidate.rating_key)
+    return RetireOutcome(pruned=pruned, skipped=skipped)
+
+
+async def dismiss_jobs_for(session: AsyncSession, rating_keys: list[str]) -> int:
+    """Dismiss the pending and parked jobs queued for rows that were pruned.
+
+    A parked job for a pruned row is pure Failures-page noise, and a pending
+    one would park by construction -- nothing can resolve it any more. Jobs
+    carry no foreign key to ``media_items`` (``db/models.py``), so they are
+    found the only way the payload allows: by the ``rating_key`` the
+    ``RenderIntent`` carries. Payloads written before that field existed carry
+    none; those are out of scope, already parked, and dismissible by hand.
+
+    ``running`` jobs are deliberately left alone. A claimed job is never
+    interrupted anywhere in this project (``api/jobs.py``), and one running
+    against a pruned row simply parks itself for the next applied pass to
+    dismiss.
+
+    ``with_for_update(skip_locked=True)`` mirrors the queue's own claim
+    (``queue/jobs.py``'s ``SELECT ... FOR UPDATE SKIP LOCKED``): while this
+    transaction holds a row a worker skips it rather than claiming it
+    underneath the flip, and a row a worker already holds is skipped here
+    rather than blocking the sweep behind it -- that row is ``running``, which
+    this does not touch anyway.
+    """
+    if not rating_keys:
+        return 0
+    jobs = (
+        await session.execute(
+            select(QueuedJob)
+            .where(QueuedJob.kind == "process_item")
+            .where(QueuedJob.state.in_(("pending", "parked")))
+            .where(QueuedJob.payload["rating_key"].astext.in_(rating_keys))
+            .with_for_update(skip_locked=True)
+        )
+    ).scalars().all()
+    for job in jobs:
+        job.state = "dismissed"
+    await session.flush()
+    return len(jobs)

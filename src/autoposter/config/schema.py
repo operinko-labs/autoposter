@@ -792,6 +792,40 @@ class CleanupConfig(BaseModel):
     max_orphan_share: float = 0.25
 
 
+class PruneConfig(BaseModel):
+    """Retiring ``media_items`` rows Plex can no longer resolve. See
+    ``scheduler/prune.py``.
+
+    Dry run by default, the same posture as ``cleanup.apply`` and
+    ``collections.apply_to_plex``: report which rows would go, delete nothing
+    until the operator has read a report and opted in. More strictly here than
+    anywhere else, because a cleanup mistake is a folder that moved to
+    ``backup_root`` and a prune mistake is a row that is gone.
+
+    Note what "gone" means, because it is wider than "deleted from Plex": a row
+    is prunable when the *pipeline* cannot resolve it, and the pipeline never
+    looks inside ``plex.excluded_libraries``. Excluding a library therefore
+    makes its rows prunable. That is the intended behaviour -- an operator
+    excludes a library precisely to stop processing those items -- but it means
+    an applied prune after an exclusion retires those rows. No files are
+    touched, and re-including the library re-creates the rows on the next pass.
+    """
+
+    apply: bool = False
+    # Sanity caps on the result of a sweep, mirroring cleanup.max_orphans /
+    # max_orphan_share. A Plex rebuild, a renamed library, a newly excluded one
+    # or a server answering from a partly-loaded state all make large numbers
+    # of rows look unresolvable at once, and the unhealthy-Plex guard does not
+    # catch a server that answers wrongly rather than not at all. Past either
+    # cap the pass refuses and reports the numbers rather than treating them as
+    # a work order. 500 sits far above real churn on a ~16,000-item library yet
+    # far below any plausible "the server changed" figure; the share cap
+    # catches the same failure on a small library, where no useful absolute cap
+    # would ever fire.
+    max_prunes: int = 500
+    max_prune_share: float = 0.25
+
+
 class AdoptConfig(BaseModel):
     """One-time adoption of an existing library: ``python -m autoposter.adopt``.
 
@@ -844,19 +878,19 @@ class ArtworkModesConfig(BaseModel):
 
 
 class SchedulerConfig(BaseModel):
-    """Cadences for three of the periodic passes in ``scheduler/jobs.py`` --
-    the collections reconcile, the ratings-drift sweep and the asset cleanup --
-    and the master switch for all four: the Radarr/Sonarr sync safety net is
-    also registered under ``enabled`` (its cadence lives in
-    ``ArrSyncConfig.hours``), so disabling the scheduler stops it too and
-    missed webhooks then never converge.
+    """Cadences for four of the periodic passes in ``scheduler/jobs.py`` and
+    ``scheduler/prune.py`` -- the collections reconcile, the ratings-drift
+    sweep, the asset cleanup and the media_items prune -- and the master switch
+    for all five: the Radarr/Sonarr sync safety net is also registered under
+    ``enabled`` (its cadence lives in ``ArrSyncConfig.hours``), so disabling the
+    scheduler stops it too and missed webhooks then never converge.
 
-    There is deliberately no ``cleanup_apply`` field here even though it
-    controls a scheduled job: ``CleanupConfig.apply`` above already means
-    exactly that (dry run by default, moves rather than deletes) and
-    ``make_cleanup_job`` reads it directly, so this section only owns *when*
-    the cleanup pass runs, not whether it writes -- repeating it here would
-    give the same behaviour two names.
+    There is deliberately no ``cleanup_apply`` or ``prune_apply`` field here
+    even though both control scheduled jobs: ``CleanupConfig.apply`` and
+    ``PruneConfig.apply`` already mean exactly that (dry run by default) and
+    the job factories read them directly, so this section only owns *when*
+    those passes run, not whether they write -- repeating it here would give
+    the same behaviour two names.
     """
 
     enabled: bool = True
@@ -869,6 +903,7 @@ class SchedulerConfig(BaseModel):
     drift_batch_size: int = 500
     drift_max_age_days: float = 7
     cleanup_days: int = 7
+    prune_days: int = 7
 
 
 class RadarrConfig(BaseModel):
@@ -1000,6 +1035,7 @@ class Config(BaseModel):
     badges: BadgesConfig = Field(default_factory=BadgesConfig)
     collections: CollectionsConfig = Field(default_factory=CollectionsConfig)
     cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
+    prune: PruneConfig = Field(default_factory=PruneConfig)
     artwork_modes: ArtworkModesConfig = Field(default_factory=ArtworkModesConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     adopt: AdoptConfig = Field(default_factory=AdoptConfig)
