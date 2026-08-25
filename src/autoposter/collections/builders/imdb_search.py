@@ -129,9 +129,11 @@ class ImdbSearchParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # Optional, and defaulting to the library's own media type when it is
-    # absent -- see ``build``. Shadows the builtin as an attribute name only,
-    # and ``type:`` is what IMDb's own advanced-search form calls this.
+    # Optional. ``build`` always derives the title-type ids it sends from
+    # ``ctx.library_type`` -- an explicit ``type:`` never supplies them itself,
+    # it only narrows which libraries the definition is allowed to run against
+    # (see ``build``'s cross-check). Shadows the builtin as an attribute name
+    # only, and ``type:`` is what IMDb's own advanced-search form calls this.
     type: str | None = None
     genres: list[str] | None = Field(default=None, min_length=1)
     # IMDb's user rating is 1.0-10.0. A ``rating_gte: 0`` is a filter that
@@ -139,7 +141,11 @@ class ImdbSearchParams(BaseModel):
     # floor is IMDb's floor rather than zero.
     rating_gte: float | None = Field(default=None, ge=1.0, le=10.0)
     rating_lte: float | None = Field(default=None, ge=1.0, le=10.0)
-    votes_gte: int | None = Field(default=None, ge=0)
+    # A ``votes_gte: 0`` is a filter that filters nothing while still satisfying
+    # the one-constraint guard -- the exact hole ``rating_gte``'s ``ge=1.0``
+    # floor above closes for the rating side, so the vote floor gets IMDb's
+    # minimum count of one rather than zero for the same reason.
+    votes_gte: int | None = Field(default=None, ge=1)
     released_after: datetime.date | None = None
     released_before: datetime.date | None = None
     sort: str = "popularity.desc"

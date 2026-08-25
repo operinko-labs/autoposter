@@ -461,11 +461,16 @@ async def test_a_graphql_errors_array_is_refused_even_on_a_200():
     )
 
 
-async def test_a_null_result_with_no_error_is_refused_not_emptied():
+async def test_a_null_result_with_no_error_is_drift_not_emptied():
+    """A null ``advancedTitleSearch`` with no ``errors`` array is not a shape
+    IMDb has ever answered this query with -- ``ImdbListDrift``, not
+    ``ImdbListRefused``: an operator cannot fix an unrecognised shape, only a
+    code change can, and the engine's log line carries the exception class
+    name and nothing else."""
     async with httpx.AsyncClient(
         transport=_answers({"data": {"advancedTitleSearch": None}})
     ) as http:
-        with pytest.raises(ImdbListRefused, match="imdb_search"):
+        with pytest.raises(ImdbListDrift, match="imdb_search"):
             await _build(http, genres=["Film-Noir"])
 
 
@@ -581,6 +586,15 @@ async def test_a_release_window_that_excludes_everything_is_refused():
 async def test_a_vote_floor_that_is_not_a_count_is_refused(value):
     with pytest.raises(ValidationError):
         await _build(None, votes_gte=value)
+
+
+async def test_a_vote_floor_of_zero_is_refused():
+    """``votes_gte: 0`` filters nothing while still satisfying the
+    one-constraint guard -- the exact hole ``rating_gte``'s ``ge=1.0`` floor
+    closes on the rating side, so the vote floor gets IMDb's minimum count of
+    one rather than zero for the same reason."""
+    with pytest.raises(ValidationError):
+        await _build(None, votes_gte=0)
 
 
 @pytest.mark.parametrize("value", ["show", "series", "Movie", "film", "tvSeries"])

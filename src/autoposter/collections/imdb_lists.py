@@ -162,12 +162,18 @@ def _connection(
     path: tuple[str, ...],
     subject: str,
     null_root: str = _NULL_ROOT,
+    null_class: type[Exception] = ImdbListRefused,
 ) -> tuple[list, dict]:
     """``(edges, pageInfo)`` out of one response, or a raise naming the shape.
 
     ``path`` is the field names from ``data`` down to the connection object:
     ``("list", "titleListItemSearch")`` for a list, ``("advancedTitleSearch",)``
     for the search root, whose connection has no wrapper.
+
+    ``null_class`` is the exception a null root raises -- ``ImdbListRefused`` by
+    default, which is right for the lists (a null root there is IMDb saying "no
+    such list"), but wrong for the search root, whose null root is an
+    unrecognised shape rather than an operator-fixable refusal. The caller picks.
     """
     if not isinstance(payload, dict):
         raise ImdbListDrift(
@@ -194,7 +200,7 @@ def _connection(
         )
     node = node[root]
     if node is None:
-        raise ImdbListRefused(f"{subject} {null_root}")
+        raise null_class(f"{subject} {null_root}")
     if not isinstance(node, dict):
         raise ImdbListDrift(f"{subject}: {root!r} was {_excerpt(node)}, not an object")
     for field in rest:
@@ -261,6 +267,7 @@ async def _fetch(
     variables: dict,
     subject: str,
     null_root: str = _NULL_ROOT,
+    null_class: type[Exception] = ImdbListRefused,
 ) -> list[str]:
     """Walk one connection's cursor pages and return its ids in source order."""
     ids: list[str] = []
@@ -273,7 +280,7 @@ async def _fetch(
             GRAPHQL_URL, headers=HEADERS, json={"query": query, "variables": page_variables}
         )
         response.raise_for_status()
-        edges, page_info = _connection(response.json(), path, subject, null_root)
+        edges, page_info = _connection(response.json(), path, subject, null_root, null_class)
         ids += _ids(edges, edge_path, subject, len(ids))
         if not page_info.get("hasNextPage"):
             return ids
@@ -341,4 +348,5 @@ async def fetch_search(
         subject,
         null_root="came back null with no error, which is not a shape IMDb has "
         "ever answered this query with",
+        null_class=ImdbListDrift,
     )
