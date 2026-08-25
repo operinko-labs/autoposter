@@ -482,6 +482,41 @@ async def test_a_server_error_names_the_class_and_never_the_base_url():
     assert error.value.__suppress_context__ is True
 
 
+@pytest.mark.parametrize(
+    "base_url, leak",
+    [
+        ("http://tracearr.internal:notaport", "notaport"),
+        ("http://tracearr❤secret.internal", "tracearr❤secret.internal"),
+    ],
+    ids=["garbage-port", "bad-codepoint-host"],
+)
+async def test_a_malformed_base_url_is_refused_without_quoting_itself(base_url, leak):
+    """The input this module's URL hygiene exists for, and the one it used to
+    miss: ``httpx.InvalidURL`` is a *sibling* of ``httpx.HTTPError``, not a
+    descendant, so an ``except httpx.HTTPError`` never saw it.
+
+    It is raised while building the request -- before any transport runs -- and
+    its own message quotes the offending component: ``Invalid port: 'notaport'``
+    for the first case and ``Invalid IDNA hostname: '<host>'`` for the second,
+    which is the whole cluster-internal hostname. Both would reach the log
+    through the engine's ``logger.exception``, and both would escape as a
+    non-``TracearrRefused`` class, breaking the "one dead source" contract the
+    builder's per-bucket handling is built on.
+    """
+    async with httpx.AsyncClient(transport=_routed({})) as http:
+        client = TracearrClient(http, base_url, API_KEY)
+        with pytest.raises(TracearrRefused) as error:
+            await client.history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+    message = str(error.value)
+    assert "InvalidURL" in message
+    assert "/history" in message
+    assert leak not in message
+    assert API_KEY not in message
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
+
+
 async def test_no_repr_of_the_client_carries_the_key():
     async with httpx.AsyncClient(transport=_routed({})) as http:
         client = _client(http)
@@ -533,6 +568,57 @@ async def test_a_response_with_no_data_array_is_refused():
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
         with pytest.raises(TracearrRefused, match="'data'"):
             await _client(http).history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+
+async def test_a_matched_route_answering_html_is_refused_not_decoded():
+    """Past the SPA guard, so the header check cannot help: a route that *did*
+    match but whose body is HTML -- an upstream proxy's error page in front of a
+    live Tracearr, which is why it still carries the rate-limit headers.
+
+    Without the decode inside the wrapped block this escapes as a raw
+    ``json.JSONDecodeError``, which is not a ``TracearrRefused`` and so is
+    invisible to the builder's per-bucket handling. The page is also attacker-
+    or infrastructure-controlled text, so nothing from it may be quoted.
+    """
+    body = "<!doctype html><html><body>gateway PROXYSECRET failed</body></html>"
+    routes = {f"{API_PREFIX}/history": lambda request: httpx.Response(
+        200, text=body,
+        headers={"content-type": "text/html", "x-ratelimit-limit": "240"},
+    )}
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        with pytest.raises(TracearrRefused) as error:
+            await _client(http).history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+    message = str(error.value)
+    assert "JSONDecodeError" in message
+    assert "/history" in message
+    assert "PROXYSECRET" not in message
+    assert BASE_URL not in message
+    assert API_KEY not in message
+
+
+async def test_a_top_level_json_array_is_refused_rather_than_returned():
+    """``_get`` annotates ``-> dict`` and both callers ``.get`` what it returns,
+    so a top-level array used to escape as an ``AttributeError`` from one frame
+    down -- and ``media()`` is worse, since it would *return* the list to the
+    ranking code, where the failure is much harder to attribute.
+
+    The type's name is a stable label; the payload's contents are not quoted.
+    """
+    routes = {f"{API_PREFIX}/history": lambda request: _matched(
+        [{"id": "a", "title": "A Private Title"}]
+    )}
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        with pytest.raises(TracearrRefused) as error:
+            await _client(http).history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+    message = str(error.value)
+    assert "list" in message
+    assert "/history" in message
+    assert "A Private Title" not in message
+    assert BASE_URL not in message
+    assert API_KEY not in message
+    assert not isinstance(error.value, TracearrNotFound)
 
 
 # --- config, secret and bundle wiring -----------------------------------------
@@ -669,8 +755,12 @@ operator put in their YAML. ``httpx.HTTPStatusError`` puts the full URL in its
 own message, and the engine logs a failed build with ``logger.exception`` --
 traceback included (``collections/engine.py``). So every httpx error becomes a
 ``TracearrRefused`` naming the path and the original exception's CLASS, raised
-``from None`` so the chained message cannot reach the log either. The API key
-lives in a header and enters no message, no cache key and no ``repr``.
+``from None`` so the chained message cannot reach the log either. That has to
+include ``httpx.InvalidURL``, which is a *sibling* of ``HTTPError`` rather than
+a descendant and is the one raised when the operator's ``base_url`` is itself
+malformed -- the case whose message quotes the offending port, or the whole
+hostname. The API key lives in a header and enters no message, no cache key and
+no ``repr``.
 
 **404 raises -- as its own class.** ``fetch_json`` turns a 404 into ``None``,
 which is the right answer for artwork and the wrong one here, for the reason
@@ -699,6 +789,7 @@ even by requests that fail authentication. One collection costs one page per
 ranked title -- which is why the builder's ``limit`` is applied *before* those
 calls rather than after.
 """
+import json
 import logging
 import re
 
@@ -738,7 +829,7 @@ RATE_LIMIT_HEADER = "x-ratelimit-limit"
 # into a path: it always comes from Tracearr itself, and a value with a slash
 # in it would address a different endpoint entirely.
 _MEDIA_ID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
-                       r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+                       r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
 
 
 class TracearrRefused(Exception):
@@ -826,17 +917,57 @@ class TracearrClient:
                 cache=None,
                 ttl_seconds=0,
             )
-        except httpx.HTTPError as error:
+        except (httpx.HTTPError, httpx.InvalidURL, json.JSONDecodeError) as error:
             # ``from None`` on purpose: ``HTTPStatusError``'s own message
             # carries the full URL, and the engine logs a failed build with its
             # traceback. The class name is all that crosses.
+            #
+            # ``InvalidURL`` is listed separately because it is a *sibling* of
+            # ``HTTPError``, not a descendant -- so ``httpx.HTTPError`` alone
+            # let the one input this module exists to defend against escape
+            # raw. It is raised at request-build time from ``URL(url)`` when
+            # the operator's ``base_url`` is malformed, and its messages
+            # interpolate the offending component: ``Invalid port: 'notaport'``
+            # or ``Invalid IDNA hostname: '<the whole cluster-internal host>'``.
+            # Verified against the installed httpx 0.28.1 that this one class is
+            # the whole URL-construction surface: ``_urlparse.py`` catches
+            # ``idna.IDNAError`` itself and re-raises ``InvalidURL``, so no idna
+            # exception (they are all ``UnicodeError`` subclasses) ever crosses.
+            #
+            # ``JSONDecodeError`` because ``fetch_json`` decodes inside this
+            # ``try``: a route that matched (rate-limit headers present, 2xx)
+            # but answered HTML -- an upstream proxy's error page -- is a
+            # refusal, not a crash, and the caller's ``except TracearrRefused``
+            # must see it. Its message carries no URL, but the class alone is
+            # the diagnostic worth keeping.
+            detail = type(error).__name__
+            if isinstance(error, httpx.HTTPStatusError):
+                # An integer, carrying neither URL nor credential. Without it a
+                # rejected API key (401), a spent rate-limit budget (429) and a
+                # dead instance (500) are one indistinguishable log line -- and
+                # a 401 carries rate-limit headers, so it passes the guard and
+                # lands exactly here.
+                detail = f"{detail} {error.response.status_code}"
             raise TracearrRefused(
-                f"{subject}: Tracearr refused {path} ({type(error).__name__})"
+                f"{subject}: Tracearr refused {path} ({detail})"
             ) from None
         if payload is None:
             raise TracearrNotFound(
                 f"{subject}: Tracearr answered 404 for {path}. Building an empty "
                 "collection instead would remove every member it has."
+            )
+        if not isinstance(payload, dict):
+            # A matched route answering a top-level array or scalar. Both
+            # callers annotate ``dict`` and both go on to ``.get`` it, so
+            # without this the failure surfaces as an ``AttributeError`` from
+            # somewhere downstream -- outside the ``TracearrRefused`` contract
+            # the builder's per-bucket handling is built on, and for ``media()``
+            # only after the wrong type has been handed to the ranking code.
+            # The type's name only: a payload this client cannot parse is
+            # exactly the payload it must not quote into a log.
+            raise TracearrRefused(
+                f"{subject}: {path} answered a {type(payload).__name__}, not a JSON "
+                "object"
             )
         return payload
 
@@ -992,7 +1123,9 @@ In `src/autoposter/collections/service.py`, add the import beside the other prov
 and the factory, immediately after `_arr_client` (`:269`):
 
 ```python
-def _tracearr_client(service, api_key: str, http: httpx.AsyncClient):
+def _tracearr_client(
+    service, api_key: str, http: httpx.AsyncClient
+) -> TracearrClient | None:
     """One Tracearr client, or None if this deployment has no such service.
 
     The ``_arr_client`` triple, for the same reasons: ``enabled`` is the
@@ -1023,7 +1156,8 @@ Run:
 ```
 docker compose -p row79t1 -f docker-compose.yml -f .superpowers/isolated-db.yml run --rm test pytest tests/test_tracearr_client.py -x -q
 ```
-Expected: PASS, 23 passed (the half-configured case is parametrized three ways).
+Expected: PASS, 26 passed — 23 test functions, of which the half-configured case
+is parametrized three ways and the malformed-`base_url` case two ways (21 + 3 + 2).
 
 - [ ] **Step 8: Run the tests the new config section could have broken**
 

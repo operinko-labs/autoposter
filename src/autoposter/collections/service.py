@@ -271,7 +271,9 @@ def _arr_client(service, api_key: str, kind, http: httpx.AsyncClient) -> ArrClie
     return ArrClient(http, service.base_url, api_key, kind)
 
 
-def _tracearr_client(service, api_key: str, http: httpx.AsyncClient):
+def _tracearr_client(
+    service, api_key: str, http: httpx.AsyncClient
+) -> TracearrClient | None:
     """One Tracearr client, or None if this deployment has no such service.
 
     The ``_arr_client`` triple, for the same reasons: ``enabled`` is the

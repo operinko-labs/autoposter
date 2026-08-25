@@ -30,8 +30,12 @@ operator put in their YAML. ``httpx.HTTPStatusError`` puts the full URL in its
 own message, and the engine logs a failed build with ``logger.exception`` --
 traceback included (``collections/engine.py``). So every httpx error becomes a
 ``TracearrRefused`` naming the path and the original exception's CLASS, raised
-``from None`` so the chained message cannot reach the log either. The API key
-lives in a header and enters no message, no cache key and no ``repr``.
+``from None`` so the chained message cannot reach the log either. That has to
+include ``httpx.InvalidURL``, which is a *sibling* of ``HTTPError`` rather than
+a descendant and is the one raised when the operator's ``base_url`` is itself
+malformed -- the case whose message quotes the offending port, or the whole
+hostname. The API key lives in a header and enters no message, no cache key and
+no ``repr``.
 
 **404 raises -- as its own class.** ``fetch_json`` turns a 404 into ``None``,
 which is the right answer for artwork and the wrong one here, for the reason
@@ -60,6 +64,7 @@ even by requests that fail authentication. One collection costs one page per
 ranked title -- which is why the builder's ``limit`` is applied *before* those
 calls rather than after.
 """
+import json
 import logging
 import re
 
@@ -99,7 +104,7 @@ RATE_LIMIT_HEADER = "x-ratelimit-limit"
 # into a path: it always comes from Tracearr itself, and a value with a slash
 # in it would address a different endpoint entirely.
 _MEDIA_ID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
-                       r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+                       r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
 
 
 class TracearrRefused(Exception):
@@ -187,17 +192,57 @@ class TracearrClient:
                 cache=None,
                 ttl_seconds=0,
             )
-        except httpx.HTTPError as error:
+        except (httpx.HTTPError, httpx.InvalidURL, json.JSONDecodeError) as error:
             # ``from None`` on purpose: ``HTTPStatusError``'s own message
             # carries the full URL, and the engine logs a failed build with its
             # traceback. The class name is all that crosses.
+            #
+            # ``InvalidURL`` is listed separately because it is a *sibling* of
+            # ``HTTPError``, not a descendant -- so ``httpx.HTTPError`` alone
+            # let the one input this module exists to defend against escape
+            # raw. It is raised at request-build time from ``URL(url)`` when
+            # the operator's ``base_url`` is malformed, and its messages
+            # interpolate the offending component: ``Invalid port: 'notaport'``
+            # or ``Invalid IDNA hostname: '<the whole cluster-internal host>'``.
+            # Verified against the installed httpx 0.28.1 that this one class is
+            # the whole URL-construction surface: ``_urlparse.py`` catches
+            # ``idna.IDNAError`` itself and re-raises ``InvalidURL``, so no idna
+            # exception (they are all ``UnicodeError`` subclasses) ever crosses.
+            #
+            # ``JSONDecodeError`` because ``fetch_json`` decodes inside this
+            # ``try``: a route that matched (rate-limit headers present, 2xx)
+            # but answered HTML -- an upstream proxy's error page -- is a
+            # refusal, not a crash, and the caller's ``except TracearrRefused``
+            # must see it. Its message carries no URL, but the class alone is
+            # the diagnostic worth keeping.
+            detail = type(error).__name__
+            if isinstance(error, httpx.HTTPStatusError):
+                # An integer, carrying neither URL nor credential. Without it a
+                # rejected API key (401), a spent rate-limit budget (429) and a
+                # dead instance (500) are one indistinguishable log line -- and
+                # a 401 carries rate-limit headers, so it passes the guard and
+                # lands exactly here.
+                detail = f"{detail} {error.response.status_code}"
             raise TracearrRefused(
-                f"{subject}: Tracearr refused {path} ({type(error).__name__})"
+                f"{subject}: Tracearr refused {path} ({detail})"
             ) from None
         if payload is None:
             raise TracearrNotFound(
                 f"{subject}: Tracearr answered 404 for {path}. Building an empty "
                 "collection instead would remove every member it has."
+            )
+        if not isinstance(payload, dict):
+            # A matched route answering a top-level array or scalar. Both
+            # callers annotate ``dict`` and both go on to ``.get`` it, so
+            # without this the failure surfaces as an ``AttributeError`` from
+            # somewhere downstream -- outside the ``TracearrRefused`` contract
+            # the builder's per-bucket handling is built on, and for ``media()``
+            # only after the wrong type has been handed to the ranking code.
+            # The type's name only: a payload this client cannot parse is
+            # exactly the payload it must not quote into a log.
+            raise TracearrRefused(
+                f"{subject}: {path} answered a {type(payload).__name__}, not a JSON "
+                "object"
             )
         return payload
 

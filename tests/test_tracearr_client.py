@@ -266,6 +266,41 @@ async def test_a_server_error_names_the_class_and_never_the_base_url():
     assert error.value.__suppress_context__ is True
 
 
+@pytest.mark.parametrize(
+    "base_url, leak",
+    [
+        ("http://tracearr.internal:notaport", "notaport"),
+        ("http://tracearr❤secret.internal", "tracearr❤secret.internal"),
+    ],
+    ids=["garbage-port", "bad-codepoint-host"],
+)
+async def test_a_malformed_base_url_is_refused_without_quoting_itself(base_url, leak):
+    """The input this module's URL hygiene exists for, and the one it used to
+    miss: ``httpx.InvalidURL`` is a *sibling* of ``httpx.HTTPError``, not a
+    descendant, so an ``except httpx.HTTPError`` never saw it.
+
+    It is raised while building the request -- before any transport runs -- and
+    its own message quotes the offending component: ``Invalid port: 'notaport'``
+    for the first case and ``Invalid IDNA hostname: '<host>'`` for the second,
+    which is the whole cluster-internal hostname. Both would reach the log
+    through the engine's ``logger.exception``, and both would escape as a
+    non-``TracearrRefused`` class, breaking the "one dead source" contract the
+    builder's per-bucket handling is built on.
+    """
+    async with httpx.AsyncClient(transport=_routed({})) as http:
+        client = TracearrClient(http, base_url, API_KEY)
+        with pytest.raises(TracearrRefused) as error:
+            await client.history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+    message = str(error.value)
+    assert "InvalidURL" in message
+    assert "/history" in message
+    assert leak not in message
+    assert API_KEY not in message
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
+
+
 async def test_no_repr_of_the_client_carries_the_key():
     async with httpx.AsyncClient(transport=_routed({})) as http:
         client = _client(http)
@@ -317,6 +352,57 @@ async def test_a_response_with_no_data_array_is_refused():
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
         with pytest.raises(TracearrRefused, match="'data'"):
             await _client(http).history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+
+async def test_a_matched_route_answering_html_is_refused_not_decoded():
+    """Past the SPA guard, so the header check cannot help: a route that *did*
+    match but whose body is HTML -- an upstream proxy's error page in front of a
+    live Tracearr, which is why it still carries the rate-limit headers.
+
+    Without the decode inside the wrapped block this escapes as a raw
+    ``json.JSONDecodeError``, which is not a ``TracearrRefused`` and so is
+    invisible to the builder's per-bucket handling. The page is also attacker-
+    or infrastructure-controlled text, so nothing from it may be quoted.
+    """
+    body = "<!doctype html><html><body>gateway PROXYSECRET failed</body></html>"
+    routes = {f"{API_PREFIX}/history": lambda request: httpx.Response(
+        200, text=body,
+        headers={"content-type": "text/html", "x-ratelimit-limit": "240"},
+    )}
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        with pytest.raises(TracearrRefused) as error:
+            await _client(http).history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+    message = str(error.value)
+    assert "JSONDecodeError" in message
+    assert "/history" in message
+    assert "PROXYSECRET" not in message
+    assert BASE_URL not in message
+    assert API_KEY not in message
+
+
+async def test_a_top_level_json_array_is_refused_rather_than_returned():
+    """``_get`` annotates ``-> dict`` and both callers ``.get`` what it returns,
+    so a top-level array used to escape as an ``AttributeError`` from one frame
+    down -- and ``media()`` is worse, since it would *return* the list to the
+    ranking code, where the failure is much harder to attribute.
+
+    The type's name is a stable label; the payload's contents are not quoted.
+    """
+    routes = {f"{API_PREFIX}/history": lambda request: _matched(
+        [{"id": "a", "title": "A Private Title"}]
+    )}
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        with pytest.raises(TracearrRefused) as error:
+            await _client(http).history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+    message = str(error.value)
+    assert "list" in message
+    assert "/history" in message
+    assert "A Private Title" not in message
+    assert BASE_URL not in message
+    assert API_KEY not in message
+    assert not isinstance(error.value, TracearrNotFound)
 
 
 # --- config, secret and bundle wiring -----------------------------------------
