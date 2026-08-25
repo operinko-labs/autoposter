@@ -80,6 +80,44 @@ function supply(supplied: Supplied, fallback: unknown): unknown {
   return supplied ?? fallback;
 }
 
+/** The catalog panel mounted on this page fetches for itself. Its own
+ * behaviour is covered in CatalogPanel.test.tsx; what these fixtures owe it is
+ * a well-formed answer, so a page-level test is not reading an error state the
+ * page never shows in life. */
+const CATALOG = {
+  categories: [
+    {
+      key: "awards",
+      label: "Awards",
+      presets: [
+        {
+          key: "award_cannes",
+          name: "Cannes Film Festival",
+          titles: ["Cannes Palme d'Or Winners"],
+          years_title: "Cannes <year>",
+          description: "Cannes Film Festival: 1 winners collection.",
+          kometa_source: "defaults/award/cannes.yml",
+          library_types: ["Movie"],
+          readiness: "ready",
+          gated_row: null,
+          setting: null,
+          active: false,
+        },
+      ],
+    },
+    { key: "charts", label: "Charts", presets: [] },
+  ],
+};
+
+const CONFIG = {
+  version: "cfg-1",
+  collections: { enabled: true, presets: [] },
+  overridden_paths: [],
+  frozen_paths: {},
+  redacted_paths: [],
+  keep_sentinel: "***KEEP***",
+};
+
 interface StubOptions {
   collections?: Supplied;
   status?: Supplied;
@@ -93,6 +131,10 @@ function stubFetch(options: StubOptions = {}) {
     if (path.startsWith("/api/scheduled-runs/") && options.run) return options.run(path, init);
     if (path.startsWith("/api/scheduled-runs/")) return json({ status: "requested", poll_seconds: 60 });
     if (path === "/api/status") return json(supply(options.status, status()));
+    // Before the /api/collections/ prefix below, which would otherwise swallow
+    // the catalog and hand the picker a list of managed collections.
+    if (path === "/api/collections/catalog") return json(CATALOG);
+    if (path === "/api/config") return json(CONFIG);
     if (path === "/api/collections/preview") {
       if (options.preview) return options.preview(path, init);
       return json({ definitions: [], actions: [] });
@@ -471,7 +513,11 @@ describe("Collections", () => {
 
     render(<Collections />);
 
-    expect(await screen.findByText("database is down")).toBeInTheDocument();
+    // Every fetch fails here, including the catalog panel's own, so the
+    // message renders twice. The one this test is about is the page's -- the
+    // one outside the panel that reports its own failure for itself.
+    const shown = await screen.findAllByText("database is down");
+    expect(shown.some((node) => node.closest(".catalog-panel") === null)).toBe(true);
   });
 
   // --- per-row poster control -----------------------------------------------
@@ -737,5 +783,21 @@ describe("Collections", () => {
     ).toBeInTheDocument();
     // The rest of the page survived it.
     expect(screen.getByRole("heading", { name: "Collections" })).toBeInTheDocument();
+  });
+
+  it("mounts the catalog picker below the definitions it adds to", async () => {
+    stubFetch();
+
+    render(<Collections />);
+
+    // The panel's own behaviour is CatalogPanel.test.tsx's; what belongs here
+    // is that the page mounts it and that it reaches its own endpoint rather
+    // than being handed the managed-collections list by the fixture's
+    // catch-all.
+    const strip = await screen.findByRole("tablist", { name: "Catalog categories" });
+    expect(within(strip).getByRole("tab", { name: "Awards" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("checkbox", { name: /Cannes Film Festival/ }),
+    ).toBeInTheDocument();
   });
 });

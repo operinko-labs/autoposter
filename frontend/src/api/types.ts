@@ -382,6 +382,61 @@ export interface CollectionPreviewResponse {
   actions: string[];
 }
 
+/** One row of the preset catalog, as `catalog_listing`
+ * (src/autoposter/collections/catalog.py) serves it.
+ *
+ * `setting` is the field that decides what a row's checkbox *writes*, and the
+ * two answers are not variations of one another:
+ *
+ *   - `null` -- an ordinary preset. Its `active` state is membership of
+ *     `collections.presets`, and switching it on appends its `key` there.
+ *   - a dotted config path (`"collections.awards"`) -- a row that renders a
+ *     boolean setting that shipped before the catalog existed. Its `active`
+ *     state is that boolean's value, and switching it on writes that path.
+ *     Its key is deliberately NOT a preset key: the server refuses
+ *     `presets: [oscars]` as unknown, so a picker that wrote one there would
+ *     produce a config the API rejects.
+ *
+ * `readiness` is `"ready"` or `"gated"`; a gated row names the roadmap row it
+ * waits on in `gated_row`, and the config refuses its key outright, so the
+ * picker renders it disabled rather than offering a switch that cannot be
+ * thrown. */
+export interface CatalogPreset {
+  key: string;
+  name: string;
+  /** The static collection titles this preset builds. Empty for a preset
+   * whose collections are all dynamic. */
+  titles: string[];
+  /** The shape of the dynamic titles ("Cannes <year>"), or null where the
+   * preset builds none. Not a title that will exist -- which years the
+   * dataset carries is not knowable here. */
+  years_title: string | null;
+  description: string;
+  /** The Kometa defaults file this reproduces, verbatim, or an honest
+   * statement that it has none. */
+  kometa_source: string;
+  library_types: string[];
+  readiness: string;
+  gated_row: number | null;
+  setting: string | null;
+  active: boolean;
+}
+
+export interface CatalogCategory {
+  key: string;
+  label: string;
+  /** Empty is an ordinary state: every category is listed whether or not its
+   * rows have been written, so a category cannot silently vanish from the
+   * picker. */
+  presets: CatalogPreset[];
+}
+
+/** GET /api/collections/catalog. Touches neither Plex nor the database -- it
+ * is a pure table plus which keys the live config has switched on. */
+export interface CollectionsCatalogResponse {
+  categories: CatalogCategory[];
+}
+
 /** The JSON outcome of POST /api/testing/sample when the title does not fit at
  * the minimum point size. The pipeline writes no artifact in that case, so the
  * endpoint returns this instead of image bytes -- a labelled outcome, not an

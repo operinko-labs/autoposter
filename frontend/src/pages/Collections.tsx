@@ -13,6 +13,7 @@ import type {
 } from "../api/types";
 import { formatTime } from "../format";
 import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
+import { CatalogPanel } from "./CatalogPanel";
 // The status pill is dashboard.css's, and the reconcile bar shows the same
 // job state the dashboard does -- imported rather than duplicated so the two
 // pages cannot drift apart.
@@ -583,6 +584,12 @@ export function Collections() {
       </div>
 
       <DefinitionsPanel />
+
+      {/* The catalog sits below the definitions it adds to: an operator reads
+          what is built today, then picks what else to build. It is the only
+          panel here that touches neither Plex nor the database, so it renders
+          on a replica where the two above it report 503. */}
+      <CatalogPanel />
     </>
   );
 }

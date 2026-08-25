@@ -16,6 +16,7 @@ function stylesheet(relative: string): string {
   return readFileSync(new URL(relative, import.meta.url), "utf8");
 }
 
+const catalogCss = stylesheet("./pages/catalog.css");
 const collectionsCss = stylesheet("./pages/collections.css");
 const itemCss = stylesheet("./pages/item.css");
 const logsCss = stylesheet("./pages/logs.css");
@@ -274,6 +275,55 @@ describe("the id-mismatch rows fit a narrow table", () => {
 
   it("wraps the scan control and its explanation", () => {
     expect(declaration(mismatchesCss, ".mismatch-controls", "flex-wrap")).toBe("wrap");
+  });
+});
+
+describe("the catalog picker's tab strip fits a phone", () => {
+  it("wraps the strip rather than hiding categories off the right edge", () => {
+    // Nine labels are wider than a phone in one line. A scrolling strip would
+    // put Time and Production behind a gesture nothing announces, so the strip
+    // wraps at every width -- this is not a mobile-only rule.
+    expect(declaration(catalogCss, ".catalog-tabs", "display")).toBe("flex");
+    expect(declaration(catalogCss, ".catalog-tabs", "flex-wrap")).toBe("wrap");
+  });
+
+  it("marks the selected tab by more than its colour", () => {
+    // The same rule the mismatch table follows for a disagreeing id: colour
+    // alone is the distinction a colour-blind operator does not get.
+    expect(declaration(catalogCss, '.catalog-tab[aria-selected="true"]', "font-weight")).toBe(
+      "600",
+    );
+    expect(declaration(catalogCss, '.catalog-tab[aria-selected="true"]', "box-shadow")).toBe(
+      "inset 0 -2px 0 0 var(--accent)",
+    );
+  });
+
+  it("gives a tab a touch-sized target", () => {
+    expect(declaration(catalogCss, ".catalog-tab", "min-height")).toBe("40px");
+  });
+});
+
+describe("the catalog rows fit a narrow panel", () => {
+  it("stacks a row's switch over its detail below 640px", () => {
+    expect(declaration(catalogCss, ".catalog-row", "display")).toBe("flex");
+    expect(declaration(catalogCss, ".catalog-row", "flex-direction", MOBILE)).toBe("column");
+    expect(declaration(catalogCss, ".catalog-row", "align-items", MOBILE)).toBe("stretch");
+  });
+
+  it("keeps a badge on one line at every width", () => {
+    // "needs row 155" broken across two lines is not a row number any more.
+    expect(declaration(catalogCss, ".catalog-badge", "white-space")).toBe("nowrap");
+  });
+
+  it("lets only the provenance path break, and only on a phone", () => {
+    expect(declaration(catalogCss, ".catalog-source", "white-space")).toBe("nowrap");
+    expect(declaration(catalogCss, ".catalog-source", "white-space", MOBILE)).toBe("normal");
+    expect(declaration(catalogCss, ".catalog-source", "word-break", MOBILE)).toBe("break-word");
+  });
+
+  it("wraps the summary strip and its chips", () => {
+    expect(declaration(catalogCss, ".catalog-summary", "flex-wrap")).toBe("wrap");
+    expect(declaration(catalogCss, ".catalog-count", "white-space")).toBe("nowrap");
   });
 });
 
