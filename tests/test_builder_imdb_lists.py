@@ -8,8 +8,14 @@ what is pinned here is IMDb's shape rather than a plausible-looking guess at
 it. Two guesses that a from-memory fixture would have frozen in were wrong:
 the edge field is ``title`` and not ``listItem``, and there is no
 ``user(id:)`` root -- a watchlist is reached through ``predefinedList``.
+
+The one thing the recordings do not carry is the ``titleType`` selection, which
+was added afterwards: the recorded list really is five films, so its entries are
+typed ``movie`` here, and the mixed list the filter is actually about is built
+inline where it is used.
 """
 import json
+import logging
 from pathlib import Path
 
 import httpx
@@ -59,6 +65,40 @@ def _answers(payload, seen: list | None = None, status: int = 200):
     return httpx.MockTransport(handler)
 
 
+# The mixed list the title-type filter exists for: every type a Movie library
+# can own, every type a Show library can own, and the three kinds of entry
+# neither can -- an episode, a video game, and one IMDb named no type for.
+MIXED = [
+    ("tt1000001", "movie"),
+    ("tt1000002", "tvMovie"),
+    ("tt1000003", "short"),
+    ("tt1000004", "video"),
+    ("tt2000001", "tvSeries"),
+    ("tt2000002", "tvMiniSeries"),
+    ("tt3000001", "tvEpisode"),
+    ("tt3000002", "videoGame"),
+    ("tt3000003", None),
+]
+
+
+def _typed(entries, has_next=False):
+    """One page of ``(id, titleType)`` entries, in IMDb's list shape.
+
+    A None type is served the way IMDb serves one -- the ``titleType`` object
+    itself null -- rather than as an absent key, because that is the shape that
+    would otherwise slip through a ``.get`` chain as a truthy dict.
+    """
+    edges = [
+        {"title": {"id": value, "titleType": {"id": kind} if kind else None}}
+        for value, kind in entries
+    ]
+    return _answers({"data": {"list": {"titleListItemSearch": {
+        "total": len(edges),
+        "pageInfo": {"hasNextPage": has_next, "endCursor": None},
+        "edges": edges,
+    }}}})
+
+
 def _ctx(http, library_type: str = "Movie", **params) -> BuilderContext:
     library = "Movies" if library_type == "Movie" else "TV Shows"
     return BuilderContext(
@@ -97,6 +137,10 @@ async def test_the_pinned_query_and_variables_are_sent_verbatim():
         "omitting `sort` is what keeps IMDb's own list order; naming one would "
         "silently reorder every existing collection"
     )
+    assert "titleType { id }" in first["query"], (
+        "the type is what tells an episode id from a film's; a query that stopped "
+        "asking for it would send every entry back to being unfilterable"
+    )
 
 
 async def test_the_second_page_is_asked_for_with_the_first_pages_cursor():
@@ -126,14 +170,25 @@ async def test_paging_stops_when_the_last_page_says_so():
 # --- the transport: order and content -----------------------------------------
 
 
-async def test_ids_are_returned_in_list_order_across_pages():
+async def test_entries_are_returned_in_list_order_across_pages():
+    """``(id, title type)`` pairs, and the type comes back alongside the id
+    rather than being fetched per title -- one entry, one round trip's share."""
     async with httpx.AsyncClient(transport=_paged()) as http:
-        ids = await fetch_list(http, "ls055350410")
+        entries = await fetch_list(http, "ls055350410")
 
-    assert ids == [
-        "tt0039152", "tt0057569", "tt0013442",  # page 1, in the recorded order
-        "tt0047162", "tt0023694",               # page 2
+    assert entries == [
+        ("tt0039152", "movie"), ("tt0057569", "movie"),  # page 1, recorded order
+        ("tt0013442", "movie"),
+        ("tt0047162", "movie"), ("tt0023694", "movie"),  # page 2
     ]
+
+
+async def test_an_entry_imdb_names_no_type_for_is_data_not_drift():
+    """The id is pinned and a wrong one raises; the type is not. A null
+    ``titleType`` is one entry the builder drops, where raising would take the
+    whole collection down over a field IMDb owes nobody."""
+    async with httpx.AsyncClient(transport=_typed([("tt0039152", None)])) as http:
+        assert await fetch_list(http, "ls055350410") == [("tt0039152", None)]
 
 
 async def test_a_list_that_really_is_empty_is_data_not_a_failure():
@@ -280,14 +335,104 @@ async def test_the_list_builder_namespaces_every_id():
 
 
 async def test_the_list_builder_runs_on_a_show_library_too():
-    """No library-type guard: an IMDb list may hold films and series at once,
-    and the library already decides which half of it resolves."""
+    """Still no library-type guard -- a list is allowed on either library. The
+    recorded list is five films, so a Show library keeps none of them, and that
+    is the filter answering rather than the builder refusing."""
     async with httpx.AsyncClient(transport=_paged()) as http:
         result = await REGISTRY["imdb_list"].build(
             _ctx(http, library_type="Show", list="ls055350410")
         )
 
+    assert result.ids == []
+
+
+# --- the title-type filter ------------------------------------------------------
+#
+# THE production bug this fixes. Three of the shipped universe lists are episode
+# dumps -- Kometa's Arrowverse list is 977 ``tvEpisode`` entries and one
+# ``video``, with no series on it at all -- and an episode's ``tt`` id is in
+# neither library's guid space, so every one of them could only ever be reported
+# unresolved. The filter is about what an id CAN mean, not what the operator
+# meant, which is why it is not optional and not configurable.
+
+
+async def test_a_movie_library_keeps_only_what_it_could_own():
+    """Films, TV movies, shorts and standalone videos: Plex files all four
+    under Movies, each with its own ``imdb://`` guid. Series, episodes, games
+    and the untyped entry cannot resolve there and never reach the resolver."""
+    async with httpx.AsyncClient(transport=_typed(MIXED)) as http:
+        result = await REGISTRY["imdb_list"].build(_ctx(http, list="ls055350410"))
+
+    assert result.ids == [
+        ("imdb", "tt1000001"), ("imdb", "tt1000002"),
+        ("imdb", "tt1000003"), ("imdb", "tt1000004"),
+    ]
+
+
+async def test_a_show_library_keeps_only_series_and_mini_series():
+    """``tvMovie`` is excluded on purpose and is the interesting half: Plex
+    files one as a movie, so its id in a Show collection is as unresolvable as
+    an episode's. Same call ``imdb_search.TITLE_TYPE_IDS`` makes."""
+    async with httpx.AsyncClient(transport=_typed(MIXED)) as http:
+        result = await REGISTRY["imdb_list"].build(
+            _ctx(http, library_type="Show", list="ls055350410")
+        )
+
+    assert result.ids == [("imdb", "tt2000001"), ("imdb", "tt2000002")]
+
+
+async def test_the_kept_entries_stay_in_list_order():
+    """Source order is the collection's custom order, so dropping an entry must
+    not reorder the ones around it -- the mixed list interleaves a dropped
+    ``tvEpisode`` between two kept series."""
+    entries = [
+        ("tt2000001", "tvSeries"),
+        ("tt3000001", "tvEpisode"),
+        ("tt2000002", "tvMiniSeries"),
+    ]
+    async with httpx.AsyncClient(transport=_typed(entries)) as http:
+        result = await REGISTRY["imdb_list"].build(
+            _ctx(http, library_type="Show", list="ls055350410")
+        )
+
+    assert result.ids == [("imdb", "tt2000001"), ("imdb", "tt2000002")]
+
+
+async def test_a_type_this_repository_does_not_know_is_dropped():
+    """An unrecognised type is far likelier to be a new bulk type than a film
+    IMDb re-labelled, and the debug line below is what makes the guess visible.
+    Keeping it instead would put the unresolvable ids straight back."""
+    async with httpx.AsyncClient(transport=_typed([("tt4000001", "musicVideo")])) as http:
+        result = await REGISTRY["imdb_list"].build(_ctx(http, list="ls055350410"))
+
+    assert result.ids == []
+
+
+async def test_what_was_dropped_is_logged_by_count_and_by_type(caplog):
+    """Not just the count. A list quietly losing entries to a type id nobody has
+    seen before is IMDb drift, and this line is the only place it can surface."""
+    logger = "autoposter.collections.builders.imdb_lists"
+    with caplog.at_level(logging.DEBUG, logger=logger):
+        async with httpx.AsyncClient(transport=_typed(MIXED)) as http:
+            await REGISTRY["imdb_list"].build(_ctx(http, list="ls055350410"))
+
+    assert "dropped 5 entries" in caplog.text
+    assert "tvEpisode" in caplog.text and "videoGame" in caplog.text
+    assert "tvSeries" in caplog.text and "tvMiniSeries" in caplog.text
+    assert "unknown" in caplog.text, "an entry with no type at all is named too"
+    assert "ls055350410" in caplog.text and "Movies" in caplog.text
+
+
+async def test_nothing_is_logged_when_the_whole_list_is_kept(caplog):
+    """The line reports an exception, not a routine. A list of films on a Movie
+    library drops nothing and says nothing."""
+    logger = "autoposter.collections.builders.imdb_lists"
+    with caplog.at_level(logging.DEBUG, logger=logger):
+        async with httpx.AsyncClient(transport=_paged()) as http:
+            result = await REGISTRY["imdb_list"].build(_ctx(http, list="ls055350410"))
+
     assert len(result.ids) == 5
+    assert "dropped" not in caplog.text
 
 
 @pytest.mark.parametrize(

@@ -49,6 +49,16 @@ id -- so the level-by-level validation, the excerpting, the errors-before-
 status check, the cursor loop and the page cap are written once and every root
 gets the same loud failure. The alternative, a second copy of that walk for the
 search root, is exactly the copy that would drift into being defensive.
+
+**One root asks for more than an id.** ``LIST_QUERY`` also selects each entry's
+``titleType { id }``, because a public list can hold anything IMDb has a page
+for -- including the ~950 ``tvEpisode`` entries on Kometa's Star Trek universe
+list, whose ids belong to no Plex library's guid space at all. So ``_fetch``
+takes a second, optional edge path and ``fetch_list`` returns ``(id, type)``
+pairs where the other two roots still return bare ids. That path is the one
+piece of the shape below not covered by the 2026-08-25 live recordings; it was
+read off the live lists during the universe diagnosis, and unlike the id path
+it is *not* pinned -- see ``_entries`` for why a missing type is data.
 """
 import logging
 import re
@@ -87,10 +97,19 @@ MAX_PAGES = 10
 # same list walked three at a time, which agreed position for position -- and
 # that order is the collection's custom order. Naming a sort would silently
 # reorder every existing collection.
+#
+# ``titleType { id }`` rides along because a public list is not a list of one
+# kind of thing. Three of Kometa's universe lists are almost entirely
+# ``tvEpisode`` -- Arrowverse ``ls566667558`` is 977 episodes and one ``video``,
+# with no series on it at all -- and an episode's ``tt`` id is in neither a
+# Movie library's nor a Show library's guid space, so emitting one can only
+# produce an unresolved id. The id is the *builder's* to act on
+# (``builders/imdb_lists.py``); asking for it is this module's.
 LIST_QUERY = (
     "query ListItems($id: ID!, $first: Int!, $after: String) {"
     " list(id: $id) { titleListItemSearch(first: $first, after: $after) {"
-    " total pageInfo { hasNextPage endCursor } edges { title { id } } } } }"
+    " total pageInfo { hasNextPage endCursor }"
+    " edges { title { id titleType { id } } } } } }"
 )
 
 # ``$after`` is ``String``, not ``ID``: the endpoint rejects the ``ID`` form
@@ -240,27 +259,45 @@ def _shape(path: tuple[str, ...]) -> str:
     return text
 
 
-def _ids(edges: list, path: tuple[str, ...], subject: str, offset: int) -> list[str]:
-    """The title ids of one page, in page order.
+def _walk(value: object, path: tuple[str, ...]) -> object:
+    """One edge followed down a field path, or None where the path runs out."""
+    for field in path:
+        value = value.get(field) if isinstance(value, dict) else None
+    return value
 
-    Every edge must be exactly the pinned shape -- ``{"title": {"id": "tt…"}}``
-    on the list roots, ``{"node": {"title": {"id": "tt…"}}}`` on the search
-    root. An edge that is not is a raise rather than a skip: one skipped entry
-    is a title silently missing from the collection, and a shape change would
-    skip all of them at once.
+
+def _entries(
+    edges: list,
+    path: tuple[str, ...],
+    subject: str,
+    offset: int,
+    type_path: tuple[str, ...] | None = None,
+) -> list[tuple[str, str | None]]:
+    """One page's ``(title id, IMDb title type id)`` pairs, in page order.
+
+    The id is pinned. Every edge must be exactly the expected shape --
+    ``{"title": {"id": "tt…"}}`` on the list roots, ``{"node": {"title": {"id":
+    "tt…"}}}`` on the search root. An edge that is not is a raise rather than a
+    skip: one skipped entry is a title silently missing from the collection,
+    and a shape change would skip all of them at once.
+
+    The title type is deliberately *not* pinned, and the asymmetry is the
+    point. It is asked for on one root only (``type_path`` is None for the
+    others), and its consumer treats an unknown type as one entry to drop --
+    so a missing one costs a single list member, where raising would cost the
+    whole collection. Non-string values fold to None for the same reason.
     """
-    ids: list[str] = []
+    entries: list[tuple[str, str | None]] = []
     for position, edge in enumerate(edges, start=offset + 1):
-        value: object = edge
-        for field in path:
-            value = value.get(field) if isinstance(value, dict) else None
+        value = _walk(edge, path)
         if not isinstance(value, str) or not _IMDB_ID.match(value):
             raise ImdbListDrift(
                 f"{subject}: entry {position} is not the {_shape(path)} shape "
                 f"this module pins -- got {_excerpt(edge)}"
             )
-        ids.append(value)
-    return ids
+        title_type = _walk(edge, type_path) if type_path else None
+        entries.append((value, title_type if isinstance(title_type, str) else None))
+    return entries
 
 
 async def _fetch(
@@ -272,9 +309,14 @@ async def _fetch(
     subject: str,
     null_root: str = _NULL_ROOT,
     null_class: type[Exception] = ImdbListRefused,
-) -> list[str]:
-    """Walk one connection's cursor pages and return its ids in source order."""
-    ids: list[str] = []
+    type_path: tuple[str, ...] | None = None,
+) -> list[tuple[str, str | None]]:
+    """Walk one connection's cursor pages and return its entries in source order.
+
+    An entry is ``(id, title type)``, the type being None on every root that
+    does not ask for one -- see ``_entries``.
+    """
+    entries: list[tuple[str, str | None]] = []
     after: str | None = None
     for page in range(1, MAX_PAGES + 1):
         page_variables = dict(variables, first=PAGE_SIZE)
@@ -285,9 +327,9 @@ async def _fetch(
         )
         response.raise_for_status()
         edges, page_info = _connection(response.json(), path, subject, null_root, null_class)
-        ids += _ids(edges, edge_path, subject, len(ids))
+        entries += _entries(edges, edge_path, subject, len(entries), type_path)
         if not page_info.get("hasNextPage"):
-            return ids
+            return entries
         after = page_info.get("endCursor")
         if not isinstance(after, str) or not after:
             raise ImdbListDrift(
@@ -296,13 +338,20 @@ async def _fetch(
             )
     logger.warning(
         "%s: stopped at the %d-page cap with %d id(s); IMDb says there are more",
-        subject, MAX_PAGES, len(ids),
+        subject, MAX_PAGES, len(entries),
     )
-    return ids
+    return entries
 
 
-async def fetch_list(http: httpx.AsyncClient, list_id: str) -> list[str]:
-    """The public list's IMDb ids, in list order."""
+async def fetch_list(
+    http: httpx.AsyncClient, list_id: str
+) -> list[tuple[str, str | None]]:
+    """The public list's ``(IMDb id, title type id)`` entries, in list order.
+
+    The type is IMDb's own vocabulary -- ``movie``, ``tvSeries``, ``tvEpisode``
+    -- and None for an entry IMDb named no type for. The caller decides what a
+    type means; see ``builders/imdb_lists.py`` for why it has to.
+    """
     return await _fetch(
         http,
         LIST_QUERY,
@@ -310,6 +359,7 @@ async def fetch_list(http: httpx.AsyncClient, list_id: str) -> list[str]:
         ("title", "id"),
         {"id": list_id},
         f"IMDb list {list_id!r}",
+        type_path=("title", "titleType", "id"),
     )
 
 
@@ -319,8 +369,12 @@ async def fetch_watchlist(http: httpx.AsyncClient, user_id: str) -> list[str]:
     Public only. There is no anonymous route to a private one, and IMDb says
     so with a FORBIDDEN error rather than an empty list -- which
     ``_connection`` turns into ``ImdbListRefused`` naming the watchlist.
+
+    Ids only. ``WATCHLIST_QUERY`` does not ask for title types and this does
+    not filter on them -- a watchlist is one person's own shortlist of things
+    to watch, not the bulk episode dump a curated list can be.
     """
-    return await _fetch(
+    entries = await _fetch(
         http,
         WATCHLIST_QUERY,
         ("predefinedList", "titleListItemSearch"),
@@ -328,6 +382,7 @@ async def fetch_watchlist(http: httpx.AsyncClient, user_id: str) -> list[str]:
         {"user": user_id},
         f"the public IMDb watchlist of {user_id!r}",
     )
+    return [value for value, _ in entries]
 
 
 async def fetch_search(
@@ -342,8 +397,12 @@ async def fetch_search(
     rather than an error, so a constraint value this repository has not pinned
     is indistinguishable from an honest empty result, and an empty result one
     layer down removes every member.
+
+    Ids only, and no title-type filter here either: the search *constraint*
+    already names the title types (``builders/imdb_search.TITLE_TYPE_IDS``), so
+    IMDb never returns one that was not asked for.
     """
-    return await _fetch(
+    entries = await _fetch(
         http,
         SEARCH_QUERY,
         ("advancedTitleSearch",),
@@ -354,3 +413,4 @@ async def fetch_search(
         "ever answered this query with",
         null_class=ImdbListDrift,
     )
+    return [value for value, _ in entries]

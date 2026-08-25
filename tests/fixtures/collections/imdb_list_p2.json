@@ -10,12 +10,18 @@
         "edges": [
           {
             "title": {
-              "id": "tt0047162"
+              "id": "tt0047162",
+              "titleType": {
+                "id": "movie"
+              }
             }
           },
           {
             "title": {
-              "id": "tt0023694"
+              "id": "tt0023694",
+              "titleType": {
+                "id": "movie"
+              }
             }
           }
         ]
