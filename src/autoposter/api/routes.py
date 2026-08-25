@@ -268,12 +268,28 @@ async def logout(
 async def status(
     request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
+    """Queue counts, worker count and the scheduled-job table.
+
+    Each scheduled job carries a derived ``status`` (see
+    ``api.snapshots._run_status``) so the dashboard can show a long run in
+    progress instead of the previous run's outcome for its whole duration.
+
+    Two things about it are surprising rather than wrong. The hand-trigger
+    (``POST /api/scheduled-runs/{name}/run``) nulls ``last_started_at``
+    without starting anything, so re-triggering a job that is already running
+    briefly reports it as not-running until the scheduler's next claim
+    re-stamps that column. And during a deployment rollout, the new pod's
+    boot instant is later than the old pod's still-live run's start, so for
+    the overlap window the new pod's own ``/api/status`` labels that live run
+    ``interrupted`` even though it has not actually died yet.
+    """
     # The queries live in api/snapshots.py because the dashboard stream's
     # broadcaster builds this same body on its poll -- see that module.
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         return await status_snapshot(
-            session, request.app.state.config, request.app.state.scheduler_intervals
+            session, request.app.state.config, request.app.state.scheduler_intervals,
+            request.app.state.started_at,
         )
 
 

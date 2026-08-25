@@ -112,6 +112,16 @@
   color: var(--warn);
 }
 
+.pill-running {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+}
+
+.pill-interrupted {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--warn);
+}
+
 .pill-rendered {
   background: color-mix(in srgb, var(--ok) 22%, transparent);
   color: var(--ok);

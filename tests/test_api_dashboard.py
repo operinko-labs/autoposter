@@ -1,4 +1,5 @@
 """GET /api/status and GET /api/events."""
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest_asyncio
@@ -177,6 +178,125 @@ async def test_status_reports_a_null_interval_for_a_job_the_scheduler_never_regi
 async def test_status_reports_worker_count(client, auth_headers):
     response = await client.get("/api/status", headers=auth_headers)
     assert response.json()["workers"] == 5  # config/autoposter.example.yaml
+
+
+# --- derived scheduled-job status ---
+#
+# A production incident (2026-08-25): a multi-minute scheduled run logs
+# nothing between its claim and its finish, and last_status/last_finished_at
+# keep showing the *previous* run's outcome for that whole stretch -- so a
+# healthy 15-minute run and a dead scheduler look identical on the dashboard.
+# `status` is derived read-time from last_started_at/last_finished_at and
+# this process's boot instant (app.state.started_at), never written back.
+#
+# Every case below drives explicit timestamps against an injected boot
+# instant -- no wall-clock sleeps, no datetime.now() deltas.
+
+BOOT = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+async def _status_of(client, auth_headers, name="drift"):
+    response = await client.get("/api/status", headers=auth_headers)
+    row = next(j for j in response.json()["scheduled_jobs"] if j["name"] == name)
+    return row
+
+
+async def test_status_is_running_when_started_after_boot_and_unfinished(
+    app, client, auth_headers, session
+):
+    app.state.started_at = BOOT
+    session.add(
+        ScheduledRun(
+            name="drift", last_started_at=BOOT + timedelta(minutes=1),
+            last_finished_at=None, last_status="ok",
+        )
+    )
+    await session.commit()
+
+    row = await _status_of(client, auth_headers)
+    assert row["status"] == "running"
+
+
+async def test_status_is_running_when_the_last_finish_predates_the_last_start(
+    app, client, auth_headers, session
+):
+    """last_status/last_finished_at still describe the *previous* run while a
+    new one is in flight -- the exact shape a multi-minute run leaves."""
+    app.state.started_at = BOOT
+    started = BOOT + timedelta(minutes=5)
+    session.add(
+        ScheduledRun(
+            name="drift", last_started_at=started,
+            last_finished_at=started - timedelta(hours=1), last_status="ok",
+        )
+    )
+    await session.commit()
+
+    row = await _status_of(client, auth_headers)
+    assert row["status"] == "running"
+
+
+async def test_status_is_running_when_the_start_exactly_equals_boot(
+    app, client, auth_headers, session
+):
+    """The boundary: a start stamped at exactly the boot instant is this
+    process's own claim, not a leftover from a process that died -- >=, not >."""
+    app.state.started_at = BOOT
+    session.add(
+        ScheduledRun(name="drift", last_started_at=BOOT, last_finished_at=None)
+    )
+    await session.commit()
+
+    row = await _status_of(client, auth_headers)
+    assert row["status"] == "running"
+
+
+async def test_status_is_interrupted_when_the_start_predates_boot_and_unfinished(
+    app, client, auth_headers, session
+):
+    """A start before this process existed cannot be this process's claim --
+    the process that made it is gone, so the run died with it. A proof, not a
+    guess about how long is too long."""
+    app.state.started_at = BOOT
+    session.add(
+        ScheduledRun(
+            name="drift", last_started_at=BOOT - timedelta(seconds=1),
+            last_finished_at=None, last_status="ok",
+        )
+    )
+    await session.commit()
+
+    row = await _status_of(client, auth_headers)
+    assert row["status"] == "interrupted"
+
+
+async def test_status_reports_the_recorded_status_once_finished(
+    app, client, auth_headers, session
+):
+    app.state.started_at = BOOT
+    started = BOOT + timedelta(minutes=1)
+    session.add(
+        ScheduledRun(
+            name="drift", last_started_at=started,
+            last_finished_at=started + timedelta(minutes=2), last_status="failed",
+        )
+    )
+    await session.commit()
+
+    row = await _status_of(client, auth_headers)
+    assert row["status"] == "failed"
+
+
+async def test_status_is_null_for_a_job_that_has_never_run(
+    app, client, auth_headers, session
+):
+    app.state.started_at = BOOT
+    session.add(ScheduledRun(name="drift"))
+    await session.commit()
+
+    row = await _status_of(client, auth_headers)
+    assert row["status"] is None
+    assert row["last_status"] is None
 
 
 # --- /api/events ---

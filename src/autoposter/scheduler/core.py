@@ -155,6 +155,10 @@ class Scheduler:
             return
         if not claimed:
             return
+        # Nothing else logs between the claim and the finish -- a multi-minute
+        # job (the prune walk, in production) was otherwise silent for its
+        # whole run, indistinguishable from a scheduler that never woke up.
+        logger.info("scheduler: %s started", job.name)
 
         status, detail = "ok", ""
         try:

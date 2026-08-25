@@ -24,6 +24,7 @@ const STATUS = {
       last_status: "ok",
       last_detail: "nothing to do",
       interval_seconds: 900,
+      status: "ok",
     },
     // Registration is config-conditional: this row survives from a
     // deployment that ran the job, but the running scheduler knows no
@@ -35,6 +36,7 @@ const STATUS = {
       last_status: null,
       last_detail: null,
       interval_seconds: null,
+      status: null,
     },
   ],
 };
@@ -134,6 +136,16 @@ async function jobRow(name: string) {
   return within(row!);
 }
 
+/** A snapshot whose scheduled-runs table is exactly `jobs` -- everything else
+ * from STATUS/EVENTS. Used by the derived-status pill tests below, which
+ * care about one row's shape and nothing else in the page. */
+function snapshotWithScheduledJobs(jobs: unknown[]) {
+  return {
+    status: { ...STATUS, scheduled_jobs: jobs },
+    events: EVENTS.events,
+  };
+}
+
 beforeEach(() => {
   setToken(null);
 });
@@ -186,6 +198,130 @@ describe("Dashboard", () => {
     for (const table of tables) {
       expect(table.parentElement).toHaveClass("table-scroll");
     }
+  });
+
+  it("renames the scheduled-runs Result column to Status", async () => {
+    stubFetch();
+
+    render(<Dashboard />);
+    await screen.findByText("collections_reconcile");
+
+    expect(screen.getByRole("columnheader", { name: "Status" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Result" })).not.toBeInTheDocument();
+  });
+
+  describe("the derived scheduled-run status", () => {
+    // A multi-minute run previously showed the *previous* run's ok/failed
+    // pill for its whole duration -- indistinguishable from a scheduler that
+    // never woke up. These four cover what api/snapshots.py's `_run_status`
+    // can now say instead.
+
+    it("shows a Running pill with how long the job has been going", async () => {
+      // "now" fixed 5m30s after last_started_at, so formatSince floors to "5m".
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date("2026-01-02T03:09:30Z"));
+      stubFetch(undefined, undefined, async (_path, init) =>
+        ndjsonStream(
+          init!.signal as AbortSignal,
+          snapshotWithScheduledJobs([
+            {
+              name: "prune",
+              last_started_at: "2026-01-02T03:04:00Z",
+              last_finished_at: null,
+              last_status: "ok",
+              last_detail: "previous pass",
+              interval_seconds: 900,
+              status: "running",
+            },
+          ]),
+        ).response,
+      );
+
+      render(<Dashboard />);
+      const row = await jobRow("prune");
+
+      expect(row.getByText("Running")).toHaveClass("pill", "pill-running");
+      expect(row.getByText("since 5m")).toBeInTheDocument();
+    });
+
+    it("shows an Interrupted pill explaining the run died with its process", async () => {
+      stubFetch(undefined, undefined, async (_path, init) =>
+        ndjsonStream(
+          init!.signal as AbortSignal,
+          snapshotWithScheduledJobs([
+            {
+              name: "prune",
+              last_started_at: "2026-01-02T02:00:00Z",
+              last_finished_at: null,
+              last_status: "ok",
+              last_detail: "previous pass",
+              interval_seconds: 900,
+              status: "interrupted",
+            },
+          ]),
+        ).response,
+      );
+
+      render(<Dashboard />);
+      const row = await jobRow("prune");
+
+      const pill = row.getByText("Interrupted");
+      expect(pill).toHaveClass("pill", "pill-interrupted");
+      expect(pill).toHaveAttribute(
+        "title",
+        "started before this instance; the run died with its process",
+      );
+    });
+
+    it("still renders a failed pill as before, now driven by the derived status", async () => {
+      stubFetch(undefined, undefined, async (_path, init) =>
+        ndjsonStream(
+          init!.signal as AbortSignal,
+          snapshotWithScheduledJobs([
+            {
+              name: "prune",
+              last_started_at: "2026-01-02T03:04:00Z",
+              last_finished_at: "2026-01-02T03:09:00Z",
+              last_status: "failed",
+              last_detail: "connection refused",
+              interval_seconds: 900,
+              status: "failed",
+            },
+          ]),
+        ).response,
+      );
+
+      render(<Dashboard />);
+      const row = await jobRow("prune");
+
+      const pill = row.getByText("failed");
+      expect(pill).toHaveClass("pill", "pill-failed");
+      expect(pill).toHaveAttribute("title", "connection refused");
+    });
+
+    it("shows never for a job with no recorded status at all", async () => {
+      stubFetch(undefined, undefined, async (_path, init) =>
+        ndjsonStream(
+          init!.signal as AbortSignal,
+          snapshotWithScheduledJobs([
+            {
+              name: "prune",
+              last_started_at: null,
+              last_finished_at: null,
+              last_status: null,
+              last_detail: null,
+              interval_seconds: 900,
+              status: null,
+            },
+          ]),
+        ).response,
+      );
+
+      render(<Dashboard />);
+      const row = await jobRow("prune");
+
+      expect(row.getByText("never")).toBeInTheDocument();
+    });
   });
 
   it("updates a count in place from a later snapshot, fetching nothing else", async () => {

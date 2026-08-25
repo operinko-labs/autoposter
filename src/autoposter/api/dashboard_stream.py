@@ -17,6 +17,7 @@ module follows deliberately.
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -102,6 +103,7 @@ class StatusBroadcaster:
         session_factory,
         config_holder,
         scheduler_intervals: dict,
+        started_at: datetime | None = None,
         interval_seconds: float = POLL_SECONDS,
         events_limit: int = EVENTS_LIMIT,
     ):
@@ -113,6 +115,13 @@ class StatusBroadcaster:
         # The live mapping create_app publishes, not a copy: the lifespan
         # fills it in place after this object is constructed (see app.py).
         self._scheduler_intervals = scheduler_intervals
+        # The process boot instant status_snapshot compares a running job's
+        # last_started_at against (see api/snapshots.py). Production always
+        # passes app.state.started_at; a caller that does not -- every
+        # broadcaster this module's own tests build directly -- gets
+        # construction time, which is a harmless stand-in since none of them
+        # exercise the derived status field.
+        self._started_at = started_at if started_at is not None else datetime.now(UTC)
         self._interval_seconds = interval_seconds
         self._events_limit = events_limit
         self._subscribers: set[asyncio.Queue] = set()
@@ -177,7 +186,8 @@ class StatusBroadcaster:
         async with self._session_factory() as session:
             return {
                 "status": await status_snapshot(
-                    session, self._config_holder.current, self._scheduler_intervals
+                    session, self._config_holder.current, self._scheduler_intervals,
+                    self._started_at,
                 ),
                 "events": await events_snapshot(session, self._events_limit),
             }

@@ -1,6 +1,7 @@
 """Scheduler bookkeeping and claiming."""
 import asyncio
 import inspect
+import logging
 from pathlib import Path
 
 from sqlalchemy import select, text
@@ -132,6 +133,26 @@ async def test_the_scheduler_runs_a_due_job_and_records_success(session_factory)
     assert row.last_status == "ok"
     assert row.last_detail == "did the thing"
     assert row.last_finished_at is not None
+
+
+async def test_a_claimed_job_logs_that_it_started(session_factory, caplog):
+    """A multi-minute job was otherwise silent from claim to finish -- a
+    healthy long run and a dead scheduler looked identical on the logs. One
+    INFO line at claim time, naming only the job, fixes that."""
+    async def body(session):
+        return "did the thing"
+
+    stop = asyncio.Event()
+    scheduler = Scheduler(session_factory, [_job(name="prune", run=body)], poll_seconds=0.01)
+    with caplog.at_level(logging.INFO):
+        task = asyncio.create_task(scheduler.run(stop))
+        await asyncio.sleep(0.1)
+        stop.set()
+        await task
+
+    started = [r for r in caplog.records if "started" in r.message]
+    assert len(started) == 1
+    assert started[0].message == "scheduler: prune started"
 
 
 async def test_a_failing_job_is_recorded_and_the_scheduler_survives(session_factory):

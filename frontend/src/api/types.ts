@@ -34,6 +34,12 @@ export interface ScheduledRun {
    * must not be computed. The server sends no next-run time: the client adds
    * this to `last_started_at` itself. */
   interval_seconds: number | null;
+  /** Derived read-time on the server (api/snapshots.py's `_run_status`), not
+   * stored: `"running"` or `"interrupted"` while a claimed run has no later
+   * finish, distinguished by comparing its start against the server's own
+   * boot instant; otherwise the recorded `last_status`, including null for a
+   * job that has never run. */
+  status: "running" | "interrupted" | string | null;
 }
 
 export interface Status {

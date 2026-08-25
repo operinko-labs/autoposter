@@ -9,7 +9,7 @@ import {
   type ScheduledRunRequestResponse,
   type Status,
 } from "../api/types";
-import { formatTime } from "../format";
+import { formatSince, formatTime } from "../format";
 import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
 import "./dashboard.css";
 
@@ -189,7 +189,7 @@ export function Dashboard() {
                   <tr>
                     <th>Job</th>
                     <th>Last run</th>
-                    <th>Result</th>
+                    <th>Status</th>
                     <th />
                   </tr>
                 </thead>
@@ -201,14 +201,28 @@ export function Dashboard() {
                           Run now beside it a sliver wide. */}
                       <td className="muted cell-time">{formatTime(job.last_finished_at)}</td>
                       <td>
-                        {job.last_status === null ? (
+                        {job.status === null ? (
                           <span className="muted">never</span>
+                        ) : job.status === "running" ? (
+                          <>
+                            <span className="pill pill-running">Running</span>{" "}
+                            {job.last_started_at !== null && (
+                              <span className="muted">{formatSince(job.last_started_at)}</span>
+                            )}
+                          </>
+                        ) : job.status === "interrupted" ? (
+                          <span
+                            className="pill pill-interrupted"
+                            title="started before this instance; the run died with its process"
+                          >
+                            Interrupted
+                          </span>
                         ) : (
                           <span
-                            className={`pill pill-${job.last_status}`}
+                            className={`pill pill-${job.status}`}
                             title={job.last_detail ?? ""}
                           >
-                            {job.last_status}
+                            {job.status}
                           </span>
                         )}
                       </td>

@@ -3,6 +3,7 @@ import functools
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import httpx
 import requests
@@ -330,6 +331,14 @@ def create_app(
     # object the holder now holds. The two are never allowed to diverge.
     app.state.config_holder = ConfigHolder(config)
     app.state.config = config
+    # The instant this application object was built, which is process-boot
+    # time for the real deployment (main.build calls create_app first thing)
+    # and construction time for every test app. /api/status compares a
+    # scheduled job's last_started_at against this to tell a run genuinely in
+    # progress from one whose owning process no longer exists -- see
+    # api/snapshots.py. Set unconditionally, like the other state above, so
+    # an app whose lifespan never runs still has one.
+    app.state.started_at = datetime.now(UTC)
     # The *file* the config was loaded from, which a loaded Config cannot tell
     # anyone: an override is a delta over that document, so both reverting one
     # (the config editor) and applying one (the lifespan's merge above) mean
@@ -401,7 +410,8 @@ def create_app(
     # mapping itself so the lifespan's later fill (in place, see above) is
     # visible to it.
     app.state.dashboard_broadcaster = StatusBroadcaster(
-        session_factory, app.state.config_holder, app.state.scheduler_intervals
+        session_factory, app.state.config_holder, app.state.scheduler_intervals,
+        started_at=app.state.started_at,
     )
     app.include_router(router)
     app.include_router(api_router)
