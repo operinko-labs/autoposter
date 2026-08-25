@@ -25,6 +25,7 @@ v2-media-show-by-uuid.json`` and ``v2-media-movie-by-uuid.json``.
 """
 import json
 import logging
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -301,6 +302,52 @@ async def test_a_malformed_base_url_is_refused_without_quoting_itself(base_url, 
     assert error.value.__suppress_context__ is True
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://xn--tracearr.internal",
+        "http://xn--tracearr-secret-cluster.internal",
+    ],
+    ids=["punycode-codepoint", "punycode-bidi"],
+)
+async def test_a_punycode_base_url_is_refused_by_the_total_guard(base_url):
+    """The *second* idna call site, and the one an enumerated catch tuple missed.
+
+    ``httpx``'s ``URL.host`` property (``_urls.py``) runs ``idna.decode(host)``
+    on any host starting ``xn--``, unguarded -- a separate path from the
+    ``idna.encode`` in ``_urlparse.py``, which httpx does wrap in
+    ``InvalidURL``. It is reached on the request-build path, so it lands inside
+    this client's ``try``, and it raises ``idna``'s own errors: they subclass
+    ``UnicodeError``, so they are neither ``httpx.HTTPError`` nor
+    ``httpx.InvalidURL`` nor ``json.JSONDecodeError``.
+
+    Their messages carry a *transform* of the operator's host rather than the
+    host verbatim -- ``Codepoint U+02E9 at position 1 of '<decoded label>'`` --
+    which is still derived from the base URL and still must not reach a log.
+    The point of the test is less these two classes than that the guard no
+    longer depends on having named them.
+    """
+    async with httpx.AsyncClient(transport=_routed({})) as http:
+        client = TracearrClient(http, base_url, API_KEY)
+        with pytest.raises(TracearrRefused) as error:
+            await client.history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+    message = str(error.value)
+    # The whole message is client-constructed: a fixed sentence around one bare
+    # class name. Asserting the *entire* shape rather than a list of forbidden
+    # substrings is what makes this a test of the invariant rather than a test
+    # of the two idna spellings that happen to be raised today -- no quoted
+    # host, no decoded label, no codepoint listing can satisfy it.
+    assert re.fullmatch(
+        r"the Tracearr watch history: Tracearr refused /history \(\w+\)", message
+    ), message
+    assert "xn--" not in message
+    assert "secret" not in message
+    assert API_KEY not in message
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
+
+
 async def test_no_repr_of_the_client_carries_the_key():
     async with httpx.AsyncClient(transport=_routed({})) as http:
         client = _client(http)
@@ -377,6 +424,32 @@ async def test_a_matched_route_answering_html_is_refused_not_decoded():
     assert "JSONDecodeError" in message
     assert "/history" in message
     assert "PROXYSECRET" not in message
+    assert BASE_URL not in message
+    assert API_KEY not in message
+
+
+async def test_a_body_that_is_not_decodable_text_is_refused():
+    """``response.json()`` decodes before it parses, so a body that is not text
+    at all raises ``UnicodeDecodeError`` -- a ``ValueError``, and *not* a
+    ``json.JSONDecodeError``, which is why an enumerated catch tuple listing the
+    latter still let this through.
+
+    Its message quotes the offending bytes' position and the codec's guess at
+    the encoding, so a response body an upstream can control was reaching the
+    log. Under the total guard the class name is all that survives.
+    """
+    routes = {f"{API_PREFIX}/history": lambda request: httpx.Response(
+        200, content=b"\xff\xfe\x00secret",
+        headers={"x-ratelimit-limit": "240"},
+    )}
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        with pytest.raises(TracearrRefused) as error:
+            await _client(http).history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+    message = str(error.value)
+    assert "UnicodeDecodeError" in message
+    assert "/history" in message
+    assert "secret" not in message
     assert BASE_URL not in message
     assert API_KEY not in message
 

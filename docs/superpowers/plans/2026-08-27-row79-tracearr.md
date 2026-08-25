@@ -241,6 +241,7 @@ v2-media-show-by-uuid.json`` and ``v2-media-movie-by-uuid.json``.
 """
 import json
 import logging
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -517,6 +518,52 @@ async def test_a_malformed_base_url_is_refused_without_quoting_itself(base_url, 
     assert error.value.__suppress_context__ is True
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://xn--tracearr.internal",
+        "http://xn--tracearr-secret-cluster.internal",
+    ],
+    ids=["punycode-codepoint", "punycode-bidi"],
+)
+async def test_a_punycode_base_url_is_refused_by_the_total_guard(base_url):
+    """The *second* idna call site, and the one an enumerated catch tuple missed.
+
+    ``httpx``'s ``URL.host`` property (``_urls.py``) runs ``idna.decode(host)``
+    on any host starting ``xn--``, unguarded -- a separate path from the
+    ``idna.encode`` in ``_urlparse.py``, which httpx does wrap in
+    ``InvalidURL``. It is reached on the request-build path, so it lands inside
+    this client's ``try``, and it raises ``idna``'s own errors: they subclass
+    ``UnicodeError``, so they are neither ``httpx.HTTPError`` nor
+    ``httpx.InvalidURL`` nor ``json.JSONDecodeError``.
+
+    Their messages carry a *transform* of the operator's host rather than the
+    host verbatim -- ``Codepoint U+02E9 at position 1 of '<decoded label>'`` --
+    which is still derived from the base URL and still must not reach a log.
+    The point of the test is less these two classes than that the guard no
+    longer depends on having named them.
+    """
+    async with httpx.AsyncClient(transport=_routed({})) as http:
+        client = TracearrClient(http, base_url, API_KEY)
+        with pytest.raises(TracearrRefused) as error:
+            await client.history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+    message = str(error.value)
+    # The whole message is client-constructed: a fixed sentence around one bare
+    # class name. Asserting the *entire* shape rather than a list of forbidden
+    # substrings is what makes this a test of the invariant rather than a test
+    # of the two idna spellings that happen to be raised today -- no quoted
+    # host, no decoded label, no codepoint listing can satisfy it.
+    assert re.fullmatch(
+        r"the Tracearr watch history: Tracearr refused /history \(\w+\)", message
+    ), message
+    assert "xn--" not in message
+    assert "secret" not in message
+    assert API_KEY not in message
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
+
+
 async def test_no_repr_of_the_client_carries_the_key():
     async with httpx.AsyncClient(transport=_routed({})) as http:
         client = _client(http)
@@ -593,6 +640,32 @@ async def test_a_matched_route_answering_html_is_refused_not_decoded():
     assert "JSONDecodeError" in message
     assert "/history" in message
     assert "PROXYSECRET" not in message
+    assert BASE_URL not in message
+    assert API_KEY not in message
+
+
+async def test_a_body_that_is_not_decodable_text_is_refused():
+    """``response.json()`` decodes before it parses, so a body that is not text
+    at all raises ``UnicodeDecodeError`` -- a ``ValueError``, and *not* a
+    ``json.JSONDecodeError``, which is why an enumerated catch tuple listing the
+    latter still let this through.
+
+    Its message quotes the offending bytes' position and the codec's guess at
+    the encoding, so a response body an upstream can control was reaching the
+    log. Under the total guard the class name is all that survives.
+    """
+    routes = {f"{API_PREFIX}/history": lambda request: httpx.Response(
+        200, content=b"\xff\xfe\x00secret",
+        headers={"x-ratelimit-limit": "240"},
+    )}
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        with pytest.raises(TracearrRefused) as error:
+            await _client(http).history(since="2026-07-26T00:00:00Z", media_type="movie")
+
+    message = str(error.value)
+    assert "UnicodeDecodeError" in message
+    assert "/history" in message
+    assert "secret" not in message
     assert BASE_URL not in message
     assert API_KEY not in message
 
@@ -753,14 +826,16 @@ uuid>}``, so it is handed straight back, never inspected and never logged.
 **The base URL never leaves this module.** It is a cluster-internal hostname an
 operator put in their YAML. ``httpx.HTTPStatusError`` puts the full URL in its
 own message, and the engine logs a failed build with ``logger.exception`` --
-traceback included (``collections/engine.py``). So every httpx error becomes a
-``TracearrRefused`` naming the path and the original exception's CLASS, raised
-``from None`` so the chained message cannot reach the log either. That has to
-include ``httpx.InvalidURL``, which is a *sibling* of ``HTTPError`` rather than
-a descendant and is the one raised when the operator's ``base_url`` is itself
-malformed -- the case whose message quotes the offending port, or the whole
-hostname. The API key lives in a header and enters no message, no cache key and
-no ``repr``.
+traceback included (``collections/engine.py``). So every exception raised while
+fetching becomes a ``TracearrRefused`` naming the path and the original
+exception's CLASS, raised ``from None`` so the chained message cannot reach the
+log either. That catch is
+deliberately *total* rather than a list of classes: the libraries under here
+interpolate what they were handed into their own messages -- the full URL, an
+offending port, the hostname, a punycode-decoded transform of it -- and which
+class carries which is a moving target across dependency versions. ``_get``
+records why at length. The API key lives in a header and enters no message, no
+cache key and no ``repr``.
 
 **404 raises -- as its own class.** ``fetch_json`` turns a 404 into ``None``,
 which is the right answer for artwork and the wrong one here, for the reason
@@ -789,7 +864,6 @@ even by requests that fail authentication. One collection costs one page per
 ranked title -- which is why the builder's ``limit`` is applied *before* those
 calls rather than after.
 """
-import json
 import logging
 import re
 
@@ -917,29 +991,47 @@ class TracearrClient:
                 cache=None,
                 ttl_seconds=0,
             )
-        except (httpx.HTTPError, httpx.InvalidURL, json.JSONDecodeError) as error:
-            # ``from None`` on purpose: ``HTTPStatusError``'s own message
-            # carries the full URL, and the engine logs a failed build with its
-            # traceback. The class name is all that crosses.
+        except TracearrRefused:
+            # The guard's own refusal, already hygienic. It is raised inside
+            # ``request()``, which runs inside this ``try``, so it needs an
+            # explicit pass-through or the clause below would re-wrap it and
+            # lose the message that names the missing rate-limit header.
+            raise
+        except Exception as error:
+            # Deliberately total, and the breadth is the point rather than a
+            # shortcut.
             #
-            # ``InvalidURL`` is listed separately because it is a *sibling* of
-            # ``HTTPError``, not a descendant -- so ``httpx.HTTPError`` alone
-            # let the one input this module exists to defend against escape
-            # raw. It is raised at request-build time from ``URL(url)`` when
-            # the operator's ``base_url`` is malformed, and its messages
-            # interpolate the offending component: ``Invalid port: 'notaport'``
-            # or ``Invalid IDNA hostname: '<the whole cluster-internal host>'``.
-            # Verified against the installed httpx 0.28.1 that this one class is
-            # the whole URL-construction surface: ``_urlparse.py`` catches
-            # ``idna.IDNAError`` itself and re-raises ``InvalidURL``, so no idna
-            # exception (they are all ``UnicodeError`` subclasses) ever crosses.
+            # The invariant is that NO third-party exception text may cross
+            # this boundary: ``base_url`` is a cluster-internal hostname, the
+            # engine logs a failed build with ``logger.exception``, and the
+            # libraries under here interpolate whatever they were handed into
+            # their own messages -- the full URL, the offending port, the
+            # hostname, a punycode-decoded transform of it, a fragment of an
+            # undecodable response body.
             #
-            # ``JSONDecodeError`` because ``fetch_json`` decodes inside this
-            # ``try``: a route that matched (rate-limit headers present, 2xx)
-            # but answered HTML -- an upstream proxy's error page -- is a
-            # refusal, not a crash, and the caller's ``except TracearrRefused``
-            # must see it. Its message carries no URL, but the class alone is
-            # the diagnostic worth keeping.
+            # That surface cannot be enumerated. Two rounds of listing the
+            # classes that can escape were each defeated by the first probe
+            # outside the tested inputs: ``httpx.InvalidURL`` is a *sibling* of
+            # ``HTTPError`` rather than a descendant, and then ``idna``'s errors
+            # (``UnicodeError`` subclasses, so in neither) escape the *second*,
+            # unguarded ``idna`` call site -- ``_urls.py``'s ``URL.host``
+            # property, which ``idna.decode``s any ``xn--`` host on the
+            # request-build path -- while ``response.json()`` raises
+            # ``UnicodeDecodeError`` rather than ``JSONDecodeError`` on a body
+            # that is not decodable text. ``pyproject.toml`` pins ``httpx>=0.27``
+            # with no upper bound, so any such list is validated against one
+            # patch version of a dependency free to move those call sites again.
+            #
+            # So the guard is closed by construction instead: nothing leaves
+            # ``_get`` except ``TracearrRefused`` and its subclass, whatever
+            # httpx, idna or the stdlib decide to raise next. The class name is
+            # the diagnostic that survives, and ``from None`` suppresses the
+            # chain -- without it ``logger.exception`` prints "During handling
+            # of the above exception" followed by the original message, which is
+            # the leak this whole arrangement exists to prevent. Losing the
+            # traceback is the accepted price; it is not recovered by logging
+            # ``exc_info`` here, because that would put the URL in a log line
+            # just as surely.
             detail = type(error).__name__
             if isinstance(error, httpx.HTTPStatusError):
                 # An integer, carrying neither URL nor credential. Without it a
@@ -1156,8 +1248,9 @@ Run:
 ```
 docker compose -p row79t1 -f docker-compose.yml -f .superpowers/isolated-db.yml run --rm test pytest tests/test_tracearr_client.py -x -q
 ```
-Expected: PASS, 26 passed — 23 test functions, of which the half-configured case
-is parametrized three ways and the malformed-`base_url` case two ways (21 + 3 + 2).
+Expected: PASS, 29 passed — 25 test functions, of which the half-configured case
+is parametrized three ways and the malformed-`base_url` and punycode-`base_url`
+cases two ways each (22 + 3 + 2 + 2).
 
 - [ ] **Step 8: Run the tests the new config section could have broken**
 

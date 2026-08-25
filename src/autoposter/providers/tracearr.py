@@ -28,14 +28,15 @@ uuid>}``, so it is handed straight back, never inspected and never logged.
 **The base URL never leaves this module.** It is a cluster-internal hostname an
 operator put in their YAML. ``httpx.HTTPStatusError`` puts the full URL in its
 own message, and the engine logs a failed build with ``logger.exception`` --
-traceback included (``collections/engine.py``). So every httpx error becomes a
-``TracearrRefused`` naming the path and the original exception's CLASS, raised
-``from None`` so the chained message cannot reach the log either. That has to
-include ``httpx.InvalidURL``, which is a *sibling* of ``HTTPError`` rather than
-a descendant and is the one raised when the operator's ``base_url`` is itself
-malformed -- the case whose message quotes the offending port, or the whole
-hostname. The API key lives in a header and enters no message, no cache key and
-no ``repr``.
+traceback included (``collections/engine.py``). So every exception raised while
+fetching becomes a ``TracearrRefused`` naming the path and the original
+exception's CLASS, raised ``from None`` so the chained message cannot reach the
+log either. That catch is deliberately *total* rather than a list of classes:
+the libraries under here interpolate what they were handed into their own
+messages -- the full URL, an offending port, the hostname, a punycode-decoded
+transform of it -- and which class carries which is a moving target across
+dependency versions. ``_get`` records why at length. The API key lives in a
+header and enters no message, no cache key and no ``repr``.
 
 **404 raises -- as its own class.** ``fetch_json`` turns a 404 into ``None``,
 which is the right answer for artwork and the wrong one here, for the reason
@@ -64,7 +65,6 @@ even by requests that fail authentication. One collection costs one page per
 ranked title -- which is why the builder's ``limit`` is applied *before* those
 calls rather than after.
 """
-import json
 import logging
 import re
 
@@ -192,29 +192,47 @@ class TracearrClient:
                 cache=None,
                 ttl_seconds=0,
             )
-        except (httpx.HTTPError, httpx.InvalidURL, json.JSONDecodeError) as error:
-            # ``from None`` on purpose: ``HTTPStatusError``'s own message
-            # carries the full URL, and the engine logs a failed build with its
-            # traceback. The class name is all that crosses.
+        except TracearrRefused:
+            # The guard's own refusal, already hygienic. It is raised inside
+            # ``request()``, which runs inside this ``try``, so it needs an
+            # explicit pass-through or the clause below would re-wrap it and
+            # lose the message that names the missing rate-limit header.
+            raise
+        except Exception as error:
+            # Deliberately total, and the breadth is the point rather than a
+            # shortcut.
             #
-            # ``InvalidURL`` is listed separately because it is a *sibling* of
-            # ``HTTPError``, not a descendant -- so ``httpx.HTTPError`` alone
-            # let the one input this module exists to defend against escape
-            # raw. It is raised at request-build time from ``URL(url)`` when
-            # the operator's ``base_url`` is malformed, and its messages
-            # interpolate the offending component: ``Invalid port: 'notaport'``
-            # or ``Invalid IDNA hostname: '<the whole cluster-internal host>'``.
-            # Verified against the installed httpx 0.28.1 that this one class is
-            # the whole URL-construction surface: ``_urlparse.py`` catches
-            # ``idna.IDNAError`` itself and re-raises ``InvalidURL``, so no idna
-            # exception (they are all ``UnicodeError`` subclasses) ever crosses.
+            # The invariant is that NO third-party exception text may cross
+            # this boundary: ``base_url`` is a cluster-internal hostname, the
+            # engine logs a failed build with ``logger.exception``, and the
+            # libraries under here interpolate whatever they were handed into
+            # their own messages -- the full URL, the offending port, the
+            # hostname, a punycode-decoded transform of it, a fragment of an
+            # undecodable response body.
             #
-            # ``JSONDecodeError`` because ``fetch_json`` decodes inside this
-            # ``try``: a route that matched (rate-limit headers present, 2xx)
-            # but answered HTML -- an upstream proxy's error page -- is a
-            # refusal, not a crash, and the caller's ``except TracearrRefused``
-            # must see it. Its message carries no URL, but the class alone is
-            # the diagnostic worth keeping.
+            # That surface cannot be enumerated. Two rounds of listing the
+            # classes that can escape were each defeated by the first probe
+            # outside the tested inputs: ``httpx.InvalidURL`` is a *sibling* of
+            # ``HTTPError`` rather than a descendant, and then ``idna``'s errors
+            # (``UnicodeError`` subclasses, so in neither) escape the *second*,
+            # unguarded ``idna`` call site -- ``_urls.py``'s ``URL.host``
+            # property, which ``idna.decode``s any ``xn--`` host on the
+            # request-build path -- while ``response.json()`` raises
+            # ``UnicodeDecodeError`` rather than ``JSONDecodeError`` on a body
+            # that is not decodable text. ``pyproject.toml`` pins ``httpx>=0.27``
+            # with no upper bound, so any such list is validated against one
+            # patch version of a dependency free to move those call sites again.
+            #
+            # So the guard is closed by construction instead: nothing leaves
+            # ``_get`` except ``TracearrRefused`` and its subclass, whatever
+            # httpx, idna or the stdlib decide to raise next. The class name is
+            # the diagnostic that survives, and ``from None`` suppresses the
+            # chain -- without it ``logger.exception`` prints "During handling
+            # of the above exception" followed by the original message, which is
+            # the leak this whole arrangement exists to prevent. Losing the
+            # traceback is the accepted price; it is not recovered by logging
+            # ``exc_info`` here, because that would put the URL in a log line
+            # just as surely.
             detail = type(error).__name__
             if isinstance(error, httpx.HTTPStatusError):
                 # An integer, carrying neither URL nor credential. Without it a
