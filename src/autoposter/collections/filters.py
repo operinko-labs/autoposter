@@ -220,7 +220,7 @@ PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
 _NEGATES = {"not": None, "isnot": "is"}
 
 # The value types whose missing-value rule ignores the operator: SETTLED-BY-
-# REVIEW against Kometa's number/date filter, which excludes a ``None`` value
+# ORACLE against Kometa's number/date filter, which excludes a ``None`` value
 # unconditionally. ``tag``/``str`` are deliberately absent -- their rule still
 # depends on the operator (positive excludes, negative includes). See the
 # module docstring.
@@ -413,7 +413,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "The listing attrib `studio` (video.py:405). The ONE tier-1 string "
         "attribute, and the distinction matters: a bare `studio: Warner` is a "
         "case-insensitive SUBSTRING match, where a bare `genre: Horror` is an "
-        "exact tag match. SETTLED-IN-FAVOR (fix-round review) -- this "
+        "exact tag match. SETTLED-BY-ORACLE (Kometa builder.py:377-447 puts "
+        "`studio` in string_filters; both oracle configs exercise it) -- this "
         "transcription files `studio` under Kometa's string filters (which "
         "carry .is/.isnot/.begins/.ends) rather than its tag filters, and that "
         "is the single most consequential tag-vs-string call in the table: had "
@@ -792,8 +793,8 @@ def _parse_block(raw: object, op: str, field: str) -> FilterGroup:
 def _parse_nested(raw: object, op: str, field: str) -> FilterGroup:
     """An ``any:``/``all:`` value, in either accepted shape.
 
-    A **mapping** makes each of its keys one alternative -- ``any: {genre:
-    Horror, label: keep}`` is "horror or labelled keep". A **list** makes each
+    A **mapping** makes each of its keys one alternative -- ``any: {studio:
+    A24, year.gte: 2020}`` is "from A24 or from this decade". A **list** makes each
     element a block whose own keys are ANDed, which is what an alternative
     needs when it is more than one attribute wide.
     """
