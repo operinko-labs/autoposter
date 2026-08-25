@@ -1,0 +1,393 @@
+{
+  "name": "v1-activity-week",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/public/activity",
+    "query": {
+      "period": "week"
+    },
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 200,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "1000",
+    "x-ratelimit-remaining": "998",
+    "x-ratelimit-reset": "60",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "3895",
+    "date": "Tue, 25 Aug 2026 06:38:41 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "period": "week",
+    "range": {
+      "start": "2026-08-18T06:38:40.703Z",
+      "end": "2026-08-25T06:38:40.703Z"
+    },
+    "plays": [
+      {
+        "date": "2026-08-18 12:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 6
+      },
+      {
+        "date": "2026-08-19 06:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 1
+      },
+      {
+        "date": "2026-08-19 18:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 1
+      },
+      {
+        "date": "2026-08-20 06:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 2
+      },
+      {
+        "date": "2026-08-20 18:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 2
+      },
+      {
+        "date": "2026-08-21 12:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 1
+      },
+      {
+        "date": "2026-08-21 18:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 2
+      },
+      {
+        "date": "2026-08-22 00:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 1
+      },
+      {
+        "date": "2026-08-22 12:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 2
+      },
+      {
+        "date": "2026-08-23 06:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 2
+      },
+      {
+        "date": "2026-08-23 12:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 2
+      },
+      {
+        "date": "2026-08-23 18:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 2
+      },
+      {
+        "date": "2026-08-24 18:00:00",
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "count": 2
+      }
+    ],
+    "concurrent": [
+      {
+        "date": "2026-08-18 12:00:00+00",
+        "total": 2,
+        "direct": 1,
+        "directStream": 0,
+        "transcode": 1
+      },
+      {
+        "date": "2026-08-18 18:00:00+00",
+        "total": 0,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 0
+      },
+      {
+        "date": "2026-08-19 06:00:00+00",
+        "total": 1,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 1
+      },
+      {
+        "date": "2026-08-19 12:00:00+00",
+        "total": 0,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 0
+      },
+      {
+        "date": "2026-08-19 18:00:00+00",
+        "total": 1,
+        "direct": 1,
+        "directStream": 0,
+        "transcode": 0
+      },
+      {
+        "date": "2026-08-20 06:00:00+00",
+        "total": 1,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 1
+      },
+      {
+        "date": "2026-08-20 12:00:00+00",
+        "total": 0,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 0
+      },
+      {
+        "date": "2026-08-20 18:00:00+00",
+        "total": 2,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 2
+      },
+      {
+        "date": "2026-08-21 12:00:00+00",
+        "total": 1,
+        "direct": 1,
+        "directStream": 0,
+        "transcode": 0
+      },
+      {
+        "date": "2026-08-21 18:00:00+00",
+        "total": 1,
+        "direct": 1,
+        "directStream": 0,
+        "transcode": 0
+      },
+      {
+        "date": "2026-08-22 00:00:00+00",
+        "total": 1,
+        "direct": 1,
+        "directStream": 0,
+        "transcode": 0
+      },
+      {
+        "date": "2026-08-22 06:00:00+00",
+        "total": 0,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 0
+      },
+      {
+        "date": "2026-08-22 12:00:00+00",
+        "total": 1,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 1
+      },
+      {
+        "date": "2026-08-22 18:00:00+00",
+        "total": 0,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 0
+      },
+      {
+        "date": "2026-08-23 06:00:00+00",
+        "total": 2,
+        "direct": 0,
+        "directStream": 2,
+        "transcode": 0
+      },
+      {
+        "date": "2026-08-23 12:00:00+00",
+        "total": 1,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 1
+      },
+      {
+        "date": "2026-08-23 18:00:00+00",
+        "total": 1,
+        "direct": 0,
+        "directStream": 0,
+        "transcode": 1
+      },
+      {
+        "date": "2026-08-24 18:00:00+00",
+        "total": 1,
+        "direct": 1,
+        "directStream": 0,
+        "transcode": 0
+      }
+    ],
+    "byDayOfWeek": [
+      {
+        "day": 0,
+        "name": "Sun",
+        "count": 6
+      },
+      {
+        "day": 1,
+        "name": "Mon",
+        "count": 2
+      },
+      {
+        "day": 2,
+        "name": "Tue",
+        "count": 6
+      },
+      {
+        "day": 3,
+        "name": "Wed",
+        "count": 2
+      },
+      {
+        "day": 4,
+        "name": "Thu",
+        "count": 4
+      },
+      {
+        "day": 5,
+        "name": "Fri",
+        "count": 3
+      },
+      {
+        "day": 6,
+        "name": "Sat",
+        "count": 3
+      }
+    ],
+    "byHourOfDay": [
+      {
+        "hour": 0,
+        "count": 0
+      },
+      {
+        "hour": 1,
+        "count": 0
+      },
+      {
+        "hour": 2,
+        "count": 0
+      },
+      {
+        "hour": 3,
+        "count": 0
+      },
+      {
+        "hour": 4,
+        "count": 0
+      },
+      {
+        "hour": 5,
+        "count": 1
+      },
+      {
+        "hour": 6,
+        "count": 0
+      },
+      {
+        "hour": 7,
+        "count": 0
+      },
+      {
+        "hour": 8,
+        "count": 2
+      },
+      {
+        "hour": 9,
+        "count": 2
+      },
+      {
+        "hour": 10,
+        "count": 1
+      },
+      {
+        "hour": 11,
+        "count": 1
+      },
+      {
+        "hour": 12,
+        "count": 1
+      },
+      {
+        "hour": 13,
+        "count": 0
+      },
+      {
+        "hour": 14,
+        "count": 1
+      },
+      {
+        "hour": 15,
+        "count": 3
+      },
+      {
+        "hour": 16,
+        "count": 2
+      },
+      {
+        "hour": 17,
+        "count": 5
+      },
+      {
+        "hour": 18,
+        "count": 5
+      },
+      {
+        "hour": 19,
+        "count": 1
+      },
+      {
+        "hour": 20,
+        "count": 2
+      },
+      {
+        "hour": 21,
+        "count": 1
+      },
+      {
+        "hour": 22,
+        "count": 0
+      },
+      {
+        "hour": 23,
+        "count": 0
+      }
+    ],
+    "platforms": [
+      {
+        "platform": "Web",
+        "count": 17
+      },
+      {
+        "platform": "device_4",
+        "count": 6
+      },
+      {
+        "platform": "device_3",
+        "count": 3
+      }
+    ],
+    "quality": {
+      "directPlay": 10,
+      "directStream": 2,
+      "transcode": 15,
+      "total": 27,
+      "directPlayPercent": 37,
+      "directStreamPercent": 7,
+      "transcodePercent": 56
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "v2-streams",
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/public/streams",
+    "query": {},
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 200,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "232",
+    "x-ratelimit-reset": "59",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "121",
+    "date": "Tue, 25 Aug 2026 06:38:38 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "data": [],
+    "summary": {
+      "total": 0,
+      "transcodes": 0,
+      "direct_streams": 0,
+      "direct_plays": 0,
+      "total_bitrate": "—",
+      "by_server": []
+    }
+  }
+}

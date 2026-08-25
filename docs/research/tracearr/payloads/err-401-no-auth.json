@@ -1,0 +1,38 @@
+{
+  "name": "err-401-no-auth",
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/public/history",
+    "query": {
+      "pageSize": 1
+    },
+    "authorization": null
+  },
+  "status": 401,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "239",
+    "x-ratelimit-reset": "60",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "98",
+    "date": "Tue, 25 Aug 2026 06:38:41 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "statusCode": 401,
+    "error": "UnauthorizedError",
+    "message": "Missing or invalid Authorization header"
+  }
+}

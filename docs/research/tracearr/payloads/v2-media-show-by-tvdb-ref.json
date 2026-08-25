@@ -1,0 +1,36 @@
+{
+  "name": "v2-media-show-by-tvdb-ref",
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/public/media/show:tvdb:11751886",
+    "query": {},
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 404,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "226",
+    "x-ratelimit-reset": "58",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "64",
+    "date": "Tue, 25 Aug 2026 06:38:39 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "statusCode": 404,
+    "error": "NotFoundError",
+    "message": "Not Found"
+  }
+}

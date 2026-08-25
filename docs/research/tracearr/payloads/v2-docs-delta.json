@@ -1,0 +1,88 @@
+{
+  "name": "v2-docs",
+  "note": "Reduced artefact. The live /docs response is the static spec banked as openapi-v2.json with the serverId enums and descriptions injected per request; only those injected parts plus a structural fingerprint are recorded here. VERIFIED 2026-08-25 by a full recursive diff of the live body against openapi-v2.json inside the container: exactly 8 differences, all four serverId parameters gaining an enum plus a rewritten description, and nothing else. Contrary to the earlier reading of the handler source, the live response carries NO servers[] key at all - it is absent from both documents. The sha256 below is over the live document with servers[] popped and the serverId enums/descriptions stripped; the same computation over openapi-v2.json in the same interpreter yields the same digest. Compute it with UTF-8 decoding - the file has 15 non-ASCII bytes and a locale-default open() on Windows produces a different digest.",
+  "status": 200,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "231",
+    "x-ratelimit-reset": "59",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "58469",
+    "date": "Tue, 25 Aug 2026 06:38:39 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "servers": null,
+  "path_count": 14,
+  "schema_count": 35,
+  "serverId_parameters": {
+    "GET /api/v2/public/history": {
+      "schema": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Filter to specific server",
+        "enum": [
+          "11111111-1111-4111-8111-000000000001"
+        ]
+      },
+      "required": false,
+      "description": "Filter to specific server. Available servers:\n• **server_1**: `11111111-1111-4111-8111-000000000001`",
+      "name": "server_id",
+      "in": "query"
+    },
+    "GET /api/v2/public/streams": {
+      "schema": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Filter to specific server",
+        "enum": [
+          "11111111-1111-4111-8111-000000000001"
+        ]
+      },
+      "required": false,
+      "description": "Filter to specific server. Available servers:\n• **server_1**: `11111111-1111-4111-8111-000000000001`",
+      "name": "server_id",
+      "in": "query"
+    },
+    "GET /api/v2/public/media/{ref}/watchers": {
+      "schema": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Filter to a single server",
+        "enum": [
+          "11111111-1111-4111-8111-000000000001"
+        ]
+      },
+      "required": false,
+      "description": "Filter to specific server. Available servers:\n• **server_1**: `11111111-1111-4111-8111-000000000001`",
+      "name": "server_id",
+      "in": "query"
+    },
+    "GET /api/v2/public/recently-added": {
+      "schema": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Filter to specific server",
+        "enum": [
+          "11111111-1111-4111-8111-000000000001"
+        ]
+      },
+      "required": false,
+      "description": "Filter to specific server. Available servers:\n• **server_1**: `11111111-1111-4111-8111-000000000001`",
+      "name": "server_id",
+      "in": "query"
+    }
+  },
+  "canonical_sha256_servers_and_enums_stripped": "e111e37faf27c17052313e60435c197efedf22efcd9d598d78b9a2361110baea"
+}

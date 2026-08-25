@@ -1,0 +1,89 @@
+{
+  "name": "v2-libraries",
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/public/libraries",
+    "query": {},
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 200,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "235",
+    "x-ratelimit-reset": "59",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "842",
+    "date": "Tue, 25 Aug 2026 06:38:38 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "data": [
+      {
+        "server_id": "11111111-1111-4111-8111-000000000001",
+        "server_type": "plex",
+        "library_id": "1",
+        "item_count": 1955,
+        "movie_count": 1955,
+        "episode_count": 0,
+        "show_count": 0,
+        "track_count": 0,
+        "total_file_size": 14883443501272,
+        "resolutions": {
+          "1080p": 1881,
+          "480p": 7,
+          "1440p": 1,
+          "4k": 36,
+          "720p": 17,
+          "sd": 8,
+          "576p": 5
+        }
+      },
+      {
+        "server_id": "11111111-1111-4111-8111-000000000001",
+        "server_type": "plex",
+        "library_id": "2",
+        "item_count": 12971,
+        "movie_count": 0,
+        "episode_count": 12687,
+        "show_count": 284,
+        "track_count": 0,
+        "total_file_size": 16326378758173,
+        "resolutions": {
+          "sd": 225,
+          "720p": 472,
+          "1080p": 11794,
+          "4k": 1,
+          "576p": 73,
+          "480p": 121,
+          "unknown": 285
+        }
+      },
+      {
+        "server_id": "11111111-1111-4111-8111-000000000001",
+        "server_type": "plex",
+        "library_id": "5",
+        "item_count": 143,
+        "movie_count": 143,
+        "episode_count": 0,
+        "show_count": 0,
+        "track_count": 0,
+        "total_file_size": 240504682661,
+        "resolutions": {
+          "1080p": 143
+        }
+      }
+    ]
+  }
+}

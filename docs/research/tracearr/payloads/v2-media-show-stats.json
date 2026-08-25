@@ -1,0 +1,85 @@
+{
+  "name": "v2-media-show-stats",
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/public/media/faf036e2-8459-4ace-a8ba-19486b6289c6/stats",
+    "query": {},
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 200,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "223",
+    "x-ratelimit-reset": "58",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "755",
+    "date": "Tue, 25 Aug 2026 06:38:39 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "media_id": "faf036e2-8459-4ace-a8ba-19486b6289c6",
+    "media_type": "show",
+    "windows": {
+      "all_time": {
+        "combined": {
+          "plays": 19,
+          "watch_time_ms": 49151307,
+          "unique_users": 2
+        },
+        "per_server": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_name": "server_1",
+            "plays": 19,
+            "watch_time_ms": 49151307,
+            "unique_users": 2
+          }
+        ]
+      },
+      "last_30": {
+        "combined": {
+          "plays": 5,
+          "watch_time_ms": 11192307,
+          "unique_users": 1
+        },
+        "per_server": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_name": "server_1",
+            "plays": 5,
+            "watch_time_ms": 11192307,
+            "unique_users": 1
+          }
+        ]
+      },
+      "last_7": {
+        "combined": {
+          "plays": 1,
+          "watch_time_ms": 1624307,
+          "unique_users": 1
+        },
+        "per_server": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_name": "server_1",
+            "plays": 1,
+            "watch_time_ms": 1624307,
+            "unique_users": 1
+          }
+        ]
+      }
+    }
+  }
+}

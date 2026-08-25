@@ -1,0 +1,118 @@
+{
+  "name": "v1-users",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/public/users",
+    "query": {
+      "page": 1,
+      "pageSize": 5
+    },
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 200,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "1000",
+    "x-ratelimit-remaining": "996",
+    "x-ratelimit-reset": "60",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "2282",
+    "date": "Tue, 25 Aug 2026 06:38:41 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "data": [
+      {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "username": "user_4",
+        "displayName": "user_4",
+        "thumbUrl": "https://avatar.example.invalid/4.jpg",
+        "avatarUrl": "https://avatar.example.invalid/4.jpg",
+        "role": "member",
+        "trustScore": 100,
+        "totalViolations": 0,
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "serverName": "server_1",
+        "lastActivityAt": null,
+        "sessionCount": 754,
+        "createdAt": "2023-09-09T18:11:09.000Z"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000005",
+        "username": "user_5",
+        "displayName": "user_5",
+        "thumbUrl": "https://avatar.example.invalid/5.jpg",
+        "avatarUrl": "https://avatar.example.invalid/5.jpg",
+        "role": "member",
+        "trustScore": 100,
+        "totalViolations": 0,
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "serverName": "server_1",
+        "lastActivityAt": null,
+        "sessionCount": 238,
+        "createdAt": "2024-11-27T21:18:05.000Z"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000006",
+        "username": "user_6",
+        "displayName": "user_6",
+        "thumbUrl": "https://avatar.example.invalid/6.jpg",
+        "avatarUrl": "https://avatar.example.invalid/6.jpg",
+        "role": "member",
+        "trustScore": 100,
+        "totalViolations": 0,
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "serverName": "server_1",
+        "lastActivityAt": null,
+        "sessionCount": 115,
+        "createdAt": "2021-02-21T15:24:47.000Z"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000007",
+        "username": "user_7",
+        "displayName": "user_7",
+        "thumbUrl": "https://avatar.example.invalid/7.jpg",
+        "avatarUrl": "https://avatar.example.invalid/7.jpg",
+        "role": "member",
+        "trustScore": 100,
+        "totalViolations": 0,
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "serverName": "server_1",
+        "lastActivityAt": null,
+        "sessionCount": 303,
+        "createdAt": "2020-10-06T15:15:00.000Z"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000008",
+        "username": "user_8",
+        "displayName": "user_8",
+        "thumbUrl": "https://avatar.example.invalid/8.jpg",
+        "avatarUrl": "https://avatar.example.invalid/8.jpg",
+        "role": "member",
+        "trustScore": 100,
+        "totalViolations": 0,
+        "serverId": "11111111-1111-4111-8111-000000000001",
+        "serverName": "server_1",
+        "lastActivityAt": null,
+        "sessionCount": 25,
+        "createdAt": "2024-05-18T12:33:45.000Z"
+      }
+    ],
+    "meta": {
+      "total": 17,
+      "page": 1,
+      "pageSize": 5
+    }
+  }
+}

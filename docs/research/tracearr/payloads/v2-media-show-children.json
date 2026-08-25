@@ -1,0 +1,74 @@
+{
+  "name": "v2-media-show-children",
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/public/media/faf036e2-8459-4ace-a8ba-19486b6289c6/children",
+    "query": {},
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 200,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "224",
+    "x-ratelimit-reset": "58",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "789",
+    "date": "Tue, 25 Aug 2026 06:38:39 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "data": [
+      {
+        "id": "8e17699d-b787-499f-b8bc-261ca527f3d5",
+        "media_type": "season",
+        "title": "Season 1",
+        "season_number": 1,
+        "episode_count": 10,
+        "episode_number": null,
+        "imdb_id": null,
+        "tmdb_id": null,
+        "tvdb_id": null,
+        "show_media_id": "faf036e2-8459-4ace-a8ba-19486b6289c6",
+        "genres": null
+      },
+      {
+        "id": "2e4ae910-b530-4085-82e3-7e9b25f19cdb",
+        "media_type": "season",
+        "title": "Season 2",
+        "season_number": 2,
+        "episode_count": 10,
+        "episode_number": null,
+        "imdb_id": null,
+        "tmdb_id": null,
+        "tvdb_id": null,
+        "show_media_id": "faf036e2-8459-4ace-a8ba-19486b6289c6",
+        "genres": null
+      },
+      {
+        "id": "efb78946-3cea-4d6c-86cd-3b52f27ff697",
+        "media_type": "season",
+        "title": "Season 3",
+        "season_number": 3,
+        "episode_count": 8,
+        "episode_number": null,
+        "imdb_id": null,
+        "tmdb_id": null,
+        "tvdb_id": null,
+        "show_media_id": "faf036e2-8459-4ace-a8ba-19486b6289c6",
+        "genres": null
+      }
+    ]
+  }
+}

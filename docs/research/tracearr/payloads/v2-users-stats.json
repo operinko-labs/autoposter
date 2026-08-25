@@ -1,0 +1,78 @@
+{
+  "name": "v2-users-stats",
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/public/users/00000000-0000-4000-8000-000000000004/stats",
+    "query": {},
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 200,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "220",
+    "x-ratelimit-reset": "58",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "433",
+    "date": "Tue, 25 Aug 2026 06:38:40 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "user_id": "00000000-0000-4000-8000-000000000004",
+    "windows": {
+      "all_time": {
+        "plays": 88,
+        "watch_time_ms": 281013000
+      },
+      "last_30": {
+        "plays": 3,
+        "watch_time_ms": 15635000
+      },
+      "last_7": {
+        "plays": 0,
+        "watch_time_ms": 0
+      }
+    },
+    "top_genres": [
+      {
+        "genre": "Adventure",
+        "plays": 14
+      },
+      {
+        "genre": "Action",
+        "plays": 13
+      },
+      {
+        "genre": "Comedy",
+        "plays": 4
+      },
+      {
+        "genre": "Fantasy",
+        "plays": 2
+      },
+      {
+        "genre": "Science Fiction",
+        "plays": 2
+      },
+      {
+        "genre": "Animation",
+        "plays": 1
+      },
+      {
+        "genre": "Drama",
+        "plays": 1
+      }
+    ]
+  }
+}

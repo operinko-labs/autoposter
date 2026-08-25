@@ -1,0 +1,53 @@
+{
+  "name": "v2-media-movie-watchers",
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/public/media/movie:tmdb:36648/watchers",
+    "query": {
+      "window": "all_time"
+    },
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 200,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "228",
+    "x-ratelimit-reset": "59",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "390",
+    "date": "Tue, 25 Aug 2026 06:38:39 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "media_id": "79e224e2-5dd6-447f-9ebc-c9e798300128",
+    "media_type": "movie",
+    "window": "all_time",
+    "watchers": [
+      {
+        "user": {
+          "server_user_id": "00000000-0000-4000-8000-000000000009",
+          "user_id": "00000000-0000-4000-8000-000000000003",
+          "username": "user_3",
+          "identity_name": "user_3"
+        },
+        "plays": 2,
+        "watch_time_ms": 11916412,
+        "completion_pct": 93.7,
+        "last_watched_day": "2026-08-23",
+        "distinct_episodes_watched": null
+      }
+    ]
+  }
+}

@@ -1,0 +1,201 @@
+{
+  "name": "v2-users",
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/public/users",
+    "query": {
+      "pageSize": 10
+    },
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 200,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "234",
+    "x-ratelimit-reset": "59",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "3447",
+    "date": "Tue, 25 Aug 2026 06:38:38 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "data": [
+      {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "username": "user_4",
+        "email": "user_1@example.invalid",
+        "plex_account_id": null,
+        "accounts": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_type": "plex",
+            "server_user_id": "00000000-0000-4000-8000-000000000016",
+            "external_user_id": "extuser_1",
+            "username": "user_4",
+            "removed_at": null
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000005",
+        "username": "user_5",
+        "email": "user_2@example.invalid",
+        "plex_account_id": null,
+        "accounts": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_type": "plex",
+            "server_user_id": "00000000-0000-4000-8000-000000000017",
+            "external_user_id": "extuser_2",
+            "username": "user_5",
+            "removed_at": null
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000006",
+        "username": "user_6",
+        "email": "user_3@example.invalid",
+        "plex_account_id": null,
+        "accounts": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_type": "plex",
+            "server_user_id": "00000000-0000-4000-8000-000000000018",
+            "external_user_id": "extuser_3",
+            "username": "user_6",
+            "removed_at": null
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000007",
+        "username": "user_7",
+        "email": "user_4@example.invalid",
+        "plex_account_id": null,
+        "accounts": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_type": "plex",
+            "server_user_id": "00000000-0000-4000-8000-000000000019",
+            "external_user_id": "extuser_4",
+            "username": "user_7",
+            "removed_at": null
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000008",
+        "username": "user_8",
+        "email": "user_5@example.invalid",
+        "plex_account_id": null,
+        "accounts": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_type": "plex",
+            "server_user_id": "00000000-0000-4000-8000-000000000020",
+            "external_user_id": "extuser_5",
+            "username": "user_8",
+            "removed_at": null
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000021",
+        "username": "user_11",
+        "email": null,
+        "plex_account_id": null,
+        "accounts": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_type": "plex",
+            "server_user_id": "00000000-0000-4000-8000-000000000022",
+            "external_user_id": "extuser_6",
+            "username": "user_11",
+            "removed_at": null
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "username": "user_3",
+        "email": "user_6@example.invalid",
+        "plex_account_id": null,
+        "accounts": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_type": "plex",
+            "server_user_id": "00000000-0000-4000-8000-000000000009",
+            "external_user_id": "extuser_7",
+            "username": "user_3",
+            "removed_at": null
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000023",
+        "username": "user_12",
+        "email": "user_7@example.invalid",
+        "plex_account_id": null,
+        "accounts": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_type": "plex",
+            "server_user_id": "00000000-0000-4000-8000-000000000024",
+            "external_user_id": "extuser_8",
+            "username": "user_12",
+            "removed_at": null
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000025",
+        "username": "user_13",
+        "email": null,
+        "plex_account_id": null,
+        "accounts": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_type": "plex",
+            "server_user_id": "00000000-0000-4000-8000-000000000026",
+            "external_user_id": "extuser_9",
+            "username": "user_13",
+            "removed_at": null
+          }
+        ]
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "username": "user_9",
+        "email": "user_8@example.invalid",
+        "plex_account_id": null,
+        "accounts": [
+          {
+            "server_id": "11111111-1111-4111-8111-000000000001",
+            "server_type": "plex",
+            "server_user_id": "00000000-0000-4000-8000-000000000012",
+            "external_user_id": "extuser_10",
+            "username": "user_9",
+            "removed_at": null
+          }
+        ]
+      }
+    ],
+    "meta": {
+      "nextCursor": "eyJ0IjoiMjAyNi0wOC0yM1QwODo1ODo0NC41NjJaIiwiaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMTMifQ",
+      "pageSize": 10
+    }
+  }
+}

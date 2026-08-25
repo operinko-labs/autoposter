@@ -1,0 +1,38 @@
+{
+  "name": "err-400-pagesize-over-max",
+  "request": {
+    "method": "GET",
+    "path": "/api/v2/public/history",
+    "query": {
+      "pageSize": 101
+    },
+    "authorization": "Bearer <REDACTED>"
+  },
+  "status": 400,
+  "response_headers": {
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+    "access-control-allow-origin": "https://host-1.example.invalid",
+    "access-control-allow-credentials": "true",
+    "x-ratelimit-limit": "240",
+    "x-ratelimit-remaining": "214",
+    "x-ratelimit-reset": "56",
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "81",
+    "date": "Tue, 25 Aug 2026 06:38:41 GMT",
+    "connection": "keep-alive",
+    "keep-alive": "timeout=72"
+  },
+  "body": {
+    "statusCode": 400,
+    "error": "BadRequestError",
+    "message": "Invalid query parameters"
+  }
+}
