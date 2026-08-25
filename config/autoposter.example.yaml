@@ -78,6 +78,16 @@ collections:
   #       summary: A few favourites.
   #       sync_mode: sync # the collection is exactly this list; `append` only ever adds
   #       limit: 50 # cap on members, applied after resolution
+  #       # Post-builder filtering (roadmap row 96): Kometa's
+  #       # `attribute[.modifier]: value`, evaluated on the resolved items
+  #       # BEFORE limit -- so a cap counts what survives the filter. Nest
+  #       # `any:`/`all:` blocks for alternatives. Tier 1 is year,
+  #       # resolution, audience_rating, critic_rating, content_rating,
+  #       # added, release, duration and studio; any other attribute
+  #       # refuses when the config loads, naming it and why.
+  #       filters:
+  #         year.gte: 2000
+  #         content_rating: [PG-13, R]
   #       sort: custom
   #       labels: [Favourites] # extra Plex labels, beyond ownership_label
   #       label_sync: false # true makes labels + ownership_label authoritative and removes the rest

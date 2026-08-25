@@ -32,7 +32,7 @@ off by default, capped, and refused outright past the cap.
 """
 import logging
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 from sqlalchemy import select
@@ -46,6 +46,8 @@ from autoposter.collections.builders.base import (
     SmartContext,
     SourceClients,
 )
+from autoposter.collections.filter_values import PlexItemView
+from autoposter.collections.filters import evaluate, parse_filters
 from autoposter.collections.lists import member_diff, reconcile_list_collection
 from autoposter.collections.reconcile import has_label, load_labels, protected_label
 from autoposter.collections.resolve import build_owned_index, resolve_external
@@ -75,6 +77,12 @@ class DefinitionResult:
     schedule, or nothing left to apply after a failure or an empty resolve --
     so a failed definition is skipped too, with ``failed`` saying which of the
     two it was.
+
+    ``unresolved`` and ``filtered`` are filled on every pass rather than only
+    for a preview: both are by-products of work the pass did anyway, and both
+    answer "why is this collection smaller than the source" -- the first with
+    "this library does not own them", the second with "``filters:`` excluded
+    them".
     """
 
     title: str
@@ -83,6 +91,10 @@ class DefinitionResult:
     removing: int = 0
     deleting: int = 0
     unresolved: int = 0
+    # How many resolved items this definition's ``filters:`` excluded. Zero
+    # when it has none, and zero -- not the whole set -- when the stage could
+    # not run: see ``_passing``.
+    filtered: int = 0
     failed: bool = False
     skipped: bool = False
     actions: list[str] = field(default_factory=list)
@@ -131,6 +143,14 @@ def _due(definition: CollectionDefinition, run_index: int, now: datetime) -> boo
 # expander exists to decide per unit; the last two were already honoured on
 # the placeholder before expansion ever happened, and re-applying them would
 # be a second, differently-scoped gate.
+#
+# ``filters`` rides along on the same argument as ``limit``, and the two are
+# the list's only narrowing knobs (roadmap row 96). Neither says where a
+# collection's membership comes from -- that is ``builder`` and ``params``,
+# which the expander owns -- and both say which of it survives. "Oscar winners,
+# capped at 25" and "Oscar winners, nothing before 2000" are the same kind of
+# instruction, written once for a family an operator cannot enumerate; dropping
+# the second silently would be row 141's defect again, one field along.
 _INHERITED_BY_EXPANSION = (
     "labels",
     "label_sync",
@@ -142,6 +162,7 @@ _INHERITED_BY_EXPANSION = (
     "visible_shared",
     "hub_priority",
     "limit",
+    "filters",
     "sync_mode",
     "tmdb_summary",
 )
@@ -433,10 +454,20 @@ async def _run_one(
         )
 
     items = resolved.items
+    if definition.filters is not None:
+        kept = _passing(definition, items, library)
+        if kept is None:
+            outcome.failed = True
+            items = []
+        else:
+            outcome.filtered = len(items) - len(kept)
+            items = kept
+
     if definition.limit is not None:
-        # After resolution, so a limit counts collection members rather than
-        # candidate ids: capping before would leave a short collection whenever
-        # the library was missing one of the first few.
+        # After resolution -- and, since row 96, after the filter -- so a limit
+        # counts collection members rather than candidate ids: capping before
+        # either would leave a short collection whenever the library was
+        # missing one of the first few, or the filter excluded one of them.
         items = items[: definition.limit]
 
     outcome.skipped = not items
@@ -470,6 +501,67 @@ async def _run_one(
         settings=definition,
     )
     return outcome
+
+
+def _passing(definition: CollectionDefinition, items: list, library: str) -> list | None:
+    """The items this definition's ``filters:`` keeps, or None if it could not
+    be evaluated at all.
+
+    The stage sits between resolution and the cap and is deliberately dumb:
+    order is preserved (the builder's order is the collection's), and nothing
+    here reaches Plex -- ``PlexItemView`` reads only values the section listing
+    already carried, which is what keeps a filter from costing one request per
+    item (``filter_values``).
+
+    **The containment is defence in depth, and it is on purpose.** Evaluation
+    is total by construction: the accessors are total over the item, the
+    predicate model defines a result for a missing value rather than raising,
+    and a filter naming an attribute with no accessor is refused at config load
+    (``schema.CollectionDefinition._filters_must_parse_and_be_readable``). So
+    this ``except`` should be unreachable. It is here because the engine's rule
+    is that no one definition's failure is the pass's, and a rule that holds
+    only where somebody remembered to keep it is not a rule -- the guard that
+    never fires costs nothing, and the one left out is the one that takes a
+    pass down.
+
+    Contained the way a dead source is, for a reason worth stating: the
+    alternative -- keeping the unfiltered items -- would write the very members
+    the operator's filter exists to exclude, a full and plausible and wrong
+    collection. No items is what ``lists.py`` reads as "make no changes", so
+    the collection is left exactly as it was and the definition is reported
+    failed. The parse happens here rather than being carried on the definition
+    because the model is dumped to JSON for ``definition_config_hash`` and
+    copied by expansion, and neither would survive a compiled regex; it is
+    microseconds against a pass that has just walked the library.
+    """
+    try:
+        parsed = parse_filters(definition.filters)
+        # One date for the whole collection. ``evaluate`` would otherwise read
+        # the clock per item, and a pass that crossed midnight would measure
+        # the first half of a relative window (``added: 30``) against one day
+        # and the second half against the next -- a membership no single day
+        # would have produced.
+        #
+        # The runner's local date rather than this pass's ``now``, which is
+        # UTC: plexapi hands back ``addedAt`` as a naive datetime in the
+        # RUNNER's clock (``filters._as_calendar_date``), so the local date is
+        # the one that shares a basis with the values being compared. That
+        # whole runner-dependence is roadmap row 154's open question; this line
+        # deliberately does not pre-empt its answer.
+        today = date.today()
+        return [
+            item for item in items
+            if evaluate(parsed, PlexItemView(item), today=today)
+        ]
+    except Exception:
+        # The class name and traceback go to the log; nothing derived from the
+        # exception reaches an action string, the same rule the builder's
+        # containment above keeps.
+        logger.exception(
+            "%s: could not evaluate the filter on %r; nothing was applied to it "
+            "this pass", library, definition.title,
+        )
+        return None
 
 
 async def _summary_for(

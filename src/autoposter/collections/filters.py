@@ -61,7 +61,7 @@ words (``current_year`` and its offsets). Each is a tier-2 row, not a bug.
 """
 import datetime as dt
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -80,6 +80,7 @@ __all__ = [
     "ItemView",
     "evaluate",
     "parse_filters",
+    "predicates",
 ]
 
 # The four categorical columns, as closed sets. A row outside them would parse,
@@ -747,6 +748,22 @@ def parse_filters(raw: object, *, field: str = "filters") -> FilterGroup:
     one mapping must all match, which is Kometa's rule.
     """
     return _parse_block(raw, "all", field)
+
+
+def predicates(node: "FilterGroup | FilterPredicate") -> Iterator[FilterPredicate]:
+    """Every predicate in a parsed tree, depth-first.
+
+    The config layer's source-tier check walks this: whether a filter names an
+    attribute the item view can actually read is a property of the leaves, and
+    parsing alone cannot answer it (this module's vocabulary is the whole
+    table, accessors exist for a subset -- see ``filter_values``). Kept here so
+    that the tree's shape stays this module's business.
+    """
+    if isinstance(node, FilterPredicate):
+        yield node
+        return
+    for child in node.children:
+        yield from predicates(child)
 
 
 # --- evaluation --------------------------------------------------------------

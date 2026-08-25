@@ -116,6 +116,7 @@ def _library_failure(library: str, error: Exception) -> dict:
         "title": LIBRARY_ENTRY_TITLE,
         "library": library,
         "adding": 0, "removing": 0, "deleting": 0, "unresolved": 0,
+        "filtered": 0,
         "failed": True, "skipped": True,
         "actions": [
             "%s: could not be previewed (%s)" % (library, type(error).__name__)
@@ -141,8 +142,9 @@ async def preview_collections(
 
     Per definition: the collection's title and library, how many members would
     be added and removed, whether it would be deleted by the sweep, how many of
-    the source's ids this library does not own, and whether the source failed
-    or nothing was applied -- plus that definition's own action strings.
+    the source's ids this library does not own, how many resolved items its
+    ``filters:`` excluded, and whether the source failed or nothing was applied
+    -- plus that definition's own action strings.
 
     A library that cannot be previewed -- a section name that no longer names a
     section, a Plex read that failed -- becomes one failed entry for that
@@ -210,6 +212,7 @@ async def preview_collections(
                     "removing": result.removing,
                     "deleting": result.deleting,
                     "unresolved": result.unresolved,
+                    "filtered": result.filtered,
                     "failed": result.failed,
                     "skipped": result.skipped,
                     "actions": [_redact(action) for action in result.actions],

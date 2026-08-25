@@ -16,6 +16,7 @@ are ``tests/test_builder_knobs.py``'s.
 The Oscars memoisation is here too: seven collections, one dataset, one request
 -- and one request when it fails, not seven.
 """
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,7 +31,12 @@ from autoposter.collections.builders import (
     SourceClients,
     register,
 )
-from autoposter.collections.engine import _expand, definition_titles, run_definitions
+from autoposter.collections.engine import (
+    _expand,
+    definition_titles,
+    run_definitions,
+    run_library,
+)
 from autoposter.collections.service import _managed_titles
 from autoposter.collections.sources import AWARD_YEARS_TITLE, default_definitions
 from autoposter.config.schema import CollectionDefinition
@@ -50,10 +56,14 @@ class FakeGuid:
 
 
 class FakeItem:
-    def __init__(self, key, guids):
+    def __init__(self, key, guids, **attributes):
         self.ratingKey = key
         self.title = key
         self.guids = [FakeGuid(g) for g in guids]
+        # Listing attributes, for the tests that filter. ``filter_values``
+        # reads them off the item with ``object.__getattribute__``, so a plain
+        # instance attribute is exactly what a resolved plexapi item presents.
+        self.__dict__.update(attributes)
 
 
 class FakeCollection:
@@ -112,7 +122,12 @@ class FakeCollection:
 
 class FakeSection:
     def __init__(self, items=(), existing=()):
-        self._items = [FakeItem(key, guids) for key, guids in items]
+        # ``(key, guids)``, or ``(key, guids, attributes)`` for a test that
+        # filters on a listing attribute.
+        self._items = [
+            FakeItem(entry[0], entry[1], **(entry[2] if len(entry) > 2 else {}))
+            for entry in items
+        ]
         self._existing = {c.title: c for c in existing}
 
     def all(self):
@@ -560,6 +575,7 @@ async def test_the_plex_accessor_shares_the_engines_owned_index(session, registr
 # the units as bare definitions silently dropped all of them.
 
 _RIDE_ALONGS = {
+    "filters": {"year.gte": 2000},
     "labels": ["Awards"],
     "label_sync": True,
     "item_label": ["Oscar Winner"],
@@ -639,6 +655,7 @@ async def test_the_oscars_year_collections_inherit_the_placeholders_settings():
     placeholder = CollectionDefinition(
         title=AWARD_YEARS_TITLE, builder="imdb_award_years",
         labels=["Awards"], sort_title="!110_Oscars", limit=25,
+        filters={"year.gte": 2000},
     )
 
     async with httpx.AsyncClient(transport=_requests_for([])) as http:
@@ -652,5 +669,228 @@ async def test_the_oscars_year_collections_inherit_the_placeholders_settings():
         assert unit.labels == ["Awards"]
         assert unit.sort_title == "!110_Oscars"
         assert unit.limit == 25
+        assert unit.filters == {"year.gte": 2000}, (
+            "a filter on the placeholder is a filter on every year it expands to"
+        )
         assert unit.sort == "release", "the builder's own choice survives"
         assert unit.summary.startswith("Academy Awards")
+
+
+# --- roadmap row 96: the filter stage --------------------------------------
+#
+# ``filters:`` narrows what the builder resolved, in one stage between
+# resolution and the member cap. Four properties are load-bearing and each has
+# a test here: the ORDER (a cap counts what survives the filter, not what the
+# filter was given), the COUNT (``filtered`` says how many were excluded, and
+# it reaches the preview), what the rest of the outcome is computed FROM (the
+# post-filter set -- ``skipped``, the diff, the members written), and
+# CONTAINMENT (a filter that cannot evaluate leaves its collection exactly as
+# it was, the way a dead source does).
+
+
+async def test_a_filter_keeps_the_items_that_pass_and_counts_the_rest(
+    session, registry_entry
+):
+    registry_entry(_Listing(
+        "test_filtered", [("imdb", "tt1"), ("imdb", "tt2"), ("imdb", "tt3")]
+    ))
+    section = FakeSection([
+        ("m1", ["imdb://tt1"], {"year": 1994}),
+        ("m2", ["imdb://tt2"], {"year": 2005}),
+        ("m3", ["imdb://tt3"], {"year": 2011}),
+    ])
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(
+            title="This Century", builder="test_filtered", filters={"year.gte": 2000}
+        )],
+        _config(),
+    )
+
+    assert [i.ratingKey for i in section._existing["This Century"]._live] == ["m2", "m3"]
+    [result] = run.definitions
+    assert result.filtered == 1, "the count is what the filter excluded"
+    assert result.failed is False and result.skipped is False
+
+
+async def test_the_filter_runs_before_the_limit(session, registry_entry):
+    """The seam's order, and the test is the mutation: filtering *after* the
+    cap gives this definition one member, not two -- the cap would spend a slot
+    on ``m1`` and the filter would then throw it away. ``limit`` counts
+    collection members (see ``test_the_limit_caps_members_after_resolution``),
+    and an item the filter excludes was never going to be one."""
+    registry_entry(_Listing(
+        "test_filter_limit", [("imdb", "tt1"), ("imdb", "tt2"), ("imdb", "tt3")]
+    ))
+    section = FakeSection([
+        ("m1", ["imdb://tt1"], {"year": 1994}),
+        ("m2", ["imdb://tt2"], {"year": 2005}),
+        ("m3", ["imdb://tt3"], {"year": 2011}),
+    ])
+
+    actions = await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Two Modern", builder="test_filter_limit",
+            filters={"year.gte": 2000}, limit=2,
+        )],
+        _config(),
+    )
+
+    assert actions == ["created 'Two Modern' with 2 item(s)"]
+    assert [i.ratingKey for i in section._existing["Two Modern"]._live] == ["m2", "m3"]
+
+
+async def test_a_definition_whose_filter_excludes_everything_is_skipped(
+    session, registry_entry
+):
+    """Empty after filtering is empty, which ``lists.py`` reads as "make no
+    changes" -- the collection keeps the members it had. A filter that matches
+    nothing must not empty a live collection, exactly as a dead source must
+    not."""
+    registry_entry(_Listing("test_filter_all_out", [("imdb", "tt1")]))
+    kept = FakeItem("m9", ["imdb://tt9"])
+    live = FakeCollection("Nothing Left", [kept], labels=[LABEL])
+    section = FakeSection([("m1", ["imdb://tt1"], {"year": 1994})], existing=[live])
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(
+            title="Nothing Left", builder="test_filter_all_out",
+            filters={"year.gte": 2000},
+        )],
+        _config(),
+    )
+
+    assert [i.ratingKey for i in live._live] == ["m9"]
+    [result] = run.definitions
+    assert result.skipped is True and result.filtered == 1
+    assert result.failed is False, "a filter that matches nothing is not a failure"
+
+
+async def test_the_preview_diff_is_taken_against_the_filtered_set(
+    session, registry_entry
+):
+    """``adding``/``removing`` describe the members a pass would write, and a
+    pass writes what the filter kept. A diff taken before the filter would
+    promise to add an item the filter is about to drop."""
+    registry_entry(_Listing(
+        "test_filter_preview", [("imdb", "tt1"), ("imdb", "tt2"), ("imdb", "tt3")]
+    ))
+    stale = FakeItem("m9", ["imdb://tt9"])
+    live = FakeCollection("Previewed", [stale], labels=[LABEL])
+    section = FakeSection([
+        ("m1", ["imdb://tt1"], {"year": 1994}),
+        ("m2", ["imdb://tt2"], {"year": 2005}),
+        ("m3", ["imdb://tt3"], {"year": 2011}),
+    ], existing=[live])
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(
+            title="Previewed", builder="test_filter_preview", filters={"year.gte": 2000}
+        )],
+        _config(), dry_run=True, preview=True,
+    )
+
+    [result] = run.definitions
+    assert (result.adding, result.removing) == (2, 1), (
+        "m2 and m3 would be added and the stale member removed -- m1 is filtered "
+        "out and is neither"
+    )
+    assert result.filtered == 1
+
+
+async def test_a_filter_that_cannot_evaluate_leaves_its_collection_alone(
+    session, registry_entry
+):
+    """Containment, applied to the stage. Evaluation is total by construction
+    -- the accessors are total, the model defines a result for a missing value,
+    and a deferred attribute refuses at config load -- so this should be
+    unreachable. It is guarded anyway, on the engine's rule that one
+    definition's failure is never the pass's, and the containment has to be the
+    dead-source one: keeping the unfiltered items would write the very members
+    the operator asked to exclude."""
+    registry_entry(_Listing("test_filter_broken", [("imdb", "tt1")]))
+    registry_entry(_Listing("test_filter_healthy", [("imdb", "tt2")]))
+    kept = FakeItem("m9", ["imdb://tt9"])
+    live = FakeCollection("Broken Filter", [kept], labels=[LABEL])
+    section = FakeSection([
+        # A year the view hands back as a word: the predicate model raises
+        # rather than treating a wrongly-typed value as missing.
+        ("m1", ["imdb://tt1"], {"year": "nineteen ninety-four"}),
+        ("m2", ["imdb://tt2"], {"year": 2005}),
+    ], existing=[live])
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [
+            CollectionDefinition(
+                title="Broken Filter", builder="test_filter_broken",
+                filters={"year.gte": 2000},
+            ),
+            CollectionDefinition(title="Healthy", builder="test_filter_healthy"),
+        ],
+        _config(),
+    )
+
+    assert [i.ratingKey for i in live._live] == ["m9"], "nothing was applied to it"
+    assert run.failures == ["Broken Filter"], (
+        "and the pass does not report itself clean"
+    )
+    assert "Healthy" in section._existing, "the definition after it still ran"
+    assert not any("nineteen" in action for action in run.actions), (
+        "nothing derived from the exception reaches an action string"
+    )
+
+
+async def test_a_relative_date_filter_measures_every_item_against_one_date(
+    session, registry_entry, monkeypatch
+):
+    """A relative window (``added: 30`` is "in the last 30 days") reads the
+    clock once per definition, not once per item: a pass that crossed midnight
+    would otherwise measure the first half of a collection against one day and
+    the rest against the next, and produce a membership no single day would."""
+    reads = []
+
+    class _Clock:
+        @staticmethod
+        def today():
+            reads.append(1)
+            return date(2026, 8, 25)
+
+    monkeypatch.setattr("autoposter.collections.engine.date", _Clock)
+    registry_entry(_Listing(
+        "test_filter_recent", [("imdb", "tt1"), ("imdb", "tt2"), ("imdb", "tt3")]
+    ))
+    section = FakeSection([
+        ("m1", ["imdb://tt1"], {"addedAt": datetime(2026, 8, 20)}),
+        ("m2", ["imdb://tt2"], {"addedAt": datetime(2026, 8, 24)}),
+        ("m3", ["imdb://tt3"], {"addedAt": datetime(2024, 1, 1)}),
+    ])
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(
+            title="Recently Added", builder="test_filter_recent", filters={"added": 30}
+        )],
+        _config(),
+    )
+
+    assert [
+        i.ratingKey for i in section._existing["Recently Added"]._live
+    ] == ["m1", "m2"]
+    assert run.definitions[0].filtered == 1
+    assert reads == [1], "one date for the collection, not one per item"
+
+
+def test_no_shipped_definition_carries_a_filter():
+    """The golden gate's other half. ``filters:`` is an operator's tool: a
+    default definition that gained one would change the membership of a live
+    collection nobody asked to change, and ``golden_port.json`` would be a
+    record of what this service used to do."""
+    config = _config(charts=True, awards=True, separators=True)
+    for library_type in ("Movie", "Show"):
+        for definition in default_definitions(config, library_type):
+            assert definition.filters is None, definition.title

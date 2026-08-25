@@ -290,6 +290,7 @@ async def test_the_preview_reports_the_counts_per_definition(
         # tt1 is owned and not in the collection; m2 is in it and no longer
         # named; tt404 is a title this library does not own.
         "adding": 1, "removing": 1, "deleting": 0, "unresolved": 1,
+        "filtered": 0,
         "failed": False, "skipped": False,
         "actions": ["would update 'Charted' with 1 item(s)"],
     }]
@@ -469,6 +470,7 @@ async def test_one_unreadable_library_does_not_take_the_whole_preview_down(
     assert gone == [{
         "title": "(library)", "library": "Gone",
         "adding": 0, "removing": 0, "deleting": 0, "unresolved": 0,
+        "filtered": 0,
         "failed": True, "skipped": True,
         "actions": ["Gone: could not be previewed (RuntimeError)"],
     }]
@@ -502,6 +504,7 @@ async def test_a_bundle_construction_failure_is_a_library_failure_not_a_500(
     assert movies == [{
         "title": "(library)", "library": "Movies",
         "adding": 0, "removing": 0, "deleting": 0, "unresolved": 0,
+        "filtered": 0,
         "failed": True, "skipped": True,
         "actions": ["Movies: could not be previewed (RuntimeError)"],
     }]

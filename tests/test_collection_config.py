@@ -329,6 +329,9 @@ def test_the_commented_example_definition_is_one_the_schema_accepts():
 
     assert len(config.definitions) == 1
     assert config.definitions[0].builder in ("plex_id",)
+    assert config.definitions[0].filters == {
+        "year.gte": 2000, "content_rating": ["PG-13", "R"]
+    }, "the documented filter has to be one the filter model accepts too"
 
 
 def test_a_definition_colliding_with_a_shipped_collection_is_rejected():
@@ -401,3 +404,136 @@ def test_definitions_are_editable_without_a_restart():
     """The whole section is live except `collections.enabled`; a definition
     added in Settings has to take effect on the next reconcile."""
     assert frozen_reason("collections.definitions") is None
+
+
+# --- roadmap row 96: `filters:` on a definition ----------------------------
+#
+# The same discipline as `params:` above, and for the same reason: a filter is
+# only ever read inside a pass, so anything wrong with one that is not caught
+# here surfaces hours later as a collection that quietly stopped being right.
+# Two classes of wrong, and the second is the one the parser alone cannot see:
+#
+# - the SHAPE (an attribute that does not exist, a modifier its type does not
+#   take, a value that is not of that type) -- `filters.parse_filters`'s job;
+# - the SOURCE TIER. The parser gates on the attribute TABLE, and the table
+#   carries rows the item view deliberately cannot read: `genre` is a real
+#   tier-1 attribute name that parses cleanly and is deferred to tier 2,
+#   because Plex's section listing truncates it. Without the tier check
+#   `genre: Horror` would load, run, and raise `AttributeNotInListing` per
+#   item mid-pass -- silent until it runs, which is exactly what load-time
+#   validation exists to prevent.
+
+
+def test_a_filter_on_a_shipped_attribute_loads():
+    document = _document_with_definitions([
+        {"title": "Modern", "builder": "plex_id", "params": {"ids": ["1"]},
+         "filters": {"year.gte": 2000, "content_rating": ["PG", "PG-13"]}}
+    ])
+
+    definition = build_config(document).collections.definitions[0]
+
+    assert definition.filters == {"year.gte": 2000, "content_rating": ["PG", "PG-13"]}
+
+
+def test_a_definition_without_filters_has_none():
+    """None rather than `{}`: an empty mapping is a filter block an operator
+    wrote and left empty, which `parse_filters` refuses."""
+    assert CollectionDefinition(title="X", builder="plex_id",
+                                params={"ids": ["1"]}).filters is None
+
+
+def test_a_filter_naming_a_deferred_attribute_refuses_at_config_load():
+    """THE hole this check exists to close. `genre` is in the table -- it
+    parses, it types, it is one of the fifteen the roadmap names -- and Phase
+    9a's probe found the Plex listing carries at most two genres per item
+    against the three and four the metadata endpoint returns. So there is no
+    accessor for it, and a `genre:` filter that loaded would raise inside the
+    run, per item, on a collection nobody was watching."""
+    document = _document_with_definitions([
+        {"title": "Scary", "builder": "plex_id", "params": {"ids": ["1"]},
+         "filters": {"genre": "Horror"}}
+    ])
+
+    with pytest.raises(ValidationError) as raised:
+        build_config(document)
+
+    message = str(raised.value)
+    assert "genre" in message, "the attribute that is wrong"
+    assert "tier2-deferred" in message, "and that it is deferred, not unknown"
+    assert "row 96" in message, "and the row that tracks getting it back"
+    assert "Scary" in message and "filters.genre" in message, (
+        "the definition and the key, the params discipline"
+    )
+
+
+@pytest.mark.parametrize(
+    "attribute", ["genre", "label", "collection", "network",
+                  "audio_language", "subtitle_language"],
+)
+def test_every_deferred_attribute_refuses_at_config_load(attribute):
+    """All six of them, by name. A row moved back to `listing` without an
+    accessor -- or an accessor added without the row moving -- fails here."""
+    with pytest.raises(ValidationError, match="tier2-deferred"):
+        CollectionDefinition(
+            title="X", builder="plex_id", params={"ids": ["1"]},
+            filters={attribute: "whatever"},
+        )
+
+
+def test_an_unknown_filter_attribute_refuses_at_config_load():
+    document = _document_with_definitions([
+        {"title": "Typo", "builder": "plex_id", "params": {"ids": ["1"]},
+         "filters": {"genres": "Horror"}}
+    ])
+
+    with pytest.raises(ValidationError) as raised:
+        build_config(document)
+
+    message = str(raised.value)
+    assert "genres" in message and "Typo" in message
+    assert "unknown filter attribute" in message
+
+
+def test_a_modifier_the_attributes_type_does_not_take_refuses_at_config_load():
+    """`.before` is a date modifier and `year` is an int. Kometa has no such
+    spelling, and accepting it would mean guessing which of two readings the
+    operator meant."""
+    with pytest.raises(ValidationError, match="year") as raised:
+        CollectionDefinition(
+            title="Old", builder="plex_id", params={"ids": ["1"]},
+            filters={"year.before": 2000},
+        )
+
+    assert "Old" in str(raised.value), "the definition, not just the key"
+
+
+def test_a_filter_value_of_the_wrong_type_refuses_at_config_load():
+    with pytest.raises(ValidationError, match="whole number"):
+        CollectionDefinition(
+            title="Old", builder="plex_id", params={"ids": ["1"]},
+            filters={"year.gte": "the nineties"},
+        )
+
+
+def test_a_smart_definition_refuses_filters():
+    """The `_membership_knobs_need_a_membership` class. Plex evaluates a smart
+    collection's membership from its own filter, so there is no resolved list
+    for a post-builder filter to narrow -- and 9c is where a smart definition's
+    filter is written into the Plex-side search instead."""
+    with pytest.raises(ValidationError, match="filters"):
+        CollectionDefinition(
+            title="Buckets", builder="cs_bucket", filters={"year.gte": 2000}
+        )
+
+
+def test_the_filter_is_part_of_the_definitions_hash():
+    """A filter narrows membership, so editing one is an edit to the
+    collection: without this the members hash would not flap and the pass
+    would leave the old membership in place."""
+    base = CollectionDefinition(title="X", builder="plex_id", params={"ids": ["1"]})
+    filtered = CollectionDefinition(
+        title="X", builder="plex_id", params={"ids": ["1"]},
+        filters={"year.gte": 2000},
+    )
+
+    assert definition_config_hash(base) != definition_config_hash(filtered)

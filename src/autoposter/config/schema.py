@@ -324,6 +324,16 @@ class CollectionDefinition(BaseModel):
     # the config is an explicit choice, and a pull that silently overrode it
     # would be a setting that reads as applied and is not.
     tmdb_summary: int | None = Field(default=None, gt=0)
+    # Row 96: post-builder filtering. A Kometa-shaped mapping of
+    # ``attribute[.modifier]: value`` keys, plus nested ``any:``/``all:``
+    # blocks -- ``{"year.gte": 2000, "content_rating": ["PG", "PG-13"]}``. The
+    # engine evaluates it against the resolved items, between resolution and
+    # ``limit``, so a cap counts the members that survived the filter.
+    # Untyped here for the reason ``params`` is: the shape belongs to
+    # ``collections.filters``, which validates it below. None rather than {},
+    # because an empty mapping is a block an operator wrote and left empty and
+    # the parser refuses that.
+    filters: dict | None = None
 
     @field_validator("builder")
     @classmethod
@@ -410,6 +420,14 @@ class CollectionDefinition(BaseModel):
         would be the worst outcome: the operator would see a setting that reads
         as applied and never is.
 
+        ``filters`` joins them for the same reason one step further out: it
+        narrows a membership this service resolved, and a smart definition
+        never resolves one -- the items are chosen inside Plex, by the
+        builder's own filter, and a client-side pass over a list we do not
+        have could not narrow anything. A smart definition's filtering is a
+        different mechanism entirely (it belongs in the search the builder
+        sends), which is 9c's, not this field's.
+
         ``sort_title`` and ``collection_mode`` are deliberately NOT here. They
         are properties of the collection object rather than of its membership,
         and the smart create path applies them (roadmap row 104).
@@ -424,6 +442,7 @@ class CollectionDefinition(BaseModel):
             ("sync_mode", self.sync_mode, "sync"),
             ("item_label", self.item_label, []),
             ("tmdb_summary", self.tmdb_summary, None),
+            ("filters", self.filters, None),
         ):
             if value != default:
                 raise ValueError(
@@ -454,6 +473,64 @@ class CollectionDefinition(BaseModel):
                 "'hub_priority' requires at least one of 'visible_library', "
                 "'visible_home' or 'visible_shared' to promote the collection "
                 "to a managed hub first"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _filters_must_parse_and_be_readable(self) -> "CollectionDefinition":
+        """A ``filters:`` block is parsed, typed and tier-checked here.
+
+        Two refusals, both at load, both naming the definition and the key --
+        the params discipline above, one field along:
+
+        - the PARSE (``filters.parse_filters``) rejects an unknown attribute, a
+          modifier the attribute's type does not take, an unparseable value and
+          a broken regex. Its own message carries the dotted key; the title is
+          added here, because an operator with twenty definitions needs both
+          halves to fix one.
+        - the SOURCE TIER. This half cannot be left to the parser and is the
+          reason this validator is not three lines long. The parser's
+          vocabulary is the attribute TABLE, and the table deliberately carries
+          rows the item view will not read: ``genre`` is one of the fifteen
+          tier-1 names, it parses cleanly, and Phase 9a's probe found Plex's
+          section listing truncates it to two per item -- so it has no accessor
+          (``filter_values.SHIPPED_ATTRIBUTES``) and evaluating it raises
+          ``AttributeNotInListing``. Without this check ``genre: Horror`` would
+          load green and fail per item, mid-pass, inside a run nobody is
+          watching -- the silent-until-it-runs failure that config validation
+          exists to prevent, and the engine would contain it into a collection
+          that quietly stopped updating.
+
+        Checked against the accessors rather than against the row's tier
+        directly, so that the config refuses exactly what the run cannot read:
+        the two can only disagree if someone moves a row without an accessor or
+        adds an accessor without moving the row, and ``filter_values``'s own
+        tests already fail on either.
+        """
+        if self.filters is None:
+            return self
+        from autoposter.collections.filter_values import SHIPPED_ATTRIBUTES
+        from autoposter.collections.filters import parse_filters, predicates
+
+        try:
+            parsed = parse_filters(self.filters)
+        except ValueError as error:
+            raise ValueError(
+                f"{self.title!r} does not configure 'filters' correctly -- {error}"
+            ) from error
+
+        for predicate in predicates(parsed):
+            row = predicate.attribute
+            if row.name in SHIPPED_ATTRIBUTES:
+                continue
+            raise ValueError(
+                f"{self.title!r} cannot filter on {row.name!r} at {predicate.field}: "
+                f"that attribute's source tier is {row.source!r}. Phase 9a's probe "
+                "found the Plex section listing does not carry it completely enough "
+                "to filter on (the row's note in collections/filters.py has the "
+                "numbers), and reading it per item would cost one Plex request per "
+                "item -- so it is filed for tier 2 under roadmap row 96 rather than "
+                "answered wrongly. Filterable today: " + ", ".join(SHIPPED_ATTRIBUTES)
             )
         return self
 
