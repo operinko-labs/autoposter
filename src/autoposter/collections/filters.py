@@ -26,24 +26,32 @@ schema, so the rows are *transcribed* from its documented filter semantics.
 That transcription is fallible in a way a wrong TMDb parameter is not: a filter
 with the wrong meaning still loads, still runs, and produces a full, plausible,
 wrong collection. Two things are done about it. Every judgement call carries its
-reasoning on the row, and the ones this transcription is **not** confident about
-are marked ``UNVERIFIED-TRANSCRIPTION`` in the note -- Task 4's Kometa oracle
-adjudicates those against Kometa's own code. A note without that marker is a
-claim this module is standing behind.
+reasoning on the row, and the ones this transcription was **not** confident
+about are marked in the note. A fresh call is ``UNVERIFIED-TRANSCRIPTION`` --
+Task 4's Kometa oracle adjudicates those against Kometa's own code. A call this
+module's own fix round has already checked against named Kometa evidence reads
+``SETTLED-BY-REVIEW`` (the code changed to match) or ``SETTLED-IN-FAVOR`` (the
+original transcription was already right); a note with none of the three is a
+claim this module has stood behind since Task 1.
 
-**The missing-value rule, which is an invariant and not a per-operator detail.**
-An item that has no value for an attribute is EXCLUDED by a positive filter and
-INCLUDED by a negative one (``.not``, ``.isnot``). So ``genre: Horror`` drops an
-item with no genres at all, and ``genre.not: Horror`` keeps it. This is applied
-in exactly one place, ``_matches`` below, so that every operator gets it and no
-operator can quietly opt out. ``UNVERIFIED-TRANSCRIPTION``: the rule is
-Kometa's for tag attributes, where its implementation intersects the item's tags
-with the filter's and the empty intersection falls out correctly for both
-modifiers. For *numbers and dates* Kometa may instead short-circuit a missing
-value to "excluded" regardless of modifier, which would make
-``year.not: 1999`` drop an item with no year rather than keep it. Uniformity is
-chosen here because a rule with a per-type exception is a rule nobody can
-remember; the oracle decides whether Kometa agrees.
+**The missing-value rule splits by value-type family (SETTLED-BY-REVIEW).** For
+``tag``/``str`` attributes: an item with no value for the attribute is EXCLUDED
+by a positive filter and INCLUDED by a negative one (``.not``, ``.isnot``). So
+``genre: Horror`` drops an item with no genres at all, and ``genre.not: Horror``
+keeps it -- this is Kometa's rule for tags, where its implementation intersects
+the item's tags with the filter's and the empty intersection falls out
+correctly for both modifiers. For ``int``/``float``/``date``/``duration``
+attributes the missing item is EXCLUDED under EVERY operator, including
+``.not`` -- so ``audience_rating.not: 8`` on an unrated item still drops it,
+same as ``audience_rating: 8`` would. This was originally shipped uniform
+(a single rule, no type exception) and marked ``UNVERIFIED-TRANSCRIPTION``
+because a per-type exception is a rule nobody remembers; the fix round's review
+settled it against Kometa's own number/date filter, whose check opens with
+``if value is None: return True`` (filtered out) *before* it even looks at the
+modifier -- the short-circuit ignores the operator entirely for these four
+types, where only the tag intersection has no such short-circuit. Both halves
+are applied in exactly one place, ``_matches`` below, so that every operator
+gets the rule for its type and no operator can quietly opt out.
 
 **What tier 1 deliberately does not have**, so that each is a refusal naming the
 field rather than a silent gap: Kometa's tag ``.count_gt``/``.count_gte``/
@@ -122,7 +130,15 @@ DEFAULT_OPERATOR: dict[str, str] = {
 # ``plexapi.base.OPERATORS`` key it means, so 9b's search translation is a
 # lookup rather than a reinvention. Negative operators name their POSITIVE
 # counterpart's key -- ``.not`` on a tag is "no tag ``iexact``-matches any
-# value", and the negation is ours, not plexapi's. The two ``None`` entries are
+# value", and the negation is ours, not plexapi's -- so a 9b translator that
+# negated the key too would double-negate. This is a UNIFORM rule with no
+# exceptions: ``test_every_negative_operators_plexapi_mapping_equals_its_positive_counterparts``
+# in the test module pins it structurally. (SETTLED-BY-REVIEW: the three
+# ``.not`` rows below for ``int``/``float``/``duration`` originally read
+# ``"ne"`` -- plexapi's own negation key, which happens to exist, but is not
+# the *positive counterpart's* key the stated convention promises. Fixed to
+# ``"exact"``, matching each type's ``eq`` row, the same as every other
+# negative operator in this table already did.) The two ``None`` entries are
 # the deliberate gap: "in the last N days" is a relative window and every entry
 # in plexapi's table is an absolute comparison.
 PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
@@ -137,19 +153,19 @@ PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
     ("str", "ends"): "iendswith",
     ("str", "regex"): "iregex",
     ("int", "eq"): "exact",
-    ("int", "not"): "ne",
+    ("int", "not"): "exact",
     ("int", "gt"): "gt",
     ("int", "gte"): "gte",
     ("int", "lt"): "lt",
     ("int", "lte"): "lte",
     ("float", "eq"): "exact",
-    ("float", "not"): "ne",
+    ("float", "not"): "exact",
     ("float", "gt"): "gt",
     ("float", "gte"): "gte",
     ("float", "lt"): "lt",
     ("float", "lte"): "lte",
     ("duration", "eq"): "exact",
-    ("duration", "not"): "ne",
+    ("duration", "not"): "exact",
     ("duration", "gt"): "gt",
     ("duration", "gte"): "gte",
     ("duration", "lt"): "lt",
@@ -168,6 +184,13 @@ PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
 # match the first one", and what makes the missing-value rule fall out of one
 # branch instead of one per operator.
 _NEGATES = {"not": None, "isnot": "is"}
+
+# The value types whose missing-value rule ignores the operator: SETTLED-BY-
+# REVIEW against Kometa's number/date filter, which excludes a ``None`` value
+# unconditionally. ``tag``/``str`` are deliberately absent -- their rule still
+# depends on the operator (positive excludes, negative includes). See the
+# module docstring.
+_MISSING_ALWAYS_EXCLUDES = ("int", "float", "date", "duration")
 
 
 @dataclass(frozen=True)
@@ -295,19 +318,22 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "filter is MINUTES. The view converts, and the config is minutes -- so "
         "`duration.gte: 90` is an hour and a half, not 90ms. Its own value type "
         "rather than `int` so the unit lives in the table instead of in a "
-        "comment on one row.",
+        "comment on one row. The view must hand back an `int`, ROUNDED, not the "
+        "raw float `ms / 60000` produces -- see `ItemView.get`'s docstring; "
+        "Task 2's accessor rounds once at the boundary so `.eq`/`.not` never "
+        "compare an unrounded float for exact equality.",
     ),
     FilterAttribute(
         "studio", "str", _BOTH, "listing",
         "The listing attrib `studio` (video.py:405). The ONE tier-1 string "
         "attribute, and the distinction matters: a bare `studio: Warner` is a "
         "case-insensitive SUBSTRING match, where a bare `genre: Horror` is an "
-        "exact tag match. UNVERIFIED-TRANSCRIPTION -- this transcription files "
-        "`studio` under Kometa's string filters (which carry .is/.isnot/"
-        ".begins/.ends) rather than its tag filters, and that is the single "
-        "most consequential tag-vs-string call in the table: if Kometa treats "
-        "it as a tag, `studio: Warner` matches nothing at all instead of "
-        "everything Warner. Task 4's oracle adjudicates.",
+        "exact tag match. SETTLED-IN-FAVOR (fix-round review) -- this "
+        "transcription files `studio` under Kometa's string filters (which "
+        "carry .is/.isnot/.begins/.ends) rather than its tag filters, and that "
+        "is the single most consequential tag-vs-string call in the table: had "
+        "Kometa treated it as a tag, `studio: Warner` would match nothing at "
+        "all instead of everything Warner.",
     ),
     FilterAttribute(
         "network", "tag", ("show",), "probe",
@@ -338,9 +364,17 @@ class ItemView(Protocol):
     ``get`` is keyed on the TABLE's attribute name -- ``release``, not
     ``originallyAvailableAt`` -- and returns the value in the type the row
     declares: a sequence of strings (or one bare string) for ``tag``, a string
-    for ``str``, a number for ``int``/``float``, minutes for ``duration``, a
-    ``date`` or ``datetime`` for ``date``. ``None`` means the item has no value,
-    which is the missing-value rule's input.
+    for ``str``, a number for ``int``/``float``, an ``int`` of MINUTES,
+    ROUNDED, for ``duration``, a ``date`` or ``datetime`` for ``date``.
+    ``None`` means the item has no value, which is the missing-value rule's
+    input.
+
+    Duration is pinned to ``int`` deliberately: Plex's wire value is
+    milliseconds and the accessor divides by 60000, which does not land on a
+    whole number for most real runtimes. Handing back the raw float would leave
+    ``duration.eq``/``duration.not`` comparing floats for exact equality across
+    a division this module does not control -- round at the accessor, once,
+    rather than let that trap travel downstream undecided.
     """
 
     def get(self, attribute: str, /) -> object | None: ...
@@ -489,7 +523,21 @@ class _Today:
 _TODAY = _Today()
 
 
+_US_DATE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
+
+_DATE_MESSAGE = "is not a date -- write it as 2024-01-31 or 01/31/2024, or `today`"
+
+
 def _as_date(value: object, field: str) -> dt.date | _Today:
+    """A date, in either of two unambiguous spellings.
+
+    ISO (``2024-01-31``, dashes, 4-digit year leading) is this module's own
+    form; ``MM/DD/YYYY`` (slashes) is how Kometa's own configs spell it, and
+    an operator copying a value out of an existing Kometa config should not
+    have to reformat it. The two are told apart by punctuation, not position,
+    so there is no reading of a well-formed value that is ambiguous between
+    them.
+    """
     if isinstance(value, str) and value.strip().casefold() == "today":
         return _TODAY
     if isinstance(value, dt.datetime):
@@ -497,13 +545,19 @@ def _as_date(value: object, field: str) -> dt.date | _Today:
     if isinstance(value, dt.date):
         return value
     if isinstance(value, str):
+        text = value.strip()
+        us = _US_DATE.match(text)
+        if us:
+            month, day, year = (int(group) for group in us.groups())
+            try:
+                return dt.date(year, month, day)
+            except ValueError as error:
+                raise ValueError(f"{field}: {value!r} {_DATE_MESSAGE}") from error
         try:
-            return dt.date.fromisoformat(value.strip())
+            return dt.date.fromisoformat(text)
         except ValueError as error:
-            raise ValueError(
-                f"{field}: {value!r} is not a date -- write it as 2024-01-31, or `today`"
-            ) from error
-    raise ValueError(f"{field}: {value!r} is not a date -- write it as 2024-01-31, or `today`")
+            raise ValueError(f"{field}: {value!r} {_DATE_MESSAGE}") from error
+    raise ValueError(f"{field}: {value!r} {_DATE_MESSAGE}")
 
 
 def _as_days(value: object, field: str) -> int:
@@ -515,6 +569,12 @@ def _as_days(value: object, field: str) -> int:
     rather than being coerced -- ``added: "2024-01-01"`` is an operator who
     meant ``added.after``, and answering it with a 2024-day window would be
     worse than saying so.
+
+    SETTLED-IN-FAVOR (fix-round review): Kometa's own blank-modifier date-filter
+    comparison, ``value < data or value > current_time`` with ``data`` computed
+    as ``current_time - timedelta(days=value)``, is a day-window test, not an
+    equality test -- the same citation that fixed the window's upper edge in
+    ``_matches_one`` confirms this reading was already right.
     """
     _boolean_is_not_a_value(value, field)
     if not isinstance(value, int):
@@ -556,10 +616,15 @@ def _split_key(key: str, field: str) -> tuple[FilterAttribute, str]:
         return attribute, attribute.default_operator
     writable = [f".{op}" for op in attribute.operators if op != attribute.default_operator]
     if modifier not in attribute.operators or modifier == attribute.default_operator:
+        # The bare form's meaning is not literally its "default operator" name
+        # for a date -- ``added: 30`` is a window in days, not "added eq 30" --
+        # so saying "which means eq" here would teach the wrong thing about
+        # what a bare key does.
+        bare_meaning = "within-the-last-N-days" if attribute.type == "date" else attribute.default_operator
         raise ValueError(
             f"{field}: .{modifier} does not apply to {name!r}, a {attribute.type} attribute "
             "-- it takes " + ", ".join(writable)
-            + f" (or no modifier at all, which means {attribute.default_operator})"
+            + f" (or no modifier at all, which means {bare_meaning})"
         )
     return attribute, modifier
 
@@ -717,13 +782,16 @@ def _matches_one(
     if kind == "date":
         when = _as_calendar_date(have, attribute.name)
         if operator == "eq":
-            # "in the last N days", inclusive of the boundary day. A future
-            # date passes: a window that starts N days ago has no upper edge,
-            # and an item Plex says is released next week is still "released in
-            # the last 30 days" by that reading. UNVERIFIED-TRANSCRIPTION --
-            # whether Kometa bounds the window at today is exactly the kind of
-            # corner the Task 4 oracle is for.
-            return when >= today - dt.timedelta(days=want)
+            # "in the last N days", inclusive of both boundary days: on or
+            # after (today - N) and on or before today. SETTLED-BY-REVIEW: this
+            # module first shipped the lower edge only, with no upper bound, so
+            # a future date passed -- marked UNVERIFIED-TRANSCRIPTION. Kometa's
+            # own blank-modifier date-filter comparison is
+            # ``value < data or value > current_time`` (where ``data`` is
+            # ``current_time - timedelta(days=value)``): a two-sided window, so
+            # a future date FAILS. Fixed to bound at ``today``; see
+            # ``date-eq-5`` in the test module, flipped by this same citation.
+            return today - dt.timedelta(days=want) <= when <= today
         moment = today if isinstance(want, _Today) else want
         if operator == "before":
             return when < moment
@@ -751,9 +819,11 @@ def _matches(predicate: FilterPredicate, view: ItemView, today: dt.date) -> bool
     The two rules that apply to every operator live here and only here, which
     is what makes them invariants rather than conventions:
 
-    - **missing value**: an item with no value for the attribute is excluded by
-      a positive filter and included by a negative one. See the module
-      docstring for the transcription note on this;
+    - **missing value**: for ``tag``/``str`` attributes, an item with no value
+      is excluded by a positive filter and included by a negative one; for
+      ``int``/``float``/``date``/``duration`` attributes it is excluded by
+      EVERY operator, including ``.not``. See the module docstring for the
+      transcription note on this split;
     - **a list means any-of**: the predicate holds if ANY written value
       matches, and a negative operator is the negation of that -- so
       ``genre.not: [Horror, Comedy]`` means "neither", not "not Horror".
@@ -762,6 +832,8 @@ def _matches(predicate: FilterPredicate, view: ItemView, today: dt.date) -> bool
     negative = predicate.operator in _NEGATES
     have = view.get(attribute.name)
     if _is_missing(have, attribute.type):
+        if attribute.type in _MISSING_ALWAYS_EXCLUDES:
+            return False
         return negative
 
     operator = predicate.operator

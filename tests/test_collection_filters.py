@@ -24,6 +24,7 @@ of this file -- the single exception is the operator-mapping test, which reads
 plexapi's own ``OPERATORS`` table to prove 9b's translation is a mapping.
 """
 import datetime as dt
+import pathlib
 import re
 
 import pytest
@@ -160,6 +161,35 @@ def test_every_operator_maps_onto_plexapis_own_operator_table():
     assert unmapped == [("date", "eq"), ("date", "not")]
 
 
+def test_every_negative_operators_plexapi_mapping_equals_its_positive_counterparts():
+    """The stated convention, pinned structurally rather than left to a
+    reviewer rereading 34 rows: a negative operator's ``PLEXAPI_EQUIVALENT``
+    entry is the SAME key as the positive operator it negates (``_NEGATES``
+    names it, or ``None`` to mean "the type's default"). ``_matches`` runs the
+    positive comparison and inverts the boolean -- the negation never touches
+    plexapi -- so a 9b translator that also negated the key would double-negate.
+
+    This is what catches the (int, not) / (float, not) / (duration, not) rows,
+    which shipped as ``"ne"`` (plexapi's own negation key, and a real key in
+    its table) instead of ``"exact"`` (their ``eq`` counterpart's key) --
+    a false instance of the convention that a spot check of "is it a valid
+    plexapi key" would not have caught.
+    """
+    from autoposter.collections import filters as filters_module
+
+    checked = 0
+    for value_type, operators in OPERATORS_BY_TYPE.items():
+        for operator in operators:
+            if operator not in filters_module._NEGATES:
+                continue
+            positive = filters_module._NEGATES[operator] or DEFAULT_OPERATOR[value_type]
+            assert PLEXAPI_EQUIVALENT[(value_type, operator)] == PLEXAPI_EQUIVALENT[
+                (value_type, positive)
+            ], (value_type, operator)
+            checked += 1
+    assert checked > 0
+
+
 def test_every_type_has_a_default_operator_that_is_one_of_its_operators():
     """The default is what a bare ``genre: Horror`` means. It has no modifier
     spelling, which is why it is a separate mapping rather than a row in
@@ -211,6 +241,24 @@ def test_a_dotted_key_names_the_operator():
         "before",
         (dt.date(2024, 1, 1),),
     )
+
+
+def test_a_date_accepts_both_iso_and_kometas_us_spelling():
+    """ISO (dashes, 4-digit year leading) is this module's own form;
+    ``MM/DD/YYYY`` (slashes) is how Kometa's own configs spell it. The two are
+    told apart by punctuation, not position, so accepting both is unambiguous:
+    an operator pasting a date straight out of an existing Kometa config
+    should not have to reformat it."""
+    (iso,) = parse_filters({"added.before": "2024-01-31"}).children
+    (us,) = parse_filters({"added.before": "01/31/2024"}).children
+
+    assert iso.values == (dt.date(2024, 1, 31),)
+    assert us.values == (dt.date(2024, 1, 31),)
+
+
+def test_an_unparseable_us_spelled_date_is_refused_naming_the_field():
+    with pytest.raises(ValueError, match=re.escape("filters.added.before")):
+        parse_filters({"added.before": "13/40/2024"})
 
 
 def test_several_keys_in_one_block_are_all_of():
@@ -302,6 +350,20 @@ def test_each_type_refuses_the_operators_it_does_not_have(key):
         parse_filters({key: "x"})
 
 
+def test_the_operator_refusal_for_a_date_explains_the_bare_form_correctly():
+    """A date's bare form is not literally its ``default_operator`` name
+    (``eq``) -- ``added: 30`` is a window in days, not "added eq 30" -- so the
+    refusal for an operator a date attribute lacks must say so, not
+    "... which means eq", which would teach the wrong thing about what a bare
+    ``added:`` does."""
+    with pytest.raises(ValueError) as caught:
+        parse_filters({"added.gt": "2024-01-01"})
+
+    message = str(caught.value)
+    assert "within-the-last-N-days" in message
+    assert "which means eq" not in message
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -360,7 +422,12 @@ def test_the_refusal_names_the_full_path_of_a_nested_field():
 # Each entry is ``(what the view has, what the config says, expected)``. Every
 # set carries at least one missing-value case (``None``) because the
 # missing-value rule is a table-level invariant, not a per-operator detail --
-# see the coverage test below, which enforces exactly that.
+# see the coverage test below, which enforces exactly that. The invariant
+# itself splits by type family (SETTLED-BY-REVIEW; see the module docstring in
+# ``src/autoposter/collections/filters.py``): ``tag``/``str`` missing values are
+# excluded by a positive operator and included by a negative one, while
+# ``int``/``float``/``date``/``duration`` missing values are excluded by every
+# operator, ``.not`` included.
 #
 # One attribute stands in for each value type: the operators are properties of
 # the type, and the table's own test above pins that every row of a type gets
@@ -453,7 +520,7 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
         (2000, 2000, False),
         (2000, 1999, True),
         (2000, [1999, 2000], False),
-        (None, 2000, True),
+        (None, 2000, False),
     ],
     ("int", "gt"): [
         (2000, 1999, True),
@@ -490,7 +557,7 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
     ("float", "not"): [
         (7.5, 7.5, False),
         (7.5, 8, True),
-        (None, 7.5, True),
+        (None, 7.5, False),
     ],
     ("float", "gt"): [
         (7.5, 7.4, True),
@@ -516,57 +583,60 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
         (7.5, 7.4, False),
         (None, 8, False),
     ],
-    # -- duration: the view is minutes; the config is Kometa's minutes, plus
-    #    the written forms an operator reaches for -------------------------
+    # -- duration: the view is minutes as an INT, ROUNDED (see ItemView.get's
+    #    docstring); the config is Kometa's minutes, plus the written forms an
+    #    operator reaches for -------------------------------------------------
     ("duration", "eq"): [
-        (90.0, 90, True),
-        (90.0, "90m", True),
-        (90.0, "1h30m", True),
-        (90.0, "1:30", True),
-        (60.0, "1h", True),
-        (90.0, 91, False),
+        (90, 90, True),
+        (90, "90m", True),
+        (90, "1h30m", True),
+        (90, "1:30", True),
+        (60, "1h", True),
+        (90, 91, False),
         (None, 90, False),
     ],
     ("duration", "not"): [
-        (90.0, 90, False),
-        (90.0, 91, True),
-        (None, 90, True),
+        (90, 90, False),
+        (90, 91, True),
+        (None, 90, False),
     ],
     ("duration", "gt"): [
-        (90.0, 89, True),
-        (90.0, 90, False),
-        (90.0, "1h29m", True),
+        (90, 89, True),
+        (90, 90, False),
+        (90, "1h29m", True),
         (None, 89, False),
     ],
     ("duration", "gte"): [
-        (90.0, 90, True),
-        (90.0, 91, False),
+        (90, 90, True),
+        (90, 91, False),
         (None, 90, False),
     ],
     ("duration", "lt"): [
-        (90.0, 91, True),
-        (90.0, 90, False),
+        (90, 91, True),
+        (90, 90, False),
         (None, 91, False),
     ],
     ("duration", "lte"): [
-        (90.0, 90, True),
-        (90.0, 89, False),
+        (90, 90, True),
+        (90, 89, False),
         (None, 90, False),
     ],
-    # -- date: the bare form is a window in days, the rest are absolute -------
+    # -- date: the bare form is a window in days, bounded at today; the rest
+    #    are absolute -----------------------------------------------------
     ("date", "eq"): [
         (TODAY, 0, True),
         (dt.date(2026, 8, 20), 30, True),
         (dt.date(2026, 7, 26), 30, True),
         (dt.date(2026, 7, 25), 30, False),
         (dt.datetime(2026, 8, 20, 13, 5), 30, True),
-        (dt.date(2026, 9, 1), 30, True),
+        (dt.date(2026, 9, 1), 30, False),
         (None, 30, False),
     ],
     ("date", "not"): [
         (dt.date(2026, 7, 26), 30, False),
         (dt.date(2026, 7, 25), 30, True),
-        (None, 30, True),
+        (dt.date(2026, 9, 1), 30, True),
+        (None, 30, False),
     ],
     ("date", "before"): [
         (dt.date(2024, 1, 1), dt.date(2024, 1, 2), True),
@@ -646,17 +716,25 @@ def test_every_operator_has_a_case_set_including_a_missing_value():
         assert any(have is None for have, _, _ in cases), pair
 
 
-def test_the_missing_value_rule_is_uniform_across_every_operator():
-    """Stated once, as the invariant it is: an item with no value for the
-    attribute is EXCLUDED by a positive filter and INCLUDED by a negative one.
+def test_the_missing_value_rule_splits_by_type_family():
+    """Stated once, as the (split) invariant it is. ``tag``/``str``: an item
+    with no value for the attribute is EXCLUDED by a positive filter and
+    INCLUDED by a negative one. ``int``/``float``/``date``/``duration``: a
+    missing value is EXCLUDED by every operator, ``.not`` included --
+    SETTLED-BY-REVIEW against Kometa's own number/date filter, whose
+    missing-value check ignores the modifier entirely.
 
     Read off the case table rather than re-listed, so the two cannot disagree.
     """
     negative = {"not", "isnot"}
+    always_excluded = {"int", "float", "date", "duration"}
     for (value_type, operator), cases in OPERATOR_CASES.items():
         for have, _, expected in cases:
             if have is None:
-                assert expected is (operator in negative), (value_type, operator)
+                if value_type in always_excluded:
+                    assert expected is False, (value_type, operator)
+                else:
+                    assert expected is (operator in negative), (value_type, operator)
 
 
 # --- dates: the convention ---------------------------------------------------
@@ -760,3 +838,26 @@ def test_a_view_value_of_the_wrong_type_is_loud_rather_than_silently_missing():
 
     with pytest.raises(TypeError, match="year"):
         evaluate(group, {"year": "2001"}, today=TODAY)
+
+
+# --- the model never touches plexapi ------------------------------------------
+
+
+def test_filters_module_never_imports_plexapi():
+    """The module docstring's central claim, pinned structurally: read the
+    module's own import list rather than trust the docstring to stay true. The
+    operator-mapping test above is the only place in this test file plexapi is
+    imported -- the model under test never is."""
+    import ast
+
+    import autoposter.collections.filters as filters_module
+
+    tree = ast.parse(pathlib.Path(filters_module.__file__).read_text(encoding="utf-8"))
+    imported_roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_roots.add(node.module.split(".")[0])
+
+    assert "plexapi" not in imported_roots
