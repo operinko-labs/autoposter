@@ -530,6 +530,38 @@ def _job(config, plex, *, healthy=True):
     return make_prune_job(ConfigHolder(config), lambda: plex, lambda: healthy)
 
 
+class _ReupsertingPlex(FakePlex):
+    """A probe that answers "gone" and then writes the row back, mid-pass.
+
+    The race the ``(id, updated_at)`` key exists for: a worker re-resolves and
+    re-upserts a row between this pass's probe and its delete. Doing the write
+    from inside ``exists_many`` puts it where a fixture cannot reach it -- in
+    the middle of one ``job.run`` -- so what these tests exercise is the job's
+    own handling of a skip, not ``retire``'s.
+    """
+
+    def __init__(self, session, resolved, live=()):
+        super().__init__(live)
+        self._session = session
+        self._resolved = resolved
+
+    async def exists_many(self, intents):
+        flags = await super().exists_many(intents)
+        await _upsert_media_item(self._session, self._resolved)
+        await self._session.commit()
+        return flags
+
+
+def _resolved_movie(rating_key, *, title="New Title"):
+    """What a worker would write back for a movie it has just re-resolved."""
+    return ResolvedItem(
+        rating_key=rating_key, library="Movies", kind="movie", title=title,
+        year=2001, season_number=None, episode_number=None,
+        root_folder=f"{title} (2001)", file_path="/mnt/Media/Movies/x.mkv",
+        art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
+    )
+
+
 async def test_the_job_is_named_and_paced_off_the_holder():
     """The cadence is a deref, not a captured number, so an edit to
     ``scheduler.prune_days`` is live the way every other job's is."""
@@ -593,6 +625,31 @@ async def test_a_probe_failure_takes_the_pass_down_rather_than_reading_as_gone(s
     message = str(caught.value)
     assert "ConnectionError" in message
     assert "plex.example" not in message and "connection reset" not in message
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 1
+
+
+async def test_a_connect_failure_refuses_without_leaking_the_server_address(session):
+    """The client is built inside the same try as the scan, because building it
+    connects. A refused connection, a rejected token or a plexapi
+    ``BadRequest`` all raise with the server address in the message, and
+    ``is_healthy()`` cannot prevent it: the liveness probe is periodic, so a
+    server can drop between the last probe and this connect. Uncaught, that
+    message is what ``scheduler/core.py`` writes to ``last_detail``, which the
+    dashboard renders."""
+    await _add_item(session, "11")
+
+    def exploding_factory():
+        raise ConnectionError("https://plex.example:32400 boom")
+
+    job = make_prune_job(ConfigHolder(_config(apply=True)), exploding_factory, lambda: True)
+
+    with pytest.raises(PruneRefused) as caught:
+        await job.run(session)
+
+    message = str(caught.value)
+    assert "ConnectionError" in message
+    assert "plex.example" not in message and "boom" not in message
     session.expire_all()
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 1
 
@@ -697,3 +754,51 @@ async def test_the_summary_reports_held_parents_even_when_nothing_is_prunable(se
     assert "2" in summary and "held" in summary.lower()
     session.expire_all()
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 3
+
+
+async def test_an_applied_pass_counts_directories_off_what_it_actually_pruned(session):
+    """A row that survived the pass orphans nothing -- it is still there.
+    Counting the candidates instead would claim a directory no delete created
+    and, as here, fire the cleanup-cap warning over a line this prune never
+    crossed: one directory, exactly at ``max_orphans``, is not a warning."""
+    await _add_item(session, "10")
+    await _add_item(session, "11", title="Old Title")
+
+    plex = _ReupsertingPlex(session, _resolved_movie("11"))
+    summary = await _job(_config(apply=True, max_orphans=1), plex).run(session)
+
+    assert "pruned 1 of 2" in summary
+    assert "1 asset director" in summary
+    assert "WARNING" not in summary, (
+        f"only the pruned row orphans a directory, and it is at the cap: {summary!r}"
+    )
+
+
+async def test_a_skipped_rows_queued_job_is_not_dismissed(session):
+    """Why the disposal is keyed on ``outcome.pruned`` and not on the candidate
+    list, said at the job level. The row was re-upserted between this pass's
+    probe and its delete, so it survives -- and the work queued against it is
+    still live work, which a dismissal keyed on the candidates would sweep away
+    on the strength of an observation that stopped being true mid-pass."""
+    await _add_item(session, "11", title="Old Title")
+    session.add(Job(
+        kind="process_item",
+        payload={"kind": "movie", "title": "Gone", "rating_key": "11"},
+        dedupe_key="process_item:movie:title gone",
+        state="parked",
+    ))
+    await session.commit()
+
+    plex = _ReupsertingPlex(session, _resolved_movie("11"))
+    summary = await _job(_config(apply=True), plex).run(session)
+
+    assert "pruned 0 of 1" in summary
+    assert "dismissed 0" in summary
+    assert "shielded by one that did" in summary
+    session.expire_all()
+    survivor = (await session.execute(select(MediaItem))).scalar_one()
+    assert (survivor.rating_key, survivor.title) == ("11", "New Title")
+    assert (await session.execute(select(Job))).scalar_one().state == "parked"
+    assert (await session.execute(select(EventLog))).scalars().all() == [], (
+        "nothing was deleted, so nothing may carry a deletion audit row"
+    )
