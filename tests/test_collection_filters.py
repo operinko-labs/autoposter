@@ -98,9 +98,13 @@ def test_every_row_is_typed_sourced_and_scoped_from_the_fixed_vocabularies():
 
 def test_the_column_totals_are_the_transcriptions_checksum():
     """Each column's distribution, spelled out. These are the numbers a
-    reviewer checks the table against, and the numbers Task 2's probe moves:
-    the seven ``probe`` rows are exactly the ones whose data may not be in the
-    listing, and each becomes ``listing`` or ``tier2-deferred``."""
+    reviewer checks the table against, and the numbers Task 2's probe moved:
+    the seven ``probe`` rows were exactly the ones whose data might not be in
+    the listing, and the read-only production probe turned each into ``listing``
+    (resolution, alone) or ``tier2-deferred`` (the other six). Each moved row
+    carries its probe data in its note, and
+    ``tests/test_collection_filter_values.py`` fails if the accessors and these
+    tiers ever disagree."""
     by_type = {kind: [r.name for r in FILTER_ATTRIBUTES if r.type == kind] for kind in VALUE_TYPES}
     by_source = {t: [r.name for r in FILTER_ATTRIBUTES if r.source == t] for t in SOURCE_TIERS}
 
@@ -114,6 +118,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     }
     assert by_source["listing"] == [
         "year",
+        "resolution",
         "audience_rating",
         "critic_rating",
         "content_rating",
@@ -122,16 +127,15 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "duration",
         "studio",
     ]
-    assert by_source["probe"] == [
+    assert by_source["tier2-deferred"] == [
         "genre",
-        "resolution",
         "audio_language",
         "subtitle_language",
         "label",
         "network",
         "collection",
     ]
-    assert by_source["tier2-deferred"] == []
+    assert by_source["probe"] == []
 
 
 def test_item_kinds_are_movie_show_or_both():

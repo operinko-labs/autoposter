@@ -87,11 +87,13 @@ __all__ = [
 VALUE_TYPES = ("tag", "str", "int", "float", "date", "duration")
 ITEM_KINDS = ("movie", "show")
 
-# Where a row's data comes from. ``probe`` is Task 2's question, not a shrug:
+# Where a row's data comes from. ``probe`` was Task 2's question, not a shrug:
 # Plex's listing endpoint carries some child elements and not others depending
 # on the server and the request, so a row marked ``probe`` becomes ``listing``
 # (ships scan-free) or ``tier2-deferred`` (drops out of tier 1 rather than
-# shipping a silent request-per-item) once the read-only probe answers.
+# shipping a silent request-per-item) once the read-only probe answers. Task 2's
+# probe (2026-08-25) answered all seven of tier 1's, so no row carries ``probe``
+# today; the tier stays in the vocabulary for the tier-2 rows 9b will add.
 SOURCE_TIERS = ("listing", "probe", "tier2-deferred")
 
 # The operator vocabulary, per value type. These are internal names; the YAML
@@ -231,15 +233,37 @@ _BOTH = ("movie", "show")
 # Fifteen tier-1 rows, in the order the roadmap names them (roadmap.md:538-551),
 # transcribed from Kometa's documented filter semantics. Column totals are
 # asserted in tests/test_collection_filters.py as the transcription's checksum:
-# 8 tag / 1 str / 1 int / 2 float / 2 date / 1 duration; 8 listing / 7 probe;
-# 11 both-kinds / 3 movie-only / 1 show-only.
+# 8 tag / 1 str / 1 int / 2 float / 2 date / 1 duration; 9 listing /
+# 6 tier2-deferred (Task 2's probe moved the seven ``probe`` rows: resolution
+# in, the other six out); 11 both-kinds / 3 movie-only / 1 show-only.
+#
+# THE PROBE, in one paragraph, because six of these rows are now a refusal and
+# a reader deserves the reason without leaving the file. Read-only, against the
+# production server (ShadowPlex, Plex 1.43.4.10903-e5521bd8c, 1955 movies /
+# 284 shows), 2026-08-25; the full log is in
+# ``.superpowers/sdd/task-2-report.md``. The finding that decided most of it:
+# Plex's section listing does not merely omit some child elements, it TRUNCATES
+# the ones it does send. Genre comes back capped at two per item -- never three,
+# anywhere in either section -- while the item's own metadata endpoint returns
+# three and four. So the listing is not a smaller-but-correct answer for tags;
+# it is a wrong one, and a filter built on it would produce full, plausible,
+# wrong collections rather than visibly empty ones. Twenty-two listing
+# parameters were tried against the tag counts; none changed anything.
 FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
-        "genre", "tag", _BOTH, "probe",
+        "genre", "tag", _BOTH, "tier2-deferred",
         "Plex's `<Genre>` child element, which plexapi exposes as the `genres` "
-        "cached property (video.py:433) -- present on a listing item only if the "
-        "listing XML carried the child, which is Task 2's probe question. Exact "
-        "tag match, case-insensitive: `genre: Hor` does NOT match `Horror`.",
+        "cached property (video.py:433). Exact tag match, case-insensitive: "
+        "`genre: Hor` does NOT match `Horror`. PROBE VERDICT: DEFERRED, and the "
+        "surprising one -- the listing DOES carry `<Genre>`, but capped at two "
+        "per item. Per-item counts over the full movie listing were {1: 175, "
+        "2: 1780} and over the shows {1: 43, 2: 241}: not one item anywhere with "
+        "three, against a metadata endpoint that routinely returns three or four. "
+        "Twenty sampled movies had 38 genres in the listing against 58 in "
+        "metadata, agreeing exactly on 3 of 20. `2 Fast 2 Furious` lists as "
+        "Action/Crime and is also a Thriller. A listing-backed accessor would "
+        "therefore not fail, it would answer WRONG, so genre leaves tier 1 "
+        "rather than ship a filter that silently drops a third of its matches.",
     ),
     FilterAttribute(
         "year", "int", _BOTH, "listing",
@@ -248,15 +272,20 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "load naming the field rather than parsing as something else.",
     ),
     FilterAttribute(
-        "resolution", "tag", ("movie",), "probe",
-        "Stream-level: Plex carries it on `<Media videoResolution=...>`, which "
-        "plexapi reaches through the `media` cached property. EXPECT THIS TO "
-        "DEFER to tier 2 -- the roadmap names it tier 1, but the plan's "
-        "no-silent-N+1 rule outranks the naming, and a listing that carries "
-        "Media children is the less likely probe outcome. Values are Plex's "
-        "own: 4k, 1080, 720, 576, 480, sd. Movie-only here because a show's "
-        "resolution is a property of its episodes, and per-episode traversal is "
-        "not a tier-1 read.",
+        "resolution", "tag", ("movie",), "listing",
+        "Plex carries it on `<Media videoResolution=...>`, which plexapi reaches "
+        "through the `media` cached property. Values are Plex's own: 4k, 1080, "
+        "720, 576, 480, sd. Movie-only because a show's resolution is a property "
+        "of its episodes, and per-episode traversal is not a tier-1 read. PROBE "
+        "VERDICT: SHIPS -- the one row that went the opposite way to this note's "
+        "original expectation. All 1955 movies carry `<Media>` in the listing, "
+        "all 2009 Media elements across them carry `videoResolution` (observed "
+        "values: 1080 x1780, sd, 4k, 480, 720), and the listing's Media set "
+        "matched the metadata endpoint's on all 25 items sampled -- including "
+        "every multi-version item found, which is why the view hands back a LIST "
+        "of resolutions rather than one. Unlike the tag families, Media is not "
+        "truncated: the per-item count histogram was {1: 1905, 2: 46, 3: 4}, "
+        "which is the real distribution of file versions, not a cap.",
     ),
     FilterAttribute(
         "audience_rating", "float", _BOTH, "listing",
@@ -283,21 +312,32 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "filter, per the plan's Plex-only adjudication.",
     ),
     FilterAttribute(
-        "audio_language", "tag", ("movie",), "probe",
-        "Stream-level, like `resolution`: the languages of the item's audio "
-        "streams, under `<Media><Part><Stream>`. EXPECT THIS TO DEFER -- "
-        "streams are a level below the Media children a listing might carry.",
+        "audio_language", "tag", ("movie",), "tier2-deferred",
+        "Stream-level: the languages of the item's audio streams, under "
+        "`<Media><Part><Stream>`. PROBE VERDICT: DEFERRED, exactly as this note "
+        "predicted -- streams are a level below the Media children the listing "
+        "carries, and it stops at Part. Zero `<Stream>` elements across 200 "
+        "listing movies; the same movie via /library/metadata has four. Note "
+        "that plexapi's `Movie`/`Show` also expose an `audioLanguage` ATTRIB, "
+        "which is the item's preferred-audio SETTING and not the languages its "
+        "files contain -- reading that would be a same-name-different-filter "
+        "bug of the kind the item_facts adjudication already ruled out.",
     ),
     FilterAttribute(
-        "subtitle_language", "tag", ("movie",), "probe",
-        "Stream-level, like `audio_language`, and expected to defer with it.",
+        "subtitle_language", "tag", ("movie",), "tier2-deferred",
+        "Stream-level, like `audio_language`, and DEFERRED with it on the same "
+        "probe data (no `<Stream>` element reaches the listing at all). The "
+        "`subtitleLanguage` attrib is the same trap as `audioLanguage`.",
     ),
     FilterAttribute(
-        "label", "tag", _BOTH, "probe",
+        "label", "tag", _BOTH, "tier2-deferred",
         "Plex's `<Label>` child element -> the `labels` cached property "
-        "(video.py:441). reconcile.py:70-83 already pays a deliberate reload "
-        "for labels per collection, which is evidence the listing may not carry "
-        "them; the probe decides.",
+        "(video.py:441). PROBE VERDICT: DEFERRED -- the listing strips the "
+        "family outright. Zero `<Label>` children across all 1955 movies and all "
+        "284 shows, while the metadata endpoint carried a label for all 30 "
+        "sampled movies and for 19 of 20 sampled shows (`Overlay`, this "
+        "server's Kometa-era marker). This settles what reconcile.py:70-83's "
+        "deliberate per-collection reload was already evidence for.",
     ),
     FilterAttribute(
         "added", "date", _BOTH, "listing",
@@ -336,22 +376,36 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "all instead of everything Warner.",
     ),
     FilterAttribute(
-        "network", "tag", ("show",), "probe",
+        "network", "tag", ("show",), "tier2-deferred",
         "Show-only. plexapi reads `Show.network` from a listing ATTRIB "
-        "(video.py:618), not from a child element, so unlike genre/label/"
-        "collection this one may well be listing-resident -- but the 9a fact "
-        "sheet audited `Movie._loadData` only, so the probe still has to "
-        "confirm the show listing carries the attrib. Kometa filters `network` "
-        "as a tag, so the bare form is an exact match even though the Plex "
-        "value is one string.",
+        "(video.py:618), not from a child element, so the expectation was that "
+        "this one might well be listing-resident. PROBE VERDICT: DEFERRED, and "
+        "STRANDED -- Plex 1.43.4 does not emit `network` at all. Zero of 284 "
+        "shows carry the attrib in the listing, AND it is absent from "
+        "/library/metadata for the shows checked, so the reload the naive "
+        "accessor would pay per show returns None anyway. What those shows do "
+        "carry is a `studio` naming the network (E4, Hulu, Paramount+), which is "
+        "a DIFFERENT attribute with its own row and its own string semantics; "
+        "conflating them is not a substitution this table will make silently. "
+        "Filed for tier 2 -- see the Task 2 report's recommendation.",
     ),
     FilterAttribute(
-        "collection", "tag", _BOTH, "probe",
+        "collection", "tag", _BOTH, "tier2-deferred",
         "Plex's `<Collection>` child element -> the `collections` cached "
         "property (video.py:417): the collections the ITEM is already a member "
         "of on the server. Not this service's definitions, and not the "
         "collection being built -- filtering on it is how an operator says "
-        "\"anything not already in X\".",
+        "\"anything not already in X\". PROBE VERDICT: DEFERRED. The listing "
+        "carries the element for only 257 of 1955 movies, and where it is "
+        "missing that is not the truth: 6 of 20 sampled movies disagreed with "
+        "the metadata endpoint (4 collection memberships in the listing against "
+        "10 in metadata), `2 Fast 2 Furious` among them -- listed as being in no "
+        "collection while actually in The Fast and the Furious Collection. Shows "
+        "fared better (20 of 20 agreed) but a family that is right for one "
+        "library kind and wrong for the other is not a tier-1 filter. Note also "
+        "that `includeCollections=1`, the parameter whose name suggests it fixes "
+        "this, does something else entirely: it MIXES Collection objects into "
+        "the result set, changing what the listing returns.",
     ),
 )
 
