@@ -4,8 +4,12 @@ Same transport as the charts: the same ``api.graphql.imdb.com`` endpoint, the
 same mandatory ``x-imdb-client-name`` header (without it the endpoint answers
 403), a raw POST rather than ``providers.fetch.fetch_json`` -- that helper is
 JSON-over-GET and caches by URL, neither of which fits a GraphQL POST -- and
-the same raise-on-everything posture, because these collections use sync
-semantics and an empty membership one layer down means "remove every member".
+the same raise-on-everything posture, because the failure that matters cuts
+both ways: a wrong non-empty result overwrites the collection, and an empty
+one is read one layer down as "make no changes"
+(``lists.reconcile_list_collection``) -- so a drift-empty response freezes
+the collection instead of erroring, indistinguishable from a healthy no-op
+until it silently stops updating.
 
 **The queries below were verified against the live endpoint on 2026-08-25**,
 not recalled, and the fixtures under ``tests/fixtures/collections/`` are

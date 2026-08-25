@@ -84,6 +84,13 @@ __all__ = [
 ]
 
 
+# Sentinel for "this row has no TMDb-documented default" -- distinct from
+# ``None``, which already means "the operator didn't set this field". A real
+# default is compared with ``!=`` in the empty-guard below, and the sentinel
+# never equals a real value, so a row with no default simply never matches.
+_NO_WIRE_DEFAULT = object()
+
+
 @dataclass(frozen=True)
 class DiscoverParam:
     """One row of the matrix.
@@ -94,12 +101,23 @@ class DiscoverParam:
     a dot is not legal in an identifier, and pydantic carries the real name as
     the field's alias. ``scope`` is which discover endpoint accepts it:
     ``"movie"``, ``"tv"``, or ``"shared"`` for the ones both document.
+
+    ``wire_default`` is TMDb's own default for this parameter, when one is
+    documented and the model can express it -- see ``_needs_at_least_one_attribute``
+    for why it matters: a value equal to what TMDb already assumes with the
+    field unset sends the same unfiltered request as leaving it unset. Only
+    ``include_adult`` carries one today; the rest of the matrix's boolean rows
+    (``include_video``, ``include_null_first_air_dates``,
+    ``screened_theatrically``) have no "defaults to" note on their row, so
+    unlike ``include_adult`` their TMDb default was never pinned during
+    transcription and is left alone rather than guessed at.
     """
 
     name: str
     type: Any
     scope: str
     note: str = ""
+    wire_default: Any = _NO_WIRE_DEFAULT
 
     @property
     def field(self) -> str:
@@ -232,7 +250,10 @@ DISCOVER_PARAMS: tuple[DiscoverParam, ...] = (
     DiscoverParam("with_watch_providers", str, "shared"),
     DiscoverParam("without_watch_providers", str, "shared"),
     DiscoverParam("with_watch_monetization_types", str, "shared"),
-    DiscoverParam("include_adult", bool, "shared", "TMDb defaults it to false; unset leaves that alone"),
+    DiscoverParam(
+        "include_adult", bool, "shared", "TMDb defaults it to false; unset leaves that alone",
+        wire_default=False,
+    ),
     DiscoverParam("with_companies", str, "shared", "a company produces both films and shows"),
     DiscoverParam("without_companies", str, "shared"),
     DiscoverParam("with_genres", str, "shared"),
@@ -322,6 +343,11 @@ DISCOVER_PARAMS: tuple[DiscoverParam, ...] = (
 # here and the model would come out short a field.
 BY_NAME: dict[str, DiscoverParam] = {row.name: row for row in DISCOVER_PARAMS}
 
+# Python identifier -> row, the same map keyed the other way: the empty-guard
+# below walks ``model_fields_set``, which yields ``field`` values, not TMDb's
+# ``name``.
+BY_FIELD: dict[str, DiscoverParam] = {row.field: row for row in DISCOVER_PARAMS}
+
 # Filters TMDb documents as needing a companion, and which one. Both of these
 # are silent-no-op hazards rather than errors: TMDb answers a watch-provider
 # filter with no `watch_region` by ignoring the filter, so the operator gets
@@ -381,9 +407,20 @@ class _TmdbDiscoverParamsBase(BaseModel):
         result with a redundant order on top. Only ``_FILTERING_FIELDS``
         counts here; see its definition for why that set, not this guard, is
         where a newly added row has to be excluded.
+
+        A value equal to TMDb's own documented default is the same hole with
+        the opposite shape: ``{include_adult: false}`` alone sets a field, but
+        ``false`` is what TMDb already assumes with the field unset, so the
+        request sent is the unfiltered query again -- the exact outcome this
+        guard exists to refuse, and the exact hole ``votes_gte: ge=1`` closes
+        on the IMDb search side. ``{include_adult: true}`` genuinely widens
+        the query and counts normally. ``DiscoverParam.wire_default`` carries
+        this per row; see its docstring for which rows have one.
         """
         if not any(
-            name in _FILTERING_FIELDS and getattr(self, name) is not None
+            name in _FILTERING_FIELDS
+            and (value := getattr(self, name)) is not None
+            and value != BY_FIELD[name].wire_default
             for name in self.model_fields_set
         ):
             raise ValueError(

@@ -53,10 +53,12 @@ leave it wrong.
 **A role that matches nothing warns and returns empty.** It cannot raise:
 a person with no television work at all is a legitimate answer for a Show
 library, and a legitimate definition would then fail on one library and
-succeed on another. It cannot be silent either -- an empty membership means
-"remove every member" one layer down, and a wrong role string produces exactly
-the same empty. The warning names the person, the role and how many credits
-were actually read, so the two cases are distinguishable from the log alone.
+succeed on another. It cannot be silent either -- an empty membership is read
+one layer down as "make no changes" (``lists.reconcile_list_collection``), so
+a wrong role string would silently freeze the collection instead of erroring,
+indistinguishable from the legitimate case above. The warning names the
+person, the role and how many credits were actually read, so the two cases
+are distinguishable from the log alone.
 ``tmdb_discover`` warns at its page cap for the same reason.
 
 **Deliberately absent -- this is the 10c line, and it is a hard stop.**

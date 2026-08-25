@@ -226,6 +226,24 @@ def test_a_genuine_filter_alongside_sort_by_satisfies_the_guard():
     assert definition.params["with_genres"] == "18"
 
 
+def test_include_adult_false_alone_does_not_satisfy_the_empty_guard():
+    """``include_adult: false`` sets a field, but ``false`` is what TMDb
+    already assumes with the field unset -- the same unfiltered query as
+    ``sort_by`` alone, and the exact hole ``votes_gte: ge=1`` closes on the
+    IMDb search side (``builders/imdb_search.py``)."""
+    with pytest.raises(ValueError, match="at least one attribute") as caught:
+        _definition(include_adult=False)
+    assert "tmdb_chart" in str(caught.value)
+
+
+def test_include_adult_true_alone_satisfies_the_guard():
+    """``include_adult: true`` genuinely widens the query past TMDb's own
+    default, so unlike ``false`` it counts as a real filter on its own."""
+    definition = _definition(include_adult=True)
+
+    assert definition.params["include_adult"] is True
+
+
 def test_a_watch_provider_filter_without_a_watch_region_is_refused():
     """TMDb ignores the provider filter without ``watch_region`` and answers the
     unfiltered query, so the collection would hold every title rather than the

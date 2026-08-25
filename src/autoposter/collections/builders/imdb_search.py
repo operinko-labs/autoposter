@@ -3,8 +3,12 @@
 The transport is ``collections/imdb_lists.py`` -- the same endpoint, the same
 mandatory ``x-imdb-client-name`` header, the same level-by-level drift
 validation and the same raise-on-anything-unexpected posture the list builders
-get, because the failure that matters is identical: an empty membership one
-layer down means "remove every member".
+get, because the failure that matters is identical either way: a wrong
+non-empty result overwrites the collection, and an empty one is read one
+layer down as "make no changes" (``lists.reconcile_list_collection``) -- so
+drift that empties the response silently freezes the collection instead of
+erroring, indistinguishable from a healthy no-op until someone notices it
+never updates.
 
 What this module owns is the *vocabulary*. IMDb's ``advancedTitleSearch``
 validates the **shape** of a constraint and not its **values**: the walk behind
