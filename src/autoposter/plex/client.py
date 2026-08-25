@@ -312,12 +312,33 @@ class PlexClient:
                     target = item
                     parent_rating_key = None
                     if intent.kind == "season":
+                        if intent.season_number is None:
+                            # A season intent with no season number cannot be
+                            # addressed under the show, so the pipeline provably
+                            # cannot resolve it -- absence concluded from the
+                            # data, never from a provider error. The episode
+                            # branch below carries the full reasoning.
+                            return None
                         try:
                             target = item.season(season=intent.season_number)
                         except PlexNotFound:
                             return None
                         parent_rating_key = str(item.ratingKey)
                     elif intent.kind == "episode":
+                        if intent.season_number is None or intent.episode_number is None:
+                            # An episode intent with no coordinates cannot be
+                            # addressed under the show, so the pipeline provably
+                            # cannot resolve it -- absence concluded from the
+                            # data, never from a provider error. Plex's TV agent
+                            # really does hand back `index: None` (see
+                            # `render/naming.py::missing_number`, which
+                            # documents the year-grouped specials this comes
+                            # from and guards the same shape at the naming
+                            # call); `Show.episode(season=None, episode=None)`
+                            # is a call plexapi refuses by contract, so making
+                            # it at all only converts a knowable absence into a
+                            # BadRequest that a prune scan reads as a failure.
+                            return None
                         try:
                             target = item.episode(
                                 season=intent.season_number, episode=intent.episode_number

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from plexapi.exceptions import BadRequest as PlexBadRequest
 from plexapi.exceptions import NotFound as PlexNotFound
 
 from autoposter.config.loader import load_config
@@ -135,12 +136,21 @@ class FakeShow(FakeItem):
         self._seasons[number] = season_item
 
     def season(self, season=None):
+        # plexapi refuses an unaddressable call before any request goes out:
+        # with no title and no number there is nothing to ask the server for,
+        # and BadRequest -- not NotFound -- is what comes back.
+        if season is None:
+            raise PlexBadRequest("Missing argument: title or season is required")
         try:
             return self._seasons[season]
         except KeyError:
             raise PlexNotFound(f"season {season} not found")
 
     def episode(self, season=None, episode=None):
+        # Same contract as `season` above: plexapi needs a title, or BOTH
+        # coordinates, and raises BadRequest when it has neither.
+        if season is None or episode is None:
+            raise PlexBadRequest("Missing argument: title or season and episode are required")
         return self.season(season=season)._episode(episode)
 
 
@@ -354,6 +364,123 @@ async def test_resolve_an_episode_plex_has_not_scanned_yet_raises_item_not_found
 
     with pytest.raises(ItemNotFound):
         await client.resolve(intent)
+
+
+async def test_an_episode_intent_without_coordinates_is_absent_not_a_bad_request():
+    """A ``media_items`` row with NULL season/episode numbers is unresolvable.
+
+    Production: the first ``plex_prune`` pass refused the whole scan with
+    ``PruneRefused: ... (BadRequest)`` because such a row's stale rating key
+    fell through to the GUID search, matched the show, and then descended with
+    ``item.episode(season=None, episode=None)`` -- a call plexapi refuses by
+    contract before any request goes out. One row poisoned the entire sweep.
+    Since ``resolve()`` shares the same search, those rows' render jobs were
+    erroring on BadRequest instead of parking cleanly as ItemNotFound.
+    """
+    show = _show_with_season_and_episode()
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+    server = FakeServer([shows])
+    client = PlexClient(server=server, excluded_libraries=[])
+    no_coordinates = RenderIntent(
+        kind="episode", title="Severance", tvdb_id=371980,
+        season_number=None, episode_number=None, rating_key="557",
+    )
+    # The shape production actually holds: a year-grouped special, filed under
+    # `parentIndex` 2024 with no `index` of its own. plexapi needs BOTH
+    # coordinates, so half of them is still an unmakeable call.
+    year_grouped_special = RenderIntent(
+        kind="episode", title="Severance", tvdb_id=371980,
+        season_number=2024, episode_number=None, rating_key="557",
+    )
+
+    for intent in (no_coordinates, year_grouped_special):
+        with pytest.raises(ItemNotFound):
+            await client.resolve(intent)
+    assert await client.exists_many([no_coordinates, year_grouped_special]) == [False, False]
+
+
+async def test_an_episode_intent_with_coordinates_still_descends():
+    """The guard above reads the data, so it must not fire on a complete row."""
+    show = _show_with_season_and_episode()
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+    server = FakeServer([shows])
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="episode", title="Severance", tvdb_id=371980,
+        season_number=2, episode_number=3, rating_key="557",
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "557"
+    assert await client.exists_many([intent]) == [True]
+
+
+async def test_a_live_special_with_no_episode_number_still_resolves_by_rating_key():
+    """The guard sits in the GUID descend only, and that asymmetry is the point.
+
+    A year-grouped special whose stored rating key STILL names it never reaches
+    the descend: ``_fetch_by_rating_key_sync`` compares the item's own
+    ``index``/``parentIndex`` against the intent's numbers, and ``None ==
+    None`` matches. So the live ones keep resolving exactly as before, and only
+    the ones whose key has gone stale -- which is to say, the ones the descend
+    could never have addressed anyway -- read as absent.
+    """
+    show = _show_with_season_and_episode()
+    special = FakeItem(
+        "601", "The 2024 Special", None, None, [], item_type="episode",
+        parent_rating_key="600", library_section_title="Shows", show=show,
+        index=None, parent_index=2024,
+    )
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+    server = FakeServer([shows], items_by_key={601: special})
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="episode", title="The 2024 Special", tvdb_id=371980,
+        season_number=2024, episode_number=None, rating_key="601",
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "601"
+    assert await client.exists_many([intent]) == [True]
+    assert shows.getguid_calls == [], (
+        "the stored rating key resolved it; the descend was never reached"
+    )
+
+
+async def test_a_season_intent_without_a_number_is_absent_not_a_bad_request():
+    """The episode descend's sibling hazard: ``Show.season(season=None)`` is
+    refused by plexapi the same way, so a season row with a NULL number would
+    poison a prune scan identically."""
+    show = _show_with_season_and_episode()
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+    server = FakeServer([shows])
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="season", title="Severance", tvdb_id=371980,
+        season_number=None, rating_key="556",
+    )
+
+    with pytest.raises(ItemNotFound):
+        await client.resolve(intent)
+    assert await client.exists_many([intent]) == [False]
+
+
+async def test_a_season_intent_with_a_number_still_descends():
+    show = _show_with_season_and_episode()
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+    server = FakeServer([shows])
+    client = PlexClient(server=server, excluded_libraries=[])
+    intent = RenderIntent(
+        kind="season", title="Severance", tvdb_id=371980,
+        season_number=2, rating_key="556",
+    )
+
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "556"
+    assert await client.exists_many([intent]) == [True]
 
 
 async def test_resolved_season_and_episode_feed_the_right_text_into_title_text_for():
