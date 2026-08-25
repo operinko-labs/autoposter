@@ -545,9 +545,9 @@ Four more things bound what one pass can do:
 1. **An unhealthy Plex refuses the whole pass.** A server that answers nothing
    would make every row look gone. The liveness state (the same one that gates
    job claiming) is checked before the table is even read.
-2. **Any probe error refuses the whole pass**, and is recorded as `failed`
-   rather than `ok` in `scheduled_runs`. The detail names the exception class
-   only, never the server address.
+2. **Any error while connecting to Plex or probing it refuses the whole
+   pass**, and is recorded as `failed` rather than `ok` in `scheduled_runs`.
+   The detail names the exception class only, never the server address.
 3. **A parent is pruned only when it and every descendant are individually
    gone.** `media_items.parent_id` cascades, so deleting a show removes its
    seasons and episodes; one episode that still resolves holds the whole show.
@@ -555,6 +555,11 @@ Four more things bound what one pass can do:
    a surviving show is still pruned on its own — that is the re-match case.
 4. **The empty-table guard**: an empty `media_items` refuses, because that
    means a restore has not finished.
+
+An applied pass also protects itself against changes made while it runs: a
+row that changed since the probe -- or was held because a row underneath it
+changed -- is left alone rather than deleted on stale evidence, and the
+summary reports how many rows were left that way.
 
 Each deleted row leaves one `events_log` row (`source = 'prune'`,
 `event_type = 'media_item_pruned'`) carrying its whole identity — rating key,

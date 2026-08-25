@@ -239,11 +239,16 @@ def create_app(
             # PlexClient's section-constrained search and its library
             # exclusions, not a bare fetchItem. Built inside the factory so
             # that both the connect and the client construction happen on the
-            # thread the job offloads to, and read off the holder so a changed
-            # exclusion list is honoured per run. `health.healthy` is passed as
-            # a deref for the same reason the worker pool takes one: an
-            # unhealthy Plex must be seen at the moment the pass starts, and
-            # for THIS job it means refuse, not wait.
+            # thread the job offloads to, and read off the holder -- so an
+            # edited exclusion list reaches this job on its next run, even
+            # before the restart the rest of the `plex` section waits for
+            # (it is a FROZEN_SECTIONS entry; the settings editor tells the
+            # operator so). The server connection itself still comes from
+            # server_factory, built once at startup like the rest of `plex`.
+            # `health.healthy` is passed as a deref for the same reason the
+            # worker pool takes one: an unhealthy Plex must be seen at the
+            # moment the pass starts, and for THIS job it means refuse, not
+            # wait.
             scheduler_jobs.append(make_prune_job(
                 holder,
                 lambda: PlexClient(

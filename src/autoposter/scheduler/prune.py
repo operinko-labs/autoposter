@@ -115,13 +115,7 @@ class PruneScan:
 
     @property
     def directories(self) -> int:
-        """How many asset directories this prune would orphan.
-
-        One per pruned movie or show: seasons and episodes keep their artwork
-        under the show's folder (``render/naming.py``), so they orphan nothing
-        of their own. Reported because those directories become the existing
-        ``asset_cleanup`` sweep's work -- this module touches no files at all.
-        """
+        """How many asset directories this prune would orphan -- see ``_directory_count``."""
         return _directory_count(self.prunable)
 
 

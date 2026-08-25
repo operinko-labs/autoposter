@@ -451,6 +451,9 @@ async def test_the_lifespan_fills_the_dict_the_broadcaster_holds_rather_than_reb
         assert app.state.scheduler_intervals, (
             "precondition: the example config registers scheduler jobs"
         )
+        assert "plex_prune" in app.state.scheduler_intervals, (
+            "the boot registration in app.py did not append the prune job"
+        )
         assert held == app.state.scheduler_intervals, (
             "the lifespan rebound app.state.scheduler_intervals; the broadcaster "
             f"still holds the mapping it was given ({held!r}) and the stream "
