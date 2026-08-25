@@ -402,6 +402,40 @@ class PlexClient:
         """
         return await asyncio.to_thread(self._list_items_sync, wanted_type)
 
+    def _exists_sync(self, intent: RenderIntent) -> bool:
+        return self._search_sync(intent) is not None
+
+    async def exists_many(self, intents: list[RenderIntent]) -> list[bool]:
+        """Whether each intent still resolves, answered in the order given.
+
+        The pruner's notion of "gone" (``scheduler/prune.py``), and
+        deliberately NOT ``resolve()``: resolve raises ``ItemNotFound`` for two
+        states that are not absence at all -- a movie Plex has but has not
+        scanned media parts for yet, and an item whose file sits outside every
+        library root. A pruner reading either as "gone" would delete rows for
+        items Plex still holds. What IS shared with resolve is the half that
+        decides existence, ``_search_sync``: the stored rating key first, then
+        a GUID search, both constrained to the non-excluded sections of the
+        right type. So an item moved into an excluded library reads as gone
+        here for exactly the reason it is unreachable to the pipeline.
+
+        One thread for the whole walk rather than one per intent: a
+        library-sized sweep is ~16,000 probes, and that many hops through the
+        event loop -- shared with the worker pool and the Plex liveness probe
+        -- is the stall ``find_orphaned_assets`` offloads its own walk to
+        avoid.
+
+        Nothing is caught here. A probe that fails for any reason other than
+        "not found" -- the server unreachable mid-walk, a token that stopped
+        working -- must reach the caller, because a pruner that read an error
+        as absence would delete the library.
+        """
+
+        def _walk() -> list[bool]:
+            return [self._exists_sync(intent) for intent in intents]
+
+        return await asyncio.to_thread(_walk)
+
     async def resolve(self, intent: RenderIntent) -> ResolvedItem:
         match = await asyncio.to_thread(self._search_sync, intent)
         if match is None:

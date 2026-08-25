@@ -811,3 +811,124 @@ async def test_list_items_honours_the_library_exclusions():
     items = await client.list_items("movie")
 
     assert [item.title for item in items] == ["Dune: Part Two"]
+
+
+async def test_exists_many_answers_each_intent_in_order(server):
+    """The pruner's whole question, and it must line up with its input."""
+    client = PlexClient(server=server, excluded_libraries=["Photos"])
+    intents = [
+        RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134),
+        RenderIntent(kind="movie", title="Gone", tmdb_id=999999),
+        RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134),
+    ]
+
+    assert await client.exists_many(intents) == [True, False, True]
+
+
+async def test_exists_many_uses_the_stored_rating_key_before_any_guid_search():
+    """A row carries the exact Plex identity it was resolved under, so the
+    probe must try that first -- otherwise every season and episode row would
+    be judged by the GUID search, which reads their ids as the series'."""
+    episode = FakeItem(
+        "555", "An Episode", 2020, None, [], item_type="episode",
+        library_section_title="TV Shows", index=3, parent_index=1,
+    )
+    show = FakeShow("500", "A Show", 2020, None, ["tvdb://77"],
+                    library_section_title="TV Shows")
+    episode._show = show
+    shows = FakeSection("TV Shows", "/mnt/Media/TV", [show], section_type="show")
+    server = FakeServer([shows], items_by_key={555: episode})
+    client = PlexClient(server=server, excluded_libraries=[])
+
+    intent = RenderIntent(
+        kind="episode", title="An Episode", season_number=1, episode_number=3,
+        rating_key="555",
+    )
+
+    assert await client.exists_many([intent]) == [True]
+    assert shows.getguid_calls == [], (
+        "the stored rating key resolved it; no GUID search should have happened"
+    )
+
+
+async def test_exists_many_reads_an_item_in_an_excluded_library_as_gone(server):
+    """The pipeline never looks inside an excluded library, so neither does
+    this: excluding a library is what made the DVR rows unresolvable, and
+    reporting them as present would leave them parking forever."""
+    client = PlexClient(server=server, excluded_libraries=["Movies", "Photos"])
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134)
+
+    assert await client.exists_many([intent]) == [False]
+
+
+async def test_exists_many_reads_a_movie_with_no_media_parts_as_present():
+    """The distinction that stops this being ``resolve()``. ``resolve`` raises
+    ItemNotFound for a movie Plex has but has not scanned parts for yet; that
+    item is emphatically not gone, and pruning its row would delete a row for
+    something Plex still holds."""
+    unscanned = FakeItem("900", "Just Added", 2024, None, ["tmdb://5"])
+    movies = FakeSection("Movies", "/mnt/Media/Movies", [unscanned])
+    client = PlexClient(server=FakeServer([movies]), excluded_libraries=[])
+    intent = RenderIntent(kind="movie", title="Just Added", tmdb_id=5)
+
+    with pytest.raises(ItemNotFound):
+        await client.resolve(intent)
+    assert await client.exists_many([intent]) == [True]
+
+
+async def test_exists_many_lets_a_probe_failure_out():
+    """A dead server must never read as "everything is gone". Nothing but
+    NotFound is caught anywhere below this, and the caller refuses the pass."""
+
+    class BrokenServer(FakeServer):
+        def fetchItem(self, ekey):
+            raise ConnectionError("connection reset")
+
+    movies = FakeSection("Movies", "/mnt/Media/Movies", [])
+    client = PlexClient(server=BrokenServer([movies]), excluded_libraries=[])
+    intent = RenderIntent(kind="movie", title="Anything", rating_key="1")
+
+    with pytest.raises(ConnectionError):
+        await client.exists_many([intent])
+
+
+async def test_exists_many_offloads_the_whole_walk_in_one_thread(server, monkeypatch):
+    """A library-sized sweep is ~16,000 probes. One ``asyncio.to_thread`` per
+    probe would be 16,000 hops through the loop that also carries the worker
+    pool and the Plex liveness probe -- so the walk is offloaded once, the way
+    ``find_orphaned_assets`` offloads its own."""
+    import asyncio as asyncio_module
+    import threading
+
+    from autoposter.plex import client as client_module
+
+    real_to_thread = asyncio_module.to_thread
+    calls = []
+    threads = set()
+
+    async def counting_to_thread(func, *args, **kwargs):
+        calls.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    real_sections = client_module.PlexClient._sections
+
+    def spying_sections(self, wanted_type):
+        threads.add(threading.current_thread())
+        return real_sections(self, wanted_type)
+
+    monkeypatch.setattr(client_module.asyncio, "to_thread", counting_to_thread)
+    monkeypatch.setattr(client_module.PlexClient, "_sections", spying_sections)
+
+    client = PlexClient(server=server, excluded_libraries=["Photos"])
+    intents = [
+        RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134)
+        for _ in range(5)
+    ]
+
+    assert await client.exists_many(intents) == [True] * 5
+    assert len(calls) == 1, (
+        "the whole walk must go through one asyncio.to_thread, not one per intent"
+    )
+    assert threads and threading.current_thread() not in threads, (
+        "the probes ran on the event loop thread"
+    )
