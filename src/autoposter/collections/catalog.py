@@ -867,8 +867,9 @@ _US_SHOW_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # **These titles carry a region prefix and the US ones do not.** Upstream
 # titles all seven families identically (``<<key_name>> <<library_typeU>>s``),
 # which across six co-enabled families collides eight ways: AU, NZ and MAL all
-# have a ``G`` bucket and so does the US movie table, and ``PG``, ``M``, ``R``,
-# ``PG-13``, ``18`` and ``R18`` repeat likewise. Two built-in definitions
+# have a ``G`` bucket and so does the US movie table, ``PG``, ``M``, ``R``,
+# ``PG-13``, ``18`` and ``R18`` repeat likewise, and UK's ``12`` collides with
+# DE's own ``12``. Two built-in definitions
 # sharing one title overwrite each other on every pass and the members hash
 # flaps between them forever -- and that is exactly the collision
 # ``_titles_must_not_collide`` structurally cannot catch (module docstring),
@@ -1049,9 +1050,11 @@ _MAL_CONTENT_RATINGS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Rx", ("Rx", "Rx - Hentai")),
 )
 
-# One row per regional family: the country code (which is both the key suffix
-# and the title prefix), the picker's label, the table, the sentence naming
-# the rating system, and the note its semantics need. The trap notes are the
+# One row per regional family: the country code (the key suffix), the title
+# prefix (``code.upper()`` for all five rows today, kept as its own column
+# rather than derived so a family whose prefix must differ from its code has
+# somewhere to put it), the picker's label, the table, the sentence naming the
+# rating system, and the note its semantics need. The trap notes are the
 # point of the last column -- a bucket whose letter means something else in
 # another country is a collection an operator would only find wrong by opening
 # it.
@@ -1095,8 +1098,8 @@ _REGIONAL_RATING_PRESETS: tuple[Preset, ...] = tuple(
         name=name,
         description=(
             "%s Each bucket carries Kometa's own addon list, so a title "
-            "certified under a neighbouring country's system lands in the "
-            "matching bucket rather than in nothing. %s The titles carry the "
+            "certified under another system lands in the matching bucket "
+            "rather than in nothing. %s The titles carry the "
             "'%s' prefix -- unlike the US rows, which shipped bare -- because "
             "these families share bucket letters with each other and switching "
             "two of them on would otherwise build two collections under one "
