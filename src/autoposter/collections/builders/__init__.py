@@ -109,7 +109,12 @@ register(TvdbListBuilder())
 register(TvdbMovieBuilder())
 register(TvdbShowBuilder())
 register(ImdbAwardBuilder())
-register(ImdbAwardYearsBuilder())
+# One registration per ceremony, because ``engine.definition_titles`` reads a
+# year builder's ``TITLE_PATTERN`` off the registry entry with no definition in
+# hand -- see ``imdb_award``'s module docstring. The static builder needs no
+# such split: it takes its event as a param.
+register(ImdbAwardYearsBuilder("oscars"))
+register(ImdbAwardYearsBuilder("golden_globes"))
 register(CsBucketBuilder())
 
 __all__ = [

@@ -38,6 +38,10 @@ from autoposter.config.schema import CollectionDefinition
 LABEL = "autoposter"
 
 AWARD_FIXTURE = Path("tests/fixtures/collections/ev0000003.yml").read_text(encoding="utf-8")
+# The event id is checked against this before the event file is asked for.
+VALIDATION_FIXTURE = Path(
+    "tests/fixtures/collections/event_validation.yml"
+).read_text(encoding="utf-8")
 
 
 class FakeGuid:
@@ -359,8 +363,14 @@ def test_managed_titles_covers_every_definition_a_pass_runs(registry_entry):
 
 
 def _requests_for(counter, ok=True):
+    """``ok=False`` kills the **event file** and leaves the validation list
+    working -- which is the failure the event memo has to cover. Killing both
+    would prove only that the validation memo works."""
     async def handle(request):
-        counter.append(str(request.url))
+        url = str(request.url)
+        counter.append(url)
+        if "event_validation" in url:
+            return httpx.Response(200, text=VALIDATION_FIXTURE)
         if not ok:
             return httpx.Response(500, text="boom")
         return httpx.Response(200, text=AWARD_FIXTURE)
@@ -370,7 +380,11 @@ def _requests_for(counter, ok=True):
 
 async def test_the_oscars_dataset_is_fetched_once_for_every_collection(session):
     """One file holds every ceremony, and seven collections read it. Seven
-    requests would be seven chances to be rate-limited mid-pass."""
+    requests would be seven chances to be rate-limited mid-pass.
+
+    Two requests, not one: the validation list the event id is checked against
+    is its own file, and it is memoised separately -- so the seven collections
+    still cost one fetch each of two files, whatever the pass builds."""
     requests: list[str] = []
     section = FakeSection([("m1", ["imdb://tt31193180"])])
     config = _config(charts=False)
@@ -382,7 +396,10 @@ async def test_the_oscars_dataset_is_fetched_once_for_every_collection(session):
             config, http=http,
         )
 
-    assert len(requests) == 1, requests
+    assert requests == [
+        "https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master/event_validation.yml",
+        "https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master/events/ev0000003.yml",
+    ], requests
 
 
 async def test_a_dead_oscars_dataset_is_asked_for_once_too(session):
@@ -400,7 +417,10 @@ async def test_a_dead_oscars_dataset_is_asked_for_once_too(session):
             config, http=http,
         )
 
-    assert len(requests) == 1, requests
+    assert requests == [
+        "https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master/event_validation.yml",
+        "https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master/events/ev0000003.yml",
+    ], "the dead event file was asked for once, not once per collection"
     assert actions == [
         "'Oscars Best Picture Winners': source returned no items; "
         "leaving the collection untouched",

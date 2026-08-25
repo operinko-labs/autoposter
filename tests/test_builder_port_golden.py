@@ -42,6 +42,9 @@ from autoposter.collections.sources import default_definitions
 GOLDEN = Path("tests/fixtures/collections/golden_port.json")
 
 AWARD_FIXTURE = Path("tests/fixtures/collections/ev0000003.yml").read_text(encoding="utf-8")
+VALIDATION_FIXTURE = Path(
+    "tests/fixtures/collections/event_validation.yml"
+).read_text(encoding="utf-8")
 CHART_FIXTURE = Path("tests/fixtures/collections/imdb_chart.json").read_text(encoding="utf-8")
 
 LABEL = "autoposter"
@@ -251,6 +254,14 @@ def _handler(charts_ok=True, awards_ok=True, posters="none"):
         if "IMDb-Awards" in url:
             if not awards_ok:
                 return httpx.Response(500, text="boom")
+            # Added when the award builders started checking the event id
+            # against the dataset's own validation list -- a second file from
+            # the same host, fetched before the event file. THE ONLY CHANGE to
+            # this harness since capture, and it adds a route rather than
+            # touching a recorded value: the Oscars collections' action
+            # strings and section state below are the capture's, unchanged.
+            if "event_validation" in url:
+                return httpx.Response(200, text=VALIDATION_FIXTURE)
             return httpx.Response(200, text=AWARD_FIXTURE)
         if "Default-Images" in url:
             if posters == "missing":

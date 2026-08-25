@@ -512,12 +512,12 @@ async def test_an_oscars_year_collection_gets_that_years_poster(session, config_
     async with _client(_serving_handler(data, seen)) as http:
         await reconcile_list_collection(
             session, section, "Movies", "Oscars Winners 2026", [FakeItem("a")], LABEL,
-            dry_run=False, kind="award_year", key="2026", http=http, config=config,
+            dry_run=False, kind="award_year", key="oscars:2026", http=http, config=config,
         )
 
     collection = section._existing["Oscars Winners 2026"]
     assert collection.uploaded_bytes == [data]
-    assert seen == [hosted_poster_url("award_year", "2026")]
+    assert seen == [hosted_poster_url("award_year", "oscars:2026")]
 
 
 async def test_posters_false_disables_list_collection_posters(session, config_factory, tmp_path):

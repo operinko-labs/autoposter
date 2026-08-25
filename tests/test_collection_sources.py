@@ -24,6 +24,9 @@ async def build_all(http, session, section, library, library_type, label, config
     )
 
 AWARD_FIXTURE = Path("tests/fixtures/collections/ev0000003.yml").read_text(encoding="utf-8")
+VALIDATION_FIXTURE = Path(
+    "tests/fixtures/collections/event_validation.yml"
+).read_text(encoding="utf-8")
 CHART_FIXTURE = (Path("tests/fixtures/collections/imdb_chart.json")).read_text(encoding="utf-8")
 
 
@@ -157,7 +160,21 @@ def _config(*, charts=True, awards=True, apply_to_plex=True):
 
 
 def _transport(handler):
-    return httpx.MockTransport(handler)
+    """The per-test handler, with the award validation list answered for it.
+
+    Every award build asks for ``event_validation.yml`` before the event file
+    -- one extra route that says nothing about what any test here is checking,
+    so it is served here rather than repeated in nine handlers.
+    ``test_both_sources_disabled_touches_nothing`` still proves what it always
+    did: with awards off there is no definition to build, so nothing asks for
+    the validation list either and its refusing handler is never reached.
+    """
+    def handle(request):
+        if "event_validation" in str(request.url):
+            return httpx.Response(200, text=VALIDATION_FIXTURE)
+        return handler(request)
+
+    return httpx.MockTransport(handle)
 
 
 async def test_a_failed_chart_does_not_prevent_the_award_collections(session):

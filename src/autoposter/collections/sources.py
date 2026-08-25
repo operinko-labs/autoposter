@@ -16,7 +16,7 @@ Two things the definitions deliberately do not decide:
   awards are movies-only, and library *type* is not known until the section is
   in hand -- so it is a parameter here rather than a field on the definitions.
 """
-from autoposter.collections.builders.imdb_award import AWARDS
+from autoposter.collections.builders.imdb_award import EVENTS
 from autoposter.collections.builders.imdb_chart import CHART_TITLES, CHARTS_FOR
 from autoposter.config.schema import CollectionDefinition
 
@@ -48,14 +48,21 @@ def chart_and_award_definitions(config, library_type: str) -> list[CollectionDef
             )
 
     if config.collections.awards and library_type == "Movie":
-        for award, (title, _, _, _) in AWARDS.items():
+        # Oscars only, deliberately: the other ceremonies the builder now knows
+        # are opt-in operator definitions. Presets are opinions, and this one
+        # shipped -- adding a ceremony here would create collections in every
+        # deployment that had never asked for them.
+        oscars = EVENTS["oscars"]
+        for award, (title, _, _, _) in oscars.awards.items():
             definitions.append(
                 CollectionDefinition(
                     title=title, builder="imdb_award", params={"award": award}
                 )
             )
         definitions.append(
-            CollectionDefinition(title=AWARD_YEARS_TITLE, builder="imdb_award_years")
+            CollectionDefinition(
+                title=AWARD_YEARS_TITLE, builder=oscars.years_builder
+            )
         )
 
     return definitions

@@ -19,9 +19,18 @@ BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master"
 @pytest.mark.parametrize(
     "kind,key,expected",
     [
-        ("award_static", "best_picture_winner", f"{BASE}/award/oscars/best_picture_winner.jpg"),
-        ("award_static", "best_director_winner", f"{BASE}/award/oscars/best_director_winner.jpg"),
-        ("award_year", "2026", f"{BASE}/award/oscars/winner/2026.jpg"),
+        ("award_static", "oscars:best_picture_winner",
+         f"{BASE}/award/oscars/best_picture_winner.jpg"),
+        ("award_static", "oscars:best_director_winner",
+         f"{BASE}/award/oscars/best_director_winner.jpg"),
+        ("award_year", "oscars:2026", f"{BASE}/award/oscars/winner/2026.jpg"),
+        # The ceremony's folder is Kometa's ``golden``, not its event key --
+        # each of these was fetched and returned 200, like every other row.
+        ("award_static", "golden_globes:best_picture_winner",
+         f"{BASE}/award/golden/best_picture_winner.jpg"),
+        ("award_static", "golden_globes:best_director_winner",
+         f"{BASE}/award/golden/best_director_winner.jpg"),
+        ("award_year", "golden_globes:2026", f"{BASE}/award/golden/winner/2026.jpg"),
         ("chart", "IMDb Popular", f"{BASE}/chart/color/IMDb%20Popular.jpg"),
         ("chart", "IMDb Top 250", f"{BASE}/chart/color/IMDb%20Top%20250.jpg"),
         ("chart", "IMDb Lowest Rated", f"{BASE}/chart/color/IMDb%20Lowest%20Rated.jpg"),
@@ -38,12 +47,24 @@ def test_hosted_urls_match_the_verified_paths(kind, key, expected):
 def test_only_chart_keys_are_url_encoded():
     """Encoding the award year would be harmless; encoding its slash would
     not, so the encoding is deliberately per-kind rather than blanket."""
-    assert "%2F" not in hosted_poster_url("award_year", "2026")
-    assert "/winner/2026.jpg" in hosted_poster_url("award_year", "2026")
+    assert "%2F" not in hosted_poster_url("award_year", "oscars:2026")
+    assert "/winner/2026.jpg" in hosted_poster_url("award_year", "oscars:2026")
 
 
 def test_an_unknown_kind_yields_no_url():
     assert hosted_poster_url("something_else", "x") is None
+
+
+@pytest.mark.parametrize("key", ["berlinale:best_picture_winner", "2026", ""])
+def test_an_award_key_without_a_known_event_yields_no_url(key):
+    """A ceremony ``Default-Images`` has no folder for keeps no poster.
+
+    The alternative is worse than a 404: every unmapped event would otherwise
+    fall back to some other ceremony's folder and be given the wrong award's
+    artwork, which looks like a working collection.
+    """
+    assert hosted_poster_url("award_static", key) is None
+    assert hosted_poster_url("award_year", key) is None
 
 
 def test_a_local_poster_is_found(tmp_path, config_factory):

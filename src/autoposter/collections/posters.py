@@ -38,6 +38,15 @@ DEFAULT_IMAGES_BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Ima
 
 _LOCAL_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
 
+# Award event key -> its folder under ``award/`` in ``Default-Images``. Kometa's
+# own folder names, read off its defaults (``image: award/oscars/...``,
+# ``image: award/golden/...``) and confirmed to exist in the repository, not
+# derived from the event key -- "golden_globes" would have been ``golden``
+# wrong. An event missing here keeps no poster at all: a guessed path either
+# 404s (a poster nobody notices is missing) or, worse, resolves to some other
+# ceremony's artwork.
+AWARD_SEGMENTS = {"oscars": "oscars", "golden_globes": "golden"}
+
 
 class PosterPathRefused(Exception):
     """A collection's poster path does not land inside ``assets_root``.
@@ -58,11 +67,21 @@ def hosted_poster_url(kind: str, key: str) -> str | None:
     ``award/oscars/winner/2026``. An unrecognised kind returns ``None``
     rather than guessing: a wrong URL 404s and the collection quietly keeps
     no poster, which is harder to spot than an error.
+
+    The two award kinds take an **event-scoped** key, ``"<event>:<stem>"`` --
+    ``"oscars:best_picture_winner"``, ``"golden_globes:2026"``. The event half
+    is a key of ``AWARD_SEGMENTS``; anything else returns ``None`` by the same
+    rule as an unrecognised kind, which is what makes "this ceremony has no
+    hosted artwork" expressible rather than a wrong path.
     """
-    if kind == "award_static":
-        return f"{DEFAULT_IMAGES_BASE}/award/oscars/{key}.jpg"
-    if kind == "award_year":
-        return f"{DEFAULT_IMAGES_BASE}/award/oscars/winner/{key}.jpg"
+    if kind in ("award_static", "award_year"):
+        event, _, stem = key.partition(":")
+        segment = AWARD_SEGMENTS.get(event)
+        if segment is None or not stem:
+            return None
+        if kind == "award_static":
+            return f"{DEFAULT_IMAGES_BASE}/award/{segment}/{stem}.jpg"
+        return f"{DEFAULT_IMAGES_BASE}/award/{segment}/winner/{stem}.jpg"
     if kind == "chart":
         return f"{DEFAULT_IMAGES_BASE}/chart/color/{quote(key, safe='')}.jpg"
     if kind == "content_rating":

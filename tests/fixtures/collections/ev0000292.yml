@@ -1,0 +1,413 @@
+# Golden Globes, USA
+'2026':  # https://www.imdb.com/event/ev0000292/2026/1/
+  golden globe:
+    best director - motion picture:
+      nominee: [tt1312221, tt14905854, tt27714581, tt30144839, tt31193180, tt36491653]
+      winner: [tt30144839]
+    best motion picture - animated:
+      nominee: [tt14205554, tt14883538, tt26443597, tt29313285, tt32820897, tt4900148]
+      winner: [tt14205554]
+    best motion picture - drama:
+      nominee: [tt1312221, tt14905854, tt27714581, tt27847051, tt31193180, tt36491653]
+      winner: [tt14905854]
+    best motion picture - musical or comedy:
+      nominee: [tt12300742, tt1527793, tt30144839, tt31688586, tt32536315, tt32916440]
+      winner: [tt30144839]
+    best motion picture - non-english language:
+      nominee: [tt1527793, tt27714581, tt27847051, tt32298285, tt36491653, tt36943034]
+      winner: [tt27847051]
+    best original score - motion picture:
+      nominee: [tt1312221, tt14905854, tt16311594, tt30144839, tt31193180, tt32298285]
+      winner: [tt31193180]
+    best original song - motion picture:
+      nominee: [tt14205554, tt1757678, tt19847976, tt29768334, tt31193180]
+      winner: [tt14205554]
+    best performance by a female actor in a limited series, anthology series or motion picture made for television:
+      nominee: [tt2085059, tt30252752, tt31314751, tt31974367, tt32267726, tt8332798]
+      winner: [tt30252752]
+    best performance by a female actor in a motion picture - drama:
+      nominee: [tt14905854, tt27714581, tt27953589, tt32159989, tt32843349, tt9362736]
+      winner: [tt14905854]
+    best performance by a female actor in a motion picture - musical or comedy:
+      nominee: [tt12300742, tt18382850, tt19847976, tt30144839, tt30343021, tt34819091]
+      winner: [tt18382850]
+    best performance by a female actor in a supporting role in any motion picture:
+      nominee: [tt11214558, tt19847976, tt26581740, tt27714581, tt30144839]
+      winner: [tt30144839]
+    best performance by a female actor in a supporting role on television:
+      nominee: [tt11815682, tt13406094, tt23649128, tt31806037]
+      winner: [tt31806037]
+    best performance by a female actor in a television series - drama:
+      nominee: [tt11280740, tt17491088, tt22202452, tt26591147, tt31510819, tt3581920]
+      winner: [tt22202452]
+    best performance by a female actor in a television series - musical or comedy:
+      nominee: [tt11691774, tt11815682, tt13443470, tt14269590, tt14452776, tt26933824]
+      winner: [tt11815682]
+    best performance by a male actor in a limited series, anthology series or motion picture made for television:
+      nominee: [tt11389652, tt13207736, tt2085059, tt23055142, tt31806037, tt31974367]
+      winner: [tt31806037]
+    best performance by a male actor in a motion picture - drama:
+      nominee: [tt11214558, tt1312221, tt27847051, tt29768334, tt31193180, tt31923069]
+      winner: [tt27847051]
+    best performance by a male actor in a motion picture - musical or comedy:
+      nominee: [tt12300742, tt1527793, tt30144839, tt30446847, tt32536315, tt32916440]
+      winner: [tt32916440]
+    best performance by a male actor in a supporting role in any motion picture:
+      nominee: [tt1312221, tt14905854, tt27714581, tt30144839, tt30446847]
+      winner: [tt27714581]
+    best performance by a male actor in a supporting role on television:
+      nominee: [tt11280740, tt13406094, tt31806037, tt7203552]
+      winner: [tt31806037]
+    best performance by a male actor in a television series - drama:
+      nominee: [tt11280740, tt27444205, tt28013708, tt31938062, tt5875444, tt9253284]
+      winner: [tt31938062]
+    best performance by a male actor in a television series - musical or comedy:
+      nominee: [tt11691774, tt14452776, tt23649128, tt26933824, tt31449991]
+      winner: [tt23649128]
+    best performance in stand-up comedy on television:
+      nominee: [tt32767869, tt34491055, tt36242994, tt36473825, tt38948229, tt39131664]
+      winner: [tt32767869]
+    best screenplay - motion picture:
+      nominee: [tt14905854, tt27714581, tt30144839, tt31193180, tt32916440, tt36491653]
+      winner: [tt30144839]
+    best television limited series, anthology series, or motion picture made for television:
+      nominee: [tt2085059, tt30252752, tt31314751, tt31806037, tt31974367, tt32267726]
+      winner: [tt31806037]
+    best television series - drama:
+      nominee: [tt11280740, tt13406094, tt17491088, tt22202452, tt31938062, tt5875444]
+      winner: [tt31938062]
+    best television series - musical or comedy:
+      nominee: [tt11691774, tt11815682, tt14218830, tt14452776, tt23649128, tt26933824]
+      winner: [tt23649128]
+    cinematic and box office achievement:
+      nominee: [tt14205554, tt16311594, tt1757678, tt19847976, tt26443597, tt26581740, tt31193180, tt9603208]
+      winner: [tt31193180]
+    podcast of the year:
+      nominee: [tt10457036, tt11857594, tt12825566, tt14514116, tt22476986, tt35684666]
+      winner: [tt35684666]
+'2025': # https://www.imdb.com/event/ev0000292/2025/1/
+  golden globe:
+    best director - motion picture:
+      nominee: [tt17526714, tt20215234, tt20221436, tt28607951, tt32086077, tt8999762]
+      winner: [tt8999762]
+    best motion picture - animated:
+      nominee: [tt13622970, tt17163970, tt22022452, tt23770030, tt29623480, tt4772188]
+      winner: [tt4772188]
+    best motion picture - drama:
+      nominee: [tt11563598, tt15239678, tt20215234, tt23055660, tt28082769, tt8999762]
+      winner: [tt8999762]
+    best motion picture - musical or comedy:
+      nominee: [tt1262426, tt16426418, tt17526714, tt20221436, tt21823606, tt28607951]
+      winner: [tt20221436]
+    best motion picture - non-english language:
+      nominee: [tt10236164, tt14961016, tt20221436, tt28618488, tt32086077, tt32178949]
+      winner: [tt20221436]
+    best original score - motion picture:
+      nominee: [tt15239678, tt16426418, tt20215234, tt20221436, tt29623480, tt8999762]
+      winner: [tt16426418]
+    best original song - motion picture:
+      nominee: [tt14260836, tt16426418, tt20221436, tt29623480, tt31193791]
+      winner: [tt20221436]
+    best performance by a female actor in a limited series, anthology series or motion picture made for television:
+      nominee: [tt15435876, tt15837600, tt16294384, tt1984119, tt21375036, tt2356777]
+      winner: [tt2356777]
+    best performance by a female actor in a motion picture - drama:
+      nominee: [tt14961016, tt22893404, tt29439114, tt30057084, tt31193791, tt5112584]
+      winner: [tt14961016]
+    best performance by a female actor in a motion picture - musical or comedy:
+      nominee: [tt1262426, tt12810074, tt16426418, tt17526714, tt20221436, tt28607951]
+      winner: [tt17526714]
+    best performance by a female actor in a supporting role in any motion picture:
+      nominee: [tt1262426, tt17526714, tt20215234, tt20221436, tt8999762]
+      winner: [tt20221436]
+    best performance by a female actor in a supporting role on television:
+      nominee: [tt11016042, tt11815682, tt13649112, tt14452776, tt17491088, tt2356777]
+      winner: [tt13649112]
+    best performance by a female actor in a television series - drama:
+      nominee: [tt11198330, tt14044212, tt17491088, tt26591147, tt2788316, tt27995113]
+      winner: [tt2788316]
+    best performance by a female actor in a television series - musical or comedy:
+      nominee: [tt11691774, tt11815682, tt14218830, tt14452776, tt15571732, tt26933824]
+      winner: [tt11815682]
+    best performance by a male actor in a limited series, anthology series or motion picture made for television:
+      nominee: [tt11016042, tt13207736, tt13649112, tt15435876, tt16294384, tt8230448]
+      winner: [tt15435876]
+    best performance by a male actor in a motion picture - drama:
+      nominee: [tt11563598, tt20215234, tt24176060, tt28479262, tt8368368, tt8999762]
+      winner: [tt8999762]
+    best performance by a male actor in a motion picture - musical or comedy:
+      nominee: [tt20215968, tt21097228, tt21823606, tt22408160, tt27657135, tt28015403]
+      winner: [tt21097228]
+    best performance by a male actor in a supporting role in any motion picture:
+      nominee: [tt11563598, tt21823606, tt28607951, tt8368368, tt8999762, tt9218128]
+      winner: [tt21823606]
+    best performance by a male actor in a supporting role on television:
+      nominee: [tt13207736, tt14452776, tt15677150, tt21382958, tt2788316, tt5875444]
+      winner: [tt2788316]
+    best performance by a male actor in a television series - drama:
+      nominee: [tt14044212, tt14186672, tt17677860, tt24053860, tt2788316, tt5875444]
+      winner: [tt2788316]
+    best performance by a male actor in a television series - musical or comedy:
+      nominee: [tt11691774, tt14452776, tt15677150, tt26670955, tt26933824]
+      winner: [tt14452776]
+    best performance in stand-up comedy on television:
+      nominee: [tt31039503, tt32149504, tt33081211, tt33350315, tt33749189, tt34385018]
+      winner: [tt33350315]
+    best screenplay - motion picture:
+      nominee: [tt17526714, tt20215234, tt20221436, tt21823606, tt28607951, tt8999762]
+      winner: [tt20215234]
+    best television limited series, anthology series, or motion picture made for television:
+      nominee: [tt11016042, tt13207736, tt13649112, tt15435876, tt16294384, tt2356777]
+      winner: [tt13649112]
+    best television series - drama:
+      nominee: [tt10919420, tt14044212, tt17491088, tt24053860, tt2788316, tt5875444]
+      winner: [tt2788316]
+    best television series - musical or comedy:
+      nominee: [tt11691774, tt11815682, tt13210838, tt14218830, tt14452776, tt26933824]
+      winner: [tt11815682]
+    cinematic and box office achievement:
+      nominee: [tt12584954, tt1262426, tt18412256, tt2049403, tt22022452, tt29623480, tt6263850, tt9218128]
+      winner: [tt1262426]
+'2024': # https://www.imdb.com/event/ev0000292/2024/1/
+  golden globe:
+    best director - motion picture:
+      nominee: [tt13238346, tt14230458, tt1517268, tt15398776, tt5535276, tt5537002]
+      winner: [tt15398776]
+    best motion picture - animated:
+      nominee: [tt11304740, tt15789038, tt16428256, tt6587046, tt6718170, tt9362722]
+      winner: [tt6587046]
+    best motion picture - drama:
+      nominee: [tt13238346, tt15398776, tt17009710, tt5535276, tt5537002, tt7160372]
+      winner: [tt15398776]
+    best motion picture - non-english language:
+      nominee: [tt13238346, tt14225838, tt16277242, tt17009710, tt21027780, tt7160372]
+      winner: [tt17009710]
+    best motion picture, musical or comedy:
+      nominee: [tt13651794, tt14230458, tt14849194, tt1517268, tt16419074, tt23561236]
+      winner: [tt14230458]
+    best original score - motion picture:
+      nominee: [tt14230458, tt15398776, tt5537002, tt6587046, tt7160372, tt9362722]
+      winner: [tt15398776]
+    best original song - motion picture:
+      nominee: [tt14160834, tt1517268, tt6689014, tt6718170]
+      winner: [tt1517268]
+    best performance by a female actor in a limited series, anthology series or motion picture made for television:
+      nominee: [tt12923632, tt13911628, tt14403178, tt14586350, tt2802850, tt8749198]
+      winner: [tt14403178]
+    best performance by a female actor in a motion picture - drama:
+      nominee: [tt13238346, tt17009710, tt22041854, tt5302918, tt5535276, tt5537002]
+      winner: [tt5537002]
+    best performance by a female actor in a motion picture - musical or comedy:
+      nominee: [tt1200263, tt13651794, tt14230458, tt1517268, tt15671028, tt21027780]
+      winner: [tt14230458]
+    best performance by a female actor in a supporting role in any motion picture:
+      nominee: [tt1200263, tt13651794, tt14849194, tt15398776, tt17351924, tt5302918]
+      winner: [tt14849194]
+    best performance by a female actor in a supporting role on television:
+      nominee: [tt10986410, tt11041332, tt11691774, tt14452776, tt4786824, tt7660850]
+      winner: [tt4786824]
+    best performance by a female actor in a television series - drama:
+      nominee: [tt13623608, tt17491088, tt18335752, tt3581920, tt4786824, tt7660850]
+      winner: [tt7660850]
+    best performance by a female actor in a television series - musical or comedy:
+      nominee: [tt11691774, tt14218830, tt14269590, tt14452776, tt2235759, tt5788792]
+      winner: [tt14452776]
+    best performance by a male actor in a limited series, anthology series or motion picture made for television:
+      nominee: [tt11468254, tt14403178, tt15384586, tt15399640, tt2802850, tt8749198]
+      winner: [tt14403178]
+    best performance by a male actor in a motion picture - drama:
+      nominee: [tt14160834, tt15398776, tt17351924, tt21192142, tt5535276, tt5537002]
+      winner: [tt15398776]
+    best performance by a male actor in a motion picture, musical or comedy:
+      nominee: [tt13521006, tt14849194, tt16419074, tt21942866, tt23561236, tt6166392]
+      winner: [tt14849194]
+    best performance by a male actor in a supporting role in any motion picture:
+      nominee: [tt13651794, tt14230458, tt1517268, tt15398776, tt5537002]
+      winner: [tt15398776]
+    best performance by a male actor in a supporting role on television:
+      nominee: [tt14452776, tt22074164, tt7203552, tt7660850]
+      winner: [tt7660850]
+    best performance by a male actor in a television series - drama:
+      nominee: [tt3581920, tt4786824, tt5875444, tt7660850]
+      winner: [tt7660850]
+    best performance by a male actor in a television series - musical or comedy:
+      nominee: [tt10986410, tt11691774, tt14452776, tt15677150, tt5348176]
+      winner: [tt14452776]
+    best performance in stand-up comedy on television:
+      nominee: [tt23571908, tt26931915, tt27443713, tt27791865, tt30028158, tt30088797]
+      winner: [tt30088797]
+    best screenplay - motion picture:
+      nominee: [tt13238346, tt14230458, tt1517268, tt15398776, tt17009710, tt5537002]
+      winner: [tt17009710]
+    best television limited series, anthology series, or motion picture made for television:
+      nominee: [tt13911628, tt14403178, tt15320362, tt15384586, tt2802850, tt8749198]
+      winner: [tt14403178]
+    best television series - musical or comedy:
+      nominee: [tt10986410, tt11691774, tt14218830, tt14452776, tt22074164, tt5348176]
+      winner: [tt14452776]
+    best television series, drama:
+      nominee: [tt17491088, tt18335752, tt3581920, tt4786824, tt7203552, tt7660850]
+      winner: [tt7660850]
+    cinematic and box office achievement:
+      nominee: [tt10366206, tt1517268, tt15398776, tt28814949, tt6718170, tt6791350, tt9362722, tt9603212]
+      winner: [tt1517268]
+'2023': # https://www.imdb.com/event/ev0000292/2023/1/
+  golden globe:
+    best director - motion picture:
+      nominee: [tt11813216, tt14208870, tt1630029, tt3704428, tt6710474]
+      winner: [tt14208870]
+    best motion picture - animated:
+      nominee: [tt10540510, tt1488589, tt15339456, tt3915174, tt8097030]
+      winner: [tt1488589]
+    best motion picture - drama:
+      nominee: [tt14208870, tt14444726, tt1630029, tt1745960, tt3704428]
+      winner: [tt14208870]
+    best motion picture - musical or comedy:
+      nominee: [tt10640346, tt11564570, tt11813216, tt6710474, tt7322224]
+      winner: [tt11813216]
+    best motion picture - non-english language:
+      nominee: [tt1016150, tt12477480, tt15301048, tt8178634, tt9660502]
+      winner: [tt15301048]
+    best original score - motion picture:
+      nominee: [tt10640346, tt11813216, tt13669038, tt14208870, tt1488589]
+      winner: [tt10640346]
+    best original song - motion picture:
+      nominee: [tt1488589, tt1745960, tt8178634, tt9114286, tt9411972]
+      winner: [tt8178634]
+    best performance by an actor in a limited series, anthology series or motion picture made for television:
+      nominee: [tt11324406, tt13207736, tt13659418, tt1998372, tt4301160]
+      winner: [tt13207736]
+    best performance by an actor in a motion picture - drama:
+      nominee: [tt13495458, tt13833688, tt14458442, tt3704428, tt9051908]
+      winner: [tt3704428]
+    best performance by an actor in a motion picture - musical or comedy:
+      nominee: [tt10640346, tt11564570, tt11813216, tt6160448, tt9764362]
+      winner: [tt11813216]
+    ? best performance by an actor in a supporting role in a limited series, anthology series or motion picture made for television
+    : nominee: [tt13207736, tt13406094, tt13659418, tt15574312, tt4301160]
+      winner: [tt4301160]
+    best performance by an actor in a supporting role in a musical-comedy or drama television series:
+      nominee: [tt11280740, tt14218830, tt4786824, tt5348176, tt5645432]
+      winner: [tt14218830]
+    best performance by an actor in a supporting role in any motion picture:
+      nominee: [tt10640346, tt11813216, tt4273800, tt6710474]
+      winner: [tt6710474]
+    best performance by an actor in a television series - drama:
+      nominee: [tt11280740, tt3032476, tt4236770, tt5645432, tt9253284]
+      winner: [tt4236770]
+    best performance by an actor in a television series - musical or comedy:
+      nominee: [tt11691774, tt14452776, tt4288182, tt5348176]
+      winner: [tt14452776]
+    best performance by an actress in a limited series, anthology series or motion picture made for television:
+      nominee: [tt10166622, tt11834592, tt13659418, tt5545398, tt8740976]
+      winner: [tt10166622]
+    best performance by an actress in a motion picture - drama:
+      nominee: [tt14208870, tt14402146, tt14444726, tt1655389, tt8093700]
+      winner: [tt14444726]
+    best performance by an actress in a motion picture - musical or comedy:
+      nominee: [tt10640346, tt13352968, tt5151570, tt6710474, tt9764362]
+      winner: [tt6710474]
+    ? best performance by an actress in a supporting role in a limited series, anthology series or motion picture made for television
+    : nominee: [tt11527058, tt13207736, tt13406094, tt1998372]
+      winner: [tt13406094]
+    best performance by an actress in a supporting role in a musical-comedy or drama television series:
+      nominee: [tt11815682, tt14218830, tt4786824, tt5071412]
+      winner: [tt5071412]
+    best performance by an actress in a supporting role in any motion picture:
+      nominee: [tt11198810, tt11813216, tt6710474, tt7322224, tt9114286]
+      winner: [tt9114286]
+    best performance by an actress in a television series - drama:
+      nominee: [tt11198330, tt15421858, tt4786824, tt5071412, tt8772296]
+      winner: [tt8772296]
+    best performance by an actress in a television series - musical or comedy:
+      nominee: [tt11691774, tt11815682, tt13443470, tt14218830, tt7569576]
+      winner: [tt14218830]
+    best screenplay - motion picture:
+      nominee: [tt11813216, tt13669038, tt14208870, tt14444726, tt6710474]
+      winner: [tt11813216]
+    best television limited series, anthology series or motion picture made for television:
+      nominee: [tt10166622, tt13207736, tt13406094, tt13659418, tt4301160]
+      winner: [tt13406094]
+    best television series - drama:
+      nominee: [tt11198330, tt11280740, tt3032476, tt4786824, tt5071412]
+      winner: [tt11198330]
+    best television series - musical or comedy:
+      nominee: [tt11691774, tt11815682, tt13443470, tt14218830, tt14452776]
+      winner: [tt14218830]
+'2022': # https://www.imdb.com/event/ev0000292/2022/1/
+  golden globe:
+    best director - motion picture:
+      nominee: [tt10293406, tt1160419, tt12789558, tt3581652, tt9100054]
+      winner: [tt10293406]
+    best motion picture - animated:
+      nominee: [tt12801262, tt14749948, tt2953050, tt5109280, tt8430054]
+      winner: [tt2953050]
+    best motion picture - drama:
+      nominee: [tt10293406, tt10366460, tt1160419, tt12789558, tt9620288]
+      winner: [tt10293406]
+    best motion picture - musical or comedy:
+      nominee: [tt11271038, tt11286314, tt12889404, tt3581652, tt8721424]
+      winner: [tt3581652]
+    best motion picture - non-english language:
+      nominee: [tt10262648, tt11777738, tt12618926, tt12680684, tt14039582]
+      winner: [tt14039582]
+    best original score - motion picture:
+      nominee: [tt10293406, tt1160419, tt12618926, tt2953050, tt8847712]
+      winner: [tt1160419]
+    best original song - motion picture:
+      nominee: [tt12789558, tt2382320, tt2452150, tt2953050, tt9620288]
+      winner: [tt2382320]
+    best performance by an actor in a limited series, anthology series or motion picture made for television:
+      nominee: [tt12682218, tt7985576, tt9140560, tt9174558, tt9569546]
+      winner: [tt9174558]
+    best performance by an actor in a motion picture - drama:
+      nominee: [tt10095582, tt10293406, tt13207508, tt4995540, tt9620288]
+      winner: [tt9620288]
+    best performance by an actor in a motion picture - musical or comedy:
+      nominee: [tt11271038, tt11286314, tt12889404, tt1321510, tt8721424]
+      winner: [tt8721424]
+    best performance by an actor in a supporting role in a motion picture:
+      nominee: [tt10293406, tt10366460, tt12789558, tt3108894]
+      winner: [tt10293406]
+    best performance by an actor in a supporting role on television:
+      nominee: [tt10919420, tt10986410, tt7203552, tt7660850]
+      winner: [tt10919420]
+    best performance by an actor in a television series - drama:
+      nominee: [tt10919420, tt2531336, tt7562112, tt7660850]
+      winner: [tt7660850]
+    best performance by an actor in a television series - musical or comedy:
+      nominee: [tt10986410, tt11691774, tt2235759, tt3487356]
+      winner: [tt10986410]
+    best performance by an actress in a limited series, anthology series or motion picture made for television:
+      nominee: [tt10155688, tt11337908, tt12682218, tt5673782, tt9140560]
+      winner: [tt10155688]
+    best performance by an actress in a motion picture - drama:
+      nominee: [tt11214590, tt12536294, tt4995540, tt9100054, tt9115530]
+      winner: [tt4995540]
+    best performance by an actress in a motion picture - musical or comedy:
+      nominee: [tt11271038, tt11286314, tt3228774, tt3581652, tt6217926]
+      winner: [tt3581652]
+    best performance by an actress in a supporting role in a motion picture:
+      nominee: [tt10293406, tt12789558, tt3581652, tt8893974, tt9620288]
+      winner: [tt3581652]
+    best performance by an actress in a supporting role on television:
+      nominee: [tt10986410, tt11337908, tt13406094, tt7660850, tt9174558]
+      winner: [tt7660850]
+    best performance by an actress in a television series - drama:
+      nominee: [tt0835434, tt5834204, tt5853176, tt7203552, tt7562112]
+      winner: [tt7562112]
+    best performance by an actress in a television series - musical or comedy:
+      nominee: [tt11815682, tt2235759, tt3487356, tt5024912]
+      winner: [tt11815682]
+    best screenplay - motion picture:
+      nominee: [tt10293406, tt11271038, tt11286314, tt12789558, tt4995540]
+      winner: [tt12789558]
+    best television limited series, anthology series or motion picture made for television:
+      nominee: [tt10155688, tt11337908, tt2788432, tt6704972, tt9174558]
+      winner: [tt6704972]
+    best television series - drama:
+      nominee: [tt10919420, tt2531336, tt7203552, tt7562112, tt7660850]
+      winner: [tt7660850]
+    best television series - musical or comedy:
+      nominee: [tt10986410, tt11691774, tt11815682, tt13623580, tt2235759]
+      winner: [tt11815682]
