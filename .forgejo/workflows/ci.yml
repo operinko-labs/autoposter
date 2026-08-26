@@ -46,6 +46,13 @@ env:
   # renovate: datasource=docker depName=postgres versioning=docker
   POSTGRES_VERSION: "18.6"
   IMAGE_NAME: autoposter
+  # The virtualenv the "Lint and test" job runs everything from, cached whole
+  # between runs -- see "Restore the virtualenv". Deliberately *outside* the
+  # checkout: the ImageMagick step below streams this workspace to the Docker
+  # daemon as a build context, and .dockerignore excludes only
+  # frontend/node_modules and frontend/dist, so a venv under the checkout would
+  # add a few hundred megabytes to every one of those builds.
+  VENV: /opt/ci-venv
   # Every Docker resource a run creates is suffixed with the run id, because
   # the runner hosts concurrent jobs on one shared daemon. With fixed names,
   # two overlapping runs fought over them: each began with `docker rm -f
@@ -74,14 +81,69 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           # Cache pip's wheel cache between runs, keyed on pyproject.toml --
-          # the same treatment setup-node already gives npm below.
+          # the same treatment setup-node already gives npm below. Since the
+          # venv cache below arrived this is the *miss* path's accelerator: on
+          # a venv hit pip never runs, and on a venv miss these wheels are what
+          # it installs from rather than downloading them again.
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # The built virtualenv itself, not merely the wheels it was built from.
+      # A warm pip cache still left `pip install -e ".[dev]"` to resolve the
+      # dependency graph and unpack every package on every run; restoring the
+      # venv skips all of that.
+      #
+      # The key is the interpreter patch plus pyproject.toml's hash, which is
+      # the whole of what decides this venv's contents -- both the dependency
+      # list and the dev extras live in that file, so any change to what gets
+      # installed changes the key. `v1` is the manual escape hatch: bump it if
+      # a restored venv is ever wrong in a way the key cannot see.
+      #
+      # Deliberately no `restore-keys:`. A near-miss would hand the job a venv
+      # built for a *different* dependency set, and the run would go green
+      # having tested against packages this commit does not declare -- exactly
+      # the class of silent wrongness the missing-Pillow incident was. A miss
+      # is meant to reinstall.
+      - name: Restore the virtualenv
+        id: venv
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.VENV }}
+          key: v1-venv-py${{ env.PYTHON_VERSION }}-${{ hashFiles('pyproject.toml') }}
+
       - name: Install the package and its dev extras
+        # Skipped outright on a cache hit -- that is the point of the step
+        # above. The venv is created explicitly at a path this workflow names,
+        # rather than installing into whatever interpreter setup-python put on
+        # PATH: the job is itself a container, so the interpreter lives in the
+        # runner's tool cache, and a directory that is to be cached has to be
+        # one this file chose.
+        if: steps.venv.outputs.cache-hit != 'true'
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          python -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --upgrade pip
+          "$VENV/bin/pip" install -e ".[dev]"
+
+      - name: Use the virtualenv for the rest of the job
+        # Everything after this -- ruff, pytest, alembic -- resolves from here.
+        run: |
+          echo "VIRTUAL_ENV=$VENV" >> "$GITHUB_ENV"
+          echo "$VENV/bin" >> "$GITHUB_PATH"
+
+      - name: Verify the virtualenv answers for this checkout
+        # A restored venv is only ever as good as its key. If the interpreter
+        # it was built against moved, or the editable install's recorded path
+        # stopped resolving, every later step fails with something that reads
+        # like a source error. Say it here instead, on the step whose name is
+        # the diagnosis, with the fix being to bump `v1` in the key above.
+        #
+        # `pip install -e` records an absolute path into the workspace, so
+        # importing the package also proves the cached venv points at *this*
+        # checkout rather than at a stale one.
+        run: |
+          python -c "import autoposter; print('autoposter from', autoposter.__file__)"
+          ruff --version
+          pytest --version
 
       # Deliberately not a `services:` block. On this runner the job is itself
       # a container on the default bridge network, so a service container is
