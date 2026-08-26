@@ -287,6 +287,13 @@ class ManagedCollection(Base):
     library: Mapped[str] = mapped_column(String(128), index=True)
     title: Mapped[str] = mapped_column(String(255))
     # smart | manual | separator | operator
+    # "smart" is a Plex-native smart collection -- Plex evaluates a stored
+    # filter and owns the membership. Two builders write it and the row does
+    # not distinguish them, deliberately: a Common Sense age bucket
+    # (``collections/reconcile.py``) and a ``smart_filter`` definition's
+    # collection (``collections/smart.py``) differ in who derived the filter,
+    # not in what the row has to remember about the result. Both leave
+    # ``member_count`` and the reconcile stamps NULL for the same reason.
     # "operator" is a row an operator created directly through a lifecycle
     # endpoint (``api/collections_builders.py::blank_collection``) rather than
     # a definition -- no definition enumerates its title, so it needs its own
