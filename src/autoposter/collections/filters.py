@@ -82,6 +82,32 @@ words (``current_year`` and its offsets), and -- SETTLED-BY-ORACLE, see
 ``OPERATORS_BY_TYPE`` -- the four range modifiers on a date, which Kometa
 accepts and silently rewrites to the strict ``.after``/``.before``. Each is a
 tier-2 row, not a bug.
+
+**The set arithmetic (phase 9b), because "the rest of row 96" is not one
+number.** Kometa has TWO vocabularies and they are not nested, so a single
+"residue" figure hides which half is being talked about. Counted against
+Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
+
+- the FILTER vocabulary is ``builder.filters_by_type`` (builder.py:278-350):
+  **70** distinct attribute names across all seven library types, **65** of
+  them reachable on a movie or show library;
+- the SEARCH vocabulary is ``plex.searches`` (plex.py:594-601): 338 distinct
+  ``name.modifier`` entries, of which 183 are non-music, spelling **55**
+  distinct non-music attribute names;
+- the overlap is **26** names. So **44** filter names have no Plex search
+  field at all (``aspect``, ``height``, ``width``, ``versions``, ``summary``,
+  ``filepath``, ``imdb_keyword``, ``tmdb_*``, ``tvdb_*``, ...) and **29**
+  search names have no filter (``unplayed``, ``progress``, ``hdr``,
+  ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
+
+This table covers **19** of the 55 search names and **17** of the 70 filter
+names. Both halves of the residue are real work, and they are different work:
+the 53 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
+``plays`` and ``last_played`` came in here as ``unprobed``, which is a source
+tier and not an accessor, so the row-96 arithmetic moves by two and no
+further), while the 36 unsearched names are 9b's own tail, filed per family
+for T6. The two must not be reported as one number, which is what row 96's
+original "~45" did.
 """
 import datetime as dt
 import re
@@ -92,10 +118,17 @@ from typing import Protocol
 __all__ = [
     "BY_NAME",
     "DEFAULT_OPERATOR",
+    "FILTERABLE_ATTRIBUTES",
     "FILTER_ATTRIBUTES",
     "ITEM_KINDS",
     "OPERATORS_BY_TYPE",
     "PLEXAPI_EQUIVALENT",
+    "RELATIVE_UNITS",
+    "SEARCHABLE_ATTRIBUTES",
+    "SEARCH_MODIFIERS",
+    "SEARCH_ONLY_OPERATORS",
+    "SEARCH_OPERATORS_BY_TYPE",
+    "SEARCH_OPERATORS_EXCLUDED",
     "SOURCE_TIERS",
     "VALUE_TYPES",
     "FilterAttribute",
@@ -109,17 +142,31 @@ __all__ = [
 
 # The four categorical columns, as closed sets. A row outside them would parse,
 # load, and match nothing.
-VALUE_TYPES = ("tag", "str", "int", "float", "date", "duration")
+#
+# ``bool`` joined in 9b and is SEARCH-ONLY in practice: Kometa's boolean
+# attributes (``unplayed``, ``progress``, ``hdr``, ...) are answered by the
+# Plex server as ``field=1`` / ``field!=1`` (builder.py:4238-4241) and have no
+# client-side counterpart in Kometa's filter vocabulary at all.
+VALUE_TYPES = ("tag", "str", "int", "float", "date", "duration", "bool")
 ITEM_KINDS = ("movie", "show")
 
-# Where a row's data comes from. ``probe`` was Task 2's question, not a shrug:
-# Plex's listing endpoint carries some child elements and not others depending
-# on the server and the request, so a row marked ``probe`` becomes ``listing``
-# (ships scan-free) or ``tier2-deferred`` (drops out of tier 1 rather than
-# shipping a silent request-per-item) once the read-only probe answers. Task 2's
-# probe (2026-08-25) answered all seven of tier 1's, so no row carries ``probe``
-# today; the tier stays in the vocabulary for the tier-2 rows 9b will add.
-SOURCE_TIERS = ("listing", "probe", "tier2-deferred")
+# Where a row's data comes from, for the CLIENT-SIDE filter. ``probe`` was Task
+# 2's question, not a shrug: Plex's listing endpoint carries some child elements
+# and not others depending on the server and the request, so a row marked
+# ``probe`` becomes ``listing`` (ships scan-free) or ``tier2-deferred`` (drops
+# out of tier 1 rather than shipping a silent request-per-item) once the
+# read-only probe answers. Task 2's probe (2026-08-25) answered all seven of
+# tier 1's, so no row carries ``probe`` today. 9b added two tiers rather than
+# reusing an existing one, because both would have been a lie:
+#
+# - ``unprobed``: the attribute IS in Kometa's filter vocabulary, but 9a never
+#   probed whether the section listing carries it, so there is no verdict to
+#   cite. Refusing it in ``filters:`` with the tier2-deferred copy would claim
+#   a probe finding that does not exist. ``plays`` and ``last_played`` are the
+#   two: Kometa filters on both (builder.py:280-293) and searches on both.
+# - ``search-only``: the attribute is not in Kometa's filter vocabulary at all,
+#   so there is nothing to probe. ``unplayed`` and ``progress``.
+SOURCE_TIERS = ("listing", "probe", "tier2-deferred", "unprobed", "search-only")
 
 # The operator vocabulary, per value type. These are internal names; the YAML
 # spelling of each is ``.<name>`` except for the type's default, which is
@@ -148,6 +195,10 @@ OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
     # says so; silently disagreeing would not. A tier-2 row is filed for a
     # real inclusive-boundary date operator under a name Kometa does not use.
     "date": ("eq", "not", "before", "after"),
+    # Search-only in practice -- every ``bool`` row is ``filterable=False`` --
+    # but the type has to have an entry or ``FilterAttribute.operators`` raises
+    # a KeyError for a row nothing was ever going to evaluate.
+    "bool": ("eq",),
 }
 
 # What a bare ``genre: Horror`` means. Note that ``str`` defaults to *contains*
@@ -160,6 +211,138 @@ DEFAULT_OPERATOR: dict[str, str] = {
     "float": "eq",
     "duration": "eq",
     "date": "eq",
+    "bool": "eq",
+}
+
+# --- the SEARCH half of the vocabulary (phase 9b) ----------------------------
+#
+# Distinct from ``OPERATORS_BY_TYPE`` above and deliberately so: an attribute
+# can be legal in one block and refused in the other, and one table with two
+# operator sets is the only shape in which the two cannot drift apart. Every
+# entry is transcribed from Kometa v2.4.8's ``searches`` comprehension
+# (modules/plex.py:594-601), which is also the gate ``Builder._filter`` checks
+# a written key against (builder.py:4194) -- a name.modifier absent from it is
+# refused by Kometa outright, not merely undocumented. The differences from the
+# client-side set are each argued below.
+SEARCH_OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    # ``.regex`` is deliberately absent (see SEARCH_ONLY_OPERATORS' sibling
+    # note below and ``_split_key``): Kometa's search-regex is not a regex sent
+    # to Plex, it is a client-side expansion over the library's tag vocabulary
+    # (builder.py:4301-4323), so shipping the spelling here would make one
+    # config key mean two mechanisms.
+    "tag": ("eq", "not"),
+    "str": ("contains", "not", "is", "isnot", "begins", "ends"),
+    # The bare form and ``.not`` are here for ``year`` alone, which reaches
+    # them by being a ``year_attribute`` and therefore taking ``tag_modifiers``
+    # as well as ``number_modifiers`` (plex.py:597, :599). The table's other
+    # ``int`` row, ``plays``, is a ``number_attribute`` only, and
+    # SEARCH_OPERATORS_EXCLUDED subtracts the two from it.
+    "int": ("eq", "not", "gt", "gte", "lt", "lte"),
+    # NOT ``eq``/``not``, and this is a TRANSCRIPTION CORRECTION made against a
+    # live fetch of v2.4.8 rather than from the plan's text. Kometa's
+    # ``float_attributes`` take ``float_modifiers`` and nothing else
+    # (plex.py:549-550, :600), which is the four ranges plus ``.rated``: there
+    # is no ``critic_rating:`` and no ``critic_rating.not:`` in ``searches`` at
+    # all, so Kometa answers either with "attribute is not valid"
+    # (builder.py:4194-4195). Offering them here would have shipped two keys
+    # Plex is never asked.
+    #
+    # ``.rated`` is search-only: Plex answers "has any rating at all" as
+    # ``field!=-1`` (builder.py:4236-4237), which no client-side comparison
+    # spells.
+    "float": ("gt", "gte", "lt", "lte", "rated"),
+    # The four ranges only, for the same reason as ``float`` -- ``duration`` IS
+    # a ``float_attribute`` (plex.py:549), with ``.rated`` subtracted from it
+    # by name (plex.py:600). So a bare ``duration:`` is not a Kometa search
+    # either; ``_split_key`` refuses it saying so. Where the two blocks DO
+    # agree is the unit: Kometa multiplies a search duration by 60000
+    # (builder.py:4234) exactly as the client-side view divides by it, so
+    # ``duration.gt: 90`` is ninety minutes in both.
+    "duration": ("gt", "gte", "lt", "lte"),
+    "date": ("eq", "not", "before", "after"),
+    "bool": ("eq",),
+}
+
+# Per-row subtractions from the type's search operator set. ``resolution`` is
+# transcribed from ``no_not_mods`` (modules/plex.py:593) -- Plex has no negated
+# resolution filter. ``plays`` is the ``int`` row that is not a year: see the
+# ``int`` note above (plex.py:547-548, :599).
+SEARCH_OPERATORS_EXCLUDED: dict[str, tuple[str, ...]] = {
+    "resolution": ("not",),
+    "plays": ("eq", "not"),
+}
+
+# Operators that exist ONLY in a search, so that writing one in a ``filters:``
+# block is answered by name rather than by the generic "does not apply" line.
+SEARCH_ONLY_OPERATORS = ("rated",)
+
+# The modifier translation, keyed ``(value_type, operator)``.
+#
+# Kometa's own ``modifier_translation`` (modules/plex.py:195) is keyed on the
+# modifier string alone, and it is NOT a bijection: four wire strings are each
+# reached from two different modifiers, and every one of those collisions is
+# between two DIFFERENT value types --
+#
+#     %3E    .gte (int/float/duration)  and  .ends   (str)
+#     %3C    .lte (int/float/duration)  and  .begins (str)
+#     %3E%3E .gt  (int/float/duration)  and  .after  (date)
+#     %3C%3C .lt  (int/float/duration)  and  .before (date)
+#
+# -- so the pair key is not decoration, it is the only key under which the
+# table is a function. ``test_the_modifier_table_is_not_invertible`` pins that
+# structurally, so nobody "simplifies" this into a one-level dict.
+#
+# The two date entries below are the odd ones: a bare or ``.not`` date in a
+# search is a relative window, and Kometa takes its modifier from
+# ``last_mod`` (builder.py:4224) rather than from ``modifier_translation`` --
+# ``%3E%3E`` for "in the last N", ``%3C%3C`` for "not in the last N". They are
+# written here so the renderer has one lookup and not two, which is also why
+# they are NOT part of the four collisions above: they do not come from
+# ``modifier_translation`` at all.
+#
+# ``("float", "rated")`` and ``("bool", "eq")`` are the empty string because
+# for those two the NEGATION rides on the argument, not on the modifier: a
+# ``.rated`` term is ``field!=-1`` or ``field=-1``, and a boolean term is
+# ``field=1`` or ``field!=1`` (builder.py:4236-4241). The renderer supplies the
+# ``!``; this table must not, or it would be applied twice.
+SEARCH_MODIFIERS: dict[tuple[str, str], str] = {
+    ("tag", "eq"): "",
+    ("tag", "not"): "!",
+    ("str", "contains"): "",
+    ("str", "not"): "!",
+    ("str", "is"): "%3D",
+    ("str", "isnot"): "!%3D",
+    ("str", "begins"): "%3C",
+    ("str", "ends"): "%3E",
+    ("int", "eq"): "",
+    ("int", "not"): "!",
+    ("int", "gt"): "%3E%3E",
+    ("int", "gte"): "%3E",
+    ("int", "lt"): "%3C%3C",
+    ("int", "lte"): "%3C",
+    ("float", "gt"): "%3E%3E",
+    ("float", "gte"): "%3E",
+    ("float", "lt"): "%3C%3C",
+    ("float", "lte"): "%3C",
+    ("float", "rated"): "",
+    ("duration", "gt"): "%3E%3E",
+    ("duration", "gte"): "%3E",
+    ("duration", "lt"): "%3C%3C",
+    ("duration", "lte"): "%3C",
+    ("date", "eq"): "%3E%3E",
+    ("date", "not"): "%3C%3C",
+    ("date", "before"): "%3C%3C",
+    ("date", "after"): "%3E%3E",
+    ("bool", "eq"): "",
+}
+
+# Kometa's ``date_sub_mods`` (modules/plex.py:307), which is both the legal
+# unit set for a relative window and the name each unit reads as. ``o`` is
+# MONTHS and ``m`` is MINUTES -- the least guessable pair in the vocabulary,
+# and the reason ``_as_window``'s refusal spells the whole table out.
+RELATIVE_UNITS: dict[str, str] = {
+    "s": "Seconds", "m": "Minutes", "h": "Hours", "d": "Days",
+    "w": "Weeks", "o": "Months", "y": "Years",
 }
 
 # The 9b translation argument, written down. Each of our operators names the
@@ -206,6 +389,11 @@ PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
     ("duration", "gte"): "gte",
     ("duration", "lt"): "lt",
     ("duration", "lte"): "lte",
+    # A boolean has no client-side operator set (it is search-only), so this
+    # entry exists to keep the table total over OPERATORS_BY_TYPE rather than
+    # because anything reads it. ``exact`` is the honest key: plexapi would
+    # compare the value for equality.
+    ("bool", "eq"): "exact",
     ("date", "eq"): None,
     ("date", "not"): None,
     ("date", "before"): "lt",
@@ -229,15 +417,31 @@ _MISSING_ALWAYS_EXCLUDES = ("int", "float", "date", "duration")
 
 @dataclass(frozen=True)
 class FilterAttribute:
-    """One row of the table.
+    """One row of the table -- both vocabularies.
 
     ``name`` is Kometa's own name for the attribute and is what an operator
     writes in YAML; where it differs from Plex's wire name (``release`` for
     ``originallyAvailableAt``, ``critic_rating`` for ``rating``) the row's note
     says so, because that difference is the reason the row exists rather than a
-    passthrough. ``kinds`` is which library the attribute means anything for.
-    ``source`` is one of ``SOURCE_TIERS``. ``note`` is required by the table's
-    own test: a row with nothing to say about itself is a row nobody checked.
+    passthrough. ``note`` is required by the table's own test: a row with
+    nothing to say about itself is a row nobody checked.
+
+    **The client-side half.** ``kinds`` is which library the attribute means
+    anything for as a ``filters:`` predicate; ``source`` is one of
+    ``SOURCE_TIERS``; ``filterable`` is whether the attribute is in Kometa's
+    FILTER vocabulary at all (modules/builder.py:278-350). The two are
+    independent: ``plays`` is filterable and unprobed, ``unplayed`` is neither.
+
+    **The search half.** ``search_field`` is the Plex query field for a MOVIE
+    library, after ``search_translation`` (modules/plex.py:60-138);
+    ``show_search_field`` is the same after ``show_translation``
+    (modules/plex.py:168-193) re-scopes it for a SHOW library -- which for
+    three media attributes means the EPISODE libtype, not the show's.
+    ``search_kinds`` is which library types Plex will answer the search for,
+    transcribed from ``movie_only_searches`` (:430-445) and
+    ``show_only_searches`` (:446-506), and it is a SEPARATE column from
+    ``kinds`` because they genuinely differ -- ``resolution`` is movie-only
+    client-side and both-kinds server-side.
     """
 
     name: str
@@ -245,6 +449,10 @@ class FilterAttribute:
     kinds: tuple[str, ...]
     source: str
     note: str
+    search_field: str | None
+    show_search_field: str | None
+    search_kinds: tuple[str, ...]
+    filterable: bool
 
     @property
     def operators(self) -> tuple[str, ...]:
@@ -257,17 +465,54 @@ class FilterAttribute:
     def default_operator(self) -> str:
         return DEFAULT_OPERATOR[self.type]
 
+    @property
+    def searchable(self) -> bool:
+        """Derived from ``search_field``, not stored beside it -- a row with a
+        field and ``searchable=False`` would be a contradiction the table could
+        hold."""
+        return self.search_field is not None
+
+    @property
+    def search_operators(self) -> tuple[str, ...]:
+        """The type's search operators, minus this row's own subtractions."""
+        excluded = SEARCH_OPERATORS_EXCLUDED.get(self.name, ())
+        return tuple(
+            op for op in SEARCH_OPERATORS_BY_TYPE[self.type] if op not in excluded
+        )
+
+    def field_for(self, libtype: str) -> str:
+        """The Plex query field for one library type.
+
+        Raises rather than falling back: a caller asking for a field on a
+        libtype the row does not serve has already skipped the
+        ``search_kinds`` check, and answering with the movie field would build
+        a query Plex silently answers with the wrong set.
+        """
+        if self.search_field is None:
+            raise ValueError(f"{self.name!r} has no Plex search field")
+        if libtype not in self.search_kinds:
+            raise ValueError(
+                f"{self.name!r} is not searchable on a {libtype} library"
+            )
+        if libtype == "show" and self.show_search_field is not None:
+            return self.show_search_field
+        return self.search_field
+
 
 _BOTH = ("movie", "show")
 
 # --- THE TABLE ---------------------------------------------------------------
 #
-# Fifteen tier-1 rows, in the order the roadmap names them (roadmap.md:538-551),
-# transcribed from Kometa's documented filter semantics. Column totals are
-# asserted in tests/test_collection_filters.py as the transcription's checksum:
-# 8 tag / 1 str / 1 int / 2 float / 2 date / 1 duration; 9 listing /
-# 6 tier2-deferred (Task 2's probe moved the seven ``probe`` rows: resolution
-# in, the other six out); 11 both-kinds / 3 movie-only / 1 show-only.
+# Nineteen rows: 9a's fifteen in the order the roadmap names them
+# (roadmap.md:538-551), then 9b's four appended rather than interleaved so the
+# first fifteen still read against the roadmap line they came from. Column
+# totals are asserted in tests/test_collection_filters.py as the
+# transcription's checksum: 8 tag / 1 str / 2 int / 2 float / 3 date /
+# 1 duration / 2 bool; 9 listing / 6 tier2-deferred (Task 2's probe moved the
+# seven ``probe`` rows: resolution in, the other six out) / 2 unprobed /
+# 2 search-only; 13 both-kinds / 5 movie-only / 1 show-only for ``kinds``, and
+# 15 / 3 / 1 for ``search_kinds``, which is a different split and that is the
+# point of the second column.
 #
 # THE PROBE, in one paragraph, because six of these rows are now a refusal and
 # a reader deserves the reason without leaving the file. Read-only, against the
@@ -296,12 +541,16 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "Action/Crime and is also a Thriller. A listing-backed accessor would "
         "therefore not fail, it would answer WRONG, so genre leaves tier 1 "
         "rather than ship a filter that silently drops a third of its matches.",
+        search_field="genre", show_search_field="show.genre",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "year", "int", _BOTH, "listing",
         "The listing attrib `year`. Kometa's special year words (`current_year` "
         "and its offsets) are NOT tier 1, so `year: current_year` refuses at "
         "load naming the field rather than parsing as something else.",
+        search_field="year", show_search_field="show.year",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "resolution", "tag", ("movie",), "listing",
@@ -319,6 +568,13 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "rather than one. Unlike the tag families, Media is not "
         "truncated: the per-item count histogram was {1: 1905, 2: 46, 3: 4}, "
         "which is the real distribution of file versions, not a cap.",
+        # Movie-only as a client filter and BOTH as a search: Plex answers a
+        # show library's resolution at the EPISODE libtype
+        # (show_translation, plex.py:186), which is exactly the per-episode
+        # traversal the client-side accessor refuses to pay for -- the server
+        # does it for free.
+        search_field="resolution", show_search_field="episode.resolution",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "audience_rating", "float", _BOTH, "listing",
@@ -326,6 +582,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "audience score -- NOT `userRating`, which is the logged-in account's "
         "own star rating and is a separate Kometa filter (`user_rating`) left "
         "out of tier 1.",
+        search_field="audienceRating", show_search_field="show.audienceRating",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "critic_rating", "float", _BOTH, "listing",
@@ -333,6 +591,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "unqualified `rating` field the CRITIC rating, which is why this row "
         "exists rather than a passthrough: an operator writing `rating:` would "
         "be writing a Kometa attribute that does not exist.",
+        search_field="rating", show_search_field="show.rating",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "content_rating", "tag", _BOTH, "listing",
@@ -343,6 +603,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "certification and deliberately NOT `ItemFacts.content_rating`, which "
         "is a Common Sense age rating (gather.py:98-116): same name, different "
         "filter, per the plan's Plex-only adjudication.",
+        search_field="contentRating", show_search_field="show.contentRating",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "audio_language", "tag", ("movie",), "tier2-deferred",
@@ -355,12 +617,17 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "which is the item's preferred-audio SETTING and not the languages its "
         "files contain -- reading that would be a same-name-different-filter "
         "bug of the kind the item_facts adjudication already ruled out.",
+        search_field="audioLanguage", show_search_field="episode.audioLanguage",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "subtitle_language", "tag", ("movie",), "tier2-deferred",
         "Stream-level, like `audio_language`, and DEFERRED with it on the same "
         "probe data (no `<Stream>` element reaches the listing at all). The "
         "`subtitleLanguage` attrib is the same trap as `audioLanguage`.",
+        search_field="subtitleLanguage",
+        show_search_field="episode.subtitleLanguage",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "label", "tag", _BOTH, "tier2-deferred",
@@ -371,6 +638,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "sampled movies and for 19 of 20 sampled shows (`Overlay`, this "
         "server's Kometa-era marker). This settles what reconcile.py:70-83's "
         "deliberate per-collection reload was already evidence for.",
+        search_field="label", show_search_field="show.label",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "added", "date", _BOTH, "listing",
@@ -384,6 +653,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "something added at 09:15 that day, and two runs of the same "
         "collection in different timezones can disagree about an item added "
         "near midnight (roadmap row 154).",
+        search_field="addedAt", show_search_field="show.addedAt",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "release", "date", _BOTH, "listing",
@@ -391,6 +662,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "row's name is Kometa's, not Plex's, because the config is Kometa-"
         "shaped; the plan calls the attribute `release (originally_available)` "
         "for the same reason.",
+        search_field="originallyAvailableAt",
+        show_search_field="show.originallyAvailableAt",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "duration", "duration", _BOTH, "listing",
@@ -407,6 +681,14 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "failed here. The cost of the correction is that `duration.eq: 90` is "
         "now a float-equality test almost nothing satisfies, which is exactly "
         "what it is in Kometa; write a range instead.",
+        # MOVIE-ONLY as a search, and only for the four range modifiers:
+        # ``duration.gt``/``.gte``/``.lt``/``.lte`` are in
+        # movie_only_searches (plex.py:441-444). There is no bare ``duration``
+        # search at all -- see SEARCH_OPERATORS_BY_TYPE's note -- and the
+        # ranges that do exist are MINUTES on both sides, because Kometa
+        # multiplies a search duration by 60000 (builder.py:4234).
+        search_field="duration", show_search_field=None,
+        search_kinds=("movie",), filterable=True,
     ),
     FilterAttribute(
         "studio", "str", _BOTH, "listing",
@@ -420,6 +702,17 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "is the single most consequential tag-vs-string call in the table: had "
         "Kometa treated it as a tag, `studio: Warner` would match nothing at "
         "all instead of everything Warner.",
+        # ``studio`` is in BOTH of Kometa's search category lists -- it is a
+        # string_attribute (plex.py:507) AND a tag_attribute (plex.py:568),
+        # which is where two of the duplicate entries in ``searches`` come
+        # from. Which branch wins depends on the modifier:
+        # ``validate_attribute`` tests ``.regex`` against the TAG list first
+        # (builder.py:4301) and only then the string list (builder.py:4326).
+        # Since ``.regex`` is refused here (see SEARCH_OPERATORS_BY_TYPE),
+        # every operator this table ships takes the STRING branch, and the
+        # value goes to Plex ``quote()``d and unresolved.
+        search_field="studio", show_search_field="show.studio",
+        search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
         "network", "tag", ("show",), "tier2-deferred",
@@ -434,6 +727,13 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "a DIFFERENT attribute with its own row and its own string semantics; "
         "conflating them is not a substitution this table will make silently. "
         "Filed for tier 2 -- see the Task 2 report's recommendation.",
+        # Already show-scoped by search_translation (plex.py:63), so
+        # show_translation never sees it and the two columns are equal rather
+        # than the second being None. 9a proved the ITEM attribute absent on
+        # Plex 1.43.4; whether the SEARCH field answers is Task 5's probe #1,
+        # the single highest-value question this phase asks.
+        search_field="show.network", show_search_field="show.network",
+        search_kinds=("show",), filterable=True,
     ),
     FilterAttribute(
         "collection", "tag", _BOTH, "tier2-deferred",
@@ -452,10 +752,83 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "that `includeCollections=1`, the parameter whose name suggests it fixes "
         "this, does something else entirely: it MIXES Collection objects into "
         "the result set, changing what the listing returns.",
+        search_field="collection", show_search_field="show.collection",
+        search_kinds=_BOTH, filterable=True,
+    ),
+    # --- rows 9b added ------------------------------------------------------
+    #
+    # None of the four is a client-side filter today, and the two REASONS are
+    # different, which is why ``SOURCE_TIERS`` grew two values rather than one.
+    FilterAttribute(
+        "plays", "int", _BOTH, "unprobed",
+        "Plex's `viewCount` -- how many times the item has been played by the "
+        "account the token belongs to. In BOTH of Kometa's vocabularies: a "
+        "search (plex.py:80, :547) and a filter (builder.py:280-293). Its "
+        "source tier is `unprobed`, not `tier2-deferred`, and the distinction "
+        "is deliberate: 9a's probe never asked whether `viewCount` reaches the "
+        "section listing, so there is no verdict to cite and the "
+        "tier2-deferred refusal copy -- which cites one -- would be a claim "
+        "nobody checked. A `filters:` block naming it refuses saying exactly "
+        "that. Note also that `viewCount` is PER-ACCOUNT: the answer depends "
+        "on whose token the pass runs with, which is a property no other row "
+        "in this table has. As a SEARCH it takes the four range modifiers and "
+        "nothing else -- it is a number_attribute and not a year_attribute "
+        "(plex.py:547, :599) -- so SEARCH_OPERATORS_EXCLUDED subtracts the "
+        "bare form and `.not` that its `int` type otherwise offers.",
+        search_field="viewCount", show_search_field="show.viewCount",
+        search_kinds=_BOTH, filterable=True,
+    ),
+    FilterAttribute(
+        "last_played", "date", _BOTH, "unprobed",
+        "Plex's `lastViewedAt`. In both vocabularies, like `plays`, and "
+        "`unprobed` for the same reason. Per-account, like `plays`. As a "
+        "search its bare and `.not` forms are RELATIVE WINDOWS -- "
+        "`last_played.not: 6o` is \"not played in the last six months\", the "
+        "shape a stale-media collection wants -- and roadmap row 154's "
+        "timezone divergence applies to it in the opposite direction from "
+        "`added`: a server-side date predicate evaluates in the PLEX SERVER's "
+        "clock, not the runner's.",
+        search_field="lastViewedAt", show_search_field="show.lastViewedAt",
+        search_kinds=_BOTH, filterable=True,
+    ),
+    FilterAttribute(
+        "unplayed", "bool", ("movie",), "search-only",
+        "Plex's `unwatched` (plex.py:84), a server-side boolean: `unplayed: "
+        "true` emits `unwatched=1`, `false` emits `unwatched!=1` "
+        "(builder.py:4238-4241). MOVIE-ONLY -- it is in movie_only_searches "
+        "(plex.py:439). A show library's equivalent is `unplayed_episodes` "
+        "(`show.unwatchedLeaves`), which is a different attribute with a "
+        "different meaning (how many episodes, not whether the show) and is "
+        "filed for the per-family tail rather than aliased silently. "
+        "`search-only`: Kometa has no `unplayed` FILTER at all, so `filters:` "
+        "refuses it by naming the block it does belong to. Per-account.",
+        search_field="unwatched", show_search_field=None,
+        search_kinds=("movie",), filterable=False,
+    ),
+    FilterAttribute(
+        "progress", "bool", ("movie",), "search-only",
+        "Plex's `inProgress` (plex.py:89): partially played. Movie-only "
+        "(plex.py:440); the show equivalent is `episode_progress`, filed for "
+        "the tail. `search-only` like `unplayed`, and per-account like it. "
+        "Note that Kometa's `progress` SORT (`viewOffset`, plex.py:623-624) "
+        "is a different thing under the same word -- a sort key, not a "
+        "predicate -- and the sort table carries it independently.",
+        search_field="inProgress", show_search_field=None,
+        search_kinds=("movie",), filterable=False,
     ),
 )
 
 BY_NAME: dict[str, FilterAttribute] = {row.name: row for row in FILTER_ATTRIBUTES}
+
+# Derived from the table, in table order, so each reads as a subset of it
+# rather than as an independent list. ``filter_values.SHIPPED_ATTRIBUTES``
+# already does the same thing one column along.
+SEARCHABLE_ATTRIBUTES: tuple[str, ...] = tuple(
+    row.name for row in FILTER_ATTRIBUTES if row.searchable
+)
+FILTERABLE_ATTRIBUTES: tuple[str, ...] = tuple(
+    row.name for row in FILTER_ATTRIBUTES if row.filterable
+)
 
 
 class ItemView(Protocol):

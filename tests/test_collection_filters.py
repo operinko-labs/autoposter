@@ -68,7 +68,13 @@ def test_the_table_holds_exactly_the_tier_one_rows():
     the count is the transcription's checksum: a row lost, duplicated or renamed
     in an edit shows up here rather than as a filter an operator writes and
     nothing applies. Pinning the order too means the table stays readable
-    against the roadmap it came from rather than drifting into edit order."""
+    against the roadmap it came from rather than drifting into edit order.
+
+    Phase 9b appended four, at the end rather than interleaved, so the fifteen
+    above still read against the roadmap line they came from: ``plays`` and
+    ``last_played`` are in BOTH of Kometa's vocabularies and were never probed
+    for the client-side one, and ``unplayed`` and ``progress`` are search-only.
+    """
     assert [row.name for row in FILTER_ATTRIBUTES] == [
         "genre",
         "year",
@@ -85,6 +91,10 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "studio",
         "network",
         "collection",
+        "plays",
+        "last_played",
+        "unplayed",
+        "progress",
     ]
 
 
@@ -116,10 +126,11 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     assert {k: len(v) for k, v in by_type.items()} == {
         "tag": 8,
         "str": 1,
-        "int": 1,
+        "int": 2,
         "float": 2,
-        "date": 2,
+        "date": 3,
         "duration": 1,
+        "bool": 2,
     }
     assert by_source["listing"] == [
         "year",
@@ -141,15 +152,23 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "collection",
     ]
     assert by_source["probe"] == []
+    # 9b's two, and they are two tiers rather than one because the REASONS
+    # differ: ``unprobed`` means Kometa filters on it and 9a never asked
+    # whether the listing carries it; ``search-only`` means Kometa has no
+    # filter of that name at all, so there is nothing to ask.
+    assert by_source["unprobed"] == ["plays", "last_played"]
+    assert by_source["search-only"] == ["unplayed", "progress"]
 
 
 def test_item_kinds_are_movie_show_or_both():
     movie_only = sorted(r.name for r in FILTER_ATTRIBUTES if r.kinds == ("movie",))
     show_only = sorted(r.name for r in FILTER_ATTRIBUTES if r.kinds == ("show",))
 
-    assert movie_only == ["audio_language", "resolution", "subtitle_language"]
+    assert movie_only == [
+        "audio_language", "progress", "resolution", "subtitle_language", "unplayed",
+    ]
     assert show_only == ["network"]
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 11
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 13
 
 
 def test_every_operator_maps_onto_plexapis_own_operator_table():
@@ -206,6 +225,70 @@ def test_every_type_has_a_default_operator_that_is_one_of_its_operators():
     assert set(DEFAULT_OPERATOR) == set(OPERATORS_BY_TYPE) == set(VALUE_TYPES)
     for value_type, default in DEFAULT_OPERATOR.items():
         assert default in OPERATORS_BY_TYPE[value_type]
+
+
+# --- the search half of the table (phase 9b Task 1) ---------------------------
+
+
+def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
+    """Two kind columns, because they genuinely differ.
+
+    ``resolution`` is movie-only as a CLIENT filter (a show's resolution is a
+    property of its episodes, and per-episode traversal is not a tier-1 read)
+    and both-kinds as a SEARCH -- Plex answers it at the episode libtype, and
+    the server does the traversal for free. ``duration`` goes the other way:
+    both-kinds client-side, movie-only as a search, because Kometa's
+    ``movie_only_searches`` lists its four range modifiers (plex.py:441-444).
+    """
+    from collections import Counter
+
+    from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
+
+    assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
+        ("movie", "show"): 15, ("movie",): 3, ("show",): 1,
+    }
+    assert BY_NAME["resolution"].kinds == ("movie",)
+    assert BY_NAME["resolution"].search_kinds == ("movie", "show")
+    assert BY_NAME["duration"].kinds == ("movie", "show")
+    assert BY_NAME["duration"].search_kinds == ("movie",)
+
+
+def test_every_row_is_searchable_and_seventeen_are_filterable():
+    """The set arithmetic, pinned so it cannot rot silently.
+
+    Kometa's search vocabulary is 55 non-music attributes and its filter
+    vocabulary is 70 names; this table covers 19 of the first and 17 of the
+    second. The module docstring carries the full derivation.
+    """
+    from autoposter.collections.filters import (
+        FILTERABLE_ATTRIBUTES,
+        FILTER_ATTRIBUTES,
+        SEARCHABLE_ATTRIBUTES,
+    )
+
+    assert all(row.searchable for row in FILTER_ATTRIBUTES)
+    assert len(SEARCHABLE_ATTRIBUTES) == 19
+    assert len(FILTERABLE_ATTRIBUTES) == 17
+    assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
+        "unplayed", "progress",
+    }
+
+
+def test_the_show_search_field_rescoping_is_transcribed():
+    """``show_translation`` (Kometa modules/plex.py:168-193) re-scopes a search
+    field for a show library, and three of them go to the EPISODE libtype
+    rather than the show's -- which is the whole reason the column exists."""
+    from autoposter.collections.filters import BY_NAME
+
+    assert BY_NAME["genre"].show_search_field == "show.genre"
+    assert BY_NAME["added"].show_search_field == "show.addedAt"
+    assert BY_NAME["resolution"].show_search_field == "episode.resolution"
+    assert BY_NAME["audio_language"].show_search_field == "episode.audioLanguage"
+    assert BY_NAME["subtitle_language"].show_search_field == "episode.subtitleLanguage"
+    # network is already show-scoped by search_translation, so show_translation
+    # never sees it -- the two columns are equal, not None.
+    assert BY_NAME["network"].search_field == "show.network"
+    assert BY_NAME["network"].show_search_field == "show.network"
 
 
 # --- the accepted YAML shapes ------------------------------------------------
@@ -741,10 +824,23 @@ def test_every_operator_has_a_case_set_including_a_missing_value():
     quietly shipping untested, and so does a case-set that forgot the
     missing-value rule -- which is a table-level invariant every operator has
     to honour, not a per-operator detail someone may reasonably skip.
+
+    ``bool`` is excluded, and it is the one exclusion this test will accept: it
+    is a SEARCH-ONLY type (phase 9b), every ``bool`` row is
+    ``filterable=False``, and ``_split_key`` therefore refuses one in a
+    ``filters:`` block before ``evaluate`` can ever see it. Its entry in
+    ``OPERATORS_BY_TYPE`` exists only to keep ``FilterAttribute.operators``
+    total over ``VALUE_TYPES``; a case-set for it could not be written as a
+    config key at all. A future FILTERABLE boolean row would have to delete
+    this exclusion, which is the point of spelling it out rather than
+    filtering on ``OPERATOR_CASES``.
     """
-    pairs = {(t, op) for t, ops in OPERATORS_BY_TYPE.items() for op in ops}
+    pairs = {
+        (t, op) for t, ops in OPERATORS_BY_TYPE.items() for op in ops if t != "bool"
+    }
 
     assert set(OPERATOR_CASES) == pairs
+    assert all(row.filterable is False for row in FILTER_ATTRIBUTES if row.type == "bool")
     for pair, cases in OPERATOR_CASES.items():
         assert cases, pair
         assert any(have is None for have, _, _ in cases), pair
