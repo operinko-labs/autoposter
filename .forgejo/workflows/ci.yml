@@ -230,7 +230,24 @@ jobs:
         # and tests/conftest.py's `imagemagick` fixture fails rather than skips
         # when it is -- so leaving them in this run would make it red here for
         # a reason that is not a defect.
-        run: pytest tests/ -q -m "not imagemagick"
+        #
+        # `-n auto` fans the suite out across the runner's cores. That is safe
+        # only because tests/conftest.py hands each worker a database of its
+        # own, derived from AUTOPOSTER_TEST_DATABASE_URL and created through
+        # AUTOPOSTER_MAINTENANCE_DATABASE_URL -- both exported above by
+        # .forgejo/scripts/wait_for_postgres.py. Sharing one database across
+        # workers is what produced StaleDataErrors reading exactly like real
+        # regressions, and is why conftest.py used to forbid this outright.
+        #
+        # `--dist loadgroup` rather than plain `load`, so that a test which
+        # cannot be separated from its neighbours can be kept with them by
+        # marking it `@pytest.mark.xdist_group(...)`. Nothing carries that
+        # marker today; the flag is what makes adding one sufficient.
+        #
+        # The ImageMagick step below stays serial. It is eleven tests against
+        # one private database, so there is nothing to gain and a second
+        # per-worker database scheme to get wrong.
+        run: pytest tests/ -q -m "not imagemagick" -n auto --dist loadgroup
 
       # The tests that prove poster output is byte-identical to the tool this
       # service replaces had, until this step, never run in CI at all: they

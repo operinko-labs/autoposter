@@ -35,6 +35,12 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    # Parallel runs, which are safe only because tests/conftest.py hands each
+    # worker a database of its own -- see `_database_for_this_process` there.
+    # CI passes `-n auto`; the documented local command stays serial, because a
+    # development box is already sharing its cores with an editor, the API
+    # container and the vite server.
+    "pytest-xdist>=3.6",
     "ruff>=0.8",
     # tests/test_badge_parity.py compares rendered regions numerically.
     "numpy>=2.0",

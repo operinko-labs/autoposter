@@ -2,7 +2,9 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
+import asyncpg
 import httpx
 import pytest
 import pytest_asyncio
@@ -30,7 +32,76 @@ def _required_env(name: str) -> str:
     return value
 
 
-TEST_DB_URL = _required_env("AUTOPOSTER_TEST_DATABASE_URL")
+XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER")
+
+
+def _database_for_this_process(url: str) -> str:
+    """The database this pytest process owns outright.
+
+    Serially there is one process and it gets the URL untouched -- exactly what
+    this module did before parallel runs were possible at all.
+
+    Under pytest-xdist there are several, and they may not share: the schema
+    below is dropped and rebuilt by the first database test in each *process*,
+    so N workers against one database means N ``drop_all`` calls landing
+    mid-suite underneath each other. That is not a hypothetical -- it is the
+    StaleDataError this file used to carry a warning against, and the same one
+    the workflow's ImageMagick step records from the time it shared this
+    database with the main run. So each worker gets ``<base>_gw0``,
+    ``<base>_gw1`` and so on, created on demand by
+    ``_create_this_process_database`` below.
+    """
+    if not XDIST_WORKER:
+        return url
+    parsed = urlsplit(url)
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            f"{parsed.path}_{XDIST_WORKER}",
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+TEST_DB_URL = _database_for_this_process(_required_env("AUTOPOSTER_TEST_DATABASE_URL"))
+
+# Written back so the variable and this module cannot name two different
+# databases. tests/test_config_overrides.py reads it directly and hands it to
+# the CLIs as AUTOPOSTER_DATABASE_URL, which has to be the database the
+# ``session`` fixture just wrote the overrides row into. Outside xdist this
+# stores exactly the string it read.
+os.environ["AUTOPOSTER_TEST_DATABASE_URL"] = TEST_DB_URL
+
+
+async def _create_this_process_database() -> None:
+    """Create this worker's database if the server does not have it yet.
+
+    A no-op serially, where the database is the one the environment named and
+    something else already made it.
+
+    ``CREATE DATABASE`` cannot run inside a transaction block, so it goes over
+    a bare asyncpg connection rather than through a SQLAlchemy engine -- the
+    same constraint .forgejo/workflows/ci.yml's ImageMagick step records where
+    it uses two separate ``psql`` invocations for the same reason. Workers do
+    not race each other over this: each one only ever creates the single
+    database its own name spells.
+    """
+    if not XDIST_WORKER:
+        return
+    name = urlsplit(TEST_DB_URL).path.lstrip("/")
+    maintenance = _required_env("AUTOPOSTER_MAINTENANCE_DATABASE_URL")
+    connection = await asyncpg.connect(maintenance, timeout=10)
+    try:
+        exists = await connection.fetchval(
+            "SELECT 1 FROM pg_database WHERE datname = $1", name
+        )
+        if not exists:
+            await connection.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await connection.close()
+
 
 EXAMPLE_CONFIG = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -121,10 +192,10 @@ def no_outbound_network(monkeypatch):
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
 
 
-# Per-process on purpose -- and a trap if pytest-xdist ever arrives: each
-# worker process would run its own first-test drop_all against the one shared
-# database, mid-run, under everyone else. The database is not
-# concurrency-safe for parallel suites; keep runs serial.
+# Per-process on purpose: each worker process runs its own first-test drop_all,
+# which is only safe because ``_database_for_this_process`` above has given it a
+# database nobody else is using. Sharing one database across workers is what
+# produced the StaleDataErrors this flag used to carry a warning against.
 _SCHEMA_READY = False
 
 
@@ -142,6 +213,8 @@ async def engine():
     test's event loop.
     """
     global _SCHEMA_READY
+    if not _SCHEMA_READY:
+        await _create_this_process_database()
     eng = create_async_engine(TEST_DB_URL, future=True)
     async with eng.begin() as conn:
         if not _SCHEMA_READY:
