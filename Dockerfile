@@ -83,6 +83,23 @@ RUN apk add --no-cache \
  && magick -version | grep -q HDRI \
  && magick -version
 
+# 2026-08-26 -- CVE-2026-14456: openssl 3.5.7-r0 -> 3.5.8-r0. Remove when the
+# pinned python:alpine base ships openssl >= 3.5.8 (Renovate's next base bump).
+#
+# The base is Alpine 3.24.1, whose repository already has the fixed package;
+# only the image predates it. Both stages that ship anything inherit this one,
+# so patching here covers `runtime` and the `dev` stage CI runs the
+# ImageMagick-gated tests in. The node stages are not in scope: `frontend`
+# contributes only /frontend/dist to the final image and `webdev` is never
+# reachable from `docker build .`, so neither ships an openssl layer.
+#
+# Deliberately its own RUN in the base stage, above every COPY. The layer is
+# keyed on this file alone, so it is built once and reused by both dependent
+# stages -- putting it any lower would rebuild it whenever pyproject.toml or
+# src/ changed, which is the layer ordering the dev stage was reshaped to
+# avoid.
+RUN apk upgrade --no-cache libcrypto3 libssl3
+
 WORKDIR /app
 
 # Development only. Never reachable from `docker build .`, which targets the
