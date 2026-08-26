@@ -25,6 +25,7 @@ keep people honest.
 
 import fnmatch
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -128,12 +129,29 @@ def test_ci_sets_the_ci_environment_variable():
     )
 
 
+def _jobs() -> dict[str, dict]:
+    """Every job in the workflow, by id."""
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8")).get("jobs") or {}
+
+
+def _needs(job: dict) -> list[str]:
+    """A job's ``needs``, which YAML allows as either a string or a list."""
+    declared = job.get("needs") or []
+    return [declared] if isinstance(declared, str) else list(declared)
+
+
+def _named_step(name: str) -> dict:
+    """The one step called ``name``, across all jobs."""
+    matches = [step for step in _steps() if step.get("name") == name]
+    assert len(matches) == 1, f"expected exactly one {name!r} step, found {len(matches)}"
+    return matches[0]
+
+
 def _steps() -> list[dict]:
     """Every step in the workflow, across all jobs."""
-    loaded = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     return [
         step
-        for job in (loaded.get("jobs") or {}).values()
+        for job in _jobs().values()
         for step in (job.get("steps") or [])
         if isinstance(step, dict)
     ]
@@ -246,6 +264,214 @@ def test_the_image_job_builds_the_default_target():
             "tests/test_dev_environment.py::test_the_runtime_stage_is_the_last_one "
             "would stay green while a development image shipped as production"
         )
+
+
+def test_the_virtualenv_cache_is_keyed_on_what_decides_its_contents():
+    """A venv restored on too loose a key tests packages this commit does not declare.
+
+    The job skips ``pip install -e ".[dev]"`` outright when this cache hits, so
+    whatever the key does not cover is something CI has become unable to notice
+    changing. pyproject.toml holds both the dependency list and the dev extras,
+    and the interpreter patch decides which wheels resolve for them, so the key
+    names both. Drop the hash and a dependency bump runs against the previous
+    run's packages with a green tick over it; add a ``restore-keys:`` and a
+    near-miss does the same thing deliberately.
+
+    The skip itself is asserted too. A cache nothing is conditioned on is a
+    download that saves nothing, which would look exactly like this working.
+    """
+    caches = [step for step in _steps() if step.get("id") == "venv"]
+    assert len(caches) == 1, (
+        "expected exactly one step with `id: venv` in .forgejo/workflows/ci.yml, "
+        f"found {len(caches)}; this test and that step's `if:` consumers name it"
+    )
+    cache = caches[0]
+    assert str(cache.get("uses", "")).startswith("actions/cache@"), (
+        f"the `venv` step is {cache.get('uses')!r}, not an actions/cache step"
+    )
+
+    with_block = cache.get("with") or {}
+    key = str(with_block.get("key", ""))
+    assert "hashFiles('pyproject.toml')" in key, (
+        f"the venv cache key is {key!r}, which does not hash pyproject.toml. A "
+        "dependency change would then restore the previous run's venv and the "
+        "suite would pass against packages this commit does not declare"
+    )
+    assert "PYTHON_VERSION" in key, (
+        f"the venv cache key is {key!r} and does not name the interpreter "
+        "version; a Python bump would restore a venv built for the old one"
+    )
+    assert "restore-keys" not in with_block, (
+        "the venv cache declares restore-keys, so a miss falls back to a venv "
+        "built for a different dependency set instead of reinstalling"
+    )
+
+    conditioned = [
+        step
+        for step in _steps()
+        if "steps.venv.outputs.cache-hit" in str(step.get("if", ""))
+    ]
+    assert conditioned, (
+        "nothing in the workflow is conditioned on steps.venv.outputs.cache-hit, "
+        "so the install runs whether the cache hit or not and the cache buys "
+        "nothing but a download"
+    )
+
+
+def test_the_test_step_defers_the_deep_lane_only_on_pull_requests():
+    """The lane split must never reach the run that publishes.
+
+    A pull request deselects ``deep`` as well as ``imagemagick`` -- 516 of the
+    3,259 tests, every ASGI-plus-database suite in tests/conftest.py's
+    DEEP_SUITES. That is only safe while the other lane runs them *and* gates
+    the push, which ``test_the_image_job_cannot_publish_past_a_failing_suite``
+    below is the other half of. Narrow the non-pull-request selection too and
+    CI would push an image whose integration suites nobody ran -- with every
+    tick green, because the tests were deselected rather than failed.
+
+    Asserted against the step's script rather than its name, so renaming the
+    step is fine and quietly changing what it selects is not.
+    """
+    script = _named_step("Test")["run"]
+    selections = re.findall(r'markers="([^"]*)"', script)
+    assert len(selections) == 2, (
+        f"the Test step assigns {len(selections)} marker selections ({selections}); "
+        "this test expects the two lanes to be written out as literals so they "
+        "can be read here"
+    )
+    assert all("not imagemagick" in selection for selection in selections), (
+        f"a lane does not deselect the ImageMagick-gated tests: {selections}. "
+        "They fail rather than skip under CI, so that lane would go red for a "
+        "reason that is not a defect"
+    )
+
+    fast = 'markers="not imagemagick and not deep"'
+    full = 'markers="not imagemagick"'
+    assert fast in script and full in script, (
+        f"the Test step's lanes are {selections}; expected one selection that "
+        "deselects `deep` and one that does not"
+    )
+    assert "pull_request" in script[: script.index(fast)], (
+        "the lane that deselects `deep` is not the pull-request branch, so "
+        "either pull requests run everything or main runs less than everything"
+    )
+    assert "else" in script[script.index(fast) : script.index(full)], (
+        "the two lanes are not the two branches of one conditional; read the "
+        f"script again before trusting this test: {script!r}"
+    )
+
+    assert re.search(r"-n\s+(auto|\d+)", script), (
+        "the Test step no longer passes -n, so the suite runs in one process "
+        "again; tests/conftest.py's per-worker databases exist for this"
+    )
+    assert "--dist loadgroup" in script, (
+        "the Test step dropped --dist loadgroup, so an `xdist_group` marker "
+        "would be silently ignored rather than keeping its tests together"
+    )
+
+
+def test_the_image_job_cannot_publish_past_a_failing_suite():
+    """``needs:`` cannot be conditional, so the ordering is expressed as gates.
+
+    A pull request publishes nothing, so the image job may build and verify in
+    parallel with the suite; a push to main may not, because the last step of
+    that job pushes to Harbor. The shape is two gate jobs, exactly one of which
+    can succeed per event, with the image job requiring one of them to have
+    **succeeded**.
+
+    ``== 'success'`` and not ``!= 'failure'`` is the whole of the safety here,
+    and it is the assertion most worth keeping: a job whose ``needs`` failed is
+    *skipped*, not failed, so a gate waiting on a red suite reports ``skipped``
+    -- indistinguishable, to the weaker test, from the gate that a pull request
+    skips on purpose. Written the loose way, a failing suite on main would have
+    published.
+    """
+    jobs = _jobs()
+    image = jobs["image"]
+    gates = _needs(image)
+    assert gates, (
+        "the image job declares no `needs`, so nothing orders it after the "
+        "suite on any event and a red main run would still push"
+    )
+
+    condition = str(image.get("if", ""))
+    waits_for_the_suite = []
+    for gate in gates:
+        assert gate in jobs, f"the image job needs {gate!r}, which is not a job"
+        assert f"needs.{gate}.result == 'success'" in condition, (
+            f"the image job needs {gate!r} but its `if` does not require that "
+            f"gate to have succeeded: {condition!r}. A gate whose own `needs` "
+            "failed reports 'skipped', so anything weaker than == 'success' "
+            "lets a failing suite through"
+        )
+        assert "-" not in gate, (
+            f"the gate job id {gate!r} contains a hyphen; `needs.{gate}.result` "
+            "parses as a subtraction in a workflow expression and evaluates to "
+            "nothing, which fails open"
+        )
+        if "test" in _needs(jobs[gate]):
+            waits_for_the_suite.append(gate)
+        else:
+            gate_if = str(jobs[gate].get("if", ""))
+            assert re.search(r"==\s*'pull_request'", gate_if), (
+                f"the gate {gate!r} does not wait for the `test` job and is not "
+                f"restricted to pull requests ({gate_if!r}); it would open the "
+                "image job on main with the suite unfinished"
+            )
+
+    assert waits_for_the_suite, (
+        f"none of the image job's gates ({gates}) waits for the `test` job, so "
+        "no event orders the image build after the suite"
+    )
+
+    pushes = [
+        step
+        for step in (image.get("steps") or [])
+        if "docker push" in str(step.get("run", ""))
+    ]
+    assert pushes, "the image job pushes nothing; this test is then meaningless"
+    for step in pushes:
+        step_if = str(step.get("if", ""))
+        assert "refs/heads/main" in step_if and "push" in step_if, (
+            f"a step running `docker push` is conditioned on {step_if!r}, which "
+            "does not restrict it to a push to main; a pull request's image "
+            "job now runs without waiting for the suite, so this is what keeps "
+            "an unverified image out of the registry"
+        )
+
+
+def test_the_deep_lane_is_declared_and_never_deselected_by_default():
+    """``-m`` in addopts would narrow every lane at once, CI's included.
+
+    The marker is applied by tests/conftest.py's ``pytest_collection_modifyitems``
+    rather than written in the 23 files, so this is where the declaration is
+    checked to still exist and still name files that do. A default ``-m`` in
+    addopts is the one way the *main* lane could quietly stop running the deep
+    suites while the workflow still asked for them.
+    """
+    ini = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    options = ini["tool"]["pytest"]["ini_options"]
+
+    markers = options.get("markers") or []
+    assert any(marker.startswith("deep:") for marker in markers), (
+        f"pyproject.toml registers {markers}, with no `deep:` among them; the "
+        "workflow's `-m \"... and not deep\"` would then be selecting on a "
+        "marker nothing declares"
+    )
+    assert "-m" not in str(options.get("addopts", "")), (
+        "pytest's addopts carries a `-m`, which every lane inherits -- "
+        "including the main-branch run that is the reason deferring the deep "
+        "suites on pull requests is safe"
+    )
+
+    from conftest import DEEP_SUITES
+
+    assert DEEP_SUITES, "tests/conftest.py's DEEP_SUITES is empty; there is no deep lane"
+    missing = sorted(name for name in DEEP_SUITES if not (REPO / "tests" / name).is_file())
+    assert not missing, (
+        f"DEEP_SUITES names files that do not exist: {missing}. They are matched "
+        "on filename, so a renamed suite silently rejoins the fast lane"
+    )
 
 
 @pytest.mark.parametrize(
