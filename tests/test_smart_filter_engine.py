@@ -107,8 +107,10 @@ class FakeSection:
         self._server = FakeServer()
         self._existing = {c.title: c for c in existing}
         self._matches = matches
+        self.listings = 0
 
     def collections(self, **kw):
+        self.listings += 1
         return list(self._existing.values())
 
     def collection(self, title):
@@ -228,6 +230,49 @@ async def test_the_pass_run_cache_reaches_the_builder(session):
         [_definition(), _definition(title="More Horror")], _config(),
     )
     assert calls == [("genre", "movie")]
+
+
+async def test_a_pass_lists_the_sections_collections_once(session):
+    """The engine memoises ONE ``section.collections()`` per pass and threads it
+    to every list reconciler. Before this it did not reach the smart dispatch,
+    so each smart definition listed the library for itself -- 305 collections on
+    the production Movies section, per definition, on every pass, an unchanged
+    definition included, because the listing is read before the hash
+    short-circuit can return. Three definitions, one listing.
+    """
+    section = FakeSection(matches=3)
+    config = _config()
+    definitions = [
+        _definition(), _definition(title="More Horror"), _definition(title="Even More"),
+    ]
+    await run_library(session, section, "Movies", "Movie", definitions, config)
+    assert section.listings == 1
+
+    # And the second pass -- every definition hash-current -- lists it once
+    # more and no more: the fallback is gone, not merely amortised on a create.
+    await run_library(session, section, "Movies", "Movie", definitions, config)
+    assert section.listings == 2
+
+
+async def test_the_shape_conflict_still_fires_for_a_hash_current_definition(session):
+    """The listing is read BEFORE the hash short-circuit, and that ordering is
+    load-bearing rather than incidental: a collection whose shape changed in
+    Plex has to be re-detected on a pass where the definition itself did not
+    change. Sharing the listing must not turn into hoisting the short-circuit
+    above it.
+    """
+    section = FakeSection(matches=3)
+    config = _config()
+    await run_library(session, section, "Movies", "Movie", [_definition()], config)
+    writes = len(section._server.queries)
+
+    # Plex-side: the collection is no longer smart. The definition's hash is
+    # untouched, so only a check that runs ahead of the short-circuit can see it.
+    section._existing["Recent Horror"].smart = False
+    run = await run_library(session, section, "Movies", "Movie", [_definition()], config)
+
+    assert any("shape conflict" in action for action in run.actions)
+    assert len(section._server.queries) == writes
 
 
 # --- seam 2: what the definition is understood to manage --------------------

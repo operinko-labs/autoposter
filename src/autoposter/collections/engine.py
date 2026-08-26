@@ -347,7 +347,7 @@ async def run_library(
                     session=session, section=section, library=library,
                     library_type=library_type, label=label, config=config,
                     http=http, dry_run=dry_run, definition=definition,
-                    run_cache=run_cache,
+                    run_cache=run_cache, listing=listing,
                 )
             )
             actions += smart_actions

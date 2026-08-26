@@ -141,8 +141,10 @@ class FakeSection:
         self._existing = {c.title: c for c in existing}
         self._matches = matches
         self.fetched = []
+        self.listings = 0
 
     def collections(self, **kw):
+        self.listings += 1
         return list(self._existing.values())
 
     def collection(self, title):
@@ -259,6 +261,46 @@ def test_this_files_oracle_copies_match_the_oracles():
     assert kometa_post["12-show-rescoping"] == KOMETA_POST_SHOW
     assert kometa_post["8-rated"] == KOMETA_POST_8
     assert kometa_post["15-unreached-renders-and-rows"] == KOMETA_POST_15
+
+
+async def test_a_created_collection_goes_back_into_the_callers_listing(session):
+    """``lists.py:283``'s rule, on this path too. The map belongs to the PASS,
+    so a later definition reading it has to see a collection this one created
+    rather than a listing taken before it existed."""
+    section = FakeSection(matches=7)
+    listing: dict = {}
+
+    await reconcile_smart_collection(
+        session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=False,
+        existing=listing,
+    )
+
+    assert listing[TITLE].title == TITLE
+    # The caller's map was the one consulted, so nothing listed the section.
+    assert section.listings == 0
+
+
+async def test_a_supplied_listing_is_used_instead_of_listing_the_section(session):
+    """The reason the caller passes one at all: ``section.collections()``
+    returns every collection in the library, and the engine already paid for it
+    once this pass. The listing is read before the hash short-circuit, so a
+    definition that costs nothing else still costs this -- which is what made it
+    worth sharing rather than amortising."""
+    existing = FakeCollection(TITLE, labels=[LABEL], rating_key="12345", smart=True)
+    section = FakeSection(matches=7)
+    session.add(ManagedCollection(
+        library="Movies", title=TITLE, kind="smart", plex_rating_key="12345",
+        definition_hash=smart_definition_hash(URL, None, None),
+    ))
+    await session.flush()
+
+    actions = await reconcile_smart_collection(
+        session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=False,
+        existing={TITLE: existing},
+    )
+
+    assert actions == []
+    assert section.listings == 0
 
 
 async def test_taking_over_a_list_row_stamps_it_smart_and_clears_its_stamps(session):

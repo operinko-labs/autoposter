@@ -32,6 +32,7 @@ validating ``ctx.config`` themselves regardless -- a builder is also called
 directly, by tests and by an expanding builder's constructed definitions --
 so the two are defence in depth, not one replacing the other.
 """
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -182,6 +183,17 @@ class SmartContext:
     failures included. Sharing the dict with the list builders is the point: two
     definitions naming ``genre: Horror`` cost one round trip whichever builders
     they use. ``cs_bucket`` ignores it.
+
+    ``listing`` is the pass's ``{title: collection}`` map of the section, as a
+    CALLABLE so it is fetched only if a smart builder asks for it. Every list
+    definition in a pass already shares one -- ``section.collections()`` returns
+    every collection in the library, 305 of them on the production Movies
+    section -- and a smart builder that did not take it would pay for that
+    listing once per definition, on every pass, unchanged definitions included.
+    Calling it is what puts a smart definition on the same one-listing budget.
+    Optional, and its absence is a fallback rather than an error: a direct
+    caller with no pass around it has nothing to share. ``cs_bucket`` ignores
+    it.
     """
 
     session: AsyncSession
@@ -194,6 +206,7 @@ class SmartContext:
     dry_run: bool = True
     definition: Any = None
     run_cache: dict[str, Any] = field(default_factory=dict)
+    listing: Callable[[], dict] | None = None
 
 
 @runtime_checkable

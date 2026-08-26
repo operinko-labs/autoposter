@@ -185,6 +185,12 @@ class SmartFilterBuilder:
                 ctx.label,
                 summary=definition.summary,
                 dry_run=ctx.dry_run,
+                # The pass's one listing, not a second one per definition.
+                # Called here rather than at context construction so a
+                # definition that refuses in ``search_url`` above costs
+                # nothing, and so a pass carrying no smart_filter definition
+                # never fetches it at all.
+                existing=ctx.listing() if ctx.listing is not None else None,
                 adopt=collections.adopt,
                 adopt_from=collections.adopt_from,
                 adopt_removes_prior_label=collections.adopt_removes_prior_label,

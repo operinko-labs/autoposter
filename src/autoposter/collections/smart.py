@@ -223,6 +223,14 @@ async def reconcile_smart_collection(
     what lets the whole reconcile be tested without a builder, a registry entry
     or a params model.
 
+    ``existing`` is the caller's ``{title: collection}`` map of the section,
+    shared across the pass for the reason ``lists.py`` gives: one
+    ``section.collections()`` returns every collection in the library, so a
+    caller reconciling several in a row pays for it once. A collection created
+    here is written back into it. Omitting it falls back to listing here, and
+    the write-back then lands in a map nobody else reads -- which is what a
+    direct caller with no pass around it should get.
+
     ``settings`` is the ``CollectionDefinition``, supplying the per-definition
     collection settings (labels, sort title, display mode, hub visibility) the
     shared ``apply_collection_settings`` applies. ``summary`` is the definition's
@@ -293,6 +301,11 @@ async def reconcile_smart_collection(
         else:
             if collection is None:
                 collection = create_smart_collection(section, libtype, title, url)
+                # Back into the shared listing, exactly as ``lists.py:283``
+                # does it: the map is the pass's, so a later definition
+                # reading it has to see a collection this pass created rather
+                # than a listing taken before it existed.
+                listing[title] = collection
                 collection.addLabel(label)
                 actions.append(
                     "created %r as a smart collection (%d item(s) match now)"
