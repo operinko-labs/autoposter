@@ -34,6 +34,7 @@ docker compose -p <unique> -f docker-compose.yml -f .superpowers/isolated-db.yml
 - Teardown at the end of each task: `docker compose -p <unique> down`. **NEVER `down -v`** — that destroys the volume other work may still be using.
 - Allow up to 1800s per command; the compose image build plus a contended host makes a cold first run slow.
 - The shared test database is **not** concurrency-safe (`tests/conftest.py:124-128`): never add `-n`/xdist, never run two pytest commands against the same `-p` project at the same time.
+  *[Superseded 2026-08-26, `ci/speedup` 838ef57: xdist is now safe — each worker derives its own database from `PYTEST_XDIST_WORKER` (the cited lines have moved: the mechanism is `_database_for_this_process` at `tests/conftest.py:100-133`, and the flag's comment is now at `tests/conftest.py:260-264`). Still true: two pytest commands against the same compose project remain unsafe — keep unique `-p` names.]*
 
 **Golden gate + lint, before the commit step of every task.** Both must pass:
 
