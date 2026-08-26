@@ -6,6 +6,7 @@ single-row ``config_overrides`` table instead (``db/models.py``) and are merged
 over the file every time a ``Config`` is built. The file keeps owning the
 defaults; the database owns the deltas.
 """
+import logging
 from pathlib import Path
 from typing import get_args
 
@@ -17,8 +18,32 @@ from autoposter.config.loader import build_config, read_config_document
 from autoposter.config.schema import Config
 from autoposter.db.models import ConfigOverride
 
+logger = logging.getLogger(__name__)
+
 # The single-document table's only row.
 OVERRIDES_ROW_ID = 1
+
+# Sections that left the config schema behind and are dropped out of a stored
+# overrides document instead of being refused with it.
+#
+# ``version_check`` was live-editable in the settings editor right up to the
+# commit that moved its three fields into ``AUTOPOSTER_IMAGE_REF``
+# (``config/image_ref.py``), so any deployment whose operator ever saved that
+# section has the key sitting in this table's one row. ``Config``'s
+# ``_version_check_moved_to_an_env_var`` validator refuses the key in *any*
+# document it validates, and the merged document goes through the same
+# validator -- so leaving it in place would brick the pod at boot with a
+# message telling the operator to edit a YAML file that does not carry the
+# key, while the editor that could clear the row sits behind an app that will
+# not start.
+#
+# The file half of that refusal stands: a mounted ``autoposter.yaml`` with a
+# ``version_check:`` block is an operator-actionable error, and being told to
+# delete it is the point. This half is not actionable, so it self-heals
+# instead: the key is dropped with one WARNING, and because the editor can no
+# longer produce it, the next save of the overrides document writes it out of
+# existence for good.
+MIGRATED_SECTIONS = ("version_check",)
 
 
 def _reject_secrets(document: dict, path: str = "") -> None:
@@ -135,12 +160,42 @@ def document_paths(document: dict, path: str = "") -> list[str]:
     return paths
 
 
+def _without_migrated_sections(document: dict) -> dict:
+    """``document`` minus any ``MIGRATED_SECTIONS`` key, warning once per key.
+
+    Top-level only, and deliberately so: these are whole sections that left the
+    schema, not individual settings, and a walk looking for the name at depth
+    would strip an operator's legitimately-named subkey somewhere else in the
+    tree.
+
+    Returns the same object when there is nothing to drop, so the ordinary
+    deployment -- every one whose operator never touched the section -- pays a
+    membership test and allocates nothing.
+    """
+    present = [key for key in MIGRATED_SECTIONS if key in document]
+    if not present:
+        return document
+    for key in present:
+        logger.warning(
+            "dropping stale %s from stored overrides -- the section moved to "
+            "AUTOPOSTER_IMAGE_REF; this warning disappears once the stored "
+            "overrides are next saved", key,
+        )
+    return {key: value for key, value in document.items() if key not in present}
+
+
 async def load_overrides_document(session: AsyncSession) -> dict:
     """The stored overrides document, or ``{}`` when there is no row.
 
     An empty document is the pre-edit state of every deployment, and merging
     ``{}`` is the identity, so "no overrides yet" costs nothing beyond one
     primary-key lookup and behaves exactly like the file alone.
+
+    Migrated sections are stripped here rather than at the merge, because this
+    is the single seam every reader of the stored document comes through: the
+    boot-time merge (``load_effective_config``) that would otherwise refuse to
+    validate, and ``GET /api/config``'s ``overridden_paths``, which would
+    otherwise mark a setting the editor no longer renders as overridden.
     """
     row = await session.scalar(
         select(ConfigOverride).where(ConfigOverride.id == OVERRIDES_ROW_ID)
@@ -158,7 +213,7 @@ async def load_overrides_document(session: AsyncSession) -> dict:
             "the config_overrides document must be a JSON object, not "
             f"{type(row.document).__name__}"
         )
-    return row.document
+    return _without_migrated_sections(row.document)
 
 
 async def load_effective_config(path: Path, session: AsyncSession) -> Config:

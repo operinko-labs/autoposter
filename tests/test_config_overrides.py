@@ -173,6 +173,94 @@ async def test_a_stored_secrets_key_is_rejected_at_load(session):
         await load_effective_config(EXAMPLE, session)
 
 
+# --- sections that left the schema -------------------------------------------
+
+
+def _overrides_warnings(caplog) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and record.name == "autoposter.config.overrides"
+    ]
+
+
+async def test_a_stored_version_check_section_does_not_brick_the_boot(session, caplog):
+    """The migration hazard this strip exists for. ``version_check`` was
+    live-editable in the settings editor right up to the commit that moved its
+    three fields into AUTOPOSTER_IMAGE_REF, so any deployment whose operator
+    ever saved that section carries the key in its ``config_overrides`` row --
+    and ``Config._version_check_moved_to_an_env_var`` refuses the key in *any*
+    document it validates, the merged one included.
+
+    Refusing it here would fail the pod at boot with a message telling the
+    operator to delete a block from ``autoposter.yaml``, which does not have
+    it, while the only thing that could clear the row -- the settings editor --
+    sits behind the app that will not start. So the key is dropped and the boot
+    succeeds."""
+    await _store(session, {"version_check": {"project": "operinko-labs"}, "workers": 2})
+
+    with caplog.at_level(logging.WARNING):
+        config = await load_effective_config(EXAMPLE, session)
+
+    # The untouched neighbour still applies: this drops one key, not the row.
+    assert config.workers == 2
+    assert "version_check" not in config.model_dump()
+
+
+async def test_dropping_a_stored_version_check_section_says_so_once(session, caplog):
+    """Silent would be worse than the refusal: an operator whose stored
+    override stopped doing anything is owed the reason, and the way out."""
+    await _store(session, {"version_check": {"project": "operinko-labs"}})
+
+    with caplog.at_level(logging.WARNING):
+        await load_effective_config(EXAMPLE, session)
+
+    warnings = _overrides_warnings(caplog)
+    assert len(warnings) == 1
+    assert "dropping stale version_check from stored overrides" in warnings[0]
+    assert "AUTOPOSTER_IMAGE_REF" in warnings[0]
+    # Self-healing, and the message has to say so: the editor can no longer
+    # produce the key, and the document is always written whole.
+    assert "next saved" in warnings[0]
+
+
+async def test_an_ordinary_stored_document_warns_about_nothing(session, caplog):
+    """The cost every other deployment pays for the strip: none, and no noise."""
+    await _store(session, {"workers": 2})
+
+    with caplog.at_level(logging.WARNING):
+        config = await load_effective_config(EXAMPLE, session)
+
+    assert config.workers == 2
+    assert _overrides_warnings(caplog) == []
+
+
+async def test_the_stored_document_reader_drops_it_too(session):
+    """Stripped at the read, not at the merge, so ``GET /api/config``'s
+    ``overridden_paths`` cannot mark as overridden a setting the editor no
+    longer renders at all."""
+    await _store(session, {"version_check": {"project": "x"}, "workers": 2})
+
+    assert await load_overrides_document(session) == {"workers": 2}
+
+
+async def test_a_version_check_key_in_the_yaml_file_is_still_refused(tmp_path, session):
+    """The other half of the pair, asserted here beside the strip so the
+    asymmetry is deliberate on the page rather than only in a docstring: the
+    file is operator-actionable -- delete the block -- so it stays a hard
+    refusal. Only the document an operator cannot reach self-heals."""
+    bad = tmp_path / "autoposter.yaml"
+    bad.write_text(
+        EXAMPLE.read_text(encoding="utf-8")
+        + "\nversion_check:\n  project: operinko-labs\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="version_check"):
+        await load_effective_config(bad, session)
+
+
 # --- the generation holder ---------------------------------------------------
 
 

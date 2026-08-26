@@ -22,9 +22,11 @@ internal hostname -- and it is not in the response, not in an event row, and
 not in the log. That last one is the trap: every httpx exception renders the
 full request URL in its own message, so ``logger.warning("...%s", exc)``,
 ``repr(exc)`` or ``exc_info=True`` would each publish it into a log an
-operator pastes into a ticket. Only ``type(exc).__name__`` is logged --
-plus, for an ``httpx.HTTPStatusError``, the response's status code, which is
-just an int and names nothing about where it was fetched from.
+operator pastes into a ticket. Only ``type(exc).__name__`` is logged, behind
+a fixed category word naming which half of the exchange failed
+(``_failure_reason``) -- plus, for an ``httpx.HTTPStatusError``, the
+response's status code, which is just an int and names nothing about where it
+was fetched from.
 
 **Harbor is polled in the background, not fetched on request.** The
 `autoposter` project is public and internet-accessible (an operator decision,
@@ -107,6 +109,33 @@ async def _ask_harbor(http, harbor_url: str, project: str, repository: str, toke
     return None
 
 
+def _failure_reason(exc: Exception) -> str:
+    """A failed poll as a category plus a class name -- never a URL.
+
+    The class name alone says what was raised, not what an operator should go
+    and look at, and three quite different problems all arrive as "some httpx
+    exception". So the category leads:
+
+    * ``connect`` -- the registry was not spoken to at all. This is where a
+      registry that does not speak **https** lands, and it lands there on
+      every poll forever: the URL is built with a hardcoded scheme (see
+      ``_poll``), so an ``http``-only registry is a permanent, silent
+      no-answer that would otherwise be indistinguishable from an outage.
+    * ``status`` -- Harbor answered with a refusal. The code comes too: an
+      int, which names nothing about where it was fetched from, and which is
+      what separates a rotated robot token (401) from a Harbor that is down.
+    * ``parse`` -- Harbor answered with something this module could not read.
+
+    ``httpx.HTTPStatusError`` is checked first because it is not a
+    ``TransportError``: the request succeeded, the answer was a refusal.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"status: {type(exc).__name__} {exc.response.status_code}"
+    if isinstance(exc, httpx.TransportError):
+        return f"connect: {type(exc).__name__}"
+    return f"parse: {type(exc).__name__}"
+
+
 class VersionPoller:
     """Background refresh of Harbor's newest tag, in ``PlexHealth``'s idiom --
     a single ``run(stop_event)`` coroutine the lifespan starts as a task and
@@ -159,23 +188,19 @@ class VersionPoller:
     async def _poll(self) -> None:
         registry, project, repository = self._target
         try:
+            # https, always: an image reference carries no scheme to derive one
+            # from, and this deployment's registry is https. A registry that is
+            # not fails every poll as a `connect` failure -- which is why the
+            # warning below carries a category (see `_failure_reason`) rather
+            # than a bare class name.
             self.latest = await _ask_harbor(
                 self._http, f"https://{registry}", project, repository, self._token
             )
-        except httpx.HTTPStatusError as exc:
-            # The status code too -- an int, never a URL -- so a rotated robot
-            # token (401) reads differently in the log from an outage.
-            logger.warning(
-                "the update check could not reach the registry (%s %s)",
-                type(exc).__name__, exc.response.status_code,
-            )
         except Exception as exc:
-            # The class name and nothing else. See this module's docstring: the
-            # exception's own message carries the Harbor URL.
-            logger.warning(
-                "the update check could not reach the registry (%s)",
-                type(exc).__name__,
-            )
+            # The category and the class name, and nothing else. See this
+            # module's docstring: the exception's own message carries the
+            # Harbor URL.
+            logger.warning("the update check failed (%s)", _failure_reason(exc))
 
 
 def _running_version() -> str:

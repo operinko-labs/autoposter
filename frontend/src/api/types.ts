@@ -653,10 +653,16 @@ export interface ArtworkModeResponse {
 /** `GET /api/version` -- what this pod is running, and whether Harbor has newer.
  *
  * `update_available` is a tri-state, and the null is the point: it means the
- * registry was not asked (no `AUTOPOSTER_IMAGE_REF`, no robot token) or
- * could not be reached. That is not the same as "you are up to date", so the
- * sidebar shows no marker at all rather than one it cannot stand behind.
- * `latest` is null in exactly the same cases.
+ * registry has no answer here yet. Either the check is off (no
+ * `AUTOPOSTER_IMAGE_REF`, or one that did not parse), or the background poll
+ * that refreshes the answer has not completed a successful pass -- which
+ * includes the ordinary seconds between boot and the first poll, not only a
+ * registry that could not be reached. A robot token is NOT one of these
+ * cases: the Harbor project is public, so an unset `AUTOPOSTER_HARBOR_TOKEN`
+ * polls anonymously rather than switching the check off. None of them mean
+ * "you are up to date", so the sidebar shows no marker at all rather than one
+ * it cannot stand behind. `latest` is null in exactly the same cases --
+ * `update_available` is derived from it server-side.
  *
  * The Harbor URL is deliberately absent from this shape: it is derived from
  * AUTOPOSTER_IMAGE_REF at boot and never leaves the server -- see

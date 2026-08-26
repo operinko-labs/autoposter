@@ -222,13 +222,53 @@ async def test_the_running_tag_cached_as_latest_is_not_an_update(
 
 async def test_the_endpoint_never_calls_harbor_itself(client, auth_headers, app):
     """The background poll replaced the request-path fetch -- GET /api/version
-    must only ever read app.state.version_poller.latest."""
+    must only ever read app.state.version_poller.latest.
+
+    Asserted as a discriminating pair, because the negative half alone is not
+    evidence: a `_http` assignment that had gone inert -- wrong attribute, a
+    poller the endpoint does not read -- would satisfy "zero Harbor requests"
+    just as well as the property being true. So the same client, on the same
+    poller, must record *zero* requests across a run of endpoint calls and
+    *exactly one* from a single poll. Only a live assignment passes both."""
+    seen = []
+
     def handler(request):
-        raise AssertionError("the endpoint must never call Harbor itself")
+        seen.append(request)
+        return httpx.Response(200, json=[{"tags": [{"name": NEWER}]}])
 
     async with AsyncClient(transport=httpx.MockTransport(handler)) as http:
         app.state.version_poller._http = http
-        await get(client, auth_headers)
+
+        for _ in range(3):
+            await get(client, auth_headers)
+        assert seen == [], "the endpoint must never call Harbor itself"
+
+        await app.state.version_poller._poll()
+
+    assert len(seen) == 1, "the poller's own http client was not the one wired in"
+    assert app.state.version_poller.latest == NEWER
+
+
+async def test_a_dev_build_against_a_cached_registry_tag_is_an_update(
+    client, auth_headers, app, monkeypatch
+):
+    """Honest rather than clever: a developer running an unpushed local build
+    IS behind whatever main last published, and saying so is more useful than
+    suppressing the marker because the running version has no sha. This is the
+    only test behind deploy/README.md's claim that a `dev` pod with a reachable
+    registry always shows the marker, so the tag is polled for real rather than
+    assigned."""
+    monkeypatch.delenv("AUTOPOSTER_VERSION")
+    http, _ = _mock_transport(tags=(NEWER,))
+    async with http:
+        app.state.version_poller._http = http
+        await app.state.version_poller._poll()
+
+    body = await get(client, auth_headers)
+
+    assert body["version"] == "dev"
+    assert body["latest"] == NEWER
+    assert body["update_available"] is True
 
 
 async def test_the_robot_token_is_never_in_the_response(client, auth_headers, app):
@@ -378,6 +418,58 @@ async def test_a_failed_poll_leaves_the_previous_answer_standing():
     assert poller.latest == NEWER
 
 
+async def test_an_error_status_also_leaves_the_previous_answer_standing():
+    """A 401 from a rotated robot account is as much a failed poll as a refused
+    connection, and must be contained the same way: the sidebar keeps showing
+    what the last successful poll found rather than blanking."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json=[{"tags": [{"name": NEWER}]}])
+        return httpx.Response(401, json={"errors": []})
+
+    async with AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        poller = VersionPoller(http=http, target=TARGET, token=HARBOR_TOKEN)
+        await poller._poll()
+        assert poller.latest == NEWER
+
+        await poller._poll()
+
+    assert poller.latest == NEWER
+
+
+async def test_a_connect_failure_is_logged_under_the_connect_category(caplog):
+    """The category is what makes an https-only assumption debuggable: the
+    Harbor URL is built with a hardcoded scheme (api/version.py `_poll`), so a
+    registry that speaks plain HTTP fails here on every poll forever, and a
+    bare class name would never say which half of the exchange failed."""
+    http, _ = _mock_transport(error=httpx.ConnectError("connection refused"))
+    async with http:
+        poller = VersionPoller(http=http, target=TARGET, token=HARBOR_TOKEN)
+        with caplog.at_level(logging.WARNING):
+            await poller._poll()
+
+    assert "connect: ConnectError" in caplog.records[0].getMessage()
+
+
+async def test_an_unreadable_answer_is_logged_under_the_parse_category(caplog):
+    """Harbor answered, and the answer was not something this module could
+    read -- a different problem from an unreachable registry and from a
+    refusal, so it is named differently."""
+    def handler(request):
+        return httpx.Response(200, text="<html>not the registry api</html>")
+
+    async with AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        poller = VersionPoller(http=http, target=TARGET, token=HARBOR_TOKEN)
+        with caplog.at_level(logging.WARNING):
+            await poller._poll()
+
+    assert poller.latest is None
+    assert "parse: " in caplog.records[0].getMessage()
+
+
 async def test_a_failure_logs_the_exception_class_and_not_the_url(caplog):
     """The guard this module exists to keep. httpx's own exception message
     embeds the full request URL, so logging the exception -- with `%s`, with
@@ -414,8 +506,7 @@ async def test_a_401_logs_the_status_code_and_not_just_the_class(caplog):
 
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert "HTTPStatusError" in warnings[0].getMessage()
-    assert "401" in warnings[0].getMessage()
+    assert "status: HTTPStatusError 401" in warnings[0].getMessage()
     assert "harbor.example" not in caplog.text
     assert HARBOR_URL not in caplog.text
 
@@ -486,7 +577,7 @@ async def test_run_survives_a_failed_poll_and_retries_next_interval(monkeypatch,
 
     assert calls["n"] == 2
     assert poller.latest == NEWER
-    assert any("could not reach the registry" in r.message for r in caplog.records)
+    assert any("the update check failed" in r.message for r in caplog.records)
 
 
 async def test_run_does_nothing_without_an_image_ref():

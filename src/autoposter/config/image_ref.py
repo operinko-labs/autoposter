@@ -34,6 +34,15 @@ def parse_image_ref(ref: str) -> tuple[str, str, str] | None:
     is missing. The repository may itself be multiple ``/``-separated
     segments; only its last one can carry a tag, so a registry port's own
     ``:`` is never mistaken for one.
+
+    **The registry is assumed to speak https.** An image reference carries no
+    scheme -- there is nothing here to derive one from -- and ``api/version.py``
+    builds its Harbor URL as ``https://{registry}``. A ``host:5000`` registry
+    parses because a port is how a hostless first segment is told apart from a
+    project name, not because a plain-HTTP registry is supported: one would
+    parse cleanly and then fail every poll, which is why that failure is logged
+    under its own ``connect`` category (``api/version.py``'s
+    ``_failure_reason``) instead of as an unexplained class name.
     """
     ref = ref.strip()
     if not ref:
