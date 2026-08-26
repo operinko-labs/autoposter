@@ -139,7 +139,9 @@ variables:
   unset value does not mean "no auth required", it means every login attempt
   401s.
 - `AUTOPOSTER_HARBOR_TOKEN` — optional, same posture as the MDBList key. See
-  "The sidebar's update check" below.
+  "The sidebar's update check" below, which also covers `AUTOPOSTER_IMAGE_REF`
+  — not a secret, and so not part of this ExternalSecret, but the other half
+  of the same check.
 - `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` — optional, same posture as the MDBList key.
   A plex.tv *account* token, for the collection builders whose source is the
   account rather than the server. Deliberately not `AUTOPOSTER_PLEX_TOKEN`:
@@ -167,6 +169,11 @@ available" when the Harbor registry holds a newer image. It is off until both
 halves are provided, and it is off safely — the version line still shows, with
 no marker.
 
+The registry, project and repository are **not** operator config — they are a
+deployment fact, derivable from the image reference the pod is already
+running, so there is nothing to keep in sync with wherever the image actually
+lives:
+
 1. **A Harbor robot account.** In Harbor, under the project → Robot Accounts,
    create one with `pull` and `list` on the `autoposter` repository (nothing
    more; this account never pushes). Harbor shows the secret once. The
@@ -180,27 +187,29 @@ no marker.
 
    Put the result in the ExternalSecret as `AUTOPOSTER_HARBOR_TOKEN`.
 
-2. **The registry to ask**, in `autoposter.yaml`:
+2. **`AUTOPOSTER_IMAGE_REF`**, set to the full reference the pod pulled --
+   e.g. `harbor.example.internal/operinko-labs/autoposter:sha-abc1234`. The
+   app splits this into the registry host, the Harbor project and the
+   repository itself at boot (`config/image_ref.py`); there is no separate
+   field for any of the three. In Helm this is one line templated from the
+   chart's own image value, e.g.
+   `"{{ .Values.image.repository }}:{{ .Values.image.tag }}"`, so it can
+   never drift from what the Deployment actually runs.
 
-   ```yaml
-   version_check:
-     harbor_url: https://harbor.example.internal
-     project: operinko-labs
-     repository: autoposter
-   ```
+   The derived registry host is treated as private, the same as the old
+   config field was: it never appears in `GET /api/version`'s response, in an
+   event row, or in the log — a failed check logs the exception's class name
+   (plus, for an HTTP error from Harbor, the status code) and nothing else. An
+   `AUTOPOSTER_IMAGE_REF` that does not parse (not enough `/`-separated
+   segments, or a first segment that doesn't look like a registry host) logs
+   one WARNING naming the reason and switches the check off, the same as
+   leaving it unset.
 
-   `harbor_url` is deliberately config rather than a secret, but it is treated
-   as private all the same: it never appears in `GET /api/version`'s response,
-   in an event row, or in the log — a failed check logs the exception's class
-   name (plus, for an HTTP error from Harbor, the status code) and nothing
-   else. It is not read from the environment because it is not a credential
-   and belongs beside the other things an operator tunes.
-
-The check is cached in-process for fifteen minutes per `harbor_url` /
-`project` / `repository` combination, so the registry sees at most four
-requests an hour per pod however many browser tabs are open. The cache is
-keyed on that triple, so editing the block above is answered by a fresh check
-immediately rather than from the old target until the window expires.
+The check is cached in-process for fifteen minutes per registry / project /
+repository combination, so the registry sees at most four requests an hour
+per pod however many browser tabs are open. `AUTOPOSTER_IMAGE_REF` does not
+change without a restart, so unlike the old config field there is no
+mid-process target change for that cache to notice.
 
 The comparison only works because the image knows its own tag: CI passes the
 commit's short sha to `docker build` as `GIT_SHA`, the Dockerfile stamps it as
@@ -208,6 +217,11 @@ commit's short sha to `docker build` as `GIT_SHA`, the Dockerfile stamps it as
 exact tag. An image built any other way reports `dev`, and a `dev` pod with a
 reachable registry always shows the marker — correctly, since it is running
 something that was never published.
+
+**Migrating from the old `version_check:` config block:** remove it from
+`autoposter.yaml` — the schema no longer recognises it, and a mounted file
+that still has it fails to load — and add `AUTOPOSTER_IMAGE_REF` alongside
+`AUTOPOSTER_HARBOR_TOKEN`. `AUTOPOSTER_HARBOR_TOKEN` itself is unchanged.
 
 None of these are read from the YAML config file.
 

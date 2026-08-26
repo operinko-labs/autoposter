@@ -15,7 +15,9 @@ the images that exist.
 
 Two rules shape the rest of this module.
 
-**The Harbor URL never leaves the process.** It is operator config -- an
+**The Harbor URL never leaves the process.** It is derived from
+``AUTOPOSTER_IMAGE_REF`` at boot (``config/image_ref.py``, stored on
+``app.state.version_check_target`` by ``app.py``'s ``create_app``) -- an
 internal hostname -- and it is not in the response, not in an event row, and
 not in the log. That last one is the trap: every httpx exception renders the
 full request URL in its own message, so ``logger.warning("...%s", exc)``,
@@ -68,11 +70,12 @@ CACHE_TTL_SECONDS = 900
 # reader. Failures are cached too -- an outage must not be hammered by every
 # mount for as long as it lasts.
 #
-# Keyed on the target, not just on time: ``version_check`` is live-editable in
-# the settings editor, and a time-only key would keep answering from the old
-# target for up to CACHE_TTL_SECONDS after an edit pointed it somewhere new.
-# Editing back and forth costs nothing extra -- each target keeps its own
-# entry and its own TTL.
+# Keyed on the target as well as time, even though AUTOPOSTER_IMAGE_REF is
+# read once at boot and fixed for the life of the process, so in production
+# there is only ever one key in play. Keying by it anyway costs nothing and
+# keeps the cache correct rather than assuming a singleton -- exactly what
+# the test suite's several distinct targets, each with its own entry and TTL,
+# already exercise.
 _cache: dict[tuple[str, str, str], tuple[float, str | None]] = {}
 
 
@@ -153,22 +156,23 @@ async def get_version(
     which is not the same as "no update" and must not be shown as one.
     """
     version = _running_version()
-    check = request.app.state.config_holder.current.version_check
+    target = request.app.state.version_check_target
     token = request.app.state.secrets.harbor_token
     http = request.app.state.http
 
-    # All four, not just the URL: an empty project or repository builds a
-    # request that can only 404, and the credential is what makes a private
-    # project's listing readable at all. `http` is None until the lifespan
-    # runs, which is every test application that has not wired one.
-    configured = all([check.harbor_url, check.project, check.repository, token, http])
-    latest = (
-        await latest_tag(
-            http, check.harbor_url, check.project, check.repository, token
-        )
-        if configured
-        else None
-    )
+    # `target` is None whenever AUTOPOSTER_IMAGE_REF was unset or unparseable
+    # (config/image_ref.py) -- the check-off state. The credential is what
+    # makes a private project's listing readable at all, and `http` is None
+    # until the lifespan runs, which is every test application that has not
+    # wired one.
+    configured = target is not None and bool(token) and http is not None
+    latest = None
+    if configured:
+        registry, project, repository = target
+        # https:// rather than carried in the ref: a registry a pod actually
+        # pulled from is reached over TLS, and the ref itself never spells a
+        # scheme (Docker references don't).
+        latest = await latest_tag(http, f"https://{registry}", project, repository, token)
 
     return {
         "version": version,

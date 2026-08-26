@@ -207,21 +207,6 @@ notifications:
   timeout_seconds: 10 # per-attempt HTTP timeout
   retry_count: 3 # attempts before giving up; notification failure never fails the run it reports on
 
-version_check:
-  # The sidebar's "Update available" marker, checked against the image registry
-  # rather than against git: a commit whose image failed to build or failed the
-  # vulnerability scan was never pushed, so git would offer an update to
-  # something nobody can deploy.
-  #
-  # Null (the default) switches the check off -- the sidebar then shows the
-  # running version alone. The credential is NOT here: set the environment
-  # variable AUTOPOSTER_HARBOR_TOKEN to base64("robot$name:secret") for a
-  # Harbor robot account with pull/list on this repository. Without either the
-  # URL or the token, the registry is never contacted.
-  harbor_url: null # e.g. https://harbor.example.internal -- never logged or in an error; visible in the config editor
-  project: your-harbor-project # the Harbor project the image is pushed to
-  repository: autoposter # the repository inside it; tags are read as sha-<git>
-
 artwork:
   use_logo: true
   logo_language_order: [en, fi]

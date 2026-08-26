@@ -13,11 +13,14 @@ Two independent facts meet here, and the tests keep them independent:
   deployable; the git history does not, because a commit whose image failed
   to build was never pushed.
 
-The rule these tests hold to hardest: **the Harbor URL is operator config and
-must never leave the process.** It is not in the response, and a failed check
-logs the exception's class name and nothing else -- an httpx error's own
-message carries the full URL, so ``exc_info`` or ``%s`` on the exception would
-put an internal hostname into a log an operator pastes into a bug report.
+The registry, project and repository are derived from ``AUTOPOSTER_IMAGE_REF``
+at boot (``config/image_ref.py``, ``app.py``'s ``create_app``), not typed as
+config -- see ``test_image_ref.py`` for the parser itself. The rule these
+tests hold to hardest: **the Harbor URL is derived, internal, and must never
+leave the process.** It is not in the response, and a failed check logs the
+exception's class name and nothing else -- an httpx error's own message
+carries the full URL, so ``exc_info`` or ``%s`` on the exception would put an
+internal hostname into a log an operator pastes into a bug report.
 """
 import logging
 from pathlib import Path
@@ -36,10 +39,12 @@ from autoposter.config.schema import Secrets
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
 
-HARBOR_URL = "https://harbor.example"
+REGISTRY = "harbor.example"
+HARBOR_URL = f"https://{REGISTRY}"
 HARBOR_TOKEN = "cm9ib3QkYXV0b3Bvc3RlcjpzM2NyZXQ="
 PROJECT = "operinko-labs"
 REPOSITORY = "autoposter"
+IMAGE_REF = f"{REGISTRY}/{PROJECT}/{REPOSITORY}:sha-4b2a34d"
 
 RUNNING = "sha-4b2a34d"
 NEWER = "sha-9f10c2e"
@@ -69,17 +74,27 @@ def running_version(monkeypatch):
     monkeypatch.setenv("AUTOPOSTER_VERSION", RUNNING)
 
 
-def _app(session_factory, secrets: Secrets, harbor_url: str | None = HARBOR_URL):
+def _app(
+    session_factory, secrets: Secrets, monkeypatch, image_ref: str | None = IMAGE_REF
+):
+    """An app whose ``version_check_target`` is derived from ``image_ref``.
+
+    ``create_app`` reads ``AUTOPOSTER_IMAGE_REF`` once, at construction, onto
+    ``app.state`` -- there is no longer a config field to set after the fact,
+    so the environment has to carry the right value *before* this call, via
+    the caller's own ``monkeypatch``.
+    """
+    if image_ref is None:
+        monkeypatch.delenv("AUTOPOSTER_IMAGE_REF", raising=False)
+    else:
+        monkeypatch.setenv("AUTOPOSTER_IMAGE_REF", image_ref)
     config = load_config(EXAMPLE)
-    config.version_check.harbor_url = harbor_url
-    config.version_check.project = PROJECT
-    config.version_check.repository = REPOSITORY
     return create_app(config, session_factory, secrets)
 
 
 @pytest_asyncio.fixture
-async def app(session_factory):
-    return _app(session_factory, _secrets())
+async def app(session_factory, monkeypatch):
+    return _app(session_factory, _secrets(), monkeypatch)
 
 
 @pytest_asyncio.fixture
@@ -193,13 +208,18 @@ async def test_the_bare_prefix_a_local_build_produces_is_dev(
 # --- the check being switched off --------------------------------------------
 
 
-async def test_without_a_harbor_url_nothing_is_checked(client, auth_headers, app, wire):
-    """The default state of the config: a deployment that has not been given a
-    registry to ask reports what it is running and says nothing about newer."""
-    app.state.config_holder.current.version_check.harbor_url = None
+async def test_without_an_image_ref_nothing_is_checked(session_factory, monkeypatch, wire):
+    """The default state of a deployment that has not been given
+    AUTOPOSTER_IMAGE_REF: it reports what it is running and says nothing
+    about newer."""
+    app = _app(session_factory, _secrets(), monkeypatch, image_ref=None)
     seen = wire(app)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        login = await client.post("/api/login", json={"password": PASSWORD})
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
 
-    body = await get(client, auth_headers)
+        body = await get(client, headers)
 
     assert body["version"] == RUNNING
     assert body["latest"] is None
@@ -207,11 +227,11 @@ async def test_without_a_harbor_url_nothing_is_checked(client, auth_headers, app
     assert seen == []
 
 
-async def test_without_a_robot_token_nothing_is_checked(session_factory, wire):
+async def test_without_a_robot_token_nothing_is_checked(session_factory, monkeypatch, wire):
     """Harbor's artifact listing is not anonymous for a private project, and a
     tokenless request would 401 on every poll. Not attempting it is the answer,
     not an error to report."""
-    app = _app(session_factory, _secrets(harbor_token=""))
+    app = _app(session_factory, _secrets(harbor_token=""), monkeypatch)
     seen = wire(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -324,8 +344,9 @@ async def test_the_robot_token_is_never_in_the_response(client, auth_headers, ap
 
 
 async def test_the_harbor_url_is_never_in_the_response(client, auth_headers, app, wire):
-    """Operator config, not something a browser session is entitled to: the
-    response says whether an update exists, never where that was learned."""
+    """Derived from AUTOPOSTER_IMAGE_REF, not something a browser session is
+    entitled to: the response says whether an update exists, never where
+    that was learned."""
     wire(app)
 
     response = await client.get("/api/version", headers=auth_headers)
@@ -453,25 +474,6 @@ async def test_the_window_expiring_asks_harbor_again(
         "_cache",
         {key: (stamped - version_module.CACHE_TTL_SECONDS - 1, latest)},
     )
-
-    await get(client, auth_headers)
-
-    assert len(seen) == 2
-
-
-async def test_editing_the_target_forces_a_fresh_check(
-    client, auth_headers, app, wire
-):
-    """`version_check` is live-editable in the settings editor. A cache keyed
-    only on time would keep answering for the target it was primed against --
-    up to fifteen minutes of showing an operator the wrong registry's answer
-    right after they changed it."""
-    seen = wire(app)
-
-    await get(client, auth_headers)
-    assert len(seen) == 1
-
-    app.state.config_holder.current.version_check.harbor_url = "https://harbor2.example"
 
     await get(client, auth_headers)
 

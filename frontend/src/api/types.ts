@@ -653,13 +653,14 @@ export interface ArtworkModeResponse {
 /** `GET /api/version` -- what this pod is running, and whether Harbor has newer.
  *
  * `update_available` is a tri-state, and the null is the point: it means the
- * registry was not asked (no `version_check.harbor_url`, no robot token) or
+ * registry was not asked (no `AUTOPOSTER_IMAGE_REF`, no robot token) or
  * could not be reached. That is not the same as "you are up to date", so the
  * sidebar shows no marker at all rather than one it cannot stand behind.
  * `latest` is null in exactly the same cases.
  *
- * The Harbor URL is deliberately absent from this shape: it is operator config
- * and never leaves the server -- see src/autoposter/api/version.py.
+ * The Harbor URL is deliberately absent from this shape: it is derived from
+ * AUTOPOSTER_IMAGE_REF at boot and never leaves the server -- see
+ * src/autoposter/api/version.py.
  */
 export interface VersionResponse {
   version: string;

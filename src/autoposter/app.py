@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import logging
+import os
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -19,6 +20,7 @@ from autoposter.api.dashboard_stream import StatusBroadcaster
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
 from autoposter.config.holder import ConfigHolder
+from autoposter.config.image_ref import parse_image_ref
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.overrides import load_effective_config
@@ -390,6 +392,17 @@ def create_app(
     app.state.config_path = DEFAULT_CONFIG_PATH
     app.state.session_factory = session_factory
     app.state.secrets = secrets
+    # ``(registry, project, repository)``, or None -- see api/version.py.
+    # Read here, once, rather than through Secrets: it is not a credential,
+    # it is a deployment fact (the image reference the pod already runs), so
+    # os.environ is read directly at this construction path rather than
+    # through Secrets.from_env(), which every test app would then have to
+    # fake a value for. create_app rather than main.build() because this is
+    # the one path every application -- deployed and every test's -- goes
+    # through; main.build() is production-only and tests never call it.
+    app.state.version_check_target = parse_image_ref(
+        os.environ.get("AUTOPOSTER_IMAGE_REF", "")
+    )
     # The worker-pause fence (Phase 7b). Created here so every application --
     # the deployed one and every test's -- has one for a mode trigger endpoint
     # to reach; the background lifespan hands this exact object to the worker

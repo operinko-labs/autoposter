@@ -109,6 +109,22 @@ def test_notifications_timeout_of_zero_is_rejected_at_load(tmp_path):
         load_config(bad)
 
 
+def test_a_leftover_version_check_section_fails_loudly_at_load(tmp_path):
+    """`version_check:` moved out of the schema entirely -- the registry,
+    project and repository it held are now derived from AUTOPOSTER_IMAGE_REF
+    (see config/image_ref.py). Pydantic ignores unknown keys, so without an
+    explicit guard a deployment that forgot to remove this block from its
+    YAML would have it silently dropped and believe it still did something."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        EXAMPLE.read_text(encoding="utf-8")
+        + "\nversion_check:\n  harbor_url: https://harbor.example\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="version_check"):
+        load_config(bad)
+
+
 def test_imdb_refresh_defaults_from_the_example_config():
     operations = load_config(EXAMPLE).operations
     assert operations.imdb_refresh_hours == 6

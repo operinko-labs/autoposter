@@ -1019,26 +1019,6 @@ class NotificationsConfig(BaseModel):
     retry_count: int = Field(3, ge=1)
 
 
-class VersionCheckConfig(BaseModel):
-    """Where to ask what the newest deployable image is.
-
-    The registry, not the git history: a commit whose image failed to build or
-    failed the vulnerability scan was never pushed, so git would report an
-    update to something nobody can deploy. Harbor holds exactly the images that
-    exist.
-
-    ``harbor_url`` is null by default, which switches the check off entirely --
-    the endpoint then reports the running version and nothing about newer. It
-    is operator config and is never logged, returned or echoed anywhere; see
-    api/version.py for why that matters. The credential is not here: it is the
-    ``AUTOPOSTER_HARBOR_TOKEN`` environment variable, like every other secret.
-    """
-
-    harbor_url: str | None = None
-    project: str = ""
-    repository: str = ""
-
-
 class Config(BaseModel):
     assets_root: Path
     manual_assets_root: Path
@@ -1071,9 +1051,28 @@ class Config(BaseModel):
     tracearr: TracearrConfig = Field(default_factory=TracearrConfig)
     arr_sync: ArrSyncConfig = Field(default_factory=ArrSyncConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
-    version_check: VersionCheckConfig = Field(default_factory=VersionCheckConfig)
     # Not a release number: the hash of every setting that changes what a
     # render produces, computed by config/loader.py's render_version and
     # stored on each Render row so a settings change can be detected as
-    # staleness. Unrelated to `version_check` above, which is about the image.
+    # staleness.
     version: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _version_check_moved_to_an_env_var(cls, data):
+        """``version_check:`` is no longer a config section -- the registry,
+        project and repository it held are derived from ``AUTOPOSTER_IMAGE_REF``
+        instead (``config/image_ref.py``). Pydantic ignores unknown keys, so
+        without this a deployment that forgot to remove the block from its
+        YAML would have it silently dropped and believe it still did
+        something, rather than being told to migrate. ``mode="before"`` is
+        required to see it at all: by ``mode="after"`` the key is already
+        gone.
+        """
+        if isinstance(data, dict) and "version_check" in data:
+            raise ValueError(
+                "version_check: has moved out of the config file -- set "
+                "AUTOPOSTER_IMAGE_REF instead (see deploy/README.md's "
+                '"The sidebar\'s update check") and remove this block'
+            )
+        return data
