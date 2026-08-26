@@ -1,0 +1,186 @@
+All checks passed!
+probe run 2026-08-26T14:00:15 (runner clock)
+SERVER version=1.43.4.10903-e5521bd8c platform=Linux 20.04.6 LTS (Focal Fossa) friendly='ShadowPlex'
+SECTION key=1 title='Movies' type=movie
+SECTION key=2 title='TV Shows' type=show
+SECTION key=3 title='Photos' type=photo
+SECTION key=5 title='DVR' type=movie
+movie listing walk: 1960 item(s)
+show listing walk: 286 item(s)
+
+========================================================================
+PART A -- the dual-path round-trip, movie library
+========================================================================
+addedAt range: 2025-01-08 .. 2026-08-25 (n=1960)
+  a third through the RANGE  = 2025-07-25  <- used
+  a third through the ITEMS  = 2025-01-08  (rejected: same as the minimum)
+studios: 824 distinct; top five [('Universal Pictures', 63), ('Warner Bros. Pictures', 60), ('Paramount Pictures', 51), ('Walt Disney Pictures', 45), ('Columbia Pictures', 43)]; chosen = 'Columbia Pictures'
+
+attribute         type       |srv|  |cli|  |s-c|  |c-s|  verdict
+------------------------------------------------------------------------
+year              int         1299   1299      0      0  AGREE
+resolution        tag         1890   1890      0      0  AGREE
+audience_rating   float        971    971      0      0  AGREE
+critic_rating     float        161    161      0      0  AGREE
+content_rating    tag            0      0      0      0  AGREE (VACUOUS: both empty)
+added             date         651    651      0      0  AGREE
+release           date         385    385      0      0  AGREE
+duration          duration     513    513      0      0  AGREE
+studio            str           43     43      0      0  AGREE
+
+--- year ---
+  written  : {'year.gte': 2010}
+  query    : /library/sections/1/all?type=1&sort=titleSort&year%3E=2010
+  server   : 1299   client: 1299   verdict: AGREE
+
+--- resolution ---
+  written  : {'resolution': '1080'}
+  query    : /library/sections/1/all?type=1&sort=titleSort&resolution=1080
+  server   : 1890   client: 1890   verdict: AGREE
+
+--- audience_rating ---
+  written  : {'audience_rating.gte': 7}
+  query    : /library/sections/1/all?type=1&sort=titleSort&audienceRating%3E=7.0
+  server   : 971   client: 971   verdict: AGREE
+
+--- critic_rating ---
+  written  : {'critic_rating.lt': 5}
+  query    : /library/sections/1/all?type=1&sort=titleSort&rating%3C%3C=5.0
+  server   : 161   client: 161   verdict: AGREE
+
+--- content_rating ---
+  written  : {'content_rating': 'PG-13'}
+  query    : /library/sections/1/all?type=1&sort=titleSort&contentRating=PG-13
+  server   : 0   client: 0   verdict: AGREE (VACUOUS: both empty)
+
+--- added ---
+  written  : {'added.after': '2025-07-25'}
+  query    : /library/sections/1/all?type=1&sort=titleSort&addedAt%3E%3E=2025-07-25
+  server   : 651   client: 651   verdict: AGREE
+
+--- release ---
+  written  : {'release.before': '2000-01-01'}
+  query    : /library/sections/1/all?type=1&sort=titleSort&originallyAvailableAt%3C%3C=2000-01-01
+  server   : 385   client: 385   verdict: AGREE
+
+--- duration ---
+  written  : {'duration.gt': 120}
+  query    : /library/sections/1/all?type=1&sort=titleSort&duration%3E%3E=7200000.0
+  server   : 513   client: 513   verdict: AGREE
+
+--- studio ---
+  written  : {'studio': 'Columbia Pictures'}
+  query    : /library/sections/1/all?type=1&sort=titleSort&studio=Columbia%20Pictures
+  server   : 43   client: 43   verdict: AGREE
+
+========================================================================
+PART A ADDENDUM -- the two predicates the brief's values could not decide
+========================================================================
+contentRating in the listing: 22 distinct; top five [('17', 291), ('16', 236), ('13', 235), ('15', 226), ('14', 164)]
+  written  : {'content_rating': '17'}  (the library's most common, replacing the brief's 'PG-13')
+  query    : /library/sections/1/all?type=1&sort=titleSort&contentRating=17
+  server   : 291   client: 291   |s-c|=0 |c-s|=0   verdict: AGREE
+
+added boundary sensitivity, around 2025-07-25
+  items whose addedAt is within 24h of the boundary: 0
+  (row 154: the server evaluates this boundary in ITS zone and the client in the runner's. Only these items could disagree; every one of them landing on the same side is the offset's blast radius measured, not the offset itself.)
+
+========================================================================
+PART B / PROBE 1 -- show.network as a SEARCH field
+========================================================================
+row: network -> search_field='show.network' show_search_field='show.network' search_kinds=('show',)
+STEP 1: listFilterChoices(field='network', libtype='show') -> 91 choice(s)
+  choice: title='5' key='126689'
+  choice: title='5Star' key='139106'
+  choice: title='A&E' key='202257'
+  choice: title='A&E Crime Central' key='202259'
+  choice: title='ABC' key='12460'
+STEP 2: {'all': {'network': '5'}}
+  query: /library/sections/2/all?type=2&sort=titleSort&show.network=126689
+  -> 2 show(s)
+STEP 3: the same shows' listing `studio` values
+  'Fireman Sam' studio='S4C'
+  'Thomas the Tank Engine & Friends' studio='ITV1'
+
+========================================================================
+PART B / PROBE 2 -- language search, and AND-under-`all`
+========================================================================
+
+### audio_language (Plex field 'audioLanguage')
+  46 value(s): ['ar', 'arc', 'cs', 'da', 'de', 'el', 'en', 'en-GB', 'en-US', 'english', 'es', 'es-419', 'es-AR', 'es-ES', 'fi', 'fr', 'fr-CA', 'fr-FR', 'he', 'hi', 'hu', 'id', 'is', 'it', 'ja', 'ko', 'la', 'mul', 'myn', 'nb', 'nl', 'no', 'pl', 'pt', 'pt-BR', 'ro', 'ru', 'sk', 'sv', 'ta', 'te', 'th', 'tr', 'uk', 'zh', 'zxx']
+  base codes with >1 variant: [('es', ['es', 'es-419', 'es-AR', 'es-ES']), ('en', ['en', 'en-GB', 'en-US']), ('fr', ['fr', 'fr-CA', 'fr-FR']), ('pt', ['pt', 'pt-BR'])]
+  {'all': {'audio_language': 'es'}}
+    query: /library/sections/1/all?type=1&sort=titleSort&audioLanguage=es-419&and=1&audioLanguage=es&and=1&audioLanguage=es-AR&and=1&audioLanguage=es-ES
+    -> 0 item(s)
+  {'any': {'audio_language': 'es'}}
+    query: /library/sections/1/all?type=1&sort=titleSort&push=1&audioLanguage=es-419&or=1&audioLanguage=es&or=1&audioLanguage=es-AR&or=1&audioLanguage=es-ES&pop=1
+    -> 24 item(s)
+  yardstick, one exact variant 'es': 0 item(s)
+
+### subtitle_language (Plex field 'subtitleLanguage')
+  115 value(s): ['ar', 'ar-001', 'ar-SA', 'az', 'bg', 'br', 'ca', 'ca-ES', 'cs', 'cs-CZ', 'da', 'da-DK', 'de', 'de-DE', 'el', 'el-GR', 'en', 'en-GB', 'en-US', 'eng', 'es', 'es-419', 'es-CA', 'es-ES', 'es-LA', 'et', 'eu', 'eu-ES', 'fa', 'fi', 'fi-FI', 'fil', 'fil-PH', 'fin', 'fr', 'fr-CA', 'fr-FR', 'gl', 'gl-ES', 'he', 'he-IL', 'hi', 'hi-IN', 'hr', 'hr-HR', 'hu', 'hu-HU', 'id', 'id-ID', 'is', 'it', 'it-IT', 'ja', 'ja-JP', 'kk', 'km', 'kn', 'kn-IN', 'ko', 'ko-KR', 'lt', 'lv', 'mk', 'ml', 'ml-IN', 'mn', 'ms', 'ms-MY', 'mul', 'nb', 'nb-NO', 'nl', 'nl-BE', 'nl-NL', 'nn', 'no', 'no-NO', 'pl', 'pl-PL', 'pt', 'pt-BR', 'pt-PT', 'ro', 'ro-RO', 'ru', 'ru-RU', 'se', 'sk', 'sk-SK', 'sl', 'sq', 'sr', 'sr-Latn', 'sv', 'sv-SE', 'ta', 'ta-IN', 'te', 'te-IN', 'th', 'th-TH', 'tr', 'tr-TR', 'uk', 'uk-UA', 'vi', 'vi-VN', 'yue', 'yue-Hant', 'zh', 'zh-HK', 'zh-Hans', 'zh-Hant', 'zh-TW', 'zxx']
+  base codes with >1 variant: [('es', ['es', 'es-419', 'es-CA', 'es-ES', 'es-LA']), ('zh', ['zh', 'zh-HK', 'zh-Hans', 'zh-Hant', 'zh-TW']), ('en', ['en', 'en-GB', 'en-US', 'eng']), ('ar', ['ar', 'ar-001', 'ar-SA']), ('fi', ['fi', 'fi-FI', 'fin']), ('fr', ['fr', 'fr-CA', 'fr-FR']), ('nl', ['nl', 'nl-BE', 'nl-NL']), ('pt', ['pt', 'pt-BR', 'pt-PT']), ('ca', ['ca', 'ca-ES']), ('cs', ['cs', 'cs-CZ']), ('da', ['da', 'da-DK']), ('de', ['de', 'de-DE']), ('el', ['el', 'el-GR']), ('eu', ['eu', 'eu-ES']), ('fil', ['fil', 'fil-PH']), ('gl', ['gl', 'gl-ES']), ('he', ['he', 'he-IL']), ('hi', ['hi', 'hi-IN']), ('hr', ['hr', 'hr-HR']), ('hu', ['hu', 'hu-HU']), ('id', ['id', 'id-ID']), ('it', ['it', 'it-IT']), ('ja', ['ja', 'ja-JP']), ('kn', ['kn', 'kn-IN']), ('ko', ['ko', 'ko-KR']), ('ml', ['ml', 'ml-IN']), ('ms', ['ms', 'ms-MY']), ('nb', ['nb', 'nb-NO']), ('no', ['no', 'no-NO']), ('pl', ['pl', 'pl-PL']), ('ro', ['ro', 'ro-RO']), ('ru', ['ru', 'ru-RU']), ('sk', ['sk', 'sk-SK']), ('sr', ['sr', 'sr-Latn']), ('sv', ['sv', 'sv-SE']), ('ta', ['ta', 'ta-IN']), ('te', ['te', 'te-IN']), ('th', ['th', 'th-TH']), ('tr', ['tr', 'tr-TR']), ('uk', ['uk', 'uk-UA']), ('vi', ['vi', 'vi-VN']), ('yue', ['yue', 'yue-Hant'])]
+  {'all': {'subtitle_language': 'es'}}
+    query: /library/sections/1/all?type=1&sort=titleSort&subtitleLanguage=es&and=1&subtitleLanguage=es-419&and=1&subtitleLanguage=es-ES&and=1&subtitleLanguage=es-CA&and=1&subtitleLanguage=es-LA
+    -> 0 item(s)
+  {'any': {'subtitle_language': 'es'}}
+    query: /library/sections/1/all?type=1&sort=titleSort&push=1&subtitleLanguage=es&or=1&subtitleLanguage=es-419&or=1&subtitleLanguage=es-ES&or=1&subtitleLanguage=es-CA&or=1&subtitleLanguage=es-LA&pop=1
+    -> 442 item(s)
+  yardstick, one exact variant 'es': 0 item(s)
+
+========================================================================
+PART B / PROBE 3 -- genre search vs the listing's 2-tag truncation
+========================================================================
+five movies with 2 genres in the listing and 3+ in metadata: 5 found
+
+  '2 Fast 2 Furious' (key=158244)
+    listing  : ['Action', 'Crime']
+    metadata : ['Action', 'Crime', 'Thriller']
+    3rd genre (dropped by the listing): 'Thriller'
+    search {'all': {'genre': 'Thriller'}} -> 492 item(s); this movie present: True
+
+  'The 5th Wave' (key=164890)
+    listing  : ['Action', 'Adventure']
+    metadata : ['Action', 'Adventure', 'Science Fiction']
+    3rd genre (dropped by the listing): 'Science Fiction'
+    search {'all': {'genre': 'Science Fiction'}} -> 393 item(s); this movie present: True
+
+  '10 Lives' (key=65692)
+    listing  : ['Family', 'Fantasy']
+    metadata : ['Family', 'Fantasy', 'Animation', 'Comedy']
+    3rd genre (dropped by the listing): 'Animation'
+    search {'all': {'genre': 'Animation'}} -> 393 item(s); this movie present: True
+
+  '12 Strong' (key=65969)
+    listing  : ['Drama', 'History']
+    metadata : ['Drama', 'History', 'War', 'Action']
+    3rd genre (dropped by the listing): 'War'
+    search {'all': {'genre': 'War'}} -> 73 item(s); this movie present: True
+
+  'The 13th Warrior' (key=65702)
+    listing  : ['Action', 'Adventure']
+    metadata : ['Action', 'Adventure', 'History']
+    3rd genre (dropped by the listing): 'History'
+    search {'all': {'genre': 'History'}} -> 75 item(s); this movie present: True
+
+RESULT: 5/5
+
+========================================================================
+PART C -- the six removed spellings, as bare server queries
+========================================================================
+These six are refusals in this build because Kometa's `searches` list has no such key (T1 corrections A and B). The question here is only what PLEX does with them -- evidence for the narrowing, not a change.
+library total (movie listing walk): 1960
+search_field per row: {'critic_rating': 'rating', 'audience_rating': 'audienceRating', 'plays': 'viewCount'}
+  critic_rating:      (bare eq)      rating=8                     ->    21  a proper subset (answered)
+  critic_rating.not:  (bare ne)      rating!=8                    ->  1938  a proper subset (answered)
+  audience_rating:    (bare eq)      audienceRating=8             ->    35  a proper subset (answered)
+  audience_rating.not:(bare ne)      audienceRating!=8            ->  1925  a proper subset (answered)
+  plays:              (bare eq)      viewCount=3                  ->     2  a proper subset (answered)
+  plays.not:          (bare ne)      viewCount!=3                 ->   105  a proper subset (answered)
+  CONTROL critic_rating.gte (ships)  rating%3E=8                  ->   158  a proper subset (answered)
+  CONTROL plays.gt (ships)           viewCount%3E%3E=3            ->     0  0 (matched nothing)
+  CONTROL nonsense field             notAFieldAtAll=8             ->  1960  ALL (predicate ignored)
+
+========================================================================
+END
+========================================================================
