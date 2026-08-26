@@ -263,16 +263,23 @@ def test_a_gated_off_definition_still_counts_as_managing_its_title():
 
 
 async def test_the_sweep_never_touches_a_collection_its_definition_builds(session):
-    existing = FakeCollection("Recent Horror", labels=[LABEL], smart=True)
-    section = FakeSection(matches=3, existing=[existing])
+    """Deletion armed, so the sweep genuinely reaches its delete logic: a
+    collection its own definition builds must never become a candidate, even
+    while an orphan alongside it -- built by nothing -- is deleted as usual."""
+    built = FakeCollection("Recent Horror", labels=[LABEL], smart=True)
+    orphan = FakeCollection("Old Awards", labels=[LABEL], smart=True)
+    section = FakeSection(matches=3, existing=[built, orphan])
     await _managed_row(session, "Movies", "Recent Horror")
+    await _managed_row(session, "Movies", "Old Awards")
 
     run = await run_library(
-        session, section, "Movies", "Movie", [_definition()], _config(),
+        session, section, "Movies", "Movie", [_definition()],
+        _config(delete_unconfigured=True),
         sweep=True,
     )
-    assert existing.deleted is False
-    assert not any("no definition builds it" in action for action in run.actions)
+    assert built.deleted is False
+    assert orphan.deleted is True
+    assert not any("deleted 'Recent Horror'" in action for action in run.actions)
 
 
 async def test_an_orphaned_smart_filter_collection_is_only_reported_by_default(session):
