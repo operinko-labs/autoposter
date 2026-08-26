@@ -20,16 +20,27 @@ from autoposter.db.base import Base
 # everything, and nothing is published from a run that skipped any of it.
 #
 # Chosen by measurement rather than by taste. A serial run of the whole suite
-# spends 459.7s inside tests; these 23 files are 321.2s of that -- 69.9% of the
-# time for 516 of the 3,248 tests. They have one cause in common, which is also
-# why nothing cheaper is on the list: each of these tests builds the ASGI
-# application and drives it against a real database, and the migrations suite
-# creates, migrates and drops whole scratch databases per test.
+# spends 459.7s inside tests; these 22 files are 299.7s of that -- about two
+# thirds of the time for 513 of the 3,253 non-ImageMagick tests. They have one
+# cause in common, which is also why nothing cheaper is on the list: each of
+# these tests builds the ASGI application and drives it against a real
+# database.
 #
-# Written out rather than matched by glob so that a new `test_api_*.py` file
-# lands in the fast lane by default. That is the safe direction to fail: the
-# cost of forgetting to add a file here is a pull request that runs more than
-# it had to, not one that runs less.
+# tests/test_migrations.py is deliberately *not* here, though it was briefly.
+# It is the cheapest thing that was ever on this list (21.5s, 3 tests) and the
+# only one that is not an API suite, and what it guards is model/migration
+# drift -- the incident in its own module docstring, an empty autogenerate that
+# ran clean, got stamped as head and shipped unable to boot. The image job's
+# "Verify migrations apply to an empty database" does run on pull requests, but
+# it proves the migrations *apply*, not that they match the models, so
+# deferring this file would let a PR add a model column with no migration and
+# see nothing but green. 21.5s buys pull requests back their only drift guard.
+#
+# Written out rather than matched by glob, because which lane a suite belongs
+# in is a decision and a glob would make it silently. The other half of that is
+# FAST_API_SUITES below and the guard in tests/test_ci_path_filters.py that
+# reads both: a new `test_api_*.py` file has to be named in one list or the
+# other, on the pull request that adds it, or the suite goes red.
 DEEP_SUITES = frozenset(
     {
         "test_api_actions.py",
@@ -54,17 +65,24 @@ DEEP_SUITES = frozenset(
         "test_api_scheduled_runs.py",
         "test_api_testing.py",
         "test_api_version.py",
-        "test_migrations.py",
     }
 )
+
+# The other answer to the same question: a `test_api_*.py` suite that is
+# cheap enough to keep on both lanes. Empty today -- every one of the 22 builds
+# the ASGI app against a real database, which is what the deep lane *is* -- and
+# it exists so that the answer "this one stays fast" can be given explicitly
+# rather than by omission. tests/test_ci_path_filters.py asserts every
+# `test_api_*.py` file appears in one set or the other.
+FAST_API_SUITES: frozenset[str] = frozenset()
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items):
     """Apply the ``deep`` marker to every test in ``DEEP_SUITES``.
 
-    ``pytestmark = pytest.mark.deep`` in each of the 23 modules would say the
-    same thing, but it would say it in 23 places while the lane is one decision;
+    ``pytestmark = pytest.mark.deep`` in each of the 22 modules would say the
+    same thing, but it would say it in 22 places while the lane is one decision;
     here the whole of it is readable at once and CI's ``-m`` expression has a
     single thing to point at.
 

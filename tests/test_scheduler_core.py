@@ -173,11 +173,24 @@ async def test_a_failing_job_is_recorded_and_the_scheduler_survives(session_fact
     # enough for that on an idle machine and stopped being enough once CI ran
     # the suite under `-n auto`, where it failed as "scheduler stopped after the
     # first failure" having simply not been given the time.
-    async with asyncio.timeout(5):
-        while len(calls) < 2:
-            await asyncio.sleep(0.01)
-    stop.set()
-    await task
+    #
+    # The timeout is swallowed rather than propagated so that the named
+    # assertion below is what reports the failure: a bare TimeoutError out of
+    # the `async with` says only "5 seconds passed", where the assertion says
+    # "scheduler stopped after the first failure", which is the actual
+    # diagnosis and the reason this test exists. The `finally` is what keeps
+    # the swallowing honest -- the scheduler is stopped and awaited on both
+    # paths, so a timed-out run cannot leave the task pending for
+    # pytest-asyncio to report as unrelated teardown noise.
+    try:
+        async with asyncio.timeout(5):
+            while len(calls) < 2:
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        pass
+    finally:
+        stop.set()
+        await task
 
     assert len(calls) > 1, "scheduler stopped after the first failure"
     async with session_factory() as session:

@@ -7,12 +7,20 @@ than accumulates, a ``secrets`` key never survives it, and an empty (or
 absent) document is exactly the old file-only behaviour.
 """
 import logging
-import os
 from pathlib import Path
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+
+# From conftest rather than from os.environ directly, because the value that
+# matters is the one conftest *derived*: under pytest-xdist it appends this
+# worker's name, and the CLIs driven below have to reach the same database the
+# ``session`` fixture wrote the overrides row into. conftest writes it back to
+# AUTOPOSTER_TEST_DATABASE_URL too, so reading the variable would also work --
+# but only because conftest is imported first, which is a load-bearing ordering
+# that an import states and a getenv leaves to be rediscovered.
+from conftest import TEST_DB_URL
 
 from autoposter.adopt import __main__ as adopt_main
 from autoposter.collections import __main__ as collections_main
@@ -27,8 +35,6 @@ from autoposter.config.schema import Secrets
 from autoposter.db.models import ConfigOverride
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
-
-TEST_DB_URL = os.environ["AUTOPOSTER_TEST_DATABASE_URL"]
 
 SECRET_ENV = {
     "AUTOPOSTER_DATABASE_URL": TEST_DB_URL,

@@ -88,28 +88,55 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # The coarse time component of the venv cache key below. ISO year-week,
+      # so it changes once a week and no more often: a computed key component
+      # is the only way a cache entry's *contents* can be refreshed at all,
+      # because cache keys are immutable and a key that hits is never rewritten.
+      - name: Compute the virtualenv cache's week bucket
+        id: epoch
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
       # The built virtualenv itself, not merely the wheels it was built from.
       # A warm pip cache still left `pip install -e ".[dev]"` to resolve the
       # dependency graph and unpack every package on every run; restoring the
       # venv skips all of that.
       #
-      # The key is the interpreter patch plus pyproject.toml's hash, which is
-      # the whole of what decides this venv's contents -- both the dependency
-      # list and the dev extras live in that file, so any change to what gets
-      # installed changes the key. `v1` is the manual escape hatch: bump it if
-      # a restored venv is ever wrong in a way the key cannot see.
+      # The key is the interpreter patch, pyproject.toml's hash and the ISO
+      # week. The first two are what this repository *declares*: both the
+      # dependency list and the dev extras live in pyproject.toml, so any
+      # change to what gets installed changes the key. They are not the whole
+      # of what decides the venv's contents, though, and the week is why this
+      # key does not pretend otherwise -- every dependency here is a `>=` floor
+      # with no upper bound and there is no lockfile, so the *install date* is
+      # a determinant too: a key that named only the declarations would freeze
+      # whatever resolved on the day it was first saved, for as long as nobody
+      # edited pyproject. That is how an unpinned ruff turned a green local run
+      # into 127 CI failures once already, except deferred and attached to an
+      # unrelated commit. The week bucket bounds that drift to seven days at
+      # the cost of one miss a week. `v1` is the manual escape hatch on top:
+      # bump it if a restored venv is ever wrong in a way the key cannot see.
       #
       # Deliberately no `restore-keys:`. A near-miss would hand the job a venv
       # built for a *different* dependency set, and the run would go green
       # having tested against packages this commit does not declare -- exactly
       # the class of silent wrongness the missing-Pillow incident was. A miss
       # is meant to reinstall.
+      #
+      # Split into restore + save rather than one `actions/cache` step, and the
+      # save is placed after the verification step below on purpose. `cache`'s
+      # save runs in a *post* step, which fires whether or not the job
+      # succeeded -- so an install that died partway (a network blip, a wheel
+      # that would not build) used to store the half-built venv under this
+      # immutable key. Every later run then restored the broken venv, skipped
+      # the install on the hit, and went red at the verification step, on every
+      # run, until a human bumped `v1`. Only a venv that has been proven to
+      # import `autoposter` is stored now.
       - name: Restore the virtualenv
         id: venv
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ env.VENV }}
-          key: v1-venv-py${{ env.PYTHON_VERSION }}-${{ hashFiles('pyproject.toml') }}
+          key: v1-venv-py${{ env.PYTHON_VERSION }}-${{ steps.epoch.outputs.week }}-${{ hashFiles('pyproject.toml') }}
 
       - name: Install the package and its dev extras
         # Skipped outright on a cache hit -- that is the point of the step
@@ -144,6 +171,17 @@ jobs:
           python -c "import autoposter; print('autoposter from', autoposter.__file__)"
           ruff --version
           pytest --version
+
+      - name: Save the virtualenv
+        # After the verification above, never before it -- see the long note on
+        # the restore step. Skipped on a hit because the key is immutable and
+        # saving over an existing entry is at best a no-op and at worst a
+        # warning in the log.
+        if: steps.venv.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.VENV }}
+          key: ${{ steps.venv.outputs.cache-primary-key }}
 
       # Deliberately not a `services:` block. On this runner the job is itself
       # a container on the default bridge network, so a service container is
@@ -258,11 +296,13 @@ jobs:
         #
         # --- the two lanes ---------------------------------------------------
         #
-        # A pull request additionally deselects `deep`: the 23 ASGI-plus-
+        # A pull request additionally deselects `deep`: the 22 ASGI-plus-
         # database suites listed in tests/conftest.py's DEEP_SUITES, which are
-        # 516 of the 3,259 tests and about 70% of the serial time. Everything
-        # else -- and that is 2,732 tests, ruff, and the whole frontend suite --
-        # still runs on every push to the branch.
+        # 513 of the 3,264 tests and about two thirds of the serial time.
+        # Everything else -- and that is 2,740 tests, ruff, and the whole
+        # frontend suite -- still runs on every push to the branch. The three
+        # numbers partition the suite exactly: 2,740 fast + 513 deferred + 11
+        # ImageMagick-gated = 3,264 collected.
         #
         # The contract that makes deferring them safe is that main runs them
         # before anything is published. This job's full selection runs on
@@ -317,6 +357,17 @@ jobs:
       # instead of skip, so if this step ever stops providing a `magick` the
       # run goes red rather than quietly passing having rendered nothing.
       # tests/test_ci_path_filters.py asserts both that flag and this step.
+      #
+      # This step runs on *every* event, pull requests included, and that was
+      # re-decided rather than inherited when the deep suites were deferred.
+      # Measured after the Dockerfile's dev-stage layer reorder, three runs on
+      # a warm daemon: 58.1s / 54.7s / 38.4s end to end -- build plus the
+      # container create, cp and run -- of which the build is 1.3-2.4s and the
+      # rest is the eleven tests. Median 54.7s. That is cheap enough to keep
+      # where it is: byte-identical poster output against the tool this service
+      # replaces is the founding invariant, and a pull request that cannot see
+      # it break is a pull request that has stopped checking the thing this
+      # repository exists to do.
       - name: Test the ImageMagick-gated poster parity
         run: |
           # A private database. The run above rebuilds the schema in
@@ -403,6 +454,13 @@ jobs:
   # second copy of it is a second thing to keep in step. Underscores and not
   # hyphens in the job ids on purpose -- `needs.gate-pr.result` parses as a
   # subtraction in a workflow expression and silently evaluates to nothing.
+  #
+  # The cost, stated where the "in parallel with `test`" claim above is made:
+  # each of these is a real job and takes a runner slot for as long as it runs.
+  # On a single-runner pool the parallelism is notional -- `gate_pr` has to be
+  # scheduled and finish before `image` can start -- so every run pays two
+  # extra job startups, and what a pull request actually buys is the image job
+  # no longer waiting for the *suite*, not the two running at once.
   gate_pr:
     name: Nothing is published from a pull request
     runs-on: ubuntu-latest
@@ -626,14 +684,22 @@ jobs:
           # HIGH or CRITICAL fails the job and so is never pushed.
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity HIGH,CRITICAL --exit-code 1 --no-progress             ${{ env.CI_IMAGE }}
 
+      # `needs.gate_verified.result == 'success'` on all three of these, on top
+      # of the job-level `if`, is belt and braces. The event conditions alone
+      # are true on a *red* main run too -- the whole of what keeps an
+      # unverified image out of Harbor is the job's compound
+      # `!cancelled() && (... || ...)`, which is the more elaborate of the two
+      # expressions and so the likelier to be evaluated differently by a
+      # runner that is not GitHub's. Restating the requirement at the three
+      # steps that actually publish puts the check where the consequence is.
       - name: Resolve Harbor registry host
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.gate_verified.result == 'success'
         run: |
           echo "REGISTRY=$(echo "${{ secrets.HARBOR_URL }}" | sed -E 's#^[a-zA-Z]+://##; s#/+$##')" >> "$GITHUB_ENV"
           echo "IMAGE_PREFIX=$(echo "${{ secrets.HARBOR_URL }}" | sed -E 's#^[a-zA-Z]+://##; s#/+$##')/operinko-labs" >> "$GITHUB_ENV"
 
       - name: Log in to Harbor
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.gate_verified.result == 'success'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -643,7 +709,7 @@ jobs:
       # The image pushed is the exact one the checks above ran against --
       # re-building here could produce a different one.
       - name: Push the verified image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.gate_verified.result == 'success'
         run: |
           TAG="${{ steps.gen_tag.outputs.tag }}"
           TARGET="${IMAGE_PREFIX}/${{ env.IMAGE_NAME }}"

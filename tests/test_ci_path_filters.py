@@ -25,6 +25,7 @@ keep people honest.
 
 import fnmatch
 import re
+import shlex
 import tomllib
 from pathlib import Path
 
@@ -277,8 +278,20 @@ def test_the_virtualenv_cache_is_keyed_on_what_decides_its_contents():
     run's packages with a green tick over it; add a ``restore-keys:`` and a
     near-miss does the same thing deliberately.
 
+    The key's third component is the ISO week, and it is asserted for the
+    opposite reason to the other two: every dependency in pyproject.toml is a
+    ``>=`` floor with no lockfile, so without a time component the first save
+    would freeze that resolution for as long as nobody edited the file, and CI
+    would stop tracking upstream while looking exactly like this.
+
     The skip itself is asserted too. A cache nothing is conditioned on is a
     download that saves nothing, which would look exactly like this working.
+
+    And the *save* is asserted to come after the step that verifies the venv
+    imports. ``actions/cache``'s combined form saves in a post step that runs
+    even when the job failed, so a part-built venv from a died-mid-install run
+    used to be stored under this immutable key and restored, broken, forever
+    after.
     """
     caches = [step for step in _steps() if step.get("id") == "venv"]
     assert len(caches) == 1, (
@@ -286,7 +299,7 @@ def test_the_virtualenv_cache_is_keyed_on_what_decides_its_contents():
         f"found {len(caches)}; this test and that step's `if:` consumers name it"
     )
     cache = caches[0]
-    assert str(cache.get("uses", "")).startswith("actions/cache@"), (
+    assert str(cache.get("uses", "")).startswith("actions/cache"), (
         f"the `venv` step is {cache.get('uses')!r}, not an actions/cache step"
     )
 
@@ -306,6 +319,21 @@ def test_the_virtualenv_cache_is_keyed_on_what_decides_its_contents():
         "built for a different dependency set instead of reinstalling"
     )
 
+    bucket = re.search(r"steps\.(\w+)\.outputs\.\w+", key)
+    assert bucket, (
+        f"the venv cache key is {key!r}, which has no computed component. "
+        "pyproject.toml's dependencies are all `>=` floors with no lockfile, so "
+        "a key made only of declarations freezes whatever resolved on the day "
+        "it was first saved -- cache entries are immutable and a hit is never "
+        "rewritten. A coarse time bucket is what keeps CI tracking upstream"
+    )
+    producer = [step for step in _steps() if step.get("id") == bucket.group(1)]
+    assert len(producer) == 1, (
+        f"the venv cache key reads steps.{bucket.group(1)}.outputs, but "
+        f"{len(producer)} steps carry `id: {bucket.group(1)}`; the key would "
+        "then interpolate to nothing and collapse to a constant"
+    )
+
     conditioned = [
         step
         for step in _steps()
@@ -317,12 +345,34 @@ def test_the_virtualenv_cache_is_keyed_on_what_decides_its_contents():
         "nothing but a download"
     )
 
+    test_steps = _jobs()["test"]["steps"]
+    names = [str(step.get("name", "")) for step in test_steps]
+    saves = [
+        index
+        for index, step in enumerate(test_steps)
+        if str(step.get("uses", "")).startswith("actions/cache/save@")
+    ]
+    assert len(saves) == 1, (
+        f"expected exactly one actions/cache/save step in the `test` job, found "
+        f"{len(saves)}. Without a separate save the venv is stored by the cache "
+        "action's post step, which runs on a failed job too -- so an install "
+        "that died partway is written under this immutable key and every later "
+        "run restores it broken"
+    )
+    verify = names.index("Verify the virtualenv answers for this checkout")
+    assert saves[0] > verify, (
+        f"the virtualenv is saved at step {saves[0]}, before the verification "
+        f"at step {verify}. Only a venv that has been proven to import "
+        "`autoposter` may be stored, because the key it is stored under can "
+        "never be overwritten"
+    )
+
 
 def test_the_test_step_defers_the_deep_lane_only_on_pull_requests():
     """The lane split must never reach the run that publishes.
 
-    A pull request deselects ``deep`` as well as ``imagemagick`` -- 516 of the
-    3,259 tests, every ASGI-plus-database suite in tests/conftest.py's
+    A pull request deselects ``deep`` as well as ``imagemagick`` -- 513 of the
+    3,264 tests, every ASGI-plus-database suite in tests/conftest.py's
     DEEP_SUITES. That is only safe while the other lane runs them *and* gates
     the push, which ``test_the_image_job_cannot_publish_past_a_failing_suite``
     below is the other half of. Narrow the non-pull-request selection too and
@@ -438,13 +488,24 @@ def test_the_image_job_cannot_publish_past_a_failing_suite():
             "job now runs without waiting for the suite, so this is what keeps "
             "an unverified image out of the registry"
         )
+        # Belt and braces over the job-level `if`. The event conditions above
+        # are true on a red main run too, so without this the whole protection
+        # is one compound `!cancelled() && (... || ...)` expression evaluated by a
+        # runner that is not GitHub's.
+        assert any(
+            f"needs.{gate}.result == 'success'" in step_if for gate in waits_for_the_suite
+        ), (
+            f"a step running `docker push` is conditioned on {step_if!r}, which "
+            f"does not restate that one of {waits_for_the_suite} succeeded. The "
+            "event conditions alone are satisfied by a failing run on main"
+        )
 
 
 def test_the_deep_lane_is_declared_and_never_deselected_by_default():
     """``-m`` in addopts would narrow every lane at once, CI's included.
 
     The marker is applied by tests/conftest.py's ``pytest_collection_modifyitems``
-    rather than written in the 23 files, so this is where the declaration is
+    rather than written in the 22 files, so this is where the declaration is
     checked to still exist and still name files that do. A default ``-m`` in
     addopts is the one way the *main* lane could quietly stop running the deep
     suites while the workflow still asked for them.
@@ -458,7 +519,10 @@ def test_the_deep_lane_is_declared_and_never_deselected_by_default():
         "workflow's `-m \"... and not deep\"` would then be selecting on a "
         "marker nothing declares"
     )
-    assert "-m" not in str(options.get("addopts", "")), (
+    # Tokenised rather than searched for as a substring: `--maxfail=1` contains
+    # `-m`, so the loose form would one day reject a perfectly legitimate
+    # addopts change with a message about lane narrowing.
+    assert "-m" not in shlex.split(str(options.get("addopts", ""))), (
         "pytest's addopts carries a `-m`, which every lane inherits -- "
         "including the main-branch run that is the reason deferring the deep "
         "suites on pull requests is safe"
@@ -471,6 +535,46 @@ def test_the_deep_lane_is_declared_and_never_deselected_by_default():
     assert not missing, (
         f"DEEP_SUITES names files that do not exist: {missing}. They are matched "
         "on filename, so a renamed suite silently rejoins the fast lane"
+    )
+
+
+def test_every_api_suite_has_been_assigned_a_lane():
+    """A new ``test_api_*.py`` may not pick its lane by being forgotten.
+
+    DEEP_SUITES is checked above for naming files that exist; this is the
+    other direction, and it is the one that erodes the thing the split was
+    built for. Every one of these suites builds the ASGI application against a
+    real database, which is the whole definition of the deep lane, so a new one
+    landing in the fast lane by omission costs pull requests time with no
+    signal anywhere that it happened -- nothing goes untested, the number just
+    quietly stops being true.
+
+    This does not decide the lane. It requires that somebody did, in one list
+    or the other, on the pull request that adds the file.
+    """
+    from conftest import DEEP_SUITES, FAST_API_SUITES
+
+    assigned = DEEP_SUITES | FAST_API_SUITES
+    unassigned = sorted(
+        path.name for path in (REPO / "tests").glob("test_api_*.py") if path.name not in assigned
+    )
+    assert not unassigned, (
+        f"tests/test_api_*.py suites belong to no lane: {unassigned}. Add each "
+        "to tests/conftest.py's DEEP_SUITES (it builds the ASGI app against a "
+        "real database, like the other 22) or to FAST_API_SUITES (it is cheap "
+        "enough to run on every pull request), but say which"
+    )
+
+    phantom = sorted(name for name in FAST_API_SUITES if not (REPO / "tests" / name).is_file())
+    assert not phantom, (
+        f"FAST_API_SUITES names files that do not exist: {phantom}; a renamed "
+        "suite would then be exempted from the check above by a stale entry"
+    )
+    overlap = sorted(DEEP_SUITES & FAST_API_SUITES)
+    assert not overlap, (
+        f"{overlap} are in both DEEP_SUITES and FAST_API_SUITES. DEEP_SUITES "
+        "wins -- the marker is applied from it -- so the fast entry is a claim "
+        "about the lane that is not true"
     )
 
 
