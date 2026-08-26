@@ -240,6 +240,26 @@ async def test_the_cli_exits_zero_when_every_library_succeeded(monkeypatch):
     await cli.main()  # must not raise SystemExit
 
 
+async def test_the_cli_silences_httpxs_url_bearing_request_log(monkeypatch):
+    """``main()`` builds the same ``SourceClients`` bundle ``main.py`` does --
+    Tracearr's base_url included -- so its httpx logger must be silenced the
+    same way (see ``main.py:75-81``), or httpx's own INFO line prints the
+    full request URL once per request."""
+    import logging
+
+    import autoposter.collections.__main__ as cli
+
+    async def fake_reconcile(session, server, config, http, summaries=None, **kwargs):
+        return ReconcileResult(libraries=[LibraryOutcome(library="Movies")])
+
+    _stub_cli_dependencies(monkeypatch, cli, fake_reconcile)
+    logging.getLogger("httpx").setLevel(logging.NOTSET)
+
+    await cli.main()
+
+    assert logging.getLogger("httpx").level == logging.WARNING
+
+
 async def test_the_cli_threads_a_real_source_bundle_to_the_reconcile(monkeypatch):
     """Fix round F3: ``BuilderContext.sources`` defaults via
     ``default_factory``, so if ``main()`` ever stopped building and passing

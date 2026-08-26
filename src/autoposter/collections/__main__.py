@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    # httpx logs one INFO line per request carrying the FULL url, and this
+    # process builds the same SourceClients bundle main.py does -- Tracearr's
+    # base_url included -- so the same reasoning that silences httpx there
+    # (main.py:75-81) binds here too.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     secrets = Secrets.from_env()
 
     # The database comes first now: the config the operator is actually
