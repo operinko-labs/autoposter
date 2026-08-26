@@ -95,10 +95,29 @@ WORKDIR /app
 # to build against: the editable install records a path pointing at /app/src,
 # which docker-compose.yml then replaces with a bind mount of the host tree, so
 # an edit needs no rebuild.
+#
+# The dependencies are installed before src/ arrives, and against a stub
+# package, so that a source-only commit reuses that layer instead of resolving
+# and downloading every wheel again. `--no-cache-dir` means "again" is over the
+# network every time, and this stage is built by CI's "Test the
+# ImageMagick-gated poster parity" step on every run: before the split it paid
+# the full install whenever any file under src/ changed, which is most commits.
+# hatchling needs *something* to build against, and an editable install records
+# a path rather than the contents it was built from, so the stub is replaced
+# wholesale by the COPY below and leaves nothing behind.
 FROM pybase AS dev
 COPY pyproject.toml ./
+RUN mkdir -p src/autoposter \
+ && touch src/autoposter/__init__.py \
+ && pip install --no-cache-dir -e ".[dev]"
 COPY src ./src
-RUN pip install --no-cache-dir -e ".[dev]"
+# Re-run against the real tree with the dependency graph excluded -- seconds,
+# and nothing is downloaded but the build backend. It exists so this stage is
+# correct whatever hatchling's editable install happens to emit: today that is
+# a .pth naming /app/src, for which the stub install alone would suffice, but a
+# future release emitting a finder that maps the modules it saw would otherwise
+# ship an image containing only the stub.
+RUN pip install --no-cache-dir -e ".[dev]" --no-deps
 
 FROM pybase AS runtime
 COPY pyproject.toml ./
