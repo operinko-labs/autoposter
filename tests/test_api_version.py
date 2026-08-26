@@ -376,6 +376,20 @@ async def test_the_latest_tag_is_the_sha_one_not_the_floating_one():
     assert poller.latest == NEWER
 
 
+async def test_a_build_tag_is_not_mistaken_for_the_sha_one():
+    """CI also pushes a third tag, `build-<epoch>-sha-<git>`, for a cluster's
+    Flux ImagePolicy to order releases by. It does not start with `sha-`, so
+    it must not be the one this poller picks up -- a build tag winning here
+    would compare the running version against something that names no commit
+    and corrupt the update check."""
+    http, _ = _mock_transport(tags=("build-1700000000-sha-9f10c2e", "latest", NEWER))
+    async with http:
+        poller = VersionPoller(http=http, target=TARGET, token=HARBOR_TOKEN)
+        await poller._poll()
+
+    assert poller.latest == NEWER
+
+
 async def test_an_artifact_with_no_sha_tag_is_no_answer():
     http, _ = _mock_transport(tags=("latest",))
     async with http:

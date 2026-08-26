@@ -723,11 +723,21 @@ jobs:
         run: |
           TAG="${{ steps.gen_tag.outputs.tag }}"
           TARGET="${IMAGE_PREFIX}/${{ env.IMAGE_NAME }}"
+          # A third tag, ordered rather than merely unique: the cluster's Flux
+          # ImagePolicy selects the newest image by parsing this shape out of
+          # the tag, so `sha-<short>`/`latest` alone leave it with nothing it
+          # can order and it sits empty. Consumer regex, verbatim from the
+          # policy: ^build-(?P<ts>\d+)-sha-[a-f0-9]+$ -- keep the
+          # `build-<epoch>-sha-<hex>` shape intact if this step is ever
+          # touched, or the policy stops matching silently.
+          BUILD_TAG="build-$(date +%s)-${TAG}"
           docker tag ${{ env.CI_IMAGE }} "${TARGET}:${TAG}"
           docker tag ${{ env.CI_IMAGE }} "${TARGET}:latest"
+          docker tag ${{ env.CI_IMAGE }} "${TARGET}:${BUILD_TAG}"
           docker push "${TARGET}:${TAG}"
           docker push "${TARGET}:latest"
-          echo "pushed ${TARGET}:${TAG} and ${TARGET}:latest"
+          docker push "${TARGET}:${BUILD_TAG}"
+          echo "pushed ${TARGET}:${TAG}, ${TARGET}:latest and ${TARGET}:${BUILD_TAG}"
 
       # Per-run names do not clean themselves up, and this also covers the
       # failure paths -- a failing alembic used to leave ci-pg and ci-net

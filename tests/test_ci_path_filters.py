@@ -512,6 +512,59 @@ def test_the_image_job_cannot_publish_past_a_failing_suite():
         )
 
 
+def test_the_build_tag_conforms_to_the_flux_image_policys_regex():
+    """The cluster's Flux ImagePolicy can only order tags shaped
+    ``build-<epoch>-sha-<hex>``; a mismatch is silent -- the policy simply
+    never selects an image, with no error anywhere. This full-matches a
+    constructed example tag against the policy's own pattern, quoted here
+    verbatim from the workflow's comment rather than retyped, so the two
+    cannot drift apart unnoticed.
+    """
+    push_script = _named_step("Push the verified image")["run"]
+
+    match = re.search(r'BUILD_TAG="([^"]*)"', push_script)
+    assert match, (
+        "the Push step no longer assigns BUILD_TAG; the Flux ImagePolicy has "
+        "nothing left to order releases by"
+    )
+    assert match.group(1) == "build-$(date +%s)-${TAG}", (
+        f"BUILD_TAG is now built as {match.group(1)!r}; the ImagePolicy's "
+        "regex assumes exactly `build-<epoch>-sha-<hex>`"
+    )
+
+    # The exact, fully-anchored pattern the Flux ImagePolicy matches against.
+    # Read out of the workflow's own comment rather than typed twice, so a
+    # comment that drifts from the real policy fails here instead of staying
+    # silently wrong.
+    flux_image_policy_pattern = r"^build-(?P<ts>\d+)-sha-[a-f0-9]+$"
+    assert flux_image_policy_pattern in push_script, (
+        "the Push step's comment no longer quotes the Flux ImagePolicy's "
+        "pattern verbatim; a reader has no way to confirm the tag shape "
+        "without going and finding the policy"
+    )
+
+    gen_tag_script = _named_step("Generate image tag")["run"]
+    assert "${{ github.sha }}" in gen_tag_script, (
+        "SHORT_SHA no longer comes from github.sha; a git sha is lowercase "
+        "hex by construction, but a different source might not be, and the "
+        "ImagePolicy's pattern is lowercase-only"
+    )
+    assert not re.search(r"tr\s+.*upper|\^\^", gen_tag_script, re.IGNORECASE), (
+        "the Generate image tag step now appears to uppercase SHORT_SHA; the "
+        "ImagePolicy's `[a-f0-9]+` would then silently stop matching"
+    )
+
+    # Construct an example tag exactly as the two steps above do, from a
+    # git-sha-shaped (lowercase hex) short sha, and full-match it.
+    example_tag = "sha-4b2a34d"  # TAG, as "Generate image tag" would emit it
+    example_epoch = "1700000000"  # `date +%s`
+    build_tag = f"build-{example_epoch}-{example_tag}"
+    assert re.fullmatch(flux_image_policy_pattern, build_tag), (
+        f"the constructed example {build_tag!r} does not full-match the Flux "
+        f"ImagePolicy's pattern {flux_image_policy_pattern!r}"
+    )
+
+
 def test_the_deep_lane_is_declared_and_never_deselected_by_default():
     """``-m`` in addopts would narrow every lane at once, CI's included.
 
