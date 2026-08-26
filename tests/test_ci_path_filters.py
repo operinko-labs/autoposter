@@ -544,19 +544,35 @@ def test_the_build_tag_conforms_to_the_flux_image_policys_regex():
     )
 
     gen_tag_script = _named_step("Generate image tag")["run"]
-    assert "${{ github.sha }}" in gen_tag_script, (
-        "SHORT_SHA no longer comes from github.sha; a git sha is lowercase "
-        "hex by construction, but a different source might not be, and the "
-        "ImagePolicy's pattern is lowercase-only"
-    )
-    assert not re.search(r"tr\s+.*upper|\^\^", gen_tag_script, re.IGNORECASE), (
-        "the Generate image tag step now appears to uppercase SHORT_SHA; the "
-        "ImagePolicy's `[a-f0-9]+` would then silently stop matching"
+
+    # An allowlist of the whole SHORT_SHA pipeline, not a blacklist of ways to
+    # break it: pinning this exact one-liner forecloses every transformation
+    # between github.sha and SHORT_SHA at once -- `tr 'a-z' 'A-Z'`,
+    # `${SHORT_SHA^^}`, `awk 'toupper'`, or anything else -- rather than
+    # naming each uppercasing idiom in a negative regex and missing one.
+    assert 'SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)' in gen_tag_script, (
+        "SHORT_SHA is no longer built as "
+        '`echo "${{ github.sha }}" | cut -c1-7` with nothing else in between; '
+        "a git sha is lowercase hex by construction, but an inserted "
+        "transformation might not preserve that, and the ImagePolicy's "
+        "`[a-f0-9]+` is lowercase-only"
     )
 
-    # Construct an example tag exactly as the two steps above do, from a
+    # The `tag` output's construction, extracted rather than retyped, so the
+    # `sha-` prefix -- half of what the ImagePolicy matches on -- is pinned to
+    # what the step actually emits. A rename to, say, `git-` would otherwise
+    # leave this test's own hardcoded example green while the real pipeline
+    # silently stopped matching the policy.
+    tag_match = re.search(r'echo "tag=([^"]*)"', gen_tag_script)
+    assert tag_match, (
+        "the Generate image tag step no longer publishes a `tag` output via "
+        '`echo "tag=..."`, which this test expects to extract from'
+    )
+    example_tag = tag_match.group(1).replace("${SHORT_SHA}", "4b2a34d")
+
+    # Construct an example BUILD_TAG exactly as the two steps above do, from
+    # the extracted `tag` expression plus a sample epoch and a sample
     # git-sha-shaped (lowercase hex) short sha, and full-match it.
-    example_tag = "sha-4b2a34d"  # TAG, as "Generate image tag" would emit it
     example_epoch = "1700000000"  # `date +%s`
     build_tag = f"build-{example_epoch}-{example_tag}"
     assert re.fullmatch(flux_image_policy_pattern, build_tag), (
