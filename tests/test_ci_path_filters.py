@@ -359,7 +359,18 @@ def test_the_virtualenv_cache_is_keyed_on_what_decides_its_contents():
         "that died partway is written under this immutable key and every later "
         "run restores it broken"
     )
-    verify = names.index("Verify the virtualenv answers for this checkout")
+    verifies = [
+        index
+        for index, name in enumerate(names)
+        if name == "Verify the virtualenv answers for this checkout"
+    ]
+    assert len(verifies) == 1, (
+        "expected exactly one 'Verify the virtualenv answers for this checkout' "
+        f"step in the `test` job, found {len(verifies)}. The save below is "
+        "ordered against it by name, so a rename leaves nothing holding the "
+        "save after the proof -- rename this test's expectation with it"
+    )
+    verify = verifies[0]
     assert saves[0] > verify, (
         f"the virtualenv is saved at step {saves[0]}, before the verification "
         f"at step {verify}. Only a venv that has been proven to import "

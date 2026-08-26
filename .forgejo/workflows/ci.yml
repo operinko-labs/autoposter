@@ -94,7 +94,17 @@ jobs:
       # because cache keys are immutable and a key that hits is never rewritten.
       - name: Compute the virtualenv cache's week bucket
         id: epoch
-        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+        run: |
+          WEEK="$(date -u +%G-W%V)"
+          # `%G` and `%V` are GNU extensions. A `date` without them emits the
+          # format string, or nothing, and either way an empty output here
+          # would interpolate to nothing in the key below -- collapsing it back
+          # to the frozen `py<patch>-<hash>` shape this bucket exists to
+          # prevent, silently and with every run still green. Same reasoning as
+          # the `test -n "$PG_HOST_PORT"` below, and the same one line.
+          test -n "$WEEK"
+          case "$WEEK" in *%*) echo "date does not support %G/%V: $WEEK" >&2; exit 1;; esac
+          echo "week=$WEEK" >> "$GITHUB_OUTPUT"
 
       # The built virtualenv itself, not merely the wheels it was built from.
       # A warm pip cache still left `pip install -e ".[dev]"` to resolve the
