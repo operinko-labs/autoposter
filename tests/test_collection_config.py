@@ -480,6 +480,39 @@ def test_every_deferred_filter_attribute_refuses_at_config_load(attribute):
         )
 
 
+def test_a_definition_filtering_on_plays_says_the_listing_was_never_probed():
+    """The ``unprobed`` tier's own copy, and the reason it is a separate tier.
+
+    ``plays`` IS one of Kometa's filter attributes, so the parser lets it
+    through -- but 9a probed the seven attributes its own tier named and
+    ``viewCount`` was not among them. Answering with the tier2-deferred
+    sentence would cite a probe verdict that does not exist, which is the
+    confident-and-wrong failure the probe exists to prevent.
+    """
+    from autoposter.config.schema import CollectionDefinition
+
+    with pytest.raises(ValueError) as error:
+        CollectionDefinition(
+            title="Rewatched", builder="plex_all", filters={"plays.gt": 3}
+        )
+    message = str(error.value)
+    assert "never probed" in message
+    assert "plex_search" in message
+
+
+def test_a_definition_filtering_on_unplayed_is_refused_by_the_parser():
+    """A ``search-only`` row never reaches the source-tier loop: Kometa has no
+    ``unplayed`` FILTER at all, so ``parse_filters`` refuses it one layer up
+    and names the block it does belong to."""
+    from autoposter.config.schema import CollectionDefinition
+
+    with pytest.raises(ValueError) as error:
+        CollectionDefinition(
+            title="Unseen", builder="plex_all", filters={"unplayed": True}
+        )
+    assert "not a client-side filter" in str(error.value)
+
+
 def test_an_unknown_filter_attribute_refuses_at_config_load():
     document = _document_with_definitions([
         {"title": "Typo", "builder": "plex_id", "params": {"ids": ["1"]},

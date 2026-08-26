@@ -135,6 +135,7 @@ __all__ = [
     "FilterGroup",
     "FilterPredicate",
     "ItemView",
+    "RelativeWindow",
     "evaluate",
     "parse_filters",
     "predicates",
@@ -874,11 +875,21 @@ class FilterPredicate:
 
 @dataclass(frozen=True)
 class FilterGroup:
-    """``all`` (every child must match) or ``any`` (one child must match)."""
+    """``all`` (every child must match) or ``any`` (one child must match).
+
+    ``inline`` is a RENDERING hint and nothing else: it says this group's
+    children belong in the parent's stream rather than inside their own
+    ``push``/``pop`` pair, which is how a ``plex_search`` list-shaped nesting
+    reproduces Kometa byte for byte. It is always False for a ``filters:``
+    tree, and ``evaluate`` ignores it -- an inline group's ``op`` equals its
+    parent's, and both conjunctions are associative, so the boolean answer is
+    the same either way. See ``_parse_nested``.
+    """
 
     op: str
     children: tuple["FilterGroup | FilterPredicate", ...]
     field: str
+    inline: bool = False
 
 
 # --- parsing -----------------------------------------------------------------
@@ -1018,6 +1029,85 @@ class _Today:
 _TODAY = _Today()
 
 
+@dataclass(frozen=True)
+class RelativeWindow:
+    """A bare or ``.not`` date in a **search**: "in the last N <unit>".
+
+    The client-side spelling of the same idea is a plain int of days
+    (``_as_days``), because ``filters:`` evaluates in python and there is
+    nothing to hand a unit to. A search has a server, and Plex takes the unit
+    natively -- Kometa sends ``f"{count}{unit}"`` (builder.py:4446-4452) with
+    the unit taken from the value's last character. This is the narrowing of
+    9a's two ``PLEXAPI_EQUIVALENT`` ``None``s that the roadmap's Notes-for-9b
+    item 2 predicted: those two entries mean "plexapi's CLIENT-side table has
+    no key", not "Plex cannot do this".
+
+    ``unit`` is a key of ``RELATIVE_UNITS``. Note ``o`` is months and ``m`` is
+    minutes; the renderer rewrites ``o`` to ``mon`` on the wire
+    (builder.py:4226-4227), which is Plex's spelling and not Kometa's.
+    """
+
+    count: int
+    unit: str
+
+
+_WINDOW = re.compile(r"^(\d+)([smhdwoy])$")
+
+
+def _as_window(value: object, field: str) -> RelativeWindow:
+    """A relative window, in Kometa's own spelling.
+
+    A bare int is days, which is both Kometa's default (``search_mod = "d"``,
+    builder.py:4447) and the client-side meaning, so the two blocks agree on
+    the one spelling an operator is most likely to write. A suffixed string
+    names its own unit. Anything else refuses NAMING ALL SEVEN UNITS, because
+    ``o`` for months next to ``m`` for minutes is the single least guessable
+    thing in this vocabulary and a refusal that does not spell it out sends
+    the operator to the source.
+    """
+    _boolean_is_not_a_value(value, field)
+    if isinstance(value, int):
+        count, unit = value, "d"
+    elif isinstance(value, str):
+        text = value.strip().lower()
+        match = _WINDOW.match(text)
+        if match:
+            count, unit = int(match.group(1)), match.group(2)
+        elif text.isdigit():
+            count, unit = int(text), "d"
+        else:
+            count = -1
+            unit = ""
+    else:
+        count, unit = -1, ""
+    if not unit or count < 0:
+        spelled = ", ".join(
+            f"{key} = {name.lower()}" for key, name in RELATIVE_UNITS.items()
+        )
+        raise ValueError(
+            f"{field}: {value!r} is not a window -- write a whole number of days "
+            f"(30), or a number with a unit ({spelled}). Note that `o` is months "
+            "and `m` is minutes"
+        )
+    return RelativeWindow(count=count, unit=unit)
+
+
+def _as_bool(value: object, field: str) -> bool:
+    """A true/false. The one place in this module where a bool is the value
+    rather than the mistake -- see ``_boolean_is_not_a_value``, which every
+    other coercion opens with.
+
+    Strings are refused even though Kometa accepts ``t``/``yes``/``n``/``no``
+    (util.py:985-995): YAML already turns every spelling an operator would
+    naturally write into a real boolean, so accepting the strings would only
+    add spellings nobody needs and one more thing for the two systems to
+    disagree about.
+    """
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field}: {value!r} is not true or false")
+
+
 _US_DATE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
 
 _DATE_MESSAGE = "is not a date -- write it as 2024-01-31 or 01/31/2024, or `today`"
@@ -1083,9 +1173,23 @@ def _as_days(value: object, field: str) -> int:
     return value
 
 
-def _parse_value(attribute: FilterAttribute, operator: str, value: object, field: str) -> object:
+def _parse_value(
+    attribute: FilterAttribute,
+    operator: str,
+    value: object,
+    field: str,
+    *,
+    searching: bool,
+) -> object:
     if operator == "regex":
         return _as_regex(value, field)
+    if operator == "rated":
+        # ``.rated`` is a yes/no question about a FLOAT attribute -- "does this
+        # item have a critic rating at all" -- so the value's type has nothing
+        # to do with the row's.
+        return _as_bool(value, field)
+    if attribute.type == "bool":
+        return _as_bool(value, field)
     if attribute.type in ("tag", "str"):
         return _as_text(value, field)
     if attribute.type == "int":
@@ -1096,32 +1200,123 @@ def _parse_value(attribute: FilterAttribute, operator: str, value: object, field
         return _as_minutes(value, field)
     # date
     if operator in ("eq", "not"):
-        return _as_days(value, field)
+        return _as_window(value, field) if searching else _as_days(value, field)
     return _as_date(value, field)
 
 
-def _split_key(key: str, field: str) -> tuple[FilterAttribute, str]:
+def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribute, str]:
     name, _, modifier = key.partition(".")
     attribute = BY_NAME.get(name)
+    vocabulary = SEARCHABLE_ATTRIBUTES if searching else FILTERABLE_ATTRIBUTES
+    block = "plex_search" if searching else "filters:"
     if attribute is None:
+        # The noun keeps 9a's wording for a ``filters:`` block rather than
+        # generalising it away, and the block name carries the rest: the two
+        # vocabularies are different lists, so offering the whole table here
+        # would name attributes the block being parsed cannot take.
+        noun = "search" if searching else "filter"
         raise ValueError(
-            f"unknown filter attribute {name!r} at {field}: tier-1 attributes are "
-            + ", ".join(sorted(BY_NAME))
+            f"unknown {noun} attribute {name!r} at {field}: the {block} "
+            "vocabulary is " + ", ".join(sorted(vocabulary))
         )
+
+    # The cross-reference (D2c). The two vocabularies are DISTINCT and share
+    # one table, so an attribute can be legal in one block and refused in the
+    # other -- and when it is, the refusal says where it does live rather than
+    # reading as a gap. Kometa's own two vocabularies are not nested either:
+    # 44 of its filter names have no Plex search field, and 29 of its search
+    # names have no filter.
+    #
+    # The FIRST of the two branches is unreachable with today's nineteen rows:
+    # every one of them is searchable, because the fifteen 9a shipped all have
+    # Plex search fields. It is written now, and tested with a synthetic row,
+    # because the first filter-only attribute (``aspect``, ``height``,
+    # ``versions``, ``summary``, ... -- 44 of them, roadmap row 96's residue)
+    # will arrive under a table row and must not arrive under a bare KeyError.
+    if searching and not attribute.searchable:
+        raise ValueError(
+            f"{field}: {name!r} is a client-side filter attribute but Plex has "
+            "no search field for it, so a plex_search cannot ask for it. Write "
+            "it as a `filters:` block on the definition instead -- the search "
+            "narrows server-side and the filter refines what comes back"
+        )
+    if not searching and not attribute.filterable:
+        raise ValueError(
+            f"{field}: {name!r} is a plex_search attribute (Plex answers it "
+            "server-side) and not a client-side filter -- Kometa has no filter "
+            "of that name either. Move it into the plex_search builder's "
+            "`params`"
+        )
+
+    if modifier == "and":
+        # Kometa's ``and_searches`` (plex.py:391-407) makes ``genre.and`` mean
+        # "every one of these", while a bare ``genre:`` at the top level means
+        # "any of these" -- a base conjunction chosen by a suffix on one key.
+        # Refused, because the same key spelling would then mean two
+        # memberships depending on a suffix three characters long.
+        raise ValueError(
+            f"{field}: .and is not a modifier here. Kometa uses it to make one "
+            f"key ANDed inside an implicit base; write the base out instead -- "
+            f"`all:` for every-one-of, `any:` for any-of -- so the config says "
+            f"which it is"
+        )
+    if searching and modifier == "regex":
+        raise ValueError(
+            f"{field}: .regex is not a plex_search modifier. Kometa's search "
+            "regex does not reach Plex at all -- it expands the pattern against "
+            "the library's own tag vocabulary first and sends the matching tags "
+            "(builder.py:4301-4323) -- so one spelling would mean two "
+            "mechanisms. A `filters:` block on the same definition supports "
+            ".regex client-side"
+        )
+    if not searching and modifier in SEARCH_ONLY_OPERATORS:
+        raise ValueError(
+            f"{field}: .{modifier} is a plex_search modifier -- Plex answers "
+            f"'has any rating at all' as a server-side comparison against -1 "
+            f"and a client-side filter has no equivalent spelling. Write "
+            f"`{name}.gt: 0` if that is what you mean"
+        )
+
+    operators = attribute.search_operators if searching else attribute.operators
+    default = attribute.default_operator
+
     if not modifier:
-        return attribute, attribute.default_operator
-    writable = [f".{op}" for op in attribute.operators if op != attribute.default_operator]
-    if modifier not in attribute.operators or modifier == attribute.default_operator:
+        if default in operators:
+            return attribute, default
+        # Reached by the three search rows whose type has no blank-modifier
+        # form: ``duration``, the two ratings and ``plays``. The message names
+        # the reason rather than the rule, because "not supported" would read
+        # as a gap in Plex and it is not one -- Kometa refuses the same key,
+        # from the same list.
+        raise ValueError(
+            f"{field}: a bare `{name}:` is not a plex_search. Kometa's search "
+            f"vocabulary gives {name!r} its range modifiers and nothing else "
+            "(plex.py:594-601), and it checks a written key against exactly "
+            "that list (builder.py:4194-4195), so Plex is never asked a plain "
+            "equality question about it. Write one of "
+            + ", ".join(f"`{name}.{op}`" for op in operators)
+        )
+
+    if modifier not in operators or modifier == default:
+        writable = [f".{op}" for op in operators if op != default]
         # The bare form's meaning is not literally its "default operator" name
         # for a date -- ``added: 30`` is a window in days, not "added eq 30" --
         # so saying "which means eq" here would teach the wrong thing about
         # what a bare key does.
-        bare_meaning = "within-the-last-N-days" if attribute.type == "date" else attribute.default_operator
-        message = (
-            f"{field}: .{modifier} does not apply to {name!r}, a {attribute.type} attribute "
-            "-- it takes " + ", ".join(writable)
-            + f" (or no modifier at all, which means {bare_meaning})"
+        bare_meaning = (
+            "within-the-last-N-days"
+            if attribute.type == "date" and not searching
+            else "in-the-last-N"
+            if attribute.type == "date"
+            else default
         )
+        message = (
+            f"{field}: .{modifier} does not apply to {name!r}, a "
+            f"{attribute.type} attribute in a {block} block "
+            "-- it takes " + ", ".join(writable)
+        )
+        if default in operators:
+            message += f" (or no modifier at all, which means {bare_meaning})"
         if attribute.type == "date" and modifier in ("gt", "gte", "lt", "lte"):
             # Kometa accepts all four on a date and rewrites every one of them
             # to the STRICT form (plex.py:2735-2747). Refusing without saying
@@ -1132,20 +1327,28 @@ def _split_key(key: str, field: str) -> tuple[FilterAttribute, str]:
                 ".after/.before, which are strict -- write the strict one you mean, so "
                 "the config says what it does"
             )
+        if name == "resolution" and modifier == "not":
+            message += (
+                ". Plex answers no negated resolution filter at all "
+                "(Kometa's no_not_mods, plex.py:593)"
+            )
         raise ValueError(message)
     return attribute, modifier
 
 
-def _parse_predicate(key: str, raw: object, field: str) -> FilterPredicate:
-    attribute, operator = _split_key(key, field)
+def _parse_predicate(key: str, raw: object, field: str, *, searching: bool) -> FilterPredicate:
+    attribute, operator = _split_key(key, field, searching=searching)
     written = raw if isinstance(raw, (list, tuple)) else [raw]
     if not written:
         raise ValueError(f"{field}: an empty list matches nothing -- remove the key instead")
-    values = tuple(_parse_value(attribute, operator, one, field) for one in written)
+    values = tuple(
+        _parse_value(attribute, operator, one, field, searching=searching)
+        for one in written
+    )
     return FilterPredicate(attribute=attribute, operator=operator, values=values, field=field)
 
 
-def _parse_block(raw: object, op: str, field: str) -> FilterGroup:
+def _parse_block(raw: object, op: str, field: str, *, searching: bool) -> FilterGroup:
     """One mapping of ``attribute[.operator]: value`` keys, plus any nested
     ``any:``/``all:`` blocks, combined with ``op``."""
     if not isinstance(raw, Mapping):
@@ -1157,42 +1360,93 @@ def _parse_block(raw: object, op: str, field: str) -> FilterGroup:
         if not isinstance(key, str):
             raise ValueError(f"{field}: {key!r} is not an attribute name")
         if key in ("any", "all"):
-            children.append(_parse_nested(value, key, f"{field}.{key}"))
+            children.append(
+                _parse_nested(value, key, f"{field}.{key}", parent_op=op, searching=searching)
+            )
         else:
-            children.append(_parse_predicate(key, value, f"{field}.{key}"))
+            children.append(
+                _parse_predicate(key, value, f"{field}.{key}", searching=searching)
+            )
     return FilterGroup(op=op, children=tuple(children), field=field)
 
 
-def _parse_nested(raw: object, op: str, field: str) -> FilterGroup:
+def _parse_nested(
+    raw: object, op: str, field: str, *, parent_op: str, searching: bool
+) -> FilterGroup:
     """An ``any:``/``all:`` value, in either accepted shape.
 
     A **mapping** makes each of its keys one alternative -- ``any: {studio:
-    A24, year.gte: 2020}`` is "from A24 or from this decade". A **list** makes each
-    element a block whose own keys are ANDed, which is what an alternative
-    needs when it is more than one attribute wide.
+    A24, year.gte: 2020}`` is "from A24 or from this decade". Identical in both
+    modes: Kometa's ``util.get_list`` turns a mapping into a one-element list
+    and renders it with the written key's conjunction, which is what this is.
+
+    A **list** is where the two blocks diverge, and the divergence is Kometa's,
+    not ours:
+
+    - ``filters:`` (Builder.check_filters, builder.py:4674-4754) ANDs each
+      element's keys and ORs the elements, so ``any: [{a, b}, {c}]`` is
+      ``(a AND b) OR c``. That is 9a's behaviour and its oracle settled it.
+    - ``plex_search`` (Builder._filter, builder.py:4207-4217) renders each
+      element with the WRITTEN key's conjunction and joins the elements with
+      the CONTAINING block's, so the same YAML is ``push(a OR b) <parent> c``.
+
+    One grammar, two renderings, one parameter -- rather than a second parser,
+    or a refusal that would cost a Kometa spelling. ``inline`` is how the URL
+    builder tells them apart: an inline wrapper's children are spliced into the
+    parent's stream instead of getting a ``push``/``pop`` of their own, which
+    is what makes the byte-level output match. ``evaluate`` needs no change,
+    because an inline wrapper's op equals its parent's and both AND and OR are
+    associative.
     """
     if isinstance(raw, Mapping):
-        return _parse_block(raw, op, field)
+        return _parse_block(raw, op, field, searching=searching)
     if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
         if not raw:
             raise ValueError(f"{field} is empty -- remove it, or give it a block to filter on")
+        element_op = op if searching else "all"
         blocks = tuple(
-            _parse_block(one, "all", f"{field}[{index}]") for index, one in enumerate(raw)
+            _parse_block(one, element_op, f"{field}[{index}]", searching=searching)
+            for index, one in enumerate(raw)
         )
-        return FilterGroup(op=op, children=blocks, field=field)
+        return FilterGroup(
+            op=parent_op if searching else op,
+            children=blocks,
+            field=field,
+            inline=searching,
+        )
     raise ValueError(f"{field}: expects a mapping of attributes or a list of them, not {raw!r}")
 
 
-def parse_filters(raw: object, *, field: str = "filters") -> FilterGroup:
-    """Parse a ``filters:`` block, or refuse naming the field that is wrong.
+def parse_filters(
+    raw: object,
+    *,
+    field: str = "filters",
+    searching: bool = False,
+    base: str = "all",
+) -> FilterGroup:
+    """Parse a ``filters:`` block or a ``plex_search`` block, or refuse naming
+    the field that is wrong.
 
     Every refusal is a ``ValueError`` whose message starts with (or contains)
     the dotted path of the offending key, because the config layer wraps it
     with the definition's title and an operator with twenty definitions needs
-    both halves to fix one. The top-level block is an ``all``: several keys in
-    one mapping must all match, which is Kometa's rule.
+    both halves to fix one.
+
+    ``base`` is the top-level conjunction, and it defaults to ``all`` because
+    that is what several keys in one ``filters:`` mapping mean in Kometa. A
+    ``plex_search`` writes its base out (``all:`` or ``any:``, D1 -- the
+    implicit base is refused), and the builder passes the written one here
+    rather than nesting the block one level deeper: Kometa's ``base_dict`` IS
+    the inner mapping (builder.py:4278-4284), and wrapping it would add a
+    ``push``/``pop`` pair Kometa does not emit.
+
+    ``searching`` selects the SEARCH vocabulary and grammar -- see
+    ``SEARCH_OPERATORS_BY_TYPE``, ``_as_window`` and ``_parse_nested``. Both are
+    keyword-only, and both default to the 9a behaviour its oracle settled.
     """
-    return _parse_block(raw, "all", field)
+    if base not in ("any", "all"):
+        raise ValueError(f"{field}: {base!r} is not a base -- write `any` or `all`")
+    return _parse_block(raw, base, field, searching=searching)
 
 
 def predicates(node: "FilterGroup | FilterPredicate") -> Iterator[FilterPredicate]:

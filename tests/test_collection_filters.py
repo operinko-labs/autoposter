@@ -40,6 +40,7 @@ from autoposter.collections.filters import (
     VALUE_TYPES,
     FilterGroup,
     FilterPredicate,
+    RelativeWindow,
     evaluate,
     parse_filters,
 )
@@ -289,6 +290,134 @@ def test_the_show_search_field_rescoping_is_transcribed():
     # never sees it -- the two columns are equal, not None.
     assert BY_NAME["network"].search_field == "show.network"
     assert BY_NAME["network"].show_search_field == "show.network"
+
+
+def test_the_modifier_table_is_not_invertible():
+    """Why ``SEARCH_MODIFIERS`` is keyed on a PAIR.
+
+    Kometa's own ``modifier_translation`` (modules/plex.py:195) maps four wire
+    strings from two different modifiers each, and every collision is between
+    two DIFFERENT value types -- so a one-level dict keyed on the modifier
+    cannot represent the table without picking a winner. This test fails the
+    moment somebody "simplifies" the key.
+
+    Two exclusions, and both are about what the claim above actually is rather
+    than about making the numbers work:
+
+    - the two date-WINDOW entries are not ``modifier_translation`` entries at
+      all. Kometa takes their wire string from ``last_mod``
+      (builder.py:4224), and ``SEARCH_MODIFIERS`` carries them only so the
+      renderer has one lookup instead of two. They are excluded by name;
+    - a collision is a wire reached by more than one distinct OPERATOR. That
+      is precisely what makes a modifier-keyed dict lossy. ``!`` is reached
+      from three of our pairs -- ``(tag, not)``, ``(str, not)``, ``(int,
+      not)`` -- but from ONE modifier, ``.not``, so Kometa stores it once and
+      means one thing by it, and it is not a collision.
+    """
+    from collections import defaultdict
+
+    from autoposter.collections.filters import SEARCH_MODIFIERS
+
+    from_modifier_translation = {
+        key: wire
+        for key, wire in SEARCH_MODIFIERS.items()
+        if key not in (("date", "eq"), ("date", "not"))
+    }
+    reached_by = defaultdict(set)
+    for (value_type, operator), wire in from_modifier_translation.items():
+        reached_by[wire].add((value_type, operator))
+
+    collisions = {
+        wire: keys
+        for wire, keys in reached_by.items()
+        if wire != "" and len({operator for _, operator in keys}) > 1
+    }
+    # The four pairs, by operator. The types differ within every pair, which is
+    # the load-bearing half.
+    assert {wire: sorted({op for _, op in keys}) for wire, keys in collisions.items()} == {
+        "%3E": ["ends", "gte"],
+        "%3C": ["begins", "lte"],
+        "%3E%3E": ["after", "gt"],
+        "%3C%3C": ["before", "lt"],
+    }
+    # And the pairs in full, so that flattening the key to the operator alone
+    # cannot leave this test green by accident.
+    assert collisions["%3E"] == {
+        ("str", "ends"), ("int", "gte"), ("float", "gte"), ("duration", "gte"),
+    }
+    assert collisions["%3C"] == {
+        ("str", "begins"), ("int", "lte"), ("float", "lte"), ("duration", "lte"),
+    }
+    assert collisions["%3E%3E"] == {
+        ("date", "after"), ("int", "gt"), ("float", "gt"), ("duration", "gt"),
+    }
+    assert collisions["%3C%3C"] == {
+        ("date", "before"), ("int", "lt"), ("float", "lt"), ("duration", "lt"),
+    }
+    for wire, keys in collisions.items():
+        assert len({value_type for value_type, _ in keys}) > 1, wire
+
+
+def test_the_modifier_table_is_total_over_the_search_operators():
+    """Every (type, operator) an attribute can actually be written with has a
+    wire string. A missing entry would be a KeyError at URL-build time, on a
+    config that loaded clean."""
+    from autoposter.collections.filters import (
+        FILTER_ATTRIBUTES,
+        SEARCH_MODIFIERS,
+    )
+
+    for row in FILTER_ATTRIBUTES:
+        for operator in row.search_operators:
+            assert (row.type, operator) in SEARCH_MODIFIERS, (row.name, operator)
+
+
+def test_resolution_has_no_negated_search():
+    """``no_not_mods`` (modules/plex.py:593). Plex will not answer a negated
+    resolution filter, so the table must not offer one."""
+    from autoposter.collections.filters import BY_NAME
+
+    assert "not" not in BY_NAME["resolution"].search_operators
+    assert "not" in BY_NAME["genre"].search_operators
+
+
+def test_duration_ships_only_its_range_operators_as_a_search():
+    from autoposter.collections.filters import BY_NAME
+
+    assert BY_NAME["duration"].search_operators == ("gt", "gte", "lt", "lte")
+    assert BY_NAME["duration"].operators == ("eq", "not", "gt", "gte", "lt", "lte")
+
+
+def test_a_rating_and_a_play_count_search_take_their_ranges_only():
+    """Task 1's transcription CORRECTION, pinned so it cannot drift back.
+
+    The plan's text gave ``float`` the bare form and ``.not`` as searches. A
+    live fetch of Kometa v2.4.8 says otherwise: ``float_attributes`` take
+    ``float_modifiers`` and nothing else (plex.py:549-550, :600), so neither
+    ``critic_rating:`` nor ``critic_rating.not:`` is in ``plex.searches`` --
+    and ``Builder._filter`` checks a written key against exactly that list
+    (builder.py:4194-4195), so Kometa answers both with "attribute is not
+    valid". ``plays`` is the same shape one type along: it is a
+    ``number_attribute`` and NOT a ``year_attribute`` (plex.py:547, :599), so
+    it gets ``number_modifiers`` alone, while ``year`` -- which is both --
+    keeps the bare form and ``.not``.
+
+    The CLIENT-side operator sets are untouched by any of this, which is the
+    whole point of the two columns.
+    """
+    from autoposter.collections.filters import BY_NAME
+
+    assert BY_NAME["critic_rating"].search_operators == ("gt", "gte", "lt", "lte", "rated")
+    assert BY_NAME["audience_rating"].search_operators == ("gt", "gte", "lt", "lte", "rated")
+    assert BY_NAME["plays"].search_operators == ("gt", "gte", "lt", "lte")
+    assert BY_NAME["year"].search_operators == ("eq", "not", "gt", "gte", "lt", "lte")
+
+    assert BY_NAME["critic_rating"].operators == ("eq", "not", "gt", "gte", "lt", "lte")
+    assert BY_NAME["plays"].operators == ("eq", "not", "gt", "gte", "lt", "lte")
+
+    for written in ({"critic_rating": 8}, {"plays": 3}):
+        with pytest.raises(ValueError, match="is not a plex_search"):
+            parse_filters(written, searching=True)
 
 
 # --- the accepted YAML shapes ------------------------------------------------
@@ -1017,3 +1146,206 @@ def test_filters_module_never_imports_plexapi():
             imported_roots.add(node.module.split(".")[0])
 
     assert "plexapi" not in imported_roots
+
+
+# --- the parser's search mode (phase 9b Task 1) -------------------------------
+
+
+def _only(group):
+    """The single predicate in a one-key block."""
+    (child,) = group.children
+    return child
+
+
+def test_a_bare_date_in_a_search_is_a_relative_window():
+    predicate = _only(parse_filters({"added": 30}, searching=True))
+    assert predicate.values == (RelativeWindow(30, "d"),)
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        (30, RelativeWindow(30, "d")),
+        ("30", RelativeWindow(30, "d")),
+        ("30d", RelativeWindow(30, "d")),
+        ("6o", RelativeWindow(6, "o")),
+        ("2y", RelativeWindow(2, "y")),
+        ("90m", RelativeWindow(90, "m")),
+        ("12h", RelativeWindow(12, "h")),
+        ("4w", RelativeWindow(4, "w")),
+        ("45s", RelativeWindow(45, "s")),
+    ],
+)
+def test_every_relative_window_unit_parses(written, expected):
+    predicate = _only(parse_filters({"last_played.not": written}, searching=True))
+    assert predicate.values == (expected,)
+
+
+def test_a_bare_date_in_a_filter_is_still_a_day_count():
+    """The client-side grammar is unchanged: ``added: 30`` is an int, and the
+    unit suffixes are refused, because ``filters:`` evaluates in python and has
+    no server to hand ``30d`` to."""
+    predicate = _only(parse_filters({"added": 30}))
+    assert predicate.values == (30,)
+    with pytest.raises(ValueError, match="not a number of days"):
+        parse_filters({"added": "30d"})
+
+
+def test_a_relative_window_refuses_an_unknown_unit_naming_all_seven():
+    with pytest.raises(ValueError) as error:
+        parse_filters({"added": "30x"}, searching=True)
+    message = str(error.value)
+    assert "filters.added" in message
+    assert "o = months" in message
+    assert "m = minutes" in message
+
+
+def test_an_attribute_no_row_names_is_refused_with_the_right_vocabulary():
+    """Two vocabularies, two lists. ``aspect`` is one of the 44 Kometa filter
+    names with no Plex search field, and no row names it yet, so both blocks
+    answer "unknown" -- but each names ITS OWN vocabulary, not the table."""
+    with pytest.raises(ValueError) as error:
+        parse_filters({"aspect": "1.78"}, searching=True)
+    message = str(error.value)
+    assert "aspect" in message
+    assert "plex_search" in message
+    assert "unplayed" in message        # a searchable name is offered
+    assert "plays" in message
+
+    with pytest.raises(ValueError) as error:
+        parse_filters({"aspect": "1.78"})
+    message = str(error.value)
+    assert "filters:" in message
+    assert "unplayed" not in message    # search-only names are NOT offered
+
+
+def test_a_search_refuses_a_filter_only_attribute_naming_the_other_block(monkeypatch):
+    """The cross-reference D2(c) requires, exercised with a synthetic row.
+
+    Unreachable from the shipped table -- all nineteen rows are searchable --
+    and written anyway, because the first filter-only row (row 96's 44-name
+    residue) must land on a refusal that says where the attribute does live,
+    not on a KeyError. A synthetic row is the only way to reach it today, and
+    a test that cannot reach the branch it names is worse than none.
+    """
+    from autoposter.collections import filters as module
+
+    row = module.FilterAttribute(
+        "aspect", "float", ("movie", "show"), "tier2-deferred", "synthetic",
+        search_field=None, show_search_field=None,
+        search_kinds=("movie", "show"), filterable=True,
+    )
+    monkeypatch.setitem(module.BY_NAME, "aspect", row)
+    with pytest.raises(ValueError) as error:
+        parse_filters({"aspect.gte": 1.78}, searching=True)
+    message = str(error.value)
+    assert "aspect" in message
+    assert "no search field" in message
+    assert "filters:" in message
+
+
+def test_a_filter_refuses_a_search_only_attribute_and_says_where_it_lives():
+    with pytest.raises(ValueError) as error:
+        parse_filters({"unplayed": True})
+    message = str(error.value)
+    assert "'unplayed' is a plex_search attribute" in message
+    assert "not a client-side filter" in message
+
+
+def test_a_search_refuses_regex_and_says_why():
+    with pytest.raises(ValueError) as error:
+        parse_filters({"genre.regex": "^Hor"}, searching=True)
+    message = str(error.value)
+    assert ".regex" in message
+    assert "filters:" in message
+
+
+def test_a_search_refuses_a_bare_duration_and_names_the_ranges():
+    """A CORRECTION to the plan's text, which said a bare ``duration:`` reaches
+    Plex unconverted and therefore asks about milliseconds. It does not reach
+    Plex at all: ``duration`` is a ``float_attribute`` and takes only the four
+    range modifiers (plex.py:549, :600), so a bare ``duration:`` is not in
+    ``plex.searches`` and Kometa refuses it outright (builder.py:4194-4195).
+    The two blocks agree on the UNIT for the ranges that do exist -- Kometa
+    multiplies a search duration by 60000 (builder.py:4234) exactly as the
+    client-side view divides by it -- so there is no millisecond trap to warn
+    about, and the refusal must not invent one."""
+    with pytest.raises(ValueError) as error:
+        parse_filters({"duration": 90}, searching=True)
+    message = str(error.value)
+    assert "filters.duration" in message
+    assert "plex_search" in message
+    assert "`duration.gt`" in message
+    assert "millisecond" not in message
+
+
+def test_a_filter_refuses_rated_and_points_at_plex_search():
+    with pytest.raises(ValueError) as error:
+        parse_filters({"critic_rating.rated": True})
+    assert "plex_search" in str(error.value)
+
+
+def test_the_and_suffix_is_refused_in_both_blocks():
+    for searching in (True, False):
+        with pytest.raises(ValueError) as error:
+            parse_filters({"genre.and": ["Horror", "Comedy"]}, searching=searching)
+        message = str(error.value)
+        assert ".and" in message
+        assert "all:" in message
+
+
+def test_a_boolean_search_takes_a_real_boolean_only():
+    predicate = _only(parse_filters({"unplayed": True}, searching=True))
+    assert predicate.values == (True,)
+    with pytest.raises(ValueError, match="true or false"):
+        parse_filters({"unplayed": "yes"}, searching=True)
+
+
+def test_rated_takes_a_boolean_not_a_number():
+    predicate = _only(parse_filters({"critic_rating.rated": False}, searching=True))
+    assert predicate.operator == "rated"
+    assert predicate.values == (False,)
+
+
+def test_a_search_list_element_takes_the_written_conjunction_and_is_inline():
+    """The nesting divergence, pinned. ``build_filter`` renders each element of
+    a list with the WRITTEN key's conjunction (builder.py:4214) and joins them
+    with the CONTAINING block's; ``check_filters`` -- the client-side path --
+    ANDs each element instead. One grammar, two renderings, one parameter."""
+    searched = parse_filters(
+        {"any": [{"studio": "A24"}, {"year.gte": 2020}]}, searching=True
+    )
+    (wrapper,) = searched.children
+    assert wrapper.inline is True
+    assert wrapper.op == "all"          # the CONTAINING block's op
+    assert [child.op for child in wrapper.children] == ["any", "any"]
+
+    filtered = parse_filters({"any": [{"studio": "A24"}, {"year.gte": 2020}]})
+    (wrapper,) = filtered.children
+    assert wrapper.inline is False
+    assert wrapper.op == "any"
+    assert [child.op for child in wrapper.children] == ["all", "all"]
+
+
+def test_a_mapping_shaped_nested_block_is_identical_in_both_modes():
+    for searching in (True, False):
+        group = parse_filters(
+            {"any": {"studio": "A24", "year.gte": 2020}}, searching=searching
+        )
+        (wrapper,) = group.children
+        assert wrapper.op == "any"
+        assert wrapper.inline is False
+        assert len(wrapper.children) == 2
+
+
+def test_the_base_conjunction_is_the_written_one_and_adds_no_nesting():
+    """Kometa's base_dict IS the inner mapping (builder.py:4278-4284), so the
+    parsed tree must be one level deep, not two -- an extra level would become
+    a push/pop pair the URL builder emits and Kometa does not."""
+    group = parse_filters({"studio": "A24", "year.gte": 2020}, base="any", searching=True)
+    assert group.op == "any"
+    assert len(group.children) == 2
+    assert all(isinstance(child, FilterPredicate) for child in group.children)
+
+    with pytest.raises(ValueError, match="is not a base"):
+        parse_filters({"studio": "A24"}, base="either")

@@ -512,6 +512,14 @@ class CollectionDefinition(BaseModel):
           exists to prevent, and the engine would contain it into a collection
           that quietly stopped updating.
 
+        The refusal copy branches on the source tier, because the two tiers
+        9b added mean different things. ``tier2-deferred`` cites a probe
+        verdict; ``unprobed`` says there is none, which is the honest answer
+        for ``plays`` and ``last_played`` and points at the ``plex_search``
+        builder instead. A ``search-only`` row never reaches this loop at all
+        -- ``parse_filters`` refuses it one layer up, with the message that
+        names ``plex_search``.
+
         Checked against ``SHIPPED_ATTRIBUTES`` -- the tier-derived set (rows in
         ``FILTER_ATTRIBUTES`` whose ``source`` is ``"listing"``), not against
         the runtime accessor map itself. The two are pinned equal by a separate
@@ -536,14 +544,30 @@ class CollectionDefinition(BaseModel):
             row = predicate.attribute
             if row.name in SHIPPED_ATTRIBUTES:
                 continue
+            if row.source == "tier2-deferred":
+                why = (
+                    "Phase 9a's probe found the Plex section listing does not carry "
+                    "it completely enough to filter on (the row's note in "
+                    "collections/filters.py has the numbers), and reading it per "
+                    "item would cost one Plex request per item -- so it is filed "
+                    "for tier 2 under roadmap row 96 rather than answered wrongly"
+                )
+            else:
+                # ``unprobed``. Deliberately NOT the sentence above: that one
+                # cites a probe verdict, and for these rows there is none. 9a
+                # probed the seven attributes its own tier named and no others,
+                # so claiming a finding here would be the same
+                # confident-and-wrong failure the probe exists to prevent.
+                why = (
+                    "Phase 9a never probed whether the Plex section listing carries "
+                    "it, so there is no verdict either way and this service will "
+                    "not guess -- it is searchable today through the 'plex_search' "
+                    "builder, which asks the server instead"
+                )
             raise ValueError(
                 f"{self.title!r} cannot filter on {row.name!r} at {predicate.field}: "
-                f"that attribute's source tier is {row.source!r}. Phase 9a's probe "
-                "found the Plex section listing does not carry it completely enough "
-                "to filter on (the row's note in collections/filters.py has the "
-                "numbers), and reading it per item would cost one Plex request per "
-                "item -- so it is filed for tier 2 under roadmap row 96 rather than "
-                "answered wrongly. Filterable today: " + ", ".join(SHIPPED_ATTRIBUTES)
+                f"that attribute's source tier is {row.source!r}. {why}. "
+                "Filterable today: " + ", ".join(SHIPPED_ATTRIBUTES)
             )
         return self
 
