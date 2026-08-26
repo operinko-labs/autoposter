@@ -62,8 +62,15 @@ testpaths = ["tests"]
 # main run (`-m "not imagemagick"`) so a dedicated step can run them where a
 # Q16-HDRI build exists. Registering it here keeps a typo'd marker from
 # quietly meaning "unmarked".
+# `deep` is applied by tests/conftest.py's `pytest_collection_modifyitems` to
+# every test in its DEEP_SUITES list, not written in the test files themselves.
+# Registering it here is what keeps a typo in the workflow's `-m` expression
+# from quietly meaning "nothing was deselected" -- the failure this lane most
+# needs to be loud about is the opposite one, a pull request that reports green
+# having run less than it should.
 markers = [
     'imagemagick: needs a real `magick` binary; pass "hdri" when byte-exact parity requires a Q16-HDRI build',
+    "deep: an ASGI-plus-database integration suite, deselected on pull requests and run in full on main; see DEEP_SUITES in tests/conftest.py",
 ]
 
 [tool.ruff]

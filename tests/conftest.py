@@ -14,6 +14,71 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from autoposter.config.loader import load_config
 from autoposter.db.base import Base
 
+# The suites a pull request defers to the merge commit. The contract itself is
+# written at the "Test" step in .forgejo/workflows/ci.yml; in short, a pull
+# request runs everything except these, main and workflow_dispatch run
+# everything, and nothing is published from a run that skipped any of it.
+#
+# Chosen by measurement rather than by taste. A serial run of the whole suite
+# spends 459.7s inside tests; these 23 files are 321.2s of that -- 69.9% of the
+# time for 516 of the 3,248 tests. They have one cause in common, which is also
+# why nothing cheaper is on the list: each of these tests builds the ASGI
+# application and drives it against a real database, and the migrations suite
+# creates, migrates and drops whole scratch databases per test.
+#
+# Written out rather than matched by glob so that a new `test_api_*.py` file
+# lands in the fast lane by default. That is the safe direction to fail: the
+# cost of forgetting to add a file here is a pull request that runs more than
+# it had to, not one that runs less.
+DEEP_SUITES = frozenset(
+    {
+        "test_api_actions.py",
+        "test_api_artwork.py",
+        "test_api_artwork_modes.py",
+        "test_api_auth.py",
+        "test_api_candidates.py",
+        "test_api_clear_override.py",
+        "test_api_collections_builders.py",
+        "test_api_config_editor.py",
+        "test_api_dashboard.py",
+        "test_api_dashboard_stream.py",
+        "test_api_filters.py",
+        "test_api_full_pass.py",
+        "test_api_jobs.py",
+        "test_api_library.py",
+        "test_api_login.py",
+        "test_api_logs.py",
+        "test_api_manual.py",
+        "test_api_mismatches.py",
+        "test_api_pick.py",
+        "test_api_scheduled_runs.py",
+        "test_api_testing.py",
+        "test_api_version.py",
+        "test_migrations.py",
+    }
+)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items):
+    """Apply the ``deep`` marker to every test in ``DEEP_SUITES``.
+
+    ``pytestmark = pytest.mark.deep`` in each of the 23 modules would say the
+    same thing, but it would say it in 23 places while the lane is one decision;
+    here the whole of it is readable at once and CI's ``-m`` expression has a
+    single thing to point at.
+
+    ``tryfirst`` because the marker has to exist before pytest's own
+    ``-m`` deselection runs, and that is also a
+    ``pytest_collection_modifyitems``. Relying on the registration order of
+    conftest against a builtin plugin would work today and be silent the day it
+    stopped: everything would simply run, on both lanes.
+    """
+    for item in items:
+        if item.path.name in DEEP_SUITES:
+            item.add_marker(pytest.mark.deep)
+
+
 def _required_env(name: str) -> str:
     """An environment variable the suite cannot run without.
 

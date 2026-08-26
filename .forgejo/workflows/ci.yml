@@ -244,10 +244,52 @@ jobs:
         # marking it `@pytest.mark.xdist_group(...)`. Nothing carries that
         # marker today; the flag is what makes adding one sufficient.
         #
+        # `auto` and not a literal, because nothing in this repository records
+        # how many cores the runner has. If it turns out to be a large one,
+        # note that every worker holds its own pool against the single
+        # PostgreSQL container started above, and that server's default
+        # max_connections is 100 -- so the cap to reach for is a literal `-n 8`
+        # or `-n 4` here, not a change to conftest.py. It would announce itself
+        # as connection errors from every worker at once, which is loud.
+        #
         # The ImageMagick step below stays serial. It is eleven tests against
         # one private database, so there is nothing to gain and a second
         # per-worker database scheme to get wrong.
-        run: pytest tests/ -q -m "not imagemagick" -n auto --dist loadgroup
+        #
+        # --- the two lanes ---------------------------------------------------
+        #
+        # A pull request additionally deselects `deep`: the 23 ASGI-plus-
+        # database suites listed in tests/conftest.py's DEEP_SUITES, which are
+        # 516 of the 3,259 tests and about 70% of the serial time. Everything
+        # else -- and that is 2,732 tests, ruff, and the whole frontend suite --
+        # still runs on every push to the branch.
+        #
+        # The contract that makes deferring them safe is that main runs them
+        # before anything is published. This job's full selection runs on
+        # `push` and on `workflow_dispatch`, and the image job cannot publish
+        # except behind a green run of it (see `gate_verified` below). So the
+        # deep lane is deferred to the merge commit, never to the image: a
+        # regression only these suites can see is found on main, in the run
+        # that would have pushed, and it blocks that push.
+        #
+        # To run the deep lane against a branch before merging it, dispatch
+        # this workflow on that branch: `workflow_dispatch` takes the full
+        # selection. That runs the branch tip rather than a merge preview,
+        # which is the same thing this forge gives CI anyway -- it publishes
+        # `refs/pull/N/head`, not `refs/pull/N/merge`. There is deliberately no
+        # `deep:` input to get wrong; the event is the switch.
+        #
+        # Both selections are written out as literals rather than assembled
+        # from a matrix or an expression, so that tests/test_ci_path_filters.py
+        # can read this script and assert on what each lane actually asks for.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            markers="not imagemagick and not deep"
+          else
+            markers="not imagemagick"
+          fi
+          echo "lane: -m '${markers}'"
+          pytest tests/ -q -m "$markers" -n auto --dist loadgroup
 
       # The tests that prove poster output is byte-identical to the tool this
       # service replaces had, until this step, never run in CI at all: they
@@ -332,10 +374,55 @@ jobs:
           # dev build fast, and it survives the tag's removal.
           docker rmi "$DEV_IMAGE" >/dev/null 2>&1 || true
 
+  # --- the image job's two entry conditions ---------------------------------
+  #
+  # `needs:` cannot be made conditional, and the two events want opposite
+  # answers. On a pull request the image job publishes nothing, so making it
+  # wait for the suite only adds the suite's whole duration to the wall clock of
+  # every pull request. On main it must wait, because the step at the end of it
+  # pushes to Harbor and a green tick over a failing suite is the one thing this
+  # workflow may never produce.
+  #
+  # So the condition is expressed as two gate jobs and the image job needs both.
+  # Exactly one of them can succeed on any given run:
+  #
+  #   pull_request      gate_pr succeeds at once, gate_verified is skipped by
+  #                     its `if`, and the image job starts immediately -- in
+  #                     parallel with `test` on the second runner.
+  #   push / dispatch   gate_pr is skipped by its `if`, gate_verified waits for
+  #                     `test` and succeeds only if it passed.
+  #   suite failed      gate_verified is *skipped* rather than failed (a job
+  #                     whose `needs` failed does not run at all), which is why
+  #                     the image job asks for `== 'success'` on one of the two
+  #                     rather than asking for "not failure" on either. Neither
+  #                     gate succeeds, so the image job does not run and nothing
+  #                     is built, let alone pushed.
+  #
+  # Two five-line jobs rather than two copies of the image job: everything
+  # below this point is one 200-line definition with a push step in it, and a
+  # second copy of it is a second thing to keep in step. Underscores and not
+  # hyphens in the job ids on purpose -- `needs.gate-pr.result` parses as a
+  # subtraction in a workflow expression and silently evaluates to nothing.
+  gate_pr:
+    name: Nothing is published from a pull request
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - run: 'echo "pull request -- the image is built and verified, never pushed"'
+
+  gate_verified:
+    name: The suite passed
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    needs: test
+    steps:
+      - run: 'echo "the suite passed -- the image job may build and publish"'
+
   image:
     name: Build, verify and push the image
     runs-on: ubuntu-latest
-    needs: test
+    needs: [gate_pr, gate_verified]
+    if: ${{ !cancelled() && (needs.gate_pr.result == 'success' || needs.gate_verified.result == 'success') }}
 
     steps:
       - name: Checkout repository
