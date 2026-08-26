@@ -376,11 +376,13 @@ class LibraryTagResolver:
     """The library's tag vocabulary, cached per pass.
 
     Public (and exported) since 9c, because ``smart_filter`` needs the same
-    vocabulary and the same per-pass cache. Two copies of this would drift, and
-    a drift here is the same written word resolving to two different Plex keys
-    in two builders -- a difference in MEMBERSHIP that nothing downstream could
-    report. It takes any context object carrying ``library`` and ``run_cache``,
-    which is what ``SmartContext`` grew in 9c.
+    vocabulary and the same per-pass cache -- and since 10a it also exposes the
+    raw vocabulary through ``choices``, which is what the dynamic engine
+    enumerates. Two copies of this would drift, and a drift here is the same
+    written word resolving to two different Plex keys in two builders -- a
+    difference in MEMBERSHIP that nothing downstream could report. It takes any
+    context object carrying ``library`` and ``run_cache``, which is what
+    ``SmartContext`` grew in 9c.
 
     One ``listFilterChoices`` per (library, libtype-scope, field) per pass, and
     the FAILURE is memoised too -- ``BuilderContext.run_cache``'s own docstring
@@ -411,6 +413,38 @@ class LibraryTagResolver:
             if spelling in choices:
                 return (choices[spelling],)
         return ()
+
+    def choices(self, attribute: str, /) -> tuple[tuple[str, str], ...]:
+        """Every ``(key, title)`` this library reports for ``attribute``.
+
+        The enumeration primitive, public since 10a. ``__call__`` above answers
+        "which key does Plex know this written word by"; this answers "what does
+        this library HAVE", which is the question one-collection-per-value asks
+        and the only question ``_raw_choices`` was already able to answer
+        without a second round trip.
+
+        It is a method here rather than a function elsewhere because
+        ``_raw_choices`` owns three things a second implementation would have to
+        duplicate and could get wrong: the one-call-per
+        ``(library, libtype-scope, field)`` memo, the narrow
+        ``NotFound``/``BadRequest`` split against the blanket
+        ``PlexApiException``/``RequestException`` one, and the class-name-only
+        wrap that keeps a tokenised URL out of the message. Kometa's own
+        enumeration is the same call through the same table
+        (``get_tags``, modules/plex.py:1346-1364).
+
+        Both members are ``str``: a caller comparing an operator's written
+        ``include:`` entry against these must compare like with like, and Plex
+        answers some keys as integers.
+        """
+        row = BY_NAME[attribute]
+        field = row.field_for(self._libtype)
+        scope, _, name = field.rpartition(".")
+        scope = scope or self._libtype
+        return tuple(
+            (str(choice.key), str(choice.title))
+            for choice in self._raw_choices(attribute, scope, name)
+        )
 
     def _cache_key(self, scope: str, name: str) -> str:
         return f"plex_search:choices:{self._ctx.library}:{scope}:{name}"

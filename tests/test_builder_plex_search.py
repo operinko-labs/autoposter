@@ -12,8 +12,10 @@ from pydantic import ValidationError
 
 from autoposter.collections.builders.base import BuilderContext, SourceClients
 from autoposter.collections.builders.plex_search import (
+    LibraryTagResolver,
     PlexSearchParams,
     PlexSearchBuilder,
+    PlexSearchUnavailable,
 )
 from autoposter.collections.builders.sources_bundle import PlexSectionAccess
 
@@ -522,3 +524,80 @@ def test_the_roadmap_row_this_phase_closes_says_so_and_files_its_tail():
     for number, count in counts.items():
         assert count in by_number[number], number
     assert sum(int(c.strip("*")) for c in counts.values()) == 36
+
+
+# --- the public enumeration seam (phase 10a) ---------------------------------
+#
+# These go through the file's own ``FakeSection``/``context`` helpers rather
+# than the second fake the plan's block sketched: the existing fake already
+# carries both hooks the plan wanted added (``raise_on`` maps a field to the
+# exception INSTANCE ``listFilterChoices`` raises, ``filter_calls`` is the
+# call log), and a parallel fake would be exactly the drift the seam itself
+# exists to avoid.
+
+
+def test_choices_hands_back_every_key_and_title_the_library_reports():
+    """The seam phase 10a's dynamic engine enumerates through. ``__call__``
+    answers "which key is this written word"; this answers "what does this
+    library HAVE", which is the question one-collection-per-value asks."""
+    section = FakeSection(choices={("genre", "movie"): GENRES})
+    resolver = LibraryTagResolver(context(section), section, "movie")
+
+    assert resolver.choices("genre") == (("1138", "Horror"), ("9", "Drama"))
+
+
+def test_choices_and_call_share_one_round_trip_per_pass():
+    """The whole reason the seam lives on this class: a pass that enumerates a
+    family AND resolves a written value for some other definition pays for one
+    ``listFilterChoices`` between them, because both go through the same
+    memoised ``_raw_choices``."""
+    section = FakeSection(choices={("genre", "movie"): GENRES})
+    resolver = LibraryTagResolver(context(section), section, "movie")
+
+    resolver.choices("genre")
+    resolver.choices("genre")
+    assert resolver("genre", "Horror") == ("1138",)
+    assert section.filter_calls == [("genre", "movie")]
+
+
+def test_choices_asks_a_show_library_at_the_scope_the_row_names():
+    """``field_for`` is what decides the libtype scope, so the three media
+    attributes are enumerated at the EPISODE libtype on a show library --
+    which is Kometa's own ``get_tags(f"episode.{field}")`` (plex.py:920-921)
+    and is not a special case here, just the dotted field being split."""
+    section = FakeSection()
+    resolver = LibraryTagResolver(context(section, library_type="Show"), section, "show")
+
+    resolver.choices("audio_language")
+    resolver.choices("genre")
+    assert section.filter_calls == [
+        ("audioLanguage", "episode"), ("genre", "show"),
+    ]
+
+
+def test_choices_memoises_the_failure_like_every_other_lookup():
+    """A dead filter is memoised as a failure, so a family of forty keys does
+    not re-ask forty times -- ``BuilderContext.run_cache``'s own docstring
+    requires it, and the seam gets it for free by going through
+    ``_raw_choices``."""
+    section = FakeSection(raise_on={"genre": NotFound("no such filter")})
+    resolver = LibraryTagResolver(context(section), section, "movie")
+
+    with pytest.raises(PlexSearchUnavailable) as first:
+        resolver.choices("genre")
+    with pytest.raises(PlexSearchUnavailable):
+        resolver.choices("genre")
+    assert section.filter_calls == [("genre", "movie")]
+    assert "NotFound" in str(first.value)
+    assert "no such filter" not in str(first.value)
+
+
+def test_choices_answers_both_members_as_str():
+    """Plex answers some keys as integers (``decade`` is the shipped example:
+    ``choice.key`` is 1980 and ``choice.title`` is "1980s"). A caller matching
+    an operator's written ``include:`` entry against these compares like with
+    like only if both members arrive as ``str``."""
+    section = FakeSection(choices={("decade", "movie"): [FakeChoice("1980s", 1980)]})
+    resolver = LibraryTagResolver(context(section), section, "movie")
+
+    assert resolver.choices("decade") == (("1980", "1980s"),)
