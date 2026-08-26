@@ -60,15 +60,19 @@ first. Nothing else about either scope moves.
 ## Branch and cut point
 
 - Branch name: **`feat/smart-collections`**.
-- **Cut from `main`.** The 9b merge is in `main` (`b994e1f feat(builders):
-  plex_search` and its two fix commits are ancestors of `main`); verify with
-  `git log --oneline -1 main` and record the actual cut commit in the Task 1
-  report. If `git merge-base --is-ancestor b994e1f main` is false, STOP and
-  report — this plan's every seam assumes 9b shipped.
+- **Cut from `origin/main` after a fetch.** The 9b merge landed on the remote
+  via a rebase-merge, so its commits carry NEW shas there (`b994e1f` names the
+  branch-side commit and is an ancestor of nothing on the remote) and a stale
+  local `main` is the trap this line originally fell into. Verify by CONTENT,
+  not by sha: `git fetch origin` then confirm
+  `git cat-file -e origin/main:src/autoposter/collections/search_url.py` —
+  that file exists only if 9b shipped. Record the actual cut commit in the
+  Task 1 report. If the probe fails, STOP and report — this plan's every seam
+  assumes 9b shipped.
 - No stacking. If a PR touching `src/autoposter/config/schema.py` or
   `src/autoposter/collections/engine.py` is open when this starts, say so in
   the Task 1 report and note the retarget instruction in the PR description
-  (the 9a/9b precedent), but still cut from `main`.
+  (the 9a/9b precedent), but still cut from `origin/main`.
 
 ## Execution
 
@@ -308,14 +312,16 @@ silent-wrongness class this phase's risk section names.
 - [ ] **Step 1: Confirm the cut point**
 
 ```bash
-git log --oneline -1 main
-git merge-base --is-ancestor b994e1f main && echo "9b IS in main"
-git switch -c feat/smart-collections main
+git fetch origin
+git cat-file -e origin/main:src/autoposter/collections/search_url.py && echo "9b IS in origin/main"
+git switch -c feat/smart-collections origin/main
 git log --oneline -1
 ```
 
-Expected: the second command prints `9b IS in main`. Record the actual cut
-commit sha in the Task 1 report. If it does not print, STOP and report.
+Expected: the second command prints `9b IS in origin/main`. (The probe is by
+content, not sha — the rebase-merge gave 9b's commits new shas on the remote,
+and a stale local `main` must not be consulted.) Record the actual cut commit
+sha in the Task 1 report. If it does not print, STOP and report.
 
 - [ ] **Step 2: Give the 9b driver upstream's `default_sort` parameter**
 
