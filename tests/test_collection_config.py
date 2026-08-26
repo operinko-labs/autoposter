@@ -570,3 +570,52 @@ def test_the_filter_is_part_of_the_definitions_hash():
     )
 
     assert definition_config_hash(base) != definition_config_hash(filtered)
+
+
+def test_a_plex_search_definition_validates_its_params_at_load():
+    definition = CollectionDefinition(
+        title="Recent Horror",
+        builder="plex_search",
+        params={"all": {"genre": "Horror", "added": 90}, "sort_by": "added.desc"},
+    )
+    assert definition.builder == "plex_search"
+
+
+def test_a_plex_search_definition_with_a_bad_key_names_the_title_and_the_key():
+    with pytest.raises(ValueError) as error:
+        CollectionDefinition(
+            title="Recent Horror",
+            builder="plex_search",
+            params={"all": {"genre": "Horror"}, "sort": "added.desc"},
+        )
+    message = str(error.value)
+    assert "Recent Horror" in message
+    assert "sort_by" in message
+
+
+def test_a_plex_search_definition_may_also_carry_a_client_side_filters_block():
+    """D2(b): the server narrows and the client refines. Both are honoured and
+    neither is folded into the other."""
+    definition = CollectionDefinition(
+        title="Recent Horror, well rated",
+        builder="plex_search",
+        params={"all": {"genre": "Horror"}},
+        filters={"audience_rating.gte": 7},
+    )
+    assert definition.filters == {"audience_rating.gte": 7}
+
+
+def test_plex_search_is_not_a_smart_builder_so_the_membership_knobs_apply():
+    """A smart definition refuses limit/sync_mode/item_label/filters
+    (schema.py:416-459) because Plex owns its membership. plex_search resolves
+    real members through the engine, so all four mean what they always did."""
+    definition = CollectionDefinition(
+        title="Top 25 Horror",
+        builder="plex_search",
+        params={"all": {"genre": "Horror"}, "sort_by": "critic_rating.desc", "limit": 50},
+        limit=25,
+        sync_mode="append",
+        item_label=["Horror night"],
+    )
+    assert definition.limit == 25
+    assert definition.params["limit"] == 50

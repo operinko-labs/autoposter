@@ -1,0 +1,401 @@
+"""``plex_search``: a query language against the library, answered by Plex.
+
+The one builder whose membership the SERVER decides. Every other builder in
+this package fetches a list from somewhere and hands the engine ids to resolve;
+this one asks the library a question and hands back the rating keys of whatever
+answered -- ``("plex", ratingKey)`` ids, which the engine resolves through its
+own owned index exactly like any other builder's, so the engine keeps one shape
+and this builder gets the ownership, dry-run and reconcile behaviour for free.
+
+**The server narrows, the client refines.** A ``filters:`` block on a
+``plex_search`` definition stays CLIENT-side and runs after resolution, exactly
+as it does on any other definition (``engine.py:457-474``). The two are not
+folded into one query, deliberately: query-folding is an optimisation with a
+very large correctness surface -- the two vocabularies are not the same set,
+the two evaluate their dates in different clocks, and a fold that got either
+wrong would produce a full, plausible, wrong collection. So a definition may
+carry both, and each does its own job.
+
+**The two vocabularies share one table and are not the same set.** Which
+attributes a search may name is ``FILTER_ATTRIBUTES``'s ``searchable`` column
+and which a ``filters:`` block may name is its ``filterable`` column
+(``collections/filters.py``). Kometa's own two vocabularies are not nested
+either -- 44 of its filter names have no Plex search field and 29 of its search
+names have no filter -- so every refusal on either side cross-references the
+other rather than reading as a gap. Both refusals live in the PARSER
+(``filters._split_key``), reached from here by passing ``searching=True``;
+nothing in this module restates them, because two copies of a vocabulary rule
+are two things to keep in step.
+
+**Dates are answered in the PLEX SERVER's clock, not the runner's** (roadmap
+row 154, and D6: document the divergence, do not reconcile it). ``added.after:
+2026-06-01`` in a ``plex_search`` is decided by the server; the same line in a
+``filters:`` block is decided by the process running this service, and 9a
+established that the value it compares is already in the runner's local clock
+because plexapi converts Plex's epoch with a bare ``datetime.fromtimestamp``.
+The two can disagree about an item near a boundary. The relative-window forms
+(``added: 30``, ``last_played.not: 6o``) are day-granular or coarser and are
+therefore insensitive to the offset, which is why the params docstring
+recommends them.
+
+**Tag values are validated against the library's own vocabulary at BUILD time**
+(roadmap row 158). A search sends Plex a KEY, never a written word, so the
+lookup is not an extra check bolted on -- it is how the query gets built at all.
+One ``listFilterChoices`` per (library, field, libtype) per pass, memoised in
+``ctx.run_cache``, failures included. Load time cannot do it: the library is
+not known until the pass, which is the same reason ``require_library_type``
+is a build-time check (``builders/base.py:246-269``).
+"""
+import logging
+from typing import Any
+
+import langcodes
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from autoposter.collections.builders.base import BuilderContext, BuilderResult
+from autoposter.collections.filters import BY_NAME, parse_filters
+from autoposter.collections.search_sorts import KNOWN_SORT_NAMES, require_sort_for_libtype
+from autoposter.collections.search_url import build_search_url
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "PlexSearchBuilder",
+    "PlexSearchParams",
+    "PlexSearchRefused",
+    "PlexSearchUnavailable",
+]
+
+# The keys Kometa accepts and this builder refuses, each with the reason. Held
+# as data so the refusals cannot drift apart in wording, and so adding one is
+# a row rather than a branch.
+_REFUSED_KEYS: dict[str, str] = {
+    "validate": (
+        "`validate: false` tells Kometa to log a per-attribute error and carry on "
+        "(modules/builder.py:4160-4167), which builds the query WITHOUT the clause "
+        "it could not resolve -- a narrower collection than the config asks for, "
+        "with nothing failing anywhere. This service refuses silently-wrong "
+        "membership: fix the value, or remove the clause"
+    ),
+    "type": (
+        "`type:` selects the season, episode, album or track libtype "
+        "(modules/builder.py:4109-4121). This builder searches movie and show "
+        "libraries; accepting the key and ignoring it would be a setting that "
+        "reads as applied and is not"
+    ),
+}
+
+
+class PlexSearchUnavailable(Exception):
+    """The context carries no library accessor, or Plex would not answer.
+
+    Its own class so the engine's log line -- which carries the exception class
+    name and nothing else -- says which client was missing. Never carries a
+    Plex exception's message: those can contain a tokenised URL.
+    """
+
+
+class PlexSearchRefused(Exception):
+    """The query cannot be built for the library this pass is running on."""
+
+
+class PlexSearchParams(BaseModel):
+    """``plex_search``'s params: the base, the query, the order and the cap.
+
+    ``all:`` or ``any:`` -- exactly one, written out. Kometa also accepts the
+    base being OMITTED and then chooses one per key (a bare ``genre:`` becomes
+    an OR block, ``genre.and:`` an AND one, modules/builder.py:4261-4276);
+    refused here, because the same key would mean two different memberships
+    depending on a three-character suffix.
+
+    ``sort_by`` -- **not** ``sort``. Kometa's key is ``sort_by``
+    (modules/builder.py:4130) and this definition already has a ``sort``, which
+    is the *collection's* Plex display order and a completely different
+    setting. All four narrowing knobs may coexist, and they compose in this
+    order:
+
+    1. ``params.sort_by`` decides the order Plex returns the search in;
+    2. ``params.limit`` caps what Plex returns, so with a ``sort_by`` it
+       decides WHICH items come back -- "the 50 highest-rated" is these two
+       together and nothing else can express it;
+    3. the definition's ``filters:`` block refines what came back, client-side;
+    4. the definition's ``limit`` caps the members that survived, and the
+       definition's ``sort`` sets how Plex displays them.
+
+    So ``params.limit: 50`` with ``limit: 25`` means "ask Plex for its top 50,
+    keep the first 25 of those this library still owns and the filter kept".
+
+    Written here rather than only in ``search_sorts``' module docstring on
+    purpose: the collision is between two keys an OPERATOR writes, one inside
+    ``params`` and one beside it, so the place it has to be readable is the
+    model that accepts them.
+
+    **Dates:** prefer the relative windows (``added: 30``,
+    ``last_played.not: 6o``) over the absolute ``.before``/``.after`` forms.
+    A server-side date predicate is evaluated in the PLEX SERVER's clock and a
+    ``filters:`` one in the runner's (roadmap row 154); a window measured in
+    days or longer is insensitive to that offset and a same-day boundary is
+    not. ``o`` is months and ``m`` is minutes -- the units are Kometa's
+    (modules/plex.py:307).
+
+    ``extra="forbid"`` so ``sort:`` for ``sort_by:`` is an error rather than a
+    silently-ignored key -- the same failure ``PlexIdParams`` exists to catch
+    (builders/base.py:299-312), one level down.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    all: dict | None = None
+    any: dict | None = None
+    sort_by: list[str] | None = None
+    limit: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _the_base_and_the_refused_keys(cls, data: Any) -> Any:
+        """Everything that has to beat ``extra="forbid"``.
+
+        A ``mode="before"`` validator, and that placement is the whole point:
+        with no base written, EVERY key in the mapping is an extra field, so
+        pydantic's own answer would be "Extra inputs are not permitted:
+        genre, studio" -- which is true and tells an operator nothing about
+        what a plex_search actually wants. The three keys Kometa does have get
+        a reason here for the same reason.
+        """
+        if not isinstance(data, dict):
+            return data
+        lowered = {str(key).lower(): key for key in data}
+        for refused, why in _REFUSED_KEYS.items():
+            if refused in lowered:
+                raise ValueError(f"{lowered[refused]!r} is not accepted here. {why}")
+        if "sort" in lowered and "sort_by" not in lowered:
+            raise ValueError(
+                "the search's order is `sort_by`, not `sort` -- `sort` on the "
+                "definition itself is the collection's display order in Plex, "
+                "which is a different setting and is still available"
+            )
+        bases = [name for name in ("all", "any") if name in lowered]
+        if len(bases) == 2:
+            raise ValueError(
+                "a plex_search has one base: write `all:` (every clause must "
+                "match) or `any:` (one must), not both. Kometa refuses this too "
+                "(modules/builder.py:4106-4107)"
+            )
+        if not bases:
+            raise ValueError(
+                "a plex_search needs a base. Write the clauses under `all:` if "
+                "every one must match, or under `any:` if one is enough. Kometa "
+                "lets you omit it and then picks per key -- a bare `genre:` "
+                "becomes an OR and `genre.and:` an AND "
+                "(modules/builder.py:4261-4276) -- which makes one spelling mean "
+                "two memberships, so it is not accepted here"
+            )
+        if isinstance(data.get("sort_by"), str):
+            data = {**data, "sort_by": [data["sort_by"]]}
+        return data
+
+    @model_validator(mode="after")
+    def _the_block_must_parse_as_a_search(self) -> "PlexSearchParams":
+        """The whole vocabulary check, at LOAD.
+
+        Unknown attribute, a modifier the type does not take in a search, an
+        unparseable value, a `.regex`, a `.and`, a bare `duration:` -- every one
+        of them refuses here, naming the key, hours before the pass. What
+        CANNOT be checked here is anything that needs the library: which
+        libtype, and whether a tag value exists. Those are build-time, and the
+        module docstring says why.
+
+        ``field`` is ``params.<base>`` and not the parser's ``filters``
+        default, so a refusal names the block an operator would go and edit.
+        The rest of the sentence -- "the plex_search vocabulary is ...", "write
+        it as a `filters:` block instead" -- is the parser's own, selected by
+        ``searching=True``.
+        """
+        base = "all" if self.all is not None else "any"
+        block = self.all if self.all is not None else self.any
+        parse_filters(block, field=f"params.{base}", searching=True, base=base)
+        return self
+
+    @model_validator(mode="after")
+    def _sort_names_must_exist_somewhere(self) -> "PlexSearchParams":
+        for name in self.sort_by or []:
+            if name not in KNOWN_SORT_NAMES:
+                raise ValueError(
+                    f"sort_by {name!r} is not a Plex sort. Options: "
+                    + ", ".join(sorted(KNOWN_SORT_NAMES))
+                )
+        return self
+
+    @property
+    def base(self) -> str:
+        return "all" if self.all is not None else "any"
+
+    @property
+    def block(self) -> dict:
+        return self.all if self.all is not None else self.any
+
+
+def _base_language_code(value: str) -> str:
+    """A language value in any common form, reduced to its base ISO 639-1 code.
+
+    Transcribed from Kometa's ``base_language_code`` (modules/plex.py:141-151),
+    including its fallback: a value that cannot be parsed comes back unchanged,
+    so an unrecognised code targets itself rather than nothing. ``langcodes`` is
+    the same library Kometa uses -- see the Task 4 Step 0 decision record for
+    why it was added rather than transcribed. Its ``LanguageTagError`` is a
+    ``ValueError`` subclass, which is what makes the fallback below catch it.
+    """
+    if not value:
+        return value
+    try:
+        return langcodes.Language.get(str(value)).language or value
+    except ValueError:
+        return value
+
+
+class PlexSearchBuilder:
+    """The library, asked a question."""
+
+    type_name = "plex_search"
+    params_model = PlexSearchParams
+
+    async def build(self, ctx: BuilderContext) -> BuilderResult:
+        params = PlexSearchParams.model_validate(ctx.config)
+        libtype = ctx.library_type.lower()
+        if libtype not in ("movie", "show"):
+            raise PlexSearchRefused(
+                f"the 'plex_search' builder searches movie and show libraries, "
+                f"but this pass is running against a {ctx.library_type} library. "
+                "Narrow the definition with `libraries:`"
+            )
+        access = ctx.sources.plex
+        if access is None:
+            raise PlexSearchUnavailable(
+                "the 'plex_search' builder reads the library it is running "
+                "against, and this context carries no library accessor"
+            )
+        section = access.section()
+
+        # Ahead of everything that talks to Plex, and deliberately duplicated:
+        # ``build_search_url`` runs this same gate immediately before
+        # ``sort_argument``, which is what makes it impossible to reach the
+        # bare ``KeyError`` from ANY caller. Here it is about cost -- a
+        # wrong-libtype sort would otherwise pay one ``listFilterChoices``
+        # round-trip per tag value before failing on a fact known before the
+        # first of them. The check is pure and idempotent, so running it twice
+        # is two comparisons.
+        require_sort_for_libtype(libtype, params.sort_by or [])
+        group = parse_filters(
+            params.block, field=f"params.{params.base}", searching=True, base=params.base
+        )
+        url = build_search_url(
+            group,
+            libtype=libtype,
+            sort_by=params.sort_by or (),
+            limit=params.limit,
+            resolve_tag=_Resolver(ctx, section, libtype),
+        )
+        logger.debug("plex_search: %s", url)
+        try:
+            items = section.fetchItems(
+                f"/library/sections/{section.key}/all{url}"
+            )
+        except Exception as error:  # noqa: BLE001 -- class name only, never the message
+            raise PlexSearchUnavailable(
+                "Plex would not answer this search: "
+                f"{type(error).__name__}"
+            ) from None
+        ids = [("plex", str(item.ratingKey)) for item in items]
+        logger.debug("plex_search: %d item(s)", len(ids))
+        return BuilderResult(ids=ids)
+
+
+class _Resolver:
+    """The library's tag vocabulary, cached per pass.
+
+    One ``listFilterChoices`` per (library, libtype-scope, field) per pass, and
+    the FAILURE is memoised too -- ``BuilderContext.run_cache``'s own docstring
+    requires that, because a dead source re-fetched once per collection is the
+    defect the cache exists to prevent.
+
+    The lookup is keyed on **four** spellings per choice -- ``title``, ``key``,
+    and both lowercased -- which is Kometa's (``get_search_choices``,
+    modules/plex.py:1308-1315), and is where the case-insensitivity an operator
+    sees actually lives. Later choices overwrite earlier ones on a collision,
+    also Kometa's (plain assignment, not ``setdefault``).
+    """
+
+    def __init__(self, ctx: BuilderContext, section, libtype: str) -> None:
+        self._ctx = ctx
+        self._section = section
+        self._libtype = libtype
+
+    def __call__(self, attribute: str, value: str, /) -> tuple[str, ...]:
+        row = BY_NAME[attribute]
+        field = row.field_for(self._libtype)
+        scope, _, name = field.rpartition(".")
+        scope = scope or self._libtype
+        if attribute in ("audio_language", "subtitle_language"):
+            return self._language_keys(attribute, scope, name, value)
+        choices = self._choices(attribute, scope, name)
+        for spelling in (str(value), str(value).lower()):
+            if spelling in choices:
+                return (choices[spelling],)
+        return ()
+
+    def _cache_key(self, scope: str, name: str) -> str:
+        return f"plex_search:choices:{self._ctx.library}:{scope}:{name}"
+
+    def _raw_choices(self, attribute: str, scope: str, name: str):
+        key = self._cache_key(scope, name)
+        cached = self._ctx.run_cache.get(key, _MISSING)
+        if cached is not _MISSING:
+            if isinstance(cached, Exception):
+                raise cached
+            return cached
+        try:
+            found = list(self._section.listFilterChoices(field=name, libtype=scope))
+        except Exception as error:  # noqa: BLE001 -- class name only
+            failure = PlexSearchUnavailable(
+                f"Plex has no {attribute!r} filter for this library "
+                f"({type(error).__name__}), so its values cannot be resolved"
+            )
+            self._ctx.run_cache[key] = failure
+            raise failure from None
+        self._ctx.run_cache[key] = found
+        return found
+
+    def _choices(self, attribute: str, scope: str, name: str) -> dict[str, str]:
+        table: dict[str, str] = {}
+        for choice in self._raw_choices(attribute, scope, name):
+            for spelling in (
+                str(choice.title), str(choice.key),
+                str(choice.title).lower(), str(choice.key).lower(),
+            ):
+                table[spelling] = str(choice.key)
+        return table
+
+    def _language_keys(
+        self, attribute: str, scope: str, name: str, value: str
+    ) -> tuple[str, ...]:
+        """Kometa's ``get_language_search_values`` (modules/plex.py:1321-1344).
+
+        An EXACT value Plex reports (``es-419``, ``spa``) targets only itself;
+        anything else expands to every library value that reduces to the same
+        base code. Each becomes its own URL term -- and under an ``all:`` block
+        those terms are ANDed, which is Kometa's behaviour and is Task 5's
+        probe #2: an item is unlikely to carry three Spanish variants at once.
+        """
+        exact: dict[str, str] = {}
+        by_base: dict[str, list[str]] = {}
+        for choice in self._raw_choices(attribute, scope, name):
+            key = str(choice.key)
+            exact[key.lower()] = key
+            by_base.setdefault(_base_language_code(key.lower()), []).append(key)
+        code = str(value).lower()
+        if code != _base_language_code(code) and code in exact:
+            return (exact[code],)
+        return tuple(by_base.get(code, ()))
+
+
+_MISSING = object()

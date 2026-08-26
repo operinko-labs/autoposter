@@ -1,0 +1,369 @@
+"""``plex_search`` -- the builder, its params, and its refusals.
+
+The URL itself is proven elsewhere (``tests/test_collection_search_oracle.py``,
+byte-identical against Kometa). What is proven here is the surface an operator
+touches: which spellings load, which refuse and what they say, what the builder
+asks Plex, and how many times it asks.
+"""
+import pytest
+from pydantic import ValidationError
+
+from autoposter.collections.builders.base import BuilderContext, SourceClients
+from autoposter.collections.builders.plex_search import (
+    PlexSearchParams,
+    PlexSearchBuilder,
+)
+from autoposter.collections.builders.sources_bundle import PlexSectionAccess
+
+
+def test_a_base_is_required_and_named():
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"genre": "Horror"})
+    message = str(error.value)
+    assert "any:" in message and "all:" in message
+
+
+def test_two_bases_are_refused():
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate(
+            {"all": {"genre": "Horror"}, "any": {"studio": "A24"}}
+        )
+    assert "one base" in str(error.value)
+
+
+def test_the_implicit_base_is_refused_with_kometas_rule_spelled_out():
+    """D1. Kometa lets you omit the base and then splits the keys itself: a
+    bare ``genre:`` becomes an OR block and ``genre.and:`` an AND one
+    (builder.py:4261-4276), so the same key means two memberships depending on
+    a three-character suffix. Refused, and the message says what to write."""
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"genre": "Horror", "studio": "A24"})
+    message = str(error.value)
+    assert "Kometa" in message
+    assert "all:" in message
+
+
+def test_validate_false_is_refused_by_name():
+    """D1. Kometa's ``validate: false`` (builder.py:4160-4167) downgrades every
+    per-attribute error to a log line and builds the query WITHOUT the clause
+    it could not resolve -- a narrower collection than the config asks for,
+    with no failure anywhere."""
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"all": {"genre": "Horror"}, "validate": False})
+    message = str(error.value)
+    assert "validate" in message
+    assert "silently" in message
+
+
+def test_the_type_key_is_refused_by_name():
+    """Kometa's ``type:`` (builder.py:4109-4121) selects the season/episode/
+    album/track libtype. v1 searches movies and shows, and accepting the key
+    while ignoring it would be a setting that reads as applied and is not."""
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"all": {"genre": "Horror"}, "type": "episode"})
+    assert "type" in str(error.value)
+
+
+def test_an_unknown_params_key_is_refused():
+    with pytest.raises(ValidationError):
+        PlexSearchParams.model_validate({"all": {"genre": "Horror"}, "sort": "title.asc"})
+
+
+def test_the_key_is_sort_by_and_not_sort():
+    """The naming warning, held. ``sort`` on the DEFINITION is the collection's
+    Plex display order; ``sort_by`` in PARAMS is the query's order, which
+    decides membership when a limit is present. Writing ``sort`` here is a
+    typo with a plausible-looking effect, so it refuses."""
+    params = PlexSearchParams.model_validate(
+        {"all": {"genre": "Horror"}, "sort_by": "title.asc"}
+    )
+    assert params.sort_by == ["title.asc"]
+
+
+def test_a_scalar_sort_by_becomes_a_one_element_list():
+    params = PlexSearchParams.model_validate(
+        {"all": {"genre": "Horror"}, "sort_by": "added.desc"}
+    )
+    assert params.sort_by == ["added.desc"]
+
+
+def test_an_unknown_sort_name_refuses_at_load():
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate(
+            {"all": {"genre": "Horror"}, "sort_by": "titel.asc"}
+        )
+    assert "titel.asc" in str(error.value)
+
+
+def test_a_sort_only_one_libtype_has_still_loads():
+    """It cannot refuse here: a definition with no ``libraries:`` key runs
+    against every library in the pass, so which table applies is only known at
+    build time. The build-time refusal is tested below."""
+    PlexSearchParams.model_validate(
+        {"all": {"genre": "Horror"}, "sort_by": "episode_added.desc"}
+    )
+
+
+def test_a_limit_of_zero_refuses():
+    with pytest.raises(ValidationError):
+        PlexSearchParams.model_validate({"all": {"genre": "Horror"}, "limit": 0})
+
+
+def test_a_bad_attribute_inside_the_block_refuses_at_load_naming_the_key():
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"all": {"aspect": "1.78"}})
+    message = str(error.value)
+    assert "aspect" in message
+    assert "params.all" in message
+    assert "plex_search" in message
+
+
+def test_a_bad_modifier_inside_the_block_refuses_at_load():
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"all": {"genre.begins": "Hor"}})
+    assert "genre" in str(error.value)
+
+
+def test_a_search_regex_refuses_at_load_pointing_at_filters():
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"all": {"studio.regex": "pictures$"}})
+    assert "filters:" in str(error.value)
+
+
+# --- the BUILD-time half ------------------------------------------------------
+#
+# ``BuilderContext``/``SourceClients``/``PlexSectionAccess`` are imported at the
+# top of the file with everything else rather than here, where the plan's block
+# put them: ruff's E4 set is selected repo-wide (pyproject.toml:73) and a
+# mid-file import is E402.
+#
+# No ``@pytest.mark.asyncio`` anywhere below: this suite runs pytest-asyncio in
+# ``asyncio_mode = "auto"`` (pyproject.toml:51), so an ``async def test_`` is
+# collected as one already and the marker would be noise.
+
+
+class FakeChoice:
+    def __init__(self, title, key):
+        self.title = title
+        self.key = key
+
+
+class FakeItem:
+    def __init__(self, rating_key):
+        self.ratingKey = rating_key
+
+
+class FakeSection:
+    """Counts what it was asked, so 'one lookup per pass' is a measurement."""
+
+    key = 1
+
+    def __init__(self, choices=None, items=None, raise_on=()):
+        self._choices = choices or {}
+        self._items = items or [FakeItem(11), FakeItem(12)]
+        self._raise_on = set(raise_on)
+        self.filter_calls = []
+        self.fetch_calls = []
+
+    def listFilterChoices(self, field, libtype=None):
+        self.filter_calls.append((field, libtype))
+        if field in self._raise_on:
+            raise LookupError("no such filter field")
+        return self._choices.get((field, libtype), [])
+
+    def fetchItems(self, key):
+        self.fetch_calls.append(key)
+        return self._items
+
+
+def context(section, *, library_type="Movie", config=None, run_cache=None):
+    return BuilderContext(
+        library="Movies",
+        library_type=library_type,
+        config=config or {},
+        run_cache=run_cache if run_cache is not None else {},
+        sources=SourceClients(plex=PlexSectionAccess(section, lambda: {})),
+    )
+
+
+GENRES = [FakeChoice("Horror", "1138"), FakeChoice("Drama", "9")]
+
+
+async def test_the_builder_sends_the_query_to_the_sections_all_endpoint():
+    section = FakeSection(choices={("genre", "movie"): GENRES})
+    ctx = context(section, config={"all": {"genre": "Horror"}})
+    result = await PlexSearchBuilder().build(ctx)
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=1&sort=titleSort&genre=1138"
+    ]
+    assert result.ids == [("plex", "11"), ("plex", "12")]
+
+
+async def test_a_tag_value_is_looked_up_once_per_pass_and_cached():
+    section = FakeSection(choices={("genre", "movie"): GENRES})
+    run_cache = {}
+    for _ in range(3):
+        ctx = context(
+            section,
+            config={"all": {"genre": ["Horror", "Drama"]}},
+            run_cache=run_cache,
+        )
+        await PlexSearchBuilder().build(ctx)
+    assert section.filter_calls == [("genre", "movie")]
+
+
+async def test_a_failed_lookup_is_cached_too_so_a_dead_field_is_asked_once():
+    """``BuilderContext.run_cache``'s own docstring requires this: a builder
+    that memoises must memoise the failure, or a dead source is re-fetched once
+    per collection."""
+    section = FakeSection(raise_on={"genre"})
+    run_cache = {}
+    for _ in range(3):
+        ctx = context(section, config={"all": {"genre": "Horror"}}, run_cache=run_cache)
+        with pytest.raises(Exception):
+            await PlexSearchBuilder().build(ctx)
+    assert section.filter_calls == [("genre", "movie")]
+
+
+async def test_a_misspelled_tag_value_refuses_at_build_naming_value_and_attribute():
+    """Roadmap row 158, answered on this path. Kometa raises
+    ``Plex Error: genre: Horrror not found`` (builder.py:4433); before 9b this
+    service compared case-insensitively at evaluation time instead, so a typo
+    built an empty collection rather than failing."""
+    section = FakeSection(choices={("genre", "movie"): GENRES})
+    ctx = context(section, config={"all": {"genre": "Horrror"}})
+    with pytest.raises(Exception) as error:
+        await PlexSearchBuilder().build(ctx)
+    message = str(error.value)
+    assert "Horrror" in message
+    assert "genre" in message
+
+
+async def test_the_lookup_matches_kometas_four_spellings():
+    section = FakeSection(choices={("genre", "movie"): GENRES})
+    for written in ("Horror", "horror", "1138"):
+        ctx = context(section, config={"all": {"genre": written}})
+        await PlexSearchBuilder().build(ctx)
+    assert all("genre=1138" in call for call in section.fetch_calls)
+
+
+async def test_a_show_library_asks_the_rescoped_field_at_the_rescoped_libtype():
+    section = FakeSection(choices={("resolution", "episode"): [FakeChoice("1080", "1080")]})
+    ctx = context(section, library_type="Show", config={"all": {"resolution": "1080"}})
+    await PlexSearchBuilder().build(ctx)
+    assert section.filter_calls == [("resolution", "episode")]
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=2&sort=titleSort&episode.resolution=1080"
+    ]
+
+
+async def test_a_show_only_attribute_refuses_at_build_on_a_movie_library():
+    section = FakeSection()
+    ctx = context(section, config={"all": {"network": "HBO"}})
+    with pytest.raises(Exception) as error:
+        await PlexSearchBuilder().build(ctx)
+    assert "libraries:" in str(error.value)
+
+
+async def test_a_show_only_sort_refuses_at_build_on_a_movie_library():
+    section = FakeSection(choices={("genre", "movie"): GENRES})
+    ctx = context(
+        section,
+        config={"all": {"genre": "Horror"}, "sort_by": "episode_added.desc"},
+    )
+    with pytest.raises(Exception) as error:
+        await PlexSearchBuilder().build(ctx)
+    assert "episode_added.desc" in str(error.value)
+
+
+async def test_a_show_only_sort_builds_on_a_show_library_and_asks_nothing_first():
+    """The other half of the gate. It refuses above and passes here, and the
+    refusal costs no ``listFilterChoices`` at all -- the sort is checked before
+    the first tag value is resolved, because a wrong-libtype sort is knowable
+    without asking Plex anything."""
+    section = FakeSection(choices={("genre", "show"): GENRES})
+    ctx = context(
+        section,
+        library_type="Show",
+        config={"all": {"genre": "Drama"}, "sort_by": "episode_added.desc"},
+    )
+    await PlexSearchBuilder().build(ctx)
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=2&sort=episode.addedAt%3Adesc&show.genre=9"
+    ]
+
+    refused = FakeSection(choices={("genre", "movie"): GENRES})
+    with pytest.raises(Exception):
+        await PlexSearchBuilder().build(
+            context(
+                refused,
+                config={"all": {"genre": "Drama"}, "sort_by": "episode_added.desc"},
+            )
+        )
+    assert refused.filter_calls == []
+
+
+async def test_a_music_library_refuses_by_name():
+    section = FakeSection()
+    ctx = context(section, library_type="Artist", config={"all": {"genre": "Horror"}})
+    with pytest.raises(Exception) as error:
+        await PlexSearchBuilder().build(ctx)
+    assert "movie and show" in str(error.value)
+
+
+async def test_a_context_with_no_library_accessor_says_so():
+    ctx = BuilderContext(
+        library="Movies", library_type="Movie", config={"all": {"genre": "Horror"}}
+    )
+    with pytest.raises(Exception) as error:
+        await PlexSearchBuilder().build(ctx)
+    assert "no library accessor" in str(error.value)
+
+
+async def test_a_plex_failure_is_reported_by_class_name_and_nothing_else():
+    """Secrets hygiene: a plexapi exception's message can carry a tokenised
+    URL, so the refusal carries the class name and no other part of it."""
+    class Boom(Exception):
+        def __str__(self):
+            return "http://plex.example:32400/library?X-Plex-Token=SECRET"
+
+    section = FakeSection(choices={("genre", "movie"): GENRES})
+
+    def explode(key):
+        raise Boom()
+
+    section.fetchItems = explode
+    ctx = context(section, config={"all": {"genre": "Horror"}})
+    with pytest.raises(Exception) as error:
+        await PlexSearchBuilder().build(ctx)
+    message = str(error.value)
+    assert "Boom" in message
+    assert "SECRET" not in message
+    assert "X-Plex-Token" not in message
+
+
+async def test_a_language_code_expands_to_every_variant_the_library_carries():
+    section = FakeSection(choices={("audioLanguage", "movie"): [
+        FakeChoice("Spanish", "es-419"),
+        FakeChoice("Spanish (Mexico)", "es-MX"),
+        FakeChoice("Spanish", "spa"),
+        FakeChoice("English", "en"),
+    ]})
+    ctx = context(section, config={"all": {"audio_language": "es"}})
+    await PlexSearchBuilder().build(ctx)
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=1&sort=titleSort"
+        "&audioLanguage=es-419&and=1&audioLanguage=es-MX&and=1&audioLanguage=spa"
+    ]
+
+
+async def test_an_exact_language_value_targets_only_itself():
+    section = FakeSection(choices={("audioLanguage", "movie"): [
+        FakeChoice("Spanish", "es-419"),
+        FakeChoice("Spanish (Mexico)", "es-MX"),
+    ]})
+    ctx = context(section, config={"all": {"audio_language": "es-419"}})
+    await PlexSearchBuilder().build(ctx)
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=1&sort=titleSort&audioLanguage=es-419"
+    ]

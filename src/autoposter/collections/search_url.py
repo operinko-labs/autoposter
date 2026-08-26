@@ -47,7 +47,11 @@ from autoposter.collections.filters import (
     FilterPredicate,
     RelativeWindow,
 )
-from autoposter.collections.search_sorts import SORT_TYPES, sort_argument
+from autoposter.collections.search_sorts import (
+    SORT_TYPES,
+    require_sort_for_libtype,
+    sort_argument,
+)
 
 __all__ = [
     "SearchAttributeNotAvailable",
@@ -136,6 +140,17 @@ def build_search_url(
     # the params model should not be able to build a query no server answers.
     if limit:
         head += f"limit={limit}&"
+    # The gate, immediately ahead of the lookup it protects.
+    # ``sort_argument`` indexes the libtype's table directly, so a sort that is
+    # real for the OTHER libtype -- ``episode_added.desc`` against a movie
+    # library -- reaches it as a bare ``KeyError``, which the engine reports as
+    # a dead source with no explanation. Here rather than only in the builder
+    # because this function is public and pure: the oracle drives it, the unit
+    # tests drive it, and a caller that skipped the params model must not be
+    # able to reach the unexplained failure either. ``PlexSearchBuilder`` calls
+    # the same gate before it starts resolving tag values, which is about the
+    # round-trips it saves rather than about the message.
+    require_sort_for_libtype(libtype, sort_by)
     head += f"sort={sort_argument(libtype, sort_by)}&"
     return head + tail
 

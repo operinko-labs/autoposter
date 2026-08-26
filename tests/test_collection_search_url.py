@@ -212,6 +212,25 @@ def test_a_zero_limit_emits_no_limit_at_all_which_is_kometas_test():
     assert url({"year.gte": 2010}, limit=None) == "?type=1&sort=titleSort&year%3E=2010"
 
 
+def test_a_wrong_libtype_sort_refuses_here_rather_than_in_sort_argument():
+    """``sort_argument`` indexes the libtype's table directly, so before this
+    gate was wired an ``episode_added.desc`` against a movie library reached
+    the engine as a bare ``KeyError`` -- a dead source with no explanation.
+    Tested at THIS layer and not only at the builder's, because the builder is
+    not the only caller and the guard has to hold for the others."""
+    from autoposter.collections.search_sorts import SortNotAvailable
+
+    with pytest.raises(SortNotAvailable) as error:
+        url({"genre": "Horror"}, sort_by=["episode_added.desc"])
+    message = str(error.value)
+    assert "episode_added.desc" in message
+    assert "libraries:" in message
+
+    assert url({"genre": "Drama"}, libtype="show", sort_by=["episode_added.desc"]) == (
+        "?type=2&sort=episode.addedAt%3Adesc&show.genre=9"
+    )
+
+
 def test_no_built_url_ever_carries_includeCollections():
     """Roadmap Notes-for-9b item 1. The name reads as 'also send each item's
     <Collection> children'; what it actually does is MIX Collection objects

@@ -41,6 +41,7 @@ from autoposter.collections.builders.imdb_lists import (
 )
 from autoposter.collections.builders.imdb_search import ImdbSearchBuilder
 from autoposter.collections.builders.mdblist import MdblistListBuilder
+from autoposter.collections.builders.plex_search import PlexSearchBuilder
 from autoposter.collections.builders.plex_trivial import PlexAllBuilder
 from autoposter.collections.builders.plex_watchlist import PlexWatchlistBuilder
 from autoposter.collections.builders.simple_ids import (
@@ -79,6 +80,10 @@ register(PlexIdBuilder())
 register(PlexRatingKeyBuilder())
 register(ImdbIdBuilder())
 register(PlexAllBuilder())
+# The one builder whose membership Plex decides. Registered here like every
+# other -- it produces ids, not actions, so it is a plain Builder and not the
+# SmartBuilder escape hatch, which is 9c's question and not this one's.
+register(PlexSearchBuilder())
 register(TmdbMovieBuilder())
 register(TmdbShowBuilder())
 register(TextFileBuilder())

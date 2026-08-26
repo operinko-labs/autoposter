@@ -3103,6 +3103,25 @@ def test_a_zero_limit_emits_no_limit_at_all_which_is_kometas_test():
     assert url({"year.gte": 2010}, limit=None) == "?type=1&sort=titleSort&year%3E=2010"
 
 
+def test_a_wrong_libtype_sort_refuses_here_rather_than_in_sort_argument():
+    """``sort_argument`` indexes the libtype's table directly, so before this
+    gate was wired an ``episode_added.desc`` against a movie library reached
+    the engine as a bare ``KeyError`` -- a dead source with no explanation.
+    Tested at THIS layer and not only at the builder's, because the builder is
+    not the only caller and the guard has to hold for the others."""
+    from autoposter.collections.search_sorts import SortNotAvailable
+
+    with pytest.raises(SortNotAvailable) as error:
+        url({"genre": "Horror"}, sort_by=["episode_added.desc"])
+    message = str(error.value)
+    assert "episode_added.desc" in message
+    assert "libraries:" in message
+
+    assert url({"genre": "Drama"}, libtype="show", sort_by=["episode_added.desc"]) == (
+        "?type=2&sort=episode.addedAt%3Adesc&show.genre=9"
+    )
+
+
 def test_no_built_url_ever_carries_includeCollections():
     """Roadmap Notes-for-9b item 1. The name reads as 'also send each item's
     <Collection> children'; what it actually does is MIX Collection objects
@@ -3207,7 +3226,11 @@ from autoposter.collections.filters import (
     FilterPredicate,
     RelativeWindow,
 )
-from autoposter.collections.search_sorts import SORT_TYPES, sort_argument
+from autoposter.collections.search_sorts import (
+    SORT_TYPES,
+    require_sort_for_libtype,
+    sort_argument,
+)
 
 __all__ = [
     "SearchAttributeNotAvailable",
@@ -3296,6 +3319,17 @@ def build_search_url(
     # the params model should not be able to build a query no server answers.
     if limit:
         head += f"limit={limit}&"
+    # The gate, immediately ahead of the lookup it protects.
+    # ``sort_argument`` indexes the libtype's table directly, so a sort that is
+    # real for the OTHER libtype -- ``episode_added.desc`` against a movie
+    # library -- reaches it as a bare ``KeyError``, which the engine reports as
+    # a dead source with no explanation. Here rather than only in the builder
+    # because this function is public and pure: the oracle drives it, the unit
+    # tests drive it, and a caller that skipped the params model must not be
+    # able to reach the unexplained failure either. ``PlexSearchBuilder`` calls
+    # the same gate before it starts resolving tag values, which is about the
+    # round-trips it saves rather than about the message.
+    require_sort_for_libtype(libtype, sort_by)
     head += f"sort={sort_argument(libtype, sort_by)}&"
     return head + tail
 
@@ -3995,6 +4029,39 @@ what shipped — the entries below are the index, not a second copy.
 8. **The `_validateAdvancedSearch` citation** in the Task 3 report (Minor 8) —
    `:1229-1257`, the `def` line included.
 
+### The accumulated carries, and where each landed
+
+Five carries reached this task from the T1–T3 reviews. Four needed no code:
+
+1. **The six-spelling narrowing** (T1) — `critic_rating:`/`.not`,
+   `audience_rating:`/`.not` and `plays:`/`.not` are not legal search
+   spellings. Already the shipped table's
+   (`SEARCH_OPERATORS_BY_TYPE["float"]`, `SEARCH_OPERATORS_EXCLUDED["plays"]`),
+   and `PlexSearchParams` derives its vocabulary from the parser rather than
+   restating it, so there is nothing here that could disagree. No test in this
+   task asserts any of the six.
+2. **`parse_filters`' `field` under `searching=True`** — the params model
+   passes `field=f"params.{base}"`, not the `"filters"` default, so a refusal
+   names the block an operator edits. `test_a_bad_attribute_inside_the_block_…`
+   pins `params.all` in the message.
+3. **`require_sort_for_libtype` gets its call site** — wired into
+   `build_search_url` immediately ahead of `sort_argument` (the T3 section's
+   block above carries the shipped text), which is what closes the bare
+   `KeyError` for *every* caller including the oracle and the unit tests.
+   `PlexSearchBuilder.build` calls the same gate a second time, before it
+   resolves any tag value: that one is about the `listFilterChoices`
+   round-trips a refusal would otherwise pay for first. Both paths are tested
+   at both layers.
+4. **The composition table** — shipped in `PlexSearchParams`' own docstring,
+   which is where an operator writing the two colliding keys reads.
+   `search_sorts` keeps the collision warning; the params model carries the
+   ordering.
+5. **D5's regex refusal and D2c's cross-referencing refusals** — the parser's,
+   reached by `searching=True`. Nothing in `plex_search.py` restates either;
+   the module docstring says so, and
+   `test_a_search_regex_refuses_at_load_pointing_at_filters` asserts the
+   parser's message arrives through the params model.
+
 ### Step 0: THE `langcodes` DECISION — resolve before writing any code
 
 `audio_language`/`subtitle_language` are in D3's v1 scope, and Kometa's search
@@ -4038,6 +4105,29 @@ is written for **A**; under B or C, delete `_base_language_code`'s `langcodes`
 import and replace its body (B) or delete `_language_keys` and add the refusal
 (C), and say so in the module docstring.
 
+**DECIDED: A**, and the cost turned out lower than the option describes. The
+pin shipped is `"langcodes>=3.5"`, not `>=3.4`, because 3.5 moved
+`language-data` (which pulls the `marisa-trie` C extension) into an optional
+`[data]` extra: on this image `pip install langcodes` resolves to 3.5.1, a
+pure-python wheel with **no required transitive dependencies at all**. Nothing
+here needs the data extra — the reduction is tag *parsing*, not a name lookup.
+Probed on the image's own base before the pin was written
+(`python:3.14.7-alpine`): `es-419`, `es_MX` and `spa` all reduce to `es`, `en`
+to `en`, and `LanguageTagError` is a `ValueError` subclass, which is what makes
+`_base_language_code`'s `except ValueError` fallback the right catch rather than
+a bare one.
+
+The dependency is load-bearing and the Task 4 report has the mutation proof:
+replacing the body with option B's split-on-`-` reduction reddens
+`test_a_language_code_expands_to_every_variant_the_library_carries` and nothing
+else, because `spa` stops reducing to `es` and silently drops out of the
+expansion — the exact failure option B names as its cost.
+
+Also note the pyproject list is **not** alphabetical (it reads `fastapi`,
+`uvicorn`, `sqlalchemy`, `asyncpg`, `alembic`, …), so the entry is appended in
+the file's real convention: at the end, under a comment saying what needs it and
+why it was added rather than transcribed.
+
 ### Step 1: Write the failing tests for the params model
 
 - [ ] **Step 1**
@@ -4055,10 +4145,12 @@ asks Plex, and how many times it asks.
 import pytest
 from pydantic import ValidationError
 
+from autoposter.collections.builders.base import BuilderContext, SourceClients
 from autoposter.collections.builders.plex_search import (
     PlexSearchParams,
     PlexSearchBuilder,
 )
+from autoposter.collections.builders.sources_bundle import PlexSectionAccess
 
 
 def test_a_base_is_required_and_named():
@@ -4216,7 +4308,10 @@ and which a ``filters:`` block may name is its ``filterable`` column
 (``collections/filters.py``). Kometa's own two vocabularies are not nested
 either -- 44 of its filter names have no Plex search field and 29 of its search
 names have no filter -- so every refusal on either side cross-references the
-other rather than reading as a gap.
+other rather than reading as a gap. Both refusals live in the PARSER
+(``filters._split_key``), reached from here by passing ``searching=True``;
+nothing in this module restates them, because two copies of a vocabulary rule
+are two things to keep in step.
 
 **Dates are answered in the PLEX SERVER's clock, not the runner's** (roadmap
 row 154, and D6: document the divergence, do not reconcile it). ``added.after:
@@ -4316,6 +4411,11 @@ class PlexSearchParams(BaseModel):
     So ``params.limit: 50`` with ``limit: 25`` means "ask Plex for its top 50,
     keep the first 25 of those this library still owns and the filter kept".
 
+    Written here rather than only in ``search_sorts``' module docstring on
+    purpose: the collision is between two keys an OPERATOR writes, one inside
+    ``params`` and one beside it, so the place it has to be readable is the
+    model that accepts them.
+
     **Dates:** prefer the relative windows (``added: 30``,
     ``last_played.not: 6o``) over the absolute ``.before``/``.after`` forms.
     A server-side date predicate is evaluated in the PLEX SERVER's clock and a
@@ -4390,6 +4490,12 @@ class PlexSearchParams(BaseModel):
         CANNOT be checked here is anything that needs the library: which
         libtype, and whether a tag value exists. Those are build-time, and the
         module docstring says why.
+
+        ``field`` is ``params.<base>`` and not the parser's ``filters``
+        default, so a refusal names the block an operator would go and edit.
+        The rest of the sentence -- "the plex_search vocabulary is ...", "write
+        it as a `filters:` block instead" -- is the parser's own, selected by
+        ``searching=True``.
         """
         base = "all" if self.all is not None else "any"
         block = self.all if self.all is not None else self.any
@@ -4422,7 +4528,8 @@ def _base_language_code(value: str) -> str:
     including its fallback: a value that cannot be parsed comes back unchanged,
     so an unrecognised code targets itself rather than nothing. ``langcodes`` is
     the same library Kometa uses -- see the Task 4 Step 0 decision record for
-    why it was added rather than transcribed.
+    why it was added rather than transcribed. Its ``LanguageTagError`` is a
+    ``ValueError`` subclass, which is what makes the fallback below catch it.
     """
     if not value:
         return value
@@ -4455,6 +4562,14 @@ class PlexSearchBuilder:
             )
         section = access.section()
 
+        # Ahead of everything that talks to Plex, and deliberately duplicated:
+        # ``build_search_url`` runs this same gate immediately before
+        # ``sort_argument``, which is what makes it impossible to reach the
+        # bare ``KeyError`` from ANY caller. Here it is about cost -- a
+        # wrong-libtype sort would otherwise pay one ``listFilterChoices``
+        # round-trip per tag value before failing on a fact known before the
+        # first of them. The check is pure and idempotent, so running it twice
+        # is two comparisons.
         require_sort_for_libtype(libtype, params.sort_by or [])
         group = parse_filters(
             params.block, field=f"params.{params.base}", searching=True, base=params.base
@@ -4607,9 +4722,13 @@ Expected: `14 passed`.
 Append to `tests/test_builder_plex_search.py`:
 
 ```python
-from autoposter.collections.builders.base import BuilderContext, SourceClients
-from autoposter.collections.builders.sources_bundle import PlexSectionAccess
-
+# --- the BUILD-time half ------------------------------------------------------
+#
+# ``BuilderContext``/``SourceClients``/``PlexSectionAccess`` are imported at the
+# top of the file with everything else rather than here, where the plan's block
+# put them: ruff's E4 set is selected repo-wide (pyproject.toml:73) and a
+# mid-file import is E402.
+#
 # No ``@pytest.mark.asyncio`` anywhere below: this suite runs pytest-asyncio in
 # ``asyncio_mode = "auto"`` (pyproject.toml:51), so an ``async def test_`` is
 # collected as one already and the marker would be noise.
@@ -4749,6 +4868,33 @@ async def test_a_show_only_sort_refuses_at_build_on_a_movie_library():
     assert "episode_added.desc" in str(error.value)
 
 
+async def test_a_show_only_sort_builds_on_a_show_library_and_asks_nothing_first():
+    """The other half of the gate. It refuses above and passes here, and the
+    refusal costs no ``listFilterChoices`` at all -- the sort is checked before
+    the first tag value is resolved, because a wrong-libtype sort is knowable
+    without asking Plex anything."""
+    section = FakeSection(choices={("genre", "show"): GENRES})
+    ctx = context(
+        section,
+        library_type="Show",
+        config={"all": {"genre": "Drama"}, "sort_by": "episode_added.desc"},
+    )
+    await PlexSearchBuilder().build(ctx)
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=2&sort=episode.addedAt%3Adesc&show.genre=9"
+    ]
+
+    refused = FakeSection(choices={("genre", "movie"): GENRES})
+    with pytest.raises(Exception):
+        await PlexSearchBuilder().build(
+            context(
+                refused,
+                config={"all": {"genre": "Drama"}, "sort_by": "episode_added.desc"},
+            )
+        )
+    assert refused.filter_calls == []
+
+
 async def test_a_music_library_refuses_by_name():
     section = FakeSection()
     ctx = context(section, library_type="Artist", config={"all": {"genre": "Horror"}})
@@ -4822,7 +4968,10 @@ docker compose -p p9bt4 -f docker-compose.yml -f .superpowers/isolated-db.yml \
     run --rm test sh -c 'timeout -s KILL 900 pytest -q tests/test_builder_plex_search.py; echo EXIT=$?'
 ```
 
-Expected: `27 passed`.
+Expected: `28 passed` — the plan's twenty-seven plus
+`test_a_show_only_sort_builds_on_a_show_library_and_asks_nothing_first`, the
+passing half of the `require_sort_for_libtype` gate (the accumulated carry
+asked for both paths, and the plan's block only refused).
 
 ### Step 8: The config surface
 
@@ -4832,8 +4981,6 @@ Append to `tests/test_collection_config.py`:
 
 ```python
 def test_a_plex_search_definition_validates_its_params_at_load():
-    from autoposter.config.schema import CollectionDefinition
-
     definition = CollectionDefinition(
         title="Recent Horror",
         builder="plex_search",
@@ -4843,8 +4990,6 @@ def test_a_plex_search_definition_validates_its_params_at_load():
 
 
 def test_a_plex_search_definition_with_a_bad_key_names_the_title_and_the_key():
-    from autoposter.config.schema import CollectionDefinition
-
     with pytest.raises(ValueError) as error:
         CollectionDefinition(
             title="Recent Horror",
@@ -4859,8 +5004,6 @@ def test_a_plex_search_definition_with_a_bad_key_names_the_title_and_the_key():
 def test_a_plex_search_definition_may_also_carry_a_client_side_filters_block():
     """D2(b): the server narrows and the client refines. Both are honoured and
     neither is folded into the other."""
-    from autoposter.config.schema import CollectionDefinition
-
     definition = CollectionDefinition(
         title="Recent Horror, well rated",
         builder="plex_search",
@@ -4874,8 +5017,6 @@ def test_plex_search_is_not_a_smart_builder_so_the_membership_knobs_apply():
     """A smart definition refuses limit/sync_mode/item_label/filters
     (schema.py:416-459) because Plex owns its membership. plex_search resolves
     real members through the engine, so all four mean what they always did."""
-    from autoposter.config.schema import CollectionDefinition
-
     definition = CollectionDefinition(
         title="Top 25 Horror",
         builder="plex_search",
@@ -4897,7 +5038,13 @@ docker compose -p p9bt4 -f docker-compose.yml -f .superpowers/isolated-db.yml \
 
 Expected: the whole file green, including the four new cases. No change to
 `schema.py` should be needed — the params-model hook (`:362-414`) already picks
-up `params_model` from the registry.
+up `params_model` from the registry. (It was not: confirmed, `schema.py` is
+untouched by this task.)
+
+`CollectionDefinition` is already imported at this file's module scope, so the
+four cases use that import rather than the plan's per-test local one — the
+file's own convention, and the local copies would have been four redundant
+statements saying the same thing.
 
 ### Step 10: The golden gate
 
@@ -4947,7 +5094,9 @@ docker compose -p p9bt4 -f docker-compose.yml -f .superpowers/isolated-db.yml \
 docker compose -p p9bt4 down
 ```
 
-Expected: Task 3's count + 31, `0 failed`; `All checks passed!`.
+Expected: the lead-in's count + 33 (28 + 4 + the one
+`build_search_url`-level sort-gate case in `tests/test_collection_search_url.py`),
+`0 failed`; `All checks passed!`.
 
 - [ ] **Step 13: Commit**
 

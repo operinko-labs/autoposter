@@ -29,6 +29,18 @@ dependencies = [
     "starlette>=0.40",
     # Password hashing for the Web UI's API (api/auth.py).
     "bcrypt>=4.2",
+    # The ISO 639 reduction behind `plex_search`'s audio_language/
+    # subtitle_language expansion. Kometa's own dependency, used the same way
+    # (`Language.get(value).language`, modules/plex.py:141-151): a written `es`
+    # has to be expanded against every locale variant the library carries, and
+    # the reduction that decides which values match is a ~184-row ISO 639-2 to
+    # 639-1 table. Added rather than transcribed because a hand-copied map that
+    # is 95% right produces a language collection that is full and wrong --
+    # precisely the failure mode phase 9b exists to prevent. Pure python, no
+    # C extension, and as of 3.5 no required transitive dependencies at all
+    # (`language-data` became the optional `[data]` extra, which nothing here
+    # needs -- the tag reduction is parsing, not lookup).
+    "langcodes>=3.5",
 ]
 
 [project.optional-dependencies]
