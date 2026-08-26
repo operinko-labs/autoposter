@@ -2330,12 +2330,14 @@ Compose project name for this task: **`row79t3`**.
 **Files:**
 - Create: `src/autoposter/collections/builders/tracearr.py`
 - Modify: `src/autoposter/collections/builders/__init__.py` (the import block `:10-73`, the `register(...)` block `:75-132`)
+- Modify: `src/autoposter/collections/builders/base.py` (the shared `PREFERENCE` table and `best_external_id`, lifted out of the two builders that would otherwise each carry a copy — see Step 3b)
+- Modify: `src/autoposter/collections/builders/mdblist.py` (drop its local `_PREFERENCE`/`_external_id` in favour of the shared pair; behaviour unchanged, its own debug-skip logging stays in `build`)
 - Modify: `src/autoposter/collections/catalog.py` (a `TRACEARR_PRESETS` block after `CHART_PRESETS` at `:656-658`; the count-checksum comment at `:1232-1247`; the `CATALOG` tuple at `:1248-1259`)
 - Modify: `tests/test_collection_catalog.py:186-196` (`CATALOG_CHECKSUM["charts"]`)
 - Create: `tests/test_builder_tracearr.py`
 
 **Interfaces:**
-- Consumes: `TracearrClient`, `TracearrRefused`, `API_PREFIX` (Task 1); `rank`, `Bucket`, `since_instant`, `MEDIA_KINDS`, `HISTORY_MEDIA_TYPE`, `METRICS` (Task 2); `BuilderContext`, `BuilderResult`, `require_library_type` (`src/autoposter/collections/builders/base.py`).
+- Consumes: `TracearrClient`, `TracearrRefused`, `API_PREFIX` (Task 1); `rank`, `Bucket`, `since_instant`, `MEDIA_KINDS`, `HISTORY_MEDIA_TYPE`, `METRICS`, `_external_id` (Task 2); `BuilderContext`, `BuilderResult`, `ExternalId`, `PREFERENCE`, `best_external_id`, `require_library_type` (`src/autoposter/collections/builders/base.py`).
 - Produces, for Task 4:
   - `autoposter.collections.builders.tracearr.TracearrBuilderRefused(Exception)`
   - `autoposter.collections.builders.tracearr.TracearrMostWatchedParams` — `metric: Literal["plays", "watch_time"] = "plays"`, `days: int = 30` (ge=1, le=365), `limit: int = 20` (ge=1, le=100), `extra="forbid"`
@@ -2496,17 +2498,26 @@ async def test_a_library_of_the_wrong_type_is_refused_by_name():
 
 
 async def test_the_window_and_the_media_type_reach_the_history_request():
+    """Mutation proof for the window: ``since_instant(params.days, ...)`` ->
+    ``since_instant(30, ...)`` reds the last assertion. ``since_instant`` is
+    pinned exactly against a fixed ``now`` in tests/test_collection_activity.py,
+    but nothing pinned that ``params.days`` was what chose the instant -- which
+    is this module's own named nightmare, a collection whose summary says "past
+    7 days" built over a 30-day window."""
     seen: list = []
     routes = {f"{API_PREFIX}/history": load("tracearr_history_movies.json")}
     async with httpx.AsyncClient(transport=_routed(routes, seen)) as http:
-        await _build(_ctx(_sources(http), library_type="Movie", days=7))
+        await _build(_ctx(_sources(http), library_type="Movie", days=1))
+        await _build(_ctx(_sources(http), library_type="Movie", days=365))
 
     assert seen[0].url.path == f"{API_PREFIX}/history"
     assert seen[0].url.params["media_type"] == "movie"
-    # The instant itself is the clock's; that it is an instant, and that one
-    # was sent at all, is the builder's. ``since_instant`` is asserted exactly
-    # in tests/test_collection_activity.py, against a fixed ``now``.
+    # The instant itself is the clock's; that it is an instant is the builder's.
     assert seen[0].url.params["since"].endswith("Z")
+    # Clock-safe: no wall-clock value is asserted, only that a one-day window
+    # starts LATER than a one-year one. ISO-Z instants of the same shape compare
+    # correctly as strings.
+    assert seen[0].url.params["since"] > seen[1].url.params["since"]
 
 
 async def test_a_show_library_asks_for_episodes_because_shows_have_no_plays():
@@ -2562,7 +2573,11 @@ async def test_a_movie_with_no_usable_id_is_dropped_and_logged(caplog):
     page["data"] = [dict(page["data"][0]) | {"tmdb_id": None, "imdb_id": None}]
     routes = {f"{API_PREFIX}/history": page}
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
-        with caplog.at_level(logging.DEBUG):
+        # Scoped like its two siblings below: root-level DEBUG would also unlock
+        # httpx's own per-request logging, which is noise here and a URL leak
+        # there. ``"autoposter"`` rather than the module keeps every logger this
+        # codebase owns in reach while still excluding httpx.
+        with caplog.at_level(logging.DEBUG, logger="autoposter"):
             result = await _build(_ctx(_sources(http), library_type="Movie"))
 
     assert result.ids == []
@@ -2587,6 +2602,29 @@ async def test_a_show_collection_takes_its_ids_off_the_media_document():
         f"{API_PREFIX}/history",
         f"{API_PREFIX}/media/{SILO_UUID}",
     ]
+
+
+async def test_a_zero_on_the_media_document_is_absence_not_an_id():
+    """The Movie path cannot hit this -- its ids came through
+    ``activity._external_id``, which reads ``0`` and ``"0"`` as the same absence
+    marker one JSON coercion apart. The Show path reads the media document raw,
+    so without the same coercion here a document carrying ``"tvdb_id": "0"``
+    emits ``("tvdb", "0")``: an id that resolves to nothing anywhere, and whose
+    empty collection is indistinguishable from a correct one. Both shapes are
+    exercised because only the string one survives the shared
+    ``best_external_id`` guard.
+    """
+    document = load("tracearr_media_show.json") | {"tvdb_id": "0", "tmdb_id": 0}
+    routes = {
+        f"{API_PREFIX}/history": load("tracearr_history_silo.json"),
+        f"{API_PREFIX}/media/{SILO_UUID}": document,
+    }
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        result = await _build(_ctx(_sources(http)))
+
+    # Falls all the way through TVDb and TMDb to IMDb rather than stopping on
+    # the "0".
+    assert result.ids == [("imdb", "tt14688458")]
 
 
 async def test_no_id_a_show_collection_emits_is_an_episode_id():
@@ -2671,10 +2709,13 @@ async def test_a_media_document_that_404s_drops_that_title_and_builds_the_rest(c
         # matched 404 envelope, rate-limit header included.
     }
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
-        # Scoped to the builder's own logger: at root level, INFO would also
-        # unlock httpx's own per-request logging, which necessarily carries
-        # the URL it just requested -- noise this test has no interest in.
-        with caplog.at_level(logging.INFO, logger="autoposter.collections.builders.tracearr"):
+        # Scoped to this codebase's own logger tree: at root level, INFO would
+        # also unlock httpx's own per-request logging, which necessarily carries
+        # the URL it just requested. ``"autoposter"`` rather than the builder's
+        # module keeps the PROVIDER's log lines in scope too -- they are the
+        # ones nearest the URL, so they are the ones this assertion most wants
+        # to be able to see.
+        with caplog.at_level(logging.INFO, logger="autoposter"):
             result = await _build(_ctx(_sources(http), limit=10))
 
     assert result.ids == [("tvdb", "403245")]
@@ -2786,10 +2827,12 @@ async def test_no_log_line_and_no_error_carries_the_base_url_or_the_key(caplog):
         ),
     }
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
-        # Scoped to the builder's own logger for the same reason as the
-        # 404-drop test above: root-level DEBUG would also unlock httpx's own
-        # per-request logging, which carries the URL by design.
-        with caplog.at_level(logging.DEBUG, logger="autoposter.collections.builders.tracearr"):
+        # Scoped for the same reason as the 404-drop test above: root-level
+        # DEBUG would also unlock httpx's own per-request logging, which carries
+        # the URL by design. ``"autoposter"`` keeps both the builder's and the
+        # provider's loggers in scope, which is the whole surface this test's
+        # name claims.
+        with caplog.at_level(logging.DEBUG, logger="autoposter"):
             with pytest.raises(TracearrRefused) as error:
                 await _build(_ctx(_sources(http)))
 
@@ -2871,6 +2914,15 @@ that costs, and what happens when Tracearr is not configured at all.
   resolves free against the engine's own index and is dropped, not guessed,
   when it is stale.
 
+**Known limitation: the Plex last resort is not available to an identified
+bucket.** A Movie bucket that HAS a ``media_id`` but no usable external id is
+dropped rather than falling back to its Plex rating key, even though the
+identity-less path has that fallback -- because ``collections/activity.py``
+sets ``rating_key=None`` on every identified bucket, so there is no key on the
+``Bucket`` to fall back to. That is A-resolution's letter ("identity-less-ONLY
+buckets"), recorded here so the asymmetry is a decision rather than an
+accident.
+
 **The budget.** 240 requests/minute shared across the whole v2 tree. One
 collection is one page per 100 plays in its window, plus at most ``limit``
 media documents on a Show library. The documents are memoised on
@@ -2918,12 +2970,25 @@ from autoposter.collections.activity import (
     rank,
     since_instant,
 )
+# ``activity``'s own absence coercion, by its private name because that is where
+# the rule lives and a second copy of it is exactly what this module is being
+# cleaned of. It maps ``0`` and ``"0"`` -- the same absence marker one JSON
+# coercion apart -- to None. A Movie bucket's ids already went through it
+# (``activity`` builds them); a media document read here has not.
+from autoposter.collections.activity import _external_id as _absent_or_str
 from autoposter.collections.builders.base import (
+    PREFERENCE,
     BuilderContext,
     BuilderResult,
+    ExternalId,
+    best_external_id,
     require_library_type,
 )
-from autoposter.providers.tracearr import TracearrNotFound, TracearrRefused
+from autoposter.providers.tracearr import (
+    TracearrClient,
+    TracearrNotFound,
+    TracearrRefused,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2933,14 +2998,10 @@ __all__ = [
     "TracearrMostWatchedParams",
 ]
 
-# ``(field on the identity, namespace)`` in preference order, per library type:
-# which guid the library's items are most likely to carry, and every fallback
-# is a member that would otherwise be dropped. The same orders
-# ``builders/mdblist.py`` uses, for the same reason.
-_PREFERENCE: dict[str, tuple[tuple[str, str], ...]] = {
-    "Movie": (("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
-    "Show": (("tvdb_id", "tvdb"), ("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
-}
+# The preference orders and the id-selection loop are ``builders/base.py``'s
+# ``PREFERENCE``/``best_external_id``, shared with ``builders/mdblist.py``: it
+# is one semantic rule and two copies of it would let the same movie resolve
+# differently depending on which builder found it.
 
 # Where one show's media document is memoised, namespaced by module like
 # ``mdblist``'s and ``imdb_award``'s.
@@ -3013,7 +3074,7 @@ class TracearrMostWatchedBuilder:
             since=since_instant(params.days, datetime.now(UTC)),
             media_type=HISTORY_MEDIA_TYPE[kind],
         )
-        ids = []
+        ids: list[ExternalId] = []
         vanished = 0
         for bucket in rank(
             records, media_kind=kind, metric=params.metric, limit=params.limit
@@ -3054,30 +3115,37 @@ class TracearrMostWatchedBuilder:
         )
 
 
-async def _external_id(ctx: BuilderContext, client, library_type: str, bucket: Bucket):
+async def _external_id(
+    ctx: BuilderContext, client: TracearrClient, library_type: str, bucket: Bucket
+) -> ExternalId | None:
     """The best namespaced id for one bucket, or None if it has none."""
     if bucket.media_id is None:
         # An identity-less-only bucket: no canonical id exists anywhere, so the
         # Plex rating key it was formed under is the only thing there is.
         return ("plex", bucket.rating_key) if bucket.rating_key else None
-    identity = (
-        {
+    if library_type == "Movie":
+        identity = {
             "imdb_id": bucket.imdb_id,
             "tmdb_id": bucket.tmdb_id,
             "tvdb_id": bucket.tvdb_id,
         }
-        if library_type == "Movie"
-        else await _media_document(ctx, client, bucket.media_id)
-    )
-    for field, namespace in _PREFERENCE[library_type]:
-        value = identity.get(field)
-        if value is None or value == "" or value == 0:
-            continue
-        return (namespace, str(value))
-    return None
+    else:
+        # The media document is read RAW off the wire, unlike a Movie bucket's
+        # ids -- so ``activity``'s absence rule has to be applied here or a
+        # document carrying ``"tvdb_id": "0"`` becomes ("tvdb", "0"), an id
+        # that resolves to nothing anywhere and looks exactly like a member the
+        # library happens not to own.
+        document = await _media_document(ctx, client, bucket.media_id)
+        identity = {
+            name: _absent_or_str(document.get(name))
+            for name in ("imdb_id", "tmdb_id", "tvdb_id")
+        }
+    return best_external_id(identity, PREFERENCE[library_type])
 
 
-async def _media_document(ctx: BuilderContext, client, media_id: str) -> dict:
+async def _media_document(
+    ctx: BuilderContext, client: TracearrClient, media_id: str
+) -> dict:
     """One show's media document, fetched at most once per library per pass.
 
     The failure is memoised as well as the answer -- see the module docstring.
@@ -3101,6 +3169,83 @@ async def _media_document(ctx: BuilderContext, client, media_id: str) -> dict:
     ctx.run_cache[memo] = document
     return document
 ```
+
+- [ ] **Step 3b: Share the preference table instead of copying it**
+
+The block above reaches for `PREFERENCE`/`best_external_id` from
+`builders/base.py`, and those do not exist yet: `builders/mdblist.py` carries
+the only copy, as `_PREFERENCE` (`:63-66`) and `_external_id(entry, preference)`
+(`:149-156`). Transcribing that copy into `tracearr.py` would leave two
+byte-identical statements of one semantic rule — "which guid does this library
+type prefer" — that have to stay in lockstep or the same movie resolves under a
+different namespace depending on which builder found it. So it is lifted rather
+than copied.
+
+In `src/autoposter/collections/builders/base.py`, add `"PREFERENCE"` and
+`"best_external_id"` to `__all__`, the table after it:
+
+```python
+# ``(field on the entry, namespace)`` in preference order, per library type:
+# which guid the library's items are most likely to carry, and every fallback is
+# a member that would otherwise be dropped.
+#
+# One table, not one per builder. It is a single semantic rule -- "which guid
+# does this library type prefer" -- and two copies of it drift: the same movie
+# built through ``mdblist_list`` and through ``tracearr_most_watched`` would
+# resolve under different namespaces, which is a difference in *membership* that
+# nothing downstream could report. Also doubles as the "which library types does
+# this builder serve" table both of them pass to ``require_library_type``.
+PREFERENCE: dict[str, tuple[tuple[str, str], ...]] = {
+    "Movie": (("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
+    "Show": (("tvdb_id", "tvdb"), ("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
+}
+```
+
+and the loop, immediately before `PlexIdParams`:
+
+```python
+def best_external_id(
+    entry: dict, preference: tuple[tuple[str, str], ...]
+) -> ExternalId | None:
+    """The best namespaced id for one entry, or None if it carries none.
+
+    ``preference`` is a ``PREFERENCE`` row -- passed in rather than looked up
+    here so a caller that already resolved the library type does not resolve it
+    twice, and so a caller with an order of its own is not blocked.
+
+    Absence is ``None``, ``""`` and ``0``: the three shapes a source uses for
+    "this entry has no such id". Note that the *string* ``"0"`` is not absence
+    here -- a caller reading a raw document that might carry one coerces it
+    before this sees it (``activity._external_id`` is that coercion), because
+    tightening it here would silently change what ``mdblist_list`` emits.
+
+    Logging a skip is the CALLER's, deliberately: ``mdblist_list`` names the
+    list and the entry title it dropped, and a shared helper could name neither.
+    """
+    for name, namespace in preference:
+        value = entry.get(name)
+        if value is None or value == "" or value == 0:
+            continue
+        return (namespace, str(value))
+    return None
+```
+
+Then in `src/autoposter/collections/builders/mdblist.py`: import
+`PREFERENCE`/`best_external_id` from `base`, delete the local `_PREFERENCE`
+block and the local `_external_id` function, and rename the three uses
+(`require_library_type(..., PREFERENCE)`, `preference = PREFERENCE[...]`,
+`external = best_external_id(entry, preference)`). Leave a pointer comment where
+`_PREFERENCE` was. `mdblist_list`'s behaviour is unchanged — including its
+per-entry debug-skip line, which stays in `build` where it can still name the
+list and the title.
+
+Run:
+```
+docker compose -p row79t3 -f docker-compose.yml -f .superpowers/isolated-db.yml run --rm test pytest tests/test_builder_mdblist.py -q
+```
+Expected: PASS, unchanged. `tests/test_builder_mdblist.py` pins behaviour and
+never referenced either private name, so the lift is invisible to it — which is
+the check that it really was a pure move.
 
 - [ ] **Step 4: Register the builder**
 

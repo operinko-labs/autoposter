@@ -147,17 +147,26 @@ async def test_a_library_of_the_wrong_type_is_refused_by_name():
 
 
 async def test_the_window_and_the_media_type_reach_the_history_request():
+    """Mutation proof for the window: ``since_instant(params.days, ...)`` ->
+    ``since_instant(30, ...)`` reds the last assertion. ``since_instant`` is
+    pinned exactly against a fixed ``now`` in tests/test_collection_activity.py,
+    but nothing pinned that ``params.days`` was what chose the instant -- which
+    is this module's own named nightmare, a collection whose summary says "past
+    7 days" built over a 30-day window."""
     seen: list = []
     routes = {f"{API_PREFIX}/history": load("tracearr_history_movies.json")}
     async with httpx.AsyncClient(transport=_routed(routes, seen)) as http:
-        await _build(_ctx(_sources(http), library_type="Movie", days=7))
+        await _build(_ctx(_sources(http), library_type="Movie", days=1))
+        await _build(_ctx(_sources(http), library_type="Movie", days=365))
 
     assert seen[0].url.path == f"{API_PREFIX}/history"
     assert seen[0].url.params["media_type"] == "movie"
-    # The instant itself is the clock's; that it is an instant, and that one
-    # was sent at all, is the builder's. ``since_instant`` is asserted exactly
-    # in tests/test_collection_activity.py, against a fixed ``now``.
+    # The instant itself is the clock's; that it is an instant is the builder's.
     assert seen[0].url.params["since"].endswith("Z")
+    # Clock-safe: no wall-clock value is asserted, only that a one-day window
+    # starts LATER than a one-year one. ISO-Z instants of the same shape compare
+    # correctly as strings.
+    assert seen[0].url.params["since"] > seen[1].url.params["since"]
 
 
 async def test_a_show_library_asks_for_episodes_because_shows_have_no_plays():
@@ -213,7 +222,11 @@ async def test_a_movie_with_no_usable_id_is_dropped_and_logged(caplog):
     page["data"] = [dict(page["data"][0]) | {"tmdb_id": None, "imdb_id": None}]
     routes = {f"{API_PREFIX}/history": page}
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
-        with caplog.at_level(logging.DEBUG):
+        # Scoped like its two siblings below: root-level DEBUG would also unlock
+        # httpx's own per-request logging, which is noise here and a URL leak
+        # there. ``"autoposter"`` rather than the module keeps every logger this
+        # codebase owns in reach while still excluding httpx.
+        with caplog.at_level(logging.DEBUG, logger="autoposter"):
             result = await _build(_ctx(_sources(http), library_type="Movie"))
 
     assert result.ids == []
@@ -238,6 +251,29 @@ async def test_a_show_collection_takes_its_ids_off_the_media_document():
         f"{API_PREFIX}/history",
         f"{API_PREFIX}/media/{SILO_UUID}",
     ]
+
+
+async def test_a_zero_on_the_media_document_is_absence_not_an_id():
+    """The Movie path cannot hit this -- its ids came through
+    ``activity._external_id``, which reads ``0`` and ``"0"`` as the same absence
+    marker one JSON coercion apart. The Show path reads the media document raw,
+    so without the same coercion here a document carrying ``"tvdb_id": "0"``
+    emits ``("tvdb", "0")``: an id that resolves to nothing anywhere, and whose
+    empty collection is indistinguishable from a correct one. Both shapes are
+    exercised because only the string one survives the shared
+    ``best_external_id`` guard.
+    """
+    document = load("tracearr_media_show.json") | {"tvdb_id": "0", "tmdb_id": 0}
+    routes = {
+        f"{API_PREFIX}/history": load("tracearr_history_silo.json"),
+        f"{API_PREFIX}/media/{SILO_UUID}": document,
+    }
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        result = await _build(_ctx(_sources(http)))
+
+    # Falls all the way through TVDb and TMDb to IMDb rather than stopping on
+    # the "0".
+    assert result.ids == [("imdb", "tt14688458")]
 
 
 async def test_no_id_a_show_collection_emits_is_an_episode_id():
@@ -322,10 +358,13 @@ async def test_a_media_document_that_404s_drops_that_title_and_builds_the_rest(c
         # matched 404 envelope, rate-limit header included.
     }
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
-        # Scoped to the builder's own logger: at root level, INFO would also
-        # unlock httpx's own per-request logging, which necessarily carries
-        # the URL it just requested -- noise this test has no interest in.
-        with caplog.at_level(logging.INFO, logger="autoposter.collections.builders.tracearr"):
+        # Scoped to this codebase's own logger tree: at root level, INFO would
+        # also unlock httpx's own per-request logging, which necessarily carries
+        # the URL it just requested. ``"autoposter"`` rather than the builder's
+        # module keeps the PROVIDER's log lines in scope too -- they are the
+        # ones nearest the URL, so they are the ones this assertion most wants
+        # to be able to see.
+        with caplog.at_level(logging.INFO, logger="autoposter"):
             result = await _build(_ctx(_sources(http), limit=10))
 
     assert result.ids == [("tvdb", "403245")]
@@ -437,10 +476,12 @@ async def test_no_log_line_and_no_error_carries_the_base_url_or_the_key(caplog):
         ),
     }
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
-        # Scoped to the builder's own logger for the same reason as the
-        # 404-drop test above: root-level DEBUG would also unlock httpx's own
-        # per-request logging, which carries the URL by design.
-        with caplog.at_level(logging.DEBUG, logger="autoposter.collections.builders.tracearr"):
+        # Scoped for the same reason as the 404-drop test above: root-level
+        # DEBUG would also unlock httpx's own per-request logging, which carries
+        # the URL by design. ``"autoposter"`` keeps both the builder's and the
+        # provider's loggers in scope, which is the whole surface this test's
+        # name claims.
+        with caplog.at_level(logging.DEBUG, logger="autoposter"):
             with pytest.raises(TracearrRefused) as error:
                 await _build(_ctx(_sources(http)))
 

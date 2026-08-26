@@ -23,6 +23,15 @@ that costs, and what happens when Tracearr is not configured at all.
   resolves free against the engine's own index and is dropped, not guessed,
   when it is stale.
 
+**Known limitation: the Plex last resort is not available to an identified
+bucket.** A Movie bucket that HAS a ``media_id`` but no usable external id is
+dropped rather than falling back to its Plex rating key, even though the
+identity-less path has that fallback -- because ``collections/activity.py``
+sets ``rating_key=None`` on every identified bucket, so there is no key on the
+``Bucket`` to fall back to. That is A-resolution's letter ("identity-less-ONLY
+buckets"), recorded here so the asymmetry is a decision rather than an
+accident.
+
 **The budget.** 240 requests/minute shared across the whole v2 tree. One
 collection is one page per 100 plays in its window, plus at most ``limit``
 media documents on a Show library. The documents are memoised on
@@ -70,12 +79,25 @@ from autoposter.collections.activity import (
     rank,
     since_instant,
 )
+# ``activity``'s own absence coercion, by its private name because that is where
+# the rule lives and a second copy of it is exactly what this module is being
+# cleaned of. It maps ``0`` and ``"0"`` -- the same absence marker one JSON
+# coercion apart -- to None. A Movie bucket's ids already went through it
+# (``activity`` builds them); a media document read here has not.
+from autoposter.collections.activity import _external_id as _absent_or_str
 from autoposter.collections.builders.base import (
+    PREFERENCE,
     BuilderContext,
     BuilderResult,
+    ExternalId,
+    best_external_id,
     require_library_type,
 )
-from autoposter.providers.tracearr import TracearrNotFound, TracearrRefused
+from autoposter.providers.tracearr import (
+    TracearrClient,
+    TracearrNotFound,
+    TracearrRefused,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,14 +107,10 @@ __all__ = [
     "TracearrMostWatchedParams",
 ]
 
-# ``(field on the identity, namespace)`` in preference order, per library type:
-# which guid the library's items are most likely to carry, and every fallback
-# is a member that would otherwise be dropped. The same orders
-# ``builders/mdblist.py`` uses, for the same reason.
-_PREFERENCE: dict[str, tuple[tuple[str, str], ...]] = {
-    "Movie": (("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
-    "Show": (("tvdb_id", "tvdb"), ("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
-}
+# The preference orders and the id-selection loop are ``builders/base.py``'s
+# ``PREFERENCE``/``best_external_id``, shared with ``builders/mdblist.py``: it
+# is one semantic rule and two copies of it would let the same movie resolve
+# differently depending on which builder found it.
 
 # Where one show's media document is memoised, namespaced by module like
 # ``mdblist``'s and ``imdb_award``'s.
@@ -165,7 +183,7 @@ class TracearrMostWatchedBuilder:
             since=since_instant(params.days, datetime.now(UTC)),
             media_type=HISTORY_MEDIA_TYPE[kind],
         )
-        ids = []
+        ids: list[ExternalId] = []
         vanished = 0
         for bucket in rank(
             records, media_kind=kind, metric=params.metric, limit=params.limit
@@ -206,30 +224,37 @@ class TracearrMostWatchedBuilder:
         )
 
 
-async def _external_id(ctx: BuilderContext, client, library_type: str, bucket: Bucket):
+async def _external_id(
+    ctx: BuilderContext, client: TracearrClient, library_type: str, bucket: Bucket
+) -> ExternalId | None:
     """The best namespaced id for one bucket, or None if it has none."""
     if bucket.media_id is None:
         # An identity-less-only bucket: no canonical id exists anywhere, so the
         # Plex rating key it was formed under is the only thing there is.
         return ("plex", bucket.rating_key) if bucket.rating_key else None
-    identity = (
-        {
+    if library_type == "Movie":
+        identity = {
             "imdb_id": bucket.imdb_id,
             "tmdb_id": bucket.tmdb_id,
             "tvdb_id": bucket.tvdb_id,
         }
-        if library_type == "Movie"
-        else await _media_document(ctx, client, bucket.media_id)
-    )
-    for field, namespace in _PREFERENCE[library_type]:
-        value = identity.get(field)
-        if value is None or value == "" or value == 0:
-            continue
-        return (namespace, str(value))
-    return None
+    else:
+        # The media document is read RAW off the wire, unlike a Movie bucket's
+        # ids -- so ``activity``'s absence rule has to be applied here or a
+        # document carrying ``"tvdb_id": "0"`` becomes ("tvdb", "0"), an id
+        # that resolves to nothing anywhere and looks exactly like a member the
+        # library happens not to own.
+        document = await _media_document(ctx, client, bucket.media_id)
+        identity = {
+            name: _absent_or_str(document.get(name))
+            for name in ("imdb_id", "tmdb_id", "tvdb_id")
+        }
+    return best_external_id(identity, PREFERENCE[library_type])
 
 
-async def _media_document(ctx: BuilderContext, client, media_id: str) -> dict:
+async def _media_document(
+    ctx: BuilderContext, client: TracearrClient, media_id: str
+) -> dict:
     """One show's media document, fetched at most once per library per pass.
 
     The failure is memoised as well as the answer -- see the module docstring.

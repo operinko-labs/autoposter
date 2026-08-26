@@ -41,8 +41,10 @@ import re
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from autoposter.collections.builders.base import (
+    PREFERENCE,
     BuilderContext,
     BuilderResult,
+    best_external_id,
     require_library_type,
 )
 from autoposter.facts.mdblist import MDBListLimitReached
@@ -59,12 +61,11 @@ _LIST_REFERENCE = re.compile(rf"^(\d+|{_SEGMENT}/{_SEGMENT})$")
 # MDBList's word for a media type, per library type.
 _MEDIATYPES = {"Movie": "movie", "Show": "show"}
 
-# ``(entry field, namespace)`` in preference order, per library type. See the
-# module docstring for why these orders and why no others.
-_PREFERENCE: dict[str, tuple[tuple[str, str], ...]] = {
-    "Movie": (("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
-    "Show": (("tvdb_id", "tvdb"), ("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
-}
+# The preference orders and the id-selection loop live in ``builders/base.py``
+# as ``PREFERENCE``/``best_external_id`` -- ``tracearr_most_watched`` needs the
+# same rule and two copies of it would drift. See the module docstring for why
+# these orders and why no others, and ``best_external_id`` for why the skip is
+# still logged here rather than there.
 
 # Where this library's "MDBList has stopped answering" memo lives (in
 # ``ctx.run_cache``, which ``engine.run_library`` builds one per library, not
@@ -146,16 +147,6 @@ async def _list_items(ctx: BuilderContext, client, params: MdblistListParams):
         raise
 
 
-def _external_id(entry: dict, preference: tuple[tuple[str, str], ...]):
-    """The best namespaced id for one entry, or None if it carries none."""
-    for field, namespace in preference:
-        value = entry.get(field)
-        if value is None or value == "" or value == 0:
-            continue
-        return (namespace, str(value))
-    return None
-
-
 class MdblistListBuilder:
     """One MDBList list, in MDBList's order, as this library's ids."""
 
@@ -164,7 +155,7 @@ class MdblistListBuilder:
 
     async def build(self, ctx: BuilderContext) -> BuilderResult:
         params = MdblistListParams.model_validate(ctx.config)
-        require_library_type("the 'mdblist_list' builder", ctx.library_type, _PREFERENCE)
+        require_library_type("the 'mdblist_list' builder", ctx.library_type, PREFERENCE)
         client = ctx.sources.mdblist
         if client is None:
             raise MdblistBuilderRefused(
@@ -173,14 +164,14 @@ class MdblistListBuilder:
             )
 
         wanted = _MEDIATYPES[ctx.library_type]
-        preference = _PREFERENCE[ctx.library_type]
+        preference = PREFERENCE[ctx.library_type]
         ids = []
         other_media = 0
         for mediatype, entry in await _list_items(ctx, client, params):
             if mediatype != wanted:
                 other_media += 1
                 continue
-            external = _external_id(entry, preference)
+            external = best_external_id(entry, preference)
             if external is None:
                 # Skipped rather than raised: MDBList knowing no id for one
                 # title is the resolver's ordinary "the library does not have

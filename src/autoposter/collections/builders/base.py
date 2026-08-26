@@ -49,6 +49,7 @@ from autoposter.providers.cache import ProviderCache
 # nothing that reads them from the builder contract has to care.
 __all__ = [
     "NAMESPACES",
+    "PREFERENCE",
     "Builder",
     "BuilderContext",
     "BuilderResult",
@@ -62,9 +63,25 @@ __all__ = [
     "SmartBuilder",
     "SmartContext",
     "SourceClients",
+    "best_external_id",
     "register",
     "require_library_type",
 ]
+
+# ``(field on the entry, namespace)`` in preference order, per library type:
+# which guid the library's items are most likely to carry, and every fallback is
+# a member that would otherwise be dropped.
+#
+# One table, not one per builder. It is a single semantic rule -- "which guid
+# does this library type prefer" -- and two copies of it drift: the same movie
+# built through ``mdblist_list`` and through ``tracearr_most_watched`` would
+# resolve under different namespaces, which is a difference in *membership* that
+# nothing downstream could report. Also doubles as the "which library types does
+# this builder serve" table both of them pass to ``require_library_type``.
+PREFERENCE: dict[str, tuple[tuple[str, str], ...]] = {
+    "Movie": (("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
+    "Show": (("tvdb_id", "tvdb"), ("tmdb_id", "tmdb"), ("imdb_id", "imdb")),
+}
 
 
 @dataclass(frozen=True)
@@ -250,6 +267,32 @@ def require_library_type(subject: str, library_type: str, allowed) -> None:
         f"a {library_type} library, where it would match nothing at all. Narrow "
         f"the definition with `libraries:` so it only targets {kinds} libraries."
     )
+
+
+def best_external_id(
+    entry: dict, preference: tuple[tuple[str, str], ...]
+) -> ExternalId | None:
+    """The best namespaced id for one entry, or None if it carries none.
+
+    ``preference`` is a ``PREFERENCE`` row -- passed in rather than looked up
+    here so a caller that already resolved the library type does not resolve it
+    twice, and so a caller with an order of its own is not blocked.
+
+    Absence is ``None``, ``""`` and ``0``: the three shapes a source uses for
+    "this entry has no such id". Note that the *string* ``"0"`` is not absence
+    here -- a caller reading a raw document that might carry one coerces it
+    before this sees it (``activity._external_id`` is that coercion), because
+    tightening it here would silently change what ``mdblist_list`` emits.
+
+    Logging a skip is the CALLER's, deliberately: ``mdblist_list`` names the
+    list and the entry title it dropped, and a shared helper could name neither.
+    """
+    for name, namespace in preference:
+        value = entry.get(name)
+        if value is None or value == "" or value == 0:
+            continue
+        return (namespace, str(value))
+    return None
 
 
 class PlexIdParams(BaseModel):

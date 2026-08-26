@@ -291,7 +291,10 @@ def _duration_ms(record: dict) -> int:
 
     Salvaging is the point, so a float-shaped string is salvaged too: losing a
     whole play's watch time to a decimal point would be that same silently
-    wrong collection. Only genuine garbage is worth 0.
+    wrong collection. Only genuine garbage is worth 0 -- and ``OverflowError``
+    is caught alongside ``TypeError``/``ValueError`` in both arms, because
+    ``json.loads`` accepts a bare ``Infinity`` token and ``int(float("inf"))``
+    raises that, not either of the other two.
     """
     value = record.get("duration_ms")
     try:
