@@ -42,7 +42,6 @@ from typing import Protocol
 from urllib.parse import quote
 
 from autoposter.collections.filters import (
-    RELATIVE_UNITS,
     SEARCH_MODIFIERS,
     FilterGroup,
     FilterPredicate,
@@ -128,7 +127,14 @@ def build_search_url(
         )
     tail = body[:-1] if group.op == "all" else f"push=1&{body}pop=1"
     head = f"?type={SORT_TYPES[libtype].key}&"
-    if limit is not None:
+    # ``if limit``, not ``if limit is not None`` -- Kometa's own test
+    # (builder.py:4289). A zero would otherwise emit ``limit=0&``, a byte Kometa
+    # never sends and which Plex would answer with nothing at all. Kometa
+    # refuses ``< 1`` a layer up (:4152) and so does ``PlexSearchParams``
+    # (``Field(ge=1)``), so this is the second of two gates rather than the
+    # only one -- but this module is public and pure, and a caller that skipped
+    # the params model should not be able to build a query no server answers.
+    if limit:
         head += f"limit={limit}&"
     head += f"sort={sort_argument(libtype, sort_by)}&"
     return head + tail
@@ -159,6 +165,18 @@ def _render_group(group: FilterGroup, *, libtype: str, resolve_tag: TagResolver)
             piece = inner if child.inline else f"push=1&{inner}pop=1&"
         else:
             piece = _render_predicate(child, group.op, libtype=libtype, resolve_tag=resolve_tag)
+        # UNREACHABLE, and a place this module does not do what Kometa does --
+        # named here so the module docstring's "never because a branch was
+        # simplified" claim stays true. Kometa reaches :4252 with an
+        # empty ``results`` and appends the conjunction anyway, producing a
+        # dangling ``and=1&`` with no term in front of it. Nothing here can
+        # render an empty piece: the parser refuses an empty block, an empty
+        # list and a nested block that produced no children, which is what
+        # ``SearchProducedNothing``'s docstring says. Kept rather than deleted
+        # because it is the last line of defence for the query shape -- a
+        # dangling conjunction is a URL Plex still answers, with a different
+        # set -- and a guard whose cost is one comparison is cheaper than the
+        # class of bug it excludes.
         if not piece:
             continue
         out += (conjunction if out else "") + piece
@@ -217,9 +235,27 @@ def _arguments(
     if row.type == "date" and operator in ("eq", "not"):
         out = []
         for value in predicate.values:
-            assert isinstance(value, RelativeWindow)  # the parser guarantees it
+            # A real guard, not an ``assert``: an assert is stripped under
+            # ``python -O``, and what it was guarding is not a theory about
+            # this module's own arithmetic but the ONE way a caller can hand
+            # this function a value it cannot render. A bare or ``.not`` date
+            # parsed with ``searching=False`` is an ``int`` of days, not a
+            # window, and the unguarded failure is ``'int' object has no
+            # attribute 'unit'`` several frames down. ``RELATIVE_UNITS`` used
+            # to be asserted here too, on the line AFTER ``value.unit`` had
+            # already been read, so it could not fail usefully; the parser's
+            # ``_as_window`` is the only producer of a ``RelativeWindow`` and
+            # it refuses a unit outside the table, which is where that check
+            # belongs.
+            if not isinstance(value, RelativeWindow):
+                raise TypeError(
+                    f"{predicate.field}: a relative date window is required "
+                    f"here, not {value!r}. This tree was parsed for a "
+                    "`filters:` block -- call parse_filters(..., "
+                    "searching=True) for a plex_search, which is what turns "
+                    "`added: 30` into a window rather than a day count"
+                )
             unit = "mon" if value.unit == "o" else value.unit
-            assert value.unit in RELATIVE_UNITS
             out.append((modifier, f"-{value.count}{unit}"))
         return out
 

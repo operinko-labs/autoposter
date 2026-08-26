@@ -7,7 +7,7 @@ runs, and produces a full, plausible, wrong collection. Every other test in
 this phase asserts the transcription against itself -- against a string
 hand-derived from the same source, by the same reading, in the same sitting.
 
-This file asserts it against Kometa. Thirteen configs, and thirteen URI strings
+This file asserts it against Kometa. Fourteen configs, and fourteen URI strings
 produced by **Kometa's own build_filter** -- fetched, transcribed standalone,
 run, and pinned below as data. Ours must reproduce them byte for byte.
 
@@ -50,6 +50,15 @@ also hand-derived from the source (1, 2, 3, 5, 7 and 12) agree with the driver
 exactly, so there is no adjudication to record. That is a weaker result than
 9a's four-way disagreement only in the sense that nothing had to be fixed; the
 falsifiability proof in the Task 3 report is what shows the gate can fail.
+
+## The fourteenth config
+
+Added after the Task 3 review, which found the one coverage hole in the
+original thirteen: configs 1 and 13 pin a multi-term join under ``all`` and no
+config pinned one under ``any``, so a renderer hard-coding ``and=1&`` between
+the terms of a single written key passed every oracle case. Config 14 is that
+case and nothing else, and its golden came from the same driver in the same
+way.
 """
 from pathlib import Path
 
@@ -124,13 +133,15 @@ CONFIGS = [
         "sort_by": "episode_added.desc", "limit": 10,
     }),
     ("13-language-expansion", "movie", {"all": {"audio_language": "es"}}),
+    ("14-multi-value-under-any", "movie", {"any": {"content_rating": ["PG-13", "R"]}}),
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
 # ``tests/oracle/9b/kometa_build_filter.py`` -- Kometa v2.4.8's
 # ``build_filter``, transcribed standalone, importing nothing from this
-# repository. The raw run is in the Task 3 report. Do not edit a string here to
-# make a test pass: if ours differs, ours is wrong.
+# repository. The raw run is in the Task 3 report (thirteen) and the Task 4
+# report (the fourteenth). Do not edit a string here to make a test pass: if
+# ours differs, ours is wrong.
 KOMETA = {
     "1-multi-value-tag": "?type=1&sort=titleSort&contentRating=5&and=1&contentRating=7",
     "2-any-base": "?type=1&limit=25&sort=rating%3Adesc&push=1&studio=A24&or=1&year%3E=2020&pop=1",
@@ -145,6 +156,7 @@ KOMETA = {
     "11-several-sorts": "?type=1&limit=100&sort=rating%3Adesc%2CtitleSort&year%3E=2010",
     "12-show-rescoping": "?type=2&limit=10&sort=episode.addedAt%3Adesc&show.genre=9&and=1&episode.resolution=1080&and=1&episode.audioLanguage=en&and=1&show.network=42&and=1&show.addedAt%3E%3E=2024-01-01",
     "13-language-expansion": "?type=1&sort=titleSort&audioLanguage=es-419&and=1&audioLanguage=es-MX&and=1&audioLanguage=spa",
+    "14-multi-value-under-any": "?type=1&sort=titleSort&push=1&contentRating=5&or=1&contentRating=7&pop=1",
 }
 
 
@@ -190,12 +202,41 @@ def test_the_oracles_vocabulary_fixture_matches_this_files_copy():
     pytest.fail("the oracle driver has no CHOICES literal")
 
 
+def test_the_driver_still_produces_the_pinned_strings():
+    """The goldens above are data, and the driver that produced them is now
+    tracked, reviewable and editable -- so it can drift from them with nothing
+    noticing, which is a smaller version of the argument that moved it under
+    ``tests/`` in the first place.
+
+    Running the driver HERE does not violate "never compare our builder against
+    the driver at test time": the builder's assertion above still runs against
+    the pinned text, and this one never touches the builder. Run in-process
+    rather than marked slow or deferred to a container step, because the driver
+    imports only the standard library, opens no socket, reads no clock on any
+    path these configs reach (``datetime.now()`` is behind ``current_year`` and
+    ``today``, which no config writes) and finishes in milliseconds -- a marker
+    would be cost with no saving, and a skipped guard is not a guard.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("kometa_oracle_driver", ORACLE_DRIVER)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+
+    for index, ((libtype, plex_filter), (name, pinned)) in enumerate(
+        zip(driver.CONFIGS, KOMETA.items(), strict=True), start=1
+    ):
+        assert name.startswith(f"{index}-"), f"{name} is not config {index}"
+        _, url = driver.build_filter("plex_search", plex_filter, libtype)
+        assert url == pinned, name
+
+
 def test_every_oracle_url_is_free_of_includeCollections():
     for url in KOMETA.values():
         assert "includeCollections" not in url
 
 
-def test_the_thirteen_configs_cover_every_shipped_value_type():
+def test_the_configs_cover_every_shipped_value_type():
     """Coverage, asserted rather than claimed. If a later task adds a value
     type to the table, this fails until a config exercises it through the
     oracle."""

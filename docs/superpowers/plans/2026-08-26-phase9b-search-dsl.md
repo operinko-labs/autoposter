@@ -503,7 +503,7 @@ table, and the fix-round adjudicates any that bite.
 | `tests/test_builder_plex_search.py` | **New.** The builder, the params model, the refusals, the tag resolution, the run-cache. | T4 |
 | `tests/test_collection_config.py` | Extended: load-time refusals through `CollectionDefinition`. | T4 |
 | `tests/oracle/9b/kometa_build_filter.py` | **New, not packaged.** Kometa's `build_filter` + `validate_attribute`, transcribed standalone. Imports nothing from this repo. Tracked under `tests/` because the oracle test reads it. | T3 |
-| `tests/oracle/9b/ours.py` | **New, not packaged.** Our side of the same thirteen configs, as a runnable script. | T3 |
+| `tests/oracle/9b/ours.py` | **New, not packaged.** Our side of the same fourteen configs, as a runnable script. | T3 |
 | `.superpowers/sdd/p9b-task-5-probe.md` | **New, not shipped.** The live probe's script and scrubbed results. | T5 |
 | `docs/superpowers/specs/2026-08-22-full-parity-roadmap.md` | **Modified.** Rows 96, 101, 154, 157, 158 + new rows. | T7 |
 | `src/autoposter/collections/catalog.py` | **Modified.** `media_aspect`'s copy fix; any row T5 unblocks. | T7 |
@@ -3094,6 +3094,15 @@ def test_the_limit_sits_between_the_type_and_the_sort():
     )
 
 
+def test_a_zero_limit_emits_no_limit_at_all_which_is_kometas_test():
+    """``if limit``, not ``if limit is not None`` (builder.py:4289). The params
+    model refuses ``limit: 0`` before this module ever sees one, so the only
+    way here is a direct call -- and the byte this used to emit, ``limit=0&``,
+    is one Kometa never sends and Plex answers with nothing."""
+    assert url({"year.gte": 2010}, limit=0) == "?type=1&sort=titleSort&year%3E=2010"
+    assert url({"year.gte": 2010}, limit=None) == "?type=1&sort=titleSort&year%3E=2010"
+
+
 def test_no_built_url_ever_carries_includeCollections():
     """Roadmap Notes-for-9b item 1. The name reads as 'also send each item's
     <Collection> children'; what it actually does is MIX Collection objects
@@ -3120,6 +3129,20 @@ def test_a_group_with_no_terms_raises_rather_than_building_an_empty_query():
     empty = FilterGroup(op="all", children=(), field="params")
     with pytest.raises(SearchProducedNothing):
         build_search_url(empty, libtype="movie", resolve_tag=resolve)
+
+
+def test_a_filters_parsed_tree_refuses_at_the_relative_window_rather_than_crashing():
+    """The one way a caller can hand this module a value it cannot render: a
+    bare date parsed with ``searching=False`` is a plain int of days, not a
+    ``RelativeWindow``. This used to be an ``assert`` -- stripped under
+    ``python -O``, and reading as an internal invariant rather than as the
+    caller error it is."""
+    group = parse_filters({"added": 30}, field="filters")
+    with pytest.raises(TypeError) as error:
+        build_search_url(group, libtype="movie", resolve_tag=resolve)
+    message = str(error.value)
+    assert "searching=True" in message
+    assert "filters.added" in message
 ```
 
 - [ ] **Step 2: Run to see it fail**
@@ -3179,7 +3202,6 @@ from typing import Protocol
 from urllib.parse import quote
 
 from autoposter.collections.filters import (
-    RELATIVE_UNITS,
     SEARCH_MODIFIERS,
     FilterGroup,
     FilterPredicate,
@@ -3265,7 +3287,14 @@ def build_search_url(
         )
     tail = body[:-1] if group.op == "all" else f"push=1&{body}pop=1"
     head = f"?type={SORT_TYPES[libtype].key}&"
-    if limit is not None:
+    # ``if limit``, not ``if limit is not None`` -- Kometa's own test
+    # (builder.py:4289). A zero would otherwise emit ``limit=0&``, a byte Kometa
+    # never sends and which Plex would answer with nothing at all. Kometa
+    # refuses ``< 1`` a layer up (:4152) and so does ``PlexSearchParams``
+    # (``Field(ge=1)``), so this is the second of two gates rather than the
+    # only one -- but this module is public and pure, and a caller that skipped
+    # the params model should not be able to build a query no server answers.
+    if limit:
         head += f"limit={limit}&"
     head += f"sort={sort_argument(libtype, sort_by)}&"
     return head + tail
@@ -3296,6 +3325,18 @@ def _render_group(group: FilterGroup, *, libtype: str, resolve_tag: TagResolver)
             piece = inner if child.inline else f"push=1&{inner}pop=1&"
         else:
             piece = _render_predicate(child, group.op, libtype=libtype, resolve_tag=resolve_tag)
+        # UNREACHABLE, and a place this module does not do what Kometa does --
+        # named here so the module docstring's "never because a branch was
+        # simplified" claim stays true. Kometa reaches :4252 with an
+        # empty ``results`` and appends the conjunction anyway, producing a
+        # dangling ``and=1&`` with no term in front of it. Nothing here can
+        # render an empty piece: the parser refuses an empty block, an empty
+        # list and a nested block that produced no children, which is what
+        # ``SearchProducedNothing``'s docstring says. Kept rather than deleted
+        # because it is the last line of defence for the query shape -- a
+        # dangling conjunction is a URL Plex still answers, with a different
+        # set -- and a guard whose cost is one comparison is cheaper than the
+        # class of bug it excludes.
         if not piece:
             continue
         out += (conjunction if out else "") + piece
@@ -3354,9 +3395,27 @@ def _arguments(
     if row.type == "date" and operator in ("eq", "not"):
         out = []
         for value in predicate.values:
-            assert isinstance(value, RelativeWindow)  # the parser guarantees it
+            # A real guard, not an ``assert``: an assert is stripped under
+            # ``python -O``, and what it was guarding is not a theory about
+            # this module's own arithmetic but the ONE way a caller can hand
+            # this function a value it cannot render. A bare or ``.not`` date
+            # parsed with ``searching=False`` is an ``int`` of days, not a
+            # window, and the unguarded failure is ``'int' object has no
+            # attribute 'unit'`` several frames down. ``RELATIVE_UNITS`` used
+            # to be asserted here too, on the line AFTER ``value.unit`` had
+            # already been read, so it could not fail usefully; the parser's
+            # ``_as_window`` is the only producer of a ``RelativeWindow`` and
+            # it refuses a unit outside the table, which is where that check
+            # belongs.
+            if not isinstance(value, RelativeWindow):
+                raise TypeError(
+                    f"{predicate.field}: a relative date window is required "
+                    f"here, not {value!r}. This tree was parsed for a "
+                    "`filters:` block -- call parse_filters(..., "
+                    "searching=True) for a plex_search, which is what turns "
+                    "`added: 30` into a window rather than a day count"
+                )
             unit = "mon" if value.unit == "o" else value.unit
-            assert value.unit in RELATIVE_UNITS
             out.append((modifier, f"-{value.count}{unit}"))
         return out
 
@@ -3437,7 +3496,7 @@ A standing test asserts no built query carries includeCollections."
 This is the acceptance gate for the whole phase. Everything above asserts the
 transcription against itself; this asserts it against Kometa.
 
-**The thirteen configs.** Each is written twice — once in this service's
+**The fourteen configs.** Each is written twice — once in this service's
 spelling, once in Kometa's — because the two grammars differ in exactly the
 places 9a and 9b refused something, and an oracle driven by a config Kometa
 cannot parse proves nothing. Between them they cover: both base conjunctions,
@@ -3459,6 +3518,7 @@ both nesting shapes, both library types, every value type's special case, sorts
 | 11 | several sorts, joined `%2C`, with a limit | `{"all": {"year.gte": 2010}, "sort_by": ["critic_rating.desc", "title.asc"], "limit": 100}` | identical |
 | 12 | SHOW libtype: five re-scoped fields, a show-only attribute, a show sort | `{"all": {"genre": "Drama", "resolution": "1080", "audio_language": "en", "network": "HBO", "added.after": "2024-01-01"}, "sort_by": "episode_added.desc", "limit": 10}` | identical |
 | 13 | a language expansion — several terms from one written value, ANDed | `{"all": {"audio_language": "es"}}` | identical |
+| 14 | a multi-value tag under `any` — the same join, ORed. **Added by the T4 lead-in**, closing the one hole the T3 review found: configs 1 and 13 pin the multi-term join under `all` only, so a renderer hard-coding `and=1&` between one key's terms passed every oracle case | `{"any": {"content_rating": ["PG-13", "R"]}}` | identical |
 
 **The vocabulary fixture.** Both sides resolve tags through the same fixed
 mapping, written once and shared by value rather than by import (the oracle
@@ -3481,7 +3541,7 @@ CHOICES = {
 - [ ] **Step 6: Write the oracle driver**
 
 Create `tests/oracle/9b/kometa_build_filter.py`. It is Kometa's
-`build_filter` and the branches of `validate_attribute` the thirteen configs
+`build_filter` and the branches of `validate_attribute` the fourteen configs
 reach, transcribed standalone with the Kometa infrastructure removed (logging,
 the display strings, the music/season/episode libtypes, the TMDb/actor-id
 lookups, `validate=False`). Header, verbatim:
@@ -3573,7 +3633,7 @@ Finally:
 
 ```python
 CONFIGS = [
-    # ... the thirteen from the table above, in Kometa's spelling, each as
+    # ... the fourteen from the table above, in Kometa's spelling, each as
     # (libtype, plex_filter)
 ]
 
@@ -3593,11 +3653,13 @@ docker compose -p p9bt3 -f docker-compose.yml -f .superpowers/isolated-db.yml \
     run --rm test python tests/oracle/9b/kometa_build_filter.py
 ```
 
-Expected: thirteen lines, each `N ?type=...`. Paste the **raw output verbatim**
+Expected: fourteen lines, each `N ?type=...`. (Thirteen when Task 3 ran it;
+the fourteenth config was added by the Task 4 lead-in and its golden captured
+the same way.) Paste the **raw output verbatim**
 into the task report — it is the derivation, and a reviewer must be able to see
 it without rerunning anything.
 
-The plan's own hand-derivation of six of the thirteen, from Kometa's source,
+The plan's own hand-derivation of six of the fourteen, from Kometa's source,
 is below. **If the oracle disagrees with any of these, the ORACLE wins**, the
 divergence is written onto the code it corrects with a `SETTLED-BY-ORACLE`
 marker (9a's convention, `src/autoposter/collections/filters.py:36-48`), and
@@ -3692,15 +3754,17 @@ CONFIGS = [
         "sort_by": "episode_added.desc", "limit": 10,
     }),
     ("13-language-expansion", "movie", {"all": {"audio_language": "es"}}),
+    ("14-multi-value-under-any", "movie", {"any": {"content_rating": ["PG-13", "R"]}}),
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
 # ``tests/oracle/9b/kometa_build_filter.py`` -- Kometa v2.4.8's
 # ``build_filter``, transcribed standalone, importing nothing from this
-# repository. The raw run is in the Task 3 report. Do not edit a string here to
-# make a test pass: if ours differs, ours is wrong.
+# repository. The raw run is in the Task 3 report (thirteen) and the Task 4
+# report (the fourteenth). Do not edit a string here to make a test pass: if
+# ours differs, ours is wrong.
 KOMETA = {
-    # <paste the thirteen lines from Step 7, as "id": "url",>
+    # <paste the fourteen lines from Step 7, as "id": "url",>
 }
 
 
@@ -3746,12 +3810,41 @@ def test_the_oracles_vocabulary_fixture_matches_this_files_copy():
     pytest.fail("the oracle driver has no CHOICES literal")
 
 
+def test_the_driver_still_produces_the_pinned_strings():
+    """The goldens above are data, and the driver that produced them is now
+    tracked, reviewable and editable -- so it can drift from them with nothing
+    noticing, which is a smaller version of the argument that moved it under
+    ``tests/`` in the first place.
+
+    Running the driver HERE does not violate "never compare our builder against
+    the driver at test time": the builder's assertion above still runs against
+    the pinned text, and this one never touches the builder. Run in-process
+    rather than marked slow or deferred to a container step, because the driver
+    imports only the standard library, opens no socket, reads no clock on any
+    path these configs reach (``datetime.now()`` is behind ``current_year`` and
+    ``today``, which no config writes) and finishes in milliseconds -- a marker
+    would be cost with no saving, and a skipped guard is not a guard.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("kometa_oracle_driver", ORACLE_DRIVER)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+
+    for index, ((libtype, plex_filter), (name, pinned)) in enumerate(
+        zip(driver.CONFIGS, KOMETA.items(), strict=True), start=1
+    ):
+        assert name.startswith(f"{index}-"), f"{name} is not config {index}"
+        _, url = driver.build_filter("plex_search", plex_filter, libtype)
+        assert url == pinned, name
+
+
 def test_every_oracle_url_is_free_of_includeCollections():
     for url in KOMETA.values():
         assert "includeCollections" not in url
 
 
-def test_the_thirteen_configs_cover_every_shipped_value_type():
+def test_the_configs_cover_every_shipped_value_type():
     """Coverage, asserted rather than claimed. If a later task adds a value
     type to the table, this fails until a config exercises it through the
     oracle."""
@@ -3779,7 +3872,9 @@ docker compose -p p9bt3 -f docker-compose.yml -f .superpowers/isolated-db.yml \
     run --rm test sh -c 'timeout -s KILL 900 pytest -q tests/test_collection_search_oracle.py; echo EXIT=$?'
 ```
 
-Expected: `16 passed` (thirteen parametrized cases + three structural).
+Expected: `18 passed` (fourteen parametrized cases + four structural). Task 3
+shipped `16 passed`; the fourteenth config and the driver-reproduction test
+below are the Task 4 lead-in's two additions.
 
 **If it is red — and expect it to be, at least once.** 9a's oracle was red in
 four places on its first run, every one a transcription judgement made without
@@ -3862,6 +3957,43 @@ attribute returning a plausible-but-wrong set -- into a gate."
   - `PlexSearchBuilder` with `type_name = "plex_search"` and
     `params_model = PlexSearchParams`.
   - `PlexSearchUnavailable(Exception)`, `PlexSearchRefused(Exception)`.
+
+### Lead-in: the nine accuracy items from the Task 3 review
+
+Shipped as a separate commit ahead of the task proper, one item per finding in
+that review's Minor list. The plan blocks each touches are already spliced with
+what shipped — the entries below are the index, not a second copy.
+
+1. **The fourteenth oracle config** (Minor 3) — `{"any": {"content_rating":
+   ["PG-13", "R"]}}`, the multi-term join under `any`. Its golden came from the
+   same driver in the same way, and the mutation proof is in the Task 4 report:
+   a hard-coded `and=1&` in `_render_predicate` reddens config 14 and nothing
+   else in the oracle. Table row 14, T3 Steps 6–9.
+2. **`test_the_driver_still_produces_the_pinned_strings`** (Minor 4) — the
+   driver is tracked and editable, so it could drift from the goldens with
+   nothing noticing. Run in-process rather than marked slow: stdlib-only, no
+   socket, no clock on any path these configs reach. The builder's own
+   assertion still runs against the pinned text, so the isolation holds.
+3. **The two runtime `assert`s in `search_url._arguments`** (Minor 5) — the
+   `isinstance` one becomes a real `TypeError` naming the caller error it
+   actually catches (a tree parsed with `searching=False`); the
+   `RELATIVE_UNITS` one is dropped with its import, because it ran *after* the
+   line that consumed `value.unit` and so could not fail usefully.
+4. **`if limit` for `if limit is not None`** (Minor 6) — Kometa's own test
+   (builder.py:4289). `PlexSearchParams` refuses `limit: 0` too, so this is the
+   second of two gates rather than the only one.
+5. **The unreachable `continue` in `_render_group`** (Minor 7) — documented at
+   the site, so the module docstring's "never because a branch was simplified"
+   claim stays true. Kept rather than removed: a dangling `and=1&` is a URL
+   Plex still answers, with a different set.
+6. **The driver's plex-vs-builder attribute-list binding** (Minor 1) — noted
+   above `validate_attribute`, with the argument for why it is inert (nothing
+   outside `searches` can reach that function, and `searches` is built from the
+   plex lists alone).
+7. **`_choices`' two dropped simplifications** (Minor 2) — the lowercase retry
+   and the `plex_search` pairing switch, added to its removal list.
+8. **The `_validateAdvancedSearch` citation** in the Task 3 report (Minor 8) —
+   `:1229-1257`, the `def` line included.
 
 ### Step 0: THE `langcodes` DECISION — resolve before writing any code
 
@@ -5115,7 +5247,7 @@ Append to row 101 (`docs/.../2026-08-22-full-parity-roadmap.md:203`), in the
 > **answered 9b (v1):** delivered — `plex_search` is a registered builder
 > (`src/autoposter/collections/builders/plex_search.py`) whose query string is
 > byte-identical to the one Kometa 2.4.8's own `build_filter` produces for the
-> same config, proven by thirteen pinned golden URIs
+> same config, proven by fourteen pinned golden URIs
 > (`tests/test_collection_search_oracle.py`). **19 of Kometa's 55 non-music
 > search attributes ship**, not all of them: the 9a nine as searches
 > (`year`, `resolution`, `audience_rating`, `critic_rating`, `content_rating`,
@@ -5372,7 +5504,7 @@ Run against the fact sheet (`.superpowers/sdd/p9b-facts.md`) and the roadmap's
 | `includeCollections` footgun test | T3 |
 | The 3213-3220 unknown-key shorthand NOT reproduced | T4 (`extra="forbid"` + the named refusals) |
 | Language base-ISO expansion transcribed and tested | T4 (Step 0 decision, `_language_keys`), T5 (probe 2) |
-| The oracle: standalone driver, N configs, pinned data | T3 (thirteen) |
+| The oracle: standalone driver, N configs, pinned data | T3 (thirteen; a fourteenth added by the T4 lead-in) |
 | The live probe: dual-path round-trip + three named probes, read-only, scrubbed | T5 |
 | The per-family tail enumerated | T6 |
 | Wrap: rows 101/96/154/157/158, `media_aspect` copy, catalog honesty, new rows | T7 |
@@ -5382,7 +5514,7 @@ Run against the fact sheet (`.superpowers/sdd/p9b-facts.md`) and the roadmap's
 **Placeholder scan.** No `TBD`, no "implement later", no "similar to Task N",
 no "add appropriate error handling". Two derivations are deliberately produced
 at execution rather than written here, and both name the exact command that
-produces them and the exact place the result is pasted: the oracle's thirteen
+produces them and the exact place the result is pasted: the oracle's fourteen
 golden strings (T3 Step 7 → Step 8, with six of them hand-derived in the plan
 as a cross-check) and Task 5's probe output. That is the 9a oracle's own
 procedure — fetch the code, run it, pin the answer — not a gap.

@@ -203,6 +203,15 @@ def test_the_limit_sits_between_the_type_and_the_sort():
     )
 
 
+def test_a_zero_limit_emits_no_limit_at_all_which_is_kometas_test():
+    """``if limit``, not ``if limit is not None`` (builder.py:4289). The params
+    model refuses ``limit: 0`` before this module ever sees one, so the only
+    way here is a direct call -- and the byte this used to emit, ``limit=0&``,
+    is one Kometa never sends and Plex answers with nothing."""
+    assert url({"year.gte": 2010}, limit=0) == "?type=1&sort=titleSort&year%3E=2010"
+    assert url({"year.gte": 2010}, limit=None) == "?type=1&sort=titleSort&year%3E=2010"
+
+
 def test_no_built_url_ever_carries_includeCollections():
     """Roadmap Notes-for-9b item 1. The name reads as 'also send each item's
     <Collection> children'; what it actually does is MIX Collection objects
@@ -229,3 +238,17 @@ def test_a_group_with_no_terms_raises_rather_than_building_an_empty_query():
     empty = FilterGroup(op="all", children=(), field="params")
     with pytest.raises(SearchProducedNothing):
         build_search_url(empty, libtype="movie", resolve_tag=resolve)
+
+
+def test_a_filters_parsed_tree_refuses_at_the_relative_window_rather_than_crashing():
+    """The one way a caller can hand this module a value it cannot render: a
+    bare date parsed with ``searching=False`` is a plain int of days, not a
+    ``RelativeWindow``. This used to be an ``assert`` -- stripped under
+    ``python -O``, and reading as an internal invariant rather than as the
+    caller error it is."""
+    group = parse_filters({"added": 30}, field="filters")
+    with pytest.raises(TypeError) as error:
+        build_search_url(group, libtype="movie", resolve_tag=resolve)
+    message = str(error.value)
+    assert "searching=True" in message
+    assert "filters.added" in message

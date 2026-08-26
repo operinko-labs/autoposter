@@ -624,7 +624,7 @@ def check_int(value, datatype="int", minimum=1, maximum=None, throw=False):
 # dict/dictlist/dictdict/strdict/dictliststr datatype branches (util.py:917-975).
 # Each returns before reaching the branches below, and ``validate_attribute``
 # calls parse with datatype "int", "float" or "bool" only on every path the
-# thirteen configs take.
+# fourteen configs take.
 def parse(error, attribute, data, datatype=None, methods=None, parent=None, default=None, options=None, translation=None, minimum=1, maximum=None, regex=None, range_split=None, date_return=None):
     display = f"{parent + ' ' if parent else ''}{attribute} attribute"
     if options is None and translation is not None:
@@ -705,6 +705,21 @@ def _choices(attribute, final_values, plex_search):
     REMOVED with them: the ``get_actor_id`` fallback (builder.py:4425-4431),
     reached only for actor/director/producer/writer, and the ``show_options``
     half of the error message.
+
+    REMOVED, and both inert for these configs rather than absent by accident:
+
+    - the LOWERCASE RETRY. Upstream tries ``str(fvalue)`` and then, on a miss,
+      ``str(fvalue).lower()`` against ``search_choices`` (builder.py:4420),
+      which is where the case-insensitivity an operator sees actually lives.
+      This tries only the exact form for a non-language attribute, because
+      every value in ``CHOICES`` is written the way the config writes it -- the
+      retry has nothing to reach. Our builder's own resolver does implement
+      it, and its tests prove it there; the oracle's job is the URL, not the
+      vocabulary lookup.
+    - the ``plex_search`` PAIRING SWITCH. Upstream pairs conditionally --
+      ``(fvalue, valid_value) if plex_search else valid_value`` (:4422) -- and
+      this always returns pairs, because ``build_filter`` is the only caller
+      and it always passes ``plex_search=True``.
     """
     is_plex_search_language = plex_search and attribute in ("audio_language", "subtitle_language")
     valid_list = []
@@ -724,7 +739,21 @@ def _choices(attribute, final_values, plex_search):
 # ``original_language``/``tmdb_keyword``, ``tmdb_genre``/``tvdb_genre``,
 # ``history``, ``tmdb_type``, ``tmdb_status``, ``imdb_keyword`` (:4353-4398) and
 # ``seasons``/``episodes``/``albums``/``tracks`` and everything after (:4453+) --
-# none is a Plex search attribute reachable from the thirteen configs.
+# none is a Plex search attribute reachable from the fourteen configs.
+#
+# THE ATTRIBUTE LISTS BELOW ARE plex's, WHERE UPSTREAM'S ARE builder's -- a
+# deliberate binding, not an oversight, and the counterpart of the note above
+# ``builder_date_attributes`` (what ``Plex.split`` reads). Upstream's
+# ``validate_attribute`` writes bare names that resolve to ``builder.py:469-475``,
+# where each is the plex list plus the builder's own additions
+# (``date_attributes`` + three aired, ``string_attributes`` + ``string_filters``,
+# and so on). Binding them to plex's is inert on THIS path and provably so:
+# ``_filter`` refuses any attribute not in ``searches`` (``final_attr not in
+# searches``, in ``_filter`` below), and ``searches`` (plex.py:507-601) is built
+# out of the plex lists alone -- so no builder-only name can reach this function
+# at all. Copying the supersets would
+# add rows that nothing can select, which is the kind of unreachable table a
+# transcription is worse for carrying.
 def validate_attribute(attribute, modifier, final, data, plex_search=False, plex_search_type=None):
     def smart_pair(list_to_pair):
         return [(t, t) for t in list_to_pair] if plex_search else list_to_pair
@@ -912,7 +941,7 @@ def build_filter(method, plex_filter, sort_type):
         # REMOVED: the implicit-base reconstruction (:4265-4277), which rebuilds
         # a base_dict out of the top-level keys using ``and_searches``/
         # ``or_searches``. 9b refuses a plex_search with no written base
-        # (decision D1) and all thirteen configs write one, so the branch is
+        # (decision D1) and all fourteen configs write one, so the branch is
         # dead here -- kept as the refusal Kometa also ends at when nothing
         # matched, so a config that lost its base cannot take a quiet path.
         raise Failed(f"{TYPE} Error: Must have either any or all as a base for {method}")
@@ -932,7 +961,7 @@ def build_filter(method, plex_filter, sort_type):
     return type_key, filter_url
 
 
-# --- the thirteen configs, in KOMETA'S spelling -------------------------------
+# --- the fourteen configs, in KOMETA'S spelling -------------------------------
 # Config 7 is the one place the two spellings differ: ours writes the second
 # duration as ``2:30``, which is 9a's own written form (``_as_minutes``) and has
 # no Kometa equivalent. The MINUTE VALUE is identical -- 150 -- which is the
@@ -978,6 +1007,12 @@ CONFIGS = [
         "sort_by": "episode_added.desc", "limit": 10,
     }),
     ("movie", {"all": {"audio_language": "es"}}),
+    # 14: the only config whose multi-term join sits under ``any``. Configs 1
+    # and 13 pin that join under ``all``, so without this one a renderer that
+    # hard-codes ``and=1&`` between the terms of a single written key passes
+    # every oracle case -- which is the self-agreement the oracle exists to
+    # escape (Task 3 review, Minor 3).
+    ("movie", {"any": {"content_rating": ["PG-13", "R"]}}),
 ]
 
 

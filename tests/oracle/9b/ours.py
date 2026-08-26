@@ -1,4 +1,4 @@
-"""Our side of the oracle: parse_filters + build_search_url, thirteen URLs.
+"""Our side of the oracle: parse_filters + build_search_url, fourteen URLs.
 
 The comparison itself lives in ``tests/test_collection_search_oracle.py``,
 where Kometa's answers are pinned as data. This script exists so a reviewer can
@@ -8,7 +8,7 @@ put the two sides side by side without pytest::
         run --rm test sh -c 'python tests/oracle/9b/kometa_build_filter.py > /tmp/k.txt; \
                              python tests/oracle/9b/ours.py > /tmp/o.txt; diff /tmp/k.txt /tmp/o.txt && echo IDENTICAL'
 
-The configs below are OUR spelling of the same thirteen. Config 7 is the one
+The configs below are OUR spelling of the same fourteen. Config 7 is the one
 place the two differ -- ``2:30`` is 9a's written duration form and Kometa has
 no equivalent, so its side is driven with the same value written ``150``.
 
@@ -75,6 +75,7 @@ CONFIGS = [
         "sort_by": "episode_added.desc", "limit": 10,
     }),
     ("movie", {"all": {"audio_language": "es"}}),
+    ("movie", {"any": {"content_rating": ["PG-13", "R"]}}),
 ]
 
 
