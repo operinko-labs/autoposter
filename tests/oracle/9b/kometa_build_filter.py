@@ -53,6 +53,7 @@ CHOICES = {
     ("audio_language", "es"): ("es-419", "es-MX", "spa"),
     ("label", "Overlay"): ("3",),
     ("collection", "The Fast and the Furious Collection"): ("77",),
+    ("country", "France"): ("36",),
 }
 
 
@@ -949,7 +950,7 @@ def build_filter(method, plex_filter, sort_type, default_sort=None):
         # REMOVED: the implicit-base reconstruction (:4265-4277), which rebuilds
         # a base_dict out of the top-level keys using ``and_searches``/
         # ``or_searches``. 9b refuses a plex_search with no written base
-        # (decision D1) and all fifteen configs write one, so the branch is
+        # (decision D1) and every config writes one, so the branch is
         # dead here -- kept as the refusal Kometa also ends at when nothing
         # matched, so a config that lost its base cannot take a quiet path.
         raise Failed(f"{TYPE} Error: Must have either any or all as a base for {method}")
@@ -969,7 +970,7 @@ def build_filter(method, plex_filter, sort_type, default_sort=None):
     return type_key, filter_url
 
 
-# --- the fifteen configs, in KOMETA'S spelling -------------------------------
+# --- the seventeen configs, in KOMETA'S spelling -----------------------------
 # Config 7 is the one place the two spellings differ: ours writes the second
 # duration as ``2:30``, which is 9a's own written form (``_as_minutes``) and has
 # no Kometa equivalent. The MINUTE VALUE is identical -- 150 -- which is the
@@ -1041,6 +1042,17 @@ CONFIGS = [
         "plays.gt": 3,
         "plays.lte": 10,
     }}),
+    # 16: the two rows phase 10a added, on a movie library. ``decade`` is a
+    # year_attribute rendered as a plain number with no tag lookup at all
+    # (builder.py:4242-4248 takes it through the same multi-term branch as the
+    # tag rows, but validate_attribute returned ints); ``country`` is an
+    # ordinary tag resolved to its key.
+    ("movie", {"all": {"decade": 1980, "country": "France"}}),
+    # 17: ``country`` on a SHOW library, which is the only thing about either
+    # row that a movie config cannot reach -- show_translation re-scopes it to
+    # ``show.country`` (plex.py:170) and a row that forgot the rescoping would
+    # build a query Plex answers with the wrong set rather than with an error.
+    ("show", {"all": {"country": "France"}}),
 ]
 
 

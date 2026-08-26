@@ -7,9 +7,10 @@ runs, and produces a full, plausible, wrong collection. Every other test in
 this phase asserts the transcription against itself -- against a string
 hand-derived from the same source, by the same reading, in the same sitting.
 
-This file asserts it against Kometa. Fifteen configs, and fifteen URI strings
-produced by **Kometa's own build_filter** -- fetched, transcribed standalone,
-run, and pinned below as data. Ours must reproduce them byte for byte.
+This file asserts it against Kometa. Seventeen configs, and seventeen URI
+strings produced by **Kometa's own build_filter** -- fetched, transcribed
+standalone, run, and pinned below as data. Ours must reproduce them byte for
+byte.
 
 ## Where Kometa's strings came from
 
@@ -81,6 +82,17 @@ the same way. The review had independently rendered each fragment against the
 fetched upstream tables and found them correct -- so this config changed no
 behaviour; it moved seven facts from "we agree with ourselves" to "Kometa said
 so".
+
+## The sixteenth and seventeenth configs
+
+Phase 10a added two rows to the table -- ``decade`` (roadmap row 171) and
+``country`` (row 174) -- and
+``test_the_configs_cover_every_shipped_value_type`` only asserts that every
+value TYPE is exercised, which both rows' types already were. So neither row
+would have been reached by any golden: config 16 pins ``decade``'s plain-number
+render beside a tag on the same movie query, and config 17 pins ``country``'s
+show-library rescoping, which is the one thing about either row that a movie
+config cannot reach. Both goldens came from the same driver in the same way.
 """
 from pathlib import Path
 
@@ -106,6 +118,7 @@ CHOICES = {
     ("audio_language", "es"): ("es-419", "es-MX", "spa"),
     ("label", "Overlay"): ("3",),
     ("collection", "The Fast and the Furious Collection"): ("77",),
+    ("country", "France"): ("36",),
 }
 
 
@@ -167,6 +180,8 @@ CONFIGS = [
         "plays.gt": 3,
         "plays.lte": 10,
     }}),
+    ("16-decade-and-country", "movie", {"all": {"decade": 1980, "country": "France"}}),
+    ("17-country-on-a-show", "show", {"all": {"country": "France"}}),
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
@@ -191,6 +206,8 @@ KOMETA = {
     "13-language-expansion": "?type=1&sort=titleSort&audioLanguage=es-419&and=1&audioLanguage=es-MX&and=1&audioLanguage=spa",
     "14-multi-value-under-any": "?type=1&sort=titleSort&push=1&contentRating=5&or=1&contentRating=7&pop=1",
     "15-unreached-renders-and-rows": "?type=1&sort=titleSort&genre!=1138&and=1&studio!%3D=A24&and=1&studio%3E=Pictures%20%26%20Co&and=1&label=3&and=1&collection=77&and=1&viewCount%3E%3E=3&and=1&viewCount%3C=10",
+    "16-decade-and-country": "?type=1&sort=titleSort&decade=1980&and=1&country=36",
+    "17-country-on-a-show": "?type=2&sort=titleSort&show.country=36",
 }
 
 

@@ -96,6 +96,8 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "last_played",
         "unplayed",
         "progress",
+        "decade",
+        "country",
     ]
 
 
@@ -125,9 +127,9 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     by_source = {t: [r.name for r in FILTER_ATTRIBUTES if r.source == t] for t in SOURCE_TIERS}
 
     assert {k: len(v) for k, v in by_type.items()} == {
-        "tag": 8,
+        "tag": 9,
         "str": 1,
-        "int": 2,
+        "int": 3,
         "float": 2,
         "date": 3,
         "duration": 1,
@@ -153,12 +155,18 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "collection",
     ]
     assert by_source["probe"] == []
-    # 9b's two, and they are two tiers rather than one because the REASONS
-    # differ: ``unprobed`` means Kometa filters on it and 9a never asked
-    # whether the listing carries it; ``search-only`` means Kometa has no
-    # filter of that name at all, so there is nothing to ask.
-    assert by_source["unprobed"] == ["plays", "last_played"]
-    assert by_source["search-only"] == ["unplayed", "progress"]
+    # 9b's two tiers rather than one because the REASONS differ: ``unprobed``
+    # means Kometa filters on it and 9a never asked whether the listing carries
+    # it; ``search-only`` means Kometa has no filter of that name at all, so
+    # there is nothing to ask.
+    #
+    # 10a appended ``country`` for the reason 9b appended ``plays``: Kometa
+    # filters on it and 9a's probe never asked whether the section listing
+    # carries ``<Country>``, so there is no verdict to cite.
+    assert by_source["unprobed"] == ["plays", "last_played", "country"]
+    # ``decade`` joins the search-only tier: row 96's own 29-name list names it
+    # first, and Kometa has no ``decade`` FILTER at all.
+    assert by_source["search-only"] == ["unplayed", "progress", "decade"]
 
 
 def test_item_kinds_are_movie_show_or_both():
@@ -166,10 +174,11 @@ def test_item_kinds_are_movie_show_or_both():
     show_only = sorted(r.name for r in FILTER_ATTRIBUTES if r.kinds == ("show",))
 
     assert movie_only == [
-        "audio_language", "progress", "resolution", "subtitle_language", "unplayed",
+        "audio_language", "decade", "progress", "resolution",
+        "subtitle_language", "unplayed",
     ]
     assert show_only == ["network"]
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 13
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 14
 
 
 def test_every_operator_maps_onto_plexapis_own_operator_table():
@@ -246,7 +255,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 15, ("movie",): 3, ("show",): 1,
+        ("movie", "show"): 16, ("movie",): 4, ("show",): 1,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -254,12 +263,14 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     assert BY_NAME["duration"].search_kinds == ("movie",)
 
 
-def test_every_row_is_searchable_and_seventeen_are_filterable():
+def test_every_row_is_searchable_and_eighteen_are_filterable():
     """The set arithmetic, pinned so it cannot rot silently.
 
     Kometa's search vocabulary is 55 non-music attributes and its filter
-    vocabulary is 70 names; this table covers 19 of the first and 17 of the
-    second. The module docstring carries the full derivation.
+    vocabulary is 70 names; this table covers 21 of the first and 18 of the
+    second. The module docstring carries the full derivation. Phase 10a added
+    ``decade`` (search-only, so searchable and not filterable) and ``country``
+    (in Kometa's 26-name overlap, so both).
     """
     from autoposter.collections.filters import (
         FILTERABLE_ATTRIBUTES,
@@ -268,10 +279,10 @@ def test_every_row_is_searchable_and_seventeen_are_filterable():
     )
 
     assert all(row.searchable for row in FILTER_ATTRIBUTES)
-    assert len(SEARCHABLE_ATTRIBUTES) == 19
-    assert len(FILTERABLE_ATTRIBUTES) == 17
+    assert len(SEARCHABLE_ATTRIBUTES) == 21
+    assert len(FILTERABLE_ATTRIBUTES) == 18
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
-        "unplayed", "progress",
+        "unplayed", "progress", "decade",
     }
 
 
@@ -320,10 +331,37 @@ def test_every_row_searchable_on_show_carries_a_show_search_field():
     row: a row with ``"show" in search_kinds`` and ``show_search_field=None``
     would silently return the MOVIE field for a show library, since
     ``field_for`` only rescopes when ``show_search_field`` is set. It holds for
-    all nineteen rows today; nothing but this test pins it."""
+    all twenty-one rows today; nothing but this test pins it."""
     for row in FILTER_ATTRIBUTES:
         if "show" in row.search_kinds:
             assert row.show_search_field is not None, row.name
+
+
+def test_decades_search_operator_set_is_the_bare_form_alone():
+    """``decade`` is in Kometa's ``no_not_mods`` (plex.py:593), and that list
+    does two things at once: it drops ``.not`` from the tag-modifier half of
+    ``searches`` and it drops the attribute from the number-modifier half
+    ENTIRELY (plex.py:597-599). So ``decade: 1980`` is the only decade search
+    Kometa will build -- not ``decade.gte``, which reads like an int operator
+    and is not one. ``resolution`` is the sibling row that only loses ``.not``,
+    which is why the two subtractions differ."""
+    from autoposter.collections.filters import BY_NAME
+
+    assert BY_NAME["decade"].search_operators == ("eq",)
+    assert BY_NAME["resolution"].search_operators == ("eq",)
+    assert BY_NAME["year"].search_operators == ("eq", "not", "gt", "gte", "lt", "lte")
+
+
+def test_country_is_rescoped_for_a_show_library_and_decade_refuses_one():
+    """The two new rows' libtype behaviour, which is where a wrong
+    transcription would silently build the wrong query rather than fail."""
+    from autoposter.collections.filters import BY_NAME
+
+    assert BY_NAME["country"].field_for("movie") == "country"
+    assert BY_NAME["country"].field_for("show") == "show.country"
+    assert BY_NAME["decade"].field_for("movie") == "decade"
+    with pytest.raises(ValueError, match="not searchable on a show library"):
+        BY_NAME["decade"].field_for("show")
 
 
 def test_the_modifier_table_is_not_invertible():

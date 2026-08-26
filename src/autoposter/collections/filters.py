@@ -100,13 +100,13 @@ Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
   search names have no filter (``unplayed``, ``progress``, ``hdr``,
   ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
 
-This table covers **19** of the 55 search names and **17** of the 70 filter
+This table covers **21** of the 55 search names and **18** of the 70 filter
 names. Both halves of the residue are real work, and they are different work:
-the 53 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
-``plays`` and ``last_played`` came in here as ``unprobed``, which is a source
-tier and not an accessor, so the row-96 arithmetic moves by two and no
-further), while the 36 unsearched names are 9b's own tail, filed per family
-for T6. The two must not be reported as one number, which is what row 96's
+the 52 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
+``plays``, ``last_played`` and 10a's ``country`` came in here as ``unprobed``,
+which is a source tier and not an accessor, so the row-96 arithmetic moves by
+three and no further), while the 34 unsearched names are 9b's own tail, filed
+per family for T6. The two must not be reported as one number, which is what row 96's
 original "~45" did.
 """
 import datetime as dt
@@ -271,6 +271,12 @@ SEARCH_OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
 SEARCH_OPERATORS_EXCLUDED: dict[str, tuple[str, ...]] = {
     "resolution": ("not",),
     "plays": ("eq", "not"),
+    # ``decade`` is in the same ``no_not_mods`` list as ``resolution``
+    # (plex.py:593) and loses MORE than ``resolution`` does, because it is a
+    # ``year_attribute`` and therefore reached the number modifiers too: that
+    # comprehension is guarded by the same list (plex.py:599), so all four
+    # ranges go with the ``.not``. The bare form is what is left.
+    "decade": ("not", "gt", "gte", "lt", "lte"),
 }
 
 # Operators that exist ONLY in a search, so that writing one in a ``filters:``
@@ -504,15 +510,15 @@ _BOTH = ("movie", "show")
 
 # --- THE TABLE ---------------------------------------------------------------
 #
-# Nineteen rows: 9a's fifteen in the order the roadmap names them
-# (roadmap.md:538-551), then 9b's four appended rather than interleaved so the
-# first fifteen still read against the roadmap line they came from. Column
-# totals are asserted in tests/test_collection_filters.py as the
-# transcription's checksum: 8 tag / 1 str / 2 int / 2 float / 3 date /
+# Twenty-one rows: 9a's fifteen in the order the roadmap names them
+# (roadmap.md:538-551), then 9b's four and 10a's two appended rather than
+# interleaved so the first fifteen still read against the roadmap line they came
+# from. Column totals are asserted in tests/test_collection_filters.py as the
+# transcription's checksum: 9 tag / 1 str / 3 int / 2 float / 3 date /
 # 1 duration / 2 bool; 9 listing / 6 tier2-deferred (Task 2's probe moved the
-# seven ``probe`` rows: resolution in, the other six out) / 2 unprobed /
-# 2 search-only; 13 both-kinds / 5 movie-only / 1 show-only for ``kinds``, and
-# 15 / 3 / 1 for ``search_kinds``, which is a different split and that is the
+# seven ``probe`` rows: resolution in, the other six out) / 3 unprobed /
+# 3 search-only; 14 both-kinds / 6 movie-only / 1 show-only for ``kinds``, and
+# 16 / 4 / 1 for ``search_kinds``, which is a different split and that is the
 # point of the second column.
 #
 # THE PROBE, in one paragraph, because six of these rows are now a refusal and
@@ -816,6 +822,58 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "predicate -- and the sort table carries it independently.",
         search_field="inProgress", show_search_field=None,
         search_kinds=("movie",), filterable=False,
+    ),
+    # --- rows 10a added ------------------------------------------------------
+    #
+    # Both are named by roadmap row 102's own decomposition list, and neither
+    # is a new mechanism: ``decade`` is roadmap row 171's single table row (the
+    # ``current_year``/``current_year-N`` value grammar that row also carries
+    # is NOT built here and stays with it), and ``country`` is roadmap row 174
+    # in full. Phase 10a needs them because its acceptance criterion names
+    # ``decade`` and because upstream's dynamic type table carries both.
+    FilterAttribute(
+        "decade", "int", ("movie",), "search-only",
+        "Plex's own ``decade`` filter. MOVIE-ONLY -- it is in "
+        "``movie_only_searches`` (plex.py:437), which is exactly why Kometa's "
+        "show-decade dynamic type falls back to a full library scan "
+        "(meta.py:881-898) and why this phase does not ship one. A YEAR "
+        "attribute upstream (``year_attributes``, plex.py:546), so its values "
+        "are sent as PLAIN NUMBERS -- ``decade=1980`` -- and are never resolved "
+        "through the library's tag vocabulary, exactly like ``year``; the "
+        "dynamic engine feeds it the enumerated ``choice.key`` (``1980``) and "
+        "titles the collection from ``choice.title`` (``1980s``). Its operator "
+        "set is NOT the ``int`` set: ``decade`` is in ``no_not_mods`` "
+        "(plex.py:593), which subtracts ``.not`` from its tag modifiers AND "
+        "removes it from the number-modifier comprehension entirely "
+        "(plex.py:597-599), so the bare form is the only decade search Kometa "
+        "builds -- ``SEARCH_OPERATORS_EXCLUDED`` subtracts the other five. "
+        "``search-only``: Kometa has no ``decade`` FILTER at all (row 96's "
+        "29-name search-only list names it first), so a ``filters:`` block "
+        "refuses it by naming the block it does belong to.",
+        search_field="decade", show_search_field=None,
+        search_kinds=("movie",), filterable=False,
+    ),
+    FilterAttribute(
+        "country", "tag", _BOTH, "unprobed",
+        "Plex's ``<Country>`` child element -- a tag attribute whose values "
+        "resolve through the same ``listFilterChoices`` path every shipped tag "
+        "attribute uses, which is roadmap row 174 in full. Re-scoped to "
+        "``show.country`` on a show library by ``show_translation`` "
+        "(plex.py:168-193). Source tier ``unprobed`` rather than "
+        "``tier2-deferred``, for the reason ``plays`` and ``last_played`` carry "
+        "that tier: 9a's probe never asked whether ``<Country>`` reaches the "
+        "section listing, so there is no verdict to cite and the "
+        "tier2-deferred copy -- which cites one -- would be a claim nobody "
+        "checked. It IS in both of Kometa's vocabularies (row 96's arithmetic "
+        "puts it in the 26-name overlap: it appears in neither the 44 "
+        "filter-only names nor the 29 search-only ones), so ``filterable`` is "
+        "True and a ``filters:`` block refuses it by naming its tier rather "
+        "than by denying the attribute exists. Note that phase 10a's dynamic "
+        "``country`` TYPE is movie-only -- that is upstream's dynamic type "
+        "table (meta.py:18-19), not this row: the SEARCH answers for both "
+        "library types.",
+        search_field="country", show_search_field="show.country",
+        search_kinds=_BOTH, filterable=True,
     ),
 )
 
