@@ -292,6 +292,29 @@ def test_the_show_search_field_rescoping_is_transcribed():
     assert BY_NAME["network"].show_search_field == "show.network"
 
 
+def test_field_for_picks_the_libtypes_field_and_refuses_a_libtype_it_does_not_serve():
+    """``field_for`` raises rather than falling back, and that is the whole
+    design: a caller asking for a field on a libtype the row does not serve has
+    already skipped the ``search_kinds`` check, and answering with the movie
+    field would build a query Plex silently answers with the WRONG SET rather
+    than with an error. ``resolution`` is the row that shows why the fallback
+    would be wrong even when it "works" -- a show library must be asked at the
+    episode libtype."""
+    from autoposter.collections.filters import BY_NAME
+
+    assert BY_NAME["resolution"].field_for("movie") == "resolution"
+    assert BY_NAME["resolution"].field_for("show") == "episode.resolution"
+    # No show_search_field means the movie field serves both, not that the row
+    # is unanswerable -- ``critic_rating`` has one, so check a row that does
+    # not: ``network`` is show-only and its two columns are equal.
+    assert BY_NAME["network"].field_for("show") == "show.network"
+
+    with pytest.raises(ValueError, match="not searchable on a show library"):
+        BY_NAME["duration"].field_for("show")
+    with pytest.raises(ValueError, match="not searchable on a movie library"):
+        BY_NAME["network"].field_for("movie")
+
+
 def test_the_modifier_table_is_not_invertible():
     """Why ``SEARCH_MODIFIERS`` is keyed on a PAIR.
 
