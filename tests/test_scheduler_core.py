@@ -166,7 +166,16 @@ async def test_a_failing_job_is_recorded_and_the_scheduler_survives(session_fact
     stop = asyncio.Event()
     scheduler = Scheduler(session_factory, [_job(interval=0, run=body)], poll_seconds=0.01)
     task = asyncio.create_task(scheduler.run(stop))
-    await asyncio.sleep(0.1)
+    # Waits for the behaviour rather than for the clock. The assertion below is
+    # that the scheduler came back round *after* the job raised, which costs two
+    # full cycles -- claim, run, raise, record the failure, claim again -- each
+    # one a round trip to PostgreSQL. A fixed `await asyncio.sleep(0.1)` was
+    # enough for that on an idle machine and stopped being enough once CI ran
+    # the suite under `-n auto`, where it failed as "scheduler stopped after the
+    # first failure" having simply not been given the time.
+    async with asyncio.timeout(5):
+        while len(calls) < 2:
+            await asyncio.sleep(0.01)
     stop.set()
     await task
 
