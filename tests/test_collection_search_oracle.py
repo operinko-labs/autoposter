@@ -21,8 +21,11 @@ run, and pinned below as data. Ours must reproduce them byte for byte.
 | The version | ``VERSION`` -- 2.4.8 |
 
 All from ``https://raw.githubusercontent.com/Kometa-Team/Kometa/v2.4.8``. The
-driver is ``.superpowers/oracle/9b/kometa_build_filter.py`` and its raw run is
-in ``.superpowers/sdd/task-3-report.md``. It imports **nothing** from this
+driver is ``tests/oracle/9b/kometa_build_filter.py`` -- under ``tests/``, not
+beside 9a's under ``.superpowers/``, because this test READS it and
+``.superpowers/`` is gitignored; a file an assertion depends on has to be in
+the checkout that runs the assertion. Its raw run is in
+``.superpowers/sdd/task-3-report.md``. It imports **nothing** from this
 repository -- and, unlike 9a's oracle, nothing from plexapi either: this half of
 Kometa reads a config dict and a tag vocabulary and writes a string, and there
 is no Plex object anywhere in it. Every removal it makes is marked
@@ -48,10 +51,14 @@ exactly, so there is no adjudication to record. That is a weaker result than
 9a's four-way disagreement only in the sense that nothing had to be fixed; the
 falsifiability proof in the Task 3 report is what shows the gate can fail.
 """
+from pathlib import Path
+
 import pytest
 
 from autoposter.collections.filters import parse_filters
 from autoposter.collections.search_url import build_search_url
+
+ORACLE_DRIVER = Path(__file__).parent / "oracle" / "9b" / "kometa_build_filter.py"
 
 # The library's tag vocabulary. A COPY of the oracle driver's ``CHOICES``,
 # shared by value and not by import, because the driver imports nothing from
@@ -120,7 +127,7 @@ CONFIGS = [
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
-# ``.superpowers/oracle/9b/kometa_build_filter.py`` -- Kometa v2.4.8's
+# ``tests/oracle/9b/kometa_build_filter.py`` -- Kometa v2.4.8's
 # ``build_filter``, transcribed standalone, importing nothing from this
 # repository. The raw run is in the Task 3 report. Do not edit a string here to
 # make a test pass: if ours differs, ours is wrong.
@@ -162,11 +169,19 @@ def test_the_oracles_vocabulary_fixture_matches_this_files_copy():
     """The driver imports nothing from here and this file imports nothing from
     there, so the shared fixture is shared by VALUE. This reads the driver as
     text and compares the literal, which is the only coupling that does not
-    break the isolation."""
-    import ast
-    from pathlib import Path
+    break the isolation.
 
-    source = Path(".superpowers/oracle/9b/kometa_build_filter.py").read_text()
+    Anchored to ``__file__`` rather than to the working directory: what this
+    test guarantees is only worth having if it cannot quietly stop applying,
+    and a CWD-relative path turns "run pytest from somewhere else" into a
+    vanished assertion. It is also why the driver lives under ``tests/`` at all
+    -- ``.superpowers/`` is gitignored, so a driver there would be absent from
+    a fresh clone and this test would fail (or, worse, be made to skip) for a
+    reason that has nothing to do with the transcription.
+    """
+    import ast
+
+    source = ORACLE_DRIVER.read_text()
     tree = ast.parse(source)
     for node in tree.body:
         if isinstance(node, ast.Assign) and node.targets[0].id == "CHOICES":

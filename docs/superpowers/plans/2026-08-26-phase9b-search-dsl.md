@@ -171,8 +171,14 @@ is a sign the design drifted — stop and ask.
   not `search_url`, not the test fixtures' loader. It may import stdlib. It
   does not need plexapi (unlike 9a's, which did, because Kometa's *filter* code
   reads plexapi objects; `build_filter` reads only the config dict).
-- Oracle scripts live under `.superpowers/oracle/9b/` beside 9a's
+- Oracle scripts live under `tests/oracle/9b/`, NOT beside 9a's
   (`.superpowers/oracle/9a/kometa_oracle.py`, `ours.py`, `make_library.py`).
+  9a's could sit in the ignored tree because nothing in the suite read it --
+  its script was reproduced in the task report instead. 9b's cannot:
+  `test_the_oracles_vocabulary_fixture_matches_this_files_copy` reads the
+  driver as text, and `.gitignore` ignores `.superpowers/` wholesale, so a
+  driver there is absent from a fresh clone and from CI. A file an assertion
+  depends on belongs in the checkout that runs the assertion.
 
 **Purity.**
 - Nothing in config load, in expansion, or in any parse/URL function does I/O.
@@ -496,8 +502,8 @@ table, and the fix-round adjudicates any that bite.
 | `tests/test_collection_search_oracle.py` | **New.** THE KOMETA-STRING ORACLE: twelve configs, twelve golden URI strings pinned as data. | T3 |
 | `tests/test_builder_plex_search.py` | **New.** The builder, the params model, the refusals, the tag resolution, the run-cache. | T4 |
 | `tests/test_collection_config.py` | Extended: load-time refusals through `CollectionDefinition`. | T4 |
-| `.superpowers/oracle/9b/kometa_build_filter.py` | **New, not shipped.** Kometa's `build_filter` + `validate_attribute`, transcribed standalone. Imports nothing from this repo. | T3 |
-| `.superpowers/oracle/9b/ours.py` | **New, not shipped.** Our side of the same twelve configs. | T3 |
+| `tests/oracle/9b/kometa_build_filter.py` | **New, not packaged.** Kometa's `build_filter` + `validate_attribute`, transcribed standalone. Imports nothing from this repo. Tracked under `tests/` because the oracle test reads it. | T3 |
+| `tests/oracle/9b/ours.py` | **New, not packaged.** Our side of the same thirteen configs, as a runnable script. | T3 |
 | `.superpowers/sdd/p9b-task-5-probe.md` | **New, not shipped.** The live probe's script and scrubbed results. | T5 |
 | `docs/superpowers/specs/2026-08-22-full-parity-roadmap.md` | **Modified.** Rows 96, 101, 154, 157, 158 + new rows. | T7 |
 | `src/autoposter/collections/catalog.py` | **Modified.** `media_aspect`'s copy fix; any row T5 unblocks. | T7 |
@@ -2844,8 +2850,8 @@ missing direction, show unplayed -> unviewedLeafCount) carry their reason."
 - Create: `src/autoposter/collections/search_url.py`
 - Create: `tests/test_collection_search_url.py`
 - Create: `tests/test_collection_search_oracle.py`
-- Create: `.superpowers/oracle/9b/kometa_build_filter.py` (not shipped)
-- Create: `.superpowers/oracle/9b/ours.py` (not shipped)
+- Create: `tests/oracle/9b/kometa_build_filter.py` (not packaged)
+- Create: `tests/oracle/9b/ours.py` (not packaged)
 
 **Interfaces:**
 - Consumes, from Task 1: `FilterGroup`, `FilterPredicate`, `RelativeWindow`,
@@ -3474,7 +3480,7 @@ CHOICES = {
 
 - [ ] **Step 6: Write the oracle driver**
 
-Create `.superpowers/oracle/9b/kometa_build_filter.py`. It is Kometa's
+Create `tests/oracle/9b/kometa_build_filter.py`. It is Kometa's
 `build_filter` and the branches of `validate_attribute` the thirteen configs
 reach, transcribed standalone with the Kometa infrastructure removed (logging,
 the display strings, the music/season/episode libtypes, the TMDb/actor-id
@@ -3584,7 +3590,7 @@ if __name__ == "__main__":
 
 ```bash
 docker compose -p p9bt3 -f docker-compose.yml -f .superpowers/isolated-db.yml \
-    run --rm test python .superpowers/oracle/9b/kometa_build_filter.py
+    run --rm test python tests/oracle/9b/kometa_build_filter.py
 ```
 
 Expected: thirteen lines, each `N ?type=...`. Paste the **raw output verbatim**
@@ -3613,10 +3619,14 @@ Create `tests/test_collection_search_oracle.py`. Docstring first, following
 was found on the first run, what the fixture models rather than copies), then:
 
 ```python
+from pathlib import Path
+
 import pytest
 
 from autoposter.collections.filters import parse_filters
 from autoposter.collections.search_url import build_search_url
+
+ORACLE_DRIVER = Path(__file__).parent / "oracle" / "9b" / "kometa_build_filter.py"
 
 # The library's tag vocabulary. A COPY of the oracle driver's ``CHOICES``,
 # shared by value and not by import, because the driver imports nothing from
@@ -3685,7 +3695,7 @@ CONFIGS = [
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
-# ``.superpowers/oracle/9b/kometa_build_filter.py`` -- Kometa v2.4.8's
+# ``tests/oracle/9b/kometa_build_filter.py`` -- Kometa v2.4.8's
 # ``build_filter``, transcribed standalone, importing nothing from this
 # repository. The raw run is in the Task 3 report. Do not edit a string here to
 # make a test pass: if ours differs, ours is wrong.
@@ -3715,11 +3725,19 @@ def test_the_oracles_vocabulary_fixture_matches_this_files_copy():
     """The driver imports nothing from here and this file imports nothing from
     there, so the shared fixture is shared by VALUE. This reads the driver as
     text and compares the literal, which is the only coupling that does not
-    break the isolation."""
-    import ast
-    from pathlib import Path
+    break the isolation.
 
-    source = Path(".superpowers/oracle/9b/kometa_build_filter.py").read_text()
+    Anchored to ``__file__`` rather than to the working directory: what this
+    test guarantees is only worth having if it cannot quietly stop applying,
+    and a CWD-relative path turns "run pytest from somewhere else" into a
+    vanished assertion. It is also why the driver lives under ``tests/`` at all
+    -- ``.superpowers/`` is gitignored, so a driver there would be absent from
+    a fresh clone and this test would fail (or, worse, be made to skip) for a
+    reason that has nothing to do with the transcription.
+    """
+    import ast
+
+    source = ORACLE_DRIVER.read_text()
     tree = ast.parse(source)
     for node in tree.body:
         if isinstance(node, ast.Assign) and node.targets[0].id == "CHOICES":
@@ -3809,7 +3827,7 @@ Expected: Task 2's count + 39 (23 unit + 16 oracle), `0 failed`;
 - [ ] **Step 12: Commit**
 
 ```bash
-git add tests/test_collection_search_oracle.py .superpowers/oracle/9b/
+git add tests/test_collection_search_oracle.py tests/oracle/9b/
 git commit --no-gpg-sign -m "test(search): the Kometa-string oracle
 
 Thirteen configs, thirteen golden URI strings produced by Kometa v2.4.8's own
@@ -5295,7 +5313,7 @@ Request a review with the most capable model available, scoped to:
 - the table's transcription fidelity against the fetched Kometa v2.4.8 files
   (the reviewer re-fetches; a recollection is what the 9a `SETTLED-BY-REVIEW`
   marker got wrong);
-- the oracle's isolation — that `.superpowers/oracle/9b/kometa_build_filter.py`
+- the oracle's isolation — that `tests/oracle/9b/kometa_build_filter.py`
   imports nothing from this repository, and that every removal from Kometa's
   code is marked and defensible;
 - the refusal messages: does each one say what Kometa does and what to write

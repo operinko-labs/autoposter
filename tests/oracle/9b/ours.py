@@ -5,8 +5,8 @@ where Kometa's answers are pinned as data. This script exists so a reviewer can
 put the two sides side by side without pytest::
 
     docker compose -p p9bt3 -f docker-compose.yml -f .superpowers/isolated-db.yml \
-        run --rm test sh -c 'python .superpowers/oracle/9b/kometa_build_filter.py > /tmp/k.txt; \
-                             python .superpowers/oracle/9b/ours.py > /tmp/o.txt; diff /tmp/k.txt /tmp/o.txt && echo IDENTICAL'
+        run --rm test sh -c 'python tests/oracle/9b/kometa_build_filter.py > /tmp/k.txt; \
+                             python tests/oracle/9b/ours.py > /tmp/o.txt; diff /tmp/k.txt /tmp/o.txt && echo IDENTICAL'
 
 The configs below are OUR spelling of the same thirteen. Config 7 is the one
 place the two differ -- ``2:30`` is 9a's written duration form and Kometa has
