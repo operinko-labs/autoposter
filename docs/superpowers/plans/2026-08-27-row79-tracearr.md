@@ -582,6 +582,21 @@ async def test_a_media_id_that_is_not_a_uuid_is_refused_before_any_request():
     assert seen == []
 
 
+async def test_a_non_string_media_id_is_refused_rather_than_raising_a_typeerror():
+    """A documented key can go missing from one record (the harvest's finding),
+    and the ranking's own ``media_id: str | None`` is not runtime-enforced --
+    so ``None`` (or any other non-string) reaching here must stay inside the
+    ``TracearrRefused`` contract rather than escaping as a raw ``TypeError``
+    from the regex match, which every caller upstream is built to not expect.
+    """
+    seen: list = []
+    async with httpx.AsyncClient(transport=_routed({}, seen)) as http:
+        with pytest.raises(TracearrRefused):
+            await _client(http).media(None)
+
+    assert seen == []
+
+
 # --- the media document -------------------------------------------------------
 
 
@@ -1133,7 +1148,7 @@ class TracearrClient:
         ``docs/research/tracearr/payloads/v2-media-show-by-tvdb-ref.json``) --
         so a show's ids come from here or from nowhere.
         """
-        if not _MEDIA_ID.match(media_id):
+        if not isinstance(media_id, str) or not _MEDIA_ID.match(media_id):
             raise TracearrRefused(
                 f"{media_id!r} is not a canonical Tracearr media id (a uuid), so it "
                 "would address some other endpoint rather than a media document"
@@ -1831,6 +1846,25 @@ def test_a_float_shaped_duration_is_salvaged_and_only_garbage_is_worth_nothing()
     assert ranked[0].watch_time_ms == 1624307 + 12
 
 
+def test_an_infinite_duration_reads_as_zero_and_not_a_crash():
+    """``json.loads`` accepts a bare ``Infinity`` token by default, so a
+    malformed record can hand this function a real ``float("inf")`` rather
+    than a string -- and ``int(float("inf"))`` raises ``OverflowError``, not
+    ``TypeError``/``ValueError``, so it must be caught too or the whole build
+    crashes on one malformed record instead of losing its watch time, the
+    same outcome the previous two tests guard for their own malformed shapes.
+    """
+    mangled = [dict(record) for record in records("tracearr_history_silo.json")]
+    mangled[0]["duration_ms"] = float("inf")
+    mangled[1]["duration_ms"] = 500000
+    mangled[2]["duration_ms"] = 250000
+
+    ranked = rank(mangled, media_kind="show", metric="plays", limit=10)
+
+    assert ranked[0].plays == 3
+    assert ranked[0].watch_time_ms == 750000
+
+
 def test_an_empty_window_ranks_to_nothing():
     """Not an error: a deployment nobody watched anything on in the window is
     data. The builder's caller decides what an empty membership means."""
@@ -2203,16 +2237,19 @@ def _duration_ms(record: dict) -> int:
 
     Salvaging is the point, so a float-shaped string is salvaged too: losing a
     whole play's watch time to a decimal point would be that same silently
-    wrong collection. Only genuine garbage is worth 0.
+    wrong collection. Only genuine garbage is worth 0 -- and ``OverflowError``
+    is caught alongside ``TypeError``/``ValueError`` in both arms, because
+    ``json.loads`` accepts a bare ``Infinity`` token and ``int(float("inf"))``
+    raises that, not either of the other two.
     """
     value = record.get("duration_ms")
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         pass
     try:
         return int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -2634,7 +2671,10 @@ async def test_a_media_document_that_404s_drops_that_title_and_builds_the_rest(c
         # matched 404 envelope, rate-limit header included.
     }
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
-        with caplog.at_level(logging.INFO):
+        # Scoped to the builder's own logger: at root level, INFO would also
+        # unlock httpx's own per-request logging, which necessarily carries
+        # the URL it just requested -- noise this test has no interest in.
+        with caplog.at_level(logging.INFO, logger="autoposter.collections.builders.tracearr"):
             result = await _build(_ctx(_sources(http), limit=10))
 
     assert result.ids == [("tvdb", "403245")]
@@ -2746,7 +2786,10 @@ async def test_no_log_line_and_no_error_carries_the_base_url_or_the_key(caplog):
         ),
     }
     async with httpx.AsyncClient(transport=_routed(routes)) as http:
-        with caplog.at_level(logging.DEBUG):
+        # Scoped to the builder's own logger for the same reason as the
+        # 404-drop test above: root-level DEBUG would also unlock httpx's own
+        # per-request logging, which carries the URL by design.
+        with caplog.at_level(logging.DEBUG, logger="autoposter.collections.builders.tracearr"):
             with pytest.raises(TracearrRefused) as error:
                 await _build(_ctx(_sources(http)))
 
@@ -3061,7 +3104,7 @@ async def _media_document(ctx: BuilderContext, client, media_id: str) -> dict:
 
 - [ ] **Step 4: Register the builder**
 
-In `src/autoposter/collections/builders/__init__.py`, add the import (keeping the block's alphabetical order — after the `text_file` import at `:52`, before `tmdb`):
+In `src/autoposter/collections/builders/__init__.py`, add the import (keeping the block's alphabetical order — after the `tmdb_person` import, before `tvdb`; "before `tmdb`" in an earlier draft of this step was wrong, since `tracearr` sorts after every `tmdb*` module and before `tvdb`):
 
 ```python
 from autoposter.collections.builders.tracearr import TracearrMostWatchedBuilder
@@ -3145,10 +3188,12 @@ Update the count-checksum comment (`:1235-1247`) — the `charts` line and the t
 #   awards           15 / 0 / 1     charts           10 / 0 / 1
 ```
 
-and the closing sentence:
+and the closing sentence -- the totals below were stale by the time this task
+landed (moved twice since this plan was drafted: 55 rows / 34 READY just
+before this task's two rows, not the 51 / 30 this block originally named):
 
 ```
-# -- 51 rows: 30 presets an operator can switch on today, 18 that name what
+# -- 57 rows: 36 presets an operator can switch on today, 18 that name what
 # they would build and the roadmap row that would let them, and 3 rendered
 # switches for families that already ship behind a boolean.
 ```

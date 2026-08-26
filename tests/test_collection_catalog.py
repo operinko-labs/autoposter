@@ -187,7 +187,7 @@ def test_the_awards_category_is_every_ceremony_but_the_oscars():
 # above ``CATALOG``.
 CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "awards": (15, 0, 1),
-    "charts": (8, 0, 1),
+    "charts": (10, 0, 1),
     "content": (1, 3, 0),
     "content_ratings": (7, 0, 1),
     "location": (0, 3, 0),

@@ -66,6 +66,7 @@ from autoposter.collections.builders.tmdb_person import (
     TmdbProducerBuilder,
     TmdbWriterBuilder,
 )
+from autoposter.collections.builders.tracearr import TracearrMostWatchedBuilder
 from autoposter.collections.builders.tvdb import (
     TvdbListBuilder,
     TvdbMovieBuilder,
@@ -105,6 +106,7 @@ register(TmdbWriterBuilder())
 register(TmdbProducerBuilder())
 register(TmdbCrewBuilder())
 register(MdblistListBuilder())
+register(TracearrMostWatchedBuilder())
 register(TvdbListBuilder())
 register(TvdbMovieBuilder())
 register(TvdbShowBuilder())

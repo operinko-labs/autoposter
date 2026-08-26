@@ -334,7 +334,7 @@ class TracearrClient:
         ``docs/research/tracearr/payloads/v2-media-show-by-tvdb-ref.json``) --
         so a show's ids come from here or from nowhere.
         """
-        if not _MEDIA_ID.match(media_id):
+        if not isinstance(media_id, str) or not _MEDIA_ID.match(media_id):
             raise TracearrRefused(
                 f"{media_id!r} is not a canonical Tracearr media id (a uuid), so it "
                 "would address some other endpoint rather than a media document"

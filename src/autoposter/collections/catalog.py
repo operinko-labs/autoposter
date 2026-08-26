@@ -664,6 +664,67 @@ CHART_PRESETS: tuple[Preset, ...] = tuple(
 )
 
 
+# The two Tracearr rows, in the same category and for the same reason the TMDb
+# charts are here: they answer "what should I watch, going by what is being
+# watched". What makes them different is where the ranking comes from -- TMDb
+# publishes its charts and Tracearr publishes no ranking at all, in either API
+# version, so these two are computed from the deployment's OWN watch history
+# (``collections/activity.py``). That is also why they carry no Kometa
+# attribution: Kometa's equivalent is its Tautulli chart family, which reads a
+# different service through a different API, and claiming its defaults file
+# here would be a citation that does not describe what this builds.
+#
+# Two rows rather than a tenth category. Two collections do not make a
+# taxonomy, and an operator looking for "most watched" looks under Charts.
+_TRACEARR_SOURCE = NOT_KOMETA + (
+    "the role Kometa's Tautulli chart defaults play, computed from this "
+    "deployment's own Tracearr watch history; the title is ours"
+)
+
+_TRACEARR_DESCRIPTION = (
+    "The %s played most often on this server over the past 30 days, ranked "
+    "from Tracearr's own watch history and recomputed on every pass. Needs "
+    "tracearr.enabled, tracearr.base_url and AUTOPOSTER_TRACEARR_APIKEY; "
+    "without them the collection reports itself failed rather than emptying."
+)
+
+TRACEARR_PRESETS: tuple[Preset, ...] = (
+    Preset(
+        key="chart_tracearr_movies",
+        category="charts",
+        name="Most Watched Movies",
+        description=_TRACEARR_DESCRIPTION % "films",
+        kometa_source=_TRACEARR_SOURCE,
+        library_types=_MOVIE,
+        collections=(
+            PresetCollection(
+                title="Most Watched Movies",
+                builder="tracearr_most_watched",
+                # Spelled out rather than left to the params model's defaults:
+                # a preset's params should read as the whole answer to "which
+                # collection is this", the way the award rows name their event.
+                params=(("days", 30), ("limit", 20), ("metric", "plays")),
+            ),
+        ),
+    ),
+    Preset(
+        key="chart_tracearr_shows",
+        category="charts",
+        name="Most Watched Shows",
+        description=_TRACEARR_DESCRIPTION % "series",
+        kometa_source=_TRACEARR_SOURCE,
+        library_types=_SHOW,
+        collections=(
+            PresetCollection(
+                title="Most Watched Shows",
+                builder="tracearr_most_watched",
+                params=(("days", 30), ("limit", 20), ("metric", "plays")),
+            ),
+        ),
+    ),
+)
+
+
 # --- the CONTENT category -----------------------------------------------------
 #
 # ``defaults/both/universe.yml`` is the one Content pack that reproduces
@@ -1579,19 +1640,20 @@ TIME_PRESETS: tuple[Preset, ...] = (
 # ``tests/test_collection_catalog.py``'s CATALOG_CHECKSUM pins, READY / GATED /
 # setting-backed):
 #
-#   awards           15 / 0 / 1     charts            8 / 0 / 1
+#   awards           15 / 0 / 1     charts           10 / 0 / 1
 #   content           1 / 3 / 0     content_ratings   7 / 0 / 1
 #   location          0 / 3 / 0     media             1 / 3 / 0
 #   people            1 / 4 / 0     production        1 / 2 / 0
 #   time              0 / 3 / 0
 #
-# -- 55 rows: 34 presets an operator can switch on today, 18 that name what
+# -- 57 rows: 36 presets an operator can switch on today, 18 that name what
 # they would build and the roadmap row that would let them, and 3 rendered
 # switches for families that already ship behind a boolean.
 CATALOG: tuple[Preset, ...] = (
     AWARD_PRESETS
     + SETTING_PRESETS
     + CHART_PRESETS
+    + TRACEARR_PRESETS
     + CONTENT_PRESETS
     + CONTENT_RATING_PRESETS
     + LOCATION_PRESETS

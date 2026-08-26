@@ -366,6 +366,21 @@ async def test_a_media_id_that_is_not_a_uuid_is_refused_before_any_request():
     assert seen == []
 
 
+async def test_a_non_string_media_id_is_refused_rather_than_raising_a_typeerror():
+    """A documented key can go missing from one record (the harvest's finding),
+    and the ranking's own ``media_id: str | None`` is not runtime-enforced --
+    so ``None`` (or any other non-string) reaching here must stay inside the
+    ``TracearrRefused`` contract rather than escaping as a raw ``TypeError``
+    from the regex match, which every caller upstream is built to not expect.
+    """
+    seen: list = []
+    async with httpx.AsyncClient(transport=_routed({}, seen)) as http:
+        with pytest.raises(TracearrRefused):
+            await _client(http).media(None)
+
+    assert seen == []
+
+
 # --- the media document -------------------------------------------------------
 
 
