@@ -517,7 +517,7 @@ _BOTH = ("movie", "show")
 # transcription's checksum: 9 tag / 1 str / 3 int / 2 float / 3 date /
 # 1 duration / 2 bool; 9 listing / 6 tier2-deferred (Task 2's probe moved the
 # seven ``probe`` rows: resolution in, the other six out) / 3 unprobed /
-# 3 search-only; 14 both-kinds / 6 movie-only / 1 show-only for ``kinds``, and
+# 3 search-only; 13 both-kinds / 7 movie-only / 1 show-only for ``kinds``, and
 # 16 / 4 / 1 for ``search_kinds``, which is a different split and that is the
 # point of the second column.
 #
@@ -854,7 +854,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         search_kinds=("movie",), filterable=False,
     ),
     FilterAttribute(
-        "country", "tag", _BOTH, "unprobed",
+        "country", "tag", ("movie",), "unprobed",
         "Plex's ``<Country>`` child element -- a tag attribute whose values "
         "resolve through the same ``listFilterChoices`` path every shipped tag "
         "attribute uses, which is roadmap row 174 in full. Re-scoped to "
@@ -867,11 +867,14 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "checked. It IS in both of Kometa's vocabularies (row 96's arithmetic "
         "puts it in the 26-name overlap: it appears in neither the 44 "
         "filter-only names nor the 29 search-only ones), so ``filterable`` is "
-        "True and a ``filters:`` block refuses it by naming its tier rather "
-        "than by denying the attribute exists. Note that phase 10a's dynamic "
-        "``country`` TYPE is movie-only -- that is upstream's dynamic type "
-        "table (meta.py:18-19), not this row: the SEARCH answers for both "
-        "library types.",
+        "True. ``kinds`` is movie-only because upstream's FILTER scope for "
+        "``country`` is movie-only too -- ``builder.py:328``'s only entry is "
+        "``\"movie_artist\": [\"country\"]``, no show key carries it -- so a "
+        "``filters:`` block on a show library refuses it by naming its tier. "
+        "That is a different upstream table from phase 10a's dynamic "
+        "``country`` TYPE, which is ALSO movie-only (meta.py:18-19); the "
+        "SEARCH column is unaffected by either and answers for both library "
+        "types via ``show_translation``.",
         search_field="country", show_search_field="show.country",
         search_kinds=_BOTH, filterable=True,
     ),
@@ -1285,7 +1288,7 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
     # 44 of its filter names have no Plex search field, and 29 of its search
     # names have no filter.
     #
-    # The FIRST of the two branches is unreachable with today's nineteen rows:
+    # The FIRST of the two branches is unreachable with today's twenty-one rows:
     # every one of them is searchable, because the fifteen 9a shipped all have
     # Plex search fields. It is written now, and tested with a synthetic row,
     # because the first filter-only attribute (``aspect``, ``height``,

@@ -188,8 +188,11 @@ CONFIGS = [
 # ``tests/oracle/9b/kometa_build_filter.py`` -- Kometa v2.4.8's
 # ``build_filter``, transcribed standalone, importing nothing from this
 # repository. The raw run is in the Task 3 report (thirteen), the Task 4
-# report (the fourteenth) and the Task 7 report (the fifteenth). Do not edit a
-# string here to make a test pass: if ours differs, ours is wrong.
+# report (the fourteenth), the Task 7 report (the fifteenth) and the Task 1
+# report of phase 10a-1 (sixteen and seventeen, `decade` and `country` --
+# predicted at Step 6 before the driver ran, then confirmed by it, same as the
+# fifteen before them). Do not edit a string here to make a test pass: if ours
+# differs, ours is wrong.
 KOMETA = {
     "1-multi-value-tag": "?type=1&sort=titleSort&contentRating=5&and=1&contentRating=7",
     "2-any-base": "?type=1&limit=25&sort=rating%3Adesc&push=1&studio=A24&or=1&year%3E=2020&pop=1",

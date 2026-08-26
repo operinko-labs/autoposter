@@ -75,6 +75,8 @@ def test_the_table_holds_exactly_the_tier_one_rows():
     above still read against the roadmap line they came from: ``plays`` and
     ``last_played`` are in BOTH of Kometa's vocabularies and were never probed
     for the client-side one, and ``unplayed`` and ``progress`` are search-only.
+    Phase 10a appended two more the same way: ``decade`` (search-only) and
+    ``country`` (unprobed, in both vocabularies).
     """
     assert [row.name for row in FILTER_ATTRIBUTES] == [
         "genre",
@@ -174,11 +176,11 @@ def test_item_kinds_are_movie_show_or_both():
     show_only = sorted(r.name for r in FILTER_ATTRIBUTES if r.kinds == ("show",))
 
     assert movie_only == [
-        "audio_language", "decade", "progress", "resolution",
+        "audio_language", "country", "decade", "progress", "resolution",
         "subtitle_language", "unplayed",
     ]
     assert show_only == ["network"]
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 14
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 13
 
 
 def test_every_operator_maps_onto_plexapis_own_operator_table():

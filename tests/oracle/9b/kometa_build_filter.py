@@ -627,7 +627,7 @@ def check_int(value, datatype="int", minimum=1, maximum=None, throw=False):
 # dict/dictlist/dictdict/strdict/dictliststr datatype branches (util.py:917-975).
 # Each returns before reaching the branches below, and ``validate_attribute``
 # calls parse with datatype "int", "float" or "bool" only on every path the
-# fifteen configs take.
+# seventeen configs take.
 def parse(error, attribute, data, datatype=None, methods=None, parent=None, default=None, options=None, translation=None, minimum=1, maximum=None, regex=None, range_split=None, date_return=None):
     display = f"{parent + ' ' if parent else ''}{attribute} attribute"
     if options is None and translation is not None:
@@ -742,7 +742,7 @@ def _choices(attribute, final_values, plex_search):
 # ``original_language``/``tmdb_keyword``, ``tmdb_genre``/``tvdb_genre``,
 # ``history``, ``tmdb_type``, ``tmdb_status``, ``imdb_keyword`` (:4353-4398) and
 # ``seasons``/``episodes``/``albums``/``tracks`` and everything after (:4453+) --
-# none is a Plex search attribute reachable from the fifteen configs.
+# none is a Plex search attribute reachable from the seventeen configs.
 #
 # THE ATTRIBUTE LISTS BELOW ARE plex's, WHERE UPSTREAM'S ARE builder's -- a
 # deliberate binding, not an oversight, and the counterpart of the note above
