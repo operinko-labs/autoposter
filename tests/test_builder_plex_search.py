@@ -493,7 +493,7 @@ def test_the_roadmap_row_this_phase_closes_says_so_and_files_its_tail():
     row = by_number[101]
     assert "**answered 9b (v1):** delivered" in row
     assert "19 of Kometa's 55 non-music search attributes ship" in row
-    assert "fourteen pinned golden URIs" in row
+    assert "fifteen pinned golden URIs" in row
     assert "9/9 agreement" in row
 
     # Row 96's arithmetic, corrected rather than restated. Every number here

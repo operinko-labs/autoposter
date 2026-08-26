@@ -1383,3 +1383,50 @@ def test_the_base_conjunction_is_the_written_one_and_adds_no_nesting():
 
     with pytest.raises(ValueError, match="is not a base"):
         parse_filters({"studio": "A24"}, base="either")
+
+
+def test_a_refusal_never_renders_an_empty_list_of_modifiers():
+    """``resolution`` as a SEARCH is the one row whose whole operator set is the
+    bare form (Kometa's ``no_not_mods``), so the list of writable modifiers is
+    EMPTY -- and the message used to read "it takes  (or no modifier at all,
+    which means eq)": a dangling phrase, a double space, and no options, before
+    the good no_not_mods sentence rescued it. The operator reading that has
+    been told nothing about what to write.
+
+    Pinned rather than eyeballed because an empty collection rendered into a
+    sentence is the failure mode that looks fine in every test that only checks
+    a substring.
+    """
+    from autoposter.collections.filters import parse_filters
+
+    with pytest.raises(ValueError) as error:
+        parse_filters(
+            {"resolution.not": "1080"}, field="params", searching=True, base="all"
+        )
+    message = str(error.value)
+    assert "it takes no modifier at all, which means eq" in message
+    assert "it takes  " not in message
+    assert "takes  (or" not in message
+    # the row's own reason still lands, and is what makes the refusal useful
+    assert "no_not_mods" in message
+
+
+def test_the_refusal_gets_the_article_right_for_an_int_attribute():
+    """"a int attribute" was visible on every mis-modified int and ``year``.
+
+    Cosmetic, and pinned anyway: the refusal grammar is this phase's most-read
+    surface, and it is quoted back in the roadmap as evidence the messages are
+    written for a person.
+    """
+    from autoposter.collections.filters import parse_filters
+
+    with pytest.raises(ValueError) as error:
+        parse_filters({"year.begins": 2010}, field="params", searching=True, base="all")
+    message = str(error.value)
+    assert "an int attribute" in message
+    assert "a int attribute" not in message
+
+    # and the consonant case is unchanged
+    with pytest.raises(ValueError) as error:
+        parse_filters({"studio.gt": "A24"}, field="params", searching=True, base="all")
+    assert "a str attribute" in str(error.value)

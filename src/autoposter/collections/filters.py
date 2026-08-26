@@ -1323,13 +1323,21 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
             if attribute.type == "date"
             else default
         )
-        message = (
-            f"{field}: .{modifier} does not apply to {name!r}, a "
-            f"{attribute.type} attribute in a {block} block "
-            "-- it takes " + ", ".join(writable)
+        head = (
+            f"{field}: .{modifier} does not apply to {name!r}, "
+            f"{'an' if attribute.type[:1] in 'aeiou' else 'a'} "
+            f"{attribute.type} attribute in a {block} block"
         )
-        if default in operators:
-            message += f" (or no modifier at all, which means {bare_meaning})"
+        if not writable:
+            # ``resolution`` as a SEARCH is the row this exists for: its whole
+            # operator set is the bare form (Kometa's no_not_mods), so the list
+            # of writable modifiers is empty and "it takes " would render as a
+            # dangling phrase followed by a parenthesis.
+            message = head + f" -- it takes no modifier at all, which means {bare_meaning}"
+        else:
+            message = head + " -- it takes " + ", ".join(writable)
+            if default in operators:
+                message += f" (or no modifier at all, which means {bare_meaning})"
         if attribute.type == "date" and modifier in ("gt", "gte", "lt", "lte"):
             # Kometa accepts all four on a date and rewrites every one of them
             # to the STRICT form (plex.py:2735-2747). Refusing without saying

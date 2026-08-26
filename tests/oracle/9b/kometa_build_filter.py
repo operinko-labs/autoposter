@@ -51,6 +51,8 @@ CHOICES = {
     ("network", "HBO"): ("42",),
     ("audio_language", "en"): ("en",),
     ("audio_language", "es"): ("es-419", "es-MX", "spa"),
+    ("label", "Overlay"): ("3",),
+    ("collection", "The Fast and the Furious Collection"): ("77",),
 }
 
 
@@ -624,7 +626,7 @@ def check_int(value, datatype="int", minimum=1, maximum=None, throw=False):
 # dict/dictlist/dictdict/strdict/dictliststr datatype branches (util.py:917-975).
 # Each returns before reaching the branches below, and ``validate_attribute``
 # calls parse with datatype "int", "float" or "bool" only on every path the
-# fourteen configs take.
+# fifteen configs take.
 def parse(error, attribute, data, datatype=None, methods=None, parent=None, default=None, options=None, translation=None, minimum=1, maximum=None, regex=None, range_split=None, date_return=None):
     display = f"{parent + ' ' if parent else ''}{attribute} attribute"
     if options is None and translation is not None:
@@ -739,7 +741,7 @@ def _choices(attribute, final_values, plex_search):
 # ``original_language``/``tmdb_keyword``, ``tmdb_genre``/``tvdb_genre``,
 # ``history``, ``tmdb_type``, ``tmdb_status``, ``imdb_keyword`` (:4353-4398) and
 # ``seasons``/``episodes``/``albums``/``tracks`` and everything after (:4453+) --
-# none is a Plex search attribute reachable from the fourteen configs.
+# none is a Plex search attribute reachable from the fifteen configs.
 #
 # THE ATTRIBUTE LISTS BELOW ARE plex's, WHERE UPSTREAM'S ARE builder's -- a
 # deliberate binding, not an oversight, and the counterpart of the note above
@@ -941,7 +943,7 @@ def build_filter(method, plex_filter, sort_type):
         # REMOVED: the implicit-base reconstruction (:4265-4277), which rebuilds
         # a base_dict out of the top-level keys using ``and_searches``/
         # ``or_searches``. 9b refuses a plex_search with no written base
-        # (decision D1) and all fourteen configs write one, so the branch is
+        # (decision D1) and all fifteen configs write one, so the branch is
         # dead here -- kept as the refusal Kometa also ends at when nothing
         # matched, so a config that lost its base cannot take a quiet path.
         raise Failed(f"{TYPE} Error: Must have either any or all as a base for {method}")
@@ -961,7 +963,7 @@ def build_filter(method, plex_filter, sort_type):
     return type_key, filter_url
 
 
-# --- the fourteen configs, in KOMETA'S spelling -------------------------------
+# --- the fifteen configs, in KOMETA'S spelling -------------------------------
 # Config 7 is the one place the two spellings differ: ours writes the second
 # duration as ``2:30``, which is 9a's own written form (``_as_minutes``) and has
 # no Kometa equivalent. The MINUTE VALUE is identical -- 150 -- which is the
@@ -1013,6 +1015,26 @@ CONFIGS = [
     # every oracle case -- which is the self-agreement the oracle exists to
     # escape (Task 3 review, Minor 3).
     ("movie", {"any": {"content_rating": ["PG-13", "R"]}}),
+    # 15: the render classes and the rows the first fourteen never reach
+    # (whole-branch review, Minor 1). ``studio.isnot`` is the only modifier
+    # wire string (``!%3D``) absent from every other golden; ``studio.ends``
+    # (``%3E``) shares its wire string with ``.gte`` and had never been pinned
+    # on a STRING; ``genre.not`` is the only negated TAG, which is ``!``
+    # against a RESOLVED key rather than against a written word; and
+    # ``plays.gt``/``plays.lte`` are the range wire strings on a PLAIN number
+    # -- config 7 pins the same two on ``duration``, whose renderer multiplies
+    # by 60000 and prints a float, so the plain-int branch was unpinned. The
+    # rows ``label``, ``collection`` and ``plays`` pass through the oracle here
+    # for the first time.
+    ("movie", {"all": {
+        "genre.not": "Horror",
+        "studio.isnot": "A24",
+        "studio.ends": "Pictures & Co",
+        "label": "Overlay",
+        "collection": "The Fast and the Furious Collection",
+        "plays.gt": 3,
+        "plays.lte": 10,
+    }}),
 ]
 
 

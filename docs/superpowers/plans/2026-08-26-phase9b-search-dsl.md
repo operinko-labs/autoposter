@@ -514,7 +514,7 @@ table, and the fix-round adjudicates any that bite.
 | `tests/test_builder_plex_search.py` | **New.** The builder, the params model, the refusals, the tag resolution, the run-cache. | T4 |
 | `tests/test_collection_config.py` | Extended: load-time refusals through `CollectionDefinition`. | T4 |
 | `tests/oracle/9b/kometa_build_filter.py` | **New, not packaged.** Kometa's `build_filter` + `validate_attribute`, transcribed standalone. Imports nothing from this repo. Tracked under `tests/` because the oracle test reads it. | T3 |
-| `tests/oracle/9b/ours.py` | **New, not packaged.** Our side of the same fourteen configs, as a runnable script. | T3 |
+| `tests/oracle/9b/ours.py` | **New, not packaged.** Our side of the same fifteen configs, as a runnable script. | T3, +1 in T7 |
 | `docs/research/plex-search-probe/README.md` | **New, not packaged.** The live probe's script and scrubbed results. T7 sync: this plan first named `.superpowers/sdd/p9b-task-5-probe.md`, but `.gitignore:23` ignores `.superpowers/` wholesale, so that `git add` would have staged nothing — the evidence follows the `docs/research/tracearr/` precedent instead. | T5 |
 | `docs/research/plex-search-probe/probe-roundtrip.txt` | **New, not packaged.** The raw scrubbed round-trip capture, same path move. | T5 |
 | `docs/superpowers/specs/2026-08-22-full-parity-roadmap.md` | **Modified.** Rows 96, 101, 154, 157, 158 + new rows. | T7 |
@@ -2039,13 +2039,21 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
             if attribute.type == "date"
             else default
         )
-        message = (
-            f"{field}: .{modifier} does not apply to {name!r}, a "
-            f"{attribute.type} attribute in a {block} block "
-            "-- it takes " + ", ".join(writable)
+        head = (
+            f"{field}: .{modifier} does not apply to {name!r}, "
+            f"{'an' if attribute.type[:1] in 'aeiou' else 'a'} "
+            f"{attribute.type} attribute in a {block} block"
         )
-        if default in operators:
-            message += f" (or no modifier at all, which means {bare_meaning})"
+        if not writable:
+            # ``resolution`` as a SEARCH is the row this exists for: its whole
+            # operator set is the bare form (Kometa's no_not_mods), so the list
+            # of writable modifiers is empty and "it takes " would render as a
+            # dangling phrase followed by a parenthesis.
+            message = head + f" -- it takes no modifier at all, which means {bare_meaning}"
+        else:
+            message = head + " -- it takes " + ", ".join(writable)
+            if default in operators:
+                message += f" (or no modifier at all, which means {bare_meaning})"
         if attribute.type == "date" and modifier in ("gt", "gte", "lt", "lte"):
             # Kometa accepts all four on a date and rewrites every one of them
             # to the STRICT form (plex.py:2735-2747). Refusing without saying
@@ -3542,7 +3550,7 @@ A standing test asserts no built query carries includeCollections."
 This is the acceptance gate for the whole phase. Everything above asserts the
 transcription against itself; this asserts it against Kometa.
 
-**The fourteen configs.** Each is written twice — once in this service's
+**The fifteen configs.** Each is written twice — once in this service's
 spelling, once in Kometa's — because the two grammars differ in exactly the
 places 9a and 9b refused something, and an oracle driven by a config Kometa
 cannot parse proves nothing. Between them they cover: both base conjunctions,
@@ -3587,7 +3595,7 @@ CHOICES = {
 - [ ] **Step 6: Write the oracle driver**
 
 Create `tests/oracle/9b/kometa_build_filter.py`. It is Kometa's
-`build_filter` and the branches of `validate_attribute` the fourteen configs
+`build_filter` and the branches of `validate_attribute` the fifteen configs
 reach, transcribed standalone with the Kometa infrastructure removed (logging,
 the display strings, the music/season/episode libtypes, the TMDb/actor-id
 lookups, `validate=False`). Header, verbatim:
@@ -3679,7 +3687,7 @@ Finally:
 
 ```python
 CONFIGS = [
-    # ... the fourteen from the table above, in Kometa's spelling, each as
+    # ... the fifteen from the table above, in Kometa's spelling, each as
     # (libtype, plex_filter)
 ]
 
@@ -3699,13 +3707,15 @@ docker compose -p p9bt3 -f docker-compose.yml -f .superpowers/isolated-db.yml \
     run --rm test python tests/oracle/9b/kometa_build_filter.py
 ```
 
-Expected: fourteen lines, each `N ?type=...`. (Thirteen when Task 3 ran it;
-the fourteenth config was added by the Task 4 lead-in and its golden captured
-the same way.) Paste the **raw output verbatim**
+Expected: fifteen lines, each `N ?type=...`. (Thirteen when Task 3 ran it;
+the fourteenth config was added by the Task 4 lead-in, the fifteenth by the T7
+wrap after the whole-branch review found four render classes and three rows
+that neither the goldens nor the live probe ever reached; each golden was
+captured the same way.) Paste the **raw output verbatim**
 into the task report — it is the derivation, and a reviewer must be able to see
 it without rerunning anything.
 
-The plan's own hand-derivation of six of the fourteen, from Kometa's source,
+The plan's own hand-derivation of six of the fifteen, from Kometa's source,
 is below. **If the oracle disagrees with any of these, the ORACLE wins**, the
 divergence is written onto the code it corrects with a `SETTLED-BY-ORACLE`
 marker (9a's convention, `src/autoposter/collections/filters.py:36-48`), and
@@ -3806,11 +3816,11 @@ CONFIGS = [
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
 # ``tests/oracle/9b/kometa_build_filter.py`` -- Kometa v2.4.8's
 # ``build_filter``, transcribed standalone, importing nothing from this
-# repository. The raw run is in the Task 3 report (thirteen) and the Task 4
-# report (the fourteenth). Do not edit a string here to make a test pass: if
-# ours differs, ours is wrong.
+# repository. The raw run is in the Task 3 report (thirteen), the Task 4
+# report (the fourteenth) and the Task 7 report (the fifteenth). Do not edit a
+# string here to make a test pass: if ours differs, ours is wrong.
 KOMETA = {
-    # <paste the fourteen lines from Step 7, as "id": "url",>
+    # <paste the fifteen lines from Step 7, as "id": "url",>
 }
 
 
@@ -3918,9 +3928,10 @@ docker compose -p p9bt3 -f docker-compose.yml -f .superpowers/isolated-db.yml \
     run --rm test sh -c 'timeout -s KILL 900 pytest -q tests/test_collection_search_oracle.py; echo EXIT=$?'
 ```
 
-Expected: `18 passed` (fourteen parametrized cases + four structural). Task 3
+Expected: `19 passed` (fifteen parametrized cases + four structural). Task 3
 shipped `16 passed`; the fourteenth config and the driver-reproduction test
-below are the Task 4 lead-in's two additions.
+below are the Task 4 lead-in's two additions, and the fifteenth config is the
+T7 wrap's.
 
 **If it is red — and expect it to be, at least once.** 9a's oracle was red in
 four places on its first run, every one a transcription judgement made without

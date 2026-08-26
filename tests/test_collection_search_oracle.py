@@ -7,7 +7,7 @@ runs, and produces a full, plausible, wrong collection. Every other test in
 this phase asserts the transcription against itself -- against a string
 hand-derived from the same source, by the same reading, in the same sitting.
 
-This file asserts it against Kometa. Fourteen configs, and fourteen URI strings
+This file asserts it against Kometa. Fifteen configs, and fifteen URI strings
 produced by **Kometa's own build_filter** -- fetched, transcribed standalone,
 run, and pinned below as data. Ours must reproduce them byte for byte.
 
@@ -59,6 +59,28 @@ config pinned one under ``any``, so a renderer hard-coding ``and=1&`` between
 the terms of a single written key passed every oracle case. Config 14 is that
 case and nothing else, and its golden came from the same driver in the same
 way.
+
+## The fifteenth config
+
+Added after the whole-branch review, which enumerated the v1 surface against
+these goldens and the live probe's builder-built queries and found four render
+classes and three rows that neither gate ever reached -- so they were held only
+by strings hand-derived from the same reading of the same source, which is the
+self-agreement this file exists to escape.
+
+| Never exercised before config 15 | Why it hid |
+| --- | --- |
+| ``(str, isnot)`` | ``!%3D`` is the only modifier wire string absent from every golden |
+| ``(str, ends)`` | shares ``%3E`` with ``.gte``, but had never been pinned on a STRING value |
+| ``(tag, not)`` | ``!`` against a RESOLVED key, not against a written word |
+| plain-number ``gt``/``lte`` | config 7 pins both on ``duration``, whose renderer multiplies by 60000 and emits a float |
+| the ``label``, ``collection`` and ``plays`` rows | no config and no probe query named them |
+
+Config 15 closes all seven at once, and its golden came from the same driver in
+the same way. The review had independently rendered each fragment against the
+fetched upstream tables and found them correct -- so this config changed no
+behaviour; it moved seven facts from "we agree with ourselves" to "Kometa said
+so".
 """
 from pathlib import Path
 
@@ -82,6 +104,8 @@ CHOICES = {
     ("network", "HBO"): ("42",),
     ("audio_language", "en"): ("en",),
     ("audio_language", "es"): ("es-419", "es-MX", "spa"),
+    ("label", "Overlay"): ("3",),
+    ("collection", "The Fast and the Furious Collection"): ("77",),
 }
 
 
@@ -134,14 +158,23 @@ CONFIGS = [
     }),
     ("13-language-expansion", "movie", {"all": {"audio_language": "es"}}),
     ("14-multi-value-under-any", "movie", {"any": {"content_rating": ["PG-13", "R"]}}),
+    ("15-unreached-renders-and-rows", "movie", {"all": {
+        "genre.not": "Horror",
+        "studio.isnot": "A24",
+        "studio.ends": "Pictures & Co",
+        "label": "Overlay",
+        "collection": "The Fast and the Furious Collection",
+        "plays.gt": 3,
+        "plays.lte": 10,
+    }}),
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
 # ``tests/oracle/9b/kometa_build_filter.py`` -- Kometa v2.4.8's
 # ``build_filter``, transcribed standalone, importing nothing from this
-# repository. The raw run is in the Task 3 report (thirteen) and the Task 4
-# report (the fourteenth). Do not edit a string here to make a test pass: if
-# ours differs, ours is wrong.
+# repository. The raw run is in the Task 3 report (thirteen), the Task 4
+# report (the fourteenth) and the Task 7 report (the fifteenth). Do not edit a
+# string here to make a test pass: if ours differs, ours is wrong.
 KOMETA = {
     "1-multi-value-tag": "?type=1&sort=titleSort&contentRating=5&and=1&contentRating=7",
     "2-any-base": "?type=1&limit=25&sort=rating%3Adesc&push=1&studio=A24&or=1&year%3E=2020&pop=1",
@@ -157,6 +190,7 @@ KOMETA = {
     "12-show-rescoping": "?type=2&limit=10&sort=episode.addedAt%3Adesc&show.genre=9&and=1&episode.resolution=1080&and=1&episode.audioLanguage=en&and=1&show.network=42&and=1&show.addedAt%3E%3E=2024-01-01",
     "13-language-expansion": "?type=1&sort=titleSort&audioLanguage=es-419&and=1&audioLanguage=es-MX&and=1&audioLanguage=spa",
     "14-multi-value-under-any": "?type=1&sort=titleSort&push=1&contentRating=5&or=1&contentRating=7&pop=1",
+    "15-unreached-renders-and-rows": "?type=1&sort=titleSort&genre!=1138&and=1&studio!%3D=A24&and=1&studio%3E=Pictures%20%26%20Co&and=1&label=3&and=1&collection=77&and=1&viewCount%3E%3E=3&and=1&viewCount%3C=10",
 }
 
 
