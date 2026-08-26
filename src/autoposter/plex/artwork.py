@@ -46,9 +46,9 @@ PLEX_ART_FIELDS = {
 # It bounds *this* request only. A caller that also resolves the item through
 # plexapi first (api/artwork.py's live endpoint does) pays that leg's timeout as
 # well, and plexapi's is its own: PlexServer is constructed without a `timeout`
-# argument in main.py and app.py, so it uses plexapi.TIMEOUT, 30s. Worst case
-# against a Plex that accepts connections and then says nothing is therefore
-# ~45s, not 15s.
+# argument in main.py and collections/__main__.py, so it uses plexapi.TIMEOUT,
+# 30s. Worst case against a Plex that accepts connections and then says
+# nothing is therefore ~45s, not 15s.
 ARTWORK_FETCH_TIMEOUT = 15.0
 
 # How Plex keys an image somebody pushed to the server -- this service's own

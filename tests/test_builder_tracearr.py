@@ -581,12 +581,12 @@ def test_the_roadmap_row_this_phase_closes_says_so_and_names_its_corrections():
     # Correction 2: not every history record carries ids.
     assert "2 of 50" in row
 
-    # And the three rows this phase files rather than builds are the LAST rows
-    # of the table, contiguous, and numbered one past the previous last.
+    # And the three rows this phase files rather than builds (164-166) are
+    # contiguous. Not required to be the table's last rows: a later fix round
+    # may file further rows after them (row 167 does).
     numbered = [int(m.group(1)) for m in re.finditer(r"^\|\s*(\d+)\s*\|", roadmap, re.M)]
-    assert numbered[-1] == max(numbered), "the new rows are not last in the table"
-    assert numbered[-3:] == [numbered[-4] + n for n in (1, 2, 3)], (
-        "a new row skipped a number"
+    assert [164, 165, 166] == [n for n in numbered if 164 <= n <= 166], (
+        "rows 164-166 are not contiguous"
     )
 
     by_number = {
@@ -594,7 +594,7 @@ def test_the_roadmap_row_this_phase_closes_says_so_and_names_its_corrections():
         for line in roadmap.splitlines()
         if re.match(r"^\|\s*(\d+)\s*\|", line)
     }
-    filed, hardening, editable = (by_number[number] for number in numbered[-3:])
+    filed, hardening, editable = by_number[164], by_number[165], by_number[166]
 
     # (a) the sibling builder this phase deliberately did not build,
     assert "recently-added" in filed

@@ -218,7 +218,7 @@ version_check:
   # variable AUTOPOSTER_HARBOR_TOKEN to base64("robot$name:secret") for a
   # Harbor robot account with pull/list on this repository. Without either the
   # URL or the token, the registry is never contacted.
-  harbor_url: null # e.g. https://harbor.example.internal -- never logged or returned
+  harbor_url: null # e.g. https://harbor.example.internal -- never logged or in an error; visible in the config editor
   project: your-harbor-project # the Harbor project the image is pushed to
   repository: autoposter # the repository inside it; tags are read as sha-<git>
 

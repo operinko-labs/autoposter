@@ -348,11 +348,15 @@ async def test_history_follows_the_cursor_until_it_is_null():
     straight back and never inspected.
 
     Walked over the banked payloads rather than two invented records: page one
-    is the 50-record window with Tracearr's own cursor on it, page two is the
-    page the harvest got by handing that cursor back, and the empty terminal
-    page ends the walk. The two banked pages were captured at different page
-    sizes, so they overlap by id -- and nothing here de-duplicates. The client
-    returns what it was handed, in order; what a record *means* is the ranking
+    is the 50-record window with Tracearr's own cursor on it, page two is a
+    separate banked cursor-followed page -- its own capture, ``pageSize: 10``
+    against its own cursor, not a reply to page one's -- spliced in as the
+    walk's second page, and the empty terminal page ends the walk. The two
+    banked pages were captured at different page sizes, so they overlap by id
+    -- and nothing here de-duplicates. Every value in the walk is Tracearr's
+    own, but the cursor chain this test exercises is constructed from the
+    fixtures, not a replay of the harvest's exact session. The client returns
+    what it was handed, in order; what a record *means* is the ranking
     module's business one layer up.
     """
     seen: list = []
@@ -3630,9 +3634,10 @@ consequences worth knowing:
   window, plus (on a Show library only) one `GET /api/v2/public/media/{id}`
   per ranked title, which is what `limit` bounds. Two definitions ranking the
   same show in one pass share one call. Worst case with both presets on is
-  2 × (≤10 history pages + ≤25 media lookups) ≈ 70 v2 calls per pass against a
-  240/min budget, which is why no client-side rate limiter ships; revisit that
-  only if the preset count grows.
+  ≤10 history pages for the Movie preset plus ≤10 history pages and ≤20 media
+  lookups for the Show preset — ≤40 v2 calls per pass against a 240/min
+  budget, which is why no client-side rate limiter ships; revisit that only
+  if the preset count grows.
 - **One missing title does not empty the collection.** If Tracearr no longer
   has a media document for a ranked show — a title deleted between the history
   read and the lookup — that one entry is dropped and the count is logged; the
@@ -3770,5 +3775,5 @@ Run against the adjudications (`.superpowers/sdd/row79-facts.md`) and the harves
 - The **429 shape is not implemented against**, because the harvest deliberately never captured one (it would have meant exhausting the user's live budget). A 429 falls through `_get`'s `httpx.HTTPError` arm as `TracearrRefused(... HTTPStatusError)` — a dead source for that pass, contained by the engine, with nothing derived from it reaching Plex. That is the correct behaviour; what is untested is the specific status, and there is nothing honest to test it against.
 - **`tracearr_history_end.json` is constructed, not banked.** Labelled as such in Task 2 Step 1 and in the fixture-cut script's own comment.
 - The **multi-server rating-key caveat** (A1) is documented in `activity.py`'s module docstring and is not otherwise defended against; the deployment runs one server, and the exposure is bounded to identity-less records.
-- **No client-side rate limiter**, by decision. The worst case with both presets on is 2 × (≤10 history pages + ≤25 media lookups) ≈ 70 v2 calls per pass against a shared 240/min budget, which is the arithmetic recorded in `deploy/README.md`. A 429 would arrive as `TracearrRefused(... HTTPStatusError)` — one dead source for that pass, not a retry storm. Revisit if the preset count grows.
+- **No client-side rate limiter**, by decision. The worst case with both presets on is ≤10 history pages for the Movie preset plus ≤10 history pages and ≤20 media lookups for the Show preset — ≤40 v2 calls per pass against a shared 240/min budget, which is the arithmetic recorded in `deploy/README.md`. A 429 would arrive as `TracearrRefused(... HTTPStatusError)` — one dead source for that pass, not a retry storm. Revisit if the preset count grows.
 - **The movie merge branch is covered by synthetic records, not captured ones.** Stated in the test's own name and docstring, and no synthetic record is written to a fixture file, so nothing invented can later be read as evidence of what Tracearr sends.

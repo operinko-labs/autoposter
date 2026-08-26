@@ -1064,8 +1064,11 @@ like every other preset: list the key in `collections.presets`.
 Three things have to be true before either builds:
 
 - `tracearr.enabled: true` and `tracearr.base_url` set in the YAML config. The
-  base URL may be a cluster-internal hostname; it is never logged, never
-  returned by the API and never put in an error message.
+  base URL may be a cluster-internal hostname; it never appears in a log
+  line, an error message or an event payload — `providers/tracearr.py`'s
+  error-hygiene contract. It is visible in the authenticated config editor,
+  like every other section's URL; `_REDACTORS` (`api/routes.py`) redacts only
+  `notifications.url`.
 - `AUTOPOSTER_TRACEARR_APIKEY` exported. It is a `trr_pub_...` public API key
   minted in Tracearr's own settings, and it is a *soft* secret: with it unset
   the service still boots and every other pass is unaffected, and only these
@@ -1087,9 +1090,10 @@ consequences worth knowing:
   window, plus (on a Show library only) one `GET /api/v2/public/media/{id}`
   per ranked title, which is what `limit` bounds. Two definitions ranking the
   same show in one pass share one call. Worst case with both presets on is
-  2 × (≤10 history pages + ≤25 media lookups) ≈ 70 v2 calls per pass against a
-  240/min budget, which is why no client-side rate limiter ships; revisit that
-  only if the preset count grows.
+  ≤10 history pages for the Movie preset plus ≤10 history pages and ≤20 media
+  lookups for the Show preset — ≤40 v2 calls per pass against a 240/min
+  budget, which is why no client-side rate limiter ships; revisit that only
+  if the preset count grows.
 - **One missing title does not empty the collection.** If Tracearr no longer
   has a media document for a ranked show — a title deleted between the history
   read and the lookup — that one entry is dropped and the count is logged; the

@@ -23,10 +23,11 @@ Fixtures: ``tracearr_media_show.json`` / ``tracearr_media_movie.json`` are the
 verbatim ``body`` objects of ``docs/research/tracearr/payloads/
 v2-media-show-by-uuid.json`` and ``v2-media-movie-by-uuid.json``. The paging
 test walks ``tracearr_history_window.json`` (the banked 50-record window, cursor
-included) into ``tracearr_history_page2.json`` (the page the harvest got by
-following that cursor) and out through ``tracearr_history_end.json`` -- the one
-CONSTRUCTED fixture in the set, because the live instance's history never ran
-out inside a page budget and no empty page was ever banked.
+included) into ``tracearr_history_page2.json`` (a separate banked cursor-follow
+page, captured at its own ``pageSize: 10`` rather than a reply to page one's
+cursor) and out through ``tracearr_history_end.json`` -- the one CONSTRUCTED
+fixture in the set, because the live instance's history never ran out inside a
+page budget and no empty page was ever banked.
 """
 import json
 import logging
@@ -147,11 +148,15 @@ async def test_history_follows_the_cursor_until_it_is_null():
     straight back and never inspected.
 
     Walked over the banked payloads rather than two invented records: page one
-    is the 50-record window with Tracearr's own cursor on it, page two is the
-    page the harvest got by handing that cursor back, and the empty terminal
-    page ends the walk. The two banked pages were captured at different page
-    sizes, so they overlap by id -- and nothing here de-duplicates. The client
-    returns what it was handed, in order; what a record *means* is the ranking
+    is the 50-record window with Tracearr's own cursor on it, page two is a
+    separate banked cursor-followed page -- its own capture, ``pageSize: 10``
+    against its own cursor, not a reply to page one's -- spliced in as the
+    walk's second page, and the empty terminal page ends the walk. The two
+    banked pages were captured at different page sizes, so they overlap by id
+    -- and nothing here de-duplicates. Every value in the walk is Tracearr's
+    own, but the cursor chain this test exercises is constructed from the
+    fixtures, not a replay of the harvest's exact session. The client returns
+    what it was handed, in order; what a record *means* is the ranking
     module's business one layer up.
     """
     seen: list = []
