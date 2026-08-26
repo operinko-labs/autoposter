@@ -3975,7 +3975,7 @@ attribute returning a plausible-but-wrong set -- into a gate."
 **Files:**
 - Create: `src/autoposter/collections/builders/plex_search.py`
 - Modify: `src/autoposter/collections/builders/__init__.py` (one import, one
-  `register(...)`, three `__all__` entries)
+  `register(...)`)
 - Modify: `pyproject.toml` — only if Step 0 chooses option A
 - Create: `tests/test_builder_plex_search.py`
 - Modify: `tests/test_collection_config.py` (extend)
@@ -3992,7 +3992,7 @@ attribute returning a plausible-but-wrong set -- into a gate."
     `params_model = PlexSearchParams`.
   - `PlexSearchUnavailable(Exception)`, `PlexSearchRefused(Exception)`.
 
-### Lead-in: the nine accuracy items from the Task 3 review
+### Lead-in: the eight accuracy items from the Task 3 review
 
 Shipped as a separate commit ahead of the task proper, one item per finding in
 that review's Minor list. The plan blocks each touches are already spliced with
@@ -4106,9 +4106,11 @@ import and replace its body (B) or delete `_language_keys` and add the refusal
 (C), and say so in the module docstring.
 
 **DECIDED: A**, and the cost turned out lower than the option describes. The
-pin shipped is `"langcodes>=3.5"`, not `>=3.4`, because 3.5 moved
+pin shipped is `"langcodes>=3.5"`, not `>=3.4`, because 3.4.1 moved
 `language-data` (which pulls the `marisa-trie` C extension) into an optional
-`[data]` extra: on this image `pip install langcodes` resolves to 3.5.1, a
+`[data]` extra — 3.4.0 is the last release that still requires it, which is
+what makes the brief's own `>=3.4` floor the one that would have admitted a
+C-extension build. On this image `pip install langcodes` resolves to 3.5.1, a
 pure-python wheel with **no required transitive dependencies at all**. Nothing
 here needs the data extra — the reduction is tag *parsing*, not a name lookup.
 Probed on the image's own base before the pin was written

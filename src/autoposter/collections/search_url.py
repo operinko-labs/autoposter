@@ -123,6 +123,18 @@ def build_search_url(
     ``any`` base is wrapped in ``push=1&...pop=1`` instead, because a top-level
     OR needs a scope and the query string has no other way to give it one.
     """
+    # The gate, as the FIRST statement -- ahead of ``_render_group`` and every
+    # ``resolve_tag`` round-trip it makes. ``sort_argument`` indexes the
+    # libtype's table directly, so a sort that is real for the OTHER libtype
+    # -- ``episode_added.desc`` against a movie library -- would otherwise
+    # reach it as a bare ``KeyError``, which the engine reports as a dead
+    # source with no explanation. One site rather than two (Task 4 review,
+    # ruling on Minor 1): this function is public and pure, so it has to hold
+    # for every caller, not only ``PlexSearchBuilder``; and hoisting it above
+    # the body means a wrong-libtype sort refuses before this call resolves a
+    # single tag value, which used to require a second, earlier call at the
+    # builder's own call site.
+    require_sort_for_libtype(libtype, sort_by)
     body = _render_group(group, libtype=libtype, resolve_tag=resolve_tag)
     if not body:
         raise SearchProducedNothing(
@@ -140,17 +152,6 @@ def build_search_url(
     # the params model should not be able to build a query no server answers.
     if limit:
         head += f"limit={limit}&"
-    # The gate, immediately ahead of the lookup it protects.
-    # ``sort_argument`` indexes the libtype's table directly, so a sort that is
-    # real for the OTHER libtype -- ``episode_added.desc`` against a movie
-    # library -- reaches it as a bare ``KeyError``, which the engine reports as
-    # a dead source with no explanation. Here rather than only in the builder
-    # because this function is public and pure: the oracle drives it, the unit
-    # tests drive it, and a caller that skipped the params model must not be
-    # able to reach the unexplained failure either. ``PlexSearchBuilder`` calls
-    # the same gate before it starts resolving tag values, which is about the
-    # round-trips it saves rather than about the message.
-    require_sort_for_libtype(libtype, sort_by)
     head += f"sort={sort_argument(libtype, sort_by)}&"
     return head + tail
 

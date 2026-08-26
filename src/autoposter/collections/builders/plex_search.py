@@ -50,11 +50,16 @@ import logging
 from typing import Any
 
 import langcodes
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from plexapi.exceptions import BadRequest, NotFound
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
-from autoposter.collections.builders.base import BuilderContext, BuilderResult
+from autoposter.collections.builders.base import (
+    BuilderContext,
+    BuilderResult,
+    require_library_type,
+)
 from autoposter.collections.filters import BY_NAME, parse_filters
-from autoposter.collections.search_sorts import KNOWN_SORT_NAMES, require_sort_for_libtype
+from autoposter.collections.search_sorts import KNOWN_SORT_NAMES
 from autoposter.collections.search_url import build_search_url
 
 logger = logging.getLogger(__name__)
@@ -96,7 +101,16 @@ class PlexSearchUnavailable(Exception):
 
 
 class PlexSearchRefused(Exception):
-    """The query cannot be built for the library this pass is running on."""
+    """The query cannot be built for the library this pass is running on.
+
+    Kept as its own class -- unused by this module's code today -- because
+    the brief's Produces list names it alongside ``PlexSearchUnavailable``.
+    The libtype gate that used to raise it now goes through the package's own
+    ``require_library_type``/``LibraryTypeMismatch`` instead (Task 4 review,
+    Minor 2): that helper already makes the same build-time argument this
+    class's docstring used to, under a message shape every other builder's
+    library-type refusal already shares.
+    """
 
 
 class PlexSearchParams(BaseModel):
@@ -150,6 +164,12 @@ class PlexSearchParams(BaseModel):
     sort_by: list[str] | None = None
     limit: int | None = Field(default=None, ge=1)
 
+    # Set by ``_the_block_must_parse_as_a_search``, the one place the block is
+    # parsed. ``build()`` reads it through the ``group`` property rather than
+    # calling ``parse_filters`` a second time on the same block and the same
+    # arguments (Task 4 review, Minor 11).
+    _group: Any = PrivateAttr(default=None)
+
     @model_validator(mode="before")
     @classmethod
     def _the_base_and_the_refused_keys(cls, data: Any) -> Any:
@@ -161,20 +181,38 @@ class PlexSearchParams(BaseModel):
         genre, studio" -- which is true and tells an operator nothing about
         what a plex_search actually wants. The three keys Kometa does have get
         a reason here for the same reason.
+
+        Every check below matches keys EXACTLY, not case-insensitively.
+        Before Task 4's fix round this matched case-insensitively while field
+        acceptance (``all``, ``any``, ``sort_by``, ``limit``, and
+        ``extra="forbid"`` itself) always has not -- so ``All:`` satisfied
+        "a base is present" here and was then rejected two validators later
+        by pydantic's generic "Extra inputs are not permitted", losing the
+        tailored message anyway (Task 4 review, Minor 12). Matching exactly
+        is the stricter of the two and it is what makes this validator's
+        verdict and pydantic's field lookup agree on every input.
+
+        This is also the ONLY place the written base is known by name rather
+        than inferred from which of ``self.all``/``self.any`` ended up
+        non-``None`` -- which is why the two empty-base checks below live
+        here rather than in an ``after`` validator (Task 4 review, Important
+        1): ``{"all": None}`` and no base written at all are indistinguishable
+        once pydantic has applied the field defaults, because both leave
+        ``self.all`` and ``self.any`` at ``None``.
         """
         if not isinstance(data, dict):
             return data
-        lowered = {str(key).lower(): key for key in data}
+        keys = {str(key) for key in data}
         for refused, why in _REFUSED_KEYS.items():
-            if refused in lowered:
-                raise ValueError(f"{lowered[refused]!r} is not accepted here. {why}")
-        if "sort" in lowered and "sort_by" not in lowered:
+            if refused in keys:
+                raise ValueError(f"{refused!r} is not accepted here. {why}")
+        if "sort" in keys and "sort_by" not in keys:
             raise ValueError(
                 "the search's order is `sort_by`, not `sort` -- `sort` on the "
                 "definition itself is the collection's display order in Plex, "
                 "which is a different setting and is still available"
             )
-        bases = [name for name in ("all", "any") if name in lowered]
+        bases = [name for name in ("all", "any") if name in keys]
         if len(bases) == 2:
             raise ValueError(
                 "a plex_search has one base: write `all:` (every clause must "
@@ -189,6 +227,24 @@ class PlexSearchParams(BaseModel):
                 "becomes an OR and `genre.and:` an AND "
                 "(modules/builder.py:4261-4276) -- which makes one spelling mean "
                 "two memberships, so it is not accepted here"
+            )
+        # The two empty-base messages Kometa's own ``build_filter`` raises
+        # (``{base} attribute is blank`` / ``{base} must be a dictionary``,
+        # kometa_build_filter.py:951/:953) -- reproduced here because a bare
+        # `all:` with nothing under it (YAML's ``{"all": None}``) is the most
+        # common way to hit this, and naming ``any`` -- the base the operator
+        # never wrote -- sends them looking for a block that does not exist.
+        written = bases[0]
+        value = data[written]
+        if value is None:
+            raise ValueError(
+                f"`{written}:` is written but empty. Give it at least one "
+                "clause, or remove the key"
+            )
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"`{written}:` must be a mapping of attributes, not {value!r}. "
+                "Write each clause as `attribute: value` beneath it"
             )
         if isinstance(data.get("sort_by"), str):
             data = {**data, "sort_by": [data["sort_by"]]}
@@ -210,10 +266,14 @@ class PlexSearchParams(BaseModel):
         The rest of the sentence -- "the plex_search vocabulary is ...", "write
         it as a `filters:` block instead" -- is the parser's own, selected by
         ``searching=True``.
+
+        The result is kept on ``self`` (the ``group`` property) rather than
+        discarded: it is the same parse ``build()`` would otherwise redo on
+        the same block with the same arguments.
         """
-        base = "all" if self.all is not None else "any"
-        block = self.all if self.all is not None else self.any
-        parse_filters(block, field=f"params.{base}", searching=True, base=base)
+        self._group = parse_filters(
+            self.block, field=f"params.{self.base}", searching=True, base=self.base
+        )
         return self
 
     @model_validator(mode="after")
@@ -233,6 +293,11 @@ class PlexSearchParams(BaseModel):
     @property
     def block(self) -> dict:
         return self.all if self.all is not None else self.any
+
+    @property
+    def group(self):
+        """The block, already parsed and validated at load time."""
+        return self._group
 
 
 def _base_language_code(value: str) -> str:
@@ -261,13 +326,10 @@ class PlexSearchBuilder:
 
     async def build(self, ctx: BuilderContext) -> BuilderResult:
         params = PlexSearchParams.model_validate(ctx.config)
+        require_library_type(
+            "the 'plex_search' builder", ctx.library_type, ("Movie", "Show")
+        )
         libtype = ctx.library_type.lower()
-        if libtype not in ("movie", "show"):
-            raise PlexSearchRefused(
-                f"the 'plex_search' builder searches movie and show libraries, "
-                f"but this pass is running against a {ctx.library_type} library. "
-                "Narrow the definition with `libraries:`"
-            )
         access = ctx.sources.plex
         if access is None:
             raise PlexSearchUnavailable(
@@ -276,20 +338,14 @@ class PlexSearchBuilder:
             )
         section = access.section()
 
-        # Ahead of everything that talks to Plex, and deliberately duplicated:
-        # ``build_search_url`` runs this same gate immediately before
-        # ``sort_argument``, which is what makes it impossible to reach the
-        # bare ``KeyError`` from ANY caller. Here it is about cost -- a
-        # wrong-libtype sort would otherwise pay one ``listFilterChoices``
-        # round-trip per tag value before failing on a fact known before the
-        # first of them. The check is pure and idempotent, so running it twice
-        # is two comparisons.
-        require_sort_for_libtype(libtype, params.sort_by or [])
-        group = parse_filters(
-            params.block, field=f"params.{params.base}", searching=True, base=params.base
-        )
+        # No separate ``require_sort_for_libtype`` call here any more: it is
+        # the first statement of ``build_search_url`` itself now (Task 4
+        # review, ruling on Minor 1), which gives every caller the message
+        # AND -- because it runs ahead of ``_render_group`` -- still costs
+        # this builder zero ``listFilterChoices`` round-trips before a
+        # wrong-libtype sort refuses.
         url = build_search_url(
-            group,
+            params.group,
             libtype=libtype,
             sort_by=params.sort_by or (),
             limit=params.limit,
@@ -300,7 +356,7 @@ class PlexSearchBuilder:
             items = section.fetchItems(
                 f"/library/sections/{section.key}/all{url}"
             )
-        except Exception as error:  # noqa: BLE001 -- class name only, never the message
+        except Exception as error:  # class name only, never the message
             raise PlexSearchUnavailable(
                 "Plex would not answer this search: "
                 f"{type(error).__name__}"
@@ -308,6 +364,13 @@ class PlexSearchBuilder:
         ids = [("plex", str(item.ratingKey)) for item in items]
         logger.debug("plex_search: %d item(s)", len(ids))
         return BuilderResult(ids=ids)
+
+
+# Above ``_Resolver``, its only user, rather than at the bottom of the file:
+# a module-level sentinel read on every ``run_cache.get`` lookup, not a
+# forward reference that happens to work because Python resolves names inside
+# a method body at call time rather than at class-definition time.
+_MISSING = object()
 
 
 class _Resolver:
@@ -355,7 +418,16 @@ class _Resolver:
             return cached
         try:
             found = list(self._section.listFilterChoices(field=name, libtype=scope))
-        except Exception as error:  # noqa: BLE001 -- class name only
+        # plexapi's own docstring for ``listFilterChoices`` names exactly these
+        # two: ``NotFound`` for an unknown filter field, ``BadRequest`` for an
+        # invalid one. Narrower than ``except Exception`` on purpose (Task 4
+        # review, Minor 3) -- a blanket catch here does not just log a
+        # failure, it MEMOISES one, for the rest of the pass, as a fact about
+        # the LIBRARY ("Plex has no 'genre' filter..."). A ``TypeError`` from
+        # this module's own code is not that fact, and telling the operator it
+        # is would send them looking in the wrong place for the rest of the
+        # run.
+        except (NotFound, BadRequest) as error:
             failure = PlexSearchUnavailable(
                 f"Plex has no {attribute!r} filter for this library "
                 f"({type(error).__name__}), so its values cannot be resolved"
@@ -366,6 +438,13 @@ class _Resolver:
         return found
 
     def _choices(self, attribute: str, scope: str, name: str) -> dict[str, str]:
+        # Every spelling maps to ``choice.key`` -- the KEY, never
+        # ``choice.title`` -- which is what the query has to send Plex. Kometa
+        # agrees: ``validate_attribute`` calls its own ``get_search_choices``
+        # as ``title=not plex_search`` (modules/builder.py:4412, v2.4.8), so
+        # under a plex_search that argument is ``False`` and Kometa's own
+        # table is key-keyed too, not title-keyed (Task 4 review, closing
+        # item 2).
         table: dict[str, str] = {}
         for choice in self._raw_choices(attribute, scope, name):
             for spelling in (
@@ -396,6 +475,3 @@ class _Resolver:
         if code != _base_language_code(code) and code in exact:
             return (exact[code],)
         return tuple(by_base.get(code, ()))
-
-
-_MISSING = object()

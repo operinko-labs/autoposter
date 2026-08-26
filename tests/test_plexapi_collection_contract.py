@@ -20,6 +20,7 @@ from plexapi.server import PlexServer
     [
         ("createCollection", ["title", "smart", "libtype", "sort", "filters"]),
         ("listFilterChoices", ["field", "libtype"]),
+        ("fetchItems", ["ekey"]),
         ("collection", ["title"]),
     ],
 )

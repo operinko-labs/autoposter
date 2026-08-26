@@ -6,6 +6,7 @@ touches: which spellings load, which refuse and what they say, what the builder
 asks Plex, and how many times it asks.
 """
 import pytest
+from plexapi.exceptions import NotFound
 from pydantic import ValidationError
 
 from autoposter.collections.builders.base import BuilderContext, SourceClients
@@ -29,6 +30,36 @@ def test_two_bases_are_refused():
             {"all": {"genre": "Horror"}, "any": {"studio": "A24"}}
         )
     assert "one base" in str(error.value)
+
+
+def test_an_empty_all_base_names_all_not_any():
+    """Important 1. YAML's most common mistake -- ``all:`` with nothing under
+    it -- parses as ``{"all": None}``. Before the fix this fell through to
+    ``base = "any"`` (computed as ``"all" if self.all is not None else
+    "any"``) and sent the operator looking for an ``any:`` block that does
+    not exist. The written key is known here, in the ``before`` validator,
+    which is why the refusal can name it correctly."""
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"all": None})
+    message = str(error.value)
+    assert "`all:` is written but empty" in message
+    assert "params.any" not in message
+
+
+def test_an_empty_any_base_names_any_not_all():
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"any": None})
+    message = str(error.value)
+    assert "`any:` is written but empty" in message
+    assert "params.all" not in message
+
+
+def test_a_non_mapping_base_is_refused_naming_its_own_key():
+    """Kometa's other empty-base message (``{base} must be a dictionary``,
+    kometa_build_filter.py:953), reproduced alongside the blank one."""
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"all": ["genre: Horror"]})
+    assert "`all:` must be a mapping" in str(error.value)
 
 
 def test_the_implicit_base_is_refused_with_kometas_rule_spelled_out():
@@ -58,10 +89,17 @@ def test_validate_false_is_refused_by_name():
 def test_the_type_key_is_refused_by_name():
     """Kometa's ``type:`` (builder.py:4109-4121) selects the season/episode/
     album/track libtype. v1 searches movies and shows, and accepting the key
-    while ignoring it would be a setting that reads as applied and is not."""
+    while ignoring it would be a setting that reads as applied and is not.
+
+    Asserts a fragment of the tailored reason rather than the bare word
+    ``"type"`` -- every pydantic ``ValidationError`` contains that word on its
+    own (``[type=value_error, ...]``), so it does not pin the refusal being
+    exercised here at all (Task 4 review, Minor 9)."""
     with pytest.raises(ValidationError) as error:
         PlexSearchParams.model_validate({"all": {"genre": "Horror"}, "type": "episode"})
-    assert "type" in str(error.value)
+    message = str(error.value)
+    assert "'type' is not accepted here" in message
+    assert "season, episode, album or track" in message
 
 
 def test_an_unknown_params_key_is_refused():
@@ -70,14 +108,18 @@ def test_an_unknown_params_key_is_refused():
 
 
 def test_the_key_is_sort_by_and_not_sort():
-    """The naming warning, held. ``sort`` on the DEFINITION is the collection's
-    Plex display order; ``sort_by`` in PARAMS is the query's order, which
-    decides membership when a limit is present. Writing ``sort`` here is a
-    typo with a plausible-looking effect, so it refuses."""
-    params = PlexSearchParams.model_validate(
-        {"all": {"genre": "Horror"}, "sort_by": "title.asc"}
-    )
-    assert params.sort_by == ["title.asc"]
+    """The naming warning, exercised. ``sort`` on the DEFINITION is the
+    collection's Plex display order; ``sort_by`` in PARAMS is the query's
+    order, which decides membership when a limit is present. Writing ``sort``
+    here is a typo with a plausible-looking effect, so it refuses -- naming
+    both keys and which is which (Task 4 review, Minor 10: this used to
+    validate a *good* ``sort_by`` and duplicate the test below instead of
+    exercising the refusal its own name describes)."""
+    with pytest.raises(ValidationError) as error:
+        PlexSearchParams.model_validate({"all": {"genre": "Horror"}, "sort": "title.asc"})
+    message = str(error.value)
+    assert "sort_by" in message
+    assert "display order" in message
 
 
 def test_a_scalar_sort_by_becomes_a_one_element_list():
@@ -154,21 +196,28 @@ class FakeItem:
 
 
 class FakeSection:
-    """Counts what it was asked, so 'one lookup per pass' is a measurement."""
+    """Counts what it was asked, so 'one lookup per pass' is a measurement.
+
+    ``raise_on`` maps a field name to the exception INSTANCE
+    ``listFilterChoices`` should raise for it -- an instance, not a class,
+    because Minor 3's narrowing test needs to raise something that is not a
+    plexapi error at all (a plain ``TypeError``, standing in for a bug in our
+    own code) alongside cases that are.
+    """
 
     key = 1
 
-    def __init__(self, choices=None, items=None, raise_on=()):
+    def __init__(self, choices=None, items=None, raise_on=None):
         self._choices = choices or {}
         self._items = items or [FakeItem(11), FakeItem(12)]
-        self._raise_on = set(raise_on)
+        self._raise_on = dict(raise_on or {})
         self.filter_calls = []
         self.fetch_calls = []
 
     def listFilterChoices(self, field, libtype=None):
         self.filter_calls.append((field, libtype))
         if field in self._raise_on:
-            raise LookupError("no such filter field")
+            raise self._raise_on[field]
         return self._choices.get((field, libtype), [])
 
     def fetchItems(self, key):
@@ -215,14 +264,33 @@ async def test_a_tag_value_is_looked_up_once_per_pass_and_cached():
 async def test_a_failed_lookup_is_cached_too_so_a_dead_field_is_asked_once():
     """``BuilderContext.run_cache``'s own docstring requires this: a builder
     that memoises must memoise the failure, or a dead source is re-fetched once
-    per collection."""
-    section = FakeSection(raise_on={"genre"})
+    per collection. ``NotFound`` -- not a generic exception -- because that is
+    what ``listFilterChoices`` actually raises for a field the library does
+    not have; see Minor 3 below for why the catch is narrowed to it."""
+    section = FakeSection(raise_on={"genre": NotFound("no such filter field")})
     run_cache = {}
     for _ in range(3):
         ctx = context(section, config={"all": {"genre": "Horror"}}, run_cache=run_cache)
         with pytest.raises(Exception):
             await PlexSearchBuilder().build(ctx)
     assert section.filter_calls == [("genre", "movie")]
+
+
+async def test_a_coding_bug_in_the_lookup_is_not_mistaken_for_a_missing_filter():
+    """Minor 3. ``listFilterChoices`` raising a ``TypeError`` (or any other
+    non-plexapi exception) is a bug in this module's own call, not a fact
+    about what the library supports -- so it must neither be memoised as one
+    nor reported with the "Plex has no ... filter" wording that says it is.
+    Narrowing the catch to plexapi's own ``NotFound``/``BadRequest`` (what
+    ``listFilterChoices`` documents itself as raising) is what keeps a
+    ``TypeError`` from being cached as "Plex has no 'genre' filter" for the
+    rest of the pass."""
+    section = FakeSection(raise_on={"genre": TypeError("boom")})
+    ctx = context(section, config={"all": {"genre": "Horror"}})
+    with pytest.raises(TypeError) as error:
+        await PlexSearchBuilder().build(ctx)
+    assert "boom" in str(error.value)
+    assert "Plex has no" not in str(error.value)
 
 
 async def test_a_misspelled_tag_value_refuses_at_build_naming_value_and_attribute():
@@ -304,11 +372,17 @@ async def test_a_show_only_sort_builds_on_a_show_library_and_asks_nothing_first(
 
 
 async def test_a_music_library_refuses_by_name():
+    """Minor 2. This gate now goes through the package's own
+    ``require_library_type`` rather than a hand-rolled check, so the message
+    is that helper's shared shape (``builds Movie or Show collections``)
+    rather than a bespoke sentence."""
+    from autoposter.collections.builders.base import LibraryTypeMismatch
+
     section = FakeSection()
     ctx = context(section, library_type="Artist", config={"all": {"genre": "Horror"}})
-    with pytest.raises(Exception) as error:
+    with pytest.raises(LibraryTypeMismatch) as error:
         await PlexSearchBuilder().build(ctx)
-    assert "movie and show" in str(error.value)
+    assert "Movie or Show" in str(error.value)
 
 
 async def test_a_context_with_no_library_accessor_says_so():
