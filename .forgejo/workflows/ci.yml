@@ -143,7 +143,7 @@ jobs:
       # import `autoposter` is stored now.
       - name: Restore the virtualenv
         id: venv
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.VENV }}
           key: v1-venv-py${{ env.PYTHON_VERSION }}-${{ steps.epoch.outputs.week }}-${{ hashFiles('pyproject.toml') }}
@@ -188,7 +188,7 @@ jobs:
         # saving over an existing entry is at best a no-op and at worst a
         # warning in the log.
         if: steps.venv.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.VENV }}
           key: ${{ steps.venv.outputs.cache-primary-key }}
