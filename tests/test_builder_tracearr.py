@@ -255,7 +255,7 @@ async def test_a_show_collection_takes_its_ids_off_the_media_document():
 
 async def test_a_zero_on_the_media_document_is_absence_not_an_id():
     """The Movie path cannot hit this -- its ids came through
-    ``activity._external_id``, which reads ``0`` and ``"0"`` as the same absence
+    ``activity.external_id_or_none``, which reads ``0`` and ``"0"`` as the same absence
     marker one JSON coercion apart. The Show path reads the media document raw,
     so without the same coercion here a document carrying ``"tvdb_id": "0"``
     emits ``("tvdb", "0")``: an id that resolves to nothing anywhere, and whose
@@ -523,3 +523,84 @@ def test_the_rows_expand_to_the_builder_with_an_explicit_window_and_cap():
     assert definition.params == {"days": 30, "limit": 20, "metric": "plays"}
     # A Movie-only preset asked for its Show definitions has none.
     assert BY_KEY["chart_tracearr_movies"].definitions("Show") == []
+
+
+# --- the operator surface -----------------------------------------------------
+
+
+def test_the_example_config_carries_a_tracearr_block_that_is_off():
+    """The example documents the block and never switches it on: every
+    outward-facing integration in this project ships disabled, and an example
+    that shipped this one enabled would point a fresh deployment at a hostname
+    that does not exist."""
+    import pathlib
+
+    import yaml
+
+    example = pathlib.Path("config/autoposter.example.yaml")
+    data = yaml.safe_load(example.read_text(encoding="utf-8"))
+
+    assert data["tracearr"]["enabled"] is False
+    assert set(data["tracearr"]) == {"enabled", "base_url"}
+    # The credential is never a config key. This is the failure
+    # tests/test_example_config_matches_schema.py catches from the other side.
+    assert "api_key" not in data["tracearr"]
+
+
+def test_the_secret_is_documented_in_both_places_an_operator_looks():
+    """``.env.example`` is the compose path and ``deploy/README.md`` is the
+    Kubernetes one. A soft secret documented in neither is a feature nobody can
+    turn on."""
+    import pathlib
+
+    env_example = pathlib.Path(".env.example").read_text(encoding="utf-8")
+    readme = pathlib.Path("deploy/README.md").read_text(encoding="utf-8")
+
+    assert "AUTOPOSTER_TRACEARR_APIKEY" in env_example
+    assert "AUTOPOSTER_TRACEARR_APIKEY" in readme
+    assert "tracearr_most_watched" in readme
+
+
+def test_the_roadmap_row_this_phase_closes_says_so_and_names_its_corrections():
+    """A closure note that only says "delivered" hides the two places the row's
+    own text was wrong -- and the row is what the next reader trusts."""
+    import pathlib
+    import re
+
+    roadmap = pathlib.Path(
+        "docs/superpowers/specs/2026-08-22-full-parity-roadmap.md"
+    ).read_text(encoding="utf-8")
+    row = next(
+        line for line in roadmap.splitlines() if line.startswith("| 79 |")
+    )
+
+    assert "**answered row79/tracearr:** delivered" in row
+    assert "tracearr_most_watched" in row
+    # Correction 1: the short-circuit is movies-only.
+    assert "movies only" in row.lower()
+    # Correction 2: not every history record carries ids.
+    assert "2 of 50" in row
+
+    # And the three rows this phase files rather than builds are the LAST rows
+    # of the table, contiguous, and numbered one past the previous last.
+    numbered = [int(m.group(1)) for m in re.finditer(r"^\|\s*(\d+)\s*\|", roadmap, re.M)]
+    assert numbered[-1] == max(numbered), "the new rows are not last in the table"
+    assert numbered[-3:] == [numbered[-4] + n for n in (1, 2, 3)], (
+        "a new row skipped a number"
+    )
+
+    by_number = {
+        int(re.match(r"^\|\s*(\d+)\s*\|", line).group(1)): line
+        for line in roadmap.splitlines()
+        if re.match(r"^\|\s*(\d+)\s*\|", line)
+    }
+    filed, hardening, editable = (by_number[number] for number in numbered[-3:])
+
+    # (a) the sibling builder this phase deliberately did not build,
+    assert "recently-added" in filed
+    assert filed.rstrip().endswith("| 79, 17 |")
+    # (b) the two 2026-08-25 scheduler incidents this branch only half-fixed,
+    assert "head-of-line" in hardening
+    # (c) and the Settings rows that render read-only because their value is
+    #     null, which is a shape the editor cannot type.
+    assert "(not set)" in editable

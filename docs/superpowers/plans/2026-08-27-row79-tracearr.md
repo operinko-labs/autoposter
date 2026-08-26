@@ -345,19 +345,35 @@ async def test_a_trailing_slash_on_the_base_url_does_not_double_up():
 
 async def test_history_follows_the_cursor_until_it_is_null():
     """The cursor is opaque and embeds a session identifier, so it is handed
-    straight back and never inspected. Two pages, disjoint, in order."""
+    straight back and never inspected.
+
+    Walked over the banked payloads rather than two invented records: page one
+    is the 50-record window with Tracearr's own cursor on it, page two is the
+    page the harvest got by handing that cursor back, and the empty terminal
+    page ends the walk. The two banked pages were captured at different page
+    sizes, so they overlap by id -- and nothing here de-duplicates. The client
+    returns what it was handed, in order; what a record *means* is the ranking
+    module's business one layer up.
+    """
     seen: list = []
-    pages = iter([_history([{"id": "a"}], cursor="CURSOR-1"), _history([{"id": "b"}])])
+    page1 = load("tracearr_history_window.json")
+    page2 = load("tracearr_history_page2.json") | {
+        "meta": {"nextCursor": PAGE2_CURSOR, "pageSize": 10}
+    }
+    pages = iter([page1, page2, load("tracearr_history_end.json")])
     routes = {f"{API_PREFIX}/history": lambda request: _matched(next(pages))}
     async with httpx.AsyncClient(transport=_routed(routes, seen)) as http:
         records = await _client(http).history(
             since="2026-07-26T00:00:00Z", media_type="episode"
         )
 
-    assert [record["id"] for record in records] == ["a", "b"]
-    assert len(seen) == 2
+    assert [record["id"] for record in records] == [
+        record["id"] for record in page1["data"] + page2["data"]
+    ]
+    assert len(seen) == 3
     assert "cursor" not in seen[0].url.params
-    assert seen[1].url.params["cursor"] == "CURSOR-1"
+    assert seen[1].url.params["cursor"] == page1["meta"]["nextCursor"]
+    assert seen[2].url.params["cursor"] == PAGE2_CURSOR
 
 
 async def test_history_stops_at_the_page_cap_and_says_so(caplog):
@@ -2142,7 +2158,7 @@ def rank(
         if media_kind == "movie":
             for field in _EXTERNAL_ID_FIELDS:
                 if entry[field] is None:
-                    entry[field] = _external_id(record.get(field))
+                    entry[field] = external_id_or_none(record.get(field))
         entry["plays"] += 1
         entry["watch_time_ms"] += _duration_ms(record)
         seen = record.get(key_field)
@@ -2253,12 +2269,17 @@ def _duration_ms(record: dict) -> int:
         return 0
 
 
-def _external_id(value) -> str | None:
+def external_id_or_none(value) -> str | None:
     """One external id as a string, or None when the record carries none.
 
     ``0`` and ``"0"`` are both read as absence rather than as an id: they are
     the same absence marker one JSON coercion apart, and an id of "0" resolves
     to nothing anywhere.
+
+    Public because it is shared: the ranking above applies it to a movie
+    record's ids, and ``builders/tracearr.py`` applies the same rule to a show's
+    media document, which is read raw off the wire. One absence rule, one copy
+    -- two would let the same "0" be an id on one path and absence on the other.
     """
     if value is None or value == 0 or str(value) in ("", "0"):
         return None
@@ -2337,7 +2358,7 @@ Compose project name for this task: **`row79t3`**.
 - Create: `tests/test_builder_tracearr.py`
 
 **Interfaces:**
-- Consumes: `TracearrClient`, `TracearrRefused`, `API_PREFIX` (Task 1); `rank`, `Bucket`, `since_instant`, `MEDIA_KINDS`, `HISTORY_MEDIA_TYPE`, `METRICS`, `_external_id` (Task 2); `BuilderContext`, `BuilderResult`, `ExternalId`, `PREFERENCE`, `best_external_id`, `require_library_type` (`src/autoposter/collections/builders/base.py`).
+- Consumes: `TracearrClient`, `TracearrRefused`, `API_PREFIX` (Task 1); `rank`, `Bucket`, `since_instant`, `MEDIA_KINDS`, `HISTORY_MEDIA_TYPE`, `METRICS`, `external_id_or_none` (Task 2); `BuilderContext`, `BuilderResult`, `ExternalId`, `PREFERENCE`, `best_external_id`, `require_library_type` (`src/autoposter/collections/builders/base.py`).
 - Produces, for Task 4:
   - `autoposter.collections.builders.tracearr.TracearrBuilderRefused(Exception)`
   - `autoposter.collections.builders.tracearr.TracearrMostWatchedParams` — `metric: Literal["plays", "watch_time"] = "plays"`, `days: int = 30` (ge=1, le=365), `limit: int = 20` (ge=1, le=100), `extra="forbid"`
@@ -2606,7 +2627,7 @@ async def test_a_show_collection_takes_its_ids_off_the_media_document():
 
 async def test_a_zero_on_the_media_document_is_absence_not_an_id():
     """The Movie path cannot hit this -- its ids came through
-    ``activity._external_id``, which reads ``0`` and ``"0"`` as the same absence
+    ``activity.external_id_or_none``, which reads ``0`` and ``"0"`` as the same absence
     marker one JSON coercion apart. The Show path reads the media document raw,
     so without the same coercion here a document carrying ``"tvdb_id": "0"``
     emits ``("tvdb", "0")``: an id that resolves to nothing anywhere, and whose
@@ -2967,15 +2988,10 @@ from autoposter.collections.activity import (
     HISTORY_MEDIA_TYPE,
     MEDIA_KINDS,
     Bucket,
+    external_id_or_none,
     rank,
     since_instant,
 )
-# ``activity``'s own absence coercion, by its private name because that is where
-# the rule lives and a second copy of it is exactly what this module is being
-# cleaned of. It maps ``0`` and ``"0"`` -- the same absence marker one JSON
-# coercion apart -- to None. A Movie bucket's ids already went through it
-# (``activity`` builds them); a media document read here has not.
-from autoposter.collections.activity import _external_id as _absent_or_str
 from autoposter.collections.builders.base import (
     PREFERENCE,
     BuilderContext,
@@ -3134,10 +3150,12 @@ async def _external_id(
         # ids -- so ``activity``'s absence rule has to be applied here or a
         # document carrying ``"tvdb_id": "0"`` becomes ("tvdb", "0"), an id
         # that resolves to nothing anywhere and looks exactly like a member the
-        # library happens not to own.
+        # library happens not to own. ``external_id_or_none`` is that rule, in
+        # the module that owns it: a second copy here would let the same "0" be
+        # an id on this path and absence on the ranking's.
         document = await _media_document(ctx, client, bucket.media_id)
         identity = {
-            name: _absent_or_str(document.get(name))
+            name: external_id_or_none(document.get(name))
             for name in ("imdb_id", "tmdb_id", "tvdb_id")
         }
     return best_external_id(identity, PREFERENCE[library_type])
@@ -3216,7 +3234,7 @@ def best_external_id(
     Absence is ``None``, ``""`` and ``0``: the three shapes a source uses for
     "this entry has no such id". Note that the *string* ``"0"`` is not absence
     here -- a caller reading a raw document that might carry one coerces it
-    before this sees it (``activity._external_id`` is that coercion), because
+    before this sees it (``activity.external_id_or_none`` is that coercion), because
     tightening it here would silently change what ``mdblist_list`` emits.
 
     Logging a skip is the CALLER's, deliberately: ``mdblist_list`` names the
@@ -3413,6 +3431,28 @@ docker compose -p row79t3 down
 
 Compose project name for this task: **`row79t4`**.
 
+**As executed**, this task also carried a controller queue that the plan did not
+anticipate, and three of those items changed the steps below. Recorded here
+rather than left to be inferred from the diff:
+
+- The two dead history fixtures (`tracearr_history_page2.json`,
+  `tracearr_history_end.json`, referenced by nothing after Task 2) were ADOPTED:
+  `tests/test_tracearr_client.py`'s paging test above now walks the banked
+  window into the banked cursor-followed page and out through the constructed
+  empty page, in place of two invented records.
+- `activity._external_id` was promoted to `activity.external_id_or_none`, which
+  is why Task 3's builder imports it by name rather than under a private alias.
+- **Three** roadmap rows are filed rather than one: the recently-added builder
+  Step 6(c) describes, plus a scheduler-hardening row (the 2026-08-25
+  head-of-line-blocking and Plex-timeout incidents) and a row for the Settings
+  editor's inability to type a null-valued config field. Step 1's roadmap test
+  asserts all three, and asserts contiguity across the three rather than one.
+- `deploy/README.md` also gained a paragraph in the prune section on the Plex
+  trash/mount interaction (a lost mount is a non-event only while "Empty trash
+  automatically after every scan" stays off).
+- Step 11 was already done: the plan draft was moved into the repository with
+  Task 1's own commit, so this task had nothing to move.
+
 **Files:**
 - Modify: `config/autoposter.example.yaml` (a `tracearr:` block after `sonarr:`, which ends at `:180`)
 - Modify: `.env.example`
@@ -3484,17 +3524,29 @@ def test_the_roadmap_row_this_phase_closes_says_so_and_names_its_corrections():
     # Correction 2: not every history record carries ids.
     assert "2 of 50" in row
 
-    # And the follow-up row exists, is the LAST row of the table, is numbered
-    # one past the previous last, and cites row 79 as its dependency.
+    # And the three rows this phase files rather than builds are the LAST rows
+    # of the table, contiguous, and numbered one past the previous last.
     numbered = [int(m.group(1)) for m in re.finditer(r"^\|\s*(\d+)\s*\|", roadmap, re.M)]
-    assert numbered[-1] == max(numbered), "the new row is not the last in the table"
-    assert numbered[-1] == numbered[-2] + 1, "the new row skipped a number"
-    filed = next(
-        line for line in roadmap.splitlines()
-        if line.startswith("| %d |" % numbered[-1])
+    assert numbered[-1] == max(numbered), "the new rows are not last in the table"
+    assert numbered[-3:] == [numbered[-4] + n for n in (1, 2, 3)], (
+        "a new row skipped a number"
     )
+
+    by_number = {
+        int(re.match(r"^\|\s*(\d+)\s*\|", line).group(1)): line
+        for line in roadmap.splitlines()
+        if re.match(r"^\|\s*(\d+)\s*\|", line)
+    }
+    filed, hardening, editable = (by_number[number] for number in numbered[-3:])
+
+    # (a) the sibling builder this phase deliberately did not build,
     assert "recently-added" in filed
     assert filed.rstrip().endswith("| 79, 17 |")
+    # (b) the two 2026-08-25 scheduler incidents this branch only half-fixed,
+    assert "head-of-line" in hardening
+    # (c) and the Settings rows that render read-only because their value is
+    #     null, which is a shape the editor cannot type.
+    assert "(not set)" in editable
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -3569,7 +3621,7 @@ Three things have to be true before either builds:
 **Tracearr publishes no most-watched endpoint**, in either API version — the
 only top-N-by-play-count endpoint it has is on its internal, session-JWT API
 that an API key cannot reach. So this ranking is computed here, by paging
-`GET /api/v2/public/history` over the window and grouping the records. Two
+`GET /api/v2/public/history` over the window and grouping the records. Three
 consequences worth knowing:
 
 - **The budget is the constraint.** The v2 API allows 240 requests/minute

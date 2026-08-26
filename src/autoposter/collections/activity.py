@@ -62,6 +62,7 @@ __all__ = [
     "MEDIA_KINDS",
     "METRICS",
     "Bucket",
+    "external_id_or_none",
     "rank",
     "since_instant",
 ]
@@ -196,7 +197,7 @@ def rank(
         if media_kind == "movie":
             for field in _EXTERNAL_ID_FIELDS:
                 if entry[field] is None:
-                    entry[field] = _external_id(record.get(field))
+                    entry[field] = external_id_or_none(record.get(field))
         entry["plays"] += 1
         entry["watch_time_ms"] += _duration_ms(record)
         seen = record.get(key_field)
@@ -307,12 +308,17 @@ def _duration_ms(record: dict) -> int:
         return 0
 
 
-def _external_id(value) -> str | None:
+def external_id_or_none(value) -> str | None:
     """One external id as a string, or None when the record carries none.
 
     ``0`` and ``"0"`` are both read as absence rather than as an id: they are
     the same absence marker one JSON coercion apart, and an id of "0" resolves
     to nothing anywhere.
+
+    Public because it is shared: the ranking above applies it to a movie
+    record's ids, and ``builders/tracearr.py`` applies the same rule to a show's
+    media document, which is read raw off the wire. One absence rule, one copy
+    -- two would let the same "0" be an id on one path and absence on the other.
     """
     if value is None or value == 0 or str(value) in ("", "0"):
         return None

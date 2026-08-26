@@ -21,7 +21,12 @@ answer could reach a sync-mode collection or a credential could reach a log:
 
 Fixtures: ``tracearr_media_show.json`` / ``tracearr_media_movie.json`` are the
 verbatim ``body`` objects of ``docs/research/tracearr/payloads/
-v2-media-show-by-uuid.json`` and ``v2-media-movie-by-uuid.json``.
+v2-media-show-by-uuid.json`` and ``v2-media-movie-by-uuid.json``. The paging
+test walks ``tracearr_history_window.json`` (the banked 50-record window, cursor
+included) into ``tracearr_history_page2.json`` (the page the harvest got by
+following that cursor) and out through ``tracearr_history_end.json`` -- the one
+CONSTRUCTED fixture in the set, because the live instance's history never ran
+out inside a page budget and no empty page was ever banked.
 """
 import json
 import logging
@@ -47,6 +52,16 @@ FIXTURES = Path(__file__).parent / "fixtures" / "collections"
 BASE_URL = "http://tracearr.test.invalid"
 API_KEY = "trr_pub_test"
 SHOW_UUID = "faf036e2-8459-4ace-a8ba-19486b6289c6"
+
+# The cursor ``tracearr_history_page2.json`` carried when it was banked
+# (``docs/research/tracearr/payloads/v2-history-page2-cursor.json``). The fixture
+# cut nulled it so the file stands alone as a single page; the paging test below
+# restores it rather than inventing one, so every value in that walk is
+# Tracearr's own.
+PAGE2_CURSOR = (
+    "eyJ0IjoiMjAyNi0wOC0xOVQxMTo1NDo0NC4wMDBaIiwiaWQiOiIyMjIyMjIyMi0yMjIyLTQyMjItO"
+    "DIyMi0wMDAwMDAwMDAwMjEifQ"
+)
 
 
 def load(name):
@@ -129,19 +144,35 @@ async def test_a_trailing_slash_on_the_base_url_does_not_double_up():
 
 async def test_history_follows_the_cursor_until_it_is_null():
     """The cursor is opaque and embeds a session identifier, so it is handed
-    straight back and never inspected. Two pages, disjoint, in order."""
+    straight back and never inspected.
+
+    Walked over the banked payloads rather than two invented records: page one
+    is the 50-record window with Tracearr's own cursor on it, page two is the
+    page the harvest got by handing that cursor back, and the empty terminal
+    page ends the walk. The two banked pages were captured at different page
+    sizes, so they overlap by id -- and nothing here de-duplicates. The client
+    returns what it was handed, in order; what a record *means* is the ranking
+    module's business one layer up.
+    """
     seen: list = []
-    pages = iter([_history([{"id": "a"}], cursor="CURSOR-1"), _history([{"id": "b"}])])
+    page1 = load("tracearr_history_window.json")
+    page2 = load("tracearr_history_page2.json") | {
+        "meta": {"nextCursor": PAGE2_CURSOR, "pageSize": 10}
+    }
+    pages = iter([page1, page2, load("tracearr_history_end.json")])
     routes = {f"{API_PREFIX}/history": lambda request: _matched(next(pages))}
     async with httpx.AsyncClient(transport=_routed(routes, seen)) as http:
         records = await _client(http).history(
             since="2026-07-26T00:00:00Z", media_type="episode"
         )
 
-    assert [record["id"] for record in records] == ["a", "b"]
-    assert len(seen) == 2
+    assert [record["id"] for record in records] == [
+        record["id"] for record in page1["data"] + page2["data"]
+    ]
+    assert len(seen) == 3
     assert "cursor" not in seen[0].url.params
-    assert seen[1].url.params["cursor"] == "CURSOR-1"
+    assert seen[1].url.params["cursor"] == page1["meta"]["nextCursor"]
+    assert seen[2].url.params["cursor"] == PAGE2_CURSOR
 
 
 async def test_history_stops_at_the_page_cap_and_says_so(caplog):

@@ -281,7 +281,7 @@ def best_external_id(
     Absence is ``None``, ``""`` and ``0``: the three shapes a source uses for
     "this entry has no such id". Note that the *string* ``"0"`` is not absence
     here -- a caller reading a raw document that might carry one coerces it
-    before this sees it (``activity._external_id`` is that coercion), because
+    before this sees it (``activity.external_id_or_none`` is that coercion), because
     tightening it here would silently change what ``mdblist_list`` emits.
 
     Logging a skip is the CALLER's, deliberately: ``mdblist_list`` names the

@@ -131,6 +131,9 @@ variables:
   posture as the MDBList key. Unset, `radarr.enabled`/`sonarr.enabled`
   default to `false` anyway, so the app boots the same either way; see
   "Radarr and Sonarr sync" below.
+- `AUTOPOSTER_TRACEARR_APIKEY` — optional, same posture as the MDBList key.
+  Unset, `tracearr.enabled` defaults to `false` anyway, so the app boots the
+  same either way; see "Tracearr watch-history collections" below.
 - `AUTOPOSTER_ADMIN_PASSWORD_HASH` — the bcrypt hash of the Web UI's admin
   password. See "Web UI authentication" below: unlike the keys above, an
   unset value does not mean "no auth required", it means every login attempt
@@ -529,6 +532,19 @@ re-including the library re-creates the rows on the next pass.
 
 A row that Plex *has* but has not finished scanning is never pruned: the probe
 asks only whether the item can be found, not whether it is usable yet.
+
+**A lost network mount is not a mass deletion — as long as Plex's trash stays
+manual.** When a library's storage goes away, a scan marks those items
+*unavailable* and moves them to Plex's trash; the items themselves still
+resolve, so this prune's probe reads every one of them as present and finds
+nothing prunable. What actually removes them from Plex is emptying that trash,
+which is why **"Empty trash automatically after every scan" should stay off**
+on every library this service manages. With it off, a mount outage is a
+non-event at every layer: Plex keeps the items, the prune keeps the rows, and
+the next scan after the mount returns un-marks them. With it on, one scan
+during an outage deletes the items in Plex, and the next prune pass — capped
+and dry-run by default, which is the last line of defence rather than the
+first — is then reporting a real absence it cannot tell from a deliberate one.
 
 - `prune.apply` (default `false`) — dry run: report which rows would go and
   delete nothing. Unlike the asset cleanup, whose mistake is a folder that
@@ -1037,6 +1053,53 @@ Enable these triggers:
 
 - **Radarr:** On Import Complete, On Rename, On Movie Add
 - **Sonarr:** On Import Complete, On Rename, On Series Add
+
+## Tracearr watch-history collections
+
+Two collection presets — `chart_tracearr_movies` and `chart_tracearr_shows`,
+titled **Most Watched Movies** and **Most Watched Shows** — rank a library by
+what this deployment actually played, over a 30-day window. They are opt-in
+like every other preset: list the key in `collections.presets`.
+
+Three things have to be true before either builds:
+
+- `tracearr.enabled: true` and `tracearr.base_url` set in the YAML config. The
+  base URL may be a cluster-internal hostname; it is never logged, never
+  returned by the API and never put in an error message.
+- `AUTOPOSTER_TRACEARR_APIKEY` exported. It is a `trr_pub_...` public API key
+  minted in Tracearr's own settings, and it is a *soft* secret: with it unset
+  the service still boots and every other pass is unaffected, and only these
+  definitions report themselves failed.
+- The `tracearr_most_watched` builder is what the presets expand to. It takes
+  `days` (1–365, default 30), `metric` (`plays` or `watch_time`, default
+  `plays`) and `limit` (1–100, default 20), so an operator who wants a
+  different window writes their own definition rather than editing the preset.
+
+**Tracearr publishes no most-watched endpoint**, in either API version — the
+only top-N-by-play-count endpoint it has is on its internal, session-JWT API
+that an API key cannot reach. So this ranking is computed here, by paging
+`GET /api/v2/public/history` over the window and grouping the records. Three
+consequences worth knowing:
+
+- **The budget is the constraint.** The v2 API allows 240 requests/minute
+  *shared across the whole key* — not per route, and spent even by requests
+  that fail authentication. One collection costs one page per 100 plays in its
+  window, plus (on a Show library only) one `GET /api/v2/public/media/{id}`
+  per ranked title, which is what `limit` bounds. Two definitions ranking the
+  same show in one pass share one call. Worst case with both presets on is
+  2 × (≤10 history pages + ≤25 media lookups) ≈ 70 v2 calls per pass against a
+  240/min budget, which is why no client-side rate limiter ships; revisit that
+  only if the preset count grows.
+- **One missing title does not empty the collection.** If Tracearr no longer
+  has a media document for a ranked show — a title deleted between the history
+  read and the lookup — that one entry is dropped and the count is logged; the
+  collection still builds from the rest. A Tracearr that is unreachable, or
+  answering with something other than the API, fails the definition instead and
+  leaves the existing collection untouched.
+- **These numbers are not Tracearr's dashboard numbers, and are not meant to
+  be.** `/history` windows are instants; Tracearr's own per-item stats windows
+  are UTC calendar days. The two disagree by design, and mixing them would
+  produce a number neither service would recognise.
 
 ## Outbound notifications config
 

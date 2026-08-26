@@ -179,6 +179,14 @@ sonarr:
   season_folder: true
   series_type: standard
 
+tracearr:
+  enabled: false # off until base_url is set and AUTOPOSTER_TRACEARR_APIKEY is exported
+  base_url: http://tracearr.media.svc.cluster.local
+  # api_key is deliberately not a key here -- it is AUTOPOSTER_TRACEARR_APIKEY,
+  # the same posture as radarr/sonarr. Switching this on makes the
+  # `chart_tracearr_movies` / `chart_tracearr_shows` presets buildable; it does
+  # not switch them on, which is `collections.presets`.
+
 arr_sync:
   enabled: true # the safety net (enqueue unrecorded Plex items) runs even when both services above are disabled
   hours: 24 # Radarr/Sonarr registration cadence

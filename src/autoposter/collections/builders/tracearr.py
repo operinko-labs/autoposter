@@ -76,15 +76,10 @@ from autoposter.collections.activity import (
     HISTORY_MEDIA_TYPE,
     MEDIA_KINDS,
     Bucket,
+    external_id_or_none,
     rank,
     since_instant,
 )
-# ``activity``'s own absence coercion, by its private name because that is where
-# the rule lives and a second copy of it is exactly what this module is being
-# cleaned of. It maps ``0`` and ``"0"`` -- the same absence marker one JSON
-# coercion apart -- to None. A Movie bucket's ids already went through it
-# (``activity`` builds them); a media document read here has not.
-from autoposter.collections.activity import _external_id as _absent_or_str
 from autoposter.collections.builders.base import (
     PREFERENCE,
     BuilderContext,
@@ -243,10 +238,12 @@ async def _external_id(
         # ids -- so ``activity``'s absence rule has to be applied here or a
         # document carrying ``"tvdb_id": "0"`` becomes ("tvdb", "0"), an id
         # that resolves to nothing anywhere and looks exactly like a member the
-        # library happens not to own.
+        # library happens not to own. ``external_id_or_none`` is that rule, in
+        # the module that owns it: a second copy here would let the same "0" be
+        # an id on this path and absence on the ranking's.
         document = await _media_document(ctx, client, bucket.media_id)
         identity = {
-            name: _absent_or_str(document.get(name))
+            name: external_id_or_none(document.get(name))
             for name in ("imdb_id", "tmdb_id", "tvdb_id")
         }
     return best_external_id(identity, PREFERENCE[library_type])
