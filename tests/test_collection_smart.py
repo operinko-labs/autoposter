@@ -7,6 +7,8 @@ import -- an oracle and the code it judges must not share a symbol, which is the
 rule ``test_the_oracles_vocabulary_fixture_matches_this_files_copy`` already
 states about ``CHOICES``.
 """
+import ast
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -32,6 +34,21 @@ TITLE = "Oracle Collection"
 URL = "?type=1&sort=titleSort&contentRating=5&and=1&contentRating=7"
 KOMETA_POST = "/library/collections?sectionId=2&smart=1&title=Oracle%20Collection&type=1&uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D1%26sort%3DtitleSort%26contentRating%3D5%26and%3D1%26contentRating%3D7"
 KOMETA_PUT = "/library/collections/12345/items?uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D1%26sort%3DtitleSort%26contentRating%3D5%26and%3D1%26contentRating%3D7"
+
+# Three more configs of the oracle, closing the review's Important 2: config 12
+# is the ONE byte the shipped envelope computes rather than passes through
+# (smart.py:149's ``1 if libtype == "movie" else 2``), and 8/15 are the
+# ``!`` -> ``%21`` encoding class that config 1 alone never exercises. Copied
+# from tests/test_smart_collection_oracle.py by value, same rule as above --
+# and test_this_files_oracle_copies_match_the_oracles ties the copies to it.
+URL_SHOW = "?type=2&limit=10&sort=episode.addedAt%3Adesc&show.genre=9&and=1&episode.resolution=1080&and=1&episode.audioLanguage=en&and=1&show.network=42&and=1&show.addedAt%3E%3E=2024-01-01"
+KOMETA_POST_SHOW = "/library/collections?sectionId=2&smart=1&title=Oracle%20Collection&type=2&uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D2%26limit%3D10%26sort%3Depisode.addedAt%253Adesc%26show.genre%3D9%26and%3D1%26episode.resolution%3D1080%26and%3D1%26episode.audioLanguage%3Den%26and%3D1%26show.network%3D42%26and%3D1%26show.addedAt%253E%253E%3D2024-01-01"
+
+URL_8 = "?type=1&sort=titleSort&rating!=-1&and=1&audienceRating=-1"
+KOMETA_POST_8 = "/library/collections?sectionId=2&smart=1&title=Oracle%20Collection&type=1&uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D1%26sort%3DtitleSort%26rating%21%3D-1%26and%3D1%26audienceRating%3D-1"
+
+URL_15 = "?type=1&sort=titleSort&genre!=1138&and=1&studio!%3D=A24&and=1&studio%3E=Pictures%20%26%20Co&and=1&label=3&and=1&collection=77&and=1&viewCount%3E%3E=3&and=1&viewCount%3C=10"
+KOMETA_POST_15 = "/library/collections?sectionId=2&smart=1&title=Oracle%20Collection&type=1&uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D1%26sort%3DtitleSort%26genre%21%3D1138%26and%3D1%26studio%21%253D%3DA24%26and%3D1%26studio%253E%3DPictures%2520%2526%2520Co%26and%3D1%26label%3D3%26and%3D1%26collection%3D77%26and%3D1%26viewCount%253E%253E%3D3%26and%3D1%26viewCount%253C%3D10"
 
 
 class FakeItem:
@@ -99,6 +116,15 @@ class FakeCollection:
     def editSortTitle(self, value, locked=True):
         self.sort_titles.append(value)
         self.titleSort = value
+
+    def items(self):
+        """Poisoned: a plexapi ``Collection`` truthiness check calls
+        ``__len__``, which is ``len(self.items())`` -- a live Plex request. F1
+        regression: nothing in this reconciler may reach either."""
+        raise AssertionError("items() must not be called")
+
+    def __len__(self):
+        raise AssertionError("items() must not be called")
 
     def query(self, key, method=None, **kwargs):
         """The item-level summary PUT, through this collection's own server."""
@@ -182,6 +208,58 @@ async def test_the_update_put_is_byte_identical_to_the_oracles(session):
     assert any("updated" in action for action in actions)
 
 
+async def test_the_show_branchs_type_byte_is_byte_identical_to_the_oracles(session):
+    """Config 12: the ONE byte the shipped envelope computes rather than passes
+    through (``smart.py:149``). No other test in this file drives the module
+    with ``library_type="Show"``."""
+    section = FakeSection(matches=7)
+    await reconcile_smart_collection(
+        session, section, "Shows", "Show", TITLE, URL_SHOW, LABEL, dry_run=False,
+    )
+    assert [key for key, _ in section._server.queries] == [KOMETA_POST_SHOW]
+
+
+async def test_a_raw_bang_double_encodes_through_the_shipped_path(session):
+    """Config 8: a raw ``!`` in the query, encoded by the envelope alone
+    (``%21``) -- never exercised through the shipped path by config 1."""
+    section = FakeSection(matches=7)
+    await reconcile_smart_collection(
+        session, section, "Movies", "Movie", TITLE, URL_8, LABEL, dry_run=False,
+    )
+    assert [key for key, _ in section._server.queries] == [KOMETA_POST_8]
+
+
+async def test_a_double_encoded_bang_equals_matches_the_oracles(session):
+    """Config 15: ``!%3D`` through both encoding layers (``%21%253D``)."""
+    section = FakeSection(matches=7)
+    await reconcile_smart_collection(
+        session, section, "Movies", "Movie", TITLE, URL_15, LABEL, dry_run=False,
+    )
+    assert [key for key, _ in section._server.queries] == [KOMETA_POST_15]
+
+
+def test_this_files_oracle_copies_match_the_oracles():
+    """Review ⚠️5: nothing previously guarded ``KOMETA_POST``/``KOMETA_PUT``
+    above, or the three added for configs 8/12/15, against drifting from
+    ``tests/test_smart_collection_oracle.py``'s copies. Read as text and
+    compared by literal, the same idiom
+    ``test_the_oracles_vocabulary_fixture_matches_this_files_copy`` uses for
+    ``CHOICES`` -- an oracle and the code it judges must not share a symbol,
+    so this reaches the other file's source rather than importing it.
+    """
+    source = (Path(__file__).parent / "test_smart_collection_oracle.py").read_text()
+    tree = ast.parse(source)
+    kometa_post = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign) and node.targets[0].id == "KOMETA_POST"
+    )
+    assert kometa_post["1-multi-value-tag"] == KOMETA_POST
+    assert kometa_post["12-show-rescoping"] == KOMETA_POST_SHOW
+    assert kometa_post["8-rated"] == KOMETA_POST_8
+    assert kometa_post["15-unreached-renders-and-rows"] == KOMETA_POST_15
+
+
 async def test_a_filter_matching_nothing_refuses_at_create(session):
     """C8, without ``ignore_blank_results``. Kometa offers the switch; an
     error-downgrade switch is the ``validate:`` class 9b already refused."""
@@ -242,6 +320,29 @@ async def test_a_dry_run_probes_but_writes_nothing(session):
     assert section._server.queries == []
     assert any("would create" in action and "3" in action for action in actions)
     assert await _row(session, "Movies", TITLE) is None
+
+
+async def test_a_dry_run_against_an_existing_collection_reports_update_not_create(session):
+    """F1: ``if collection`` tests a plexapi ``Collection`` for truthiness,
+    which calls ``__len__`` -> ``len(self.items())`` -- an extra Plex request
+    inside a dry run, and falsy for an existing collection whose stored filter
+    currently matches zero items. ``FakeCollection.items``/``__len__`` are
+    poisoned, so this reds on the old ``if collection`` and greens on
+    ``if collection is not None``."""
+    existing = FakeCollection(TITLE, labels=[LABEL], smart=True)
+    section = FakeSection(matches=3, existing=[existing])
+    session.add(ManagedCollection(
+        library="Movies", title=TITLE, kind="smart", plex_rating_key="12345",
+        definition_hash="stale",
+    ))
+    await session.flush()
+
+    actions = await reconcile_smart_collection(
+        session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=True,
+    )
+    assert any("would update" in action for action in actions)
+    assert not any("would create" in action for action in actions)
+    assert section._server.queries == []
 
 
 async def test_an_unchanged_definition_writes_nothing_and_probes_nothing(session):

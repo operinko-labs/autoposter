@@ -288,7 +288,7 @@ async def reconcile_smart_collection(
         if dry_run:
             actions.append(
                 "%s %r from a smart filter matching %d item(s)"
-                % ("would update" if collection else "would create", title, matched)
+                % ("would update" if collection is not None else "would create", title, matched)
             )
         else:
             if collection is None:
