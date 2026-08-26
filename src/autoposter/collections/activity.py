@@ -126,8 +126,13 @@ def since_instant(days: int, now: datetime) -> str:
     what keeps the two from being mixed by accident.
 
     Takes ``now`` rather than reading the clock, so it can be asserted against
-    a fixed instant instead of a wall-clock delta (roadmap row 119).
+    a fixed instant instead of a wall-clock delta (roadmap row 119). ``now``
+    must be timezone-aware: ``.astimezone`` reads a naive datetime as HOST
+    LOCAL time, which would shift the window by the host's offset silently and
+    differently on every differently-configured host.
     """
+    if now.tzinfo is None:
+        raise ValueError("since_instant needs a timezone-aware now")
     moment = (now - timedelta(days=days)).astimezone(UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -172,7 +177,7 @@ def rank(
             entry = buckets[group] = {
                 "media_id": group,
                 "rating_key": None,
-                "title": record.get(title_field) or record.get("media_title") or group,
+                "title": "",
                 "plays": 0,
                 "watch_time_ms": 0,
                 "keys": set(),
@@ -180,8 +185,17 @@ def rank(
                 **{field: None for field in _EXTERNAL_ID_FIELDS},
             }
             order.append(group)
-            if media_kind == "movie":
-                for field in _EXTERNAL_ID_FIELDS:
+        # First NON-EMPTY name and, per id independently, first NON-NULL id --
+        # not whichever record happened to create the bucket. Under the
+        # cross-server folding above one server's record can carry a blank
+        # title or no ids where another's does, and a movie's ids are emitted
+        # straight off the record with no ``/media`` call, so a bucket that
+        # kept an id-less first record's nulls would resolve to nothing at all.
+        if not entry["title"]:
+            entry["title"] = _title(record, title_field)
+        if media_kind == "movie":
+            for field in _EXTERNAL_ID_FIELDS:
+                if entry[field] is None:
                     entry[field] = _external_id(record.get(field))
         entry["plays"] += 1
         entry["watch_time_ms"] += _duration_ms(record)
@@ -212,15 +226,15 @@ def rank(
                 buckets[home] = {
                     "media_id": None,
                     "rating_key": seen,
-                    "title": (
-                        record.get(title_field) or record.get("media_title") or seen
-                    ),
+                    "title": "",
                     "plays": 0,
                     "watch_time_ms": 0,
                     "keys": {seen},
                     **{field: None for field in _EXTERNAL_ID_FIELDS},
                 }
                 order.append(home)
+        if not buckets[home]["title"]:
+            buckets[home]["title"] = _title(record, title_field)
         buckets[home]["plays"] += 1
         buckets[home]["watch_time_ms"] += _duration_ms(record)
 
@@ -228,7 +242,9 @@ def rank(
         Bucket(
             media_id=entry["media_id"],
             rating_key=entry["rating_key"],
-            title=entry["title"],
+            # The id is the last-resort placeholder, and only when no record in
+            # the whole bucket carried a name.
+            title=entry["title"] or entry["media_id"] or entry["rating_key"],
             plays=entry["plays"],
             watch_time_ms=entry["watch_time_ms"],
             imdb_id=entry["imdb_id"],
@@ -259,6 +275,11 @@ def _sort_key(bucket: Bucket, metric: str):
     return (-primary, -secondary, bucket.media_id or "", bucket.rating_key or "")
 
 
+def _title(record: dict, title_field: str) -> str:
+    """The name one record gives its title, or "" when it gives none."""
+    return record.get(title_field) or record.get("media_title") or ""
+
+
 def _duration_ms(record: dict) -> int:
     """``duration_ms`` as an int, or 0 if it is unusable.
 
@@ -267,15 +288,29 @@ def _duration_ms(record: dict) -> int:
     nothing here reads. Coerced anyway, and defaulted rather than raised: a
     title dropped from a ranking over one malformed field is a silently wrong
     collection, which is the outcome this whole module is arranged to avoid.
+
+    Salvaging is the point, so a float-shaped string is salvaged too: losing a
+    whole play's watch time to a decimal point would be that same silently
+    wrong collection. Only genuine garbage is worth 0.
     """
+    value = record.get("duration_ms")
     try:
-        return int(record.get("duration_ms"))
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(value))
     except (TypeError, ValueError):
         return 0
 
 
 def _external_id(value) -> str | None:
-    """One external id as a string, or None when the record carries none."""
-    if value is None or value == "" or value == 0:
+    """One external id as a string, or None when the record carries none.
+
+    ``0`` and ``"0"`` are both read as absence rather than as an id: they are
+    the same absence marker one JSON coercion apart, and an id of "0" resolves
+    to nothing anywhere.
+    """
+    if value is None or value == 0 or str(value) in ("", "0"):
         return None
     return str(value)

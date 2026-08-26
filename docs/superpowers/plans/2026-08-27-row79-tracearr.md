@@ -1416,6 +1416,17 @@ roughly 2026-08-14 to 2026-08-24, not the whole 30 days). The uuids in it are
 real, unscrubbed canonical media ids: media identity is deliberately kept in
 these fixtures, and the PII-bearing ``user`` block was scrubbed at capture.
 
+**Which fixtures carry an edit, and what the edit is.** Four of them --
+``tracearr_history_page2.json``, ``tracearr_history_silo.json``,
+``tracearr_history_movies.json`` and ``tracearr_history_unidentified.json`` --
+have ``meta.nextCursor`` set to ``null`` so a one-page fixture terminates;
+every record inside them is byte-identical to the banked capture and nothing
+else was touched. ``tracearr_history_end.json`` is the one fixture that is
+CONSTRUCTED rather than cut: an empty page in the spec's own ``CursorMeta``
+shape, written by hand because the harvest never banked a terminal page (the
+live instance's history never ran out inside a page budget). Nothing else in
+this directory is invented.
+
 The harvest's own worked example (``docs/research/tracearr-api-harvest.md``
 :768-819) reports **50 records, 2 skipped, 48 folded into 21 buckets, Warehouse
 13 at 18 plays** -- and then says, in its own words, that the honest count for
@@ -1426,12 +1437,13 @@ with nothing double-counted and nothing dropped.
 
 Every expected number below was computed from the fixture, not remembered.
 
-One test is the exception to all of that and says so in its own name and
-docstring: ``test_the_merge_works_for_movies_too__synthetic_records`` uses
-records written by hand, inline, because every movie record in the banked
-window carries a ``media_id`` and the movie branch of the merge therefore has
-no captured data behind it. Nothing synthetic is written to a fixture file, so
-nothing invented can later be mistaken for a capture.
+A few tests are the exception to all of that, and each says so in its own name
+(the ``__synthetic_records`` suffix) and in its docstring. They use records
+written by hand, inline, for cases the capture does not contain: every movie
+record in the banked window carries a ``media_id`` and all three external ids,
+so the movie branch of the merge, the per-id coalesce and the zero-as-absence
+rule have no captured data behind them at all. Nothing synthetic is written to
+a fixture file, so nothing invented can later be mistaken for a capture.
 """
 import json
 from datetime import UTC, datetime
@@ -1538,6 +1550,20 @@ def test_the_merge_does_not_depend_on_the_order_records_arrive_in():
     assert [(b.media_id, b.plays) for b in forwards] == [
         (b.media_id, b.plays) for b in backwards
     ]
+
+    # Reversing is not the hard order. In this window the two identity-less
+    # records sit at 43/44, so reversal only moves them to 5/6 -- still behind
+    # a Warehouse 13 record. The order that actually discriminates a one-pass
+    # merge is the one no capture happens to contain: both of them FIRST,
+    # before any identified bucket exists.
+    page = records()
+    lost = [r for r in page if not r.get("media_id") and not r.get("show_media_id")]
+    hoisted = lost + [r for r in page if r not in lost]
+    ranked = rank(hoisted, media_kind="show", metric="plays", limit=100)
+
+    assert len(lost) == 2
+    assert next(b for b in ranked if b.media_id == WAREHOUSE_13).plays == 20
+    assert [b for b in ranked if b.rating_key is not None] == []
 
 
 def test_the_merge_works_for_movies_too__synthetic_records():
@@ -1661,6 +1687,63 @@ def test_a_movie_bucket_carries_the_movies_own_ids():
     assert blade_trinity.title == "Blade: Trinity"
 
 
+# --- what a bucket keeps when its records disagree ----------------------------
+
+
+def test_each_external_id_comes_from_the_first_record_that_has_one__synthetic_records():
+    """Per-id coalesce, not first-record-wins -- and the same answer in either
+    order.
+
+    **Synthetic records**: all 13 banked movie records carry all three ids, so
+    nothing captured can reach this branch. It still matters, because the
+    module advertises folding one title across servers and a movie's ids are
+    emitted straight off the record with no ``/media`` lookup: a bucket that
+    kept an id-less first record's nulls would resolve to nothing downstream,
+    which is a silently empty collection rather than a visible failure.
+    """
+    bare = {
+        "media_type": "movie", "media_id": "11111111-1111-4111-8111-000000000002",
+        "media_title": "A Synthetic Film", "rating_key": "A", "duration_ms": 1000,
+        "imdb_id": None, "tmdb_id": None, "tvdb_id": None,
+    }
+    bearing = {**bare, "imdb_id": "tt9", "tmdb_id": 9}
+
+    for arrival in ([bare, bearing], [bearing, bare]):
+        bucket = rank(arrival, media_kind="movie", metric="plays", limit=10)[0]
+        assert bucket.plays == 2
+        assert (bucket.imdb_id, bucket.tmdb_id, bucket.tvdb_id) == ("tt9", "9", None)
+
+
+def test_a_bucket_is_named_by_the_first_record_that_carries_a_title__synthetic_records():
+    """Title is first NON-empty, for the same reason and by the same rule: the
+    uuid the ranking falls back to is a placeholder, not a name, and a blank
+    title on whichever record happened to arrive first must not stick."""
+    blank = {
+        "media_type": "movie", "media_id": "11111111-1111-4111-8111-000000000003",
+        "media_title": "", "rating_key": "B", "duration_ms": 1000,
+    }
+    named = {**blank, "media_title": "A Synthetic Film"}
+
+    ranked = rank([blank, named], media_kind="movie", metric="plays", limit=10)
+
+    assert ranked[0].title == "A Synthetic Film"
+
+
+def test_a_zero_external_id_is_absence_in_either_shape__synthetic_records():
+    """``0`` and ``"0"`` are the same absence marker one JSON coercion apart,
+    and an id of "0" resolves to nothing anywhere -- so neither is carried out
+    as an id. Synthetic for the same reason as above."""
+    record = {
+        "media_type": "movie", "media_id": "11111111-1111-4111-8111-000000000004",
+        "media_title": "A Synthetic Film", "rating_key": "C", "duration_ms": 1000,
+        "imdb_id": 0, "tmdb_id": "0", "tvdb_id": "",
+    }
+
+    bucket = rank([record], media_kind="movie", metric="plays", limit=10)[0]
+
+    assert (bucket.imdb_id, bucket.tmdb_id, bucket.tvdb_id) == (None, None, None)
+
+
 def test_the_movie_ranking_is_thirteen_single_play_buckets_ordered_by_watch_time():
     """Every movie in this window was played once, so the ``plays`` metric is
     one thirteen-way tie -- which is exactly why the ordering contract needs a
@@ -1732,6 +1815,22 @@ def test_a_malformed_duration_costs_the_bucket_its_watch_time_and_not_its_place(
     assert ranked[0].watch_time_ms == 547000 + 2811000
 
 
+def test_a_float_shaped_duration_is_salvaged_and_only_garbage_is_worth_nothing():
+    """Salvaging is the whole point of the coercion, so ``"12.5"`` must not be
+    thrown away with the rest: ``int("12.5")`` raises, and losing a play's
+    entire watch time to a decimal point is the same silently wrong collection
+    the previous test guards. ``"junk"`` really has nothing to salvage."""
+    mangled = [dict(record) for record in records("tracearr_history_silo.json")]
+    mangled[0]["duration_ms"] = "1624307"
+    mangled[1]["duration_ms"] = "12.5"
+    mangled[2]["duration_ms"] = "junk"
+
+    ranked = rank(mangled, media_kind="show", metric="plays", limit=10)
+
+    assert ranked[0].plays == 3
+    assert ranked[0].watch_time_ms == 1624307 + 12
+
+
 def test_an_empty_window_ranks_to_nothing():
     """Not an error: a deployment nobody watched anything on in the window is
     data. The builder's caller decides what an empty membership means."""
@@ -1764,6 +1863,17 @@ def test_since_instant_normalises_a_non_utc_now_to_utc():
     now = datetime(2026, 8, 25, 9, 38, 38, tzinfo=helsinki)
 
     assert since_instant(30, now) == "2026-07-26T06:38:38Z"
+
+
+def test_since_instant_refuses_a_naive_now_rather_than_guessing_a_timezone():
+    """The other half of the same hazard, and the one that has no signal.
+    ``.astimezone`` reads a naive datetime as HOST LOCAL time, so the obvious
+    caller mistake -- ``datetime.utcnow()`` -- would shift the window by the
+    host's offset, silently, and differently per host. The contract is that
+    callers pass an aware ``now``; the module reads no clock of its own, so
+    there is nothing here that could supply a default."""
+    with pytest.raises(ValueError, match="timezone-aware"):
+        since_instant(30, datetime(2026, 8, 25, 6, 38, 38))
 
 
 # --- purity -------------------------------------------------------------------
@@ -1928,8 +2038,13 @@ def since_instant(days: int, now: datetime) -> str:
     what keeps the two from being mixed by accident.
 
     Takes ``now`` rather than reading the clock, so it can be asserted against
-    a fixed instant instead of a wall-clock delta (roadmap row 119).
+    a fixed instant instead of a wall-clock delta (roadmap row 119). ``now``
+    must be timezone-aware: ``.astimezone`` reads a naive datetime as HOST
+    LOCAL time, which would shift the window by the host's offset silently and
+    differently on every differently-configured host.
     """
+    if now.tzinfo is None:
+        raise ValueError("since_instant needs a timezone-aware now")
     moment = (now - timedelta(days=days)).astimezone(UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1974,7 +2089,7 @@ def rank(
             entry = buckets[group] = {
                 "media_id": group,
                 "rating_key": None,
-                "title": record.get(title_field) or record.get("media_title") or group,
+                "title": "",
                 "plays": 0,
                 "watch_time_ms": 0,
                 "keys": set(),
@@ -1982,8 +2097,17 @@ def rank(
                 **{field: None for field in _EXTERNAL_ID_FIELDS},
             }
             order.append(group)
-            if media_kind == "movie":
-                for field in _EXTERNAL_ID_FIELDS:
+        # First NON-EMPTY name and, per id independently, first NON-NULL id --
+        # not whichever record happened to create the bucket. Under the
+        # cross-server folding above one server's record can carry a blank
+        # title or no ids where another's does, and a movie's ids are emitted
+        # straight off the record with no ``/media`` call, so a bucket that
+        # kept an id-less first record's nulls would resolve to nothing at all.
+        if not entry["title"]:
+            entry["title"] = _title(record, title_field)
+        if media_kind == "movie":
+            for field in _EXTERNAL_ID_FIELDS:
+                if entry[field] is None:
                     entry[field] = _external_id(record.get(field))
         entry["plays"] += 1
         entry["watch_time_ms"] += _duration_ms(record)
@@ -2014,15 +2138,15 @@ def rank(
                 buckets[home] = {
                     "media_id": None,
                     "rating_key": seen,
-                    "title": (
-                        record.get(title_field) or record.get("media_title") or seen
-                    ),
+                    "title": "",
                     "plays": 0,
                     "watch_time_ms": 0,
                     "keys": {seen},
                     **{field: None for field in _EXTERNAL_ID_FIELDS},
                 }
                 order.append(home)
+        if not buckets[home]["title"]:
+            buckets[home]["title"] = _title(record, title_field)
         buckets[home]["plays"] += 1
         buckets[home]["watch_time_ms"] += _duration_ms(record)
 
@@ -2030,7 +2154,9 @@ def rank(
         Bucket(
             media_id=entry["media_id"],
             rating_key=entry["rating_key"],
-            title=entry["title"],
+            # The id is the last-resort placeholder, and only when no record in
+            # the whole bucket carried a name.
+            title=entry["title"] or entry["media_id"] or entry["rating_key"],
             plays=entry["plays"],
             watch_time_ms=entry["watch_time_ms"],
             imdb_id=entry["imdb_id"],
@@ -2061,6 +2187,11 @@ def _sort_key(bucket: Bucket, metric: str):
     return (-primary, -secondary, bucket.media_id or "", bucket.rating_key or "")
 
 
+def _title(record: dict, title_field: str) -> str:
+    """The name one record gives its title, or "" when it gives none."""
+    return record.get(title_field) or record.get("media_title") or ""
+
+
 def _duration_ms(record: dict) -> int:
     """``duration_ms`` as an int, or 0 if it is unusable.
 
@@ -2069,16 +2200,30 @@ def _duration_ms(record: dict) -> int:
     nothing here reads. Coerced anyway, and defaulted rather than raised: a
     title dropped from a ranking over one malformed field is a silently wrong
     collection, which is the outcome this whole module is arranged to avoid.
+
+    Salvaging is the point, so a float-shaped string is salvaged too: losing a
+    whole play's watch time to a decimal point would be that same silently
+    wrong collection. Only genuine garbage is worth 0.
     """
+    value = record.get("duration_ms")
     try:
-        return int(record.get("duration_ms"))
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(value))
     except (TypeError, ValueError):
         return 0
 
 
 def _external_id(value) -> str | None:
-    """One external id as a string, or None when the record carries none."""
-    if value is None or value == "" or value == 0:
+    """One external id as a string, or None when the record carries none.
+
+    ``0`` and ``"0"`` are both read as absence rather than as an id: they are
+    the same absence marker one JSON coercion apart, and an id of "0" resolves
+    to nothing anywhere.
+    """
+    if value is None or value == 0 or str(value) in ("", "0"):
         return None
     return str(value)
 ```
