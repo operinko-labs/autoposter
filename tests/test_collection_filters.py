@@ -315,6 +315,17 @@ def test_field_for_picks_the_libtypes_field_and_refuses_a_libtype_it_does_not_se
         BY_NAME["network"].field_for("movie")
 
 
+def test_every_row_searchable_on_show_carries_a_show_search_field():
+    """Pins ``field_for``'s show-library safety (line 498-499) against a future
+    row: a row with ``"show" in search_kinds`` and ``show_search_field=None``
+    would silently return the MOVIE field for a show library, since
+    ``field_for`` only rescopes when ``show_search_field`` is set. It holds for
+    all nineteen rows today; nothing but this test pins it."""
+    for row in FILTER_ATTRIBUTES:
+        if "show" in row.search_kinds:
+            assert row.show_search_field is not None, row.name
+
+
 def test_the_modifier_table_is_not_invertible():
     """Why ``SEARCH_MODIFIERS`` is keyed on a PAIR.
 

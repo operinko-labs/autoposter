@@ -852,6 +852,17 @@ def test_field_for_picks_the_libtypes_field_and_refuses_a_libtype_it_does_not_se
     with pytest.raises(ValueError, match="not searchable on a movie library"):
         BY_NAME["network"].field_for("movie")
 
+
+def test_every_row_searchable_on_show_carries_a_show_search_field():
+    """Pins ``field_for``'s show-library safety (line 498-499) against a future
+    row: a row with ``"show" in search_kinds`` and ``show_search_field=None``
+    would silently return the MOVIE field for a show library, since
+    ``field_for`` only rescopes when ``show_search_field`` is set. It holds for
+    all nineteen rows today; nothing but this test pins it."""
+    for row in FILTER_ATTRIBUTES:
+        if "show" in row.search_kinds:
+            assert row.show_search_field is not None, row.name
+
 ```
 
 - [ ] **Step 2: Run it to see it fail**
@@ -1957,11 +1968,16 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
             ".regex client-side"
         )
     if not searching and modifier in SEARCH_ONLY_OPERATORS:
+        if attribute.type == "float":
+            raise ValueError(
+                f"{field}: .{modifier} is a plex_search modifier -- Plex answers "
+                f"'has any rating at all' as a server-side comparison against -1 "
+                f"and a client-side filter has no equivalent spelling. Write "
+                f"`{name}.gt: 0` if that is what you mean"
+            )
         raise ValueError(
-            f"{field}: .{modifier} is a plex_search modifier -- Plex answers "
-            f"'has any rating at all' as a server-side comparison against -1 "
-            f"and a client-side filter has no equivalent spelling. Write "
-            f"`{name}.gt: 0` if that is what you mean"
+            f"{field}: .{modifier} is a plex_search modifier -- it has no "
+            f"client-side filter equivalent, for {name!r} or any attribute"
         )
 
     operators = attribute.search_operators if searching else attribute.operators
@@ -1970,11 +1986,12 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
     if not modifier:
         if default in operators:
             return attribute, default
-        # Reached by the three search rows whose type has no blank-modifier
-        # form: ``duration``, the two ratings and ``plays``. The message names
-        # the reason rather than the rule, because "not supported" would read
-        # as a gap in Plex and it is not one -- Kometa refuses the same key,
-        # from the same list.
+        # Reached by the four search rows whose search operator set has no
+        # blank form: ``duration``, the two ratings and ``plays`` (``plays``'s
+        # own TYPE has one, but the row subtracts it -- see the ``int`` note
+        # above). The message names the reason rather than the rule, because
+        # "not supported" would read as a gap in Plex and it is not one --
+        # Kometa refuses the same key, from the same list.
         raise ValueError(
             f"{field}: a bare `{name}:` is not a plex_search. Kometa's search "
             f"vocabulary gives {name!r} its range modifiers and nothing else "

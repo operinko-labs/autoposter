@@ -61,7 +61,7 @@ returning it for an attribute we simply cannot read would be indistinguishable
 from a real answer -- exactly the wrong-but-plausible outcome deferring exists
 to prevent.
 """
-from autoposter.collections.filters import FILTER_ATTRIBUTES
+from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
 __all__ = [
     "DEFERRED_ATTRIBUTES",
@@ -187,10 +187,20 @@ class PlexItemView:
     def get(self, attribute: str, /) -> object | None:
         accessor = _ACCESSORS.get(attribute)
         if accessor is None:
+            row = BY_NAME.get(attribute)
+            if row is None:
+                why = "it is not one of the table's attributes at all"
+            elif row.source == "tier2-deferred":
+                why = (
+                    "the Plex section listing does not carry it completely enough "
+                    "to filter on (source tier 'tier2-deferred' -- see the row's "
+                    "note for the probe data)"
+                )
+            else:
+                why = f"its source tier is {row.source!r}, not 'tier2-deferred'"
             raise AttributeNotInListing(
-                f"{attribute!r} has no tier-1 accessor: the Plex section listing does not "
-                "carry it completely enough to filter on (source tier 'tier2-deferred' -- "
-                "see the row's note for the probe data), and reading it per item would cost "
-                "one Plex request per item. Filterable now: " + ", ".join(SHIPPED_ATTRIBUTES)
+                f"{attribute!r} has no tier-1 accessor: {why}, and reading it "
+                "per item would cost one Plex request per item. Filterable "
+                "now: " + ", ".join(SHIPPED_ATTRIBUTES)
             )
         return accessor(self._item)
