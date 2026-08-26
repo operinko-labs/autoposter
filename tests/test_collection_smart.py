@@ -8,6 +8,7 @@ rule ``test_the_oracles_vocabulary_fixture_matches_this_files_copy`` already
 states about ``CHOICES``.
 """
 import ast
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -258,6 +259,42 @@ def test_this_files_oracle_copies_match_the_oracles():
     assert kometa_post["12-show-rescoping"] == KOMETA_POST_SHOW
     assert kometa_post["8-rated"] == KOMETA_POST_8
     assert kometa_post["15-unreached-renders-and-rows"] == KOMETA_POST_15
+
+
+async def test_taking_over_a_list_row_stamps_it_smart_and_clears_its_stamps(session):
+    """The C11 remediation path, in the list -> smart direction.
+
+    The definition was a ``plex_search``; the operator switched it to
+    ``smart_filter``, met the shape refusal, and did what it told them --
+    deleted the collection in Plex so the next pass could create it. That pass
+    arrives here with the LIST definition's row: ``kind="manual"``, and the
+    membership stamps that definition wrote. Nothing on this path revisited
+    them before, so the row reported a count Plex has since taken ownership of
+    as if a pass had just confirmed it.
+    """
+    section = FakeSection(matches=7)
+    session.add(ManagedCollection(
+        library="Movies", title=TITLE, kind="manual", plex_rating_key="12345",
+        definition_hash="the list definition's", member_count=42,
+        last_added=3, last_removed=1,
+        last_reconciled_at=datetime(2020, 1, 1, tzinfo=UTC),
+    ))
+    await session.flush()
+
+    await reconcile_smart_collection(
+        session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=False,
+    )
+
+    row = await _row(session, "Movies", TITLE)
+    kind, member_count = row.kind, row.member_count
+    last_added, last_removed = row.last_added, row.last_removed
+    last_reconciled = row.last_reconciled_at
+    assert kind == "smart"
+    # The invariant ``ManagedCollection``'s own comment states for a smart row:
+    # Plex evaluates the filter live, so there is no membership to count.
+    assert (member_count, last_added, last_removed, last_reconciled) == (
+        None, None, None, None
+    )
 
 
 async def test_a_filter_matching_nothing_refuses_at_create(session):

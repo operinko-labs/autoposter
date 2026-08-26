@@ -466,6 +466,41 @@ async def _stats(session):
     ).one()
 
 
+async def test_taking_over_a_smart_row_stamps_it_manual_and_fills_its_stamps(session):
+    """The mirror of the operator take-over above, and the C11 remediation path
+    in the smart -> list direction.
+
+    ``reconcile.shape_conflict`` tells an operator switching a definition from
+    ``smart_filter`` to a list builder to delete the collection in Plex and let
+    the next pass create it. That pass arrives here with the smart definition's
+    row -- ``kind="smart"``, and ``member_count``/the reconcile stamps NULL,
+    which is exactly the invariant ``ManagedCollection`` documents for that
+    kind. This reconcile is a definition claiming the title and maintaining its
+    membership, so the row has to say so: leaving "smart" behind would keep a
+    row claiming its stamps can never be filled while the lines below fill
+    them.
+    """
+    section = FakeSection()
+    session.add(ManagedCollection(
+        library="Movies", title="IMDb Top 250", kind="smart",
+        plex_rating_key="12345", definition_hash="the smart definition's",
+    ))
+    await session.flush()
+
+    await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=False,
+    )
+
+    row = (await session.execute(
+        select(ManagedCollection).where(ManagedCollection.title == "IMDb Top 250")
+    )).scalar_one()
+    assert row.kind == "manual"
+    member_count, added, removed, reconciled_at = await _stats(session)
+    assert (member_count, added, removed) == (2, 2, 0)
+    assert reconciled_at is not None
+
+
 async def test_the_create_path_stamps_the_reconcile_stats(session):
     """A brand-new collection added every one of its members, so the create
     path's delta is the whole list."""

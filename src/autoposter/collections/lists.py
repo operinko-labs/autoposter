@@ -345,18 +345,27 @@ async def reconcile_list_collection(
             else:
                 record.definition_hash = wanted
                 record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
-                if record.kind == "operator":
-                    # An operator blank (``ops/blank``) can sit under a title
-                    # a definition is later pointed at -- reconciling here is
-                    # this definition claiming it, the same as any other
-                    # take-over. Leaving "operator" would make the row lie
-                    # forever afterwards: if the definition is later removed,
-                    # ``engine._sweep`` reads "operator" as "no definition
-                    # ever built this, never delete it" and reports a
-                    # collection an operator made, not one a since-removed
-                    # definition did. "manual" is the safe direction and the
-                    # true story -- a definition really does own this title
-                    # now.
+                if record.kind != "manual":
+                    # A row written under another kind can sit under a title
+                    # this definition is later pointed at -- reconciling here
+                    # is this definition claiming it, the same as any other
+                    # take-over, and leaving the old kind would make the row
+                    # lie forever afterwards. Two ways it happens, and the
+                    # lie is different in each. An operator blank
+                    # (``ops/blank``) leaves ``kind="operator"``: if the
+                    # definition is later removed, ``engine._sweep`` reads
+                    # that as "no definition ever built this, never delete
+                    # it" and reports a collection an operator made, not one
+                    # a since-removed definition did. A SMART definition
+                    # leaves ``kind="smart"`` -- ``shape_conflict`` tells an
+                    # operator switching the other way to delete the
+                    # collection in Plex and let the next pass rebuild it,
+                    # which lands here -- and that kind carries
+                    # ``ManagedCollection``'s promise that ``member_count``
+                    # and the reconcile stamps stay NULL, which the four
+                    # lines below are about to falsify. "manual" is the safe
+                    # direction and the true story either way: a definition
+                    # really does maintain this title's membership now.
                     record.kind = "manual"
             record.member_count = len(items)
             record.last_added = added_count
