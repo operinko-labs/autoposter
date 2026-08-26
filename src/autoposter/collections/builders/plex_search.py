@@ -57,6 +57,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from autoposter.collections.builders.base import (
     BuilderContext,
     BuilderResult,
+    SmartContext,
     require_library_type,
 )
 from autoposter.collections.filters import BY_NAME, parse_filters
@@ -393,7 +394,7 @@ class LibraryTagResolver:
     also Kometa's (plain assignment, not ``setdefault``).
     """
 
-    def __init__(self, ctx: BuilderContext, section, libtype: str) -> None:
+    def __init__(self, ctx: BuilderContext | SmartContext, section, libtype: str) -> None:
         self._ctx = ctx
         self._section = section
         self._libtype = libtype

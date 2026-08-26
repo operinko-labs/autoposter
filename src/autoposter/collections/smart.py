@@ -65,6 +65,7 @@ __all__ = [
     "SmartFilterMatchedNothing",
     "create_smart_collection",
     "reconcile_smart_collection",
+    "require_matches",
     "smart_definition_hash",
     "smart_filter_uri",
     "update_smart_collection",
@@ -336,13 +337,14 @@ async def reconcile_smart_collection(
                 record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
                 # The row can predate this definition's SHAPE. ``shape_conflict``
                 # tells an operator switching a definition from a list builder to
-                # this one to "delete %r in Plex and let the next pass create it"
-                # -- and following that advice leaves the LIST definition's row
-                # behind for this create to find, carrying ``kind="manual"`` and
-                # the membership stamps that definition wrote. Nothing below ever
-                # revisits them, so the row would report a stale count as if a
-                # pass had just confirmed it, for a collection whose membership is
-                # now Plex's. Stamping the kind and clearing the stamps is what
+                # this one to delete the collection in Plex and let the next pass
+                # create it -- and following that advice leaves the LIST
+                # definition's row behind for this create to find, carrying
+                # ``kind="manual"`` and the membership stamps that definition
+                # wrote. Nothing below ever revisits them, so the row would
+                # report a stale count as if a pass had just confirmed it, for a
+                # collection whose membership is now Plex's. Stamping the kind
+                # and clearing the stamps is what
                 # keeps ``ManagedCollection``'s own promise about a smart row
                 # ("both leave member_count and the reconcile stamps NULL") true
                 # through the one path that can break it.

@@ -279,6 +279,9 @@ _SMART_REFUSABLE_DEFAULTS: dict[str, object] = {
     "filters": None,
 }
 
+# "no entry", distinct from every default above -- ``None`` is four of them.
+_UNTABLED = object()
+
 
 class CollectionDefinition(BaseModel):
     """One operator-configured collection: a builder plus how to apply it.
@@ -471,7 +474,20 @@ class CollectionDefinition(BaseModel):
                 "never is"
             )
         for field_name, why in refused.items():
-            if getattr(self, field_name) != _SMART_REFUSABLE_DEFAULTS[field_name]:
+            default = _SMART_REFUSABLE_DEFAULTS.get(field_name, _UNTABLED)
+            if default is _UNTABLED:
+                # Unreachable today (both builders' key sets are subsets), and
+                # spelled out anyway: the alternative is a bare KeyError at
+                # config load, three lines after a branch that goes to real
+                # trouble to explain the adjacent mistake.
+                raise ValueError(
+                    f"{self.builder!r} refuses {field_name!r}, which is not in "
+                    "the refusable-field table. A smart builder can only refuse "
+                    "a field whose unwritten value this validator knows, since "
+                    "the check is 'did the operator write it'. Add it to "
+                    "'_SMART_REFUSABLE_DEFAULTS' with the field's own default"
+                )
+            if getattr(self, field_name) != default:
                 raise ValueError(
                     f"{field_name!r} does not apply to {self.builder!r}: {why}"
                 )

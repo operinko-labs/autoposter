@@ -34,6 +34,9 @@ here, so everything upstream reads off ``self`` is a parameter instead:
 ``self.Plex.key`` becomes ``section_key``, ``self.PlexServer._uriRoot()``
 becomes the transcribed ``uri_root()``, and ``update_smart_collection``'s
 ``collection`` (read only for ``collection.ratingKey``) becomes ``rating_key``.
+``test_smart_filter``'s own Plex read -- ``self.fetchItems(uri_args)``, whose
+length is the whole of upstream's verdict -- becomes ``item_count``, the count
+the caller supplies; the VERDICT is what this file records, not the read.
 ``create_smart_collection``'s ``ignore_blank_results`` is positional and
 undefaulted upstream; it defaults to False here so the refusing path -- the one
 9c adopts -- is what a plain call gets.

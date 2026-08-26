@@ -247,10 +247,37 @@ def test_cs_bucket_now_refuses_summary_and_sort_too():
     builder-derived per-bucket summary, and a family of smart collections has no
     single membership to order -- so both silently no-opped. This is load-time
     breaking for a config that sets either today, which is what the row says."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as summary_refusal:
         CollectionDefinition(title="Ages", builder="cs_bucket", summary="hi")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as sort_refusal:
         CollectionDefinition(title="Ages", builder="cs_bucket", sort="release")
+    # The messages, not only the classes: this is the test that closes the row,
+    # and a refusal that stopped naming the field or the builder would still
+    # raise while telling the operator nothing about which knob to move.
+    for refusal, field in ((summary_refusal, "summary"), (sort_refusal, "sort")):
+        assert field in str(refusal.value)
+        assert "cs_bucket" in str(refusal.value)
+
+
+def test_a_smart_builder_declaring_no_refusals_is_refused_outright(monkeypatch):
+    """The validator's own load-bearing guarantee, which no registered builder
+    exercises because both declare a table.
+
+    Defaulting a missing table to "refuse nothing" is exactly how a
+    silently-ignored setting ships: the smart builder that forgot the attribute
+    is the one whose definitions most need it, since nobody has yet thought
+    about which of the membership knobs it cannot apply.
+    """
+    class Forgetful:
+        type_name = "forgetful_smart"
+        smart = True
+
+    monkeypatch.setitem(REGISTRY, "forgetful_smart", Forgetful())
+    with pytest.raises(ValueError) as caught:
+        CollectionDefinition(title="Anything", builder="forgetful_smart")
+
+    assert "refused_definition_fields" in str(caught.value)
+    assert "forgetful_smart" in str(caught.value)
 
 
 def test_the_shipped_default_definition_still_loads():

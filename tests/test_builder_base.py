@@ -66,10 +66,15 @@ def test_importing_the_package_is_enough_to_populate_the_registry():
 
 
 def test_every_registered_builder_satisfies_the_protocol():
-    """Either protocol: a builder produces ids for the engine to resolve, or --
-    the Common Sense buckets being the only family -- it is a smart builder that
-    applies itself. Nothing may be in the registry as neither, since the engine
-    dispatches on exactly this distinction."""
+    """Either protocol: a builder produces ids for the engine to resolve, or it
+    is a smart builder that applies itself. Nothing may be in the registry as
+    neither, since the engine dispatches on exactly this distinction.
+
+    ``SmartBuilder`` stopped requiring ``titles`` in 9c, when ``smart_filter``
+    arrived managing exactly one collection -- its definition's own -- and the
+    engine gained the fallthrough for it. So this no longer says anything about
+    whether ``cs_bucket`` still enumerates its family; that guarantee lives in
+    ``tests/test_collection_catalog.py``, which calls ``titles`` for real."""
     for type_name, builder in REGISTRY.items():
         if getattr(builder, "smart", False):
             assert isinstance(builder, SmartBuilder), type_name

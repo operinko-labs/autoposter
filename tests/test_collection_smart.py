@@ -257,10 +257,20 @@ def test_this_files_oracle_copies_match_the_oracles():
         for node in tree.body
         if isinstance(node, ast.Assign) and node.targets[0].id == "KOMETA_POST"
     )
+    kometa_put = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign) and node.targets[0].id == "KOMETA_PUT"
+    )
     assert kometa_post["1-multi-value-tag"] == KOMETA_POST
     assert kometa_post["12-show-rescoping"] == KOMETA_POST_SHOW
     assert kometa_post["8-rated"] == KOMETA_POST_8
     assert kometa_post["15-unreached-renders-and-rows"] == KOMETA_POST_15
+    # The PUT copy is the last literal in this file that nothing tied back to
+    # the oracle. It shares ``smart_filter_uri`` and ``joinArgs`` with the POST,
+    # so a drift reaching only this string takes a hand-edit to this one line --
+    # narrow, and the phase's acceptance rides on the chain being closed.
+    assert kometa_put["1-multi-value-tag"] == KOMETA_PUT
 
 
 async def test_a_created_collection_goes_back_into_the_callers_listing(session):

@@ -185,9 +185,14 @@ KOMETA_PUT = {
 def our_query(libtype, params, default_sort):
     """OUR query string for one config -- 9b's builder, with 9c's default sort.
 
-    ``sort_by or (default_sort,)`` is the whole of C5's sort delta, written here
-    the same way Task 3's builder writes it, so this file proves the exact
-    expression that ships rather than an equivalent one.
+    ``sort_by or (default_sort,)`` is the whole of C5's sort delta. The shipped
+    builder writes it as that one expression
+    (``smart_filter.SmartFilterBuilder.search_url``); this writes an EQUIVALENT
+    of it in three statements, because the params here are a raw mapping rather
+    than a validated ``PlexSearchParams`` and the spelling has to survive a
+    string ``sort_by``. What this file proves is the sort the builder must
+    produce, not the expression it produces it with -- the expression itself is
+    pinned by ``tests/test_builder_smart_filter.py``'s two sort tests.
     """
     base = "all" if "all" in params else "any"
     group = parse_filters(params[base], field="params", searching=True, base=base)
@@ -307,6 +312,10 @@ def test_the_transcribed_uri_root_matches_plexapis_shape():
     # renamed its server would otherwise satisfy the line below while reddening
     # all eighteen pins for a reason none of them names.
     assert driver.MACHINE_IDENTIFIER == MACHINE_IDENTIFIER
+    # And the section key, for the same reason: every golden hard-codes
+    # ``/library/sections/2/``, and ``build_smart_filter`` falls back to the
+    # driver's own ``SECTION_KEY`` when called with one argument.
+    assert driver.SECTION_KEY == SECTION_KEY
     assert driver.uri_root() == (
         "server://%s/com.plexapp.plugins.library" % driver.MACHINE_IDENTIFIER
     )
@@ -319,9 +328,13 @@ def test_a_filter_matching_nothing_refuses_in_kometa_too():
     of upstream and not a departure from it.
     """
     driver = load(SMART_DRIVER)
-    with pytest.raises(driver.Failed):
+    # The wording is matched, not only the class: the driver's docstring calls
+    # the message Kometa's verbatim "because the refusal wording is part of what
+    # this oracle records" (upstream modules/plex.py:1584), and an unmatched
+    # ``raises`` records nothing about it.
+    with pytest.raises(driver.Failed, match="No items for smart filter"):
         driver.create_smart_collection(TITLE, 1, "?type=1&sort=titleSort&year=1900", 0)
-    with pytest.raises(driver.Failed):
+    with pytest.raises(driver.Failed, match="No items for smart filter"):
         driver.update_smart_collection(RATING_KEY, "?type=1&sort=titleSort&year=1900", 0)
     # The escape hatch upstream offers and 9c refuses to offer (C8), recorded so
     # the refusal reads as a decision rather than as something nobody noticed.

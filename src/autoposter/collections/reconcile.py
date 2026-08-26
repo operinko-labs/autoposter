@@ -201,6 +201,13 @@ def shape_conflict(collection, title: str, want_smart: bool) -> str | None:
     rename the definition, or delete the collection and let the definition
     rebuild it.
 
+    The second path is worded conditionally on purpose. This check runs BEFORE
+    ownership is resolved (both callers, deliberately -- see their comments), so
+    the collection under this title may belong to another tool entirely, and
+    "delete it in Plex" is not advice to give about a stranger's collection.
+    Neither path writes anything either way; this is the message being honest
+    about which of the two the reader is in.
+
     Returns the refusal message, or ``None`` when the shapes agree -- the
     ``(ok, message)`` idiom ``resolve_collision`` above already uses, and not an
     exception, deliberately: a definition's own configuration error must cost
@@ -221,8 +228,9 @@ def shape_conflict(collection, title: str, want_smart: bool) -> str | None:
         "shape conflict: %r already exists in Plex as a %s collection and this "
         "definition builds a %s one. Plex cannot convert one into the other, and "
         "this service will not delete and recreate it. Either rename the "
-        "definition so it builds a new collection, or delete %r in Plex and let "
-        "the next pass create it." % (title, have, wanted, title)
+        "definition so it builds a new collection, or -- if %r is yours to "
+        "delete -- delete it in Plex and let the next pass create it."
+        % (title, have, wanted, title)
     )
 
 
