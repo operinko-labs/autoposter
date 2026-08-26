@@ -182,6 +182,50 @@ def resolve_collision(
     return True, "claimed %r (was labelled %r)" % (collection.title, prior)
 
 
+def shape_conflict(collection, title: str, want_smart: bool) -> str | None:
+    """Roadmap 9c / C11: an existing collection whose SHAPE the definition changed.
+
+    A Plex collection is either smart -- Plex evaluates a stored filter and owns
+    the membership -- or it is a list, whose membership this service maintains
+    item by item. A definition that switches ``builder:`` between the two kinds
+    is asking for the second thing to happen to a collection that is the first,
+    and there is no edit that converts one into the other.
+
+    Kometa's answer is to DELETE the collection and recreate it
+    (modules/builder.py:1768-1772), silently, in the middle of a pass. That
+    crosses the whole design of this service's delete guards: nothing is deleted
+    without an ownership label, a ``managed_collections`` row, a
+    ``delete_unconfigured`` opt-in and a ``max_deletes`` cap, and a conversion
+    would bypass all four. So this refuses, and names the two manual paths --
+    which are also the two the operator would want: keep the collection and
+    rename the definition, or delete the collection and let the definition
+    rebuild it.
+
+    Returns the refusal message, or ``None`` when the shapes agree -- the
+    ``(ok, message)`` idiom ``resolve_collision`` above already uses, and not an
+    exception, deliberately: a definition's own configuration error must cost
+    that definition its pass and nothing else, and an exception out of either
+    reconciler reaches ``reconcile_libraries``' per-library rollback, which
+    would undo the OTHER definitions' work in the same library.
+
+    A missing ``smart`` attribute reads as a list collection. plexapi casts it
+    from an XML attribute that defaults to ``'0'`` (pinned in
+    ``tests/test_plexapi_collection_contract.py``), so absence is the same
+    defensiveness ``has_label`` applies to ``labels``.
+    """
+    is_smart = bool(getattr(collection, "smart", False))
+    if is_smart == want_smart:
+        return None
+    have, wanted = ("smart", "list") if is_smart else ("list", "smart")
+    return (
+        "shape conflict: %r already exists in Plex as a %s collection and this "
+        "definition builds a %s one. Plex cannot convert one into the other, and "
+        "this service will not delete and recreate it. Either rename the "
+        "definition so it builds a new collection, or delete %r in Plex and let "
+        "the next pass create it." % (title, have, wanted, title)
+    )
+
+
 # plexapi's own mapping, reproduced so a no-op mode write can be skipped by
 # comparing against ``Collection.collectionMode`` (an int). Pinned against
 # ``Collection.modeUpdate``'s source in the plexapi contract test, so a rename

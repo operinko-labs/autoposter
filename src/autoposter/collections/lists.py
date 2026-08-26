@@ -21,6 +21,7 @@ from autoposter.collections.reconcile import (
     _edit_collection_summary,
     apply_collection_settings,
     resolve_collision,
+    shape_conflict,
 )
 from autoposter.db.models import ManagedCollection
 
@@ -207,6 +208,15 @@ async def reconcile_list_collection(
     if existing is None:
         existing = {c.title: c for c in section.collections()}
     collection = existing.get(title)
+
+    # C11, the list half. Checked BEFORE ``resolve_collision`` because a smart
+    # collection this service already owns would otherwise pass the ownership
+    # check and go on to ``addItems``, which Plex answers for a smart collection
+    # by doing nothing useful and reporting success.
+    if collection is not None:
+        conflict = shape_conflict(collection, title, want_smart=False)
+        if conflict is not None:
+            return [conflict]
 
     claim_action = None
     if collection is not None:

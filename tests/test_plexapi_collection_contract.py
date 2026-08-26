@@ -459,3 +459,51 @@ def test_watchlist_items_carry_the_type_the_builder_filters_on():
 
     assert Movie.TYPE == "movie"
     assert Show.TYPE == "show"
+
+
+# --- What the smart reconciler depends on (collections/smart.py) -------------
+#
+# ``LibrarySection.collection(title)`` -- the re-read both raw-POST helpers end
+# on, ``reconcile.create_blank_collection`` and ``smart.create_smart_collection``
+# alike -- is already pinned twice above: in the parametrized
+# ``test_library_section_methods_take_the_parameters_we_pass`` and in
+# ``test_library_section_collection_fetches_by_title``. It is not pinned a third
+# time here.
+
+
+def test_collection_exposes_the_smart_flag_the_shape_check_reads():
+    """``reconcile.shape_conflict`` branches on ``Collection.smart``. plexapi
+    casts it from an XML attribute that DEFAULTS TO '0', which is what makes
+    "absent means not smart" the correct defensive reading rather than a
+    guess."""
+    source = inspect.getsource(Collection._loadData)
+    assert "self.smart = utils.cast(bool, data.attrib.get('smart', '0'))" in source
+
+
+def test_no_reconciler_reads_a_collections_content_echo():
+    """9c decision C10, asserted rather than promised.
+
+    ``Collection.content`` is Plex's echo of a smart collection's stored uri,
+    and Kometa compares against it on every pass
+    (``check_url != self.library.smart_filter(self.obj)``,
+    modules/builder.py:1774-1776). This service hashes its own DESIRED state
+    instead, which is the Common Sense precedent and which makes the unverified
+    "does Plex echo these bytes back unchanged" question moot. If a reconciler
+    ever reads ``.content``, that is a decision to re-make deliberately, not a
+    line to slip in.
+
+    Scoped to the three reconcilers and matched with a word boundary on purpose:
+    ``\.content\b`` does not match ``.content_rating`` (an underscore is a word
+    character), and ``collections/posters.py`` legitimately reads
+    ``response.content`` off an httpx response, which is a different ``.content``
+    entirely.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src" / "autoposter" / "collections"
+    offenders = [
+        name for name in ("smart.py", "lists.py", "reconcile.py")
+        if re.search(r"\.content\b", (root / name).read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], offenders

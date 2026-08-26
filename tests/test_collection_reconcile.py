@@ -405,3 +405,47 @@ def test_the_summary_helper_never_calls_plexapis_own_method():
 
     _edit_collection_summary(collection, "A new summary.")
     assert collection.summary == "A new summary."
+
+
+# --- C11: a definition that changes shape under an existing collection -------
+
+
+def test_shape_conflict_is_silent_when_the_shapes_agree():
+    from autoposter.collections.reconcile import shape_conflict
+
+    smart = FakeCollection("Recent Horror")
+    smart.smart = True
+    assert shape_conflict(smart, "Recent Horror", want_smart=True) is None
+
+    dumb = FakeCollection("Hand Picked")
+    dumb.smart = False
+    assert shape_conflict(dumb, "Hand Picked", want_smart=False) is None
+
+
+def test_shape_conflict_names_both_shapes_and_the_manual_path():
+    """Kometa deletes and recreates here (modules/builder.py:1768-1772). This
+    service refuses, because a silent delete crosses every guard the delete
+    sweep is built out of -- and the message has to leave the operator able to
+    act, which means naming what the collection IS, what the definition BUILDS,
+    and the two ways out."""
+    from autoposter.collections.reconcile import shape_conflict
+
+    smart = FakeCollection("Recent Horror")
+    smart.smart = True
+    message = shape_conflict(smart, "Recent Horror", want_smart=False)
+    assert message is not None
+    assert "Recent Horror" in message
+    assert "smart" in message and "list" in message
+    assert "delete" in message
+
+
+def test_shape_conflict_treats_a_missing_attribute_as_a_list_collection():
+    """``Collection.smart`` is cast from an XML attribute that defaults to
+    ``'0'`` (pinned in tests/test_plexapi_collection_contract.py), and a fake or
+    a partially-loaded object may not carry it at all. Absent means NOT smart --
+    the same defensiveness ``has_label`` uses for ``labels``."""
+    from autoposter.collections.reconcile import shape_conflict
+
+    bare = FakeCollection("Hand Picked")
+    assert shape_conflict(bare, "Hand Picked", want_smart=False) is None
+    assert shape_conflict(bare, "Hand Picked", want_smart=True) is not None
