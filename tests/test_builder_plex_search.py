@@ -472,3 +472,53 @@ async def test_an_exact_language_value_targets_only_itself():
     assert section.fetch_calls == [
         "/library/sections/1/all?type=1&sort=titleSort&audioLanguage=es-419"
     ]
+
+
+def test_the_roadmap_row_this_phase_closes_says_so_and_files_its_tail():
+    """A closure note that only says "delivered" hides the scope it delivered
+    at -- and hides the tail, which is the part the next reader needs."""
+    import pathlib
+    import re
+
+    roadmap = pathlib.Path(
+        "docs/superpowers/specs/2026-08-22-full-parity-roadmap.md"
+    ).read_text(encoding="utf-8")
+    by_number = {
+        int(re.match(r"^\|\s*(\d+)\s*\|", line).group(1)): line
+        for line in roadmap.splitlines()
+        if re.match(r"^\|\s*(\d+)\s*\|", line)
+    }
+
+    # Row 101 closes, at a stated scope and with both proofs named.
+    row = by_number[101]
+    assert "**answered 9b (v1):** delivered" in row
+    assert "19 of Kometa's 55 non-music search attributes ship" in row
+    assert "fourteen pinned golden URIs" in row
+    assert "9/9 agreement" in row
+
+    # Row 96's arithmetic, corrected rather than restated. Every number here
+    # was computed over the fetched Kometa v2.4.8 files, not recalled.
+    row = by_number[96]
+    assert "not a rounding difference" in row
+    assert "are not nested" in row
+    for number in ("**70**", "**55**", "**53**", "**26**", "**44**", "**29**"):
+        assert number in row, number
+
+    # Row 154 stays OPEN. The 651/651 agreement is exposure-zero, and the row
+    # has to say so or the next reader cites it as clock agreement.
+    row = by_number[154]
+    assert "leaves it OPEN" in row
+    assert "could not tell" in row
+
+    # The tail this phase files rather than builds, contiguous and complete.
+    numbered = sorted(by_number)
+    assert [n for n in numbered if 169 <= n <= 183] == list(range(169, 184)), (
+        "rows 169-183 are not contiguous"
+    )
+    # The nine per-family rows account for all 36 attributes v1 leaves undone.
+    counts = {169: "**4**", 170: "**2**", 171: "**1**", 172: "**5**",
+              173: "**20**", 174: "**1**", 175: "**1**", 176: "**1**",
+              177: "**1**"}
+    for number, count in counts.items():
+        assert count in by_number[number], number
+    assert sum(int(c.strip("*")) for c in counts.values()) == 36

@@ -1384,3 +1384,33 @@ def test_the_listing_is_the_endpoints_only_source_of_truth():
         if preset["active"]
     ]
     assert active == ["award_venice"]
+
+
+def test_the_three_presets_9b_readjudicated_stay_gated_on_the_engine_row():
+    """Phase 9b proved the DATA path for all three and none of the shapes.
+
+    Each of these is "one collection per <distinct value>", so what they wait
+    on is the per-value enumerator and not an attribute -- the same
+    adjudication ``production_studio`` already carries, whose attribute has
+    shipped since 9a and which is still gated. The stranded-filter row is no
+    longer the right citation for any of them: it describes a client-side
+    limitation that a search does not have. Pinned because the tempting move
+    after a probe comes back positive is to flip readiness, and a preset that
+    goes READY without an enumerator builds one collection named after one
+    value.
+    """
+    keys = ("production_network", "media_audio_language", "media_subtitle_language")
+    for key in keys:
+        preset = catalog.BY_KEY[key]
+        assert preset.readiness == GATED, key
+        assert preset.gated_row == catalog.DYNAMIC_ENGINE_ROW, key
+        # Each names the evidence, so the next reader does not re-run the probe
+        # to find out what it said.
+        assert "live probe" in preset.description, key
+        assert "enumerat" in preset.description, key
+
+    # The client-side strand is still named -- it is why these cannot simply
+    # be built out of a library walk -- but it is no longer what they wait on.
+    assert "row %d" % catalog.STRANDED_FILTER_ROW in catalog.BY_KEY[
+        "media_audio_language"
+    ].description

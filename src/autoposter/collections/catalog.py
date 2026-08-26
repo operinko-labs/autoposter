@@ -1336,9 +1336,14 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
             "Academy Aperture through 2.77 Cinerama. The values are a fixed "
             "list and would need no enumeration; what is missing is the "
             "attribute. Row %d shipped its tier-1 half, and `aspect` is not "
-            "one of the fifteen tier-1 rows in collections/filters.py -- it "
-            "sits in the ~45-attribute residue that row hands to 9b, so there "
-            "is nothing to filter on yet." % FILTER_TIER_TWO_ROW
+            "one of the tier-1 rows in collections/filters.py -- it sits in "
+            "the filter residue that row carries (55 names after 9a, 53 now "
+            "that 9b added plays and last_played to the same table). Note "
+            "what 9b did NOT do for it: `aspect` is one of the 44 names in "
+            "Kometa's filter vocabulary with no Plex SEARCH field at all, so "
+            "the plex_search builder cannot reach it either. This waits on a "
+            "client-side metadata budget, not on a query language."
+            % FILTER_TIER_TWO_ROW
         ),
         kometa_source="defaults/both/aspect.yml",
         library_types=_BOTH,
@@ -1350,34 +1355,51 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
         category="media",
         name="Audio languages",
         description=(
-            "One collection per audio language in the library. Not merely "
-            "unbuilt: it needs a metadata-prefetch budget the one library walk "
-            "does not pay for. Audio languages live on the streams under "
-            "<Media><Part>, and Phase 9a's probe found the section listing "
-            "stops at Part -- zero stream elements across 200 movies, against "
-            "four for the same film from the metadata endpoint. Row %d calls "
-            "this readable-but-not-for-free, unlike `network`, which it calls "
-            "stranded outright." % STRANDED_FILTER_ROW
+            "One collection per audio language in the library -- a per-value "
+            "enumeration, which is why it is gated on the engine and not on "
+            "an attribute. Phase 9b moved the blocker without lifting it. The "
+            "CLIENT-side path is still what row %d describes: audio languages "
+            "live on the streams under <Media><Part>, and 9a's probe found "
+            "the section listing stops at Part -- zero stream elements across "
+            "200 movies, against four for the same film from the metadata "
+            "endpoint. But the SEARCH path answers: 9b's live probe read 46 "
+            "audioLanguage values straight off the library and searched them "
+            "(docs/research/plex-search-probe/README.md). So the data path "
+            "now exists and only the enumerator is missing -- one collection "
+            "per distinct value, with the naming and lifecycle machinery, is "
+            "row %d. Two things any such preset must carry: Kometa expands a "
+            "base code to every variant the library holds and joins them with "
+            "the enclosing block's conjunction, so a language predicate under "
+            "`all:` matches NOTHING (0 against 24 under `any:`, measured); "
+            "and the value vocabulary is a mix of 2-letter, locale, 3-letter, "
+            "script-qualified and one literal english, so no single "
+            "normalisation target is correct."
+            % (STRANDED_FILTER_ROW, DYNAMIC_ENGINE_ROW)
         ),
         kometa_source="defaults/both/audio_language.yml",
         library_types=_BOTH,
         readiness=GATED,
-        gated_row=STRANDED_FILTER_ROW,
+        gated_row=DYNAMIC_ENGINE_ROW,
     ),
     Preset(
         key="media_subtitle_language",
         category="media",
         name="Subtitle languages",
         description=(
-            "One collection per subtitle language, held up by exactly the same "
-            "probe finding as the audio-language pack: no stream element "
-            "reaches the section listing at all, so the values are readable "
-            "only at the same per-item metadata cost."
+            "One collection per subtitle language, in exactly the same "
+            "position as the audio-language pack and for the same reasons. "
+            "Client-side, no stream element reaches the section listing at "
+            "all, so the values are readable only at the per-item metadata "
+            "cost; through a search they are readable now -- 9b's live probe "
+            "read 115 subtitleLanguage values and searched them, and the "
+            "`all:`-conjunction trap is worse here, 0 against 442 under "
+            "`any:`. What is missing is the per-value enumerator, row %d."
+            % DYNAMIC_ENGINE_ROW
         ),
         kometa_source="defaults/both/subtitle_language.yml",
         library_types=_BOTH,
         readiness=GATED,
-        gated_row=STRANDED_FILTER_ROW,
+        gated_row=DYNAMIC_ENGINE_ROW,
     ),
 )
 
@@ -1558,19 +1580,28 @@ PRODUCTION_PRESETS: tuple[Preset, ...] = (
         category="production",
         name="Networks",
         description=(
-            "One collection per television network. Stranded, not queued: Phase "
-            "9a's probe found Plex 1.43.4 does not emit `network` anywhere at "
-            "all -- zero of 284 shows carry it in the section listing AND it is "
-            "absent from the per-item metadata endpoint, so no request budget "
-            "buys it. What those shows carry is a `studio` naming the network, "
-            "which is a different attribute with different semantics; "
-            "substituting one for the other silently is what the filter table "
-            "refused to do."
+            "One collection per television network -- a per-value "
+            "enumeration, and that is now the only thing missing. Phase 9a's "
+            "probe found Plex 1.43.4 emits no `network` ITEM attribute at all "
+            "(zero of 284 shows in the section listing AND absent from the "
+            "per-item metadata endpoint), which strands the client-side "
+            "filter for good -- no request budget buys it, row %d. The SEARCH "
+            "FIELD is a different mechanism and it answers: 9b's live probe "
+            "read 91 networks off the same library and a search on one "
+            "returned its shows, whose `studio` values (S4C, ITV1) disagree "
+            "with the network name -- so `network` carries information no "
+            "other shipped attribute does, and is not a `studio` alias "
+            "(docs/research/plex-search-probe/README.md). This preset moves "
+            "off the stranded row and onto the engine row %d. Breadth caveat "
+            "for whoever builds it: the mechanism is proven at ONE network "
+            "with two shows; 91 exist, and nothing has yet checked that they "
+            "all behave."
+            % (STRANDED_FILTER_ROW, DYNAMIC_ENGINE_ROW)
         ),
         kometa_source="defaults/show/network.yml",
         library_types=_SHOW,
         readiness=GATED,
-        gated_row=STRANDED_FILTER_ROW,
+        gated_row=DYNAMIC_ENGINE_ROW,
     ),
 )
 

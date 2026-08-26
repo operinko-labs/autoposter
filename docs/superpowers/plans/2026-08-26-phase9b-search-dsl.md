@@ -129,6 +129,17 @@ docker compose -p p9bt<N> -f docker-compose.yml -f .superpowers/isolated-db.yml 
 - `ruff check src tests` — the lint select set is `["E4", "E7", "E9", "F"]`
   (pyproject.toml:73), pinned deliberately; do not broaden it.
 
+**An evidence-only task does not run the full suite** (T5's lesson, folded in
+by T7). A task whose diff touches zero `src/` and zero `tests/` files cannot
+make the suite fail as a consequence of anything it did, so a green run buys no
+verification — T5 spent eleven minutes proving that nothing it had not changed
+still worked. Such a brief gates on `ruff check` plus its own evidence checks
+instead (for T5: the scrub greps, the read-only call-site audit, and the
+oracle-free reproduction of each command). Lint still earns its place whenever
+the evidence document embeds runnable code. This is a rule about the *diff*,
+not about the task number: the moment a task touches one shipped file, the full
+suite is back.
+
 **Paths.** Every file reference in a dispatch prompt, task brief, task report
 or commit message uses the FULL repo-relative path (`src/autoposter/...`,
 `tests/...`, `docs/...`, `.superpowers/...`). Shorthand is acceptable only
@@ -504,7 +515,8 @@ table, and the fix-round adjudicates any that bite.
 | `tests/test_collection_config.py` | Extended: load-time refusals through `CollectionDefinition`. | T4 |
 | `tests/oracle/9b/kometa_build_filter.py` | **New, not packaged.** Kometa's `build_filter` + `validate_attribute`, transcribed standalone. Imports nothing from this repo. Tracked under `tests/` because the oracle test reads it. | T3 |
 | `tests/oracle/9b/ours.py` | **New, not packaged.** Our side of the same fourteen configs, as a runnable script. | T3 |
-| `.superpowers/sdd/p9b-task-5-probe.md` | **New, not shipped.** The live probe's script and scrubbed results. | T5 |
+| `docs/research/plex-search-probe/README.md` | **New, not packaged.** The live probe's script and scrubbed results. T7 sync: this plan first named `.superpowers/sdd/p9b-task-5-probe.md`, but `.gitignore:23` ignores `.superpowers/` wholesale, so that `git add` would have staged nothing — the evidence follows the `docs/research/tracearr/` precedent instead. | T5 |
+| `docs/research/plex-search-probe/probe-roundtrip.txt` | **New, not packaged.** The raw scrubbed round-trip capture, same path move. | T5 |
 | `docs/superpowers/specs/2026-08-22-full-parity-roadmap.md` | **Modified.** Rows 96, 101, 154, 157, 158 + new rows. | T7 |
 | `src/autoposter/collections/catalog.py` | **Modified.** `media_aspect`'s copy fix; any row T5 unblocks. | T7 |
 
@@ -4345,11 +4357,17 @@ import logging
 from typing import Any
 
 import langcodes
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+import requests
+from plexapi.exceptions import BadRequest, NotFound, PlexApiException
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
-from autoposter.collections.builders.base import BuilderContext, BuilderResult
+from autoposter.collections.builders.base import (
+    BuilderContext,
+    BuilderResult,
+    require_library_type,
+)
 from autoposter.collections.filters import BY_NAME, parse_filters
-from autoposter.collections.search_sorts import KNOWN_SORT_NAMES, require_sort_for_libtype
+from autoposter.collections.search_sorts import KNOWN_SORT_NAMES
 from autoposter.collections.search_url import build_search_url
 
 logger = logging.getLogger(__name__)
@@ -4357,7 +4375,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "PlexSearchBuilder",
     "PlexSearchParams",
-    "PlexSearchRefused",
     "PlexSearchUnavailable",
 ]
 
@@ -4388,10 +4405,6 @@ class PlexSearchUnavailable(Exception):
     name and nothing else -- says which client was missing. Never carries a
     Plex exception's message: those can contain a tokenised URL.
     """
-
-
-class PlexSearchRefused(Exception):
-    """The query cannot be built for the library this pass is running on."""
 
 
 class PlexSearchParams(BaseModel):
@@ -4445,6 +4458,12 @@ class PlexSearchParams(BaseModel):
     sort_by: list[str] | None = None
     limit: int | None = Field(default=None, ge=1)
 
+    # Set by ``_the_block_must_parse_as_a_search``, the one place the block is
+    # parsed. ``build()`` reads it through the ``group`` property rather than
+    # calling ``parse_filters`` a second time on the same block and the same
+    # arguments (Task 4 review, Minor 11).
+    _group: Any = PrivateAttr(default=None)
+
     @model_validator(mode="before")
     @classmethod
     def _the_base_and_the_refused_keys(cls, data: Any) -> Any:
@@ -4456,20 +4475,38 @@ class PlexSearchParams(BaseModel):
         genre, studio" -- which is true and tells an operator nothing about
         what a plex_search actually wants. The three keys Kometa does have get
         a reason here for the same reason.
+
+        Every check below matches keys EXACTLY, not case-insensitively.
+        Before Task 4's fix round this matched case-insensitively while field
+        acceptance (``all``, ``any``, ``sort_by``, ``limit``, and
+        ``extra="forbid"`` itself) always has not -- so ``All:`` satisfied
+        "a base is present" here and was then rejected two validators later
+        by pydantic's generic "Extra inputs are not permitted", losing the
+        tailored message anyway (Task 4 review, Minor 12). Matching exactly
+        is the stricter of the two and it is what makes this validator's
+        verdict and pydantic's field lookup agree on every input.
+
+        This is also the ONLY place the written base is known by name rather
+        than inferred from which of ``self.all``/``self.any`` ended up
+        non-``None`` -- which is why the two empty-base checks below live
+        here rather than in an ``after`` validator (Task 4 review, Important
+        1): ``{"all": None}`` and no base written at all are indistinguishable
+        once pydantic has applied the field defaults, because both leave
+        ``self.all`` and ``self.any`` at ``None``.
         """
         if not isinstance(data, dict):
             return data
-        lowered = {str(key).lower(): key for key in data}
+        keys = {str(key) for key in data}
         for refused, why in _REFUSED_KEYS.items():
-            if refused in lowered:
-                raise ValueError(f"{lowered[refused]!r} is not accepted here. {why}")
-        if "sort" in lowered and "sort_by" not in lowered:
+            if refused in keys:
+                raise ValueError(f"{refused!r} is not accepted here. {why}")
+        if "sort" in keys and "sort_by" not in keys:
             raise ValueError(
                 "the search's order is `sort_by`, not `sort` -- `sort` on the "
                 "definition itself is the collection's display order in Plex, "
                 "which is a different setting and is still available"
             )
-        bases = [name for name in ("all", "any") if name in lowered]
+        bases = [name for name in ("all", "any") if name in keys]
         if len(bases) == 2:
             raise ValueError(
                 "a plex_search has one base: write `all:` (every clause must "
@@ -4484,6 +4521,24 @@ class PlexSearchParams(BaseModel):
                 "becomes an OR and `genre.and:` an AND "
                 "(modules/builder.py:4261-4276) -- which makes one spelling mean "
                 "two memberships, so it is not accepted here"
+            )
+        # The two empty-base messages Kometa's own ``build_filter`` raises
+        # (``{base} attribute is blank`` / ``{base} must be a dictionary``,
+        # kometa_build_filter.py:951/:953) -- reproduced here because a bare
+        # `all:` with nothing under it (YAML's ``{"all": None}``) is the most
+        # common way to hit this, and naming ``any`` -- the base the operator
+        # never wrote -- sends them looking for a block that does not exist.
+        written = bases[0]
+        value = data[written]
+        if value is None:
+            raise ValueError(
+                f"`{written}:` is written but empty. Give it at least one "
+                "clause, or remove the key"
+            )
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"`{written}:` must be a mapping of attributes, not {value!r}. "
+                "Write each clause as `attribute: value` beneath it"
             )
         if isinstance(data.get("sort_by"), str):
             data = {**data, "sort_by": [data["sort_by"]]}
@@ -4505,10 +4560,14 @@ class PlexSearchParams(BaseModel):
         The rest of the sentence -- "the plex_search vocabulary is ...", "write
         it as a `filters:` block instead" -- is the parser's own, selected by
         ``searching=True``.
+
+        The result is kept on ``self`` (the ``group`` property) rather than
+        discarded: it is the same parse ``build()`` would otherwise redo on
+        the same block with the same arguments.
         """
-        base = "all" if self.all is not None else "any"
-        block = self.all if self.all is not None else self.any
-        parse_filters(block, field=f"params.{base}", searching=True, base=base)
+        self._group = parse_filters(
+            self.block, field=f"params.{self.base}", searching=True, base=self.base
+        )
         return self
 
     @model_validator(mode="after")
@@ -4528,6 +4587,11 @@ class PlexSearchParams(BaseModel):
     @property
     def block(self) -> dict:
         return self.all if self.all is not None else self.any
+
+    @property
+    def group(self):
+        """The block, already parsed and validated at load time."""
+        return self._group
 
 
 def _base_language_code(value: str) -> str:
@@ -4556,13 +4620,10 @@ class PlexSearchBuilder:
 
     async def build(self, ctx: BuilderContext) -> BuilderResult:
         params = PlexSearchParams.model_validate(ctx.config)
+        require_library_type(
+            "the 'plex_search' builder", ctx.library_type, ("Movie", "Show")
+        )
         libtype = ctx.library_type.lower()
-        if libtype not in ("movie", "show"):
-            raise PlexSearchRefused(
-                f"the 'plex_search' builder searches movie and show libraries, "
-                f"but this pass is running against a {ctx.library_type} library. "
-                "Narrow the definition with `libraries:`"
-            )
         access = ctx.sources.plex
         if access is None:
             raise PlexSearchUnavailable(
@@ -4571,31 +4632,34 @@ class PlexSearchBuilder:
             )
         section = access.section()
 
-        # Ahead of everything that talks to Plex, and deliberately duplicated:
-        # ``build_search_url`` runs this same gate immediately before
-        # ``sort_argument``, which is what makes it impossible to reach the
-        # bare ``KeyError`` from ANY caller. Here it is about cost -- a
-        # wrong-libtype sort would otherwise pay one ``listFilterChoices``
-        # round-trip per tag value before failing on a fact known before the
-        # first of them. The check is pure and idempotent, so running it twice
-        # is two comparisons.
-        require_sort_for_libtype(libtype, params.sort_by or [])
-        group = parse_filters(
-            params.block, field=f"params.{params.base}", searching=True, base=params.base
-        )
+        # No separate ``require_sort_for_libtype`` call here any more: it is
+        # the first statement of ``build_search_url`` itself now (Task 4
+        # review, ruling on Minor 1), which gives every caller the message
+        # AND -- because it runs ahead of ``_render_group`` -- still costs
+        # this builder zero ``listFilterChoices`` round-trips before a
+        # wrong-libtype sort refuses.
         url = build_search_url(
-            group,
+            params.group,
             libtype=libtype,
             sort_by=params.sort_by or (),
             limit=params.limit,
             resolve_tag=_Resolver(ctx, section, libtype),
         )
         logger.debug("plex_search: %s", url)
+        # Blanket, deliberately, and NOT the three-clause shape
+        # ``_Resolver._raw_choices`` uses below: this catch never memoises
+        # anything (there is no ``run_cache`` entry a bug could be mistaken
+        # for a library fact), and it is the request that actually returns
+        # the collection's membership, so any failure here -- library bug,
+        # Plex error, dropped connection -- ends the build the same way. The
+        # resolver's finer split exists only because IT caches its verdict
+        # for the rest of the pass and must not cache a coding bug as "Plex
+        # has no such filter" (Task 4 review, Minor 3 / Fix-round Carry 1).
         try:
             items = section.fetchItems(
                 f"/library/sections/{section.key}/all{url}"
             )
-        except Exception as error:  # noqa: BLE001 -- class name only, never the message
+        except Exception as error:  # class name only, never the message
             raise PlexSearchUnavailable(
                 "Plex would not answer this search: "
                 f"{type(error).__name__}"
@@ -4603,6 +4667,13 @@ class PlexSearchBuilder:
         ids = [("plex", str(item.ratingKey)) for item in items]
         logger.debug("plex_search: %d item(s)", len(ids))
         return BuilderResult(ids=ids)
+
+
+# Above ``_Resolver``, its only user, rather than at the bottom of the file:
+# a module-level sentinel read on every ``run_cache.get`` lookup, not a
+# forward reference that happens to work because Python resolves names inside
+# a method body at call time rather than at class-definition time.
+_MISSING = object()
 
 
 class _Resolver:
@@ -4650,10 +4721,40 @@ class _Resolver:
             return cached
         try:
             found = list(self._section.listFilterChoices(field=name, libtype=scope))
-        except Exception as error:  # noqa: BLE001 -- class name only
+        # plexapi's own docstring for ``listFilterChoices`` names exactly these
+        # two: ``NotFound`` for an unknown filter field, ``BadRequest`` for an
+        # invalid one. Narrower than ``except Exception`` on purpose (Task 4
+        # review, Minor 3) -- a blanket catch here does not just log a
+        # failure, it MEMOISES one, for the rest of the pass, as a fact about
+        # the LIBRARY ("Plex has no 'genre' filter..."). A ``TypeError`` from
+        # this module's own code is not that fact, and telling the operator it
+        # is would send them looking in the wrong place for the rest of the
+        # run.
+        except (NotFound, BadRequest) as error:
             failure = PlexSearchUnavailable(
                 f"Plex has no {attribute!r} filter for this library "
                 f"({type(error).__name__}), so its values cannot be resolved"
+            )
+            self._ctx.run_cache[key] = failure
+            raise failure from None
+        # A second, DIFFERENT kind of Plex-originating failure -- not "this
+        # filter does not exist" but "Plex did not answer at all". ``query()``
+        # hands the request straight to a bare ``requests`` call
+        # (``self._session.get``), so a dropped connection or a timeout is a
+        # ``requests.RequestException``, not a ``PlexApiException``, and
+        # reaches here unwrapped; a malformed response or an auth failure is
+        # ``PlexApiException`` itself, above ``NotFound``/``BadRequest`` in
+        # its hierarchy. Caught here rather than folded into the clause above
+        # because "Plex has no such filter" would be a FALSE claim about the
+        # library for either one -- class-name-only, like the other Plex
+        # exception this module wraps, because either can carry a tokenised
+        # URL in its own message (Task 4 review, Fix-round Carry 1: the
+        # narrowing above, alone, silently dropped this wrap and let that
+        # message reach the engine's logger intact).
+        except (PlexApiException, requests.RequestException) as error:
+            failure = PlexSearchUnavailable(
+                f"Plex would not answer the {attribute!r} filter lookup for "
+                f"this library: {type(error).__name__}"
             )
             self._ctx.run_cache[key] = failure
             raise failure from None
@@ -4661,6 +4762,13 @@ class _Resolver:
         return found
 
     def _choices(self, attribute: str, scope: str, name: str) -> dict[str, str]:
+        # Every spelling maps to ``choice.key`` -- the KEY, never
+        # ``choice.title`` -- which is what the query has to send Plex. Kometa
+        # agrees: ``validate_attribute`` calls its own ``get_search_choices``
+        # as ``title=not plex_search`` (modules/builder.py:4412, v2.4.8), so
+        # under a plex_search that argument is ``False`` and Kometa's own
+        # table is key-keyed too, not title-keyed (Task 4 review, closing
+        # item 2).
         table: dict[str, str] = {}
         for choice in self._raw_choices(attribute, scope, name):
             for spelling in (
@@ -4691,15 +4799,15 @@ class _Resolver:
         if code != _base_language_code(code) and code in exact:
             return (exact[code],)
         return tuple(by_base.get(code, ()))
-
-
-_MISSING = object()
 ```
 
 - [ ] **Step 4: Register it**
 
 In `src/autoposter/collections/builders/__init__.py`, add the import in
-alphabetical position (after `plex_id`'s block, before `plex_watchlist`):
+alphabetical position — which is by MODULE name, so it lands after
+`mdblist` and before `plex_trivial` (`:44`); there is no `plex_id` module,
+the `PlexIdBuilder` import comes out of `simple_ids` (T7 sync: the line this
+step originally named did not exist):
 
 ```python
 from autoposter.collections.builders.plex_search import PlexSearchBuilder
@@ -5105,7 +5213,9 @@ docker compose -p p9bt4 down
 
 Expected: the lead-in's count + 33 (28 + 4 + the one
 `build_search_url`-level sort-gate case in `tests/test_collection_search_url.py`),
-`0 failed`; `All checks passed!`.
+`0 failed`; `All checks passed!`. **Measured** (T7 sync): `3352 + 33 = 3385
+passed`, and `3390` after the two fix rounds added four
+`test_builder_plex_search.py` cases and one contract-test row.
 
 - [ ] **Step 13: Commit**
 
@@ -5135,10 +5245,19 @@ base, validate:, type:, and sort: for sort_by:."
 ## Task 5: The live probe — READ-ONLY, and it needs the operator's server
 
 **Files:**
-- Create: `.superpowers/sdd/p9b-task-5-probe.md` (the script verbatim + the
-  scrubbed results; not shipped, not in `src/`, not in `tests/`)
-- Create: `.superpowers/sdd/p9b-probe-roundtrip.txt` (the raw per-attribute
-  round-trip table, scrubbed)
+- Create: `docs/research/plex-search-probe/README.md` (the script verbatim +
+  the scrubbed results; not shipped, not in `src/`, not in `tests/`)
+- Create: `docs/research/plex-search-probe/probe-roundtrip.txt` (the raw
+  per-attribute round-trip table, scrubbed)
+
+**T7 path sync.** Both paths above originally read `.superpowers/sdd/…`. They
+could not work: `.gitignore:23` ignores `.superpowers/` wholesale and
+`git ls-files .superpowers` returns 0, so Step 6's `git add` would have staged
+nothing and the evidence this phase's roadmap rows cite would not exist in a
+fresh clone. The evidence lives under `docs/research/plex-search-probe/`,
+following the `docs/research/tracearr/` precedent. The probe SCRIPT stays at
+`.superpowers/sdd/p9b_probe.py` (untracked) and is reproduced verbatim in the
+committed evidence doc, which is the authority.
 - No code changes. If the probe finds a divergence, the FIX is a change to the
   table or the URL builder and it comes with its own oracle re-run — but that
   is a fix round, not this task's deliverable.
@@ -5320,15 +5439,24 @@ vocabularies are worth keeping distinct.
       for `X-Plex-Token`:
 
       ```bash
-      grep -c "$PROBE_PLEX_URL" .superpowers/sdd/p9b-probe-roundtrip.txt
-      grep -c "X-Plex-Token=[^<]" .superpowers/sdd/p9b-probe-roundtrip.txt
+      grep -c "$PROBE_PLEX_URL" docs/research/plex-search-probe/probe-roundtrip.txt
+      grep -c "X-Plex-Token=[^<]" docs/research/plex-search-probe/probe-roundtrip.txt
       ```
 
-      Expected: `0` from both.
-- [ ] **Step 5: Write `.superpowers/sdd/p9b-task-5-probe.md`** — the script
+      Expected: `0` from both. (T5 ran the same check on both committed files
+      and on the bare netloc as well as the full URL, because plexapi's
+      `BadRequest` messages quote the host without its scheme.)
+- [ ] **Step 5: Write `docs/research/plex-search-probe/README.md`** — the script
       verbatim, the raw output verbatim, and a verdict paragraph per probe
       naming what it unblocks, what it strands, and what it files.
 - [ ] **Step 6: Full suite, ruff, teardown, commit.**
+
+      **T7 sync — this step's full suite was the wrong gate and the constraint
+      section now says so.** This task's diff touches zero `src/` and zero
+      `tests/` files, so the run could not have failed because of it; T5 ran it
+      anyway (`3391 passed in 661.77s`) and it bought nothing. Keep the `ruff`
+      line — the evidence doc embeds the probe script — and the evidence checks;
+      drop the `pytest` block on a re-run of this task.
 
       ```bash
       docker compose -p p9bt5 -f docker-compose.yml -f .superpowers/isolated-db.yml \
@@ -5338,7 +5466,7 @@ vocabularies are worth keeping distinct.
       docker compose -p p9bt5 -f docker-compose.yml -f .superpowers/isolated-db.yml \
           run --rm test ruff check src tests
       docker compose -p p9bt5 down
-      git add .superpowers/sdd/p9b-task-5-probe.md .superpowers/sdd/p9b-probe-roundtrip.txt
+      git add docs/research/plex-search-probe/README.md docs/research/plex-search-probe/probe-roundtrip.txt
       git commit --no-gpg-sign -m "docs(9b): the read-only live probe
 
       Nine dual-resident attributes round-tripped server-path against
@@ -5395,7 +5523,73 @@ Plus three strands that are not attributes:
 **Files:**
 - Modify: `docs/superpowers/specs/2026-08-22-full-parity-roadmap.md`
 - Modify: `src/autoposter/collections/catalog.py`
-- Test: `tests/test_collection_catalog.py` (only if a preset's readiness changes)
+- Modify: `tests/test_collection_catalog.py` (the by-shape adjudication, pinned)
+- Modify: `tests/test_builder_plex_search.py` (the row-101 closure and the
+  filed tail, pinned by row NUMBER and not by line — the 164-166 lesson)
+
+### T7 execution record — where the steps below were overtaken
+
+Written after execution, in the plan-sync convention this phase uses
+everywhere else. The steps are left as they were dispatched; this block says
+what actually shipped and why, so the two do not have to be reconciled by
+reading a diff.
+
+1. **Step 1's `<N..N+8>`** resolved to **rows 169–177**, and the closure gained
+   a sentence the step did not ask for: the live dual-path result (9/9 over
+   1960 items), because a closure that cites only the oracle claims less than
+   the phase actually proved. Read narrowly, as the row now says — for `added`
+   it proves nothing, which is item 3.
+2. **Step 2's "the residue is 55"** is right about 9a and stale about 9b. Task
+   1 computed the arithmetic over the fetched v2.4.8 files
+   (`.superpowers/sdd/task-1-report.md` §2.2): 70 filter names, 9a's table
+   covered 15 → residue **55**; 9b added `plays` and `last_played` to the same
+   table → covers 17 → residue **53**. The row and the `media_aspect` copy both
+   carry 55-then-53 with the derivation, rather than shipping a fresh wrong
+   number inside the fix that is *about* wrong numbers. The `.count_*`
+   modifiers (a filter-side-only family) are named in row 96's remainder rather
+   than given a row of their own, because they are not part of row 101's tail.
+3. **Step 3's row 154 stays OPEN, and does not cite the probe's agreement.**
+   The step's own fallback wording ("if Task 5 did not run…") did not apply —
+   Task 5 ran — but its `added` round-trip agreed 651/651 on a boundary with
+   **zero** items inside 24h of it, so the agreement measures that the
+   predicate could not tell, not that the clocks concur (T5 report §4, concern
+   2). The row records the exposure number and names the measurement it still
+   wants. Rows 157 and 158 went in as written.
+4. **Step 4's catalog was adjudicated BY SHAPE, and nothing unblocked.** The
+   rule applied to all three: read the preset's intended collection shape, and
+   unblock only if it is expressible as STATIC definitions over fixed named
+   values. All three are "one collection per distinct value" — an enumeration —
+   so all three stay GATED, and what changed is *what they wait on*:
+   `gated_row` moves from the stranded-filter row (155) to the dynamic-engine
+   row (102) for `production_network`, `media_audio_language` and
+   `media_subtitle_language`, each description now saying that 9b's probe
+   proved the DATA path (91 networks, 46 audio / 115 subtitle language values,
+   all readable through a search) and that only the enumerator is missing. This
+   is `production_studio`'s adjudication exactly — an attribute that ships and
+   a pack that still waits on the engine. `production_network` also carries the
+   breadth caveat: the mechanism is proven at one network with two shows, and
+   91 exist. **No preset's readiness changed, so the category checksum in
+   `tests/test_collection_catalog.py` is unchanged** — the step anticipated a
+   recompute that the by-shape verdict made unnecessary.
+5. **Step 5's rows are 169–183.** 169–177 are Task 6's nine families in order
+   (A people, B text, C year specials, D media booleans, E show sub-libtypes,
+   F country, G user_rating, H folder_location, I audio_codec), summing to the
+   36 attributes v1 leaves undone; 178 the search-`.regex` vocabulary
+   expansion; 179 the libtype selector; 180 the `unprobed` tier's two
+   attributes; 181 query folding, deliberately not built; 182 the language
+   `all:`-conjunction finding and the mixed vocabulary; 183 the six removed
+   spellings, which Plex answers and Kometa does not.
+6. **Step 6's tally is three instances, and no new test joined the family** —
+   `test_pipeline.py::…refreshes_updated_at` twice across Task 4's two rounds
+   and `test_scheduler_core.py::…scheduler_survives` once, all three already
+   named by row 119. Sixteen known instances.
+7. **Step 7's whole-branch review is the controller's dispatch, not this
+   task's** — an implementer requesting its own review is the one review that
+   proves nothing. Task 4 and Task 5 each carry their own review documents
+   (`.superpowers/sdd/task-{1..5}-review.md`); the one open item they left, the
+   stale T4 Step-3 code block, is closed by this task's plan-hygiene work above
+   and verified by extracting the block back out and comparing it byte for byte
+   against the shipped module.
 
 - [ ] **Step 1: Row 101 — closed, with its scope stated**
 
