@@ -1270,7 +1270,14 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
             ".regex client-side"
         )
     if not searching and modifier in SEARCH_ONLY_OPERATORS:
-        if attribute.type == "float":
+        # Both halves of the condition are load-bearing, and they are different
+        # halves. The TYPE is why the advice can name a numeric comparison at
+        # all (``genre.gt: 0`` is meaningless); the OPERATOR is what the rest of
+        # the sentence describes -- "has any rating at all", the -1 sentinel.
+        # ``SEARCH_ONLY_OPERATORS`` is a one-element tuple today, so testing
+        # only the type would put this copy under any second entry that joins
+        # it, describing a modifier that is not ``.rated``.
+        if attribute.type == "float" and modifier == "rated":
             raise ValueError(
                 f"{field}: .{modifier} is a plex_search modifier -- Plex answers "
                 f"'has any rating at all' as a server-side comparison against -1 "

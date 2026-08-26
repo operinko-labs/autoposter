@@ -1968,7 +1968,14 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
             ".regex client-side"
         )
     if not searching and modifier in SEARCH_ONLY_OPERATORS:
-        if attribute.type == "float":
+        # Both halves of the condition are load-bearing, and they are different
+        # halves. The TYPE is why the advice can name a numeric comparison at
+        # all (``genre.gt: 0`` is meaningless); the OPERATOR is what the rest of
+        # the sentence describes -- "has any rating at all", the -1 sentinel.
+        # ``SEARCH_ONLY_OPERATORS`` is a one-element tuple today, so testing
+        # only the type would put this copy under any second entry that joins
+        # it, describing a modifier that is not ``.rated``.
+        if attribute.type == "float" and modifier == "rated":
             raise ValueError(
                 f"{field}: .{modifier} is a plex_search modifier -- Plex answers "
                 f"'has any rating at all' as a server-side comparison against -1 "
@@ -2319,12 +2326,14 @@ modules/plex.py:195, :307, :593, :2735-2751."
 - Consumes: nothing from Task 1 (this module is standalone by design — the
   sorts are a property of the library type, not of the predicate tree).
 - Produces:
-  - `MOVIE_SORTS: dict[str, str]`, `SHOW_SORTS: dict[str, str]` — the written
-    name → the **pre-encoded** wire value.
+  - `MOVIE_SORTS: Mapping[str, str]`, `SHOW_SORTS: Mapping[str, str]` — the
+    written name → the **pre-encoded** wire value, as a `MappingProxyType`
+    (read-only, matching `FILTER_ATTRIBUTES`' frozen idiom one module along).
   - `SortType` — a frozen dataclass with `key: int`, `default_sort: str`,
     `sorts: Mapping[str, str]`.
-  - `SORT_TYPES: dict[str, SortType]` — keyed on our library type strings
-    (`"movie"`, `"show"`, matching `ITEM_KINDS`).
+  - `SORT_TYPES: Mapping[str, SortType]` — keyed on our library type strings
+    (`"movie"`, `"show"`, matching `ITEM_KINDS`; a test holds the two key sets
+    equal).
   - `KNOWN_SORT_NAMES: frozenset[str]` — the union, for load-time validation.
   - `sort_argument(libtype: str, sort_by: Sequence[str] = ()) -> str`
   - `require_sort_for_libtype(libtype: str, sort_by: Sequence[str]) -> None`
@@ -2392,6 +2401,16 @@ def test_every_name_but_random_is_a_directional_pair():
         for stem in stems:
             assert f"{stem}.asc" in table
             assert f"{stem}.desc" in table
+            # And the two halves are the SAME field. Without this, a transposed
+            # or duplicated hand-copy -- ``"year.asc": "year%3Adesc"`` -- passes
+            # every other test in this file, which is precisely this table's
+            # threat model. Scoped to movie/show on purpose: it does NOT hold
+            # for the deferred matrices (plex.py:668-778). Their multi-term
+            # values put ``%3Adesc`` on an INNER term and leave the rest of the
+            # tie-break chain alone -- ``episode_sorts["show.desc"]`` is
+            # ``show.titleSort%3Adesc%2Cseason.index%3AnullsLast%2C...``, six
+            # terms, one of which changed. Task 6 must not extend this line.
+            assert table[f"{stem}.desc"] == table[f"{stem}.asc"] + "%3Adesc", stem
 
 
 def test_every_descending_value_carries_the_encoded_colon():
@@ -2472,6 +2491,46 @@ def test_known_sort_names_is_the_union():
     assert "duration.asc" in KNOWN_SORT_NAMES      # movie only
     assert "episode_added.asc" in KNOWN_SORT_NAMES  # show only
     assert "nonsense.asc" not in KNOWN_SORT_NAMES
+
+
+def test_the_sort_tables_cover_exactly_the_library_types_the_table_knows():
+    """``SORT_TYPES`` restates ``filters.ITEM_KINDS`` and nothing structural
+    holds them equal. A third kind joining ``ITEM_KINDS`` would reach
+    ``sort_argument`` as a bare ``KeyError`` on the ``SORT_TYPES`` lookup --
+    which is the unexplained-failure outcome ``require_sort_for_libtype``'s own
+    docstring exists to prevent. The module stays standalone; the contract is
+    pinned here."""
+    from autoposter.collections.filters import ITEM_KINDS
+
+    assert set(SORT_TYPES) == set(ITEM_KINDS)
+
+
+def test_asking_a_direction_of_random_is_a_refusal():
+    """The module docstring's claim, pinned. ``random`` is the one name with no
+    ``.asc``/``.desc`` pair, so ``random.desc`` is not a sort at all -- and the
+    refusal must come from the gate rather than from a ``KeyError`` inside
+    ``sort_argument``."""
+    with pytest.raises(SortNotAvailable) as error:
+        require_sort_for_libtype("movie", ["random.desc"])
+    assert "random.desc" in str(error.value)
+
+    require_sort_for_libtype("movie", ["random"])
+
+
+def test_the_deferred_matrices_are_genuinely_absent():
+    """The other docstring claim. plex.py:668-778 holds season, episode,
+    artist, album and track; v1 searches movie and show, so none of their names
+    may have leaked in while the two shipped tables were copied. Every name
+    below is real -- it exists in one of those five tables and in neither of
+    ours -- so this fails on a leak rather than on a name nobody would type."""
+    for name in (
+        "season.asc",       # season_sorts, episode_sorts
+        "show.asc",         # season_sorts, episode_sorts
+        "played.asc",       # artist_sorts, album_sorts, track_sorts
+        "album_artist.asc",  # album_sorts, track_sorts
+        "popularity.asc",   # track_sorts
+    ):
+        assert name not in KNOWN_SORT_NAMES
 ```
 
 - [ ] **Step 2: Run it to see it fail**
@@ -2498,8 +2557,10 @@ transcription: Plex's sortable field names are underdocumented and several of
 them are not the field the sort's NAME suggests, so every table below is
 Kometa's own, copied **pre-encoded** from ``modules/plex.py`` at v2.4.8.
 
-**Pre-encoded, never retyped.** The values below contain ``%3Adesc`` and
-``%2C`` exactly as Kometa stores them. Re-deriving them here -- taking
+**Pre-encoded, never retyped.** The values below contain ``%3Adesc`` exactly
+as Kometa stores them, and are joined with ``%2C`` (no value in either table
+carries a comma of its own -- only the deferred season/episode/album/track
+matrices do). Re-deriving them here -- taking
 ``rating:desc`` and quoting it at build time -- would be a second
 implementation of something with exactly one correct answer, and every way of
 getting it subtly wrong produces a URL Plex still answers, with a plausible and
@@ -2525,9 +2586,21 @@ The season, episode, artist, album and track matrices (plex.py:668-778) are
 deliberately absent: v1 searches movie and show libraries, and a table nothing
 can reach is a table nobody checks. They arrive with the libtypes that need
 them (the per-family tail, Task 6).
+
+**``sort_by`` is not ``sort``.** Everything in this module serves
+``plex_search``'s ``sort_by:`` key -- which order PLEX returns the QUERY in,
+and therefore, when a ``limit`` is present, WHICH items the collection gets.
+``CollectionDefinition.sort`` (``config/schema.py:289``, default ``custom``)
+is a different setting under a confusingly similar name: it is the finished
+collection's own display order in Plex, applied with ``collection.sortUpdate``
+once the members exist (``collections/lists.py:275``). Kometa keeps them apart
+the same way -- ``sort_by`` lives inside the search block (builder.py:4130) --
+and the two must never be folded together, because one decides membership and
+the other decides presentation.
 """
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 
 __all__ = [
     "KNOWN_SORT_NAMES",
@@ -2541,7 +2614,15 @@ __all__ = [
 ]
 
 # modules/plex.py:604-636. Fifteen directional pairs plus ``random`` = 31.
-MOVIE_SORTS: dict[str, str] = {
+#
+# Read-only at the type level AND at runtime: ``Mapping`` is what
+# ``SortType.sorts`` is annotated as, and ``MappingProxyType`` is what makes
+# the annotation true. The repo's neighbouring transcription
+# (``filters.FILTER_ATTRIBUTES``) is a tuple of frozen dataclasses for the same
+# reason -- a table copied from someone else's source is data, and a caller
+# that can edit it can make ours disagree with Kometa at runtime with nothing
+# to show for it.
+MOVIE_SORTS: Mapping[str, str] = MappingProxyType({
     "title.asc": "titleSort",
     "title.desc": "titleSort%3Adesc",
     "year.asc": "year",
@@ -2575,10 +2656,10 @@ MOVIE_SORTS: dict[str, str] = {
     "bitrate.desc": "mediaBitrate%3Adesc",
     # No direction, in either table.
     "random": "random",
-}
+})
 
 # modules/plex.py:637-667. Fourteen directional pairs plus ``random`` = 29.
-SHOW_SORTS: dict[str, str] = {
+SHOW_SORTS: Mapping[str, str] = MappingProxyType({
     "title.asc": "titleSort",
     "title.desc": "titleSort%3Adesc",
     "year.asc": "year",
@@ -2610,7 +2691,7 @@ SHOW_SORTS: dict[str, str] = {
     "viewed.asc": "lastViewedAt",
     "viewed.desc": "lastViewedAt%3Adesc",
     "random": "random",
-}
+})
 
 
 @dataclass(frozen=True)
@@ -2629,10 +2710,10 @@ class SortType:
     sorts: Mapping[str, str]
 
 
-SORT_TYPES: dict[str, SortType] = {
+SORT_TYPES: Mapping[str, SortType] = MappingProxyType({
     "movie": SortType(key=1, default_sort="title.asc", sorts=MOVIE_SORTS),
     "show": SortType(key=2, default_sort="title.asc", sorts=SHOW_SORTS),
-}
+})
 
 # The union, for a LOAD-time check. A definition with no ``libraries:`` key
 # runs against every library in the pass, so which table applies is not known

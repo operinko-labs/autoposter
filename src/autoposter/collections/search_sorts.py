@@ -7,8 +7,10 @@ transcription: Plex's sortable field names are underdocumented and several of
 them are not the field the sort's NAME suggests, so every table below is
 Kometa's own, copied **pre-encoded** from ``modules/plex.py`` at v2.4.8.
 
-**Pre-encoded, never retyped.** The values below contain ``%3Adesc`` and
-``%2C`` exactly as Kometa stores them. Re-deriving them here -- taking
+**Pre-encoded, never retyped.** The values below contain ``%3Adesc`` exactly
+as Kometa stores them, and are joined with ``%2C`` (no value in either table
+carries a comma of its own -- only the deferred season/episode/album/track
+matrices do). Re-deriving them here -- taking
 ``rating:desc`` and quoting it at build time -- would be a second
 implementation of something with exactly one correct answer, and every way of
 getting it subtly wrong produces a URL Plex still answers, with a plausible and
@@ -34,9 +36,21 @@ The season, episode, artist, album and track matrices (plex.py:668-778) are
 deliberately absent: v1 searches movie and show libraries, and a table nothing
 can reach is a table nobody checks. They arrive with the libtypes that need
 them (the per-family tail, Task 6).
+
+**``sort_by`` is not ``sort``.** Everything in this module serves
+``plex_search``'s ``sort_by:`` key -- which order PLEX returns the QUERY in,
+and therefore, when a ``limit`` is present, WHICH items the collection gets.
+``CollectionDefinition.sort`` (``config/schema.py:289``, default ``custom``)
+is a different setting under a confusingly similar name: it is the finished
+collection's own display order in Plex, applied with ``collection.sortUpdate``
+once the members exist (``collections/lists.py:275``). Kometa keeps them apart
+the same way -- ``sort_by`` lives inside the search block (builder.py:4130) --
+and the two must never be folded together, because one decides membership and
+the other decides presentation.
 """
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 
 __all__ = [
     "KNOWN_SORT_NAMES",
@@ -50,7 +64,15 @@ __all__ = [
 ]
 
 # modules/plex.py:604-636. Fifteen directional pairs plus ``random`` = 31.
-MOVIE_SORTS: dict[str, str] = {
+#
+# Read-only at the type level AND at runtime: ``Mapping`` is what
+# ``SortType.sorts`` is annotated as, and ``MappingProxyType`` is what makes
+# the annotation true. The repo's neighbouring transcription
+# (``filters.FILTER_ATTRIBUTES``) is a tuple of frozen dataclasses for the same
+# reason -- a table copied from someone else's source is data, and a caller
+# that can edit it can make ours disagree with Kometa at runtime with nothing
+# to show for it.
+MOVIE_SORTS: Mapping[str, str] = MappingProxyType({
     "title.asc": "titleSort",
     "title.desc": "titleSort%3Adesc",
     "year.asc": "year",
@@ -84,10 +106,10 @@ MOVIE_SORTS: dict[str, str] = {
     "bitrate.desc": "mediaBitrate%3Adesc",
     # No direction, in either table.
     "random": "random",
-}
+})
 
 # modules/plex.py:637-667. Fourteen directional pairs plus ``random`` = 29.
-SHOW_SORTS: dict[str, str] = {
+SHOW_SORTS: Mapping[str, str] = MappingProxyType({
     "title.asc": "titleSort",
     "title.desc": "titleSort%3Adesc",
     "year.asc": "year",
@@ -119,7 +141,7 @@ SHOW_SORTS: dict[str, str] = {
     "viewed.asc": "lastViewedAt",
     "viewed.desc": "lastViewedAt%3Adesc",
     "random": "random",
-}
+})
 
 
 @dataclass(frozen=True)
@@ -138,10 +160,10 @@ class SortType:
     sorts: Mapping[str, str]
 
 
-SORT_TYPES: dict[str, SortType] = {
+SORT_TYPES: Mapping[str, SortType] = MappingProxyType({
     "movie": SortType(key=1, default_sort="title.asc", sorts=MOVIE_SORTS),
     "show": SortType(key=2, default_sort="title.asc", sorts=SHOW_SORTS),
-}
+})
 
 # The union, for a LOAD-time check. A definition with no ``libraries:`` key
 # runs against every library in the pass, so which table applies is not known

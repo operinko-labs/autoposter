@@ -194,13 +194,17 @@ class PlexItemView:
                 why = (
                     "the Plex section listing does not carry it completely enough "
                     "to filter on (source tier 'tier2-deferred' -- see the row's "
-                    "note for the probe data)"
+                    "note for the probe data), and reading it per item would cost "
+                    "one Plex request per item"
                 )
             else:
-                why = f"its source tier is {row.source!r}, not 'tier2-deferred'"
+                # The request-per-item cost belongs to the tier-2 branch and is
+                # not true here: a ``search-only`` row has nothing to read per
+                # item -- that is what the tier means -- and an ``unprobed`` one
+                # has never been measured. Each names its own tier and stops.
+                why = f"its source tier is {row.source!r}"
             raise AttributeNotInListing(
-                f"{attribute!r} has no tier-1 accessor: {why}, and reading it "
-                "per item would cost one Plex request per item. Filterable "
+                f"{attribute!r} has no tier-1 accessor: {why}. Filterable "
                 "now: " + ", ".join(SHIPPED_ATTRIBUTES)
             )
         return accessor(self._item)

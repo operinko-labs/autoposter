@@ -35,6 +35,16 @@ def test_every_name_but_random_is_a_directional_pair():
         for stem in stems:
             assert f"{stem}.asc" in table
             assert f"{stem}.desc" in table
+            # And the two halves are the SAME field. Without this, a transposed
+            # or duplicated hand-copy -- ``"year.asc": "year%3Adesc"`` -- passes
+            # every other test in this file, which is precisely this table's
+            # threat model. Scoped to movie/show on purpose: it does NOT hold
+            # for the deferred matrices (plex.py:668-778). Their multi-term
+            # values put ``%3Adesc`` on an INNER term and leave the rest of the
+            # tie-break chain alone -- ``episode_sorts["show.desc"]`` is
+            # ``show.titleSort%3Adesc%2Cseason.index%3AnullsLast%2C...``, six
+            # terms, one of which changed. Task 6 must not extend this line.
+            assert table[f"{stem}.desc"] == table[f"{stem}.asc"] + "%3Adesc", stem
 
 
 def test_every_descending_value_carries_the_encoded_colon():
@@ -115,3 +125,43 @@ def test_known_sort_names_is_the_union():
     assert "duration.asc" in KNOWN_SORT_NAMES      # movie only
     assert "episode_added.asc" in KNOWN_SORT_NAMES  # show only
     assert "nonsense.asc" not in KNOWN_SORT_NAMES
+
+
+def test_the_sort_tables_cover_exactly_the_library_types_the_table_knows():
+    """``SORT_TYPES`` restates ``filters.ITEM_KINDS`` and nothing structural
+    holds them equal. A third kind joining ``ITEM_KINDS`` would reach
+    ``sort_argument`` as a bare ``KeyError`` on the ``SORT_TYPES`` lookup --
+    which is the unexplained-failure outcome ``require_sort_for_libtype``'s own
+    docstring exists to prevent. The module stays standalone; the contract is
+    pinned here."""
+    from autoposter.collections.filters import ITEM_KINDS
+
+    assert set(SORT_TYPES) == set(ITEM_KINDS)
+
+
+def test_asking_a_direction_of_random_is_a_refusal():
+    """The module docstring's claim, pinned. ``random`` is the one name with no
+    ``.asc``/``.desc`` pair, so ``random.desc`` is not a sort at all -- and the
+    refusal must come from the gate rather than from a ``KeyError`` inside
+    ``sort_argument``."""
+    with pytest.raises(SortNotAvailable) as error:
+        require_sort_for_libtype("movie", ["random.desc"])
+    assert "random.desc" in str(error.value)
+
+    require_sort_for_libtype("movie", ["random"])
+
+
+def test_the_deferred_matrices_are_genuinely_absent():
+    """The other docstring claim. plex.py:668-778 holds season, episode,
+    artist, album and track; v1 searches movie and show, so none of their names
+    may have leaked in while the two shipped tables were copied. Every name
+    below is real -- it exists in one of those five tables and in neither of
+    ours -- so this fails on a leak rather than on a name nobody would type."""
+    for name in (
+        "season.asc",       # season_sorts, episode_sorts
+        "show.asc",         # season_sorts, episode_sorts
+        "played.asc",       # artist_sorts, album_sorts, track_sorts
+        "album_artist.asc",  # album_sorts, track_sorts
+        "popularity.asc",   # track_sorts
+    ):
+        assert name not in KNOWN_SORT_NAMES
