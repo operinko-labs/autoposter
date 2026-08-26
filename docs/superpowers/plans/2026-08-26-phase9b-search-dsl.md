@@ -3990,7 +3990,14 @@ attribute returning a plausible-but-wrong set -- into a gate."
     `extra="forbid"`.
   - `PlexSearchBuilder` with `type_name = "plex_search"` and
     `params_model = PlexSearchParams`.
-  - `PlexSearchUnavailable(Exception)`, `PlexSearchRefused(Exception)`.
+  - `PlexSearchUnavailable(Exception)`. The brief also named
+    `PlexSearchRefused(Exception)`, for the libtype refusal below; the
+    fix round replaced that refusal with the package's own
+    `require_library_type`/`LibraryTypeMismatch` (Minor 2), which left
+    `PlexSearchRefused` raised nowhere and exported anyway, so it was
+    deleted rather than kept as an unraised class (Task 4 review,
+    Fix-round Carry 2) -- the same kind of correction the `__all__` line
+    above already received.
 
 ### Lead-in: the eight accuracy items from the Task 3 review
 

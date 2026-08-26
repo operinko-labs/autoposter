@@ -50,7 +50,8 @@ import logging
 from typing import Any
 
 import langcodes
-from plexapi.exceptions import BadRequest, NotFound
+import requests
+from plexapi.exceptions import BadRequest, NotFound, PlexApiException
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from autoposter.collections.builders.base import (
@@ -67,7 +68,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "PlexSearchBuilder",
     "PlexSearchParams",
-    "PlexSearchRefused",
     "PlexSearchUnavailable",
 ]
 
@@ -97,19 +97,6 @@ class PlexSearchUnavailable(Exception):
     Its own class so the engine's log line -- which carries the exception class
     name and nothing else -- says which client was missing. Never carries a
     Plex exception's message: those can contain a tokenised URL.
-    """
-
-
-class PlexSearchRefused(Exception):
-    """The query cannot be built for the library this pass is running on.
-
-    Kept as its own class -- unused by this module's code today -- because
-    the brief's Produces list names it alongside ``PlexSearchUnavailable``.
-    The libtype gate that used to raise it now goes through the package's own
-    ``require_library_type``/``LibraryTypeMismatch`` instead (Task 4 review,
-    Minor 2): that helper already makes the same build-time argument this
-    class's docstring used to, under a message shape every other builder's
-    library-type refusal already shares.
     """
 
 
@@ -352,6 +339,15 @@ class PlexSearchBuilder:
             resolve_tag=_Resolver(ctx, section, libtype),
         )
         logger.debug("plex_search: %s", url)
+        # Blanket, deliberately, and NOT the three-clause shape
+        # ``_Resolver._raw_choices`` uses below: this catch never memoises
+        # anything (there is no ``run_cache`` entry a bug could be mistaken
+        # for a library fact), and it is the request that actually returns
+        # the collection's membership, so any failure here -- library bug,
+        # Plex error, dropped connection -- ends the build the same way. The
+        # resolver's finer split exists only because IT caches its verdict
+        # for the rest of the pass and must not cache a coding bug as "Plex
+        # has no such filter" (Task 4 review, Minor 3 / Fix-round Carry 1).
         try:
             items = section.fetchItems(
                 f"/library/sections/{section.key}/all{url}"
@@ -431,6 +427,27 @@ class _Resolver:
             failure = PlexSearchUnavailable(
                 f"Plex has no {attribute!r} filter for this library "
                 f"({type(error).__name__}), so its values cannot be resolved"
+            )
+            self._ctx.run_cache[key] = failure
+            raise failure from None
+        # A second, DIFFERENT kind of Plex-originating failure -- not "this
+        # filter does not exist" but "Plex did not answer at all". ``query()``
+        # hands the request straight to a bare ``requests`` call
+        # (``self._session.get``), so a dropped connection or a timeout is a
+        # ``requests.RequestException``, not a ``PlexApiException``, and
+        # reaches here unwrapped; a malformed response or an auth failure is
+        # ``PlexApiException`` itself, above ``NotFound``/``BadRequest`` in
+        # its hierarchy. Caught here rather than folded into the clause above
+        # because "Plex has no such filter" would be a FALSE claim about the
+        # library for either one -- class-name-only, like the other Plex
+        # exception this module wraps, because either can carry a tokenised
+        # URL in its own message (Task 4 review, Fix-round Carry 1: the
+        # narrowing above, alone, silently dropped this wrap and let that
+        # message reach the engine's logger intact).
+        except (PlexApiException, requests.RequestException) as error:
+            failure = PlexSearchUnavailable(
+                f"Plex would not answer the {attribute!r} filter lookup for "
+                f"this library: {type(error).__name__}"
             )
             self._ctx.run_cache[key] = failure
             raise failure from None

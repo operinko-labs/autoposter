@@ -6,6 +6,7 @@ touches: which spellings load, which refuse and what they say, what the builder
 asks Plex, and how many times it asks.
 """
 import pytest
+import requests
 from plexapi.exceptions import NotFound
 from pydantic import ValidationError
 
@@ -103,8 +104,14 @@ def test_the_type_key_is_refused_by_name():
 
 
 def test_an_unknown_params_key_is_refused():
+    """``extra="forbid"`` itself -- the class docstring's reason this model
+    exists at all -- rather than one of the tailored ``_REFUSED_KEYS``/``sort``
+    branches, which is what this test used to exercise (Task 4 review,
+    Fix-round Carry 3: it duplicated ``test_the_key_is_sort_by_and_not_sort``
+    on the same input, answered by the same ``sort`` branch, and its name
+    describes neither)."""
     with pytest.raises(ValidationError):
-        PlexSearchParams.model_validate({"all": {"genre": "Horror"}, "sort": "title.asc"})
+        PlexSearchParams.model_validate({"all": {"genre": "Horror"}, "nonsense": 1})
 
 
 def test_the_key_is_sort_by_and_not_sort():
@@ -291,6 +298,30 @@ async def test_a_coding_bug_in_the_lookup_is_not_mistaken_for_a_missing_filter()
         await PlexSearchBuilder().build(ctx)
     assert "boom" in str(error.value)
     assert "Plex has no" not in str(error.value)
+
+
+async def test_a_transport_failure_in_the_lookup_is_wrapped_class_name_only():
+    """Fix-round Carry 1. Narrowing ``_raw_choices``'s catch to
+    ``(NotFound, BadRequest)`` (Minor 3, above) silently dropped the
+    class-name-only wrap for a THIRD kind of failure: ``PlexServer.query``
+    hands the request straight to a bare ``requests`` call, so a dropped
+    connection is a ``requests.RequestException``, not a plexapi one, and
+    reached the engine's logger with its own message -- which can carry a
+    tokenised URL -- intact. Secrets hygiene, the same property
+    ``test_a_plex_failure_is_reported_by_class_name_and_nothing_else`` pins
+    for the ``fetchItems`` call, pinned here for the resolver's lookup too."""
+    class Boom(requests.ConnectionError):
+        def __str__(self):
+            return "http://plex.example:32400/library?X-Plex-Token=SECRET"
+
+    section = FakeSection(raise_on={"genre": Boom()})
+    ctx = context(section, config={"all": {"genre": "Horror"}})
+    with pytest.raises(Exception) as error:
+        await PlexSearchBuilder().build(ctx)
+    message = str(error.value)
+    assert "Boom" in message
+    assert "SECRET" not in message
+    assert "X-Plex-Token" not in message
 
 
 async def test_a_misspelled_tag_value_refuses_at_build_naming_value_and_attribute():
