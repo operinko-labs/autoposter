@@ -423,6 +423,25 @@ def test_a_float_shaped_duration_is_salvaged_and_only_garbage_is_worth_nothing()
     assert ranked[0].watch_time_ms == 1624307 + 12
 
 
+def test_an_infinite_duration_reads_as_zero_and_not_a_crash():
+    """``json.loads`` accepts a bare ``Infinity`` token by default, so a
+    malformed record can hand this function a real ``float("inf")`` rather
+    than a string -- and ``int(float("inf"))`` raises ``OverflowError``, not
+    ``TypeError``/``ValueError``, so it must be caught too or the whole build
+    crashes on one malformed record instead of losing its watch time, the
+    same outcome the previous two tests guard for their own malformed shapes.
+    """
+    mangled = [dict(record) for record in records("tracearr_history_silo.json")]
+    mangled[0]["duration_ms"] = float("inf")
+    mangled[1]["duration_ms"] = 500000
+    mangled[2]["duration_ms"] = 250000
+
+    ranked = rank(mangled, media_kind="show", metric="plays", limit=10)
+
+    assert ranked[0].plays == 3
+    assert ranked[0].watch_time_ms == 750000
+
+
 def test_an_empty_window_ranks_to_nothing():
     """Not an error: a deployment nobody watched anything on in the window is
     data. The builder's caller decides what an empty membership means."""

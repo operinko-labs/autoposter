@@ -296,11 +296,11 @@ def _duration_ms(record: dict) -> int:
     value = record.get("duration_ms")
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         pass
     try:
         return int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
