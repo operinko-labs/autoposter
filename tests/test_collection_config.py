@@ -549,7 +549,8 @@ def test_a_filter_value_of_the_wrong_type_refuses_at_config_load():
 
 
 def test_a_smart_definition_refuses_filters():
-    """The `_membership_knobs_need_a_membership` class. Plex evaluates a smart
+    """The `_smart_definitions_refuse_what_they_cannot_apply` class. Plex
+    evaluates a smart
     collection's membership from its own filter, so there is no resolved list
     for a post-builder filter to narrow -- and 9c is where a smart definition's
     filter is written into the Plex-side search instead."""

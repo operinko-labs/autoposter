@@ -347,6 +347,7 @@ async def run_library(
                     session=session, section=section, library=library,
                     library_type=library_type, label=label, config=config,
                     http=http, dry_run=dry_run, definition=definition,
+                    run_cache=run_cache,
                 )
             )
             actions += smart_actions
@@ -837,8 +838,10 @@ def definition_titles(
 ) -> set[str]:
     """Every collection title these definitions manage.
 
-    Three cases, because three kinds of definition name their collections
-    differently: a smart builder owns a family of titles and lists them itself;
+    Four cases, because four kinds of definition name their collections
+    differently: a smart builder that owns a family of titles lists them itself;
+    a smart builder that owns exactly the collection its definition names lists
+    nothing and is recognised by its own title;
     an expanding builder's titles are dynamic, so they are recognised in
     ``collections`` by the builder's pattern (re-fetching the source here to
     learn this pass's titles would be a second request for a report); everything
@@ -852,7 +855,16 @@ def definition_titles(
     for definition in definitions:
         builder = REGISTRY[definition.builder]
         if getattr(builder, "smart", False):
-            titles |= builder.titles(library_type, config)
+            # Two shapes of smart builder, and the difference is exactly this.
+            # ``cs_bucket`` manages a FAMILY whose titles it derives itself, so
+            # it lists them. ``smart_filter`` manages the one collection its
+            # definition names, so there is nothing to derive -- and a
+            # ``titles`` method that handed the definition's own title back to
+            # the caller that already has it would be ceremony, not
+            # information. Falling through is the smaller diff and keeps the
+            # engine's smart dispatch the single seam (9c decision C6).
+            lister = getattr(builder, "titles", None)
+            titles |= lister(library_type, config) if lister else {definition.title}
             continue
         pattern = getattr(builder, "TITLE_PATTERN", None)
         if pattern is not None:

@@ -66,6 +66,7 @@ from autoposter.collections.search_url import build_search_url
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "LibraryTagResolver",
     "PlexSearchBuilder",
     "PlexSearchParams",
     "PlexSearchUnavailable",
@@ -336,11 +337,11 @@ class PlexSearchBuilder:
             libtype=libtype,
             sort_by=params.sort_by or (),
             limit=params.limit,
-            resolve_tag=_Resolver(ctx, section, libtype),
+            resolve_tag=LibraryTagResolver(ctx, section, libtype),
         )
         logger.debug("plex_search: %s", url)
         # Blanket, deliberately, and NOT the three-clause shape
-        # ``_Resolver._raw_choices`` uses below: this catch never memoises
+        # ``LibraryTagResolver._raw_choices`` uses below: this catch never memoises
         # anything (there is no ``run_cache`` entry a bug could be mistaken
         # for a library fact), and it is the request that actually returns
         # the collection's membership, so any failure here -- library bug,
@@ -362,15 +363,23 @@ class PlexSearchBuilder:
         return BuilderResult(ids=ids)
 
 
-# Above ``_Resolver``, its only user, rather than at the bottom of the file:
+# Above ``LibraryTagResolver``, its only user, rather than at the bottom of the
+# file:
 # a module-level sentinel read on every ``run_cache.get`` lookup, not a
 # forward reference that happens to work because Python resolves names inside
 # a method body at call time rather than at class-definition time.
 _MISSING = object()
 
 
-class _Resolver:
+class LibraryTagResolver:
     """The library's tag vocabulary, cached per pass.
+
+    Public (and exported) since 9c, because ``smart_filter`` needs the same
+    vocabulary and the same per-pass cache. Two copies of this would drift, and
+    a drift here is the same written word resolving to two different Plex keys
+    in two builders -- a difference in MEMBERSHIP that nothing downstream could
+    report. It takes any context object carrying ``library`` and ``run_cache``,
+    which is what ``SmartContext`` grew in 9c.
 
     One ``listFilterChoices`` per (library, libtype-scope, field) per pass, and
     the FAILURE is memoised too -- ``BuilderContext.run_cache``'s own docstring

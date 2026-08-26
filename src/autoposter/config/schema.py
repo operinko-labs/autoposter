@@ -265,6 +265,21 @@ class ScheduleGate(BaseModel):
         return v
 
 
+# What each refusable field looks like when the operator did NOT write it. One
+# table rather than one per builder, because the check is "did they write it",
+# which needs the default -- and a per-builder list carrying its own defaults
+# would be seven chances for two builders to disagree about what `sync` means.
+_SMART_REFUSABLE_DEFAULTS: dict[str, object] = {
+    "summary": None,
+    "sort": "custom",
+    "limit": None,
+    "sync_mode": "sync",
+    "item_label": [],
+    "tmdb_summary": None,
+    "filters": None,
+}
+
+
 class CollectionDefinition(BaseModel):
     """One operator-configured collection: a builder plus how to apply it.
 
@@ -418,47 +433,47 @@ class CollectionDefinition(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _membership_knobs_need_a_membership(self) -> "CollectionDefinition":
-        """A smart builder has no membership to cap, append to or label.
+    def _smart_definitions_refuse_what_they_cannot_apply(self) -> "CollectionDefinition":
+        """A smart builder is held to its OWN table of inapplicable fields.
 
-        Plex evaluates a smart collection's filter live, so ``limit`` and
-        ``sync_mode`` have nothing to act on there, and neither has
-        ``item_label``: this service never resolves the members, so there is no
-        list of items to label. ``tmdb_summary`` goes the same way -- a smart
-        definition names a *family* of collections whose summaries the builder
-        derives per collection, so one borrowed overview could not be the
-        summary of any particular one of them. Accepting any of these silently
-        would be the worst outcome: the operator would see a setting that reads
-        as applied and never is.
+        Until 9c this was one hard-coded list, which was right while
+        ``cs_bucket`` was the only smart builder and wrong the moment a second
+        one arrived with a different shape: ``cs_bucket`` names a FAMILY of
+        collections, so it can apply no single ``summary``; ``smart_filter``
+        names exactly one, so it can. A shared list would have to refuse the
+        union (a setting that works, refused) or accept the intersection (a
+        setting that reads as applied and is not) -- and the second is the
+        failure roadmap row 140 filed.
 
-        ``filters`` joins them for the same reason one step further out: it
-        narrows a membership this service resolved, and a smart definition
-        never resolves one -- the items are chosen inside Plex, by the
-        builder's own filter, and a client-side pass over a list we do not
-        have could not narrow anything. A smart definition's filtering is a
-        different mechanism entirely (it belongs in the search the builder
-        sends), which is 9c's, not this field's.
+        So the table moves onto the builder, as ``refused_definition_fields``,
+        and this validator is the mechanism. A smart builder that declares none
+        is refused outright rather than defaulted to empty: the default that
+        matters here is "refuse nothing", and reaching it by forgetting a class
+        attribute is exactly how a silently-ignored setting ships.
 
-        ``sort_title`` and ``collection_mode`` are deliberately NOT here. They
-        are properties of the collection object rather than of its membership,
-        and the smart create path applies them (roadmap row 104).
+        ``sort_title``, ``collection_mode`` and the ``visible_*`` flags are in
+        no builder's table, deliberately. They are properties of the collection
+        OBJECT rather than of its membership, and every smart create path
+        applies them (roadmap row 104).
         """
         from autoposter.collections.builders import REGISTRY
 
         builder = REGISTRY.get(self.builder)
         if not getattr(builder, "smart", False):
             return self
-        for field, value, default in (
-            ("limit", self.limit, None),
-            ("sync_mode", self.sync_mode, "sync"),
-            ("item_label", self.item_label, []),
-            ("tmdb_summary", self.tmdb_summary, None),
-            ("filters", self.filters, None),
-        ):
-            if value != default:
+        refused = getattr(builder, "refused_definition_fields", None)
+        if refused is None:
+            raise ValueError(
+                f"{self.builder!r} is registered as a smart builder but declares "
+                "no 'refused_definition_fields'. Every smart builder has to say "
+                "which definition fields it cannot apply, because the failure "
+                "mode of not saying is a setting that reads as applied and "
+                "never is"
+            )
+        for field_name, why in refused.items():
+            if getattr(self, field_name) != _SMART_REFUSABLE_DEFAULTS[field_name]:
                 raise ValueError(
-                    f"{field!r} does not apply to {self.builder!r}: it builds smart "
-                    "collections, whose membership Plex evaluates from a filter"
+                    f"{field_name!r} does not apply to {self.builder!r}: {why}"
                 )
         return self
 

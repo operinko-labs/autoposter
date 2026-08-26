@@ -25,6 +25,48 @@ class CsBucketBuilder:
     # The engine's marker for "this one applies itself" -- see SmartContext.
     smart = True
 
+    # Which ``CollectionDefinition`` fields this builder cannot apply, and why
+    # (read at config load by ``config/schema.py``). ``summary`` and ``sort``
+    # close roadmap row 140: neither was ever read for this family -- the
+    # reconciler applies each bucket's OWN derived summary, and a family of
+    # smart collections has no single membership to order -- so both silently
+    # no-opped. This is load-time breaking for a config that sets either today,
+    # which is what row 140 says it is.
+    refused_definition_fields = {
+        "summary": (
+            "this definition names a FAMILY of collections and each one derives "
+            "its own summary from the ratings it covers, so a single summary "
+            "could not be the summary of any particular one of them"
+        ),
+        "sort": (
+            "Plex evaluates each bucket's membership live, so there is no "
+            "resolved order to set. The family's own ordering is what "
+            "`sort_title` is for"
+        ),
+        "limit": (
+            "Plex evaluates each bucket's membership from a filter, so there is "
+            "no resolved list to cap"
+        ),
+        "sync_mode": (
+            "Plex owns these collections' membership; there is nothing for this "
+            "service to sync or append to"
+        ),
+        "item_label": (
+            "this service never resolves these collections' members -- Plex "
+            "does -- so there is no list of items to label"
+        ),
+        "tmdb_summary": (
+            "this definition names a family of collections whose summaries the "
+            "builder derives per collection, so one borrowed overview could not "
+            "be the summary of any particular one of them"
+        ),
+        "filters": (
+            "a `filters:` block narrows a membership this service resolved, and "
+            "these are never resolved here -- the items are chosen inside Plex, "
+            "by the bucket's own filter"
+        ),
+    }
+
     async def apply(self, ctx: SmartContext) -> list[str]:
         return await reconcile_content_ratings(
             ctx.session,

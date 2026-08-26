@@ -155,21 +155,33 @@ class SmartContext:
     The deliberate exception to "builders never touch Plex". A Plex-native smart
     collection has no membership to produce -- Plex evaluates its filter live --
     so there is no id list for the engine to resolve and apply, and the whole
-    reconcile is the builder's. The Common Sense age buckets are the only such
-    family (``collections/reconcile.py``), and 9c decides whether operators ever
-    get to define more; until then this stays a two-implementation escape hatch
-    rather than a second builder ecosystem.
+    reconcile is the builder's.
+
+    Two shapes now use it, and the difference between them is the only thing a
+    reader has to hold: ``cs_bucket`` manages a FAMILY of collections whose
+    titles it derives itself, and ``smart_filter`` (9c) manages exactly ONE, the
+    collection its definition names. That is why ``titles`` below is an optional
+    extra rather than a protocol member.
 
     A smart builder returns action strings from ``apply`` and ignores the
-    membership knobs -- ``limit``, ``sync_mode``, ``item_label`` and
-    ``tmdb_summary`` are rejected on its definitions at config load rather than
-    silently doing nothing.
+    membership knobs -- which of them are rejected on its definitions at config
+    load is the builder's own ``refused_definition_fields`` table
+    (``config/schema.py``), because the two shapes cannot apply the same set:
+    a family has no single summary, a single collection does.
 
     ``definition`` is the definition itself, which a smart builder needs (and a
     list builder does not) because it applies its own collections: the
     per-definition collection settings the engine hands to
     ``reconcile_list_collection`` have to reach the smart reconciler the same
     way. None for a direct caller that has no definition.
+
+    ``run_cache`` is the pass's scratch, the same dict ``BuilderContext`` gets
+    and for the same reason: ``smart_filter`` resolves the library's tag
+    vocabulary through ``plex_search.LibraryTagResolver``, which memoises one
+    ``listFilterChoices`` per (library, libtype-scope, field) per pass --
+    failures included. Sharing the dict with the list builders is the point: two
+    definitions naming ``genre: Horror`` cost one round trip whichever builders
+    they use. ``cs_bucket`` ignores it.
     """
 
     session: AsyncSession
@@ -181,6 +193,7 @@ class SmartContext:
     http: httpx.AsyncClient | None = None
     dry_run: bool = True
     definition: Any = None
+    run_cache: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -203,17 +216,27 @@ class SmartBuilder(Protocol):
 
     Marked by ``smart = True``, which is what the engine dispatches on. It
     produces no ids -- see ``SmartContext`` for why -- so it gets the reconcile
-    context instead and returns the action strings itself, and it lists the
-    titles it manages so the leftovers report can enumerate definitions
-    uniformly.
+    context instead and returns the action strings itself.
+
+    Two optional extras, left off the protocol itself for the reason
+    ``params_model`` is left off ``Builder``: not every implementation has one.
+
+    - ``titles(library_type, config) -> set[str]`` -- for a builder that manages
+      a FAMILY of collections (``cs_bucket``), so the leftovers report and the
+      delete sweep can enumerate what it owns. A builder that manages exactly
+      the collection its definition names declares none, and
+      ``engine.definition_titles`` falls through to ``{definition.title}``.
+    - ``refused_definition_fields: dict[str, str]`` -- which
+      ``CollectionDefinition`` fields this builder cannot apply, mapped to the
+      reason. **Required in practice**: ``config/schema.py`` refuses to validate
+      a smart definition whose builder declares none, because silently accepting
+      a field that never applies is the failure the table exists to prevent.
     """
 
     type_name: str
     smart: bool
 
     async def apply(self, ctx: SmartContext) -> list[str]: ...
-
-    def titles(self, library_type: str, config: Any) -> set[str]: ...
 
 
 REGISTRY: dict[str, Builder | SmartBuilder] = {}

@@ -50,6 +50,7 @@ from autoposter.collections.builders.simple_ids import (
     TmdbMovieBuilder,
     TmdbShowBuilder,
 )
+from autoposter.collections.builders.smart_filter import SmartFilterBuilder
 from autoposter.collections.builders.text_file import TextFileBuilder
 from autoposter.collections.builders.tmdb import (
     TmdbChartBuilder,
@@ -84,6 +85,10 @@ register(PlexAllBuilder())
 # other -- it produces ids, not actions, so it is a plain Builder and not the
 # SmartBuilder escape hatch, which is 9c's question and not this one's.
 register(PlexSearchBuilder())
+# The same query, with Plex owning the answer instead of this service: the
+# SmartBuilder half of the pair, and the second implementation of that escape
+# hatch (``cs_bucket`` is the first). See ``builders/smart_filter.py``.
+register(SmartFilterBuilder())
 register(TmdbMovieBuilder())
 register(TmdbShowBuilder())
 register(TextFileBuilder())
