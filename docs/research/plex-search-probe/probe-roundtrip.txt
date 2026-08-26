@@ -1,4 +1,3 @@
-All checks passed!
 probe run 2026-08-26T14:00:15 (runner clock)
 SERVER version=1.43.4.10903-e5521bd8c platform=Linux 20.04.6 LTS (Focal Fossa) friendly='ShadowPlex'
 SECTION key=1 title='Movies' type=movie

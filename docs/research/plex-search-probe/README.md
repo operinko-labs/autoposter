@@ -9,8 +9,14 @@ scrubbed from every line here and in `probe-roundtrip.txt`; the placeholder is
 plexapi 4.18.2. Sections: 1 `Movies` (movie, **1960** items), 2 `TV Shows`
 (show, **286** items), 3 `Photos`, 5 `DVR`.
 
-Raw output: [`probe-roundtrip.txt`](probe-roundtrip.txt). The script that
-produced it is reproduced verbatim in §8 — it is the authority for what was
+Raw output: [`probe-roundtrip.txt`](probe-roundtrip.txt), 185 lines, exactly as
+the script printed them save for one edit recorded here: the capture was taken
+through `sh -c 'ruff check … && python p9b_probe.py'`, so ruff's own
+`All checks passed!` landed on line 1 of the redirect. That single line was
+removed so the file's content matches the command documented in §8 as
+generating it. Nothing the probe itself emitted was altered.
+
+The script is reproduced verbatim in §8 — it is the authority for what was
 sent.
 
 ---
@@ -20,7 +26,7 @@ sent.
 | | Verdict |
 | --- | --- |
 | **Part A** — nine dual-path round-trips | **9/9 AGREE, zero divergence.** No translation bug. |
-| **Probe 1** — `show.network` as a search field | **ANSWERS — 91 networks.** `production_network` **UNBLOCKS**. |
+| **Probe 1** — `show.network` as a search field | **ANSWERS — 91 networks.** `production_network` **UNBLOCKS** (end-to-end on one network's two shows — see §3). |
 | **Probe 2** — language expansion under `all:` | **Confirmed unusable under `all:`** — 0 vs 442. File the row. |
 | **Probe 3** — genre search vs listing truncation | **5/5.** The search path is not truncated. |
 | **Part C** — the six removed spellings | **Plex answers all six.** The narrowing is a Kometa inheritance by choice. |
@@ -38,12 +44,50 @@ LibrarySection.listFilterChoices GET /library/sections/{k}/{field}
 PlexServer.fetchItem             GET /library/metadata/{k}
 ```
 
-The required grep over the finished script is empty:
+**The brief's literal grep does not reproduce as "empty", and saying so
+matters more than the tidier claim.** Run verbatim against the script in §8 it
+returns **2 hits** — and both are the module docstring's own *negation* of the
+very names the pattern hunts for:
 
 ```
-$ grep -n "edit(\|addLabel\|removeLabel\|upload\|delete\|refresh\|\.put(\|\.post(\|POST\|PUT\|DELETE" p9b_probe.py
-0 matches
+$ python -c "
+import re
+pat = re.compile(r'edit\(|addLabel|removeLabel|upload|delete|refresh')
+for i, line in enumerate(open('p9b_probe.py'), 1):
+    if pat.search(line): print(i, line.rstrip())
+"
+10 Nothing else. No ``edit(``, no ``addLabel``, no ``removeLabel``, no ``upload``,
+11 no ``delete``, no ``refresh`` -- Step 2's grep over this file proves it.
 ```
+
+This is the same self-matching false positive as the `X-Plex-Token` hit noted
+in §1's scrub check: prose *about* a pattern is matched by that pattern. The
+property being asserted is about **executable code**, so the check has to be
+scoped to executable code. Stripping comments and string literals with
+`tokenize` and re-running the same pattern:
+
+```
+$ python -c "
+import io, tokenize, re
+src = open('p9b_probe.py').read()
+lines = {}
+for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+    if tok.type in (tokenize.COMMENT, tokenize.STRING):
+        continue
+    lines.setdefault(tok.start[0], []).append(tok.string)
+pat = re.compile(r'edit\(|addLabel|removeLabel|upload|delete|refresh|\.put\(|\.post\(|POST|PUT|DELETE')
+hits = [(n, ' '.join(v)) for n, v in sorted(lines.items()) if pat.search(' '.join(v))]
+print(f'{len(hits)} match(es) in the executable body')
+for n, v in hits: print(n, v)
+"
+0 match(es) in the executable body
+```
+
+**0 matches, and this one reproduces as written.** The complementary positive
+check — the same tokenised body, asked which plexapi methods it *does* call —
+finds **11 call sites across exactly the four GET-only methods above**
+(`fetchItems` ×6, `all` ×2, `listFilterChoices` ×2, `fetchItem` ×1) and nothing
+else.
 
 Two precautions beyond the brief:
 
@@ -178,10 +222,19 @@ STEP 3: the same shows' listing `studio` values
   'Thomas the Tank Engine & Friends' studio='ITV1'
 ```
 
-**Verdict: `production_network` UNBLOCKS.** 9a proved the `network` *item
-attribute* is absent on Plex 1.43.4 (0/284 shows in the listing, absent from
-`/library/metadata`). That remains true — and it is a different mechanism from
-the *search field*, which this run shows is fully populated with 91 networks.
+**Verdict: `production_network` UNBLOCKS — on a one-network demonstration.**
+
+**Scope of what was actually proven, first.** Step 1 is the decisive part and it
+is broad: 91 networks come back. Steps 2-3 are narrow — **one** of those 91
+networks, returning **two** shows, verified end to end. So the *mechanism* is
+proven and the *breadth* is not: nothing here says all 91 keys resolve, that
+none is a stale or empty tag, or that larger networks behave the same. Before
+the preset is promised across the vocabulary, sample more of it.
+
+9a proved the `network` *item attribute* is absent on Plex 1.43.4 (0/284 shows
+in the listing, absent from `/library/metadata`). That remains true — and it is
+a different mechanism from the *search field*, which this run shows is populated
+with 91 networks.
 
 Step 3 is the confirmation, not a contradiction: the two Channel 5 shows report
 studios `S4C` and `ITV1` — production companies, not the broadcast network. If
@@ -303,6 +356,8 @@ view count, so `plays.not:` does not mean "everything except" — it means
 
 **Unblocks**
 - `production_network` — `show.network` is a live search field with 91 values.
+  Verified end to end on one network's two shows, so wire it with a wider
+  sample rather than on this run alone (§3).
 
 **Files as rows (behaviour, not bugs)**
 - The language expansion is unusable under `all:`; recommend `any:` in the docs.
