@@ -532,7 +532,9 @@ table, and the fix-round adjudicates any that bite.
 >    it means milliseconds. The ranges that do exist are minutes on both sides
 >    (`builder.py:4234`).
 > 4. **`test_the_modifier_table_is_not_invertible`'s collision computation was
->    unsatisfiable.** `len(keys) > 1` over `(type, operator)` pairs collects
+>    unsatisfiable.** *(Resolution APPROVED by the controller, 2026-08-26: the
+>    narrowed-and-strengthened test ships as committed.)*
+>    `len(keys) > 1` over `(type, operator)` pairs collects
 >    `!` (one operator, three types) and both date-window entries, so the
 >    assertion failed against the very table the same section specifies:
 >    `{'%3C%3C': ['before','lt','not']} != {'%3C%3C': ['before','lt']}`,
@@ -546,6 +548,23 @@ table, and the fix-round adjudicates any that bite.
 >    builds its expected pairs from `OPERATORS_BY_TYPE`, so adding `bool` broke
 >    it. `bool` is excluded there with the reason spelled out (search-only, no
 >    filterable row, unreachable from `evaluate`).
+>
+> **Every `python` block in this Task 1 section is now byte-identical to the
+> shipped files** (audited mechanically; the only remaining difference is this
+> section's own deliberate `"...existing note, unchanged..."` elisions in the
+> fifteen-rows block). Copy from these blocks, not from memory. Three pieces of
+> shipped prose have no block here, because this section never specified their
+> text — they are pointed at rather than duplicated, so no second copy can
+> drift:
+>
+> - the **set-arithmetic record** (T7's honesty artifact) — the module
+>   docstring of `src/autoposter/collections/filters.py`, the section beginning
+>   "**The set arithmetic (phase 9b)**";
+> - the table's **header comment**, restated for nineteen rows — same file,
+>   beginning "Nineteen rows: 9a's fifteen";
+> - the **tier-branching note** on `_filters_must_parse_and_be_readable` —
+>   `src/autoposter/config/schema.py`, beginning "The refusal copy branches on
+>   the source".
 >
 > Confirmed exactly as written: the 70/55/26/44/29 set arithmetic, `date_sub_mods`,
 > `modifier_translation` and its four collisions, `show_translation`'s three
@@ -600,10 +619,17 @@ expectation in this plan is *that* number plus the tests the task added.
 
 - [ ] **Step 1**
 
-**Three of 9a's own tests are checksums over the table and MUST be updated
-here** — they are not collateral damage, they are the thing being re-checked.
-Do not add a parallel copy beside them; edit them in place, keeping their
-docstrings and appending to them.
+**~~Three~~ FOUR of 9a's own tests are checksums over the table and MUST be
+updated here** — they are not collateral damage, they are the thing being
+re-checked. Do not add a parallel copy beside them; edit them in place, keeping
+their docstrings and appending to them.
+
+**SPEC-SYNC (Task 1): there is a fourth**, item 4 below, which this section
+originally missed. `test_every_operator_has_a_case_set_including_a_missing_value`
+(`:736-747` in 9a) builds its expected pair set from `OPERATORS_BY_TYPE`, so
+adding `"bool": ("eq",)` breaks it — and a case-set for `bool` cannot be
+written at all, because every `bool` row is `filterable=False` and
+`_split_key` refuses one in a `filters:` block before `evaluate` can see it.
 
 In `tests/test_collection_filters.py`:
 
@@ -702,6 +728,39 @@ def test_the_table_holds_exactly_the_tier_one_rows():
     assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 13
 ```
 
+4. **SPEC-SYNC (Task 1), the one this section originally missed.**
+   `test_every_operator_has_a_case_set_including_a_missing_value` — exclude
+   `bool` from the expected pairs, with the reason in the docstring, and add
+   an assertion so that a future FILTERABLE boolean row has to delete the
+   exclusion rather than inherit it silently. Shipped verbatim:
+
+```python
+def test_every_operator_has_a_case_set_including_a_missing_value():
+    """The structural half of the claim "every operator is table-driven".
+
+    A ``(type, operator)`` pair with no case-set fails here rather than
+    quietly shipping untested, and so does a case-set that forgot the
+    missing-value rule -- which is a table-level invariant every operator has
+    to honour, not a per-operator detail someone may reasonably skip.
+
+    ``bool`` is excluded, and it is the one exclusion this test will accept: it
+    is a SEARCH-ONLY type (phase 9b), every ``bool`` row is
+    ``filterable=False``, and ``_split_key`` therefore refuses one in a
+    ``filters:`` block before ``evaluate`` can ever see it. Its entry in
+    ``OPERATORS_BY_TYPE`` exists only to keep ``FilterAttribute.operators``
+    total over ``VALUE_TYPES``; a case-set for it could not be written as a
+    config key at all. A future FILTERABLE boolean row would have to delete
+    this exclusion, which is the point of spelling it out rather than
+    filtering on ``OPERATOR_CASES``.
+    """
+    pairs = {
+        (t, op) for t, ops in OPERATORS_BY_TYPE.items() for op in ops if t != "bool"
+    }
+
+    assert set(OPERATOR_CASES) == pairs
+    assert all(row.filterable is False for row in FILTER_ATTRIBUTES if row.type == "bool")
+```
+
 Then **append** the genuinely new cases (note that
 `test_every_row_is_typed_sourced_and_scoped_from_the_fixed_vocabularies`
 (`:91-101`) already asserts every row has a note, so 9b adds no second one):
@@ -769,6 +828,30 @@ def test_the_show_search_field_rescoping_is_transcribed():
     # never sees it -- the two columns are equal, not None.
     assert BY_NAME["network"].search_field == "show.network"
     assert BY_NAME["network"].show_search_field == "show.network"
+
+
+def test_field_for_picks_the_libtypes_field_and_refuses_a_libtype_it_does_not_serve():
+    """``field_for`` raises rather than falling back, and that is the whole
+    design: a caller asking for a field on a libtype the row does not serve has
+    already skipped the ``search_kinds`` check, and answering with the movie
+    field would build a query Plex silently answers with the WRONG SET rather
+    than with an error. ``resolution`` is the row that shows why the fallback
+    would be wrong even when it "works" -- a show library must be asked at the
+    episode libtype."""
+    from autoposter.collections.filters import BY_NAME
+
+    assert BY_NAME["resolution"].field_for("movie") == "resolution"
+    assert BY_NAME["resolution"].field_for("show") == "episode.resolution"
+    # No show_search_field means the movie field serves both, not that the row
+    # is unanswerable -- ``critic_rating`` has one, so check a row that does
+    # not: ``network`` is show-only and its two columns are equal.
+    assert BY_NAME["network"].field_for("show") == "show.network"
+
+    with pytest.raises(ValueError, match="not searchable on a show library"):
+        BY_NAME["duration"].field_for("show")
+    with pytest.raises(ValueError, match="not searchable on a movie library"):
+        BY_NAME["network"].field_for("movie")
+
 ```
 
 - [ ] **Step 2: Run it to see it fail**
@@ -802,9 +885,13 @@ VALUE_TYPES = ("tag", "str", "int", "float", "date", "duration", "bool")
 ITEM_KINDS = ("movie", "show")
 
 # Where a row's data comes from, for the CLIENT-SIDE filter. ``probe`` was Task
-# 2's question, not a shrug; 9a's probe answered all seven of tier 1's, so no
-# row carries it today. 9b added two tiers rather than reusing an existing one,
-# because both would have been a lie:
+# 2's question, not a shrug: Plex's listing endpoint carries some child elements
+# and not others depending on the server and the request, so a row marked
+# ``probe`` becomes ``listing`` (ships scan-free) or ``tier2-deferred`` (drops
+# out of tier 1 rather than shipping a silent request-per-item) once the
+# read-only probe answers. Task 2's probe (2026-08-25) answered all seven of
+# tier 1's, so no row carries ``probe`` today. 9b added two tiers rather than
+# reusing an existing one, because both would have been a lie:
 #
 # - ``unprobed``: the attribute IS in Kometa's filter vocabulary, but 9a never
 #   probed whether the section listing carries it, so there is no verdict to
@@ -825,8 +912,10 @@ Add after `DEFAULT_OPERATOR` (:163):
 # can be legal in one block and refused in the other, and one table with two
 # operator sets is the only shape in which the two cannot drift apart. Every
 # entry is transcribed from Kometa v2.4.8's ``searches`` comprehension
-# (modules/plex.py:594-601); the differences from the client-side set are each
-# argued below.
+# (modules/plex.py:594-601), which is also the gate ``Builder._filter`` checks
+# a written key against (builder.py:4194) -- a name.modifier absent from it is
+# refused by Kometa outright, not merely undocumented. The differences from the
+# client-side set are each argued below.
 SEARCH_OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
     # ``.regex`` is deliberately absent (see SEARCH_ONLY_OPERATORS' sibling
     # note below and ``_split_key``): Kometa's search-regex is not a regex sent
@@ -835,31 +924,41 @@ SEARCH_OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
     # config key mean two mechanisms.
     "tag": ("eq", "not"),
     "str": ("contains", "not", "is", "isnot", "begins", "ends"),
-    # SPEC-SYNC (Task 1): the bare form and ``.not`` are here for ``year``
-    # alone, which is both a year_attribute and a number_attribute
-    # (plex.py:597, :599). ``plays`` is a number_attribute only, and
+    # The bare form and ``.not`` are here for ``year`` alone, which reaches
+    # them by being a ``year_attribute`` and therefore taking ``tag_modifiers``
+    # as well as ``number_modifiers`` (plex.py:597, :599). The table's other
+    # ``int`` row, ``plays``, is a ``number_attribute`` only, and
     # SEARCH_OPERATORS_EXCLUDED subtracts the two from it.
     "int": ("eq", "not", "gt", "gte", "lt", "lte"),
+    # NOT ``eq``/``not``, and this is a TRANSCRIPTION CORRECTION made against a
+    # live fetch of v2.4.8 rather than from the plan's text. Kometa's
+    # ``float_attributes`` take ``float_modifiers`` and nothing else
+    # (plex.py:549-550, :600), which is the four ranges plus ``.rated``: there
+    # is no ``critic_rating:`` and no ``critic_rating.not:`` in ``searches`` at
+    # all, so Kometa answers either with "attribute is not valid"
+    # (builder.py:4194-4195). Offering them here would have shipped two keys
+    # Plex is never asked.
+    #
     # ``.rated`` is search-only: Plex answers "has any rating at all" as
     # ``field!=-1`` (builder.py:4236-4237), which no client-side comparison
     # spells.
-    #
-    # SPEC-SYNC (Task 1): this read ``("eq", "not", "gt", "gte", "lt", "lte",
-    # "rated")``. A live fetch of v2.4.8 says float_attributes take
-    # float_modifiers and nothing else (plex.py:549-550, :600) -- no bare
-    # form, no ``.not``.
     "float": ("gt", "gte", "lt", "lte", "rated"),
-    # The four ranges only. ``duration`` IS a float_attribute (plex.py:549)
-    # with ``.rated`` subtracted by name (plex.py:600), so there is no bare
-    # ``duration`` search -- see the retraction at Notes-for-9b item 4.
+    # The four ranges only, for the same reason as ``float`` -- ``duration`` IS
+    # a ``float_attribute`` (plex.py:549), with ``.rated`` subtracted from it
+    # by name (plex.py:600). So a bare ``duration:`` is not a Kometa search
+    # either; ``_split_key`` refuses it saying so. Where the two blocks DO
+    # agree is the unit: Kometa multiplies a search duration by 60000
+    # (builder.py:4234) exactly as the client-side view divides by it, so
+    # ``duration.gt: 90`` is ninety minutes in both.
     "duration": ("gt", "gte", "lt", "lte"),
     "date": ("eq", "not", "before", "after"),
     "bool": ("eq",),
 }
 
 # Per-row subtractions from the type's search operator set. ``resolution`` is
-# ``no_not_mods`` (modules/plex.py:593). ``plays`` is SPEC-SYNC (Task 1): it is
-# a number_attribute and not a year_attribute (plex.py:547-548, :599).
+# transcribed from ``no_not_mods`` (modules/plex.py:593) -- Plex has no negated
+# resolution filter. ``plays`` is the ``int`` row that is not a year: see the
+# ``int`` note above (plex.py:547-548, :599).
 SEARCH_OPERATORS_EXCLUDED: dict[str, tuple[str, ...]] = {
     "resolution": ("not",),
     "plays": ("eq", "not"),
@@ -889,7 +988,9 @@ SEARCH_ONLY_OPERATORS = ("rated",)
 # search is a relative window, and Kometa takes its modifier from
 # ``last_mod`` (builder.py:4224) rather than from ``modifier_translation`` --
 # ``%3E%3E`` for "in the last N", ``%3C%3C`` for "not in the last N". They are
-# written here so the renderer has one lookup and not two.
+# written here so the renderer has one lookup and not two, which is also why
+# they are NOT part of the four collisions above: they do not come from
+# ``modifier_translation`` at all.
 #
 # ``("float", "rated")`` and ``("bool", "eq")`` are the empty string because
 # for those two the NEGATION rides on the argument, not on the modifier: a
@@ -911,8 +1012,6 @@ SEARCH_MODIFIERS: dict[tuple[str, str], str] = {
     ("int", "gte"): "%3E",
     ("int", "lt"): "%3C%3C",
     ("int", "lte"): "%3C",
-    ("float", "eq"): "",
-    ("float", "not"): "!",
     ("float", "gt"): "%3E%3E",
     ("float", "gte"): "%3E",
     ("float", "lt"): "%3C%3C",
@@ -982,7 +1081,7 @@ class FilterAttribute:
     **The client-side half.** ``kinds`` is which library the attribute means
     anything for as a ``filters:`` predicate; ``source`` is one of
     ``SOURCE_TIERS``; ``filterable`` is whether the attribute is in Kometa's
-    FILTER vocabulary at all (modules/builder.py:270-350). The two are
+    FILTER vocabulary at all (modules/builder.py:278-350). The two are
     independent: ``plays`` is filterable and unprobed, ``unplayed`` is neither.
 
     **The search half.** ``search_field`` is the Plex query field for a MOVIE
@@ -1138,10 +1237,10 @@ mis-positioned. Only the added lines are shown; **do not touch the existing
         "...existing note, unchanged...",
         # MOVIE-ONLY as a search, and only for the four range modifiers:
         # ``duration.gt``/``.gte``/``.lt``/``.lte`` are in
-        # movie_only_searches (plex.py:441-444). Kometa's bare ``duration``
-        # and ``duration.not`` are legal on both libtypes and are NOT put
-        # through the x60000 conversion, so they mean MILLISECONDS -- refused
-        # here by ``SEARCH_OPERATORS_BY_TYPE``, see its note.
+        # movie_only_searches (plex.py:441-444). There is no bare ``duration``
+        # search at all -- see SEARCH_OPERATORS_BY_TYPE's note -- and the
+        # ranges that do exist are MINUTES on both sides, because Kometa
+        # multiplies a search duration by 60000 (builder.py:4234).
         search_field="duration", show_search_field=None,
         search_kinds=("movie",), filterable=True,
     ),
@@ -1150,8 +1249,8 @@ mis-positioned. Only the added lines are shown; **do not touch the existing
         "...existing note, unchanged...",
         # ``studio`` is in BOTH of Kometa's search category lists -- it is a
         # string_attribute (plex.py:507) AND a tag_attribute (plex.py:568),
-        # which is where two of the four duplicate entries in ``searches``
-        # come from. Which branch wins depends on the modifier:
+        # which is where two of the duplicate entries in ``searches`` come
+        # from. Which branch wins depends on the modifier:
         # ``validate_attribute`` tests ``.regex`` against the TAG list first
         # (builder.py:4301) and only then the string list (builder.py:4326).
         # Since ``.regex`` is refused here (see SEARCH_OPERATORS_BY_TYPE),
@@ -1200,7 +1299,10 @@ Append inside `FILTER_ATTRIBUTES`, after the `collection` row:
         "nobody checked. A `filters:` block naming it refuses saying exactly "
         "that. Note also that `viewCount` is PER-ACCOUNT: the answer depends "
         "on whose token the pass runs with, which is a property no other row "
-        "in this table has.",
+        "in this table has. As a SEARCH it takes the four range modifiers and "
+        "nothing else -- it is a number_attribute and not a year_attribute "
+        "(plex.py:547, :599) -- so SEARCH_OPERATORS_EXCLUDED subtracts the "
+        "bare form and `.not` that its `int` type otherwise offers.",
         search_field="viewCount", show_search_field="show.viewCount",
         search_kinds=_BOTH, filterable=True,
     ),
@@ -1308,20 +1410,18 @@ def test_the_modifier_table_is_not_invertible():
     cannot represent the table without picking a winner. This test fails the
     moment somebody "simplifies" the key.
 
-    SPEC-SYNC (Task 1): as first written, this test's ``collisions``
-    computation over-collected and the assertion could not pass against any
-    table containing the two date-window entries. Two exclusions were added,
-    both about what the claim actually is:
+    Two exclusions, and both are about what the claim above actually is rather
+    than about making the numbers work:
 
     - the two date-WINDOW entries are not ``modifier_translation`` entries at
-      all -- Kometa takes their wire string from ``last_mod``
-      (builder.py:4224) -- so they are excluded by name;
-    - a collision is a wire reached by more than one distinct OPERATOR. ``!``
-      is reached from three of our pairs but from ONE modifier, ``.not``, so
-      Kometa stores it once and means one thing by it.
-
-    The four pairs are unchanged, and the (type, operator) sets are now
-    asserted in full so that flattening the key cannot leave this green.
+      all. Kometa takes their wire string from ``last_mod``
+      (builder.py:4224), and ``SEARCH_MODIFIERS`` carries them only so the
+      renderer has one lookup instead of two. They are excluded by name;
+    - a collision is a wire reached by more than one distinct OPERATOR. That
+      is precisely what makes a modifier-keyed dict lossy. ``!`` is reached
+      from three of our pairs -- ``(tag, not)``, ``(str, not)``, ``(int,
+      not)`` -- but from ONE modifier, ``.not``, so Kometa stores it once and
+      means one thing by it, and it is not a collision.
     """
     from collections import defaultdict
 
@@ -1349,6 +1449,8 @@ def test_the_modifier_table_is_not_invertible():
         "%3E%3E": ["after", "gt"],
         "%3C%3C": ["before", "lt"],
     }
+    # And the pairs in full, so that flattening the key to the operator alone
+    # cannot leave this test green by accident.
     assert collisions["%3E"] == {
         ("str", "ends"), ("int", "gte"), ("float", "gte"), ("duration", "gte"),
     }
@@ -1393,6 +1495,37 @@ def test_duration_ships_only_its_range_operators_as_a_search():
 
     assert BY_NAME["duration"].search_operators == ("gt", "gte", "lt", "lte")
     assert BY_NAME["duration"].operators == ("eq", "not", "gt", "gte", "lt", "lte")
+
+
+def test_a_rating_and_a_play_count_search_take_their_ranges_only():
+    """Task 1's transcription CORRECTION, pinned so it cannot drift back.
+
+    The plan's text gave ``float`` the bare form and ``.not`` as searches. A
+    live fetch of Kometa v2.4.8 says otherwise: ``float_attributes`` take
+    ``float_modifiers`` and nothing else (plex.py:549-550, :600), so neither
+    ``critic_rating:`` nor ``critic_rating.not:`` is in ``plex.searches`` --
+    and ``Builder._filter`` checks a written key against exactly that list
+    (builder.py:4194-4195), so Kometa answers both with "attribute is not
+    valid". ``plays`` is the same shape one type along: it is a
+    ``number_attribute`` and NOT a ``year_attribute`` (plex.py:547, :599), so
+    it gets ``number_modifiers`` alone, while ``year`` -- which is both --
+    keeps the bare form and ``.not``.
+
+    The CLIENT-side operator sets are untouched by any of this, which is the
+    whole point of the two columns.
+    """
+    from autoposter.collections.filters import BY_NAME
+
+    assert BY_NAME["critic_rating"].search_operators == ("gt", "gte", "lt", "lte", "rated")
+    assert BY_NAME["audience_rating"].search_operators == ("gt", "gte", "lt", "lte", "rated")
+    assert BY_NAME["plays"].search_operators == ("gt", "gte", "lt", "lte")
+    assert BY_NAME["year"].search_operators == ("eq", "not", "gt", "gte", "lt", "lte")
+
+    assert BY_NAME["critic_rating"].operators == ("eq", "not", "gt", "gte", "lt", "lte")
+    assert BY_NAME["plays"].operators == ("eq", "not", "gt", "gte", "lt", "lte")
+
+    for written in ({"critic_rating": 8}, {"plays": 3}):
+        with pytest.raises(ValueError, match="is not a plex_search"):
 ```
 
 - [ ] **Step 10: Run, expect failures, then green**
@@ -1428,16 +1561,17 @@ the task report.**
 
 - [ ] **Step 12: Write the failing tests for `searching=True`**
 
-Append to `tests/test_collection_filters.py`:
+Append to `tests/test_collection_filters.py`.
+
+**SPEC-SYNC (Task 1):** this block originally opened with its own
+`import datetime as dt` / `import pytest` /
+`from autoposter.collections.filters import RelativeWindow, parse_filters`.
+It must not: `dt`, `pytest`, `parse_filters` and `FilterPredicate` are already
+imported at the top of the file, and a second module-level import block
+part-way down fails `ruff` (E402). As shipped, `RelativeWindow` is added to the
+existing import block at `:32-46` and nothing else changes.
 
 ```python
-import datetime as dt
-
-import pytest
-
-from autoposter.collections.filters import RelativeWindow, parse_filters
-
-
 def _only(group):
     """The single predicate in a one-key block."""
     (child,) = group.children
@@ -1548,11 +1682,15 @@ def test_a_search_refuses_regex_and_says_why():
 
 
 def test_a_search_refuses_a_bare_duration_and_names_the_ranges():
-    """SPEC-SYNC (Task 1): this was
-    ``test_a_search_refuses_a_bare_duration_naming_the_millisecond_reading``
-    and asserted ``"millisecond" in message``. There is no millisecond trap --
-    a bare ``duration:`` is not in ``plex.searches`` at all -- so the refusal
-    must not invent one. See the retraction at Notes-for-9b item 4."""
+    """A CORRECTION to the plan's text, which said a bare ``duration:`` reaches
+    Plex unconverted and therefore asks about milliseconds. It does not reach
+    Plex at all: ``duration`` is a ``float_attribute`` and takes only the four
+    range modifiers (plex.py:549, :600), so a bare ``duration:`` is not in
+    ``plex.searches`` and Kometa refuses it outright (builder.py:4194-4195).
+    The two blocks agree on the UNIT for the ranges that do exist -- Kometa
+    multiplies a search duration by 60000 (builder.py:4234) exactly as the
+    client-side view divides by it -- so there is no millisecond trap to warn
+    about, and the refusal must not invent one."""
     with pytest.raises(ValueError) as error:
         parse_filters({"duration": 90}, searching=True)
     message = str(error.value)
@@ -1759,9 +1897,14 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
     vocabulary = SEARCHABLE_ATTRIBUTES if searching else FILTERABLE_ATTRIBUTES
     block = "plex_search" if searching else "filters:"
     if attribute is None:
+        # The noun keeps 9a's wording for a ``filters:`` block rather than
+        # generalising it away, and the block name carries the rest: the two
+        # vocabularies are different lists, so offering the whole table here
+        # would name attributes the block being parsed cannot take.
+        noun = "search" if searching else "filter"
         raise ValueError(
-            f"unknown attribute {name!r} at {field}: the {block} vocabulary is "
-            + ", ".join(sorted(vocabulary))
+            f"unknown {noun} attribute {name!r} at {field}: the {block} "
+            "vocabulary is " + ", ".join(sorted(vocabulary))
         )
 
     # The cross-reference (D2c). The two vocabularies are DISTINCT and share
@@ -1827,19 +1970,26 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
     if not modifier:
         if default in operators:
             return attribute, default
-        # The only row this reaches today is ``duration`` in a search. The
-        # message names the reason rather than the rule, because "not
-        # supported" would read as a gap in Plex and it is not one.
+        # Reached by the three search rows whose type has no blank-modifier
+        # form: ``duration``, the two ratings and ``plays``. The message names
+        # the reason rather than the rule, because "not supported" would read
+        # as a gap in Plex and it is not one -- Kometa refuses the same key,
+        # from the same list.
         raise ValueError(
-            f"{field}: a bare `{name}:` has no meaning in a plex_search. Kometa "
-            "sends it to Plex unconverted, so it asks about MILLISECONDS while "
-            f"`{name}:` in a `filters:` block means minutes -- the same line "
-            "would build two different collections. Write a range instead: "
-            f"`{name}.gt`, `{name}.gte`, `{name}.lt` or `{name}.lte`"
+            f"{field}: a bare `{name}:` is not a plex_search. Kometa's search "
+            f"vocabulary gives {name!r} its range modifiers and nothing else "
+            "(plex.py:594-601), and it checks a written key against exactly "
+            "that list (builder.py:4194-4195), so Plex is never asked a plain "
+            "equality question about it. Write one of "
+            + ", ".join(f"`{name}.{op}`" for op in operators)
         )
 
     if modifier not in operators or modifier == default:
         writable = [f".{op}" for op in operators if op != default]
+        # The bare form's meaning is not literally its "default operator" name
+        # for a date -- ``added: 30`` is a window in days, not "added eq 30" --
+        # so saying "which means eq" here would teach the wrong thing about
+        # what a bare key does.
         bare_meaning = (
             "within-the-last-N-days"
             if attribute.type == "date" and not searching
@@ -1855,6 +2005,10 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
         if default in operators:
             message += f" (or no modifier at all, which means {bare_meaning})"
         if attribute.type == "date" and modifier in ("gt", "gte", "lt", "lte"):
+            # Kometa accepts all four on a date and rewrites every one of them
+            # to the STRICT form (plex.py:2735-2747). Refusing without saying
+            # so would look like a gap; the point is that the spelling means
+            # something different from what it says, in Kometa as much as here.
             message += (
                 f". Kometa accepts .{modifier} on a date but silently rewrites it to "
                 ".after/.before, which are strict -- write the strict one you mean, so "
