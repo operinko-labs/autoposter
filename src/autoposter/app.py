@@ -19,6 +19,7 @@ from autoposter.artwork_modes.base import WorkerPause
 from autoposter.api.dashboard_stream import StatusBroadcaster
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
+from autoposter.api.version import VersionPoller
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.image_ref import parse_image_ref
 from autoposter.config.live import swap_config
@@ -199,6 +200,14 @@ def create_app(
         # outage should not immediately claim and fail a batch of jobs.
         await health.check_liveness()
 
+        # Replaces create_app's http=None placeholder with one that can
+        # actually poll, now that `http` exists. See api/version.py's
+        # VersionPoller and its module docstring for why this is a
+        # background poll rather than a request-path fetch.
+        app.state.version_poller = VersionPoller(
+            http=http, target=app.state.version_check_target, token=secrets.harbor_token,
+        )
+
         async with session_factory() as session:
             reclaimed = await reclaim_stale(session)
         if reclaimed:
@@ -249,6 +258,9 @@ def create_app(
         # interval, so folding it in would mean losing that or bending the
         # scheduler around one job.
         imdb_task = asyncio.create_task(imdb_refresh.run(stop_event))
+        # Same shape again: a fixed-cadence background poll with no other
+        # trigger, so it gets its own task rather than joining the scheduler.
+        version_task = asyncio.create_task(app.state.version_poller.run(stop_event))
 
         # The job *set* is decided once, here, from the boot config: a swap
         # cannot register or drop a job, which is what puts scheduler.enabled
@@ -335,9 +347,11 @@ def create_app(
             task.cancel()
             health_task.cancel()
             imdb_task.cancel()
+            version_task.cancel()
             scheduler_task.cancel()
             await asyncio.gather(
-                task, health_task, imdb_task, scheduler_task, return_exceptions=True
+                task, health_task, imdb_task, version_task, scheduler_task,
+                return_exceptions=True,
             )
             imdb_module.configure_miss_refresh(http, 0)
             await http.aclose()
@@ -402,6 +416,14 @@ def create_app(
     # through; main.build() is production-only and tests never call it.
     app.state.version_check_target = parse_image_ref(
         os.environ.get("AUTOPOSTER_IMAGE_REF", "")
+    )
+    # http=None here -- create_app has no http client yet, only the lifespan
+    # builds one -- so this placeholder never actually polls; GET /api/version
+    # still has something to read from every test app that never runs the
+    # background branch. The lifespan below replaces this with a poller that
+    # can, the same app.state.plex / app.state.http precedent.
+    app.state.version_poller = VersionPoller(
+        http=None, target=app.state.version_check_target, token=secrets.harbor_token,
     )
     # The worker-pause fence (Phase 7b). Created here so every application --
     # the deployed one and every test's -- has one for a mode trigger endpoint

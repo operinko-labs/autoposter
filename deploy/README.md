@@ -165,29 +165,16 @@ variables:
 ### The sidebar's update check
 
 The sidebar shows the version the pod is running, and marks "Update
-available" when the Harbor registry holds a newer image. It is off until both
-halves are provided, and it is off safely — the version line still shows, with
-no marker.
+available" when the Harbor registry holds a newer image. It is off until
+`AUTOPOSTER_IMAGE_REF` is provided, and it is off safely — the version line
+still shows, with no marker.
 
 The registry, project and repository are **not** operator config — they are a
 deployment fact, derivable from the image reference the pod is already
 running, so there is nothing to keep in sync with wherever the image actually
-lives:
+lives. `AUTOPOSTER_IMAGE_REF` is the only variable the check strictly needs:
 
-1. **A Harbor robot account.** In Harbor, under the project → Robot Accounts,
-   create one with `pull` and `list` on the `autoposter` repository (nothing
-   more; this account never pushes). Harbor shows the secret once. The
-   environment variable is not that secret but
-   `base64("robot$<name>:<secret>")` — the value of an `Authorization: Basic`
-   header, which is what the app sends verbatim:
-
-   ```sh
-   printf '%s' 'robot$autoposter-readonly:THE-SECRET' | base64 -w0
-   ```
-
-   Put the result in the ExternalSecret as `AUTOPOSTER_HARBOR_TOKEN`.
-
-2. **`AUTOPOSTER_IMAGE_REF`**, set to the full reference the pod pulled --
+1. **`AUTOPOSTER_IMAGE_REF`**, set to the full reference the pod pulled --
    e.g. `harbor.example.internal/operinko-labs/autoposter:sha-abc1234`. The
    app splits this into the registry host, the Harbor project and the
    repository itself at boot (`config/image_ref.py`); there is no separate
@@ -205,11 +192,31 @@ lives:
    one WARNING naming the reason and switches the check off, the same as
    leaving it unset.
 
-The check is cached in-process for fifteen minutes per registry / project /
-repository combination, so the registry sees at most four requests an hour
-per pod however many browser tabs are open. `AUTOPOSTER_IMAGE_REF` does not
-change without a restart, so unlike the old config field there is no
-mid-process target change for that cache to notice.
+2. **`AUTOPOSTER_HARBOR_TOKEN`, only for a private registry project.** The
+   `autoposter` project on Harbor is public and internet-accessible, so the
+   check works with no credential at all — unset, requests are anonymous.
+   Set this only if your own deployment pushes to a private project: in
+   Harbor, under the project → Robot Accounts, create one with `pull` and
+   `list` on the `autoposter` repository (nothing more; this account never
+   pushes). Harbor shows the secret once. The environment variable is not
+   that secret but `base64("robot$<name>:<secret>")` — the value of an
+   `Authorization: Basic` header, which is what the app sends verbatim when
+   the variable is set:
+
+   ```sh
+   printf '%s' 'robot$autoposter-readonly:THE-SECRET' | base64 -w0
+   ```
+
+   Put the result in the ExternalSecret as `AUTOPOSTER_HARBOR_TOKEN`.
+
+The check runs in the background, not on request: every six hours (hardcoded
+— a deployment fact, not a setting), a poll refreshes the cached answer, with
+the first poll firing at startup so the sidebar has something to show within
+seconds of boot rather than up to six hours later. `GET /api/version` only
+ever reads that cache; it never calls Harbor itself, so however many browser
+tabs are open, the registry sees at most one request per pod every six hours.
+A failed poll leaves the previous answer standing rather than blanking the
+marker, and logs the same class-name-only warning described above.
 
 The comparison only works because the image knows its own tag: CI passes the
 commit's short sha to `docker build` as `GIT_SHA`, the Dockerfile stamps it as
@@ -220,8 +227,9 @@ something that was never published.
 
 **Migrating from the old `version_check:` config block:** remove it from
 `autoposter.yaml` — the schema no longer recognises it, and a mounted file
-that still has it fails to load — and add `AUTOPOSTER_IMAGE_REF` alongside
-`AUTOPOSTER_HARBOR_TOKEN`. `AUTOPOSTER_HARBOR_TOKEN` itself is unchanged.
+that still has it fails to load — and add `AUTOPOSTER_IMAGE_REF`.
+`AUTOPOSTER_HARBOR_TOKEN` is now optional (see step 2 above); a deployment
+already carrying one for a private project needs no change.
 
 None of these are read from the YAML config file.
 

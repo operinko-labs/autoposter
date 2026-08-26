@@ -46,11 +46,15 @@ class Secrets(BaseModel):
     # api/auth.py and api/routes.py. Never a plaintext password, always a
     # bcrypt hash produced by hash_password().
     admin_password_hash: str = ""
-    # Soft secret, same reasoning as mdblist_apikey: the update check is one
-    # line in the sidebar, so a deployment without a Harbor robot account must
-    # still boot -- it simply reports what it is running and says nothing about
-    # newer. Already base64 of `robot$name:secret`, ready to be the value of an
-    # `Authorization: Basic` header; see api/version.py.
+    # Soft secret, same reasoning as mdblist_apikey, but for a different
+    # reason than most of this class's other ones: the autoposter Harbor
+    # project is public and internet-accessible (operator decision,
+    # 2026-08-26), so the update check works with no credential at all --
+    # an empty value means an anonymous request, not a disabled check. This
+    # exists only for a deployment whose registry project is private, where
+    # Harbor's artifact listing needs a robot account's credential. Already
+    # base64 of `robot$name:secret`, ready to be the value of an
+    # `Authorization: Basic` header when set; see api/version.py.
     harbor_token: str = ""
     # Soft secret, same reasoning as mdblist_apikey: only the collection
     # builders that ask plex.tv about the *account* (the watchlist) need it,

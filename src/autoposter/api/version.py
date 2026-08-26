@@ -13,7 +13,7 @@ failed to build, or failed the vulnerability scan, was never pushed: git would
 report an update to something nobody can deploy. The registry holds exactly
 the images that exist.
 
-Two rules shape the rest of this module.
+Three rules shape the rest of this module.
 
 **The Harbor URL never leaves the process.** It is derived from
 ``AUTOPOSTER_IMAGE_REF`` at boot (``config/image_ref.py``, stored on
@@ -26,15 +26,27 @@ operator pastes into a ticket. Only ``type(exc).__name__`` is logged --
 plus, for an ``httpx.HTTPStatusError``, the response's status code, which is
 just an int and names nothing about where it was fetched from.
 
+**Harbor is polled in the background, not fetched on request.** The
+`autoposter` project is public and internet-accessible (an operator decision,
+2026-08-26), and a request-path call would mean one Harbor round trip per
+sidebar mount. Instead ``VersionPoller`` refreshes ``app.state.version_poller``
+every ``POLL_INTERVAL_SECONDS`` from a background task the lifespan starts
+beside ``PlexHealth`` (see ``app.py``); this endpoint only ever reads that
+cached answer. Because the project is public, ``AUTOPOSTER_HARBOR_TOKEN`` is
+optional too: an empty token means an anonymous request, and being
+"configured" now means only that the image ref parsed and the process has an
+http client -- not that a token was supplied. The token still exists for a
+deployment whose registry project is private.
+
 **A registry that cannot be answered is not an error.** The half of this
 endpoint an operator actually needs -- the version they are running -- is
-known regardless, so a failure answers ``latest: null`` and
-``update_available: null`` (the sidebar then shows the version alone) rather
-than a 5xx out of a decoration.
+known regardless, so a failed poll leaves the previous answer standing (or
+``null`` before the first poll completes) rather than turning a decoration
+into a 5xx.
 """
+import asyncio
 import logging
 import os
-import time
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -55,28 +67,115 @@ DEV_VERSION = "dev"
 # `latest` would never match, so the marker would be lit forever.
 TAG_PREFIX = "sha-"
 
-# How long one Harbor answer stands for. The sidebar asks on every mount, and
-# an operator may have several tabs open; without this the registry sees a
-# request per page load. Fifteen minutes is far below any plausible deploy
-# cadence, so a genuinely new image is still noticed within one coffee.
-CACHE_TTL_SECONDS = 900
+# How often the background poll refreshes the cached answer. Hardcoded,
+# deliberately not an operator setting: cadence is a deployment fact, not a
+# preference, the same philosophy that moved the Harbor coordinates themselves
+# out of the config schema and into AUTOPOSTER_IMAGE_REF. Six hours sits far
+# below any plausible deploy cadence, so a genuinely new image is noticed the
+# same day it ships.
+POLL_INTERVAL_SECONDS = 6 * 3600
 
-# ``{(harbor_url, project, repository): (monotonic reading when filled,
-# latest tag or None)}``, for the process.
-#
-# A module global rather than a scheduler job, deliberately: a background poll
-# would keep asking a registry nobody is currently looking at the answer from,
-# and it would need its own lifespan wiring for a value that has exactly one
-# reader. Failures are cached too -- an outage must not be hammered by every
-# mount for as long as it lasts.
-#
-# Keyed on the target as well as time, even though AUTOPOSTER_IMAGE_REF is
-# read once at boot and fixed for the life of the process, so in production
-# there is only ever one key in play. Keying by it anyway costs nothing and
-# keeps the cache correct rather than assuming a singleton -- exactly what
-# the test suite's several distinct targets, each with its own entry and TTL,
-# already exercise.
-_cache: dict[tuple[str, str, str], tuple[float, str | None]] = {}
+
+async def _ask_harbor(http, harbor_url: str, project: str, repository: str, token: str):
+    """Harbor's newest ``sha-*`` tag for the repository, or ``None``.
+
+    One artifact, newest first, with its tags attached: the repository holds
+    one artifact per commit ever pushed, so an unsorted or uncapped listing
+    would read the whole history to answer a one-line question -- and without
+    ``with_tag`` the artifact comes back tagless, which is a null answer
+    however many pages are fetched.
+    """
+    headers = {}
+    if token:
+        # A Harbor robot account's credential, supplied already base64-encoded
+        # as `robot$name:secret` -- see Secrets.harbor_token. Omitted
+        # entirely for the public project's anonymous default: an empty
+        # Authorization header is not the same as sending none.
+        headers["Authorization"] = f"Basic {token}"
+    response = await http.get(
+        f"{harbor_url.rstrip('/')}/api/v2.0/projects/{project}"
+        f"/repositories/{repository}/artifacts",
+        params={"page_size": 1, "sort": "-push_time", "with_tag": "true"},
+        headers=headers,
+    )
+    response.raise_for_status()
+    for artifact in response.json():
+        for tag in artifact.get("tags") or []:
+            name = tag.get("name") or ""
+            if name.startswith(TAG_PREFIX):
+                return name
+    return None
+
+
+class VersionPoller:
+    """Background refresh of Harbor's newest tag, in ``PlexHealth``'s idiom --
+    a single ``run(stop_event)`` coroutine the lifespan starts as a task and
+    cancels on shutdown (see ``app.py``).
+
+    ``latest`` is the cached answer, read by the endpoint and nowhere else
+    fetched from; ``None`` until the first poll completes, or forever if the
+    check is unconfigured. A failed poll leaves ``latest`` exactly as the
+    previous successful poll left it -- an outage must not erase a
+    still-true answer -- and is logged the same way ``PlexHealth.refresh_token``
+    contains a plex.tv wobble: caught, logged by class name only (never the
+    exception's own message, which carries the Harbor URL), never raised.
+    """
+
+    def __init__(
+        self,
+        http: httpx.AsyncClient | None,
+        target: tuple[str, str, str] | None,
+        token: str,
+        interval_seconds: float = POLL_INTERVAL_SECONDS,
+    ):
+        self._http = http
+        self._target = target
+        self._token = token
+        self._interval_seconds = interval_seconds
+        self.latest: str | None = None
+
+    async def run(self, stop_event: asyncio.Event) -> None:
+        """Poll, then wait ``interval_seconds`` (or until ``stop_event``),
+        until ``stop_event`` is set. Polling first -- rather than waiting out
+        the first interval -- is what gives the sidebar an answer within
+        seconds of boot instead of up to ``POLL_INTERVAL_SECONDS`` later.
+
+        A no-op when unconfigured (no image ref, or no http client yet --
+        every application not built with ``run_background=True``), same as
+        today's behaviour for a deployment that never set
+        ``AUTOPOSTER_IMAGE_REF``.
+        """
+        if self._target is None or self._http is None:
+            return
+        while not stop_event.is_set():
+            await self._poll()
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=self._interval_seconds)
+            except asyncio.TimeoutError:
+                pass
+            else:
+                return
+
+    async def _poll(self) -> None:
+        registry, project, repository = self._target
+        try:
+            self.latest = await _ask_harbor(
+                self._http, f"https://{registry}", project, repository, self._token
+            )
+        except httpx.HTTPStatusError as exc:
+            # The status code too -- an int, never a URL -- so a rotated robot
+            # token (401) reads differently in the log from an outage.
+            logger.warning(
+                "the update check could not reach the registry (%s %s)",
+                type(exc).__name__, exc.response.status_code,
+            )
+        except Exception as exc:
+            # The class name and nothing else. See this module's docstring: the
+            # exception's own message carries the Harbor URL.
+            logger.warning(
+                "the update check could not reach the registry (%s)",
+                type(exc).__name__,
+            )
 
 
 def _running_version() -> str:
@@ -94,85 +193,20 @@ def _running_version() -> str:
     return raw
 
 
-async def _ask_harbor(http, harbor_url: str, project: str, repository: str, token: str):
-    """Harbor's newest ``sha-*`` tag for the repository, or ``None``.
-
-    One artifact, newest first, with its tags attached: the repository holds
-    one artifact per commit ever pushed, so an unsorted or uncapped listing
-    would read the whole history to answer a one-line question -- and without
-    ``with_tag`` the artifact comes back tagless, which is a null answer
-    however many pages are fetched.
-    """
-    response = await http.get(
-        f"{harbor_url.rstrip('/')}/api/v2.0/projects/{project}"
-        f"/repositories/{repository}/artifacts",
-        params={"page_size": 1, "sort": "-push_time", "with_tag": "true"},
-        # A Harbor robot account's credential, supplied already base64-encoded
-        # as `robot$name:secret` -- see Secrets.harbor_token.
-        headers={"Authorization": f"Basic {token}"},
-    )
-    response.raise_for_status()
-    for artifact in response.json():
-        for tag in artifact.get("tags") or []:
-            name = tag.get("name") or ""
-            if name.startswith(TAG_PREFIX):
-                return name
-    return None
-
-
-async def latest_tag(http, harbor_url: str, project: str, repository: str, token: str):
-    """``_ask_harbor`` behind the process-wide cache, never raising."""
-    key = (harbor_url, project, repository)
-    now = time.monotonic()
-    entry = _cache.get(key)
-    if entry is not None and now - entry[0] < CACHE_TTL_SECONDS:
-        return entry[1]
-    try:
-        latest = await _ask_harbor(http, harbor_url, project, repository, token)
-    except httpx.HTTPStatusError as exc:
-        # The status code too -- an int, never a URL -- so a rotated robot
-        # token (401) reads differently in the log from an outage.
-        logger.warning("the update check could not reach the registry (%s %s)",
-                       type(exc).__name__, exc.response.status_code)
-        latest = None
-    except Exception as exc:
-        # The class name and nothing else. See this module's docstring: the
-        # exception's own message carries the Harbor URL.
-        logger.warning("the update check could not reach the registry (%s)",
-                       type(exc).__name__)
-        latest = None
-    _cache[key] = (now, latest)
-    return latest
-
-
 @router.get("/version")
 async def get_version(
     request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
     """``{version, update_available, latest}`` for the sidebar's version line.
 
-    ``update_available`` is a tri-state: ``true``/``false`` when the registry
-    answered, and ``null`` when it was not asked or could not be reached --
-    which is not the same as "no update" and must not be shown as one.
+    ``latest`` comes straight off ``app.state.version_poller`` -- this handler
+    never talks to Harbor itself. ``update_available`` is a tri-state:
+    ``true``/``false`` once the poller has an answer, and ``null`` before the
+    first poll completes or when the check is unconfigured -- which is not
+    the same as "no update" and must not be shown as one.
     """
     version = _running_version()
-    target = request.app.state.version_check_target
-    token = request.app.state.secrets.harbor_token
-    http = request.app.state.http
-
-    # `target` is None whenever AUTOPOSTER_IMAGE_REF was unset or unparseable
-    # (config/image_ref.py) -- the check-off state. The credential is what
-    # makes a private project's listing readable at all, and `http` is None
-    # until the lifespan runs, which is every test application that has not
-    # wired one.
-    configured = target is not None and bool(token) and http is not None
-    latest = None
-    if configured:
-        registry, project, repository = target
-        # https:// rather than carried in the ref: a registry a pod actually
-        # pulled from is reached over TLS, and the ref itself never spells a
-        # scheme (Docker references don't).
-        latest = await latest_tag(http, f"https://{registry}", project, repository, token)
+    latest = request.app.state.version_poller.latest
 
     return {
         "version": version,
