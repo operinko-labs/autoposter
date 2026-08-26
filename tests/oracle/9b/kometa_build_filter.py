@@ -815,13 +815,18 @@ def validate_attribute(attribute, modifier, final, data, plex_search=False, plex
 # Signature change: Kometa takes ``self`` and derives the libtype from
 # ``self.builder_level`` / ``self.library.is_show`` / ``is_music``
 # (:4110-4122); with no Builder and no Library the libtype is a parameter.
-# ``display`` and ``default_sort`` are dropped -- the first only logs, the
-# second only supplies a caller-side default sort that no config uses.
+# ``display`` is dropped -- it only logs. ``default_sort`` is NOT dropped; see
+# the note on the signature below.
 #
 # REMOVED throughout: every ``logger.*`` call, and the whole
 # ``display``/``filter_details``/``display_out``/``display_line`` half, which
 # builds a human-readable summary returned BESIDE the URL and never inside it.
-def build_filter(method, plex_filter, sort_type):
+# ``default_sort`` is upstream's own parameter (modules/builder.py:4093). 9b's
+# transcription dropped it because ``plex_search`` never passes one; the
+# ``smart_filter`` call site does -- ``default_sort="random"``
+# (modules/builder.py:1478) -- so it is restored here, defaulting to None
+# exactly as upstream does, which leaves all fifteen 9b goldens untouched.
+def build_filter(method, plex_filter, sort_type, default_sort=None):
     if plex_filter is None:
         raise Failed(f"{TYPE} Error: {method} attribute is blank")
     if not isinstance(plex_filter, dict):
@@ -849,7 +854,8 @@ def build_filter(method, plex_filter, sort_type):
                 raise Failed(f"{TYPE} Error: sort_by '{test_sort}' is invalid. Options: {', '.join(sorts)}")
             sort.append(test_sort)
     if not sort:
-        sort.append(type_default_sort)
+        # modules/builder.py:4140-4141, restored verbatim.
+        sort.append(default_sort if default_sort else type_default_sort)
 
     limit = None
     if "limit" in filter_alias:
