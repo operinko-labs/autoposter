@@ -32,7 +32,7 @@ from pydantic import ValidationError
 
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
-from autoposter.collections import catalog
+from autoposter.collections import catalog, packs
 from autoposter.collections.builders import REGISTRY
 from autoposter.collections.builders.imdb_award import EVENTS
 from autoposter.collections.catalog import (
@@ -644,6 +644,65 @@ def test_a_language_packs_include_list_still_has_norwegian_in_it():
         assert len(params["include"]) == 187, preset.key
 
 
+def _table_checksum(entries) -> str:
+    """A canonical, order-sensitive sha256 over one pack table.
+
+    ``entries`` is either a ``dict[str, list[str]]`` (an addons table -- one
+    ``"key=v1,v2,..."`` line per entry, in the dict's own order) or a plain
+    string sequence (an include list -- one entry per line). Order-sensitive
+    on purpose: the record's §1 preserves upstream's file order and a
+    transcription that reordered entries without dropping any would be a
+    finding this checksum should also catch.
+    """
+    if isinstance(entries, dict):
+        lines = ["%s=%s" % (key, ",".join(values)) for key, values in entries.items()]
+    else:
+        lines = list(entries)
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def test_the_big_pack_tables_have_not_drifted_by_one_entry():
+    """Minor 1. The record these four tables transcribe is gitignored
+    (``.gitignore:23 .superpowers/``), so ``packs.py`` is the only in-repo copy
+    of ``_GENRE_ADDONS``/``_COUNTRY_INCLUDE``/``_COUNTRY_ADDONS`` -- and, for
+    ``_LANGUAGE_INCLUDE``, a checksum closes a gap the existing 187+Norwegian
+    pin does not: a same-length substitution (one code swapped for a typo)
+    moves neither the count nor the Norwegian membership check.
+
+    The cap-in-the-description mechanism (``test_every_opinion_a_pack_pins_
+    is_stated_in_the_row``) does not substitute for this either: both the old
+    and the new cap are prose in the same row (e.g. "255" and "256"), so a
+    one-entry loss still leaves a substring match. A literal count plus a
+    content checksum per table closes it regardless of which way an edit
+    moves the table.
+
+    Recomputing a digest after a DELIBERATE table edit: re-verify the edited
+    table against the record's own §1 first -- the record is the source of
+    truth, not this test -- then regenerate the digest from the verified
+    table with ``_table_checksum`` and paste the new hex string in below.
+    Never adjust a digest to make a red test green without that check.
+    """
+    assert len(packs._GENRE_ADDONS) == 10
+    assert _table_checksum(packs._GENRE_ADDONS) == (
+        "85582082a63c163741c8cb44098104bb5afa36390153bbe9b1803a06c531cd11"
+    )
+
+    assert len(packs._LANGUAGE_INCLUDE) == 187
+    assert _table_checksum(packs._LANGUAGE_INCLUDE) == (
+        "b06b349c369ba76078b1137a2cc651170840a3a73a26d07c0cd61ea91301b7cd"
+    )
+
+    assert len(packs._COUNTRY_INCLUDE) == 255
+    assert _table_checksum(packs._COUNTRY_INCLUDE) == (
+        "8b58aba716f85fc231c62eeec26ac792df015f5f6976a62eb0a17fd5f8f44737"
+    )
+
+    assert len(packs._COUNTRY_ADDONS) == 48
+    assert _table_checksum(packs._COUNTRY_ADDONS) == (
+        "2e6cc1ac88769636cdf7b668eb6820f858a5f1e430bb1218b317999329604568"
+    )
+
+
 def test_a_packs_placeholder_title_is_listed_and_reserved():
     """The pair C3 asks to read honestly.
 
@@ -697,6 +756,45 @@ def test_a_packs_placeholder_reaches_the_managed_titles_helper():
         for preset, collection, _params in _dynamic_rows():
             if library_type in preset.library_types:
                 assert collection.title in titles, (preset.key, library_type)
+
+
+def test_a_dynamic_packs_builds_string_is_honest_end_to_end():
+    """Minor 5, and Important 1's fix pinned past ``dynamic_shape`` called in
+    isolation.
+
+    ``years_title`` is the exact string ``CatalogPanel.tsx``'s ``buildsLabel``
+    interpolates next to the placeholder in ``titles`` (its two-part branch:
+    ``Builds: ${titles}, plus ${dynamic}``), so this reconstructs the whole
+    sentence an operator reads for the Genres row through ``catalog_listing``'s
+    real payload -- not a ``dynamic_shape`` call with a hand-picked
+    ``placeholder_title`` argument. Before Important 1's fix, ``grep "Builds"``
+    found only the frontend template and vitest fixture values; nothing on
+    either side asserted the rendered string, so this closes that gap.
+    """
+    listing = catalog_listing(
+        _config(["content_genres"], charts=False, awards=False, separators=False)
+    )
+    content = next(category for category in listing if category["key"] == "content")
+    genres = next(p for p in content["presets"] if p["key"] == "content_genres")
+
+    assert genres["titles"] == ["Genres"]
+    assert genres["years_title"] == (
+        'one per genre the library holds, named "<genre> <Library type>s" '
+        '("Genres" above is the reserved definition title -- the family\'s '
+        "own collections are the ones per genre, named this way)"
+    )
+
+    # The picker's own composition, unchanged by this fix
+    # (``CatalogPanel.tsx``'s ``buildsLabel``, two-part branch).
+    builds = "Builds: %s, plus %s" % (
+        ", ".join(genres["titles"]), genres["years_title"]
+    )
+    assert builds == (
+        "Builds: Genres, plus one per genre the library holds, named "
+        '"<genre> <Library type>s" ("Genres" above is the reserved '
+        "definition title -- the family's own collections are the ones per "
+        "genre, named this way)"
+    )
 
 
 # --- the gated rows ----------------------------------------------------------

@@ -121,7 +121,7 @@ def _shape_line(what: str, shape: str) -> str:
     return 'one per %s, named "%s"' % (what, shape)
 
 
-def dynamic_shape(params: dict) -> str:
+def dynamic_shape(params: dict, placeholder_title: str) -> str:
     """The family-shape line for one dynamic pack.
 
     Derived, not restated. The format is the pack's own pinned
@@ -132,6 +132,14 @@ def dynamic_shape(params: dict) -> str:
     produce. The two unknowns are written as placeholders: the key the library
     will supply, and the library type, which differs between a preset's
     libraries and would be a lie if one of them were picked.
+
+    ``placeholder_title`` is the OTHER thing ``titles()`` lists next to this
+    shape -- the reserved definition title the engine falls through to when a
+    smart builder declares none (``builders/dynamic.py``'s "No ``titles()``,
+    deliberately" note), under which no collection is ever created. C3 licenses
+    ``titles()`` reporting that title only on the condition that the shape line
+    explains it, so the explanation is written into the line itself rather than
+    left for the picker to invent.
     """
     row = DYNAMIC_TYPES[params["type"]]
     noun = row.name.replace("_", " ")
@@ -144,7 +152,11 @@ def dynamic_shape(params: dict) -> str:
         values=(),
         auto_type=row.name,
     )
-    return _shape_line("%s the library holds" % noun, shape)
+    line = _shape_line("%s the library holds" % noun, shape)
+    return (
+        '%s ("%s" above is the reserved definition title -- the family\'s own '
+        "collections are the ones per %s, named this way)" % (line, placeholder_title, noun)
+    )
 
 
 def collection_title(template: str, library_type: str) -> str:
@@ -372,7 +384,7 @@ class Preset:
             )
         for collection in self.collections:
             if collection.builder == "dynamic":
-                return dynamic_shape(dict(collection.params))
+                return dynamic_shape(dict(collection.params), collection.title)
         return None
 
 
