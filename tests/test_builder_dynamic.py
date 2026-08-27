@@ -541,12 +541,13 @@ async def test_an_empty_addon_key_in_the_leftovers_bucket_refuses_the_same_way(s
     assert "empty value" in refusals[0]
 
 
-async def test_a_real_key_named_other_refuses_the_leftovers_bucket(session):
-    """T4 review, deferred minor (upstream-shared). ``other`` is the leftovers
-    bucket's literal key (meta.py:1306-1310), so a library that genuinely holds
-    a value spelled ``other`` gives one key two meanings -- and the refusal
-    hint the emitter prints for the leftovers bucket would be printed for the
-    real one. Refused, contained to that bucket, rather than guessed."""
+async def test_a_raw_other_tag_never_included_builds_fine(session):
+    """T5 review, other-key collision correction. A library value spelled
+    ``other`` that the operator never `include`d is not a second titled entry
+    keyed ``other`` -- it simply lands among the leftovers bucket's own
+    ``values`` (``dynamic_keys.derive_keys``, ``dynamic_titles.family_titles``
+    :309-335). One bucket, not two, so there is no collision to refuse: this
+    config shape is previously-fine and must keep building both collections."""
     definition = _definition(params={
         "type": "genre", "include": ["Horror"], "other_name": "Everything else",
     })
@@ -557,7 +558,32 @@ async def test_a_real_key_named_other_refuses_the_leftovers_bucket(session):
 
     actions = await DynamicBuilder().apply(ctx)
 
+    assert not any("refused" in one for one in actions), actions
     assert any("Top Horror movies" in one and "created" in one for one in actions)
+    assert any("Everything else" in one and "created" in one for one in actions)
+
+
+async def test_two_titled_entries_keyed_other_refuses_the_collision(session):
+    """T4 review's actual finding (``progress.md:2831``, "OTHER_KEY 'other' can
+    collide with a real enumerated key"), reconstructed: a real library value
+    spelled ``other`` that IS `include`d gets its own titled entry keyed
+    ``other`` (``derive_keys`` :156-165), and ``family_titles`` claims the
+    leftovers bucket LAST with that same key (:331-335) -- two entries, one
+    key. That is the actual ambiguity the origin named, and it is refused."""
+    definition = _definition(params={
+        "type": "genre", "include": ["Horror", "other"],
+        "other_name": "Everything else",
+    })
+    section = FakeSection(choices=[
+        FakeChoice("1138", "Horror"), FakeChoice("77", "other"),
+        FakeChoice("9", "Drama"),
+    ])
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert any("Top Horror movies" in one and "created" in one for one in actions)
+    assert any("Everything else" in one and "created" in one for one in actions)
     assert any(
         "'other'" in one and "leftovers" in one and "refused" in one
         for one in actions

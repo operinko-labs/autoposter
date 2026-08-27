@@ -617,39 +617,39 @@ class DynamicBuilder:
         actions: list[str] = []
 
         # ``OTHER_KEY`` is the leftovers bucket's literal key (meta.py:
-        # 1306-1310), so a library that genuinely holds a value spelled "other"
-        # gives one key two meanings: the emitter's leftovers hint would be
-        # printed for the real value's bucket, and an operator's `exclude:
-        # [other]` would be ambiguous. Refused for that one bucket rather than
-        # guessed. Upstream shares the collision and does not notice it.
+        # 1306-1310). If the library also holds a real value spelled "other"
+        # that the operator explicitly `include`d, it gets its own titled entry
+        # with that same key -- one key would then mean two things: the
+        # emitter's leftovers hint would be printed for the real value's
+        # bucket, and an operator's `exclude: [other]` would be ambiguous
+        # between them. Refused for that one bucket rather than guessed.
+        # Upstream shares the collision and does not notice it.
         #
         # ``family_titles`` claims the leftovers bucket LAST
         # (dynamic_titles.py:331-335), so it is always the LAST entry here with
-        # ``key == OTHER_KEY``. The collision shows up one of two ways: an
-        # earlier entry with the same key is a real value that was `include`d
-        # in its own right, or -- the more common shape -- the real value was
-        # never `include`d and surfaces instead among the leftovers bucket's
-        # own ``values``, where its spelling collides with the bucket's key.
+        # ``key == OTHER_KEY``. The collision only arises when an EARLIER entry
+        # also carries that key -- a real value spelled "other" that was itself
+        # `include`d into its own bucket. A real "other" value that was never
+        # `include`d simply lands among the leftovers bucket's own ``values``
+        # instead, which is one bucket, not two, and is not ambiguous.
         other_positions = [
             index for index, unit in enumerate(titled) if unit.key == OTHER_KEY
         ]
-        if other_positions:
-            leftovers = titled[other_positions[-1]]
-            if len(other_positions) > 1 or OTHER_KEY in leftovers.values:
-                drop = other_positions[0] if len(other_positions) > 1 else other_positions[-1]
-                real = titled[drop]
-                titled = tuple(
-                    unit for index, unit in enumerate(titled) if index != drop
-                )
-                actions.append(
-                    "refused %r: %r holds a %r value spelled %r, which is also "
-                    "the leftovers bucket's own key, so one key would mean two "
-                    "things here -- `exclude:` or `key_name_override:` could not "
-                    "tell them apart either. Drop `other_name:` to build the "
-                    "real value's collection, or `exclude: [%s]` to build only "
-                    "the leftovers"
-                    % (real.title, ctx.library, params.type, OTHER_KEY, OTHER_KEY)
-                )
+        if len(other_positions) > 1:
+            drop = other_positions[0]
+            real = titled[drop]
+            titled = tuple(
+                unit for index, unit in enumerate(titled) if index != drop
+            )
+            actions.append(
+                "refused %r: %r holds a %r value spelled %r, which is also "
+                "the leftovers bucket's own key, so one key would mean two "
+                "things here -- `exclude:` or `key_name_override:` could not "
+                "tell them apart either. Drop `other_name:` to build the "
+                "real value's collection, or `exclude: [%s]` to build only "
+                "the leftovers"
+                % (real.title, ctx.library, params.type, OTHER_KEY, OTHER_KEY)
+            )
 
         # ``family_titles`` drops an ``ABSENT_KEY`` key outright and is right
         # to: it is Plex's "these items have no value for this field", not a
