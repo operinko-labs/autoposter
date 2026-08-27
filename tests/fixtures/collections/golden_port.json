@@ -56,11 +56,7 @@
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -71,11 +67,7 @@
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -86,11 +78,7 @@
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -101,11 +89,7 @@
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -116,11 +100,7 @@
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -131,11 +111,7 @@
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -146,11 +122,7 @@
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -161,11 +133,7 @@
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -176,12 +144,7 @@
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -192,12 +155,7 @@
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -208,11 +166,7 @@
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "NR"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -370,11 +324,7 @@
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -385,11 +335,7 @@
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -400,11 +346,7 @@
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -415,11 +357,7 @@
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -430,11 +368,7 @@
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -445,11 +379,7 @@
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -460,11 +390,7 @@
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -475,11 +401,7 @@
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -490,12 +412,7 @@
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -506,12 +423,7 @@
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -522,11 +434,7 @@
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "NR"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -716,11 +624,7 @@
         "summary": "Shows that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -731,11 +635,7 @@
         "summary": "Shows that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -746,11 +646,7 @@
         "summary": "Shows that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -761,11 +657,7 @@
         "summary": "Shows that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -776,11 +668,7 @@
         "summary": "Shows that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -791,11 +679,7 @@
         "summary": "Shows that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -806,11 +690,7 @@
         "summary": "Shows that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-14"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-14&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -821,11 +701,7 @@
         "summary": "Shows that are rated 15 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-14"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-14&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -836,11 +712,7 @@
         "summary": "Shows that are rated 16 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-14"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-14&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -851,12 +723,7 @@
         "summary": "Shows that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-14",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-14&or=1&show.contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -867,11 +734,7 @@
         "summary": "Shows that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -970,11 +833,7 @@
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -985,11 +844,7 @@
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1000,11 +855,7 @@
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1015,11 +866,7 @@
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1030,11 +877,7 @@
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1045,11 +888,7 @@
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1060,11 +899,7 @@
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1075,11 +910,7 @@
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1090,12 +921,7 @@
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1106,12 +932,7 @@
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1122,11 +943,7 @@
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "NR"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1326,11 +1143,7 @@
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1341,11 +1154,7 @@
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1356,11 +1165,7 @@
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1371,11 +1176,7 @@
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1386,11 +1187,7 @@
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1401,11 +1198,7 @@
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1416,11 +1209,7 @@
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1431,11 +1220,7 @@
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1446,12 +1231,7 @@
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1462,12 +1242,7 @@
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1478,11 +1253,7 @@
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "NR"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1661,11 +1432,7 @@
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1676,11 +1443,7 @@
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1691,11 +1454,7 @@
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1706,11 +1465,7 @@
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1721,11 +1476,7 @@
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1736,11 +1487,7 @@
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1751,11 +1498,7 @@
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1766,11 +1509,7 @@
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1781,12 +1520,7 @@
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1797,12 +1531,7 @@
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1813,11 +1542,7 @@
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "NR"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1946,11 +1671,7 @@
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1961,11 +1682,7 @@
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1976,11 +1693,7 @@
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -1991,11 +1704,7 @@
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2006,11 +1715,7 @@
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2021,11 +1726,7 @@
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2036,11 +1737,7 @@
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2051,11 +1748,7 @@
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2066,12 +1759,7 @@
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2082,12 +1770,7 @@
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2098,11 +1781,7 @@
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "NR"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2197,11 +1876,7 @@
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2212,11 +1887,7 @@
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2227,11 +1898,7 @@
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2242,11 +1909,7 @@
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2257,11 +1920,7 @@
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2272,11 +1931,7 @@
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "G"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2287,11 +1942,7 @@
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2302,11 +1953,7 @@
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "PG-13"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2317,12 +1964,7 @@
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2333,12 +1975,7 @@
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "R",
-            "TV-MA"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
         ],
@@ -2349,11 +1986,7 @@
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
         "sort_title": null,
-        "filters": {
-          "contentRating": [
-            "NR"
-          ]
-        },
+        "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
         ],

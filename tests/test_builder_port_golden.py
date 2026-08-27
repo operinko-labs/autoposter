@@ -7,14 +7,29 @@ the code that shipped them, *before* any of it moved onto the builder engine
 The port has to reproduce that file byte for byte. Anything else is a behaviour
 change to 305 live collections, whether or not it looks like an improvement.
 
+**One deliberate amendment, phase 10a-2.** The Common Sense family's write path
+moved from plexapi's ``createCollection(smart=True, filters=...)`` onto the
+raw-POST 9b grammar (roadmap row 185), so the ``filters`` cell -- which recorded
+a plexapi CALL SHAPE and not an outcome -- changed for every Common Sense
+collection in every scenario, from ``{"contentRating": ["G"]}`` to the POSTed
+``uri``. That amendment was adjudicated in advance
+(`.superpowers/sdd/p10a-facts.md`, Addendum 2, a user decision), it is the ONLY
+cell that moved, it landed as its own reviewed commit, and it is graded by
+something this fixture cannot reach: ``tests/test_collection_cs_equivalence.py``
+proves the two grammars select the same items. Every other cell -- every action
+string, summary, sort, label, member list and poster count -- is the original
+capture, unchanged, and so is the separator's own ``filters`` cell: its write
+path did not move.
+
 ``_library_pass`` below is the one seam: it is the per-library sequence
 ``service.reconcile_libraries`` runs, and the port rewrites it from "the smart
 reconciler, then ``build_all``" into the single engine call. Everything else in
 this file -- the fakes, the fixtures, the scenarios, the recorded strings --
 stays exactly as captured, so a diff can only come from the code under it.
 
-Re-capture (only ever on the pre-port commit). It writes the fixture and then
-*fails*, so a capture run can never be mistaken for a passing gate::
+Re-capture (only ever on the pre-port commit, or under a written adjudication
+like the one above). It writes the fixture and then *fails*, so a capture run
+can never be mistaken for a passing gate::
 
     docker compose -p 8at3 -f docker-compose.yml -f .superpowers/isolated-db.yml \
         run --rm -e AUTOPOSTER_GOLDEN_CAPTURE=1 test \
