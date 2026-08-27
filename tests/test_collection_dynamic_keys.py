@@ -95,3 +95,14 @@ def test_a_synthetic_bucket_with_no_present_member_builds_nothing():
     the entire library (``reconcile.py:669``)."""
     derived = derive_keys([("R", "R")], addons={"Kids": ["G", "PG"]})
     assert [k.key for k in derived.keys] == ["R"]
+
+
+def test_a_bare_scalar_include_is_one_key_not_its_characters():
+    """T3 review, deferred minor: ``_strlist``'s non-iterable branch
+    (util.py:933) was reachable from a YAML scalar and untested. ``include:
+    Horror`` is one key -- not six -- and the params model's ``list[str]``
+    coercion is not what makes that true, because ``derive_keys`` is public and
+    pure."""
+    derived = derive_keys([("Horror", "Horror"), ("Drama", "Drama")],
+                          include="Horror")
+    assert [one.key for one in derived.keys] == ["Horror"]

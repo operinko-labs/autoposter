@@ -114,6 +114,17 @@ def test_the_unknown_builder_error_names_the_builders_that_do_exist():
         build_config(document)
 
 
+def test_the_registry_names_every_builder_when_one_is_misspelled():
+    """T5 review, deferred minor: the "known builders" message was unpinned, so
+    a builder added to the registry without a catalog row would have quietly
+    stopped appearing in the one message an operator sees when they typo."""
+    with pytest.raises(ValidationError) as caught:
+        CollectionDefinition(title="X", builder="dynamik", params={})
+    message = str(caught.value)
+    for name in REGISTRY:
+        assert name in message, name
+
+
 def test_a_definition_naming_a_registered_builder_loads_with_its_defaults():
     document = _document_with_definitions(
         [{"title": "Hand Picked", "builder": "plex_id", "params": {"ids": ["1"]}}]

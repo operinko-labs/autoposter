@@ -126,6 +126,17 @@ def test_the_general_default_is_upstreams_and_resolution_is_the_exception():
     assert DYNAMIC_TYPES["resolution"].limit is None
 
 
+@pytest.mark.parametrize("name", ["year", "content_rating", "studio", "network"])
+def test_every_type_row_carries_a_sort_and_a_limit_that_exist(name):
+    """T2 review, deferred minor: ``limit``/``sort_by`` were pinned only for
+    genre and resolution and only transitively. Every row, directly."""
+    row = DYNAMIC_TYPES[name]
+    assert row.sort_by, name
+    for sort in row.sort_by:
+        assert sort in KNOWN_SORT_NAMES, (name, sort)
+    assert row.limit is None or row.limit >= 1, name
+
+
 def test_the_title_formats_are_upstreams_four_shapes():
     """meta.py:868 (the base), :955 (year), :957 (movie decade), :948
     (resolution), :959 (every other tag type)."""
