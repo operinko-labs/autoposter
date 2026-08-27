@@ -133,7 +133,7 @@ Three things to read off it:
    assumes rather than tests (see "The five premises" above).
 3. **Buckets 15 and 16 (movies) and 7 through 12 (shows) resolve empty.**
    Neither grammar is asked to build a query for them, here or in production
-   (`reconcile.py:609`). Addendum 3's semantics, walked rather than described.
+   (`reconcile.py:669`). Addendum 3's semantics, walked rather than described.
 
 ```
 ### Movie library, section field 'contentRating', ratings ['G', 'PG', 'PG-13', 'R', 'NC-17', 'NR', 'Unrated', 'TV-MA']

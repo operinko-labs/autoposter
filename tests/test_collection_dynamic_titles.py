@@ -76,7 +76,7 @@ def test_no_other_collection_when_nothing_was_left_over():
     """meta.py:1432-1433 warns "Other Collection not needed" and does not create
     it. An empty ``other`` would be a smart filter with no terms, which
     ``build_search_url`` refuses and which would otherwise match the entire
-    library (``reconcile.py:609-612``)."""
+    library (``reconcile.py:669``)."""
     derived = _derived(("G", "G"))
     titled = family_titles(
         derived, library_type="Movie", title_format=FORMAT, other_name="Leftovers",

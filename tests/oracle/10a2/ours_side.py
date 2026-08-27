@@ -60,9 +60,9 @@ def new_query(libtype: str, values, present, base: str = "any") -> str:
     ``base="any"`` is the whole claim under proof (p10a-facts.md C2): several
     values under an ``any:`` base render as ``push=1&f=a&or=1&f=b&pop=1``,
     which is meant to select what plexapi's comma-joined ``f=a,b`` selects.
-    ``sort_by`` is ``release.desc`` because that is the spelling of
-    ``reconcile.SORT`` (``originallyAvailableAt:desc``) in this engine's own
-    sort table, and ``limit`` is ``None`` on both sides.
+    ``sort_by`` is ``release.desc`` because that is this engine's own
+    spelling, in its sort table, of the sort this family asked plexapi for,
+    ``originallyAvailableAt:desc``, and ``limit`` is ``None`` on both sides.
 
     ``base`` is settable for one reason only: the gate's negative control
     builds the deliberately WRONG ``all:`` query through this same real code

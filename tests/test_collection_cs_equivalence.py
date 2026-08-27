@@ -186,7 +186,7 @@ def test_every_bucket_selects_the_same_items_through_both_grammars(
         if not bucket.values:
             # Addendum 3: a bucket that matches nothing is still returned, and
             # neither grammar is ever asked to build a query for it -- here or
-            # in production (``reconcile.py:609``, ``if not bucket.values``).
+            # in production (``reconcile.py:669``, ``if not bucket.values``).
             # An empty filter would mean the whole library.
             continue
         old = plexapi_side.old_query(libtype, bucket.values, ratings, field_key)

@@ -5,7 +5,7 @@ Not a transcription. ``LibrarySection._buildSearchKey`` ->
 / ``_validateFieldValue`` -> ``_validateFieldValueTag`` is the exact path
 ``section.createCollection(smart=True, filters={"contentRating": [...]})`` and
 ``collection.updateFilters(filters={"contentRating": [...]})`` take today
-(``reconcile.py:648-658``), and running it is the only way to learn what it
+(``reconcile.py:690-754``), and running it is the only way to learn what it
 emits per library type -- including whether the field name comes back bare or
 ``<libtype>.``-prefixed, which premise P4 in ``member_sets.py`` is about and
 which this driver MEASURES rather than assumes.
@@ -76,8 +76,9 @@ class _Section(LibrarySection):
 def old_query(libtype: str, values, ratings, field_key: str) -> str:
     """The query string plexapi builds for one bucket's ratings.
 
-    ``sort`` is ``reconcile.SORT`` verbatim and ``filters`` is the dict
-    ``reconcile.py:650`` passes verbatim. Returned from ``?`` onward, to match
+    ``sort`` is the sort this family asked plexapi for,
+    ``originallyAvailableAt:desc``, verbatim and ``filters`` is the dict
+    ``reconcile.py:690-754`` passes verbatim. Returned from ``?`` onward, to match
     ``build_search_url``'s shape.
 
     ``field_key`` is a parameter deliberately: whether a Plex section answers

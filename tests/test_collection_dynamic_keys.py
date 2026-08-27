@@ -92,6 +92,6 @@ def test_an_addon_key_the_library_carries_is_not_shadowed_by_a_synthetic_one():
 def test_a_synthetic_bucket_with_no_present_member_builds_nothing():
     """meta.py:1224-1225. The library has none of the members, so there is no
     collection -- rather than an empty one, which on a smart filter would match
-    the entire library (``reconcile.py:609-612``)."""
+    the entire library (``reconcile.py:669``)."""
     derived = derive_keys([("R", "R")], addons={"Kids": ["G", "PG"]})
     assert [k.key for k in derived.keys] == ["R"]
