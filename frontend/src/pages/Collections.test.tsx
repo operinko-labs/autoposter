@@ -99,7 +99,7 @@ const CATALOG = {
           key: "award_cannes",
           name: "Cannes Film Festival",
           titles: ["Cannes Palme d'Or Winners"],
-          years_title: "Cannes <year>",
+          years_title: 'one per ceremony, named "Cannes <year>"',
           description: "Cannes Film Festival: 1 winners collection.",
           kometa_source: "defaults/award/cannes.yml",
           library_types: ["Movie"],

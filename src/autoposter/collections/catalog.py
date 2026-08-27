@@ -56,7 +56,10 @@ its own in a YAML file that also names charts and people.
 """
 from dataclasses import dataclass
 
+from autoposter.collections import packs
 from autoposter.collections.builders.imdb_award import EVENTS
+from autoposter.collections.dynamic_titles import render_title
+from autoposter.collections.dynamic_types import DYNAMIC_TYPES
 from autoposter.config.schema import CollectionDefinition
 from autoposter.providers.tmdb_lists import CHART_ENDPOINTS
 
@@ -101,6 +104,49 @@ def award_years_title(event) -> str:
     return event.year_title % YEARS_PLACEHOLDER
 
 
+# What goes where the KEY does in a dynamic pack's shape line, and where the
+# library type does. Both are placeholders for the same reason
+# ``YEARS_PLACEHOLDER`` is one: a family's real titles are decided by something
+# this table cannot see -- the dataset's years, or the library's own values --
+# and a shape is the honest thing to show instead of a guess.
+DYNAMIC_KEY_PLACEHOLDER = "<%s>"
+DYNAMIC_LIBRARY_TYPE = "<Library type>"
+
+
+def _shape_line(what: str, shape: str) -> str:
+    """One line for a family this table can name the SHAPE of and not the
+    members of. Shared by the two families that have one -- an award ceremony's
+    year collections and a dynamic pack -- because the picker renders one
+    string and there is no reason for it to be assembled two ways."""
+    return 'one per %s, named "%s"' % (what, shape)
+
+
+def dynamic_shape(params: dict) -> str:
+    """The family-shape line for one dynamic pack.
+
+    Derived, not restated. The format is the pack's own pinned
+    ``title_format`` when it has one and the TYPE's default when it does not
+    (``dynamic_types.DYNAMIC_TYPES``), and it is rendered by the same
+    ``dynamic_titles.render_title`` the builder names collections with -- so
+    the sentence in the picker cannot describe a shape the builder will not
+    produce. The two unknowns are written as placeholders: the key the library
+    will supply, and the library type, which differs between a preset's
+    libraries and would be a lie if one of them were picked.
+    """
+    row = DYNAMIC_TYPES[params["type"]]
+    noun = row.name.replace("_", " ")
+    key_name = DYNAMIC_KEY_PLACEHOLDER % noun
+    shape = render_title(
+        params.get("title_format") or row.title_format,
+        key_name,
+        DYNAMIC_LIBRARY_TYPE,
+        key=key_name,
+        values=(),
+        auto_type=row.name,
+    )
+    return _shape_line("%s the library holds" % noun, shape)
+
+
 def collection_title(template: str, library_type: str) -> str:
     """One collection's title for one library type.
 
@@ -134,6 +180,14 @@ class PresetCollection:
     ``filters`` are pairs rather than dicts so a row stays hashable like the
     rest of a frozen dataclass; a filter value that is a tuple becomes the list
     ``collections.filters`` parses as an any-of.
+
+    One exception, measured rather than assumed: a dynamic pack's ``addons``,
+    ``key_name_override`` and ``title_override`` params are MAPPINGS, and
+    pydantic will not build a ``dict[str, list[str]]`` from a tuple of pairs
+    (``Input should be a valid dictionary``). Those values are dicts, so a row
+    carrying one is not hashable -- nothing hashes these rows today, and the
+    alternative (a pairs-to-dict conversion keyed on param names) would put one
+    builder's vocabulary inside a generic row.
 
     ``library_types`` narrows a SINGLE collection below its preset's own -- the
     streaming pack is offered for both kinds of library and three of its
@@ -302,10 +356,24 @@ class Preset:
         return titles
 
     def years_title(self) -> str | None:
-        """The shape of this preset's dynamic titles, or None if it has none."""
-        if self.award_event is None:
-            return None
-        return EVENTS[self.award_event].year_title % "<year>"
+        """The shape of this preset's dynamic titles, or None if it has none.
+
+        Two families build collections this table cannot name. An award
+        ceremony's year collections are named by the years the dataset carries;
+        a dynamic pack's family is named by the values the library holds.
+        Neither is knowable here, and both answer with the same one-line SHAPE
+        through the same payload key the picker already renders -- one field,
+        one UI branch, no second shape for the second family to drift from
+        (10b decision C3).
+        """
+        if self.award_event is not None:
+            return _shape_line(
+                "ceremony", EVENTS[self.award_event].year_title % "<year>"
+            )
+        for collection in self.collections:
+            if collection.builder == "dynamic":
+                return dynamic_shape(dict(collection.params))
+        return None
 
 
 # --- the AWARDS category ----------------------------------------------------
@@ -591,9 +659,14 @@ RELATIVE_YEAR_ROW = 171    # the `current_year`/`current_year-N` value grammar,
                            # the half of that row phase 10a did NOT ship
 TMDB_ORIGIN_COUNTRY_ROW = 189  # the two dynamic types that are a TMDb walk and
                                # not an enumeration -- filed by phase 10a-1's
-                               # wrap, and cited (not waited on) by the three
-                               # location packs, whose values are that walk's,
-                               # not the Plex `country` tag's
+                               # wrap, and cited (not waited on) by the two
+                               # remaining location packs, whose values are that
+                               # walk's, not the Plex `country` tag's
+TMDB_LANGUAGE_NAME_ROW = 190  # upstream names a language bucket from TMDb's
+                              # ISO-639-1 table and we name it from Plex's own
+                              # choice.title -- names only, never membership,
+                              # and the two agree on the common codes. A CITED
+                              # row, not a blocker: no preset waits on it.
 
 _BOTH = ("Movie", "Show")
 _MOVIE = ("Movie",)
@@ -790,20 +863,33 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
         name="Genres",
         description=(
             "One collection per genre the library actually holds -- Kometa's "
-            "largest pack. The per-value engine it needs SHIPPED in phase 10a "
-            "(`builder: dynamic`, `type: genre`), so an operator can build this "
-            "family today by writing a definition. What is still missing is the "
-            "PRESET: turning one catalog row into a family of collections is "
-            "the preset-expansion story, phase 10b, and it is what row %d "
-            "tracks. The genre attribute's own caveat stands and is why the "
+            "largest pack, transcribed from `defaults/both/genre.yml` (its "
+            "addon merges, which fold 'Action & Adventure' into both Action and "
+            "Adventure and 'Biography' into Biopic, are "
+            "`collections/packs.py`'s table). Built by the per-value engine "
+            "phase 10a shipped: `builder: dynamic`, `type: genre`, one "
+            "definition that expands against the library on every pass, titled "
+            "in Kometa's own shape. 21 genres on the production movie library "
+            "and 14 on the shows, inside the engine's default "
+            "`max_collections` of 50, so this pack pins no cap. Ordered "
+            "newest-first, which is upstream's own `release.desc`; upstream "
+            "caps each collection at nothing and this engine's search limit "
+            "defaults to 50, which is the one number here that is not "
+            "Kometa's. The genre attribute's own caveat stands and is why the "
             "family is built by SEARCH rather than from the section listing, "
-            "which Phase 9a's probe found truncates to two tags per item "
-            "(row %d)." % (DYNAMIC_ENGINE_ROW, STRANDED_FILTER_ROW)
+            "which phase 9a's probe found truncates to two tags per item (row "
+            "%d). To build something other than what this pack builds, copy it "
+            "into a `definitions:` entry of your own and edit it there -- a "
+            "preset is a key, not a copy of the definitions it stands for."
+            % STRANDED_FILTER_ROW
         ),
         kometa_source="defaults/both/genre.yml",
         library_types=_BOTH,
-        readiness=GATED,
-        gated_row=DYNAMIC_ENGINE_ROW,
+        collections=(
+            PresetCollection(
+                title="Genres", builder="dynamic", params=packs.GENRE_PARAMS,
+            ),
+        ),
     ),
     Preset(
         key="content_franchises",
@@ -1265,18 +1351,14 @@ CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
 
 # --- the LOCATION category ----------------------------------------------------
 #
-# Three packs, one blocker, and it moved in phase 10a. The include/exclude,
-# addon-merge and title-format machinery each of these three files configures
-# IS the dynamic engine, and that engine SHIPPED -- so "there is nothing to
-# transcribe until it exists" is no longer what these rows are waiting for.
-# What is left is named in each description: Kometa reads their values off
-# TMDb's origin-country data, which is a full-library TMDb walk rather than a
-# ``listFilterChoices`` enumeration, and the Plex ``country`` TAG that DID ship
-# as a dynamic type is a different value set.
+# Two packs, one blocker, plus one that shipped. The include/exclude, addon-
+# merge and title-format machinery each of these three files configures IS the
+# dynamic engine, and that engine shipped in phase 10a. What separates them now
+# is where their VALUES come from: ``country`` is a Plex tag this service can
+# enumerate, so that pack ships; ``region`` and ``continent`` are groupings of
+# TMDb's origin-country data, which is a full-library TMDb walk and not an
+# enumeration at all.
 _LOCATION_PACKS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
-    ("location_country", "Countries", "defaults/movie/country.yml",
-     "One collection per country of origin, with Kometa's per-country name and "
-     "flag styling.", _MOVIE),
     ("location_region", "Regions", "defaults/movie/region.yml",
      "One collection per world region (Nordic, Balkan, Southeast Asia and the "
      "rest of Kometa's grouping).", _MOVIE),
@@ -1285,7 +1367,43 @@ _LOCATION_PACKS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
      "packs.", _MOVIE),
 )
 
-LOCATION_PRESETS: tuple[Preset, ...] = tuple(
+# The pack that ships, out of the comprehension because it is no longer one of
+# a kind with its neighbours: it has a producer and they do not.
+_COUNTRY_PRESET = Preset(
+    key="location_country",
+    category="location",
+    name="Countries",
+    description=(
+        "One collection per country the library's own metadata names, with "
+        "Kometa's own list of 255 country names and the addon merges that fold "
+        "Plex's spellings into them -- 'Bolivarian Republic of Venezuela' "
+        "becomes Venezuela -- transcribed from `defaults/movie/country.yml`. "
+        "Movie libraries only, as upstream has it. Built by `builder: "
+        "dynamic`, `type: country`: 63 values on the production movie library, "
+        "measured by phase 10a's probe, and the same Plex `country` tag "
+        "upstream enumerates, so this is Kometa's own value set and not a "
+        "near-miss for it. Kometa's title shape (the country's name, and "
+        "nothing else) ships unchanged. `max_collections` is pinned at 256 -- "
+        "that include list plus the leftovers bucket, which is the most this "
+        "family can ever build -- so a library with a wider spread than the "
+        "one measured is not refused by a number nobody set. What the include "
+        "list costs: a Plex country title outside those 255 names lands in "
+        "'Other Countries' rather than getting a collection of its own. "
+        "Ordered newest-first, upstream's own `release.desc`; the 50-item "
+        "search limit each collection carries is this engine's default and not "
+        "Kometa's, which sets none. To build something else, copy this pack "
+        "into a `definitions:` entry of your own and edit it there."
+    ),
+    kometa_source="defaults/movie/country.yml",
+    library_types=_MOVIE,
+    collections=(
+        PresetCollection(
+            title="Countries", builder="dynamic", params=packs.COUNTRY_PARAMS,
+        ),
+    ),
+)
+
+LOCATION_PRESETS: tuple[Preset, ...] = (_COUNTRY_PRESET,) + tuple(
     Preset(
         key=key,
         category="location",
@@ -1395,25 +1513,45 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
             "endpoint. But the SEARCH path answers: 9b's live probe read 46 "
             "audioLanguage values straight off the library and searched them "
             "(docs/research/plex-search-probe/README.md). So the data path "
-            "now exists and so does the enumerator: one collection per distinct "
+            "exists and so does the enumerator: one collection per distinct "
             "value, with the naming and lifecycle machinery, SHIPPED in phase "
-            "10a as `builder: dynamic`, `type: audio_language`, so an operator "
-            "can build this family today by writing a definition. What is "
-            "still missing is the PRESET -- turning one catalog row into a "
-            "family is the preset-expansion story, phase 10b, and it is what "
-            "row %d tracks. Two things any such preset must carry: Kometa "
-            "expands a base code to every variant the library holds and joins "
-            "them with the enclosing block's conjunction, so a language predicate under "
-            "`all:` matches NOTHING (0 against 24 under `any:`, measured); "
-            "and the value vocabulary is a mix of 2-letter, locale, 3-letter, "
+            "10a, and this row is that engine pointed at Kometa's pack -- "
+            "`builder: dynamic`, `type: audio_language`, one definition that "
+            "expands against the library on every pass. Two things the preset "
+            "carries because 9b measured them: Kometa expands a base code to "
+            "every variant the library holds and joins them with the enclosing "
+            "block's conjunction, so a language predicate under `all:` matches "
+            "NOTHING (0 against 24 under `any:`, measured); and the value "
+            "vocabulary is a mix of 2-letter, locale, 3-letter, "
             "script-qualified and one literal english, so no single "
-            "normalisation target is correct."
-            % (STRANDED_FILTER_ROW, DYNAMIC_ENGINE_ROW)
+            "normalisation target is correct. Which is why the buckets are "
+            "named from Plex's own choice titles -- the fallback branch "
+            "upstream itself ships, since Kometa names them from TMDb's "
+            "ISO-639-1 table at run time and this service has no such table; "
+            "vendoring one is roadmap row %d, and it would change names only, "
+            "never membership. Kometa's own 187-code include list ships with "
+            "it, so a code outside that list lands in 'Other Audio' rather "
+            "than getting a collection of its own; 34 of the 46 the production "
+            "movie library holds are on the list. `max_collections` is pinned "
+            "at 188 -- that include list plus the leftovers bucket, which is "
+            "the most this family can ever build however wide the library is, "
+            "so no library is refused by a number nobody set. Ordered "
+            "newest-first, upstream's own "
+            "`release.desc`; the 50-item search limit each collection carries "
+            "is this engine's default and not Kometa's, which sets none. To "
+            "build something else, copy this pack into a `definitions:` entry "
+            "of your own and edit it there."
+            % (STRANDED_FILTER_ROW, TMDB_LANGUAGE_NAME_ROW)
         ),
         kometa_source="defaults/both/audio_language.yml",
         library_types=_BOTH,
-        readiness=GATED,
-        gated_row=DYNAMIC_ENGINE_ROW,
+        collections=(
+            PresetCollection(
+                title="Audio languages",
+                builder="dynamic",
+                params=packs.AUDIO_LANGUAGE_PARAMS,
+            ),
+        ),
     ),
     Preset(
         key="media_subtitle_language",
@@ -1696,20 +1834,27 @@ TIME_PRESETS: tuple[Preset, ...] = (
         description=(
             "'Best of the 1980s' and its neighbours: one collection per decade "
             "the library covers, each the hundred highest-rated films in it. "
-            "The same per-key top-N the year pack needs, over decades the "
-            "library turns out to hold -- and both halves SHIPPED in phase "
-            "10a: `type: decade` is one of the ten dynamic types (movie-only, "
-            "because Plex's decade filter is, which is why this row is too) "
-            "and the per-key sort and limit are the engine's. A definition "
-            "builds this family today; roughly a dozen decades is well inside "
-            "the default `max_collections`. What is missing is the PRESET, "
-            "phase 10b's preset-expansion story, which is what row %d tracks."
-            % DYNAMIC_ENGINE_ROW
+            "Built by the per-value engine phase 10a shipped -- `builder: "
+            "dynamic`, `type: decade`, one definition that expands against the "
+            "library on every pass -- and movie-only, because Plex's decade "
+            "filter is. The title shape and the per-key ordering are "
+            "transcribed from `defaults/movie/decade.yml`: this is the one "
+            "Kometa pack that pins its own `critic_rating.desc` and `limit: "
+            "100` rather than taking its template's defaults, and the hundred "
+            "in the sentence above is that pin. Twelve decades on the "
+            "production movie library, inside the engine's default "
+            "`max_collections` of 50, so this pack pins no cap. To build "
+            "something other than what this pack builds -- the 25 best of each "
+            "decade, say -- copy it into a `definitions:` entry of your own "
+            "and edit it there."
         ),
         kometa_source="defaults/movie/decade.yml",
         library_types=_MOVIE,
-        readiness=GATED,
-        gated_row=DYNAMIC_ENGINE_ROW,
+        collections=(
+            PresetCollection(
+                title="Decades", builder="dynamic", params=packs.DECADE_PARAMS,
+            ),
+        ),
     ),
     Preset(
         key="time_seasonal",
@@ -1743,12 +1888,12 @@ TIME_PRESETS: tuple[Preset, ...] = (
 # setting-backed):
 #
 #   awards           15 / 0 / 1     charts           10 / 0 / 1
-#   content           1 / 3 / 0     content_ratings   7 / 0 / 1
-#   location          0 / 3 / 0     media             1 / 3 / 0
+#   content           2 / 2 / 0     content_ratings   7 / 0 / 1
+#   location          1 / 2 / 0     media             2 / 2 / 0
 #   people            1 / 4 / 0     production        1 / 2 / 0
-#   time              0 / 3 / 0
+#   time              1 / 2 / 0
 #
-# -- 57 rows: 36 presets an operator can switch on today, 18 that name what
+# -- 57 rows: 40 presets an operator can switch on today, 14 that name what
 # they would build and the roadmap row that would let them, and 3 rendered
 # switches for families that already ship behind a boolean.
 CATALOG: tuple[Preset, ...] = (

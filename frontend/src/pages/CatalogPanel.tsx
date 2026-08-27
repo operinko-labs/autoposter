@@ -133,9 +133,12 @@ function buildsLabel(preset: CatalogPreset): string | null {
   if (preset.years_title === null) {
     return titles === "" ? null : `Builds: ${titles}`;
   }
-  // The dynamic half is reported as a shape, never as titles: which years the
-  // dataset carries is not knowable from a table.
-  const dynamic = `one per ceremony, named "${preset.years_title}"`;
+  // The dynamic half is reported as a SHAPE, never as titles -- which years
+  // the dataset carries, or which values the library holds, is not knowable
+  // from a table. The whole clause is served by the catalog so the two
+  // families that have one (award years, dynamic packs) read the same way and
+  // neither is assembled here.
+  const dynamic = preset.years_title;
   return titles === ""
     ? `Builds ${dynamic}`
     : `Builds: ${titles}, plus ${dynamic}`;

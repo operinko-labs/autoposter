@@ -416,9 +416,10 @@ export interface CatalogPreset {
   /** The static collection titles this preset builds. Empty for a preset
    * whose collections are all dynamic. */
   titles: string[];
-  /** The shape of the dynamic titles ("Cannes <year>"), or null where the
-   * preset builds none. Not a title that will exist -- which years the
-   * dataset carries is not knowable here. */
+  /** The whole clause describing this preset's dynamic family ('one per
+   * ceremony, named "Cannes <year>"'), or null where the preset builds none.
+   * Not a title that will exist -- which years the dataset carries, or which
+   * values the library holds, is not knowable here. */
   years_title: string | null;
   description: string;
   /** The Kometa defaults file this reproduces, verbatim, or an honest

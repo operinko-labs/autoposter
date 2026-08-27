@@ -265,13 +265,13 @@ def test_the_awards_category_is_every_ceremony_but_the_oscars():
 CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "awards": (15, 0, 1),
     "charts": (10, 0, 1),
-    "content": (1, 3, 0),
+    "content": (2, 2, 0),
     "content_ratings": (7, 0, 1),
-    "location": (0, 3, 0),
-    "media": (1, 3, 0),
+    "location": (1, 2, 0),
+    "media": (2, 2, 0),
     "people": (1, 4, 0),
     "production": (1, 2, 0),
-    "time": (0, 3, 0),
+    "time": (1, 2, 0),
 }
 
 
@@ -409,7 +409,9 @@ def test_an_award_preset_derives_its_facts_from_the_event_registry():
         assert preset.name == event.name
         assert preset.titles() == [award.title for award in event.awards.values()]
         assert preset.library_types == event.library_types
-        assert preset.years_title() == event.year_title % "<year>"
+        assert preset.years_title() == (
+            'one per ceremony, named "%s"' % (event.year_title % "<year>")
+        )
 
 
 def test_the_years_placeholder_derivation_matches_the_shipped_oscars_one():
@@ -536,6 +538,165 @@ def test_every_ready_preset_at_once_never_builds_one_title_twice():
         titles = _managed_titles(config, library_type)
         repeated = sorted({title for title in titles if titles.count(title) > 1})
         assert not repeated, (library_type, repeated)
+
+
+# --- the dynamic packs -------------------------------------------------------
+
+
+def _dynamic_rows() -> list[tuple[Preset, catalog.PresetCollection, dict]]:
+    """Every READY row that ships a Kometa dynamic pack, with its params.
+
+    A list built from the table rather than a hand-kept key list: a pack added
+    to the catalog is held to the contract below without anybody remembering to
+    add it here, which is the failure mode a literal tuple of seven keys has.
+    """
+    return [
+        (preset, collection, dict(collection.params))
+        for preset in READY_PRESETS
+        for collection in preset.collections
+        if collection.builder == "dynamic"
+    ]
+
+
+def test_there_are_dynamic_packs_to_hold_to_the_contract():
+    """The guard the tests below need: an empty list is a pass that proves
+    nothing, and pytest reports it as a pass."""
+    assert {preset.key for preset, _, _ in _dynamic_rows()} == {
+        "content_genres",
+        "time_decade",
+        "media_audio_language",
+        "location_country",
+    }
+
+
+def test_a_pack_is_exactly_one_definition_whose_type_the_engine_enumerates():
+    """A pack is ONE definition that expands at run time, not a table of many.
+
+    The definition validates against ``DynamicParams`` as it is constructed
+    (``CollectionDefinition._params_must_satisfy_the_builders_own_model``), so
+    a pack naming a type this service does not enumerate, or a param the
+    builder does not take, cannot even be expanded -- this asserts the shape
+    around that, which construction alone does not say.
+    """
+    from autoposter.collections.dynamic_types import DYNAMIC_TYPES
+
+    for preset, collection, params in _dynamic_rows():
+        assert params["type"] in DYNAMIC_TYPES, preset.key
+        row = DYNAMIC_TYPES[params["type"]]
+        # The pack's library types are the TYPE's -- a movie-only type under a
+        # both-libraries preset would build nothing on half its libraries and
+        # say nothing about it.
+        assert set(preset.library_types) <= set(row.kinds), preset.key
+        for library_type in preset.library_types:
+            definitions = preset.definitions(library_type)
+            assert len(definitions) == 1, (preset.key, library_type)
+            assert definitions[0].builder == "dynamic"
+            assert definitions[0].title == collection.title
+
+
+def test_every_pack_says_which_dynamic_type_it_is_in_words():
+    """The row an operator READS names the type they would write themselves.
+
+    Every pack description already tells them the customisation path is a
+    ``definitions:`` entry of their own; that path is worthless without the
+    ``type:`` to write in it.
+    """
+    for preset, _collection, params in _dynamic_rows():
+        assert "`type: %s`" % params["type"] in preset.description, preset.key
+
+
+def test_every_opinion_a_pack_pins_is_stated_in_the_row():
+    """Global constraint 10, enforced rather than trusted.
+
+    A cap, an include list or a divergent title format is an OPINION
+    (``catalog.py``'s "opinion-free until asked"), and an opinion that ships
+    without appearing in the description is one the operator cannot find. The
+    numbers are asserted as strings because that is how they appear in the
+    sentence an operator reads.
+    """
+    for preset, _collection, params in _dynamic_rows():
+        cap = params.get("max_collections")
+        if cap is not None:
+            assert str(cap) in preset.description, (preset.key, cap)
+        if params.get("include"):
+            assert "include" in preset.description, preset.key
+        if params.get("title_format"):
+            assert "title" in preset.description.lower(), preset.key
+
+
+def test_a_language_packs_include_list_still_has_norwegian_in_it():
+    """The YAML 1.1 footgun the transcription record found, pinned.
+
+    ``defaults/both/audio_language.yml`` writes Norwegian as an unquoted
+    ``- no``, which PyYAML loads as the boolean ``False`` -- so a transcription
+    round-tripped through a YAML loader silently drops the one code the
+    production movie library actually holds. The record's §1 says the string is
+    there; this is what makes a re-transcription that loses it fail.
+    """
+    packs = [
+        (preset, params)
+        for preset, _collection, params in _dynamic_rows()
+        if params["type"].endswith("_language")
+    ]
+    assert packs, "no language pack ships, so this proves nothing"
+    for preset, params in packs:
+        assert "no" in params["include"], preset.key
+        assert len(params["include"]) == 187, preset.key
+
+
+def test_a_packs_placeholder_title_is_listed_and_reserved():
+    """The pair C3 asks to read honestly.
+
+    ``titles()`` reports the placeholder -- which IS a title this service
+    manages, because the engine reserves ``{definition.title}`` for a smart
+    builder that lists none (``engine.py:976-977``) -- and ``years_title()``
+    reports the SHAPE of what the family really builds. Neither claims a
+    collection title the library has not been asked about.
+    """
+    for preset, collection, _params in _dynamic_rows():
+        assert collection.title in preset.titles(), preset.key
+        shape = preset.years_title()
+        assert shape is not None, preset.key
+        assert shape.startswith("one per "), (preset.key, shape)
+        assert "named " in shape, (preset.key, shape)
+
+
+def test_a_packs_shape_line_comes_from_the_renderer_the_builder_uses():
+    """Derived, not restated -- the module's second property, applied to the
+    picker's copy. If the shape line were written by hand it could name a title
+    format the engine does not use; here it comes out of the same
+    ``render_title`` the builder titles collections with, so it cannot.
+    """
+    from autoposter.collections.dynamic_titles import render_title
+    from autoposter.collections.dynamic_types import DYNAMIC_TYPES
+
+    for preset, _collection, params in _dynamic_rows():
+        row = DYNAMIC_TYPES[params["type"]]
+        noun = row.name.replace("_", " ")
+        key_name = catalog.DYNAMIC_KEY_PLACEHOLDER % noun
+        expected = render_title(
+            params.get("title_format") or row.title_format,
+            key_name,
+            catalog.DYNAMIC_LIBRARY_TYPE,
+            key=key_name,
+            values=(),
+            auto_type=row.name,
+        )
+        assert expected in preset.years_title(), preset.key
+
+
+def test_a_packs_placeholder_reaches_the_managed_titles_helper():
+    """Task 2's fix, exercised by a shipped row rather than a double: the
+    placeholder is what the collision test counts for this family, and it is
+    what the engine reserves on a real pass."""
+    keys = [preset.key for preset, _, _ in _dynamic_rows()]
+    config = build_config(_document(keys))
+
+    for library_type in LIBRARY_TYPES:
+        titles = _managed_titles(config, library_type)
+        for preset, collection, _params in _dynamic_rows():
+            if library_type in preset.library_types:
+                assert collection.title in titles, (preset.key, library_type)
 
 
 # --- the gated rows ----------------------------------------------------------
@@ -1406,7 +1567,7 @@ async def test_the_catalog_endpoint_lists_every_category_and_the_awards(
         "key": "award_cannes",
         "name": "Cannes",
         "titles": ["Cannes Golden Palm Winners"],
-        "years_title": "Cannes <year>",
+        "years_title": 'one per ceremony, named "Cannes <year>"',
         "description": cannes["description"],
         "kometa_source": "defaults/award/cannes.yml",
         "library_types": ["Movie"],
@@ -1463,31 +1624,27 @@ def test_the_listing_is_the_endpoints_only_source_of_truth():
     assert active == ["award_venice"]
 
 
-def test_the_three_presets_9b_readjudicated_stay_gated_on_the_engine_row():
-    """Phase 9b proved the DATA path for all three and none of the shapes.
+def test_the_presets_9b_readjudicated_carry_their_evidence_into_the_pack():
+    """Phase 9b proved the DATA path for three presets and none of the shapes;
+    10a shipped the enumerator; 10b ships the packs. What must not be lost in
+    that sequence is the evidence -- each of these rows names the live probe
+    that measured its value count, so the next reader does not re-run it.
 
-    Each of these is "one collection per <distinct value>", so what they wait
-    on is the per-value enumerator and not an attribute -- the same
-    adjudication ``production_studio`` already carries, whose attribute has
-    shipped since 9a and which is still gated. The stranded-filter row is no
-    longer the right citation for any of them: it describes a client-side
-    limitation that a search does not have. Pinned because the tempting move
-    after a probe comes back positive is to flip readiness, and a preset that
-    goes READY without an enumerator builds one collection named after one
-    value.
+    ``media_audio_language`` ships here; ``production_network`` and
+    ``media_subtitle_language`` ship in the task after this one. The assertion
+    is written over whichever of them is READY, so it holds in both states
+    rather than needing an edit between two commits of one phase.
     """
-    keys = ("production_network", "media_audio_language", "media_subtitle_language")
-    for key in keys:
+    for key in ("production_network", "media_audio_language",
+                "media_subtitle_language"):
         preset = catalog.BY_KEY[key]
-        assert preset.readiness == GATED, key
-        assert preset.gated_row == catalog.DYNAMIC_ENGINE_ROW, key
-        # Each names the evidence, so the next reader does not re-run the probe
-        # to find out what it said.
         assert "live probe" in preset.description, key
         assert "enumerat" in preset.description, key
+        if preset.readiness == GATED:
+            assert preset.gated_row == catalog.DYNAMIC_ENGINE_ROW, key
 
-    # The client-side strand is still named -- it is why these cannot simply
-    # be built out of a library walk -- but it is no longer what they wait on.
+    # The client-side strand is still named -- it is why these cannot be built
+    # out of a library walk -- but it was never what they waited on.
     assert "row %d" % catalog.STRANDED_FILTER_ROW in catalog.BY_KEY[
         "media_audio_language"
     ].description
