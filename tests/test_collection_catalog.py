@@ -117,12 +117,89 @@ def _managed_titles(config, library_type: str) -> list[str]:
             # recognisable without the flag: it carries ``titles``.
             assert not hasattr(builder, "titles"), definition.builder
         if smart:
-            titles += sorted(builder.titles(library_type, config))
+            # ``engine.definition_titles`` (engine.py:968-978) is the shape
+            # this mirrors, and it has TWO branches for a smart builder: one
+            # that lists a family it derives itself (``cs_bucket``), and a
+            # fall-through to the definition's own title for one that lists
+            # nothing. ``smart_filter`` manages exactly the collection its
+            # definition names; ``DynamicBuilder`` declares no ``titles`` at
+            # all because a dynamic family's titles are the library's and
+            # offline enumeration is impossible (9c decision C6). Both reserve
+            # the definition's title and nothing else, so that is what this
+            # helper counts for them.
+            lister = getattr(builder, "titles", None)
+            titles += (
+                sorted(lister(library_type, config))
+                if lister
+                else [definition.title]
+            )
         elif pattern is not None:
             continue
         else:
             titles.append(definition.title)
     return titles
+
+
+def test_the_titles_helper_answers_for_a_smart_builder_that_lists_nothing(
+    monkeypatch,
+):
+    """THE break site row 93 noted, proven before it is fixed.
+
+    ``engine.definition_titles`` falls through to the definition's own title
+    for a smart builder that declares no ``titles`` (``engine.py:976-977``) --
+    ``smart_filter`` manages the one collection its definition names, and
+    ``DynamicBuilder`` declares none at all because a dynamic family's titles
+    are the LIBRARY's (``builders/dynamic.py``, "No ``titles()``,
+    deliberately"). This helper called ``titles`` unconditionally, so the first
+    dynamic preset to reach it raised ``AttributeError`` instead of reporting
+    the placeholder title the engine reserves -- and the whole-table collision
+    test below is the one that would have raised.
+
+    A double rather than a shipped row, because at this commit no shipped
+    preset builds with ``dynamic`` yet; Task 3's packs are what make this
+    branch load-bearing.
+    """
+    double = Preset(
+        key="content_dynamic_double",
+        category="content",
+        name="Dynamic double",
+        description="test double",
+        kometa_source=catalog.NOT_KOMETA + "written for this test",
+        library_types=("Movie",),
+        collections=(
+            catalog.PresetCollection(
+                title="Genre double",
+                builder="dynamic",
+                params=(("type", "genre"),),
+            ),
+        ),
+    )
+    monkeypatch.setattr(catalog, "CATALOG", catalog.CATALOG + (double,))
+
+    titles = _managed_titles(_config(["content_dynamic_double"]), "Movie")
+
+    assert "Genre double" in titles
+    assert titles.count("Genre double") == 1
+
+
+def test_the_titles_helper_still_refuses_a_family_builder_that_lost_its_flag(
+    monkeypatch,
+):
+    """The guard beside the branch Task 2 changed, pinned.
+
+    Both reads in the helper have a default, so a builder that owns a family of
+    titles and has lost its ``smart`` flag would be probed as a single title
+    and could hide a collision. A family builder is recognisable without the
+    flag -- it carries ``titles`` -- and the guard is what says so. ``imdb_award``
+    is an ordinary non-smart builder the example config already builds with, so
+    giving it a ``titles`` attribute is exactly the shape the guard describes.
+    """
+    monkeypatch.setattr(
+        REGISTRY["imdb_award"], "titles", lambda *a, **k: set(), raising=False
+    )
+
+    with pytest.raises(AssertionError, match="imdb_award"):
+        _managed_titles(_config([]), "Movie")
 
 
 def _config(presets: list[str], **collections):
