@@ -587,6 +587,12 @@ SEASONAL_WINDOW_ROW = 160  # day-level windows, and a collection fed by several
                            # builders -- filed out of 70, which delivered a
                            # whole-month gate and one builder per definition
 KEYWORD_RESOLUTION_ROW = 161  # TMDb keyword name -> id, which no earlier row owns
+RELATIVE_YEAR_ROW = 171    # the `current_year`/`current_year-N` value grammar,
+                           # the half of that row phase 10a did NOT ship
+TMDB_ORIGIN_COUNTRY_ROW = 189  # the two dynamic types that are a TMDb walk and
+                               # not an enumeration -- filed by phase 10a-1's
+                               # wrap, and cited (not waited on) by the three
+                               # location packs, whose values are that walk's
 
 _BOTH = ("Movie", "Show")
 _MOVIE = ("Movie",)
@@ -783,12 +789,15 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
         name="Genres",
         description=(
             "One collection per genre the library actually holds -- Kometa's "
-            "largest pack. Waiting on two things at once: the per-value engine "
-            "that enumerates a library's genres, and the genre attribute "
-            "itself, which Phase 9a's probe found the Plex section listing "
-            "truncates to two tags per item (row %d) -- so even with the engine "
-            "a genre collection built from the listing would be full, "
-            "plausible and wrong." % STRANDED_FILTER_ROW
+            "largest pack. The per-value engine it needs SHIPPED in phase 10a "
+            "(`builder: dynamic`, `type: genre`), so an operator can build this "
+            "family today by writing a definition. What is still missing is the "
+            "PRESET: turning one catalog row into a family of collections is "
+            "the preset-expansion story, phase 10b, and it is what row %d "
+            "tracks. The genre attribute's own caveat stands and is why the "
+            "family is built by SEARCH rather than from the section listing, "
+            "which Phase 9a's probe found truncates to two tags per item "
+            "(row %d)." % (DYNAMIC_ENGINE_ROW, STRANDED_FILTER_ROW)
         ),
         kometa_source="defaults/both/genre.yml",
         library_types=_BOTH,
@@ -804,9 +813,16 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
             "with Kometa's addon merges (Prometheus into Alien, Minions into "
             "Despicable Me) and its 'Collection' suffix removed. The pack is a "
             "per-value enumeration of what the library owns, not a fixed list "
-            "of franchises, so it needs the dynamic engine rather than a "
-            "transcription -- the tmdb_collection builder it would call is "
-            "already here."
+            "of franchises. The engine that does per-value enumeration SHIPPED "
+            "in phase 10a -- but not a type this pack can use: "
+            "`tmdb_collection` is not a library enumeration at all, and "
+            "`collections/dynamic_types.py`'s scope note names it among the "
+            "deliberate absences, so there is no `type:` an operator can write "
+            "for this family today. The single-collection tmdb_collection "
+            "builder it would call is already here; what is outstanding is "
+            "that dynamic type, and then the PRESET -- the preset-expansion "
+            "story of phase 10b, which is what row %d tracks."
+            % DYNAMIC_ENGINE_ROW
         ),
         kometa_source="defaults/movie/franchise.yml",
         library_types=_MOVIE,
@@ -825,8 +841,9 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
             "is pure and cannot search. A keyword id written out here from "
             "memory is exactly the invention this table refuses, so the pack "
             "waits for the resolution step, which is row %d. Not the per-value "
-            "engine: based.yml is a FIXED four-collection pack, so row %d "
-            "landing would not close this one." % (
+            "engine: based.yml is a FIXED four-collection pack, and row %d "
+            "has since landed (phase 10a) without closing this one, exactly as "
+            "this row said it would not." % (
                 KEYWORD_RESOLUTION_ROW, DYNAMIC_ENGINE_ROW
             )
         ),
@@ -1247,11 +1264,14 @@ CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
 
 # --- the LOCATION category ----------------------------------------------------
 #
-# Three packs, one blocker: each is one collection per distinct value of an
-# attribute nothing enumerates yet. Kometa reads the values off TMDb's
-# origin-country data through its own dynamic engine, and the include/exclude,
+# Three packs, one blocker, and it moved in phase 10a. The include/exclude,
 # addon-merge and title-format machinery each of these three files configures
-# IS that engine -- there is nothing to transcribe until it exists.
+# IS the dynamic engine, and that engine SHIPPED -- so "there is nothing to
+# transcribe until it exists" is no longer what these rows are waiting for.
+# What is left is named in each description: Kometa reads their values off
+# TMDb's origin-country data, which is a full-library TMDb walk rather than a
+# ``listFilterChoices`` enumeration, and the Plex ``country`` TAG that DID ship
+# as a dynamic type is a different value set.
 _LOCATION_PACKS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("location_country", "Countries", "defaults/movie/country.yml",
      "One collection per country of origin, with Kometa's per-country name and "
@@ -1270,9 +1290,18 @@ LOCATION_PRESETS: tuple[Preset, ...] = tuple(
         category="location",
         name=name,
         description=(
-            "%s Waiting on the per-value engine: the values are whatever the "
-            "library turns out to hold, which nothing here can enumerate "
-            "without scanning it." % description
+            "%s The per-value engine SHIPPED in phase 10a, so the machinery "
+            "this pack is made of -- enumeration, addon merges, key-name "
+            "overrides, title formats -- is here. Two things are not. Its "
+            "values are Kometa's, read off TMDb's origin-country data, and "
+            "that is a full-library TMDb walk rather than an enumeration, "
+            "which is why `origin_country` is not one of the ten dynamic types "
+            "that shipped (row %d); the Plex `country` tag IS enumerable (63 "
+            "values on the production movie library, measured by phase 10a's "
+            "probe) but it is a different value set. And the PRESET itself is "
+            "the preset-expansion story of phase 10b, which is what row %d "
+            "tracks."
+            % (description, TMDB_ORIGIN_COUNTRY_ROW, DYNAMIC_ENGINE_ROW)
         ),
         kometa_source=source,
         library_types=library_types,
@@ -1365,10 +1394,15 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
             "endpoint. But the SEARCH path answers: 9b's live probe read 46 "
             "audioLanguage values straight off the library and searched them "
             "(docs/research/plex-search-probe/README.md). So the data path "
-            "now exists and only the enumerator is missing -- one collection "
-            "per distinct value, with the naming and lifecycle machinery, is "
-            "row %d. Two things any such preset must carry: Kometa expands a "
-            "base code to every variant the library holds and joins them with "
+            "now exists and so does the enumerator: one collection per distinct "
+            "value, with the naming and lifecycle machinery, SHIPPED in phase "
+            "10a as `builder: dynamic`, `type: audio_language`, so an operator "
+            "can build this family today by writing a definition. What is "
+            "still missing is the PRESET -- turning one catalog row into a "
+            "family is the preset-expansion story, phase 10b, and it is what "
+            "row %d tracks. Two things any such preset must carry: Kometa "
+            "expands a base code to every variant the library holds and joins "
+            "them with "
             "the enclosing block's conjunction, so a language predicate under "
             "`all:` matches NOTHING (0 against 24 under `any:`, measured); "
             "and the value vocabulary is a mix of 2-letter, locale, 3-letter, "
@@ -1393,7 +1427,13 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
             "cost; through a search they are readable now -- 9b's live probe "
             "read 115 subtitleLanguage values and searched them, and the "
             "`all:`-conjunction trap is worse here, 0 against 442 under "
-            "`any:`. What is missing is the per-value enumerator, row %d."
+            "`any:`. The per-value enumerator is no longer missing either: "
+            "`type: subtitle_language` SHIPPED in phase 10a and a definition "
+            "builds this family today. What is missing is the PRESET, which is "
+            "phase 10b's preset-expansion story and what row %d tracks -- with "
+            "one caveat the enumeration itself measured: 115 values is past "
+            "the engine's default `max_collections` of 50, so this family "
+            "refuses until that cap is raised on purpose."
             % DYNAMIC_ENGINE_ROW
         ),
         kometa_source="defaults/both/subtitle_language.yml",
@@ -1566,9 +1606,17 @@ PRODUCTION_PRESETS: tuple[Preset, ...] = (
             "One collection per studio, over the several hundred Kometa's "
             "include list names -- the animation studios above all. The studio "
             "attribute itself IS filterable here (it is one of the nine tier-1 "
-            "rows that ship), but the pack is a per-value enumeration with "
-            "per-studio name overrides and addon merges, and that machinery is "
-            "the engine, not a transcription."
+            "rows that ship), and the pack is a per-value enumeration with "
+            "per-studio name overrides and addon merges -- machinery that is "
+            "the engine, not a transcription, and the engine SHIPPED in phase "
+            "10a (`builder: dynamic`, `type: studio`), so a definition builds "
+            "this family today. What is missing is the PRESET, phase 10b's "
+            "preset-expansion story, which is what row %d tracks. One number "
+            "any such preset has to answer for: phase 10a's probe measured "
+            "824 studio values on the production movie library, far past "
+            "the engine's default `max_collections` of 50, so the family "
+            "refuses until that cap is raised on purpose."
+            % DYNAMIC_ENGINE_ROW
         ),
         kometa_source="defaults/both/studio.yml",
         library_types=_BOTH,
@@ -1591,12 +1639,20 @@ PRODUCTION_PRESETS: tuple[Preset, ...] = (
             "returned its shows, whose `studio` values (S4C, ITV1) disagree "
             "with the network name -- so `network` carries information no "
             "other shipped attribute does, and is not a `studio` alias "
-            "(docs/research/plex-search-probe/README.md). This preset moves "
-            "off the stranded row and onto the engine row %d. Breadth caveat "
-            "for whoever builds it: the mechanism is proven at ONE network "
-            "with two shows; 91 exist, and nothing has yet checked that they "
-            "all behave."
-            % (STRANDED_FILTER_ROW, DYNAMIC_ENGINE_ROW)
+            "(docs/research/plex-search-probe/README.md). This preset moved "
+            "off the stranded row and onto the engine row %d, and the engine "
+            "then landed: `type: network` SHIPPED in phase 10a, show-only, "
+            "with its choices listing probed at the same 91 values before it "
+            "was allowed to ship -- so a definition builds this family today. "
+            "What is still missing is the PRESET, phase 10b's "
+            "preset-expansion story, which is what row %d tracks. Breadth "
+            "caveat for whoever builds it: the mechanism is proven at ONE "
+            "network with two shows; 91 exist, and nothing has yet checked "
+            "that they all behave. Upstream additionally gates this type on "
+            "the New Plex TV Agent and this service does not, so a library "
+            "whose agent cannot answer enumerates nothing and the family "
+            "refuses rather than creating a partial pack."
+            % (STRANDED_FILTER_ROW, DYNAMIC_ENGINE_ROW, DYNAMIC_ENGINE_ROW)
         ),
         kometa_source="defaults/show/network.yml",
         library_types=_SHOW,
@@ -1614,11 +1670,19 @@ TIME_PRESETS: tuple[Preset, ...] = (
         name="Best of each year",
         description=(
             "Kometa's 'Best of <year>' for the last ten years: one collection "
-            "per year, each the ten highest-rated titles released in it. Needs "
-            "the per-value engine for two reasons -- the years are counted "
-            "relative to today, and the membership is a top-N by rating within "
-            "each value, which is the engine's per-key sort and limit rather "
-            "than a filter."
+            "per year, each the ten highest-rated titles released in it. Two "
+            "of the three things it needed have landed. The per-value engine "
+            "SHIPPED in phase 10a with `type: year`, and so did the per-key "
+            "sort and limit that make each collection a top-N by rating rather "
+            "than a filter -- so a definition builds 'one collection per year "
+            "the library holds' today (the probe counted 87 of them on the "
+            "production movie library, past the default `max_collections` of "
+            "50). What did NOT ship is the counting relative to today: the "
+            "`current_year`/`current_year-N` value grammar is the half of row "
+            "%d that phase 10a left open, and without it 'the last ten years' "
+            "has no expression here. The PRESET is the third thing, and it is "
+            "phase 10b's preset-expansion story, which row %d tracks."
+            % (RELATIVE_YEAR_ROW, DYNAMIC_ENGINE_ROW)
         ),
         kometa_source="defaults/both/year.yml",
         library_types=_BOTH,
@@ -1633,7 +1697,14 @@ TIME_PRESETS: tuple[Preset, ...] = (
             "'Best of the 1980s' and its neighbours: one collection per decade "
             "the library covers, each the hundred highest-rated films in it. "
             "The same per-key top-N the year pack needs, over decades the "
-            "library turns out to hold."
+            "library turns out to hold -- and both halves SHIPPED in phase "
+            "10a: `type: decade` is one of the ten dynamic types (movie-only, "
+            "because Plex's decade filter is, which is why this row is too) "
+            "and the per-key sort and limit are the engine's. A definition "
+            "builds this family today; roughly a dozen decades is well inside "
+            "the default `max_collections`. What is missing is the PRESET, "
+            "phase 10b's preset-expansion story, which is what row %d tracks."
+            % DYNAMIC_ENGINE_ROW
         ),
         kometa_source="defaults/movie/decade.yml",
         library_types=_MOVIE,
