@@ -267,6 +267,25 @@ def test_a_token_nothing_resolves_refuses_at_load_and_names_it(params, token):
     assert token in str(refusal.value)
 
 
+def test_a_malformed_token_is_refused_like_a_wrong_one():
+    """T5 review, Minor 4. ``_TOKEN`` matches ``<<...>>`` and a half-written
+    ``<<value>`` matches nothing at all -- so it passed every validator and
+    would have been POSTed into a live collection's name exactly as typed,
+    which is the one outcome this whole family of refusals exists to prevent.
+    A well-formed ``<<key_name>>`` sits alongside it so this reaches the
+    unbalanced-delimiter check rather than the separate "must name the key"
+    one, which a text with no well-formed token at all would trip first.
+    """
+    with pytest.raises(ValidationError) as caught:
+        DynamicParams(type="genre", title_format="Top <<key_name>> movies <<value")
+    assert "<<" in str(caught.value)
+    assert "unbalanced" in str(caught.value).lower()
+
+    # And the well-formed one still passes, so the fix is not "refuse angle
+    # brackets".
+    assert DynamicParams(type="genre", title_format="Top <<key_name>> movies")
+
+
 def test_the_definition_fields_a_family_cannot_apply_refuse_at_load():
     """Every one of the seven ``cs_bucket`` refuses, for the same reasons: this
     definition names a FAMILY, and Plex owns each member's membership."""
@@ -377,7 +396,7 @@ def test_the_route_this_builder_emits_through_refuses_a_decade_operator_form():
 async def test_a_family_labels_every_collection_it_creates(session):
     """C4's mechanism: family membership is a LABEL, which is Kometa's own
     handle for the same job (``append_label: str(map_name)``, meta.py:1421) and
-    is what 10a-2's sweep will enumerate. Never an offline title list."""
+    is what 10a-2's sweep enumerates. Never an offline title list."""
     section = FakeSection()
     definition = _definition()
     await REGISTRY["dynamic"].apply(_ctx(session, section, definition))
@@ -476,6 +495,28 @@ async def test_a_synthetic_addon_key_in_the_leftovers_bucket_refuses_rather_than
     assert "Eighties" in refusals[0], "...and the value Plex cannot be asked for"
 
 
+async def test_a_bucket_refusal_does_not_leak_the_parsers_field_path(session):
+    """T5 review, deferred nit. ``parse_filters`` prefixes its refusals with the
+    dotted config path it was given, so the operator's sentence read '... and
+    params.year: 'Eighties' is not a whole number'. The prefix is this module's
+    own argument, not anything the operator wrote."""
+    definition = _definition(params={
+        "type": "year", "include": ["1990"], "addons": {"Eighties": ["1989"]},
+        "other_name": "Everything else",
+    })
+    section = FakeSection(choices=[
+        FakeChoice("1990", "1990"), FakeChoice("1989", "1989"),
+    ])
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    refused = [one for one in actions if "refused" in one]
+    assert refused, actions
+    assert "params.year" not in refused[0], refused[0]
+    assert "whole number" in refused[0] or "integer" in refused[0]
+
+
 async def test_an_empty_addon_key_in_the_leftovers_bucket_refuses_the_same_way(session):
     """The same hole on a TAG type, so the catch is not an ``int`` special
     case: an empty ``addons`` key survives the params model, reaches
@@ -498,6 +539,52 @@ async def test_an_empty_addon_key_in_the_leftovers_bucket_refuses_the_same_way(s
     assert "Everything Else" in refusals[0]
     assert "Genres" in refusals[0]
     assert "empty value" in refusals[0]
+
+
+async def test_a_real_key_named_other_refuses_the_leftovers_bucket(session):
+    """T4 review, deferred minor (upstream-shared). ``other`` is the leftovers
+    bucket's literal key (meta.py:1306-1310), so a library that genuinely holds
+    a value spelled ``other`` gives one key two meanings -- and the refusal
+    hint the emitter prints for the leftovers bucket would be printed for the
+    real one. Refused, contained to that bucket, rather than guessed."""
+    definition = _definition(params={
+        "type": "genre", "include": ["Horror"], "other_name": "Everything else",
+    })
+    section = FakeSection(choices=[
+        FakeChoice("1138", "Horror"), FakeChoice("77", "other"),
+    ])
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert any("Top Horror movies" in one and "created" in one for one in actions)
+    assert any(
+        "'other'" in one and "leftovers" in one and "refused" in one
+        for one in actions
+    ), actions
+
+
+async def test_a_language_family_expands_a_base_code_at_the_emitter(session):
+    """10a-1 review, Minor N-4. The language seam -- a family's values are
+    ``choice.key``s, and ``LibraryTagResolver._language_keys`` expands a base
+    code to every variant the library holds (plex_search.py:518-538) -- was
+    correct by reading and pinned only at the resolver. Pinned here at the
+    EMITTER, the way ``decade``'s key/title split already is."""
+    definition = _definition(params={
+        "type": "audio_language", "include": ["es"],
+    })
+    section = FakeSection(choices=[
+        FakeChoice("es", "Spanish"), FakeChoice("es-419", "Spanish (Latin America)"),
+        FakeChoice("en", "English"),
+    ])
+    ctx = _ctx(session, section, definition)
+
+    await DynamicBuilder().apply(ctx)
+
+    assert len(section.fetched) == 1, section.fetched
+    assert "audioLanguage=es&or=1&audioLanguage=es-419" in section.fetched[0], (
+        section.fetched
+    )
 
 
 # --- the refusals, which RETURN ----------------------------------------------
@@ -566,6 +653,38 @@ async def test_a_fan_out_past_the_cap_refuses_with_both_numbers(session):
     assert "genre" in actions[0], "the refusal names the type that fanned out"
     assert "include" in actions[0], "...and the other way out"
     assert section._existing == {}
+
+
+async def test_the_cap_refusal_counts_buckets_and_values_separately(session):
+    """T5 review, Minor N-3. The message said "%r enumerates that many values
+    there" while counting BUCKETS -- post-merge, post-drop -- so an addons-heavy
+    family reported a number the library never said. Both numbers now, because
+    the operator's next move (raise the cap, or narrow with `include:`) depends
+    on which one is large.
+
+    An addons bucket's members are excluded from having a collection of their
+    own (dynamic_keys.py:144-146), so merging a two-value library into one
+    bucket alone would leave exactly one collection -- never enough to breach
+    any valid cap. A third, un-merged value keeps the family at two buckets
+    while the library itself reports three values, which is exactly the gap
+    the old wording hid.
+    """
+    definition = _definition(params={
+        "type": "genre", "max_collections": 1,
+        "addons": {"Scary": ["Horror", "Drama"]},
+    })
+    section = FakeSection(choices=[
+        FakeChoice("1138", "Horror"), FakeChoice("9", "Drama"),
+        FakeChoice("77", "Comedy"),
+    ])
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert len(actions) == 1
+    assert "3 value(s)" in actions[0], actions      # Horror, Drama, Comedy
+    assert "2 collections" in actions[0], actions
+    assert "max_collections" in actions[0]
 
 
 async def test_raising_the_cap_lets_the_same_family_build(session):
@@ -848,6 +967,28 @@ async def test_an_addons_report_names_the_members_and_not_the_bucket(session):
     assert len(inert) == 1, actions
     assert "'Dama'" in inert[0] and "addons" in inert[0]
     assert "'Eighties'" not in inert[0]
+
+
+async def test_an_addons_key_with_every_member_absent_is_named_as_dead(session):
+    """T2 review, Minor M-3. A ``addons`` key whose every member is absent from
+    the library builds no collection at all (dynamic_keys.py:144-146,
+    ``test_a_synthetic_bucket_with_no_present_member_builds_nothing``), which
+    looked identical in the old report to a bucket that merely lost one of
+    several members -- and those two are very different for the operator: one
+    means the bucket is fine and one means it is dead. Named separately, using
+    the two-set machinery already in ``_inert``."""
+    definition = _definition(params={
+        "type": "genre", "addons": {"Kids": ["Zzz", "Yyy"]},
+    })
+    section = FakeSection()
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert "Top Kids movies" not in section._existing
+    inert = [one for one in actions if "names no value" in one]
+    assert len(inert) == 1, actions
+    assert "'Kids'" in inert[0], inert[0]
 
 
 async def test_an_include_by_display_value_is_reported_inert_on_a_keyed_type(

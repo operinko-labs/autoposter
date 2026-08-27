@@ -842,12 +842,8 @@ async def _sweep(
     if not config.collections.delete_unconfigured:
         for title, _, _, family_title in candidates:
             results.append(_swept(title, library, (
-                "%r is no longer built by the %r family; "
-                "set collections.delete_unconfigured to delete it"
-                % (title, family_title)
-                if family_title else
-                "%r is no longer built by any definition; "
-                "set collections.delete_unconfigured to delete it" % title
+                "%r: %s; set collections.delete_unconfigured to delete it"
+                % (title, _why(family_title))
             )))
         return results
 

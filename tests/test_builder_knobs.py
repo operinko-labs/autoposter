@@ -911,7 +911,7 @@ async def test_a_family_sweep_is_reported_not_performed_when_not_opted_in(
 
     assert gone.deleted is False
     assert (
-        "'Top Western movies' is no longer built by the 'Genres' family; "
+        "'Top Western movies': the 'Genres' family no longer builds it; "
         "set collections.delete_unconfigured to delete it" in run.actions
     )
 

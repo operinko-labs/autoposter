@@ -177,6 +177,13 @@ _REFUSED_KEYS: dict[str, str] = {
 # line are two matches rather than one span from the first to the last.
 _TOKEN = re.compile(r"<<[^<>]*>>")
 
+# What is left after every well-formed token is removed. A half-written
+# ``<<key_name>`` matches ``_TOKEN`` not at all, so without this it passed every
+# validator and shipped literally into a live collection's name -- the exact
+# outcome the token check exists to prevent, reached by typing one bracket
+# fewer.
+_UNBALANCED = re.compile(r"<<|>>")
+
 # What ``dynamic_titles.render_title`` actually substitutes, and therefore the
 # whole set a ``title_format`` may name. Upstream resolves two more families
 # that have nowhere to come from here -- a template's ``default:`` values
@@ -394,6 +401,14 @@ class DynamicParams(BaseModel):
                         else "This one takes " + ", ".join(sorted(allowed)),
                     )
                 )
+            if _UNBALANCED.search(_TOKEN.sub("", text)):
+                raise ValueError(
+                    "`%s` has unbalanced token delimiters: %r. A token is "
+                    "written `<<name>>` with two brackets on each side, and a "
+                    "half-written one matches nothing here -- it would be "
+                    "written into the collection's name exactly as it stands, "
+                    "which is what this check exists to prevent" % (where, text)
+                )
         return self
 
     @model_validator(mode="after")
@@ -585,12 +600,13 @@ class DynamicBuilder:
             ))
         if len(titled) > params.max_collections:
             return self._refused(ctx, definition.title, (
-                "this would create %d collections in %r -- %r enumerates that "
-                "many values there -- and `max_collections` is %d, so nothing "
-                "was created. Narrow the family with `include:` or `exclude:`, "
-                "or raise `max_collections` past %d if that is really what you "
-                "want"
-                % (len(titled), ctx.library, params.type,
+                "this would create %d collections in %r -- %r reports %d "
+                "value(s) there, which `include:`, `exclude:` and `addons:` "
+                "narrow to that many buckets -- and `max_collections` is %d, so "
+                "nothing was created. Narrow the family with `include:` or "
+                "`exclude:`, or raise `max_collections` past %d if that is "
+                "really what you want"
+                % (len(titled), ctx.library, params.type, len(enumerated),
                    params.max_collections, len(titled))
             ))
 
@@ -599,6 +615,41 @@ class DynamicBuilder:
         # what the operator's narrowing did with it -- and both are decided
         # before any key is built.
         actions: list[str] = []
+
+        # ``OTHER_KEY`` is the leftovers bucket's literal key (meta.py:
+        # 1306-1310), so a library that genuinely holds a value spelled "other"
+        # gives one key two meanings: the emitter's leftovers hint would be
+        # printed for the real value's bucket, and an operator's `exclude:
+        # [other]` would be ambiguous. Refused for that one bucket rather than
+        # guessed. Upstream shares the collision and does not notice it.
+        #
+        # ``family_titles`` claims the leftovers bucket LAST
+        # (dynamic_titles.py:331-335), so it is always the LAST entry here with
+        # ``key == OTHER_KEY``. The collision shows up one of two ways: an
+        # earlier entry with the same key is a real value that was `include`d
+        # in its own right, or -- the more common shape -- the real value was
+        # never `include`d and surfaces instead among the leftovers bucket's
+        # own ``values``, where its spelling collides with the bucket's key.
+        other_positions = [
+            index for index, unit in enumerate(titled) if unit.key == OTHER_KEY
+        ]
+        if other_positions:
+            leftovers = titled[other_positions[-1]]
+            if len(other_positions) > 1 or OTHER_KEY in leftovers.values:
+                drop = other_positions[0] if len(other_positions) > 1 else other_positions[-1]
+                real = titled[drop]
+                titled = tuple(
+                    unit for index, unit in enumerate(titled) if index != drop
+                )
+                actions.append(
+                    "refused %r: %r holds a %r value spelled %r, which is also "
+                    "the leftovers bucket's own key, so one key would mean two "
+                    "things here -- `exclude:` or `key_name_override:` could not "
+                    "tell them apart either. Drop `other_name:` to build the "
+                    "real value's collection, or `exclude: [%s]` to build only "
+                    "the leftovers"
+                    % (real.title, ctx.library, params.type, OTHER_KEY, OTHER_KEY)
+                )
 
         # ``family_titles`` drops an ``ABSENT_KEY`` key outright and is right
         # to: it is Plex's "these items have no value for this field", not a
@@ -644,8 +695,10 @@ class DynamicBuilder:
         # family derived, so a key whose write refuses below is still a key this
         # family builds and its collection survives the sweep: a Plex write that
         # failed is not an operator narrowing their family. The set is
-        # deliberately MUTABLE and is the object the sweep reads, so a per-key
-        # decision below can take a title back out of it in place.
+        # deliberately MUTABLE -- but only ever NARROWED, with ``discard``, by a
+        # per-key decision below: nothing may add a title back once removed, and
+        # nothing may replace ``ctx.run_cache``'s entry with a different object,
+        # because the sweep reads this exact one.
         # ``titled`` is non-empty here -- every refusal above that could leave it
         # empty or unreached already returned -- and that matters because the
         # engine reads absence and emptiness as opposites: no record protects the
@@ -708,13 +761,21 @@ class DynamicBuilder:
                 logger.warning(
                     "%s: %r was not built: %s", ctx.library, unit.title, refusal
                 )
+                # ``parse_filters`` prefixes every refusal with the dotted
+                # config path it was handed, which is this module's own
+                # argument (``field="params"``) and not anything the operator
+                # wrote. The prefix is deterministic, so removing exactly it is
+                # safe and falling back to the whole message is honest.
+                reason = str(refusal).removeprefix(
+                    "params.%s: " % row.search_key
+                )
                 actions.append(
                     "refused %r in the %r family: it asks this library for %s "
                     "as %r values, and %s.%s"
                     % (
                         unit.title, definition.title,
                         ", ".join(repr(one) for one in values), params.type,
-                        refusal,
+                        reason,
                         " The leftovers bucket's values are the keys no "
                         "`include:` entry named, so an `addons` key the library "
                         "does not itself hold arrives here as if it were one of "
@@ -838,6 +899,15 @@ class DynamicBuilder:
                 "%s: %r" % (where, one)
                 for one in keys if str(one) not in present
             ]
+        # T2 review, Minor M-3. Every individual absent member above is
+        # already named, but a bucket whose members are ALL absent builds no
+        # collection at all (dynamic_keys.py:144-146) -- a fact the per-member
+        # lines do not say, so it is named here too.
+        named += [
+            "addons: %r (every member is absent, so it builds nothing)" % key
+            for key, members in params.addons.items()
+            if members and all(str(one) not in by_key for one in members)
+        ]
         if not named:
             return None
         return (
