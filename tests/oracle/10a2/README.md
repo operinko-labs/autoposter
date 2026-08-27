@@ -25,14 +25,39 @@ The bucket shapes are NOT a table in either driver. The gate walks
 `assets/collections/content_rating_cs.json`, so a table edit cannot leave a
 proof about the old table standing.
 
-## The four premises
+## The five premises
 
 Each is named in `member_sets.py` with its citation, so a reviewer can reject a
-premise rather than re-derive the whole thing. P4 is the only one that is a real
-question rather than a formality, and the driver MEASURES it: `plexapi_side.py`
-runs plexapi's actual `_validateFilterField`, so whichever field spelling
-plexapi produces for each library type is the one the proof compares against --
-and the gate runs the show case under BOTH spellings.
+premise rather than re-derive the whole thing.
+
+| | Premise | Evidence |
+| --- | --- | --- |
+| P1 | `field=a,b` is OR over the values | **live**: `contentRating=17%2C16` → **527 = 291 + 236**, the union to the item; AND would have been 0 |
+| P2 | `push`/`or=1`/`pop` groups, `or` is OR and `and` is AND | **live**: the same five subtitle variants, 442 under `any:` and 0 under `all:` |
+| P3 | `sort`/`limit`/`includeGuids` decide what is *returned*, never what matches | source (`builder.py:4287-4289`, `library.py:1266`) |
+| P4 | under `type=N`, `contentRating` and `<libtype>.contentRating` name one field | inference, with live corroboration: `show.network=126689` answered under `type=2` |
+| P5 | an unencoded `+` reaches the matcher as a SPACE (the **server's** decoder) | **live**: `studio=Columbia+Pictures` → **43**, the `%20` baseline exactly |
+
+P1's and P5's measurements are phase 10a-2 Task 3's own two read-only GETs,
+recorded at `docs/research/plex-dynamic-probe/README.md` §5. P2's and P4's are
+9b's (`docs/research/plex-search-probe/README.md`).
+
+**What P4 is and is not.** The driver MEASURES which spelling plexapi *emits* --
+`plexapi_side.py` runs plexapi's actual `_validateFilterField`, so whichever
+field spelling plexapi produces for each library type is the one the proof
+compares against, and the gate runs the show case under BOTH. That is a
+measurement of the input, not of the premise: `member_sets._strip_libtype`
+removes the difference before either side is evaluated, so the proof *cannot*
+detect an inequivalence between the two spellings and assumes it away. The live
+evidence that does exist is 9b's — `?type=2&sort=titleSort&show.network=126689`
+answered on a real show section
+(`docs/research/plex-search-probe/README.md:217`), and 9b already ships the
+dotted spelling for this field (`filters.py:613`).
+
+**What P5 does and does not decide.** It settles *which* six of the ten
+URL-unsafe ratings move the member set, and *whose* side is at fault. It does
+not decide whether the divergence exists — see "No decoding model rescues the
+port" in Part 2.
 
 ## The verdict
 
@@ -88,7 +113,9 @@ Three things to read off it:
    to say so.
 2. **The field spellings differ in the middle case** -- plexapi emits a bare
    `contentRating` where this engine emits `show.contentRating` -- and the
-   members still agree. That is premise P4 exercised rather than assumed.
+   members still agree. That is the *emitted spelling* measured and both run;
+   their semantic equivalence remains premise P4, which `_strip_libtype`
+   assumes rather than tests (see "The five premises" above).
 3. **Buckets 15 and 16 (movies) and 7 through 12 (shows) resolve empty.**
    Neither grammar is asked to build a query for them, here or in production
    (`reconcile.py:609`). Addendum 3's semantics, walked rather than described.
@@ -350,11 +377,16 @@ URL-unsafe values in the shipped table: 10
 Six of the ten move the member set:
 
 - `+` decodes as a SPACE, so `12+` is searched for as `12 ` and matches nothing
-  (`12+`, `gb/0+`, `gb/9+`, `gb/14+`, `R+ - Mild Nudity`).
+  (`12+`, `gb/0+`, `gb/9+`, `gb/14+`, `R+ - Mild Nudity`). **Measured** at the
+  live server, probe P5: `studio=Columbia+Pictures` returns the same 43 items as
+  the recorded `studio=Columbia%20Pictures`
+  (`docs/research/plex-dynamic-probe/README.md` §5).
 - `&` ENDS the parameter, so `R - 17+ (violence & profanity)` becomes a
   truncated `contentRating=R - 17  (violence ` plus a junk parameter
-  ` profanity)` -- which, being ANDed into the same group, makes the query
-  select nothing at all.
+  ` profanity)`. In a single-value bucket the two are ANDed into the implicit
+  group and the query selects nothing at all; in a real, mixed bucket they land
+  in the `or=1` group and the junk term is simply never true — see the blast
+  radius below.
 
 The remaining four carry a space only. A literal space is not a legal URL
 character, but a lenient parser reads it back unchanged, so the member set
@@ -363,15 +395,105 @@ survives; they are pinned on the bytes assertion alone.
 `/` is fine: plexapi escapes it to `%2F` and this engine sends it raw, and both
 decode to `/`. So `gb/U`, `no/A` and their kin are equivalent.
 
+### No decoding model rescues the port
+
+P5 is measured, so the partition above is the real one. But it is worth
+recording that the *finding* never depended on it, because that is the strongest
+form of it and the one Task 4 should act on:
+
+| | Model F (`+` → space; measured, and what this proof assumes) | Model R (`+` literal) |
+| --- | --- | --- |
+| old `12%2B` | `12+` ✅ | `12+` ✅ |
+| new `12+` | `12 ` ❌ | `12+` ✅ |
+| old `G+-+All+Ages` | `G - All Ages` ✅ | `G+-+All+Ages` ❌ |
+| new `G - All Ages` | `G - All Ages` ✅ | `G - All Ages` ✅ |
+| new `…&…` | truncates ❌ | truncates ❌ |
+
+Under Model R six ratings *still* move — the four space-only ones plus
+`R+ - Mild Nudity` and `R - 17+ (violence & profanity)`, all of which carry a
+space — except that the **old, shipped** side is the one at fault. **There is no
+decoding model under which the two grammars agree on all ten**, and the `&` row
+is URL syntax rather than server interpretation, so it holds in both columns.
+
+The fix is premise-independent for the same reason: `quote()` emits `%2B`,
+`%20` and `%26`, which decode identically under either model.
+
+### The blast radius: a silent SUBSET, not an empty collection
+
+The single-value shape above is the *rare* one. Every one of the ten unsafe
+ratings co-occurs with safe ones in the shipped table:
+
+```
+key 17  unsafe ['gb/14+', 'R - 17+ (violence & profanity)']  alongside ['gb/18','gb/15','TV-14','R','TVMA','TV-MA', ...]
+key 18  unsafe ['R - 17+ (violence & profanity)','R+ - Mild Nudity','Rx - Hentai']  alongside ['gb/18','MA-17','TVMA','TV-MA','R','NC-17', ...]
+key 1   unsafe ['gb/0+','G - All Ages']  alongside ['gb/U','G','TV-G','TV-Y', ...]
+```
+
+In a real bucket those terms sit in an **OR** group (`or=1` present), so a
+broken term does not empty the collection — the surviving terms still match and
+the collection ships **plausible but short**. Bucket `17` against a vocabulary
+holding both, verbatim:
+
+```
+bucket 17 values ['R', 'R - 17+ (violence & profanity)', 'TV-14', 'TV-MA', 'gb/14+']
+  old     ?includeGuids=1&sort=movie.originallyAvailableAt%3Adesc&type=1&contentRating=R%2CR+-+17%2B+%28violence+%26+profanity%29%2CTV-14%2CTV-MA%2Cgb%2F14%2B
+  new     ?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=R - 17+ (violence & profanity)&or=1&contentRating=TV-14&or=1&contentRating=TV-MA&or=1&contentRating=gb/14+&pop=1
+  members old=['R', 'R - 17+ (violence & profanity)', 'TV-14', 'TV-MA', 'gb/14+']
+  members new=['R', 'TV-14', 'TV-MA']
+  EQUAL=False  SUBSET=True  EMPTY=False
+  lost    ['R - 17+ (violence & profanity)', 'gb/14+']
+```
+
+Three of five survive. A strict, non-empty subset missing exactly the two unsafe
+values, with the injected ` profanity)` term OR'd into the group and simply
+never true. `test_a_mixed_bucket_degrades_to_a_silent_subset` asserts every line
+of that.
+
+That is the worse class. An empty smart collection is at least noticeable; a
+plausible-but-short one is precisely the "silent wrongness" `search_url.py`'s own
+module docstring names as the risk the whole phase sits on. It is also what the
+migration paragraph has to describe, because it is what an operator would get.
+
+**Which libraries.** Only those whose `contentRating` vocabulary carries one of
+the ten — `derive_buckets` includes an addon only when the library actually
+holds it. The `+` group (`12+`, `gb/0+`, `gb/9+`, `gb/14+`) is the realistic one
+for a European library; `R+ - Mild Nudity` / `Rx - Hentai` /
+`R - 17+ (violence & profanity)` are MyAnimeList-style and would show up in an
+anime library.
+
+**Likely latent on this server.** 9b's probe recorded this production library's
+22 content ratings as numeric age values — `17`, `16`, `13`, `15`, `14` the
+commonest (`docs/research/plex-search-probe/README.md:161-163`) — none of which
+is URL-unsafe. So the defect is very probably latent *here*, and the blast
+radius above is an inference from the shipped table rather than a measurement of
+this operator's libraries. One read-only `listFilterChoices("contentRating")`
+per section would settle whether it is urgent or latent; it was not run.
+
+**The junk parameter is modelled, not measured.** This proof treats the injected
+` profanity)` as a benign always-false term. A real server might instead reject
+an unknown filter field outright. Either outcome is a divergence, so the verdict
+is unaffected — but the specific sentence about what happens to it is a model
+output.
+
 ### How the divergence is recorded
 
-Two `xfail(strict=True)` tests at the bottom of the gate --
-`test_the_new_grammar_encodes_every_shipped_rating` (ten cases, the bytes) and
-`test_a_plus_or_ampersand_rating_still_selects_the_same_items` (six cases, the
-meaning). Strict is the point: the day the encoding is fixed they XPASS, strict
-turns an XPASS into a failure, and whoever fixed it has to delete the markers --
-at which moment the equivalence above covers the whole shipped table instead of
-the URL-safe part of it.
+Three `xfail(strict=True)` tests at the bottom of the gate:
+
+| Test | Cases | What it pins |
+| --- | --- | --- |
+| `test_the_new_grammar_encodes_every_shipped_rating` | 10 | the bytes |
+| `test_a_plus_or_ampersand_rating_still_selects_the_same_items` | 6 | the meaning, single-value bucket |
+| `test_a_mixed_bucket_selects_the_same_items_through_both_grammars` | 1 | the meaning, the realistic mixed bucket |
+
+Strict is the point: the day the encoding is fixed they XPASS, strict turns an
+XPASS into a failure, and whoever fixed it has to delete the markers -- at which
+moment the equivalence above covers the whole shipped table instead of the
+URL-safe part of it.
+
+`test_a_mixed_bucket_degrades_to_a_silent_subset` is deliberately **not**
+marked: it asserts the subset shape as it is TODAY, and it reds on the same fix,
+which is the same forcing function by another route. It is deleted with the
+markers.
 
 ## Why the proof can fail
 

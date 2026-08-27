@@ -304,3 +304,74 @@ docker compose -p p10at2 -f docker-compose.yml -f .superpowers/isolated-db.yml \
 The script is not committed: it exists for the length of the probe and this file
 is the artefact that ships, the same arrangement
 `docs/research/plex-search-probe/README.md` §8 documents.
+
+---
+
+## 5. Addendum — phase 10a-2 Task 3, the two decoder GETs (2026-08-27)
+
+Run against the same production instance, **read-only, two GETs and nothing
+else**. Both settle a premise the Common Sense equivalence proof
+(`tests/oracle/10a2/`) was resting on without measurement. Same scrub rule as
+the rest of this file: the placeholder is `<plex-host>`, and the script printed
+counts only — never a URL, never the token, which arrived from `.env` for the
+length of the run.
+
+### Probe P5 — does the server fold `+` to a space?
+
+The proof's decoder reads a query the way plexapi *encodes* it
+(`urlencode` = `quote_plus`, so a space goes out as `+`). Whether the **server**
+folds `+` back to a space was never measured; it decides whether `contentRating=12+`
+is searched for as `12+` or as `12 `, and therefore which six of the ten
+URL-unsafe shipped ratings move the member set and which side is at fault.
+
+Reuses 9b's recorded baseline: `studio=Columbia%20Pictures` → **43 items**
+(`docs/research/plex-search-probe/README.md:129`, `:142`). Re-sent with the
+space spelled `+` instead:
+
+```
+GET <plex-host>/library/sections/1/all?type=1&sort=titleSort&studio=Columbia+Pictures
+    -> HTTP 200   totalSize=43
+```
+
+**43, identical to the `%20` baseline. The server folds `+` to a space
+(Model F).** Decisive in both directions by construction: `studio` is a `str`
+row, so the bare form is a *contains* match on both paths
+(`docs/research/plex-search-probe/README.md:148`); had the server taken `+`
+literally, no studio contains the substring `Columbia+Pictures` and the answer
+would have been 0.
+
+So premise P5 — "an unencoded `+` in a value reaches the matcher as a space" —
+is **measured, not inferred**. The equivalence proof's partition stands as
+written: six of the ten ratings move the member set, and the **new** side is the
+one at fault.
+
+### Probe P1 ride-along — is a comma-joined multi-value tag OR?
+
+P1 ("`field=a,b` is OR over the values") rested on plexapi's construction
+(`','.join(result)`, `library.py:1102`) plus the shipped family's live
+membership agreeing — strong, but not the live-measurement standard P2 has.
+`content_rating` is single-valued per item (`video.py:393`), so the two models
+are maximally far apart: OR returns the union, AND returns nothing.
+
+Baselines, from 9b: this library's ratings are numeric, `('17', 291)` and
+`('16', 236)` its two commonest, and `contentRating=17` → **291** server-side
+(`docs/research/plex-search-probe/README.md:161-163`, `:168-169`).
+
+```
+GET <plex-host>/library/sections/1/all?type=1&sort=titleSort&contentRating=17%2C16
+    -> HTTP 200   totalSize=527
+```
+
+**527 = 291 + 236, exactly.** The union, to the item, with no drift in either
+baseline. AND would have returned 0. **P1 is now measured at P2's standard.**
+
+### How they were run
+
+One short script on the host — it needs `.env` and the network, so it did not
+run in the test container. Not committed, same arrangement as §4's: it read
+`AUTOPOSTER_PLEX_TOKEN` from `.env`, sent the token as an `X-Plex-Token`
+**header** so it never appeared in a URL or on a command line, sent
+`X-Plex-Container-Size: 0` so the responses carried `totalSize` and zero item
+payload, and wrapped each request class-name-only so a failure's message —
+which quotes the tokenised URL — could not reach the output. The two lines
+above are its entire output, verbatim apart from the host placeholder.
