@@ -39,9 +39,12 @@ time.
 Kometa's own handle for the same job -- it labels each generated collection with
 the map name (``append_label``, meta.py:1421) and its ``sync:`` sweep deletes
 labelled collections no key regenerated (meta.py:1300, :1456-1461) -- and it is
-what phase 10a-2's family sweep will enumerate, through this service's own
-delete guards. Until then the engine's sweep REPORTS family members and never
-considers them for deletion (``engine._sweep``).
+what ``engine._sweep`` enumerates, through this service's own delete guards.
+This module's half of that is ``generated_titles``: the pass's record of every
+title the family derived, written before anything is created, so a Plex write
+that failed cannot read as an operator narrowing their family. No record at all
+means the family did not decide, and the sweep then considers none of its
+collections.
 
 **No ``titles()``, deliberately.** ``engine.definition_titles`` offers a smart
 builder that hook, and ``cs_bucket`` uses it because its titles come from a
@@ -104,7 +107,10 @@ from autoposter.collections.smart import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["FAMILY_LABEL_PREFIX", "DynamicBuilder", "DynamicParams", "family_label"]
+__all__ = [
+    "FAMILY_LABEL_PREFIX", "DynamicBuilder", "DynamicParams", "family_label",
+    "generated_titles",
+]
 
 # The label every collection in one family carries, beside the ownership label.
 # Prefixed rather than the bare definition title (which is what Kometa uses,
@@ -136,10 +142,11 @@ _REFUSED_KEYS: dict[str, str] = {
     "sync": (
         "`sync: true` upstream is a DELETE sweep -- it labels each generated "
         "collection and deletes labelled collections no key regenerated "
-        "(meta.py:1300, :1456-1461) -- not a sync mode. This service labels the "
-        "family already, and its own delete sweep for it ships in phase 10a-2, "
-        "through the `delete_unconfigured` and `max_deletes` guards every other "
-        "delete goes through. Until then this definition never deletes anything"
+        "(meta.py:1300, :1456-1461) -- not a sync mode. This service does that "
+        "sweep already, for every builder rather than for this one, and gates "
+        "it on `collections.delete_unconfigured` and `collections.max_deletes` "
+        "instead of on a per-definition boolean -- so a config mistake cannot "
+        "cascade into a wiped library one definition at a time"
     ),
     "other_template": (
         "`other_template:` names another Kometa TEMPLATE for the leftovers "
@@ -214,6 +221,35 @@ REFUSALS = (
 def family_label(definition) -> str:
     """The label every collection in ``definition``'s family carries."""
     return "%s%s" % (FAMILY_LABEL_PREFIX, definition.title)
+
+
+def _generated_key(label: str) -> str:
+    """The pass's run-cache key for one family's generated titles.
+
+    Keyed on the family LABEL rather than the definition title, because the
+    label is what the sweep has in hand when it finds a member: it matched the
+    collection on that label a line earlier.
+    """
+    return "dynamic:generated:%s" % label
+
+
+def generated_titles(run_cache: dict, definition) -> set[str] | None:
+    """What ``definition``'s family built this pass, or ``None``.
+
+    ``None`` is the FAIL-CLOSED answer and it means "this family did not get as
+    far as deciding": the definition was outside its schedule, or it refused at
+    the family level -- a library type its type cannot serve, an empty
+    enumeration, an all-excluded family, an over-cap fan-out, a duplicate title,
+    a dead filter lookup. A sweep must not delete a family's collections on a
+    pass that never enumerated the library: one transient ``listFilterChoices``
+    failure would otherwise read as "the operator narrowed the family" and take
+    every collection in it.
+
+    A set (not ``None``) is the family's own answer, and it is the set of every
+    title the family DERIVED -- written before a single collection is created,
+    so a key whose Plex write refused is still a key this family builds.
+    """
+    return run_cache.get(_generated_key(family_label(definition)))
 
 
 class DynamicParams(BaseModel):
@@ -453,6 +489,17 @@ class DynamicBuilder:
         """
         return family_label(definition)
 
+    def generated_titles(self, run_cache: dict, definition) -> set[str] | None:
+        """What this definition's family built this pass -- see the module
+        function of the same name for what ``None`` means.
+
+        A method as well as a module function for ``family_label``'s reason:
+        ``engine._sweep`` has a builder and a definition and no reason to import
+        this module by name. Growing these two methods is the whole protocol a
+        future family builder needs to join the sweep.
+        """
+        return generated_titles(run_cache, definition)
+
     async def apply(self, ctx: SmartContext) -> list[str]:
         definition = ctx.definition
         if definition is None:
@@ -531,6 +578,16 @@ class DynamicBuilder:
                 % (len(titled), ctx.library, params.type,
                    params.max_collections, len(titled))
             ))
+
+        # The sweep's input, written HERE -- after the family-level refusals,
+        # before a single collection is created. Seeded with every title the
+        # family derived, so a key whose write refuses below is still a key this
+        # family builds and its collection survives the sweep: a Plex write that
+        # failed is not an operator narrowing their family. The set is
+        # deliberately MUTABLE and is the object the sweep reads, so a per-key
+        # decision below can take a title back out of it in place.
+        generated: set[str] = {unit.title for unit in titled}
+        ctx.run_cache[_generated_key(family_label(definition))] = generated
 
         # The definition's own settings, plus the family label. ``model_copy``
         # rather than a re-validated construction, for ``engine._completed``'s

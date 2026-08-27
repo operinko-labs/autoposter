@@ -598,19 +598,15 @@ async def test_the_award_years_keep_their_collections_out_of_the_sweep(session):
     assert "Oscars Winners (recent ceremonies)" not in titles
 
 
-async def test_a_dynamic_familys_collections_are_reported_by_the_sweep_never_deleted(
+async def test_a_family_whose_enumeration_failed_keeps_all_its_collections(
     session,
 ):
-    """A dynamic family's titles are the LIBRARY's, so no definition's title set
-    contains them and the sweep would otherwise see every one of them as an
-    orphan on the first pass after they were created.
-
-    The family is recognised by its LABEL -- which is how Kometa tracks the same
-    membership (``append_label``, meta.py:1421) and how phase 10a-2's own family
-    sweep will enumerate it, through this service's delete guards. Reported
-    rather than silently skipped: an operator who narrows ``include:`` has to
-    see the leftovers named, and the report says which phase removes them.
-    """
+    """The 10a-1 report-only branch, replaced by the real sweep. This library
+    reports no genres at all, so the definition refuses at the family level and
+    records nothing -- and a pass that decided nothing must delete nothing.
+    Kept as its own test beside the seeded ones because it is the only one that
+    reaches the fail-closed state through a real refusal rather than through an
+    absent seed."""
     from autoposter.collections.builders.dynamic import family_label
 
     definition = CollectionDefinition(
@@ -632,9 +628,8 @@ async def test_a_dynamic_familys_collections_are_reported_by_the_sweep_never_del
         _config(delete_unconfigured=True), sweep=True,
     )
 
-    reported = [one for one in run.actions if "Top Horror movies" in one]
     assert orphan.deleted is False
-    assert any("10a-2" in one for one in reported), run.actions
+    assert any("did not build anything this pass" in one for one in run.actions)
     assert (
         await session.execute(
             select(ManagedCollection).where(
@@ -642,6 +637,299 @@ async def test_a_dynamic_familys_collections_are_reported_by_the_sweep_never_del
             )
         )
     ).scalar_one_or_none() is not None
+
+
+async def test_a_family_member_this_pass_did_not_build_is_swept(session):
+    """The other half of Kometa's `sync:` (meta.py:1456-1461), through OUR
+    guards. A collection carrying the family label that this pass's enumeration
+    no longer produces is an orphan of exactly the kind the sweep exists for --
+    the operator narrowed `include:`, or the library stopped holding the value.
+    """
+    from autoposter.collections.builders.dynamic import (
+        _generated_key, family_label,
+    )
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"},
+    )
+    kept = FakeCollection(
+        "Top Horror movies", [FakeItem("m1")],
+        labels=[LABEL, family_label(definition)],
+    )
+    gone = FakeCollection(
+        "Top Western movies", [FakeItem("m1")],
+        labels=[LABEL, family_label(definition)],
+    )
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[kept, gone])
+    for title in ("Top Horror movies", "Top Western movies"):
+        session.add(ManagedCollection(
+            library="Movies", title=title, kind="smart",
+            plex_rating_key="c-" + title, definition_hash="seed",
+        ))
+    await session.flush()
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition],
+        _config(delete_unconfigured=True), sweep=True,
+        run_cache_seed={
+            _generated_key(family_label(definition)): {"Top Horror movies"},
+        },
+    )
+
+    assert kept.deleted is False
+    assert gone.deleted is True
+    assert (
+        "deleted 'Top Western movies': the 'Genres' family no longer builds it"
+        in run.actions
+    )
+    assert not any("Top Horror movies" in one for one in run.actions), (
+        "a healthy member emits nothing -- fifty members would otherwise be "
+        "fifty lines of 'nothing was deleted' on every sweep-enabled pass"
+    )
+    assert (
+        await session.execute(
+            select(ManagedCollection).where(
+                ManagedCollection.title == "Top Western movies"
+            )
+        )
+    ).scalar_one_or_none() is None
+
+
+async def test_a_family_that_did_not_run_protects_every_one_of_its_collections(
+    session,
+):
+    """FAIL-CLOSED, and the reason this is a record rather than a re-derivation.
+
+    A pass where the definition was outside its schedule, or refused (a library
+    type it cannot serve, an empty enumeration, an all-excluded family, an
+    over-cap fan-out, a duplicate title, a Plex read that failed) has NOT
+    decided that the operator narrowed the family -- it has decided nothing.
+    Deleting on that would turn one transient `listFilterChoices` failure into
+    a deleted family. One line for the family, not one per member.
+    """
+    from autoposter.collections.builders.dynamic import family_label
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"},
+    )
+    orphan = FakeCollection(
+        "Top Horror movies", [FakeItem("m1")],
+        labels=[LABEL, family_label(definition)],
+    )
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[orphan])
+    session.add(ManagedCollection(
+        library="Movies", title="Top Horror movies", kind="smart",
+        plex_rating_key="c-Top Horror movies", definition_hash="seed",
+    ))
+    await session.flush()
+
+    # No seed: this library reports no genres at all, so the definition refuses
+    # at the family level and records nothing.
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition],
+        _config(delete_unconfigured=True), sweep=True,
+    )
+
+    assert orphan.deleted is False
+    assert any(
+        "did not build anything this pass" in one and "Genres" in one
+        for one in run.actions
+    ), run.actions
+    assert (
+        await session.execute(
+            select(ManagedCollection).where(
+                ManagedCollection.title == "Top Horror movies"
+            )
+        )
+    ).scalar_one_or_none() is not None
+
+
+async def test_a_family_member_without_the_ownership_label_is_never_swept(
+    session,
+):
+    """T5 review Minor 3, closed. The 10a-1 branch put the family check ABOVE
+    the ownership check, which was harmless while the branch only reported.
+    Now that it deletes, a collection carrying the family label but NOT ours --
+    an operator labelled it by hand, or stripped our label -- must fall out at
+    the same boundary every other candidate falls out at."""
+    from autoposter.collections.builders.dynamic import (
+        _generated_key, family_label,
+    )
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"},
+    )
+    theirs = FakeCollection(
+        "Top Western movies", [FakeItem("m1")],
+        labels=[family_label(definition)],
+    )
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[theirs])
+    session.add(ManagedCollection(
+        library="Movies", title="Top Western movies", kind="smart",
+        plex_rating_key="c-Top Western movies", definition_hash="seed",
+    ))
+    await session.flush()
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition],
+        _config(delete_unconfigured=True), sweep=True,
+        run_cache_seed={_generated_key(family_label(definition)): set()},
+    )
+
+    assert theirs.deleted is False
+    assert not any("deleted" in one for one in run.actions), run.actions
+
+
+async def test_a_protected_label_beats_the_family_sweep(session):
+    """Protected wins over everything, as it does for every other candidate."""
+    from autoposter.collections.builders.dynamic import (
+        _generated_key, family_label,
+    )
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"},
+    )
+    protected = FakeCollection(
+        "Top Western movies", [FakeItem("m1")],
+        labels=[LABEL, family_label(definition),
+                "Collection managed by Maintainerr"],
+    )
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[protected])
+    session.add(ManagedCollection(
+        library="Movies", title="Top Western movies", kind="smart",
+        plex_rating_key="c-Top Western movies", definition_hash="seed",
+    ))
+    await session.flush()
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition],
+        _config(delete_unconfigured=True, protect_labels=[
+            "Collection managed by Maintainerr",
+        ]), sweep=True,
+        run_cache_seed={_generated_key(family_label(definition)): set()},
+    )
+
+    assert protected.deleted is False
+    assert any("protected" in one for one in run.actions), run.actions
+
+
+async def test_a_family_sweep_is_reported_not_performed_when_not_opted_in(
+    session,
+):
+    """`delete_unconfigured` is off by default, and off means reported -- the
+    same posture every other candidate gets, and the message names the setting
+    that would act on it."""
+    from autoposter.collections.builders.dynamic import (
+        _generated_key, family_label,
+    )
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"},
+    )
+    gone = FakeCollection(
+        "Top Western movies", [FakeItem("m1")],
+        labels=[LABEL, family_label(definition)],
+    )
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[gone])
+    session.add(ManagedCollection(
+        library="Movies", title="Top Western movies", kind="smart",
+        plex_rating_key="c-Top Western movies", definition_hash="seed",
+    ))
+    await session.flush()
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition],
+        _config(), sweep=True,
+        run_cache_seed={_generated_key(family_label(definition)): set()},
+    )
+
+    assert gone.deleted is False
+    assert (
+        "'Top Western movies' is no longer built by the 'Genres' family; "
+        "set collections.delete_unconfigured to delete it" in run.actions
+    )
+
+
+async def test_a_dry_run_previews_a_family_sweep_without_deleting(session):
+    """``dry_run`` is the same guard for a family member as for any other
+    candidate, and the preview names the family: an operator who has just
+    narrowed ``include:`` sees exactly what arming the sweep would remove."""
+    from autoposter.collections.builders.dynamic import (
+        _generated_key, family_label,
+    )
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"},
+    )
+    gone = FakeCollection(
+        "Top Western movies", [FakeItem("m1")],
+        labels=[LABEL, family_label(definition)],
+    )
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[gone])
+    session.add(ManagedCollection(
+        library="Movies", title="Top Western movies", kind="smart",
+        plex_rating_key="c-Top Western movies", definition_hash="seed",
+    ))
+    await session.flush()
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition],
+        _config(delete_unconfigured=True, apply_to_plex=False), sweep=True,
+        run_cache_seed={_generated_key(family_label(definition)): set()},
+    )
+
+    assert gone.deleted is False
+    assert (
+        "would delete 'Top Western movies': the 'Genres' family no longer "
+        "builds it" in run.actions
+    ), run.actions
+    assert (
+        await session.execute(
+            select(ManagedCollection).where(
+                ManagedCollection.title == "Top Western movies"
+            )
+        )
+    ).scalar_one_or_none() is not None
+
+
+async def test_the_cap_refuses_a_family_sweep_entirely(session):
+    """``max_deletes`` counts a family's members alongside every other
+    candidate and refuses the WHOLE sweep past the cap. A narrowed ``include:``
+    that dropped forty keys is precisely the config edit the cap exists for --
+    deleting "the first five" of them would be the same accident spread over
+    eight passes."""
+    from autoposter.collections.builders.dynamic import (
+        _generated_key, family_label,
+    )
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"},
+    )
+    members = [
+        FakeCollection(
+            "Top %s movies" % name, [FakeItem("m1")],
+            labels=[LABEL, family_label(definition)],
+        )
+        for name in ("Western", "Noir", "Musical")
+    ]
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=members)
+    for member in members:
+        session.add(ManagedCollection(
+            library="Movies", title=member.title, kind="smart",
+            plex_rating_key="c-" + member.title, definition_hash="seed",
+        ))
+    await session.flush()
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition],
+        _config(delete_unconfigured=True, max_deletes=2), sweep=True,
+        run_cache_seed={_generated_key(family_label(definition)): set()},
+    )
+
+    assert not any(member.deleted for member in members)
+    refusal = [one for one in run.actions if "refusing to delete" in one]
+    assert len(refusal) == 1, run.actions
+    assert "3" in refusal[0] and "2" in refusal[0]
 
 
 async def test_a_failed_sweep_scan_does_not_fail_the_librarys_reconcile(

@@ -228,12 +228,20 @@ async def run_definitions(
     summaries=None,
     sources: SourceClients | None = None,
     cache: ProviderCache | None = None,
+    run_cache_seed: dict | None = None,
 ) -> list[str]:
-    """``run_library``'s action strings, for callers that want only those."""
+    """``run_library``'s action strings, for callers that want only those.
+
+    ``run_cache_seed`` pre-populates the pass's scratch. It exists for the
+    delete sweep's tests, which need a dynamic family's generated-titles record
+    without a real enumeration behind it; production never passes one, and a
+    real pass overwrites any key a builder owns.
+    """
     run = await run_library(
         session, section, library, library_type, definitions, config,
         http=http, label=label, dry_run=dry_run, run_index=run_index, now=now,
         summaries=summaries, sources=sources, cache=cache,
+        run_cache_seed=run_cache_seed,
     )
     return run.actions
 
@@ -255,6 +263,7 @@ async def run_library(
     summaries=None,
     sources: SourceClients | None = None,
     cache: ProviderCache | None = None,
+    run_cache_seed: dict | None = None,
 ) -> LibraryRun:
     """Reconcile every definition that applies to this library, in order.
 
@@ -287,7 +296,7 @@ async def run_library(
 
     actions: list[str] = []
     results: list[DefinitionResult] = []
-    run_cache: dict = {}
+    run_cache: dict = dict(run_cache_seed or {})
     index = None
     existing: dict | None = None
 
@@ -395,6 +404,7 @@ async def run_library(
             swept = await _sweep(
                 session, section, library, library_type, definitions, config,
                 label=label, dry_run=dry_run, listing=listing,
+                run_cache=run_cache,
             )
         except Exception:
             # Mirrors ``service.unmanaged_prior_collections``'s containment:
@@ -661,27 +671,52 @@ async def _summary_for(
     return pulled, None
 
 
-def _family_labels(
-    definitions: list[CollectionDefinition], library: str
-) -> dict[str, str]:
-    """``{label: definition title}`` for every dynamic family this library builds.
+def _family_state(
+    definitions: list[CollectionDefinition], library: str, run_cache: dict
+) -> tuple[dict[str, str], dict[str, set[str]]]:
+    """``({label: definition title}, {label: what it built this pass})``.
 
-    Pure -- it reads the registry and the definitions, never Plex -- and
-    library-scoped for ``definition_titles_for``'s reason: a family aimed at
-    another library must not protect this one's collections.
+    Pure -- it reads the registry, the definitions and the pass's scratch, never
+    Plex -- and library-scoped for ``definition_titles_for``'s reason: a family
+    aimed at another library must not protect, or sweep, this one's collections.
 
     The builder is asked rather than the module imported, so the engine keeps
     knowing only the protocol: a builder that manages a family whose titles it
-    cannot enumerate offline says so by having a ``family_label``.
+    cannot enumerate offline says so by having a ``family_label``, and says what
+    it actually built by having a ``generated_titles``.
+
+    A family ABSENT from the second mapping is the fail-closed state: it did not
+    run this pass (outside its schedule) or it refused before deriving anything,
+    and the sweep must not consider any of its collections.
     """
     labels: dict[str, str] = {}
+    generated: dict[str, set[str]] = {}
     for definition in definitions:
         if not _targets(definition, library):
             continue
-        namer = getattr(REGISTRY[definition.builder], "family_label", None)
-        if namer is not None:
-            labels[namer(definition)] = definition.title
-    return labels
+        builder = REGISTRY[definition.builder]
+        namer = getattr(builder, "family_label", None)
+        if namer is None:
+            continue
+        label = namer(definition)
+        labels[label] = definition.title
+        reader = getattr(builder, "generated_titles", None)
+        built = reader(run_cache, definition) if reader is not None else None
+        if built is not None:
+            generated[label] = built
+    return labels, generated
+
+
+def _why(family_title: str | None) -> str:
+    """Why one candidate is being swept, as the fragment the three delete
+    messages share. A family member and an ordinary orphan are the same kind of
+    thing to every guard below and a different thing to the operator reading the
+    report -- the collection is gone either way, but only one of them is
+    something they can put back by widening ``include:``."""
+    return (
+        "the %r family no longer builds it" % family_title
+        if family_title else "no definition builds it"
+    )
 
 
 async def _sweep(
@@ -694,6 +729,7 @@ async def _sweep(
     label: str,
     dry_run: bool,
     listing,
+    run_cache: dict,
 ) -> list[DefinitionResult]:
     """Collections this service owns that no definition builds any more.
 
@@ -715,11 +751,15 @@ async def _sweep(
     - past ``max_deletes`` the sweep refuses **entirely**, with the numbers.
       Deleting "the first five" of a hundred would be the same accident,
       spread over twenty passes (the ``cleanup.max_orphans`` precedent).
-    - a **dynamic family's member** is reported and never deleted. Its titles
-      are the library's, so ``definition_titles_for`` cannot contain them and
-      every one of them would otherwise look like an orphan; the family's own
-      sweep (phase 10a-2) is what decides its lifecycle, through these same
-      guards.
+    - a **dynamic family's members** are enumerated by the family LABEL, which
+      is Kometa's own handle for the same job (``append_label``, meta.py:1421,
+      and the ``sync:`` sweep at :1300, :1456-1461). The ones the family
+      REBUILT this pass are managed and are not candidates; the ones it did not
+      are candidates like any other, through every guard above. A family that
+      did not build anything this pass -- outside its schedule, or refused --
+      protects all of its collections and says so once, for the family rather
+      than once per member: the alternative turns one failed Plex read into a
+      deleted family.
 
     The enumeration is library-scoped (``definition_titles_for``) because a
     delete decision cannot use the leftovers report's deliberately
@@ -730,7 +770,7 @@ async def _sweep(
     managed = definition_titles_for(
         definitions, listing().values(), library, library_type, config
     )
-    families = _family_labels(definitions, library)
+    families, generated = _family_state(definitions, library, run_cache)
     rows = {
         row.title: row
         for row in (
@@ -741,7 +781,19 @@ async def _sweep(
     }
 
     results: list[DefinitionResult] = []
-    candidates: list[tuple[str, object, ManagedCollection]] = []
+    candidates: list[tuple[str, object, ManagedCollection, str | None]] = []
+    for family, family_title in families.items():
+        if family in generated:
+            continue
+        # One line for the FAMILY, not one per member. A healthy fifty-member
+        # family that happened to be outside its schedule would otherwise emit
+        # fifty identical lines saying nothing was deleted.
+        results.append(_swept(family_title, library, (
+            "the dynamic family %r did not build anything this pass -- it was "
+            "outside its schedule, or it refused -- so none of its collections "
+            "were considered for deletion" % family_title
+        )))
+
     for title, collection in listing().items():
         if title in managed or title not in rows:
             continue
@@ -768,31 +820,28 @@ async def _sweep(
         family = next(
             (one for one in families if has_label(collection, one)), None
         )
+        family_title: str | None = None
         if family is not None:
-            # A dynamic family's titles are the library's, so no definition
-            # enumerates them and every member lands here on the first
-            # sweep-enabled pass after it was created. The family owns its own
-            # lifecycle -- phase 10a-2 gives it a sweep that runs through these
-            # same guards -- so this one reports and never deletes. Reported
-            # rather than skipped: an operator who narrowed the family has to
-            # see what is left behind.
-            results.append(_swept(title, library, (
-                "%r belongs to the dynamic family %r, whose own delete sweep "
-                "ships in phase 10a-2; nothing was deleted"
-                % (title, families[family])
-            )))
-            continue
+            if family not in generated or title in generated[family]:
+                # Either the family did not run (reported once, above) or this
+                # is a member it just rebuilt. Nothing to say per member.
+                continue
+            family_title = families[family]
         if not has_label(collection, label):
             logger.info(
                 "%s: %r has a managed row but not the %r label; not ours to delete",
                 library, title, label,
             )
             continue
-        candidates.append((title, collection, rows[title]))
+        candidates.append((title, collection, rows[title], family_title))
 
     if not config.collections.delete_unconfigured:
-        for title, _, _ in candidates:
+        for title, _, _, family_title in candidates:
             results.append(_swept(title, library, (
+                "%r is no longer built by the %r family; "
+                "set collections.delete_unconfigured to delete it"
+                % (title, family_title)
+                if family_title else
                 "%r is no longer built by any definition; "
                 "set collections.delete_unconfigured to delete it" % title
             )))
@@ -809,10 +858,11 @@ async def _sweep(
         )))
         return results
 
-    for title, collection, row in candidates:
+    for title, collection, row, family_title in candidates:
+        why = _why(family_title)
         if dry_run:
             results.append(_swept(
-                title, library, "would delete %r: no definition builds it" % title, 1
+                title, library, "would delete %r: %s" % (title, why), 1
             ))
             continue
         try:
@@ -839,7 +889,7 @@ async def _sweep(
                 "title": title,
                 "rating_key": str(getattr(collection, "ratingKey", "") or ""),
             },
-            outcome="deleted; no definition builds it",
+            outcome="deleted; %s" % why,
         ))
         # Flushed now, rather than left for the caller's eventual commit, so
         # this delete's audit trail is durable in the transaction before the
@@ -847,7 +897,7 @@ async def _sweep(
         # in this loop that can raise -- gets a chance to.
         await session.flush()
         results.append(_swept(
-            title, library, "deleted %r: no definition builds it" % title, 1
+            title, library, "deleted %r: %s" % (title, why), 1
         ))
     return results
 

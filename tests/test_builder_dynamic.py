@@ -167,6 +167,16 @@ def test_the_builder_is_registered_as_a_smart_builder():
     )
 
 
+def test_the_builder_offers_the_sweep_its_generated_record_by_protocol():
+    """The engine asks the REGISTRY entry rather than importing this module --
+    the same shape ``family_label`` established, so a future family builder can
+    join the sweep by growing two methods and nothing in the engine changes."""
+    builder = REGISTRY["dynamic"]
+    assert callable(getattr(builder, "family_label", None))
+    assert callable(getattr(builder, "generated_titles", None))
+    assert builder.generated_titles({}, _definition()) is None
+
+
 # --- the params, at config load ----------------------------------------------
 
 
@@ -603,3 +613,39 @@ async def test_one_key_that_refuses_costs_only_that_key(session):
     refusals = [one for one in actions if one.startswith("refused")]
     assert len(refusals) == 1
     assert "Top Drama movies" in refusals[0]
+
+
+# --- the record the family sweep reads ---------------------------------------
+
+
+async def test_a_family_records_every_title_it_derived_for_the_sweep(session):
+    """The record is the sweep's whole input, so what goes into it is a
+    promise: EVERY title the family derived, written before a single collection
+    is created. A key whose write refuses is still a key this family builds."""
+    from autoposter.collections.builders.dynamic import _generated_key
+
+    definition = _definition()
+    section = FakeSection()
+    ctx = _ctx(session, section, definition)
+
+    await DynamicBuilder().apply(ctx)
+
+    assert ctx.run_cache[_generated_key(family_label(definition))] == {
+        "Top Horror movies", "Top Drama movies",
+    }
+
+
+async def test_a_family_level_refusal_records_nothing_at_all(session):
+    """The fail-closed half, at its source: a definition that refuses before it
+    derives anything leaves NO record, and ``generated_titles`` answers None --
+    which the sweep reads as "do not consider this family's collections"."""
+    from autoposter.collections.builders.dynamic import generated_titles
+
+    definition = _definition()
+    section = FakeSection(choices=[])
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert actions and actions[0].startswith("refused")
+    assert generated_titles(ctx.run_cache, definition) is None
