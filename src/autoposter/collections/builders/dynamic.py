@@ -60,9 +60,10 @@ silently adopted.
 **Every refusal RETURNS.** ``engine.py``'s smart dispatch does not wrap a smart
 builder's ``apply``, on the grounds that anything escaping it is a Plex WRITE
 failing. So a library type this type cannot serve, a dead filter lookup, an
-empty enumeration, an over-cap fan-out, a duplicate title and a key whose query
-Plex cannot answer are all caught here and returned as action strings. A failing
-label write still reaches the engine's per-library rollback, unchanged.
+empty enumeration, an over-cap fan-out, a duplicate title, a bucket whose values
+the type's own search grammar refuses and a key whose query Plex cannot answer
+are all caught here and returned as action strings. A failing label write still
+reaches the engine's per-library rollback, unchanged.
 """
 import logging
 import re
@@ -81,6 +82,7 @@ from autoposter.collections.builders.plex_search import (
 from autoposter.collections.dynamic_keys import derive_keys
 from autoposter.collections.dynamic_titles import (
     ABSENT_KEY,
+    OTHER_KEY,
     DuplicateFamilyTitle,
     family_titles,
     title_format_names_the_key,
@@ -189,11 +191,14 @@ _OTHER_NAME_TOKENS = frozenset({"<<library_type>>", "<<library_typeU>>"})
 # substitution pass runs over it at all, so every token in one is unresolvable.
 _TITLE_OVERRIDE_TOKENS: frozenset[str] = frozenset()
 
-# Every refusal an operator's CONFIGURATION can cause once it meets a real
-# library. A tuple so the per-key path has one catch rather than six, and named
-# exhaustively rather than as ``Exception`` so a genuine bug in this module
-# still reaches the engine as a failure instead of being reported to the
-# operator as something about their family.
+# Every EXCEPTION CLASS of its own an operator's configuration can cause once it
+# meets a real library. A tuple so the per-key path has one catch rather than
+# six, and named exhaustively rather than as ``Exception`` so a genuine bug in
+# this module still reaches the engine as a failure instead of being reported to
+# the operator as something about their family. ``parse_filters`` raises a bare
+# ``ValueError`` and is therefore NOT here -- it is caught around its own call
+# instead, because ``pydantic.ValidationError`` subclasses ``ValueError`` and an
+# entry here would swallow ``DynamicParams.model_validate`` too. See ``apply``.
 REFUSALS = (
     LibraryTypeMismatch,
     PlexSearchUnavailable,
@@ -555,11 +560,52 @@ class DynamicBuilder:
                 )
                 continue
             try:
+                parsed = parse_filters(
+                    {row.search_key: values},
+                    field="params", searching=True, base="any",
+                )
+            except ValueError as refusal:
+                # Caught HERE, around this one call, and deliberately NOT added
+                # to ``REFUSALS``: ``pydantic.ValidationError`` subclasses
+                # ``ValueError``, so a module-level entry would also swallow
+                # ``DynamicParams.model_validate`` above and report a broken
+                # params model as something about one of the operator's buckets.
+                #
+                # Reachable, and from a config that validates. The leftovers
+                # bucket's values are the leftover KEYS themselves: a surviving
+                # key no ``include:`` entry named goes to ``other_keys``
+                # (dynamic_keys.py:154-159) and ``family_titles`` passes those
+                # through verbatim as that bucket's values
+                # (dynamic_titles.py:330-334). A synthetic ``addons`` key is
+                # such a key -- and it is a bucket NAME, not a value the library
+                # holds, so ``year: 'Eighties'`` is not a whole number and
+                # ``genre: ''`` is an empty tag. Uncaught, that escapes the
+                # engine's unwrapped smart dispatch (engine.py:341-352) and
+                # costs the whole library its reconcile, which is the one thing
+                # this module's docstring promises an operator's configuration
+                # cannot do.
+                logger.warning(
+                    "%s: %r was not built: %s", ctx.library, unit.title, refusal
+                )
+                actions.append(
+                    "refused %r in the %r family: it asks this library for %s "
+                    "as %r values, and %s.%s"
+                    % (
+                        unit.title, definition.title,
+                        ", ".join(repr(one) for one in values), params.type,
+                        refusal,
+                        " The leftovers bucket's values are the keys no "
+                        "`include:` entry named, so an `addons` key the library "
+                        "does not itself hold arrives here as if it were one of "
+                        "its values. Name that key in `include:` to build it as "
+                        "its own collection, or `exclude:` it."
+                        if unit.key == OTHER_KEY else "",
+                    )
+                )
+                continue
+            try:
                 url = build_search_url(
-                    parse_filters(
-                        {row.search_key: values},
-                        field="params", searching=True, base="any",
-                    ),
+                    parsed,
                     libtype=libtype,
                     sort_by=params.sort_by or row.sort_by,
                     limit=row.limit if params.limit is None else params.limit,

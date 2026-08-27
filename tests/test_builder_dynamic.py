@@ -19,6 +19,7 @@ from autoposter.collections.builders.dynamic import (
     DynamicParams,
     family_label,
 )
+from autoposter.collections.filters import parse_filters
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ManagedCollection
 
@@ -297,6 +298,71 @@ async def test_each_collection_asks_plex_for_its_own_value_under_an_any_base(ses
     )
 
 
+async def test_one_buckets_several_values_reach_plex_as_one_ord_query(session):
+    """Decision C2, byte for byte. The test above pins the ``push=1``/``pop=1``
+    envelope, but every key in it holds exactly ONE value, so it cannot see the
+    OR itself -- and the OR is the whole decision: row 182's probe answered 0
+    for the ``all:`` spelling and 442 for this one. An ``addons``-merged key is
+    the shape that carries several, and its three terms have to arrive in ONE
+    query joined by ``or=1``, not as three queries or as an AND."""
+    section = FakeSection(choices=[
+        FakeChoice("1138", "Horror"), FakeChoice("9", "Drama"),
+        FakeChoice("77", "Thriller"),
+    ])
+    actions = await REGISTRY["dynamic"].apply(_ctx(session, section, _definition(
+        params={"type": "genre", "addons": {"Horror": ["Drama", "Thriller"]}},
+    )))
+
+    # One collection, because the two addon members are merged INTO Horror
+    # rather than getting collections of their own -- so one query, whole.
+    assert list(section._existing) == ["Top Horror movies"]
+    assert any("created 'Top Horror movies'" in one for one in actions)
+    assert section.fetched == [
+        "/library/sections/2/all"
+        "?type=1&limit=50&sort=rating%3Adesc"
+        "&push=1&genre=1138&or=1&genre=9&or=1&genre=77&pop=1"
+    ]
+
+
+async def test_a_decade_family_emits_the_bare_form_and_queries_the_key(session):
+    """Amendment 1's route, guarded. ``decade`` is the type that proves routing
+    through ``parse_filters(..., searching=True)`` rather than assembling the
+    query by hand: its search vocabulary is the BARE form alone (Kometa's
+    ``no_not_mods``, plex.py:593 and :597-599), which no ``genre`` test can see
+    because tag parsing is identical on both vocabularies. It also pins
+    ``dynamic_types``' key/title split at the emitter -- ``1980`` is queried and
+    ``1980s`` is titled."""
+    section = FakeSection(choices=[
+        FakeChoice("1980", "1980s"), FakeChoice("1990", "1990s"),
+    ])
+    await REGISTRY["dynamic"].apply(_ctx(session, section, _definition(
+        title="Decades", params={"type": "decade"},
+    )))
+
+    assert sorted(section._existing) == [
+        "Best movies of the 1980s", "Best movies of the 1990s",
+    ]
+    assert section.choice_calls == [("decade", "movie")]
+    assert section.fetched[0] == (
+        "/library/sections/2/all"
+        "?type=1&limit=50&sort=rating%3Adesc&push=1&decade=1980&pop=1"
+    )
+
+
+def test_the_route_this_builder_emits_through_refuses_a_decade_operator_form():
+    """The other half of the same amendment: the reason the builder has no gate
+    of its own is that the one it routes through already holds. If this ever
+    stops raising, ``decade.gte`` becomes a query Kometa refuses to build and no
+    oracle config can cover -- so the subtraction is asserted at the exact call
+    ``DynamicBuilder.apply`` makes, arguments and all."""
+    with pytest.raises(ValueError) as refusal:
+        parse_filters(
+            {"decade.gte": "1980"}, field="params", searching=True, base="any",
+        )
+    assert "decade" in str(refusal.value)
+    assert "no modifier at all" in str(refusal.value)
+
+
 async def test_a_family_labels_every_collection_it_creates(session):
     """C4's mechanism: family membership is a LABEL, which is Kometa's own
     handle for the same job (``append_label: str(map_name)``, meta.py:1421) and
@@ -365,6 +431,62 @@ async def test_the_leftovers_bucket_never_asks_plex_for_the_absent_value(session
     assert sorted(section._existing) == ["Everything Else", "Top Horror movies"]
     assert not any("None" in one for one in section.fetched), section.fetched
     assert any("created 'Everything Else'" in one for one in actions)
+
+
+async def test_a_synthetic_addon_key_in_the_leftovers_bucket_refuses_rather_than_raising(session):
+    """The leftovers bucket's values are the leftover KEYS themselves
+    (``dynamic_keys`` routes any surviving key no ``include:`` entry named into
+    ``other_keys``, and ``family_titles`` passes them through verbatim) -- and a
+    synthetic ``addons`` key is a bucket NAME, not a value the library holds. On
+    an ``int`` type that reaches ``parse_filters`` as ``year: 'Eighties'``,
+    whose ``ValueError`` is not in ``REFUSALS`` and would escape the engine's
+    unwrapped smart dispatch, costing the WHOLE library its reconcile rather
+    than costing this one bucket. The config below validates today."""
+    section = FakeSection(choices=[
+        FakeChoice("1980", "1980"), FakeChoice("1990", "1990"),
+        FakeChoice("2000", "2000"),
+    ])
+    actions = await REGISTRY["dynamic"].apply(_ctx(session, section, _definition(
+        title="Years",
+        params={
+            "type": "year",
+            "include": ["1990"],
+            "addons": {"Eighties": ["1980"]},
+            "other_name": "Everything Else",
+        },
+    )))
+
+    # Contained to the one bucket: the included key is still built.
+    assert list(section._existing) == ["Best movies of 1990"]
+    refusals = [one for one in actions if one.startswith("refused")]
+    assert len(refusals) == 1
+    assert "Everything Else" in refusals[0], "the refusal names the bucket"
+    assert "Years" in refusals[0], "...the definition"
+    assert "Eighties" in refusals[0], "...and the value Plex cannot be asked for"
+
+
+async def test_an_empty_addon_key_in_the_leftovers_bucket_refuses_the_same_way(session):
+    """The same hole on a TAG type, so the catch is not an ``int`` special
+    case: an empty ``addons`` key survives the params model, reaches
+    ``other_keys`` by the same route, and ``parse_filters`` refuses an empty tag
+    value -- "an empty value matches nothing" -- which is the right verdict and
+    the wrong exit."""
+    section = FakeSection()
+    actions = await REGISTRY["dynamic"].apply(_ctx(session, section, _definition(
+        params={
+            "type": "genre",
+            "include": ["Horror"],
+            "addons": {"": ["Drama"]},
+            "other_name": "Everything Else",
+        },
+    )))
+
+    assert list(section._existing) == ["Top Horror movies"]
+    refusals = [one for one in actions if one.startswith("refused")]
+    assert len(refusals) == 1
+    assert "Everything Else" in refusals[0]
+    assert "Genres" in refusals[0]
+    assert "empty value" in refusals[0]
 
 
 # --- the refusals, which RETURN ----------------------------------------------
