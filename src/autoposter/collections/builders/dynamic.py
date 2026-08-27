@@ -641,6 +641,12 @@ class DynamicBuilder:
         # `include`d into its own bucket. A real "other" value that was never
         # `include`d simply lands among the leftovers bucket's own ``values``
         # instead, which is one bucket, not two, and is not ambiguous.
+        #
+        # Unlike every other per-bucket refusal in this module, this drop
+        # happens BEFORE the record seed below -- so an existing collection
+        # under the real value's title becomes an ordinary sweep candidate,
+        # not a protected one. That is narrowing, not write-failure: this
+        # family genuinely does not build that title this pass.
         other_positions = [
             index for index, unit in enumerate(titled) if unit.key == OTHER_KEY
         ]

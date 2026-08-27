@@ -695,6 +695,94 @@ async def test_a_family_member_this_pass_did_not_build_is_swept(session):
     ).scalar_one_or_none() is None
 
 
+class _EnumeratingSection(FakeSection):
+    """``FakeSection`` plus what a REAL smart-collection write needs -- a Plex
+    ``key``, a server to PUT the filter through, and items a search can
+    match. Every other dynamic-family test in this file seeds the sweep's
+    record with ``run_cache_seed`` and never exercises this path; this one
+    needs the builder's own ``apply`` to write it, so ``listFilterChoices``
+    answers with one real genre instead of the base class's empty list."""
+
+    key = "2"
+
+    def __init__(self, choice_title, **kwargs):
+        super().__init__(**kwargs)
+        self._choice_title = choice_title
+        self._server = type("Server", (), {
+            "_uriRoot": lambda self: "server://fake/com.plexapp.plugins.library",
+            "query": lambda self, path, method=None: None,
+            "_session": type("Sess", (), {"put": "PUT", "post": "POST"})(),
+        })()
+
+    def listFilterChoices(self, field, libtype=None):
+        return [type("Choice", (), {
+            "key": self._choice_title, "title": self._choice_title,
+        })()]
+
+    def fetchItems(self, path, **kw):
+        return [FakeItem("m1")]
+
+
+async def test_a_real_applys_record_is_what_the_sweep_deletes_against(session):
+    """T5-review gap, closed (10a-2 branch review I1). Every seeded test above
+    proves the sweep obeys ``run_cache``'s record; none of them proves a real
+    ``apply`` writes a record the sweep can be trusted against -- their
+    ``FakeSection.listFilterChoices`` always returns ``[]``, so a real ``apply``
+    there only ever refuses. Here nothing is seeded: the library genuinely
+    reports one genre, so the family's own enumeration -- not a test double --
+    writes 'Top Horror movies' into the pass's record, and 'Top Western
+    movies', a collection the library no longer holds that value for, never
+    enters it. The sweep then deletes on that real record.
+    """
+    from autoposter.collections.builders.dynamic import family_label
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"},
+    )
+    kept = FakeCollection(
+        "Top Horror movies", [FakeItem("m1")],
+        labels=[LABEL, family_label(definition)],
+    )
+    kept.smart = True  # ``shape_conflict`` reads this; a real one carries it.
+    gone = FakeCollection(
+        "Top Western movies", [FakeItem("m1")],
+        labels=[LABEL, family_label(definition)],
+    )
+    section = _EnumeratingSection("Horror", existing=[kept, gone])
+    for title in ("Top Horror movies", "Top Western movies"):
+        session.add(ManagedCollection(
+            library="Movies", title=title, kind="smart",
+            plex_rating_key="c-" + title, definition_hash="seed",
+        ))
+    await session.flush()
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition],
+        _config(delete_unconfigured=True), sweep=True,
+    )
+
+    assert kept.deleted is False
+    assert gone.deleted is True
+    assert (
+        "deleted 'Top Western movies': the 'Genres' family no longer builds it"
+        in run.actions
+    ), run.actions
+    assert (
+        await session.execute(
+            select(ManagedCollection).where(
+                ManagedCollection.title == "Top Western movies"
+            )
+        )
+    ).scalar_one_or_none() is None
+    assert (
+        await session.execute(
+            select(ManagedCollection).where(
+                ManagedCollection.title == "Top Horror movies"
+            )
+        )
+    ).scalar_one_or_none() is not None
+
+
 async def test_a_family_that_did_not_run_protects_every_one_of_its_collections(
     session,
 ):
