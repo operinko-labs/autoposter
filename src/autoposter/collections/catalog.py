@@ -592,7 +592,8 @@ RELATIVE_YEAR_ROW = 171    # the `current_year`/`current_year-N` value grammar,
 TMDB_ORIGIN_COUNTRY_ROW = 189  # the two dynamic types that are a TMDb walk and
                                # not an enumeration -- filed by phase 10a-1's
                                # wrap, and cited (not waited on) by the three
-                               # location packs, whose values are that walk's
+                               # location packs, whose values are that walk's,
+                               # not the Plex `country` tag's
 
 _BOTH = ("Movie", "Show")
 _MOVIE = ("Movie",)
@@ -1402,8 +1403,7 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
             "family is the preset-expansion story, phase 10b, and it is what "
             "row %d tracks. Two things any such preset must carry: Kometa "
             "expands a base code to every variant the library holds and joins "
-            "them with "
-            "the enclosing block's conjunction, so a language predicate under "
+            "them with the enclosing block's conjunction, so a language predicate under "
             "`all:` matches NOTHING (0 against 24 under `any:`, measured); "
             "and the value vocabulary is a mix of 2-letter, locale, 3-letter, "
             "script-qualified and one literal english, so no single "
