@@ -215,9 +215,10 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "(``docs/research/plex-dynamic-probe/README.md``). Upstream "
             "additionally gates this type on the New Plex TV Agent "
             "(meta.py:820-821); we have no agent check, so a library whose "
-            "agent cannot answer enumerates nothing and the definition refuses "
-            "with the count -- the probe found a real section in that state "
-            "(the ``DVR`` section answers ``country`` with zero values).",
+            "agent cannot answer enumerates nothing, which Tasks 4/5's "
+            "empty-enumeration refusal is being built against -- the probe "
+            "found a section in that state (the ``DVR`` section answers "
+            "``country`` with zero values).",
         ),
     )
 }

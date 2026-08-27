@@ -6,6 +6,10 @@ The table is Kometa's ``auto`` type map (meta.py:15-22), its
 :898, :948-959), reduced to the types phase 10a ships (adjudication C3). These
 tests are what a reviewer checks the transcription against.
 """
+import dataclasses
+
+import pytest
+
 from autoposter.collections.dynamic_types import DYNAMIC_TYPES, DynamicType
 from autoposter.collections.filters import BY_NAME, parse_filters
 from autoposter.collections.search_sorts import KNOWN_SORT_NAMES
@@ -41,12 +45,14 @@ def test_the_table_holds_exactly_the_types_c3_scoped():
     ]
 
 
-def test_every_row_is_a_frozen_row_of_the_declared_shape():
+def test_every_row_is_frozen_and_a_caller_cannot_mutate_it():
     """The table is data, and data that can be mutated at import time by any
-    caller is not a transcription any more."""
+    caller is not a transcription any more: a caller holding a row cannot
+    reassign one of its fields."""
     for name, row in DYNAMIC_TYPES.items():
         assert isinstance(row, DynamicType), name
-        assert row.name == name
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            row.name = "x"
 
 
 def test_every_row_names_a_searchable_attribute_it_can_enumerate():

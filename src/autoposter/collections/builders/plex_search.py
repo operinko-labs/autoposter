@@ -402,10 +402,7 @@ class LibraryTagResolver:
         self._libtype = libtype
 
     def __call__(self, attribute: str, value: str, /) -> tuple[str, ...]:
-        row = BY_NAME[attribute]
-        field = row.field_for(self._libtype)
-        scope, _, name = field.rpartition(".")
-        scope = scope or self._libtype
+        scope, name = self._field_and_scope(attribute)
         if attribute in ("audio_language", "subtitle_language"):
             return self._language_keys(attribute, scope, name, value)
         choices = self._choices(attribute, scope, name)
@@ -437,14 +434,17 @@ class LibraryTagResolver:
         ``include:`` entry against these must compare like with like, and Plex
         answers some keys as integers.
         """
-        row = BY_NAME[attribute]
-        field = row.field_for(self._libtype)
-        scope, _, name = field.rpartition(".")
-        scope = scope or self._libtype
+        scope, name = self._field_and_scope(attribute)
         return tuple(
             (str(choice.key), str(choice.title))
             for choice in self._raw_choices(attribute, scope, name)
         )
+
+    def _field_and_scope(self, attribute: str) -> tuple[str, str]:
+        row = BY_NAME[attribute]
+        field = row.field_for(self._libtype)
+        scope, _, name = field.rpartition(".")
+        return scope or self._libtype, name
 
     def _cache_key(self, scope: str, name: str) -> str:
         return f"plex_search:choices:{self._ctx.library}:{scope}:{name}"
