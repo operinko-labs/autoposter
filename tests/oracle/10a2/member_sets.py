@@ -76,11 +76,23 @@ with either driver, so no single bug can reach both sides of the comparison.
 from dataclasses import dataclass
 from urllib.parse import unquote_plus
 
-# P3: parameters that decide what is RETURNED and in what order, never what
-# matches. Dropped before the tree is built, so neither side's sort spelling
-# (plexapi's ``movie.originallyAvailableAt%3Adesc`` against ours,
-# ``originallyAvailableAt%3Adesc``) can make two equivalent queries compare
-# unequal or two different ones compare equal.
+# Parameters dropped before the tree is built, for two DIFFERENT reasons, and
+# this comment once ran them together (T3 review, M1).
+#
+# ``sort``, ``limit`` and ``includeGuids`` are premise P3: they decide what is
+# RETURNED and in what order, never what matches. Dropping them is what stops
+# either side's sort spelling (plexapi's ``movie.originallyAvailableAt%3Adesc``
+# against ours, ``originallyAvailableAt%3Adesc``) from making two equivalent
+# queries compare unequal.
+#
+# ``type`` is NOT covered by P3 and is not a cited premise at all: ``type=N``
+# decides what MATCHES. Dropping it is this module's own ASSUMPTION -- that both
+# sides scope the query to the same libtype, which is what ``members()``'s
+# ``libtype`` argument states once for the whole comparison. The committed
+# artefact shows the two sides agreeing on it, so nothing is hidden today; what
+# the assumption costs is that this instrument could not REPORT a libtype
+# divergence if one appeared. ``title`` is the same kind of entry with nothing
+# at stake: neither side emits it.
 IGNORED = ("type", "sort", "limit", "includeGuids", "title")
 
 
@@ -165,7 +177,7 @@ def decode(query: str, libtype: str) -> Group:
         if name in ("or", "and"):
             ops[-1] = name
             continue
-        if name in IGNORED:      # P3
+        if name in IGNORED:      # P3, plus the ``type`` assumption above
             continue
         stack[-1].append(Term(_strip_libtype(name, libtype), _decode_values(raw)))
     return Group(ops[0], tuple(stack[0]))

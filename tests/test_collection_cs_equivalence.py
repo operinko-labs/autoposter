@@ -12,34 +12,42 @@ all (Addendum 3), and the ``other`` bucket's complement. For each: plexapi's
 real ``_buildSearchKey`` and this engine's real ``build_search_url``, decoded
 and evaluated to member sets over a fixture library, asserted equal.
 
-## What this file proves, and the one thing it does not
+## What this file proves
 
-For every rating that is URL-safe, the two grammars select identical items --
-which is claim C2, that an ``any:`` base reproduces plexapi's comma-joined OR.
+For EVERY rating in the shipped table, the two grammars select identical items
+-- which is claim C2, that an ``any:`` base reproduces plexapi's comma-joined
+OR.
 
-It does NOT hold for a rating carrying a space, a ``+`` or an ``&``, and the
-shipped table has ten of those (``G - All Ages``, ``12+``,
-``R - 17+ (violence & profanity)`` and the rest). plexapi percent-encodes its
-values; ``build_search_url`` inserts a resolved TAG value raw
-(``search_url.py:313`` -- the ``str`` branch two cases below it quotes, the tag
-branch does not), which never mattered before because every tag key 9b resolved
-was an opaque numeric id. The three ``xfail(strict=True)`` tests at the bottom
-pin that divergence: they are the finding, they will XPASS the moment the
-encoding is fixed, and strict mode turns that XPASS into a failure so the fix
-cannot land without deleting the marker and getting a real green.
+"Every" is recent, and the history is the point of the file. As first written it
+held only for the URL-SAFE ratings, and the shipped table carries ten that are
+not (``G - All Ages``, ``12+``, ``R - 17+ (violence & profanity)`` and the
+rest). plexapi percent-encodes its values; ``build_search_url`` inserted a
+resolved TAG value raw -- the ``str`` branch quoted, the tag branch did not --
+which had never mattered because every tag key 9b resolved was an opaque numeric
+id, and ``content_rating`` is the one tag family whose Plex key IS its title.
+Three ``xfail(strict=True)`` tests pinned that divergence and were built to
+retire themselves: the moment the tag branch quoted they XPASSed, strict turned
+the XPASS into a failure, and the fix could not land without deleting the
+markers and getting a real green. That is what happened
+(``search_url.py``'s tag branch, phase 10a-2 task 3.5); the three tests are
+still at the bottom of this file, now unmarked and passing on their own terms,
+and a fourth -- which measured the broken shape and was deliberately unmarked so
+it would RED on the same fix -- was deleted with them.
 
-**In the shape that will actually occur it is not an empty collection but a
-SILENT SUBSET.** Every one of the ten co-occurs with safe ratings in the shipped
-table, and a bucket's terms sit in an ``or=1`` group, so the working terms still
-match: what ships is a plausible-but-short collection.
-``test_a_mixed_bucket_degrades_to_a_silent_subset`` measures that shape.
+**The shape it took was not an empty collection but a SILENT SUBSET.** Every one
+of the ten co-occurs with safe ratings in the shipped table, and a bucket's terms
+sit in an ``or=1`` group, so the working terms still matched: what shipped was a
+plausible-but-short collection. The mixed-bucket test at the bottom is that
+bucket, now asserting equality where it once asserted the subset.
 
-**The divergence does not depend on how the server decodes ``+``.** Premise P5
-(``member_sets.py``) is now live-measured -- the server folds ``+`` to a space --
-but it only decides WHICH six of the ten move and whose side is at fault. Under
-the other model the same ten still diverge with the OLD side at fault, and the
-``&`` case is URL syntax rather than server interpretation, so it holds under
-both. There is no decoding model under which the two grammars agree.
+**The divergence did not depend on how the server decodes ``+``.** Premise P5
+(``member_sets.py``) is live-measured -- the server folds ``+`` to a space --
+but it only decided WHICH six of the ten moved and whose side was at fault.
+Under the other model the same ten still diverged with the OLD side at fault,
+and the ``&`` case is URL syntax rather than server interpretation, so it held
+under both. There was no decoding model under which the two grammars agreed,
+which is why ``quote()`` -- emitting ``%2B``/``%20``/``%26``, identical on
+decode under either -- is a premise-independent fix.
 
 ## The falsifiability of the whole thing
 
@@ -120,7 +128,7 @@ UNSAFE_RATINGS = sorted(
         if UNSAFE_CHARS & set(value)
     }
 )
-# The subset whose mis-encoding changes the MEMBER SET rather than only the
+# The subset whose mis-encoding changed the MEMBER SET rather than only the
 # bytes: ``&`` truncates the term and ``+`` becomes a space, so the value the
 # server matches on is not the value that was sent. A space-only value survives
 # a lenient parser unchanged, which is why it is pinned on the bytes test alone.
@@ -128,14 +136,14 @@ MEANING_CHANGING_RATINGS = sorted(
     value for value in UNSAFE_RATINGS if {"&", "+"} & set(value)
 )
 
-# The MIXED bucket, and the shape that will actually occur. Every one of the ten
-# unsafe ratings co-occurs with SAFE ones in the shipped table -- bucket ``17``
-# carries ``gb/14+`` and ``R - 17+ (violence & profanity)`` next to ``R``,
-# ``TV-14`` and ``TV-MA``; bucket ``18`` carries three unsafe values next to
-# ``TV-MA`` and ``NC-17`` -- so a single-value bucket is the RARE case, not the
-# realistic one. In a mixed bucket the terms sit in an ``or=1`` group, so a
-# broken term does not empty the collection: the surviving terms still match and
-# what ships is a SILENT SUBSET. That is the worse class, because an empty
+# The MIXED bucket, and the shape the defect would actually have taken. Every
+# one of the ten unsafe ratings co-occurs with SAFE ones in the shipped table --
+# bucket ``17`` carries ``gb/14+`` and ``R - 17+ (violence & profanity)`` next
+# to ``R``, ``TV-14`` and ``TV-MA``; bucket ``18`` carries three unsafe values
+# next to ``TV-MA`` and ``NC-17`` -- so a single-value bucket was the RARE case,
+# not the realistic one. In a mixed bucket the terms sit in an ``or=1`` group, so
+# a broken term did not empty the collection: the surviving terms still matched
+# and what shipped was a SILENT SUBSET. That is the worse class, because an empty
 # collection is at least noticeable.
 MIXED_RATINGS = ("R", "TV-14", "TV-MA", "gb/14+", "R - 17+ (violence & profanity)")
 MIXED_UNSAFE = {"gb/14+", "R - 17+ (violence & profanity)"}
@@ -304,48 +312,46 @@ def test_the_shipped_table_is_what_was_proven():
     rather than by content -- the content is the table's own test's business."""
     assert len(TABLE["include"]) == len(TABLE["addons"])
     assert TABLE["include"], "an empty table would make every assertion vacuous"
-    assert UNSAFE_RATINGS, "the xfail tests below would assert nothing"
+    assert UNSAFE_RATINGS, "the encoding tests below would assert nothing"
     # M3: an empty parametrize is a silent SKIP, not an error, so the
-    # meaning-changing xfail would quietly stop covering anything.
-    assert MEANING_CHANGING_RATINGS, "the meaning xfail below would assert nothing"
+    # meaning-changing case would quietly stop covering anything.
+    assert MEANING_CHANGING_RATINGS, "the meaning test below would assert nothing"
     # The mixed-bucket case is written against bucket 17 by hand; if a table
     # edit moved either value out of it, that test would stop being the mixed
     # shape it claims to be.
     assert MIXED_UNSAFE <= set(TABLE["addons"]["17"]), sorted(MIXED_UNSAFE)
 
 
-# --- the divergence this proof found -----------------------------------------
+# --- the ten the fix bought ---------------------------------------------------
 #
-# All three marked ``strict`` so the day ``build_search_url`` percent-encodes a
-# resolved tag value these XPASS, strict turns the XPASS into a failure, and
-# whoever fixed it has to delete the markers -- at which point the proof above
-# covers the whole shipped table instead of the URL-safe part of it.
-# ``test_a_mixed_bucket_degrades_to_a_silent_subset`` is unmarked and reds on the
-# same fix by design; it is deleted at the same moment, for the same reason.
-
-_ENCODING = (
-    "search_url.py:313 inserts a resolved TAG value into the query raw, while "
-    "plexapi urlencodes it (library.py:1103). The shipped Common Sense table "
-    "carries ten ratings with a space, a '+' or an '&', and content_rating is "
-    "the tag type whose Plex key IS its title, so those characters reach the "
-    "query string unescaped. Remove this marker when the encoding is fixed."
-)
+# These three were born ``xfail(strict=True)``: they were the finding, and strict
+# meant that the day ``build_search_url`` percent-encoded a resolved tag value
+# they would XPASS, the XPASS would become a failure, and whoever fixed it had to
+# delete the markers to get a green. That day came, the markers are gone, and
+# what is left is ordinary coverage of the part of the shipped table the proof
+# above could not reach before. A fourth test measured the broken shape -- a
+# non-empty proper subset -- and was deliberately left unmarked so it would RED
+# on the same fix; it was deleted at that moment, as its own docstring asked.
 
 
-@pytest.mark.xfail(strict=True, reason=_ENCODING)
 @pytest.mark.parametrize("rating", UNSAFE_RATINGS)
 def test_the_new_grammar_encodes_every_shipped_rating(rating):
-    """The BYTES half of the finding: the raw value is in the query verbatim."""
+    """The BYTES half: no raw value reaches the query string verbatim.
+
+    Not byte-identical to plexapi even now -- ``quote``'s default ``safe='/'``
+    leaves a slash alone, so ``gb/0+`` goes out as ``gb/0%2B`` where plexapi
+    sends ``gb%2F0%2B``. The two decode to the same value, which is the claim
+    below and the one that decides membership.
+    """
     new = ours_side.new_query("movie", (rating,), {rating})
     assert rating not in new, new
 
 
-@pytest.mark.xfail(strict=True, reason=_ENCODING)
 @pytest.mark.parametrize("rating", MEANING_CHANGING_RATINGS)
 def test_a_plus_or_ampersand_rating_still_selects_the_same_items(rating):
     """The MEANING half: for these ten-minus-the-space-only ones, the member
-    set moves. ``&`` ends the parameter early and ``+`` decodes as a space, so
-    the value the server matches is not the value that was meant."""
+    set used to move. ``&`` ended the parameter early and ``+`` decoded as a
+    space, so the value the server matched was not the value that was meant."""
     library = _library((rating,))
     old = plexapi_side.old_query("movie", (rating,), (rating,), "contentRating")
     new = ours_side.new_query("movie", (rating,), {rating})
@@ -368,35 +374,21 @@ def _mixed_bucket():
     return bucket, library, old, new
 
 
-@pytest.mark.xfail(strict=True, reason=_ENCODING)
 def test_a_mixed_bucket_selects_the_same_items_through_both_grammars():
-    """The MEANING half again, in the shape that will actually occur.
+    """The MEANING half again, in the shape that would actually have occurred.
 
-    The two tests above build single-value buckets, which is the rare case. This
-    one is the realistic one, and it is here because the failure mode differs:
-    see ``test_a_mixed_bucket_degrades_to_a_silent_subset`` below for what
-    happens instead of equality. The absolute pin (the old query selects exactly
-    the bucket) lives in that test rather than here, so this xfail cannot pass
-    for the wrong reason.
-    """
-    bucket, library, old, new = _mixed_bucket()
-
-    assert member_sets.members(new, library, "movie") == set(bucket.values), new
-
-
-def test_a_mixed_bucket_degrades_to_a_silent_subset():
-    """What the divergence actually LOOKS LIKE where it will be met.
-
-    Not "the collection becomes empty" -- that is only the single-value bucket.
-    Here the two broken terms sit in an ``or=1`` group beside three working
-    ones, so the group still matches: ``R``, ``TV-14`` and ``TV-MA`` survive and
-    the collection ships PLAUSIBLE-BUT-SHORT. That is the "silent wrongness"
+    The two tests above build single-value buckets, which is the rare case; this
+    is the realistic one. It used to be the interesting one for the opposite
+    reason: a single-value bucket went EMPTY, but here the two broken terms sat
+    in an ``or=1`` group beside three working ones, so the group still matched
+    and the collection shipped PLAUSIBLE-BUT-SHORT -- the "silent wrongness"
     class ``search_url.py``'s own module docstring names as the risk the phase
-    sits on, and it is strictly worse than empty because nobody notices it.
+    sits on, and strictly worse than empty because nobody notices it. The
+    deleted fourth test measured that subset; this one now measures the equality
+    that replaced it.
 
-    Deliberately NOT ``xfail``: this test asserts what happens TODAY, and it is
-    meant to RED the day ``build_search_url`` quotes its tag branch -- the same
-    forcing function ``strict`` gives the xfails above. Delete it with them.
+    The absolute pin travelled here from that test: without it, two decoders
+    wrong in the same direction would satisfy the equality below.
     """
     bucket, library, old, new = _mixed_bucket()
     old_members = member_sets.members(old, library, "movie")
@@ -405,8 +397,5 @@ def test_a_mixed_bucket_degrades_to_a_silent_subset():
     # The absolute claim first, as everywhere else in this file.
     assert old_members == set(bucket.values), old
     assert "control" not in old_members, old
-
-    # Then the finding: a strict, NON-EMPTY subset.
-    assert new_members, "empty would be the noticeable failure mode; this is not it"
-    assert new_members < old_members, (sorted(new_members), sorted(old_members))
-    assert old_members - new_members == MIXED_UNSAFE, sorted(old_members - new_members)
+    # ``MIXED_UNSAFE`` is what used to go missing; nothing does now.
+    assert new_members == old_members, (sorted(new_members), sorted(old_members))

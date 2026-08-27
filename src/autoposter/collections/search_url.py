@@ -299,6 +299,17 @@ def _arguments(
 
     # A tag: the library's KEY, never the written word, and possibly several
     # per value. builder.py:4400-4440, :4245-4248.
+    #
+    # QUOTED, like the ``str`` branch below and unlike Kometa, which quotes only
+    # that one. A deliberate divergence from the byte-for-byte oracle's source
+    # of truth, in the direction of correctness: for every tag family whose Plex
+    # key is an opaque id ``quote`` is the identity and the two agree anyway,
+    # but ``content_rating``'s key IS its title, so an unquoted ``+`` reaches
+    # the matcher as a space and an unquoted ``&`` ends the parameter -- a
+    # SILENT SUBSET rather than an error.
+    # ``tests/test_collection_cs_equivalence.py`` is the proof;
+    # ``docs/research/plex-dynamic-probe/README.md`` section 5 is the ``+``
+    # measurement.
     if row.type == "tag":
         out = []
         for value in predicate.values:
@@ -310,7 +321,7 @@ def _arguments(
                     "to search for. Check the spelling against the library's "
                     "own list"
                 )
-            out.extend((modifier, key) for key in keys)
+            out.extend((modifier, quote(str(key))) for key in keys)
         return out
 
     # A string: quoted, unresolved. builder.py:4246.

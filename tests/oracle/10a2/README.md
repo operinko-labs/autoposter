@@ -64,6 +64,21 @@ port" in Part 2.
 **Equivalent for every URL-safe rating. A divergence for ten ratings the
 shipped table carries.** Both halves are below.
 
+> **Resolved in task 3.5.** The tag branch of `_arguments` now runs its resolved
+> keys through the same `quote` the `str` branch two cases below it already
+> used, so the ten are URL-safe on the wire and the equivalence covers the whole
+> shipped table. Everything in Part 2 is the PRE-FIX measurement and is kept as
+> the record of what was found; the three `xfail(strict=True)` tests it
+> describes have retired themselves, exactly as they were built to. See "How the
+> divergence was recorded, and how it retired" at the end of Part 2.
+>
+> The fix is a deliberate divergence from Kometa, which quotes only its own
+> `str` branch (`builder.py:4246`), and it is still not byte-identical to
+> plexapi: `quote`'s default `safe='/'` sends `gb/0%2B` where plexapi sends
+> `gb%2F0%2B`. The two decode alike, which is what membership turns on. All
+> seventeen 9b oracle configs stayed byte-identical, because every tag key 9b
+> resolves is an opaque id over which `quote` is the identity.
+
 ## Part 1 -- the equivalence, every shipped bucket, both library types
 
 Reproduce with `docker compose run --rm test python -` fed this script:
@@ -319,9 +334,12 @@ bucket other ['NR']
 
 ## Part 2 -- the divergence
 
-`build_search_url` inserts a resolved TAG value into the query **raw**
-(`search_url.py:313`); the `str` branch two cases below it calls `quote`, the
-tag branch does not. That never mattered in 9b because every tag key it
+*As measured before the task-3.5 fix. Every query string and member set printed
+in this part is the pre-fix output; the boxed note under "The verdict" says what
+changed and what did not.*
+
+`build_search_url` inserted a resolved TAG value into the query **raw**; the
+`str` branch two cases below it called `quote`, the tag branch did not. That never mattered in 9b because every tag key it
 resolved was an opaque numeric id (`5`, `1138`, `es-419`). `content_rating` is
 different: it is the one tag type whose Plex key IS its title, so the rating
 TEXT reaches the query string. plexapi, by contrast, runs the value through
@@ -444,10 +462,10 @@ bucket 17 values ['R', 'R - 17+ (violence & profanity)', 'TV-14', 'TV-MA', 'gb/1
   lost    ['R - 17+ (violence & profanity)', 'gb/14+']
 ```
 
-Three of five survive. A strict, non-empty subset missing exactly the two unsafe
-values, with the injected ` profanity)` term OR'd into the group and simply
-never true. `test_a_mixed_bucket_degrades_to_a_silent_subset` asserts every line
-of that.
+Three of five survived. A strict, non-empty subset missing exactly the two
+unsafe values, with the injected ` profanity)` term OR'd into the group and
+simply never true. `test_a_mixed_bucket_degrades_to_a_silent_subset` asserted
+every line of that, and was deleted by the fix it existed to force.
 
 That is the worse class. An empty smart collection is at least noticeable; a
 plausible-but-short one is precisely the "silent wrongness" `search_url.py`'s own
@@ -475,7 +493,7 @@ an unknown filter field outright. Either outcome is a divergence, so the verdict
 is unaffected — but the specific sentence about what happens to it is a model
 output.
 
-### How the divergence is recorded
+### How the divergence was recorded, and how it retired
 
 Three `xfail(strict=True)` tests at the bottom of the gate:
 
@@ -485,15 +503,24 @@ Three `xfail(strict=True)` tests at the bottom of the gate:
 | `test_a_plus_or_ampersand_rating_still_selects_the_same_items` | 6 | the meaning, single-value bucket |
 | `test_a_mixed_bucket_selects_the_same_items_through_both_grammars` | 1 | the meaning, the realistic mixed bucket |
 
-Strict is the point: the day the encoding is fixed they XPASS, strict turns an
-XPASS into a failure, and whoever fixed it has to delete the markers -- at which
-moment the equivalence above covers the whole shipped table instead of the
-URL-safe part of it.
+Strict was the point: the day the encoding was fixed they would XPASS, strict
+would turn the XPASS into a failure, and whoever fixed it had to delete the
+markers -- at which moment the equivalence above would cover the whole shipped
+table instead of the URL-safe part of it.
 
-`test_a_mixed_bucket_degrades_to_a_silent_subset` is deliberately **not**
-marked: it asserts the subset shape as it is TODAY, and it reds on the same fix,
-which is the same forcing function by another route. It is deleted with the
-markers.
+`test_a_mixed_bucket_degrades_to_a_silent_subset` was deliberately **not**
+marked: it asserted the subset shape as it stood, and it would red on the same
+fix, which is the same forcing function by another route. It was to be deleted
+with the markers.
+
+**That is what happened, in task 3.5.** All seventeen strict cases XPASSed, the
+unmarked one went red -- `18 failed, 18 passed`, recorded in
+`.superpowers/run-t35-equiv-xpass.log` -- and the three markers were deleted,
+the fourth test with them. Its
+absolute pin -- the old query selects exactly the bucket, and never the control
+item -- moved into the mixed-bucket test rather than being lost, so that test
+still cannot pass for the wrong reason. The seventeen cases are now ordinary
+passing coverage of the ten ratings.
 
 ## Why the proof can fail
 
