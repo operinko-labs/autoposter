@@ -299,7 +299,18 @@ class DynamicParams(BaseModel):
     title_format: str | None = None
     other_name: str | None = None
     sort_by: list[str] | None = None
-    limit: int | None = Field(default=None, ge=1)
+    # ``0`` is the NO-LIMIT sentinel and the one value ``None`` cannot mean:
+    # unset takes the type row's own default (50), so before this there was no
+    # way to say "ask Plex for the whole match set". Kometa's shipped packs say
+    # exactly that -- ``template: [smart_filter, shared]`` makes ``limit`` an
+    # OPTIONAL variable and a pack that supplies none emits a search carrying no
+    # ``limit=`` at all (`defaults/templates.yml:238-255`; only `decade.yml`
+    # pins one, at 100). Zero rather than a second field or a string because it
+    # is already what the emitter treats as no limit (`search_url.py:146-154`,
+    # tracking Kometa's own `if limit` at builder.py:4289), so the sentinel is
+    # read off the query builder instead of invented above it. Below zero still
+    # refuses: that is a typo, not an intent.
+    limit: int | None = Field(default=None, ge=0)
     # C8's refuse-over-surprise floor. 50 is chosen against the production
     # library: content ratings enumerate to ~7, decades to ~12, genres to ~25,
     # countries to 63, networks to 91, subtitle languages to 115 and studios to
@@ -805,7 +816,13 @@ class DynamicBuilder:
                     parsed,
                     libtype=libtype,
                     sort_by=params.sort_by or row.sort_by,
-                    limit=row.limit if params.limit is None else params.limit,
+                    # ``or None`` is where the no-limit sentinel is spent: a
+                    # pinned ``limit: 0`` arrives here as 0 and leaves as
+                    # ``None``, which is how ``build_search_url`` spells "emit
+                    # no limit at all". Only the sentinel can be zero -- no
+                    # type row pins 0 and the params model refuses anything
+                    # below it -- so nothing else is caught by the falsiness.
+                    limit=(row.limit if params.limit is None else params.limit) or None,
                     resolve_tag=resolver,
                 )
                 logger.debug("dynamic: %s -> %s", unit.title, url)

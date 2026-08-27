@@ -30,21 +30,18 @@ real dicts: pydantic will not build a ``dict[str, list[str]]`` from a tuple of
 pairs (measured -- ``Input should be a valid dictionary``), so the pairs
 convention stops at the value.
 
-**One key upstream sets that this service cannot express, recorded once here
-rather than four times below.** The record's §1.8 measured where a pack's sort
-and limit really come from: all seven pass ``template: [smart_filter, shared]``,
-whose defaults are ``sort_by: release.desc`` and NO limit at all
-(``defaults/templates.yml:238-255``), and only ``decade.yml`` overrides either.
-``sort_by`` transcribes exactly -- both names are in ``search_sorts`` -- and
-``decade``'s ``limit: 100`` transcribes too. "No limit" does NOT: the builder
-reads ``row.limit if params.limit is None else params.limit``
-(``builders/dynamic.py:808``), so an unset ``limit`` means "the type's default"
-(50) and there is no value that means "none". The three packs upstream leaves
-unlimited therefore ship with the engine's default 50-item search limit, which
-each of their rows states. ``# NOT KOMETA:``, and the smallest of the two
-divergences available -- the alternative was to abandon the transcribed
-``sort_by`` as well and ship ``critic_rating.desc``/50, which changes what the
-collections CONTAIN and not merely how many.
+**Where a pack's sort and limit really come from, recorded once here rather
+than seven times below.** The record's §1.8 measured it: all seven packs pass
+``template: [smart_filter, shared]``, whose defaults are ``sort_by:
+release.desc`` and NO limit at all (``defaults/templates.yml:238-255``), and
+only ``decade.yml`` overrides either. Both halves transcribe. ``sort_by``
+always could -- both names are in ``search_sorts`` -- and "no limit" can now
+too: ``DynamicParams.limit`` takes ``0`` as a documented no-limit sentinel
+(``builders/dynamic.py``'s field comment), which is a different statement from
+leaving it unset, since unset means "the type row's default" and that is 50.
+So every pack below pins what its own file says -- ``limit: 0`` on the six
+upstream leaves unlimited, ``limit: 100`` on ``decade`` -- and no row here
+ships the engine's default wearing a transcription's name.
 """
 
 __all__ = [
@@ -59,6 +56,13 @@ __all__ = [
 # because three packs share it and a second literal is a second thing to keep
 # right.
 _TEMPLATE_SORT: tuple[str, ...] = ("release.desc",)
+
+# The same template's `limit`, which is an OPTIONAL variable it does not supply
+# -- so the emitted search carries no limit at all (record §1.8). Six of the
+# seven packs are in that position; `0` is `DynamicParams.limit`'s no-limit
+# sentinel and is named here so the six read as one transcribed fact rather
+# than as six magic zeroes.
+_TEMPLATE_NO_LIMIT = 0
 
 
 # --- genre: defaults/both/genre.yml -------------------------------------------
@@ -121,12 +125,11 @@ GENRE_PARAMS: tuple[tuple[str, object], ...] = (
     ("title_format", "<<key_name>> <<library_typeU>>s"),
     ("addons", _GENRE_ADDONS),
     ("sort_by", _TEMPLATE_SORT),
+    ("limit", _TEMPLATE_NO_LIMIT),
     # No `max_collections`: 21 genres on the production movie library and 14 on
     # the shows (`docs/research/plex-dynamic-probe/README.md` §2), and at most
     # ten more synthetic buckets from the addon keys above, so the builder's
-    # own default of 50 never fires. No `limit` either -- see the module
-    # docstring; upstream's pack is unlimited and this one takes the engine's
-    # 50.
+    # own default of 50 never fires.
 )
 
 
@@ -212,6 +215,7 @@ AUDIO_LANGUAGE_PARAMS: tuple[tuple[str, object], ...] = (
     ("key_name_override", _LANGUAGE_KEY_NAME_OVERRIDE),
     ("other_name", "Other Audio"),
     ("sort_by", _TEMPLATE_SORT),
+    ("limit", _TEMPLATE_NO_LIMIT),
     # NOT KOMETA: upstream has no cap concept at all. The number is the
     # STRUCTURAL ceiling -- `include` is applied last and the cap is measured
     # against the derived titles, which include the leftovers bucket
@@ -418,6 +422,7 @@ COUNTRY_PARAMS: tuple[tuple[str, object], ...] = (
     ("addons", _COUNTRY_ADDONS),
     ("other_name", "Other Countries"),
     ("sort_by", _TEMPLATE_SORT),
+    ("limit", _TEMPLATE_NO_LIMIT),
     # NOT KOMETA: the same structural ceiling the audio pack pins, for the same
     # reason -- `len(include)` plus the leftovers bucket. Record §2, §5 row 5.
     ("max_collections", len(_COUNTRY_INCLUDE) + 1),

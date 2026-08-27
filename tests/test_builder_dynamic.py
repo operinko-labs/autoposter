@@ -222,6 +222,31 @@ def test_an_unknown_sort_refuses_at_load():
         _definition(params={"type": "genre", "sort_by": ["nonsense.desc"]})
 
 
+def test_a_zero_limit_is_the_no_limit_sentinel_and_a_negative_one_still_refuses():
+    """The one thing ``limit`` could not say, and now can (Addendum 2).
+
+    ``None`` already means "whatever the type's row pins" (50 for every row),
+    so before this sentinel there was no value at all meaning "ask Plex for the
+    whole match set" -- which is precisely what Kometa's shipped packs do: they
+    pass ``template: [smart_filter, shared]``, whose ``limit`` is an OPTIONAL
+    variable, and a pack that does not supply it emits a search with no
+    ``limit=`` byte (record §1.8, ``defaults/templates.yml:238-255``). Five of
+    the seven packs are in that position, so without a sentinel every one of
+    them would ship a 50-item divergence in what its collections CONTAIN.
+
+    Zero is the sentinel rather than a new field because it is already the
+    value the query builder treats as "no limit" (``search_url.py:146-154``,
+    Kometa's own ``if limit`` test at builder.py:4289) -- so the meaning is
+    read off the emitter rather than invented here. Below zero stays refused:
+    it is a typo, not an intent.
+    """
+    assert DynamicParams(type="genre", limit=0).limit == 0
+    assert DynamicParams(type="genre").limit is None
+
+    with pytest.raises(ValidationError, match="limit"):
+        DynamicParams(type="genre", limit=-1)
+
+
 def test_a_non_mapping_addons_refuses_at_load():
     """``dynamic_keys._dictliststr`` raises a bare ``TypeError`` on a
     non-mapping, which would reach the engine as a crash rather than as
@@ -376,6 +401,34 @@ async def test_a_decade_family_emits_the_bare_form_and_queries_the_key(session):
     assert section.fetched[0] == (
         "/library/sections/2/all"
         "?type=1&limit=50&sort=rating%3Adesc&push=1&decade=1980&pop=1"
+    )
+
+
+async def test_the_no_limit_sentinel_reaches_plex_as_a_query_with_no_limit(session):
+    """The other half of the sentinel: what the emitted URL actually says.
+
+    The params model accepting ``0`` is worth nothing if the consumption site
+    (``dynamic.py``'s ``build_search_url`` call) turns it back into the type's
+    default. Both queries are asserted side by side so the difference is the
+    sentinel and not the fixture: the default family carries ``limit=50``, the
+    sentinel family carries no ``limit=`` at all -- which is byte-for-byte the
+    query Kometa's own unlimited packs emit.
+    """
+    section = FakeSection()
+    await REGISTRY["dynamic"].apply(_ctx(session, section, _definition(
+        params={"type": "genre", "limit": 0},
+    )))
+    assert section.fetched, "no search was emitted, so this proves nothing"
+    assert all("limit=" not in one for one in section.fetched), section.fetched
+    assert section.fetched[0] == (
+        "/library/sections/2/all?type=1&sort=rating%3Adesc&push=1&genre=1138&pop=1"
+    )
+
+    default = FakeSection()
+    await REGISTRY["dynamic"].apply(_ctx(session, default, _definition()))
+    assert default.fetched[0] == (
+        "/library/sections/2/all"
+        "?type=1&limit=50&sort=rating%3Adesc&push=1&genre=1138&pop=1"
     )
 
 
