@@ -90,8 +90,10 @@ def test_the_two_library_type_tokens_keep_their_own_case():
     tokens do not overlap -- the ``U`` sits between ``type`` and the closing
     ``>>`` -- so both survive whichever is substituted first, and this pins
     that both appear, each in its own case, in one format."""
-    assert render_title("<<key_name>> <<library_typeU>>s in <<library_type>>", "5", "Movie") \
-        == "5 Movies in movie"
+    assert render_title(
+        "<<key_name>> <<library_typeU>>s in <<library_type>>", "5", "Movie",
+        key="5", values=("5",),
+    ) == "5 Movies in movie"
 
 
 def test_a_title_format_that_names_no_key_is_recognised_as_such():

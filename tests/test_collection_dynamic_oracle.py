@@ -222,6 +222,11 @@ TITLE_CASES = [
     ("title-override", "R", "R", "Movie", "Top <<key_name>> <<library_type>>s",
      {"title_override": {"R": "Grown-Up Movies"}}),
     ("title-token", "1990", "1990s", "Movie", "<<title>> Cinema", {}),
+    ("key-token", "1980", "1980s", "Movie",
+     "Best <<library_type>>s of the <<key_name>> (<<key>>)", {}),
+    ("type-token", "16", "16", "Movie",
+     "<<key_name>> <<library_type>>s tagged <<value>> and <<content_rating>>",
+     {"auto_type": "content_rating"}),
 ]
 
 # KOMETA'S OWN ANSWERS for the titles, pinned as data. Same driver, same run.
@@ -238,6 +243,12 @@ KOMETA_TITLES = {
     "prefix-and-suffix": {"key_name": "Studio", "title": "Top Studio movies"},
     "title-override": {"key_name": "R", "title": "Grown-Up Movies"},
     "title-token": {"key_name": "1990s", "title": "1990s Cinema"},
+    "key-token": {
+        "key_name": "1980s", "title": "Best movies of the 1980s (1980)",
+    },
+    "type-token": {
+        "key_name": "16", "title": "16 movies tagged ['16'] and ['16']",
+    },
 }
 
 

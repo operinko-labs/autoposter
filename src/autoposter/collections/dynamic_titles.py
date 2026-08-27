@@ -16,8 +16,19 @@ Upstream's order, unchanged (modules/meta.py, Kometa v2.4.8):
    suffix, each result ``.strip()``ed (:1356-1361).
 4. ``title_override[key]`` is the finished title, verbatim, and ``title_format``
    is never applied to it (:1382-1383).
-5. Otherwise ``title_format`` has its two library-type tokens substituted, then
-   ``<<title>>`` and ``<<key_name>>`` (:1268-1271, :1401).
+5. Otherwise ``title_format`` has its two library-type tokens substituted
+   (:1268-1271), then ``<<title>>`` and ``<<key_name>>`` (:1401), then every
+   ``og_call`` variable -- ``<<value>>``, ``<<{auto_type}>>``, ``<<key>>`` --
+   unconditionally (:1366, :1402-1404).
+
+What upstream resolves that this does NOT: :1406-1410 substitutes a template's
+``default:`` values, and :1272-1273 resolves ``<<limit>>`` from a library-level
+template variable. Both are the template system, which this service does not
+have, so a ``title_format`` naming any ``<<…>>`` token beyond the seven above
+has nowhere to resolve it and would ship the literal token into a live
+collection name. Refusing such a format belongs to the params model at config
+load, where the operator learns at the moment of the edit -- not here, where the
+family is already enumerated.
 
 **Three places this REFUSES where upstream logs and continues**, each because
 the upstream behaviour is a setting that reads as applied and is not:
@@ -168,16 +179,71 @@ def _substitute_library_type(text: str, library_type: str) -> str:
     return text.replace("<<library_typeU>>", library_type)
 
 
-def render_title(title_format: str, key_name: str, library_type: str) -> str:
-    """meta.py:1268-1271 and :1401.
+def _substitute_call_vars(
+    title: str,
+    *,
+    key: str,
+    key_name: str,
+    values: tuple[str, ...],
+    auto_type: str | None,
+) -> str:
+    """meta.py:1366 and :1402-1404 -- the pass the oracle driver's docstring
+    wrongly called a no-op until the Task 4 review.
+
+    ``og_call`` is built at :1366 with or without a template, and the loop at
+    :1402-1404 is unconditional, so a ``title_format`` carrying ``<<value>>``,
+    ``<<{auto_type}>>`` or ``<<key>>`` resolves it here instead of shipping the
+    literal token into a collection name. ``<<key_name>>`` is in the dict too
+    and is already gone by :1401; it is kept for the dict's real shape.
+
+    ``value`` and ``<<{auto_type}>>`` are THE SAME list object at :1366 and the
+    substitution is ``str()`` of it, so both render as a Python list repr
+    (``['16']``), not as the members joined. ``values`` is a tuple here and is
+    listed back before the ``str()`` so the repr is upstream's, ugly and all.
+
+    ``auto_type`` is ``None`` when the caller names no dynamic type, which drops
+    that one entry -- upstream always has it, and a caller who wants
+    ``<<{auto_type}>>`` resolved must say which type.
+    """
+    key_value = list(values)
+    og_call: dict[str, object] = {"value": key_value}
+    if auto_type is not None:
+        og_call[auto_type] = key_value
+    og_call["key_name"] = key_name
+    og_call["key"] = key
+    for var_key, var_val in og_call.items():
+        token = "<<%s>>" % var_key
+        if token in title:
+            title = title.replace(token, str(var_val))
+    return title
+
+
+def render_title(
+    title_format: str,
+    key_name: str,
+    library_type: str,
+    *,
+    key: str,
+    values: tuple[str, ...],
+    auto_type: str | None = None,
+) -> str:
+    """meta.py:1268-1271, :1401, and :1402-1404.
 
     Upstream substitutes the library type once for the whole family and the key
     name once per key; done together here because the result is the same string
     and one function is easier to prove than two halves that must be called in
     order.
+
+    ``key`` and ``values`` are keyword-only and REQUIRED even though most
+    formats name neither: they are what the :1402-1404 pass resolves, and a
+    default would mean a format naming ``<<key>>`` silently renders an empty
+    string -- the class of surprise this module exists to refuse.
     """
     rendered = _substitute_library_type(title_format, library_type)
-    return rendered.replace("<<title>>", key_name).replace("<<key_name>>", key_name)
+    rendered = rendered.replace("<<title>>", key_name).replace("<<key_name>>", key_name)
+    return _substitute_call_vars(
+        rendered, key=key, key_name=key_name, values=values, auto_type=auto_type,
+    )
 
 
 def _other_title(other_name: str, library_type: str) -> str:
@@ -198,6 +264,7 @@ def family_titles(
     remove_prefix: object = (),
     remove_suffix: object = (),
     other_name: str | None = None,
+    auto_type: str | None = None,
 ) -> tuple[TitledKey, ...]:
     """Every collection this family builds, named, in the family's own order.
 
@@ -206,6 +273,11 @@ def family_titles(
     (meta.py:1301-1305), and without an ``include`` there are no leftovers for
     it to hold. Its key is the literal ``"other"``, so neither override table
     can reach it, and its VALUES are the leftover keys themselves.
+
+    ``auto_type`` is the dynamic type's own name (``content_rating``,
+    ``genre``, ...), which upstream makes a title token of at :1366. Optional
+    because most formats never name it; a format that does and is not given one
+    keeps its literal token, which is the params model's to refuse.
 
     A key of ``ABSENT_KEY`` builds nothing (the module docstring says why).
 
@@ -247,7 +319,10 @@ def family_titles(
         # format there would be the silent-ignore this module refuses.
         title = (
             overrides[unit.key] if unit.key in overrides
-            else render_title(title_format, key_name, library_type)
+            else render_title(
+                title_format, key_name, library_type,
+                key=unit.key, values=unit.values, auto_type=auto_type,
+            )
         )
         claim(unit.key, key_name, title, unit.values)
 
