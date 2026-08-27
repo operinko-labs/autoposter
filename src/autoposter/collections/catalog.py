@@ -1578,19 +1578,49 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
             "cost; through a search they are readable now -- 9b's live probe "
             "read 115 subtitleLanguage values and searched them, and the "
             "`all:`-conjunction trap is worse here, 0 against 442 under "
-            "`any:`. The per-value enumerator is no longer missing either: "
-            "`type: subtitle_language` SHIPPED in phase 10a and a definition "
-            "builds this family today. What is missing is the PRESET, which is "
-            "phase 10b's preset-expansion story and what row %d tracks -- with "
-            "one caveat the enumeration itself measured: 115 values is past "
-            "the engine's default `max_collections` of 50, so this family "
-            "refuses until that cap is raised on purpose."
-            % DYNAMIC_ENGINE_ROW
+            "`any:`. Built by the per-value enumeration engine phase 10a "
+            "shipped: `builder: dynamic`, `type: subtitle_language`, one "
+            "definition "
+            "that expands against the library on every pass, titled in "
+            "Kometa's own shape. Kometa's 187-code include list ships with it, "
+            "transcribed from `defaults/both/subtitle_language.yml` -- whose "
+            "list is byte-identical to the audio pack's, so one table serves "
+            "both -- and a code outside it lands in 'Other Subtitles' rather "
+            "than getting a collection of its own; 57 of the 115 the "
+            "production movie library holds are on the list. The buckets are "
+            "named from Plex's own choice titles, which is the fallback branch "
+            "upstream itself ships, since Kometa names them from TMDb's "
+            "ISO-639-1 table at run time and this service has no such table "
+            "(vendoring one is roadmap row %d, and it would change names only, "
+            "never membership); the value vocabulary is a mix of 2-letter, "
+            "locale, 3-letter, script-qualified and one literal english, so no "
+            "single normalisation target is correct and some titles are Plex's "
+            "wording rather than Kometa's. `max_collections` is pinned at 188 "
+            "-- that include list plus the leftovers bucket, which is the most "
+            "this family can ever build however wide the library is -- so the "
+            "large multilingual library this pack exists for is not refused by "
+            "a number nobody set. Ordered newest-first, upstream's own "
+            "`release.desc`, and each collection holds every title that "
+            "matches rather than a top-N, which is also upstream's. Switching "
+            "this off is a family-wide narrowing: every collection it built "
+            "becomes a sweep candidate at once. That sweep is off unless "
+            "`collections.delete_unconfigured` is on, it never exceeds "
+            "`collections.max_deletes` in a pass, it skips protected labels -- "
+            "and past that cap it refuses the whole library's sweep and "
+            "reports the numbers rather than deleting a prefix of the family. "
+            "To build something else, copy this pack into a `definitions:` "
+            "entry of your own and edit it there."
+            % TMDB_LANGUAGE_NAME_ROW
         ),
         kometa_source="defaults/both/subtitle_language.yml",
         library_types=_BOTH,
-        readiness=GATED,
-        gated_row=DYNAMIC_ENGINE_ROW,
+        collections=(
+            PresetCollection(
+                title="Subtitle languages",
+                builder="dynamic",
+                params=packs.SUBTITLE_LANGUAGE_PARAMS,
+            ),
+        ),
     ),
 )
 
@@ -1754,25 +1784,50 @@ PRODUCTION_PRESETS: tuple[Preset, ...] = (
         category="production",
         name="Studios",
         description=(
-            "One collection per studio, over the several hundred Kometa's "
-            "include list names -- the animation studios above all. The studio "
-            "attribute itself IS filterable here (it is one of the nine tier-1 "
-            "rows that ship), and the pack is a per-value enumeration with "
-            "per-studio name overrides and addon merges -- machinery that is "
-            "the engine, not a transcription, and the engine SHIPPED in phase "
-            "10a (`builder: dynamic`, `type: studio`), so a definition builds "
-            "this family today. What is missing is the PRESET, phase 10b's "
-            "preset-expansion story, which is what row %d tracks. One number "
-            "any such preset has to answer for: phase 10a's probe measured "
-            "824 studio values on the production movie library, far past "
-            "the engine's default `max_collections` of 50, so the family "
-            "refuses until that cap is raised on purpose."
-            % DYNAMIC_ENGINE_ROW
+            "One collection per studio, over the 485 names Kometa's include "
+            "list carries -- the animation studios above all -- with the addon "
+            "merges that fold a studio's other spellings into one bucket (Toei "
+            "into Toei Animation, MGM into Metro-Goldwyn-Mayer), transcribed "
+            "from `defaults/both/studio.yml`. Built by the per-value engine "
+            "phase 10a shipped: `builder: dynamic`, `type: studio`, one "
+            "definition that expands against the library on every pass. The "
+            "number the include list answers for: phase 10a's probe measured "
+            "824 studio values on the production movie library, and upstream "
+            "ships no leftovers bucket for this pack, so a studio outside "
+            "those 485 names builds nothing at all rather than getting a "
+            "collection of its own. `max_collections` is pinned at 485 -- "
+            "Kometa's include list is that long and a whitelist is applied "
+            "last, so the family cannot exceed it whatever the library holds, "
+            "and the 824 raw values never reach it. The title format is this "
+            "pack's one divergence: Kometa titles these with the studio's name "
+            "and nothing else, and gives the country and network packs the "
+            "same bare shape -- three families that would then build "
+            "identically-named collections the moment an operator switched two "
+            "of them on. This pack is the one in both of those pairs, so it "
+            "takes a qualified format instead ('Top <studio> Movies', 'Top "
+            "<studio> Shows') and the other two keep Kometa's unchanged. One "
+            "narrowing relative to upstream, stated rather than hidden: Kometa "
+            "additionally matches the 20th Century Studios bucket on a "
+            "substring, which this engine's single search block cannot "
+            "express, so that bucket matches the exact names in its addon list. "
+            "Ordered newest-first, upstream's own `release.desc`, and each "
+            "collection holds every title that matches rather than a top-N, "
+            "which is also upstream's. Switching this off is a family-wide "
+            "narrowing: every collection it built becomes a sweep candidate at "
+            "once. That sweep is off unless `collections.delete_unconfigured` "
+            "is on, it never exceeds `collections.max_deletes` in a pass, it "
+            "skips protected labels -- and past that cap it refuses the whole "
+            "library's sweep and reports the numbers rather than deleting a "
+            "prefix of the family. To build something else, copy this pack "
+            "into a `definitions:` entry of your own and edit it there."
         ),
         kometa_source="defaults/both/studio.yml",
         library_types=_BOTH,
-        readiness=GATED,
-        gated_row=DYNAMIC_ENGINE_ROW,
+        collections=(
+            PresetCollection(
+                title="Studios", builder="dynamic", params=packs.STUDIO_PARAMS,
+            ),
+        ),
     ),
     Preset(
         key="production_network",
@@ -1780,7 +1835,8 @@ PRODUCTION_PRESETS: tuple[Preset, ...] = (
         name="Networks",
         description=(
             "One collection per television network -- a per-value "
-            "enumeration, and that is now the only thing missing. Phase 9a's "
+            "enumeration, over the 272 names Kometa's include list carries. "
+            "Phase 9a's "
             "probe found Plex 1.43.4 emits no `network` ITEM attribute at all "
             "(zero of 284 shows in the section listing AND absent from the "
             "per-item metadata endpoint), which strands the client-side "
@@ -1790,25 +1846,46 @@ PRODUCTION_PRESETS: tuple[Preset, ...] = (
             "returned its shows, whose `studio` values (S4C, ITV1) disagree "
             "with the network name -- so `network` carries information no "
             "other shipped attribute does, and is not a `studio` alias "
-            "(docs/research/plex-search-probe/README.md). This preset moved "
-            "off the stranded row and onto the engine row %d, and the engine "
-            "then landed: `type: network` SHIPPED in phase 10a, show-only, "
-            "with its choices listing probed at the same 91 values before it "
-            "was allowed to ship -- so a definition builds this family today. "
-            "What is still missing is the PRESET, phase 10b's "
-            "preset-expansion story, which is what row %d tracks. Breadth "
-            "caveat for whoever builds it: the mechanism is proven at ONE "
-            "network with two shows; 91 exist, and nothing has yet checked "
-            "that they all behave. Upstream additionally gates this type on "
-            "the New Plex TV Agent and this service does not, so a library "
-            "whose agent cannot answer enumerates nothing and the family "
-            "refuses rather than creating a partial pack."
-            % (STRANDED_FILTER_ROW, DYNAMIC_ENGINE_ROW, DYNAMIC_ENGINE_ROW)
+            "(docs/research/plex-search-probe/README.md). Built by the "
+            "per-value engine phase 10a shipped, show-only: `builder: "
+            "dynamic`, `type: network`, one definition that expands against "
+            "the library on every pass, with its choices listing probed at the "
+            "same 91 values before the type was allowed to ship. Kometa's own "
+            "272-name include list ships with it, from "
+            "`defaults/show/network.yml`, together with the addon merges that "
+            "fold a broadcaster's regional and sibling channels into the "
+            "parent (Sky Atlantic and Sky Cinema into Sky, the ESPN family "
+            "into ESPN); upstream ships no leftovers bucket here either, so a "
+            "network outside those names builds nothing rather than getting a "
+            "collection of its own. Kometa's title shape (the network's name, "
+            "and nothing else) ships unchanged. `max_collections` is pinned at "
+            "272 -- the include list's own length, which a whitelist applied "
+            "last makes a hard ceiling however wide the library is. Breadth "
+            "caveat, unchanged by shipping the pack: the search mechanism is "
+            "proven at ONE network with two shows; 91 exist, and nothing has "
+            "yet checked that they all behave. Upstream additionally gates "
+            "this type on the New Plex TV Agent and this service does not, so "
+            "a library whose agent cannot answer enumerates nothing and the "
+            "family refuses rather than creating a partial pack. Ordered "
+            "newest-first, upstream's own `release.desc`, and each collection "
+            "holds every title that matches rather than a top-N, which is also "
+            "upstream's. Switching this off is a family-wide narrowing: every "
+            "collection it built becomes a sweep candidate at once. That sweep "
+            "is off unless `collections.delete_unconfigured` is on, it never "
+            "exceeds `collections.max_deletes` in a pass, it skips protected "
+            "labels -- and past that cap it refuses the whole library's sweep "
+            "and reports the numbers rather than deleting a prefix of the "
+            "family. To build something else, copy this pack into a "
+            "`definitions:` entry of your own and edit it there."
+            % STRANDED_FILTER_ROW
         ),
         kometa_source="defaults/show/network.yml",
         library_types=_SHOW,
-        readiness=GATED,
-        gated_row=DYNAMIC_ENGINE_ROW,
+        collections=(
+            PresetCollection(
+                title="Networks", builder="dynamic", params=packs.NETWORK_PARAMS,
+            ),
+        ),
     ),
 )
 
@@ -1902,11 +1979,11 @@ TIME_PRESETS: tuple[Preset, ...] = (
 #
 #   awards           15 / 0 / 1     charts           10 / 0 / 1
 #   content           2 / 2 / 0     content_ratings   7 / 0 / 1
-#   location          1 / 2 / 0     media             2 / 2 / 0
-#   people            1 / 4 / 0     production        1 / 2 / 0
+#   location          1 / 2 / 0     media             3 / 1 / 0
+#   people            1 / 4 / 0     production        3 / 0 / 0
 #   time              1 / 2 / 0
 #
-# -- 57 rows: 40 presets an operator can switch on today, 14 that name what
+# -- 57 rows: 43 presets an operator can switch on today, 11 that name what
 # they would build and the roadmap row that would let them, and 3 rendered
 # switches for families that already ship behind a boolean.
 CATALOG: tuple[Preset, ...] = (

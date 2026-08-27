@@ -71,10 +71,20 @@ collections:
   # The keys are the ones GET /api/collections/catalog lists (the Collections
   # page's picker writes this field); an unknown one is rejected when the
   # config loads. The Oscars are the `awards:` toggle above, not a key here.
+  #
+  # Some presets are PACKS: one key builds one collection per value the library
+  # holds (every genre, every studio, every audio language). Switching a pack
+  # ON creates that whole family on the next pass, and switching it OFF makes
+  # every one of those collections an orphan at once -- which the sweep only
+  # deletes if `delete_unconfigured` above is on, never more than `max_deletes`
+  # of them in a pass, and never at all past that cap (it refuses the whole
+  # sweep and reports the numbers instead). A pack whose enumeration would
+  # exceed its own `max_collections` creates nothing and says so, rather than
+  # building a prefix of the family.
   # Example:
   #   presets:
   #     - award_cannes # Cannes Golden Palm Winners + one per recent festival
-  #     - award_emmy # Emmys, TV libraries only
+  #     - content_genres # one collection per genre the library holds
   # Operator-configured collections, each built by a registered builder. An
   # unknown `builder:` is rejected when the config loads, not hours later in a
   # reconcile. Empty by default; the toggles above are unaffected. Example:

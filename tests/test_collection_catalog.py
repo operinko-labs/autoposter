@@ -268,9 +268,9 @@ CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "content": (2, 2, 0),
     "content_ratings": (7, 0, 1),
     "location": (1, 2, 0),
-    "media": (2, 2, 0),
+    "media": (3, 1, 0),
     "people": (1, 4, 0),
-    "production": (1, 2, 0),
+    "production": (3, 0, 0),
     "time": (1, 2, 0),
 }
 
@@ -565,7 +565,10 @@ def test_there_are_dynamic_packs_to_hold_to_the_contract():
         "content_genres",
         "time_decade",
         "media_audio_language",
+        "media_subtitle_language",
         "location_country",
+        "production_studio",
+        "production_network",
     }
 
 
@@ -618,6 +621,13 @@ def test_every_opinion_a_pack_pins_is_stated_in_the_row():
         cap = params.get("max_collections")
         if cap is not None:
             assert str(cap) in preset.description, (preset.key, cap)
+        else:
+            # The converse, which the check above cannot see: a pin DELETED
+            # from the params leaves the sentence that announced it standing,
+            # and the row then promises a ceiling the family does not have.
+            # Measured as a gap by the plan's own mutation proof -- dropping
+            # `("max_collections", len(STUDIO_INCLUDE))` left every test green.
+            assert "`max_collections` is pinned" not in preset.description, preset.key
         if params.get("include"):
             assert "include" in preset.description, preset.key
         if params.get("title_format"):
@@ -662,12 +672,12 @@ def _table_checksum(entries) -> str:
 
 
 def test_the_big_pack_tables_have_not_drifted_by_one_entry():
-    """Minor 1. The record these four tables transcribe is gitignored
-    (``.gitignore:23 .superpowers/``), so ``packs.py`` is the only in-repo copy
-    of ``_GENRE_ADDONS``/``_COUNTRY_INCLUDE``/``_COUNTRY_ADDONS`` -- and, for
-    ``_LANGUAGE_INCLUDE``, a checksum closes a gap the existing 187+Norwegian
-    pin does not: a same-length substitution (one code swapped for a typo)
-    moves neither the count nor the Norwegian membership check.
+    """Minor 1, extended to every big table this catalog ships. The record
+    these eight tables transcribe is gitignored (``.gitignore:23
+    .superpowers/``), so ``packs.py`` is the only in-repo copy of them -- and,
+    for ``_LANGUAGE_INCLUDE``, a checksum closes a gap the existing
+    187+Norwegian pin does not: a same-length substitution (one code swapped
+    for a typo) moves neither the count nor the Norwegian membership check.
 
     The cap-in-the-description mechanism (``test_every_opinion_a_pack_pins_
     is_stated_in_the_row``) does not substitute for this either: both the old
@@ -701,6 +711,32 @@ def test_the_big_pack_tables_have_not_drifted_by_one_entry():
     assert _table_checksum(packs._COUNTRY_ADDONS) == (
         "2e6cc1ac88769636cdf7b668eb6820f858a5f1e430bb1218b317999329604568"
     )
+
+    assert len(packs.STUDIO_INCLUDE) == 485
+    assert _table_checksum(packs.STUDIO_INCLUDE) == (
+        "be107fdae55fc9c24694b718433900088850a6930270a9418dc1f03abf3606f8"
+    )
+
+    assert len(packs._STUDIO_ADDONS) == 85
+    assert _table_checksum(packs._STUDIO_ADDONS) == (
+        "41f834b2e27ecd1c507e676726ab75447a9cd1756a76848de7fcf3b76ee23ffc"
+    )
+
+    assert len(packs.NETWORK_INCLUDE) == 272
+    assert _table_checksum(packs.NETWORK_INCLUDE) == (
+        "7ba061041e77f3334ba600d5178d4282b283de183283442e89f7e8d87ba2a043"
+    )
+
+    assert len(packs._NETWORK_ADDONS) == 46
+    assert _table_checksum(packs._NETWORK_ADDONS) == (
+        "f75e251286b9b9d848e03912911929bf434e2555f75fb606c5e1c170bc443fe3"
+    )
+
+    # The two entries upstream's YAML does not hold as strings -- `- 5` parses
+    # as the integer and `"#0"` is quoted because `#` opens a comment. The
+    # checksum above would catch a lost one, but not what a reader needs to
+    # know: that these two are matched as the strings a Plex choice title is.
+    assert "5" in packs.NETWORK_INCLUDE and "#0" in packs.NETWORK_INCLUDE
 
 
 def test_a_packs_placeholder_title_is_listed_and_reserved():
@@ -795,6 +831,109 @@ def test_a_dynamic_packs_builds_string_is_honest_end_to_end():
         "definition title -- the family's own collections are the ones per "
         "genre, named this way)"
     )
+
+
+_FORMAT_SENTINEL = "\x1fKEY\x1f"
+
+
+def _rendered_formats(preset, params) -> list[tuple[str, str]]:
+    """One ``(library_type, rendered format)`` pair per library this pack
+    serves, with the KEY token replaced by a sentinel no real value can be."""
+    from autoposter.collections.dynamic_titles import render_title
+    from autoposter.collections.dynamic_types import DYNAMIC_TYPES
+
+    row = DYNAMIC_TYPES[params["type"]]
+    return [
+        (
+            library_type,
+            render_title(
+                params.get("title_format") or row.title_format,
+                _FORMAT_SENTINEL,
+                library_type,
+                key=_FORMAT_SENTINEL,
+                values=(),
+                auto_type=row.name,
+            ),
+        )
+        for library_type in preset.library_types
+    ]
+
+
+def test_no_two_families_an_operator_can_co_enable_share_a_title_format():
+    """The collision the whole-table title test cannot see.
+
+    ``test_every_ready_preset_at_once_never_builds_one_title_twice`` compares
+    the titles this table can NAME, and a dynamic pack names only its
+    placeholder -- the family's real titles are the library's and appear
+    nowhere offline. So two packs with the same ``title_format`` pass that test
+    and then create the same collection title on a real library the moment
+    their key spaces touch, which for the two language packs is not a
+    coincidence but a certainty: they enumerate almost the same vocabulary.
+
+    This is the offline half of the answer: two enabled families must not share
+    a rendered format for one library type. It catches the whole class rather
+    than the instances that bite today. The residual -- two DIFFERENT formats
+    that happen to render the same string for specific runtime values -- is
+    rows 135/162's documented gap and is not caught here or anywhere else.
+
+    ``cs_bucket``'s static titles are in the comparison because it is a shipped
+    family an operator cannot switch off, so a pack that rendered into one of
+    its titles would collide with something always present.
+    """
+    from autoposter.collections.buckets import derive_buckets
+
+    seen: dict[tuple[str, str], str] = {}
+    for preset, _collection, params in _dynamic_rows():
+        for library_type, rendered in _rendered_formats(preset, params):
+            previous = seen.get((library_type, rendered))
+            assert previous is None, (library_type, rendered, previous, preset.key)
+            seen[(library_type, rendered)] = preset.key
+
+    for library_type in LIBRARY_TYPES:
+        for bucket in derive_buckets(set(), library_type):
+            clash = seen.get((library_type, bucket.title))
+            assert clash is None, (library_type, bucket.title, clash)
+
+
+def test_the_collision_test_can_actually_fail():
+    """A test that has never been seen red is a test nobody has debugged.
+
+    Two packs are given one format here on purpose, and the check the test
+    above performs is run over them directly -- so the assertion's teeth are
+    proven without waiting for a real collision to ship.
+    """
+    seen: dict[tuple[str, str], str] = {}
+    collided = []
+    for key, rendered in (("pack_a", "Top KEY Movies"), ("pack_b", "Top KEY Movies")):
+        if ("Movie", rendered) in seen:
+            collided.append((key, seen[("Movie", rendered)]))
+        seen[("Movie", rendered)] = key
+
+    assert collided == [("pack_b", "pack_a")]
+
+
+# Every pack's `title_format`, as the literal `packs.py` pins. The second site
+# of a deliberate two-site edit: the test above proves the seven formats do not
+# COLLIDE, which a coordinated edit of two of them could keep true while
+# silently renaming a shipped family's every collection. Six of these are
+# Kometa's own; `production_studio`'s is this service's divergence, and it is
+# the one most likely to be "improved" by a later reader who has not read why
+# it is not bare.
+_PINNED_FORMATS: dict[str, str] = {
+    "content_genres": "<<key_name>> <<library_typeU>>s",
+    "time_decade": "Best of <<key_name>>",
+    "media_audio_language": "<<key_name>> Audio",
+    "media_subtitle_language": "<<key_name>> Subtitles",
+    "location_country": "<<key_name>>",
+    "production_network": "<<key_name>>",
+    "production_studio": "Top <<key_name>> <<library_typeU>>s",
+}
+
+
+def test_every_packs_title_format_is_pinned_here_as_well_as_in_the_pack():
+    for preset, _collection, params in _dynamic_rows():
+        assert params.get("title_format") == _PINNED_FORMATS.get(preset.key), preset.key
+    assert set(_PINNED_FORMATS) == {preset.key for preset, _, _ in _dynamic_rows()}
 
 
 # --- the gated rows ----------------------------------------------------------
