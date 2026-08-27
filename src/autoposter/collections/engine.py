@@ -339,9 +339,15 @@ async def run_library(
         builder = REGISTRY[definition.builder]
 
         if getattr(builder, "smart", False):
-            # Not wrapped: a smart builder does not fetch, so anything it raises
-            # is a Plex write failing, which belongs to the caller's per-library
-            # rollback rather than being swallowed as a dead source.
+            # Not wrapped -- and no longer because "a smart builder does not
+            # fetch", which stopped being true for ``dynamic``: it performs two
+            # reads, the enumeration wrapped class-name-only inside
+            # ``LibraryTagResolver`` and RETURNED as a refusal action, and the
+            # shared listing through ``ctx.listing()`` unwrapped like every
+            # other engine listing call. So what is left to escape ``apply`` is
+            # a Plex write or that shared listing failing, and both belong to
+            # the caller's per-library rollback rather than being swallowed here
+            # as a dead source.
             smart_actions = await builder.apply(
                 SmartContext(
                     session=session, section=section, library=library,
