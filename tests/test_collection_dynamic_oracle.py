@@ -201,7 +201,67 @@ def test_the_oracles_enumerations_match_this_files_copies():
         literals["DECADES"] == DECADES
 
 
-def test_the_driver_still_produces_the_pinned_key_answers():
+# --- the title half ----------------------------------------------------------
+
+TITLE_CASES = [
+    ("general-default", "Horror", "Horror", "Movie",
+     "Top <<key_name>> <<library_type>>s", {}),
+    ("general-default-show", "Drama", "Drama", "Show",
+     "Top <<key_name>> <<library_type>>s", {}),
+    ("decade", "1980", "1980s", "Movie",
+     "Best <<library_type>>s of the <<key_name>>", {}),
+    ("both-library-type-tokens", "5", "5", "Movie",
+     "<<key_name>> <<library_typeU>>s for a <<library_type>> library", {}),
+    ("key-name-override-suppresses-the-strip", "BBC One", "BBC One", "Show",
+     "Top <<key_name>> <<library_type>>s",
+     {"key_name_override": {"BBC One": "the BBC"},
+      "remove_prefix": ["BBC ", "the "]}),
+    ("prefix-and-suffix", "The Studio Ltd", "The Studio Ltd", "Movie",
+     "Top <<key_name>> <<library_type>>s",
+     {"remove_prefix": ["The "], "remove_suffix": [" Ltd"]}),
+    ("title-override", "R", "R", "Movie", "Top <<key_name>> <<library_type>>s",
+     {"title_override": {"R": "Grown-Up Movies"}}),
+    ("title-token", "1990", "1990s", "Movie", "<<title>> Cinema", {}),
+]
+
+# KOMETA'S OWN ANSWERS for the titles, pinned as data. Same driver, same run.
+KOMETA_TITLES = {
+    "general-default": {"key_name": "Horror", "title": "Top Horror movies"},
+    "general-default-show": {"key_name": "Drama", "title": "Top Drama shows"},
+    "decade": {"key_name": "1980s", "title": "Best movies of the 1980s"},
+    "both-library-type-tokens": {
+        "key_name": "5", "title": "5 Movies for a movie library",
+    },
+    "key-name-override-suppresses-the-strip": {
+        "key_name": "the BBC", "title": "Top the BBC shows",
+    },
+    "prefix-and-suffix": {"key_name": "Studio", "title": "Top Studio movies"},
+    "title-override": {"key_name": "R", "title": "Grown-Up Movies"},
+    "title-token": {"key_name": "1990s", "title": "1990s Cinema"},
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "key", "value", "library_type", "title_format", "options"),
+    TITLE_CASES, ids=[c[0] for c in TITLE_CASES],
+)
+def test_our_titles_are_kometas(name, key, value, library_type, title_format, options):
+    from autoposter.collections.dynamic_keys import DerivedKeys, DynamicKey
+    from autoposter.collections.dynamic_titles import family_titles
+
+    derived = DerivedKeys(
+        keys=(DynamicKey(key=key, value=value, values=(key,)),),
+        other_keys=(),
+    )
+    titled = family_titles(
+        derived, library_type=library_type, title_format=title_format, **options
+    )
+    assert len(titled) == 1
+    assert {"key_name": titled[0].key_name, "title": titled[0].title} == \
+        KOMETA_TITLES[name]
+
+
+def test_the_driver_still_produces_the_pinned_answers():
     """The goldens are data and the driver that produced them is tracked,
     reviewable and editable -- so it can drift from them with nothing noticing.
 
@@ -221,3 +281,13 @@ def test_the_driver_still_produces_the_pinned_key_answers():
     ):
         assert name == pinned_name
         assert json.loads(json.dumps(driver.derive(pairs, **options))) == pinned, name
+
+    for case, (pinned_name, pinned) in zip(
+        driver.TITLE_CASES, KOMETA_TITLES.items(), strict=True
+    ):
+        name, key, value, library_type, title_format, options = case
+        assert name == pinned_name
+        assert driver.key_name_and_title(
+            key, value, library_type=library_type,
+            title_format=title_format, **options,
+        ) == pinned, name

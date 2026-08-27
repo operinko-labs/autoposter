@@ -8,6 +8,12 @@ ranges quoted verbatim in ``.superpowers/sdd/p10a-upstream-dynamic.md`` §5 and
                                addon-members-become-exclusions extension
   modules/meta.py:1217-1228    the addons -> keys merge (``custom_keys``)
   modules/meta.py:1348-1365    the include whitelist and each key's query values
+  modules/meta.py:1268-1273    the two library-type substitutions, done ONCE
+                               before the key loop
+  modules/meta.py:1352-1361    the key name: ``key_name_override`` and, in its
+                               ``else`` branch only, the prefix/suffix strip
+  modules/meta.py:1382-1401    the title: ``title_override`` outright, else
+                               ``title_format`` with ``<<title>>``/``<<key_name>>``
   modules/util.py:917-961      the ``strlist`` / ``dictliststr`` / ``strdict``
                                coercions the three options are read through
 
@@ -23,8 +29,16 @@ library-level template variables, so the ``elif dynamic[...]`` branch is the
 only reachable one), and the per-type enumeration itself (meta.py:869-1211),
 whose output IS this driver's ``all_pairs`` argument.
 
+ALSO REMOVED from the title half (meta.py:1385-1416): the ``name_format``
+template variable, the GitHub translation lookup and its unresolvable-``<<…>>``
+fall-back, and the ``og_call``/template ``default:`` variable substitution --
+all four are the template system, which this service does not have. With no
+templates, ``_base`` at :1400 is always ``title_format`` and :1402-1416 are
+no-ops, so :1401 is the whole of the title.
+
 Run:  python kometa_dynamic.py
-      -> prints one ``N <json>`` line per case
+      -> prints one ``K<n> <json>`` line per key case, then one ``T<n> <json>``
+         line per title case
 """
 import json
 
@@ -131,6 +145,69 @@ def derive(all_pairs, *, include=None, exclude=None, addons=None, custom_keys=Tr
     return {"keys": keys, "other_keys": other_keys}
 
 
+def strdict(value):
+    """modules/util.py:961 -- ``strdict``: keys AND values both ``str()``."""
+    if not value:
+        return {}
+    return {str(k): str(v) for k, v in value.items()}
+
+
+def commalist(value):
+    """modules/util.py -- ``commalist``: comma-split, and NOT str()-coerced.
+
+    The one option of the six that is not coerced, which is upstream's own
+    asymmetry and is why a numeric prefix does not strip.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return list(value)
+    return [part.strip() for part in str(value).split(",")]
+
+
+def key_name_and_title(key, value, *, library_type, title_format,
+                       key_name_override=None, title_override=None,
+                       remove_prefix=None, remove_suffix=None):
+    """meta.py:1268-1271 (the library-type substitution), :1352-1361 (the key
+    name) and :1382-1401 (the title).
+
+    ``library_type`` is Kometa's ``library.type``: ``<<library_type>>`` is its
+    lowercase form and ``<<library_typeU>>`` is it unchanged (meta.py:1268-1271).
+    """
+    key_name_override = strdict(key_name_override)
+    title_override = strdict(title_override)
+
+    # :1268-1271, in upstream's own order -- ``<<library_type>>`` first, then
+    # ``<<library_typeU>>``. The order is NOT load-bearing and that is worth
+    # stating, because it reads as if it were: ``<<library_type>>`` is not a
+    # substring of ``<<library_typeU>>`` (the closing ``>>`` is separated by the
+    # ``U``), so neither replacement can eat the other's token and the two
+    # orders are provably identical. Transcribed in upstream's order anyway --
+    # this file is a transcription, not a rewrite.
+    title_format = title_format.replace("<<library_type>>", library_type.lower())
+    title_format = title_format.replace("<<library_typeU>>", library_type)
+
+    if key in key_name_override:                                   # :1352-1353
+        key_name = key_name_override[key]
+    else:
+        key_name = value
+        for prefix in commalist(remove_prefix):                    # :1356-1358
+            if key_name.startswith(prefix):
+                key_name = key_name[len(prefix):].strip()
+        for suffix in commalist(remove_suffix):                    # :1359-1361
+            if key_name.endswith(suffix):
+                key_name = key_name[:-len(suffix)].strip()
+
+    if key in title_override:                                      # :1382-1383
+        return {"key_name": key_name, "title": title_override[key]}
+
+    # :1401. With no template system there is no ``name_format`` and no
+    # translation name, so ``_base`` is ``title_format`` and this is the
+    # whole of the title.
+    title = title_format.replace("<<title>>", key_name).replace("<<key_name>>", key_name)
+    return {"key_name": key_name, "title": title}
+
+
 # The enumerations the cases run against. Shaped like a real
 # ``listFilterChoices`` answer for the type named, and shared BY VALUE with
 # ``tests/test_collection_dynamic_oracle.py`` -- never by import, in either
@@ -210,9 +287,56 @@ KEY_CASES = [
 ]
 
 
+TITLE_CASES = [
+    # 1. The default shape every tag type gets (meta.py:959).
+    ("general-default", "Horror", "Horror", "Movie",
+     "Top <<key_name>> <<library_type>>s", {}),
+    # 2. The show wording of the same, which is the only thing the two
+    #    library-type tokens can get wrong.
+    ("general-default-show", "Drama", "Drama", "Show",
+     "Top <<key_name>> <<library_type>>s", {}),
+    # 3. Movie decade: the key and the display value differ (meta.py:933).
+    ("decade", "1980", "1980s", "Movie",
+     "Best <<library_type>>s of the <<key_name>>", {}),
+    # 4. Both library-type tokens in one format -- the CS certification shape
+    #    (``<<key_name>> <<library_typeU>>s``) beside the lowercase one.
+    ("both-library-type-tokens", "5", "5", "Movie",
+     "<<key_name>> <<library_typeU>>s for a <<library_type>> library", {}),
+    # 5. ``key_name_override`` rewrites the name BEFORE the format, and
+    #    SUPPRESSES the prefix/suffix strip -- the strip is the else branch
+    #    (meta.py:1354-1361). BOTH prefixes are load-bearing and the case is
+    #    dead without either: "BBC " is what the VALUE would have lost had
+    #    there been no override, and "the " is what the OVERRIDE would lose if
+    #    the strip were not suppressed. With only the first, an implementation
+    #    that strips the override's own text answers identically and the case
+    #    proves nothing but "the override replaces the value".
+    ("key-name-override-suppresses-the-strip", "BBC One", "BBC One", "Show",
+     "Top <<key_name>> <<library_type>>s",
+     {"key_name_override": {"BBC One": "the BBC"},
+      "remove_prefix": ["BBC ", "the "]}),
+    # 6. Prefixes then suffixes, each stripped in sequence and each ``.strip()``ed.
+    ("prefix-and-suffix", "The Studio Ltd", "The Studio Ltd", "Movie",
+     "Top <<key_name>> <<library_type>>s",
+     {"remove_prefix": ["The "], "remove_suffix": [" Ltd"]}),
+    # 7. ``title_override`` replaces the finished title outright, and the
+    #    format is never applied to it.
+    ("title-override", "R", "R", "Movie", "Top <<key_name>> <<library_type>>s",
+     {"title_override": {"R": "Grown-Up Movies"}}),
+    # 8. ``<<title>>`` is the other accepted token for the same value
+    #    (meta.py:1401).
+    ("title-token", "1990", "1990s", "Movie", "<<title>> Cinema", {}),
+]
+
+
 def main():
     for index, (name, pairs, options) in enumerate(KEY_CASES, start=1):
-        print("%d %s %s" % (index, name, json.dumps(derive(pairs, **options))))
+        print("K%d %s %s" % (index, name, json.dumps(derive(pairs, **options))))
+    for index, case in enumerate(TITLE_CASES, start=1):
+        name, key, value, library_type, title_format, options = case
+        print("T%d %s %s" % (index, name, json.dumps(key_name_and_title(
+            key, value, library_type=library_type,
+            title_format=title_format, **options,
+        ))))
 
 
 if __name__ == "__main__":
