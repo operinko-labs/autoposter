@@ -1391,6 +1391,27 @@ entries are now reported instead of silently dropped (10a-1 review, T4 and N-5).
 
 ## Task 3: The mandatory old-vs-new equivalence proof
 
+> **CORRECTION (2026-08-27, filed by Task 6's wrap — the plan text below is
+> left as written and is out of date in two counts).**
+>
+> 1. **"The four premises" is five.** Task 3's fix round shipped a fifth,
+>    `P5` — an unencoded `+` in a value reaches the server's matcher as a
+>    SPACE — and it is live-measured rather than reasoned, at P2's standard.
+>    It was needed because the proof turned up a real defect rather than
+>    confirming a swap: `build_search_url`'s tag branch emitted a resolved key
+>    raw, and `content_rating` is the one tag family whose Plex key IS its
+>    title. `member_sets.py` says "Five premises" and is the authority; the
+>    three "four premises" lines below (this task's table, its `member_sets.py`
+>    docstring draft, and Task 6's quoted row-185 text) are the plan as it was
+>    believed when the tasks were dispatched. The row as SHIPPED says five.
+> 2. **The encoding-fix micro-task's "four strict xfails" is three markers.**
+>    Task 3 left three `xfail(strict=True)` tests spanning seventeen
+>    parametrized cases, plus ONE deliberately-unmarked test that measured the
+>    broken shape and was written to go red on the same fix. Four things
+>    retired themselves; three of them carried the strict marker. The count
+>    matters only because "four markers" would have left a reviewer looking
+>    for a marker that was never there.
+
 **Files:**
 - Create: `tests/oracle/10a2/README.md`
 - Create: `tests/oracle/10a2/plexapi_side.py`, `tests/oracle/10a2/ours_side.py`,

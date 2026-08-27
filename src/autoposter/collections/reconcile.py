@@ -711,7 +711,20 @@ async def reconcile_content_ratings(
         ) as refusal:
             # Contained to ONE bucket, for the reason above: seventeen working
             # collections must not stop being managed because an eighteenth
-            # holds a rating Plex will not resolve.
+            # cannot have its query built.
+            #
+            # Honestly, about ``TagValueNotFound`` specifically: at THIS call
+            # site it is unreachable by construction. ``derive_buckets``
+            # filters every bucket's values against ``present``, and
+            # ``present`` is exactly the titles this same resolver just
+            # returned, so no shipped bucket can fail to resolve -- which is
+            # why the test that exercises this branch has to inject a resolver
+            # rather than arrange a section. The catch stays because the other
+            # three classes are live (``SearchAttributeNotAvailable`` the
+            # moment a ``FILTER_ATTRIBUTES`` row's ``field_for`` changes for a
+            # libtype) and because ``apply`` is not wrapped upstream of here;
+            # it is not a guard against a production failure mode that exists
+            # today.
             logger.warning("%s: %r was not built: %s",
                            library_name, bucket.title, refusal)
             actions.append("refused %r: %s" % (bucket.title, refusal))

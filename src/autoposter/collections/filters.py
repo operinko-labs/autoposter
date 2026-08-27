@@ -276,6 +276,13 @@ SEARCH_OPERATORS_EXCLUDED: dict[str, tuple[str, ...]] = {
     # ``year_attribute`` and therefore reached the number modifiers too: that
     # comprehension is guarded by the same list (plex.py:599), so all four
     # ranges go with the ``.not``. The bare form is what is left.
+    #
+    # One nuance the sentence above glosses: upstream's ``.regex`` survives
+    # ``no_not_mods`` (plex.py:597), so this list is not the whole difference
+    # between us and Kometa for ``decade``. It is absent here because this
+    # service refuses ``.regex`` in a SEARCH globally, for every row, and not
+    # because ``decade`` loses it -- a subtraction that is already made
+    # elsewhere does not need a row here.
     "decade": ("not", "gt", "gte", "lt", "lte"),
 }
 

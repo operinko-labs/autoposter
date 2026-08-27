@@ -751,6 +751,14 @@ async def _sweep(
     - past ``max_deletes`` the sweep refuses **entirely**, with the numbers.
       Deleting "the first five" of a hundred would be the same accident,
       spread over twenty passes (the ``cleanup.max_orphans`` precedent).
+      Operator note, and it is new with the family sweep below: a dynamic
+      family that NARROWS reaches this cap without anybody editing a config --
+      a tightened ``include:``, or the library simply ceasing to hold six of
+      the values it held last pass, is six candidates. And reaching it
+      suspends the sweep for the WHOLE library, not just for that family, so
+      unrelated orphans stop being deleted too until the operator looks; the
+      refusal names both numbers, and one refusal covers the whole sweep,
+      which is why it cannot itself name the family that caused it.
     - a **dynamic family's members** are enumerated by the family LABEL, which
       is Kometa's own handle for the same job (``append_label``, meta.py:1421,
       and the ``sync:`` sweep at :1300, :1456-1461). The ones the family

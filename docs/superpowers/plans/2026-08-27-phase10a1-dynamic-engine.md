@@ -2154,8 +2154,12 @@ bucket values through this engine as buckets.derive_buckets does today."
 > of `<<library_typeU>>` — the `U` sits between `type` and the closing `>>`, so
 > `"<<library_typeU>>".replace("<<library_type>>", x)` matches nothing and the
 > two replacements provably commute. Upstream itself does `<<library_type>>`
-> first (meta.py:1268-1271), which the plan's own citation points at and the
-> plan's prose then contradicts. The Task 4 review adjudicated this and the
+> first (meta.py:1268-1271), which the plan's own citation all but points at
+> and the plan's prose then contradicts. (Amended 2026-08-27 by phase 10a-2's
+> wrap, closing the 10a-1 Task 6 review's M-5: the transcription below writes
+> that citation as `:1269-1272`, one line adrift of the `:1268-1271` the
+> shipped code and the oracle both use, so "points at" was itself a shade
+> generous.) The Task 4 review adjudicated this and the
 > SHIPPED code is upstream's order with the reason stated correctly
 > (`src/autoposter/collections/dynamic_titles.py::_substitute_library_type`);
 > what IS load-bearing is which of the two lowercases, not which runs first.

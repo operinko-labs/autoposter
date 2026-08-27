@@ -315,6 +315,15 @@ class DynamicParams(BaseModel):
     # and switch off is the surprise this project refuses -- and switching it on
     # costs one Plex read per key per pass, which is why it is opt-in twice
     # over: by existing, and by being priced in its own docstring.
+    #
+    # It also changes what a ZERO-match key MEANS, which is worth saying out
+    # loud rather than leaving to be discovered. Off, a key nothing matches
+    # refuses at the reconciler (`SmartFilterMatchedNothing`) and stays in the
+    # pass's record, so an existing collection under that title is protected.
+    # On -- at ANY value, since zero is below every threshold -- the key leaves
+    # the record and that collection becomes an ordinary sweep candidate,
+    # through the usual guards. The feature working as designed, but a
+    # protection posture that flips on one opt-in.
     minimum_items: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="before")

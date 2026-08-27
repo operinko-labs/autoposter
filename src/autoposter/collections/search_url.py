@@ -310,6 +310,10 @@ def _arguments(
     # ``tests/test_collection_cs_equivalence.py`` is the proof;
     # ``docs/research/plex-dynamic-probe/README.md`` section 5 is the ``+``
     # measurement.
+    # For whoever hits this from the other direction: if a future 9b oracle
+    # config resolves a tag to a TITLE and that breaks byte parity against
+    # Kometa, the failure IS this divergence surfacing -- keep the quote and
+    # accept the byte mismatch; do not revert it to make the comparison green.
     if row.type == "tag":
         out = []
         for value in predicate.values:
