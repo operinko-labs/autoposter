@@ -712,8 +712,8 @@ def test_the_big_pack_tables_have_not_drifted_by_one_entry():
         "2e6cc1ac88769636cdf7b668eb6820f858a5f1e430bb1218b317999329604568"
     )
 
-    assert len(packs.STUDIO_INCLUDE) == 485
-    assert _table_checksum(packs.STUDIO_INCLUDE) == (
+    assert len(packs._STUDIO_INCLUDE) == 485
+    assert _table_checksum(packs._STUDIO_INCLUDE) == (
         "be107fdae55fc9c24694b718433900088850a6930270a9418dc1f03abf3606f8"
     )
 
@@ -722,8 +722,8 @@ def test_the_big_pack_tables_have_not_drifted_by_one_entry():
         "41f834b2e27ecd1c507e676726ab75447a9cd1756a76848de7fcf3b76ee23ffc"
     )
 
-    assert len(packs.NETWORK_INCLUDE) == 272
-    assert _table_checksum(packs.NETWORK_INCLUDE) == (
+    assert len(packs._NETWORK_INCLUDE) == 272
+    assert _table_checksum(packs._NETWORK_INCLUDE) == (
         "7ba061041e77f3334ba600d5178d4282b283de183283442e89f7e8d87ba2a043"
     )
 
@@ -736,7 +736,7 @@ def test_the_big_pack_tables_have_not_drifted_by_one_entry():
     # as the integer and `"#0"` is quoted because `#` opens a comment. The
     # checksum above would catch a lost one, but not what a reader needs to
     # know: that these two are matched as the strings a Plex choice title is.
-    assert "5" in packs.NETWORK_INCLUDE and "#0" in packs.NETWORK_INCLUDE
+    assert "5" in packs._NETWORK_INCLUDE and "#0" in packs._NETWORK_INCLUDE
 
 
 def test_a_packs_placeholder_title_is_listed_and_reserved():
@@ -835,10 +835,25 @@ def test_a_dynamic_packs_builds_string_is_honest_end_to_end():
 
 _FORMAT_SENTINEL = "\x1fKEY\x1f"
 
+# A key value shaped like something the ``content_rating`` bucket table
+# actually holds (``assets/collections/content_rating_cs.json``'s ``include``
+# is the digit strings ``"1"``..``"18"``), used only for the cs_bucket half of
+# the collision check below. ``_FORMAT_SENTINEL`` can never equal a bucket
+# title -- no bucket title contains ``\x1f`` -- so that half of the check
+# would pass even if a shipped pack rendered exactly into one; this
+# substitute renders into a string a real bucket title actually IS, so the
+# comparison can fail (task-4 review, Important 2).
+_BUCKET_SHAPED_KEY = "13"
 
-def _rendered_formats(preset, params) -> list[tuple[str, str]]:
+
+def _rendered_formats(
+    preset, params, key_name: str = _FORMAT_SENTINEL
+) -> list[tuple[str, str]]:
     """One ``(library_type, rendered format)`` pair per library this pack
-    serves, with the KEY token replaced by a sentinel no real value can be."""
+    serves. Defaults to the sentinel no real value can be, for the
+    family-vs-family check below; the cs_bucket check passes
+    ``_BUCKET_SHAPED_KEY`` instead, since that comparison needs a
+    substitution that CAN equal a real title."""
     from autoposter.collections.dynamic_titles import render_title
     from autoposter.collections.dynamic_types import DYNAMIC_TYPES
 
@@ -848,15 +863,68 @@ def _rendered_formats(preset, params) -> list[tuple[str, str]]:
             library_type,
             render_title(
                 params.get("title_format") or row.title_format,
-                _FORMAT_SENTINEL,
+                key_name,
                 library_type,
-                key=_FORMAT_SENTINEL,
+                key=key_name,
                 values=(),
                 auto_type=row.name,
             ),
         )
         for library_type in preset.library_types
     ]
+
+
+def _assert_no_two_formats_collide(rows) -> None:
+    """The family-vs-family half of the check below, pulled out so the
+    red-first proof (``test_the_collision_test_can_actually_fail``) can drive
+    the SAME code the real test runs instead of a copy of it (task-4 review,
+    Important 1).
+
+    ``other_name`` leftovers titles go into the same ``seen`` map (Minor 2): a
+    leftovers bucket is a rendered title exactly like a KEY title is, and two
+    co-enabled packs sharing one -- on the same library type -- would build
+    the same collection with nobody the wiser, since neither pack's real
+    titles appear anywhere offline for the whole-table title test to catch.
+    """
+    from autoposter.collections.dynamic_titles import _other_title
+
+    seen: dict[tuple[str, str], str] = {}
+    for preset, _collection, params in rows:
+        for library_type, rendered in _rendered_formats(preset, params):
+            previous = seen.get((library_type, rendered))
+            assert previous is None, (library_type, rendered, previous, preset.key)
+            seen[(library_type, rendered)] = preset.key
+
+        other_name = params.get("other_name")
+        if other_name:
+            for library_type in preset.library_types:
+                other_title = _other_title(other_name, library_type)
+                previous = seen.get((library_type, other_title))
+                assert previous is None, (
+                    library_type, other_title, previous, preset.key,
+                )
+                seen[(library_type, other_title)] = preset.key
+
+
+def _assert_no_bucket_collisions(rows) -> None:
+    """The cs_bucket half of the check below, pulled out for the same reason
+    (task-4 review, Important 2).
+
+    Rendered with ``_BUCKET_SHAPED_KEY`` rather than the sentinel: a
+    comparison that can never match proves nothing, and a pack that rendered
+    exactly into a bucket's title, for some real value it enumerates, would
+    build the same collection ``cs_bucket`` already ships.
+    """
+    from autoposter.collections.buckets import derive_buckets
+
+    for preset, _collection, params in rows:
+        for library_type, rendered in _rendered_formats(
+            preset, params, key_name=_BUCKET_SHAPED_KEY
+        ):
+            for bucket in derive_buckets(set(), library_type):
+                assert rendered != bucket.title, (
+                    library_type, rendered, bucket.title, preset.key,
+                )
 
 
 def test_no_two_families_an_operator_can_co_enable_share_a_title_format():
@@ -871,45 +939,89 @@ def test_no_two_families_an_operator_can_co_enable_share_a_title_format():
     coincidence but a certainty: they enumerate almost the same vocabulary.
 
     This is the offline half of the answer: two enabled families must not share
-    a rendered format for one library type. It catches the whole class rather
-    than the instances that bite today. The residual -- two DIFFERENT formats
-    that happen to render the same string for specific runtime values -- is
-    rows 135/162's documented gap and is not caught here or anywhere else.
+    a rendered format for one library type, and neither may share an
+    ``other_name`` leftovers title with another (Minor 2). It catches the
+    whole class rather than the instances that bite today. The residual --
+    two DIFFERENT formats that happen to render the same string for specific
+    runtime values -- is rows 135/162's documented gap and is not caught here
+    or anywhere else.
 
-    ``cs_bucket``'s static titles are in the comparison because it is a shipped
-    family an operator cannot switch off, so a pack that rendered into one of
-    its titles would collide with something always present.
+    ``cs_bucket``'s static titles are in the comparison because it is a
+    shipped family an operator cannot switch off, so a pack that rendered
+    into one of its titles would collide with something always present. That
+    half is checked with ``_BUCKET_SHAPED_KEY`` rather than the sentinel used
+    above, because the sentinel can never equal a real bucket title -- see
+    ``_assert_no_bucket_collisions``.
     """
-    from autoposter.collections.buckets import derive_buckets
-
-    seen: dict[tuple[str, str], str] = {}
-    for preset, _collection, params in _dynamic_rows():
-        for library_type, rendered in _rendered_formats(preset, params):
-            previous = seen.get((library_type, rendered))
-            assert previous is None, (library_type, rendered, previous, preset.key)
-            seen[(library_type, rendered)] = preset.key
-
-    for library_type in LIBRARY_TYPES:
-        for bucket in derive_buckets(set(), library_type):
-            clash = seen.get((library_type, bucket.title))
-            assert clash is None, (library_type, bucket.title, clash)
+    _assert_no_two_formats_collide(_dynamic_rows())
+    _assert_no_bucket_collisions(_dynamic_rows())
 
 
 def test_the_collision_test_can_actually_fail():
     """A test that has never been seen red is a test nobody has debugged.
 
-    Two packs are given one format here on purpose, and the check the test
-    above performs is run over them directly -- so the assertion's teeth are
-    proven without waiting for a real collision to ship.
+    Both halves above are driven here through their real helpers --
+    ``_assert_no_two_formats_collide`` and ``_assert_no_bucket_collisions`` --
+    over fabricated ``(preset, params)`` pairs, not a re-implementation of
+    their loops: the assertion's teeth are proven on the exact code the real
+    test runs, not a copy of it that would keep passing if that code were
+    deleted, inverted, or had its assertion removed (task-4 review, Important
+    1 and 2). ``genre`` is used as every fake's ``type`` purely to satisfy
+    ``_rendered_formats``' ``DYNAMIC_TYPES`` lookup; what actually collides in
+    each case is the fabricated ``title_format`` or ``other_name``.
     """
-    seen: dict[tuple[str, str], str] = {}
-    collided = []
-    for key, rendered in (("pack_a", "Top KEY Movies"), ("pack_b", "Top KEY Movies")):
-        if ("Movie", rendered) in seen:
-            collided.append((key, seen[("Movie", rendered)]))
-        seen[("Movie", rendered)] = key
+    class _FakePreset:
+        __slots__ = ("key", "library_types")
 
-    assert collided == [("pack_b", "pack_a")]
+        def __init__(self, key: str, library_types: tuple[str, ...]) -> None:
+            self.key = key
+            self.library_types = library_types
+
+    # Two packs sharing one rendered format on the same library type.
+    format_collision = [
+        (
+            _FakePreset("pack_a", ("Movie",)), None,
+            {"type": "genre", "title_format": "Top <<key_name>> Movies"},
+        ),
+        (
+            _FakePreset("pack_b", ("Movie",)), None,
+            {"type": "genre", "title_format": "Top <<key_name>> Movies"},
+        ),
+    ]
+    with pytest.raises(AssertionError, match="pack_b"):
+        _assert_no_two_formats_collide(format_collision)
+
+    # Two DIFFERENT formats that nonetheless share one `other_name` leftovers
+    # title (Minor 2) -- the class the format check above cannot see.
+    other_name_collision = [
+        (
+            _FakePreset("pack_c", ("Movie",)), None,
+            {
+                "type": "genre", "title_format": "<<key_name>> Leftovers",
+                "other_name": "Shared Leftovers",
+            },
+        ),
+        (
+            _FakePreset("pack_d", ("Movie",)), None,
+            {
+                "type": "genre", "title_format": "<<key_name>> Extras",
+                "other_name": "Shared Leftovers",
+            },
+        ),
+    ]
+    with pytest.raises(AssertionError, match="pack_d"):
+        _assert_no_two_formats_collide(other_name_collision)
+
+    # A format that renders exactly into a real `cs_bucket` title
+    # (`_BUCKET_SHAPED_KEY` is `"13"`, one of the table's own keys).
+    bucket_collision = [
+        (
+            _FakePreset("pack_e", ("Movie",)), None,
+            {"type": "genre", "title_format": "Age <<key_name>>+ Movies"},
+        ),
+    ]
+    with pytest.raises(AssertionError, match="pack_e"):
+        _assert_no_bucket_collisions(bucket_collision)
 
 
 # Every pack's `title_format`, as the literal `packs.py` pins. The second site

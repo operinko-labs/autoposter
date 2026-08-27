@@ -49,9 +49,7 @@ __all__ = [
     "COUNTRY_PARAMS",
     "DECADE_PARAMS",
     "GENRE_PARAMS",
-    "NETWORK_INCLUDE",
     "NETWORK_PARAMS",
-    "STUDIO_INCLUDE",
     "STUDIO_PARAMS",
     "SUBTITLE_LANGUAGE_PARAMS",
 ]
@@ -488,7 +486,7 @@ COUNTRY_PARAMS: tuple[tuple[str, object], ...] = (
 # record §1.5 (`.superpowers/sdd/p10b-upstream-packs.md:992-1485`). Upstream
 # groups the list under two commented headings; the headings are comments and
 # not data, so the order is kept and the grouping is kept as comments.
-STUDIO_INCLUDE: tuple[str, ...] = (
+_STUDIO_INCLUDE: tuple[str, ...] = (
     # ANIMES
     "8bit", "A-1 Pictures", "A.C.G.T.", "Acca effe", "Actas", "AIC", "Ajia-Do",
     "Akatsuki", "Animation Do", "Ankama", "APPP", "Arms", "Artland", "Artmic",
@@ -742,7 +740,7 @@ STUDIO_PARAMS: tuple[tuple[str, object], ...] = (
     # `content_genres`' `<<key_name>> <<library_typeU>>s` on both library types.
     # The row states the divergence in words. Record §4, §5 row 1.
     ("title_format", "Top <<key_name>> <<library_typeU>>s"),
-    ("include", STUDIO_INCLUDE),
+    ("include", _STUDIO_INCLUDE),
     # `include` is a whitelist applied LAST (`dynamic_keys`' module docstring,
     # `meta.py:1348-1351`) and the engine's cap is checked against the DERIVED
     # titles (`builders/dynamic.py:610`), so this list is a hard upper bound on
@@ -752,7 +750,7 @@ STUDIO_PARAMS: tuple[tuple[str, object], ...] = (
     # leftovers title in the set the cap counts. The raw enumeration (824 values
     # on the production movie library) never reaches it. NOT KOMETA, like every
     # cap here -- upstream has no such concept. Record §2, §5 row 7.
-    ("max_collections", len(STUDIO_INCLUDE)),
+    ("max_collections", len(_STUDIO_INCLUDE)),
     ("addons", _STUDIO_ADDONS),
     ("sort_by", _TEMPLATE_SORT),
     ("limit", _TEMPLATE_NO_LIMIT),
@@ -783,7 +781,7 @@ STUDIO_PARAMS: tuple[tuple[str, object], ...] = (
 
 # Transcribed from `defaults/show/network.yml`, `include:`, in file order --
 # record §1.7 (`.superpowers/sdd/p10b-upstream-packs.md:2255-2531`).
-NETWORK_INCLUDE: tuple[str, ...] = (
+_NETWORK_INCLUDE: tuple[str, ...] = (
     "#0", "5", "7mate", "ABC", "ABC Family", "ABC Kids", "ABC TV", "ABS-CBN",
     "Acorn TV", "Adult Swim", "AHC", "ALTBalaji", "Amazon Kids+", "AMC", "AMC+",
     "Animal Planet", "ANIMAX", "Angel Studios", "Antena 3", "Apple TV", "ARD", "Arte",
@@ -829,6 +827,17 @@ NETWORK_INCLUDE: tuple[str, ...] = (
 
 # Transcribed from `defaults/show/network.yml`, `addons:`, in file order --
 # record §1.7 (`.superpowers/sdd/p10b-upstream-packs.md:2533-2748`).
+#
+# Unlike `studio`'s 85 merge keys, two of these 46 are NOT themselves
+# `include` names: `Network Ten` (member `Network 10`) and `ReelzChannel`
+# (member `Reelz`). Following `dynamic_keys`'s own rules, an addon member is
+# excluded from having its own collection and the unheld parent becomes a
+# synthetic bucket that `include` (applied last) then drops -- so with no
+# `other_name` to catch it, a library holding "Network 10" or "Reelz" (both
+# ARE on the 272-name list below) gets no collection for either. A faithful
+# transcription of upstream's own quirk, not a bug here: the record's blocks
+# are identical and the oracle chain confirms Kometa does the same, so the
+# table is not "fixed". The effective ceiling this leaves is 270, not 272.
 _NETWORK_ADDONS: dict[str, list[str]] = {
     "ABC": ["ABC.com"],
     "ABC TV": ["ABC (AU)", "ABC Comedy", "ABC Me", "ABC News", "ABC iview"],
@@ -925,7 +934,7 @@ NETWORK_PARAMS: tuple[tuple[str, object], ...] = (
     # `KEY` on Show now that `studio` is qualified -- which is the whole reason
     # `studio` is the row that moved and this one is not.
     ("title_format", "<<key_name>>"),
-    ("include", NETWORK_INCLUDE),
+    ("include", _NETWORK_INCLUDE),
     ("addons", _NETWORK_ADDONS),
     ("sort_by", _TEMPLATE_SORT),
     ("limit", _TEMPLATE_NO_LIMIT),
@@ -934,5 +943,5 @@ NETWORK_PARAMS: tuple[tuple[str, object], ...] = (
     # networks measured on the production show library, so the pin costs
     # nothing today; what it buys is that a wider library is not refused by a
     # number nobody set. Record §2, §5 row 6.
-    ("max_collections", len(NETWORK_INCLUDE)),
+    ("max_collections", len(_NETWORK_INCLUDE)),
 )
