@@ -7,12 +7,27 @@ The table is Kometa's ``auto`` type map (meta.py:15-22), its
 tests are what a reviewer checks the transcription against.
 """
 import dataclasses
+import pathlib
+import re
 
 import pytest
 
 from autoposter.collections.dynamic_types import DYNAMIC_TYPES, DynamicType
 from autoposter.collections.filters import BY_NAME, parse_filters
 from autoposter.collections.search_sorts import KNOWN_SORT_NAMES
+
+PROBE = (
+    pathlib.Path(__file__).parent.parent
+    / "docs" / "research" / "plex-dynamic-probe" / "README.md"
+)
+
+# ``=== section Movies (movie)`` and, under it,
+# ``  country               63 value(s)  137628=Argentina, ...``. The two
+# non-numeric forms the script can print -- ``n/a for this library type`` and
+# ``REFUSED (...)`` -- deliberately do not match, because neither is a verdict
+# that a row may ship on.
+_SECTION = re.compile(r"^=== section .+ \((movie|show)\)$")
+_ANSWER = re.compile(r"^ {2}(\w+) +(\d+) value\(s\)")
 
 # A value every row's attribute type accepts, so the parse check below tests
 # the KEY and not the value: ``_as_text`` takes it for the tag and str rows,
@@ -166,6 +181,68 @@ def test_country_and_decade_are_movie_only_and_network_is_show_only():
     assert DYNAMIC_TYPES["decade"].kinds == ("Movie",)
     assert DYNAMIC_TYPES["network"].kinds == ("Show",)
     assert DYNAMIC_TYPES["genre"].kinds == ("Movie", "Show")
+
+
+def _probe_verdicts() -> dict[str, dict[str, int]]:
+    """The recorded probe output, read as data: ``{attribute: {libtype: n}}``.
+
+    Parsed out of ``docs/research/plex-dynamic-probe/README.md`` §2 -- the
+    script's own stdout, quoted verbatim -- rather than restated here, for the
+    same reason ``_roadmap_rows`` reads the roadmap instead of copying it: a
+    hand-kept second copy of a measurement is a measurement nobody can check.
+    Where a library type has several probed sections the LARGEST count wins;
+    that is the honest reduction, because a section answering zero (the ``DVR``
+    section's ``country``) is a fact about that section, not about the field.
+    """
+    found: dict[str, dict[str, int]] = {}
+    libtype = None
+    for line in PROBE.read_text(encoding="utf-8").splitlines():
+        section = _SECTION.match(line)
+        if section:
+            libtype = section.group(1)
+            continue
+        answer = _ANSWER.match(line)
+        if answer and libtype is not None:
+            counts = found.setdefault(answer.group(1), {})
+            counts[libtype] = max(counts.get(libtype, 0), int(answer.group(2)))
+    return found
+
+
+def test_the_probe_parse_finds_the_recorded_run_and_not_an_empty_file():
+    """The guard on the guard below. A regex that stopped matching -- the file
+    reformatted, the fenced block moved -- would turn the enforcement into a
+    loop over nothing that passes for free, which is the one way a test like
+    this fails silently. So the parse is pinned against three numbers a reader
+    can find in §2 by eye, including the zero the reduction discards."""
+    verdicts = _probe_verdicts()
+    assert verdicts["network"] == {"show": 91}
+    assert verdicts["country"] == {"movie": 63, "show": 18}
+    assert verdicts["studio"]["movie"] == 824
+
+
+def test_no_row_ships_on_a_library_type_the_probe_did_not_measure():
+    """T2 ⚠️3, the authoring rule this wrap owes as enforcement rather than as
+    prose: C3's scope is "the types ``listFilterChoices`` can enumerate TODAY"
+    and it is fail-closed, but until now nothing stopped a future
+    ``DYNAMIC_TYPES`` row shipping on an inference. Every row, on every library
+    type its ``kinds`` claims, must have a recorded non-zero verdict in the
+    probe's own captured output.
+
+    What this catches that the note-substring check below does not: a row added
+    with no probe line at all, and a row whose ``kinds`` grows a library type
+    the probe never asked about. What it deliberately does NOT do is compare
+    counts -- the library changes, and a test that pinned live totals would
+    fail for the wrong reason. To ship a new row, re-run the probe and append
+    its output to §2; there is no way to satisfy this from prose."""
+    verdicts = _probe_verdicts()
+    for name, row in DYNAMIC_TYPES.items():
+        measured = verdicts.get(name, {})
+        for library_type in row.kinds:
+            libtype = library_type.lower()
+            assert measured.get(libtype, 0) > 0, (
+                f"{name!r} ships on {library_type} with no probe verdict for it "
+                f"-- measured {measured}"
+            )
 
 
 def test_the_two_probed_rows_ship_because_the_probe_answered():

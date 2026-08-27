@@ -20,7 +20,12 @@ what key to write into the query, how to title the result, and how to order it.
 TODAY, and -- for the two rows whose choices listing was unproven -- only after
 the phase's own read-only probe measured them
 (``docs/research/plex-dynamic-probe/README.md``: ``network`` 91 values,
-``country`` 63). Deliberately absent, each for its own reason:
+``country`` 63). That is an authoring RULE and it is enforced, not trusted:
+``test_no_row_ships_on_a_library_type_the_probe_did_not_measure`` reads the
+probe's own captured output and refuses a row on any library type it holds no
+non-zero verdict for -- so adding a row means re-running the probe and
+appending its output, never editing this table alone. Deliberately absent, each
+for its own reason:
 
 - ``edition`` -- roadmap row 170 owns the table row it needs.
 - ``original_language``/``origin_country`` -- upstream builds these as PLAIN
