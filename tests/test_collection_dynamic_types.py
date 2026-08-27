@@ -233,9 +233,11 @@ def test_no_row_ships_on_a_library_type_the_probe_did_not_measure():
     the probe never asked about. What it deliberately does NOT do is compare
     counts -- the library changes, and a test that pinned live totals would
     fail for the wrong reason. To ship a new row, re-run the probe and append
-    its output to §2; there is no way to satisfy this from prose."""
+    its output to §2; what this forecloses is shipping on an inference --
+    §2 itself stays hand-editable."""
     verdicts = _probe_verdicts()
     for name, row in DYNAMIC_TYPES.items():
+        assert row.kinds, name
         measured = verdicts.get(name, {})
         for library_type in row.kinds:
             libtype = library_type.lower()
