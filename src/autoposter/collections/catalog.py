@@ -674,6 +674,11 @@ TMDB_ORIGIN_COUNTRY_ROW = 189  # the two dynamic types that are a TMDb walk and
                                # wrap, and cited (not waited on) by the two
                                # remaining location packs, whose values are that
                                # walk's, not the Plex `country` tag's
+TMDB_COLLECTION_TYPE_ROW = 192  # the franchise pack's dynamic type: a TMDb
+                                # walk over every item's belongs_to_collection,
+                                # not a listFilterChoices enumeration -- filed
+                                # by phase 10b when row 102 closed without
+                                # being able to help it
 TMDB_LANGUAGE_NAME_ROW = 190  # upstream names a language bucket from TMDb's
                               # ISO-639-1 table and we name it from Plex's own
                               # choice.title -- names only, never membership,
@@ -917,16 +922,21 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
             "`tmdb_collection` is not a library enumeration at all, and "
             "`collections/dynamic_types.py`'s scope note names it among the "
             "deliberate absences, so there is no `type:` an operator can write "
-            "for this family today. The single-collection tmdb_collection "
-            "builder it would call is already here; what is outstanding is "
-            "that dynamic type, and then the PRESET -- the preset-expansion "
-            "story of phase 10b, which is what row %d tracks."
-            % DYNAMIC_ENGINE_ROW
+            "for this family today. "
+            "The single-collection tmdb_collection builder it would call "
+            "is already here; what is outstanding is the enumeration, and "
+            "that is a TMDb walk over every item's `belongs_to_collection` "
+            "rather than a Plex listing -- row %d, filed for exactly this "
+            "pack. Phase 10b shipped the seven packs whose values Plex can "
+            "enumerate today and deliberately added no new enumeration seam, "
+            "so this one waits for the metadata-prefetch budget rows 155, 180 "
+            "and 189 also wait on."
+            % TMDB_COLLECTION_TYPE_ROW
         ),
         kometa_source="defaults/movie/franchise.yml",
         library_types=_MOVIE,
         readiness=GATED,
-        gated_row=DYNAMIC_ENGINE_ROW,
+        gated_row=TMDB_COLLECTION_TYPE_ROW,
     ),
     Preset(
         key="content_based_on",
@@ -1422,23 +1432,24 @@ LOCATION_PRESETS: tuple[Preset, ...] = (_COUNTRY_PRESET,) + tuple(
         category="location",
         name=name,
         description=(
-            "%s The per-value engine SHIPPED in phase 10a, so the machinery "
-            "this pack is made of -- enumeration, addon merges, key-name "
-            "overrides, title formats -- is here. Two things are not. Its "
-            "values are Kometa's, read off TMDb's origin-country data, and "
-            "that is a full-library TMDb walk rather than an enumeration, "
-            "which is why `origin_country` is not one of the ten dynamic types "
-            "that shipped (row %d); the Plex `country` tag IS enumerable (63 "
-            "values on the production movie library, measured by phase 10a's "
-            "probe) but it is a different value set. And the PRESET itself is "
-            "the preset-expansion story of phase 10b, which is what row %d "
-            "tracks."
-            % (description, TMDB_ORIGIN_COUNTRY_ROW, DYNAMIC_ENGINE_ROW)
+            "%s The per-value engine shipped in phase 10a and the country pack "
+            "beside this one ships today -- so what this row waits on is "
+            "neither machinery nor a preset. It is the VALUES: Kometa reads "
+            "them off TMDb's origin-country data, which is a full-library TMDb "
+            "walk rather than an enumeration (row %d), and the grouping "
+            "vocabulary on top of it is upstream's own -- 'Nordic', 'Balkan', "
+            "'Southeast Asia' are Kometa's names for sets of those countries, "
+            "not values any library holds. The Plex `country` tag this "
+            "service CAN enumerate is a different value set and cannot be "
+            "grouped into these regions without that same table. Phase 10b "
+            "shipped `location_country` on the Plex tag and left this pack "
+            "where its data is."
+            % (description, TMDB_ORIGIN_COUNTRY_ROW)
         ),
         kometa_source=source,
         library_types=library_types,
         readiness=GATED,
-        gated_row=DYNAMIC_ENGINE_ROW,
+        gated_row=TMDB_ORIGIN_COUNTRY_ROW,
     )
     for key, name, source, description, library_types in _LOCATION_PACKS
 )
@@ -1905,17 +1916,23 @@ TIME_PRESETS: tuple[Preset, ...] = (
             "than a filter -- so a definition builds 'one collection per year "
             "the library holds' today (the probe counted 87 of them on the "
             "production movie library, past the default `max_collections` of "
-            "50). What did NOT ship is the counting relative to today: the "
+            "50). "
+            "What did NOT ship is the counting relative to today: the "
             "`current_year`/`current_year-N` value grammar is the half of row "
             "%d that phase 10a left open, and without it 'the last ten years' "
-            "has no expression here. The PRESET is the third thing, and it is "
-            "phase 10b's preset-expansion story, which row %d tracks."
-            % (RELATIVE_YEAR_ROW, DYNAMIC_ENGINE_ROW)
+            "has no expression here -- so this pack waits on that row and not "
+            "on the engine. Phase 10b considered shipping the pack it COULD "
+            "build -- one collection per year the library holds -- and "
+            "refused: the probe counted 87 years on the production movie "
+            "library, and 87 unbounded years is not 'Best of the last ten "
+            "years' wearing its name. A preset that builds something other "
+            "than the pack it cites is worse than one that waits."
+            % RELATIVE_YEAR_ROW
         ),
         kometa_source="defaults/both/year.yml",
         library_types=_BOTH,
         readiness=GATED,
-        gated_row=DYNAMIC_ENGINE_ROW,
+        gated_row=RELATIVE_YEAR_ROW,
     ),
     Preset(
         key="time_decade",

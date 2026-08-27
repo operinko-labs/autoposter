@@ -1067,6 +1067,33 @@ def test_every_gated_row_cites_a_roadmap_row_that_exists():
         assert preset.gated_row in rows, (preset.key, preset.gated_row)
 
 
+def test_no_preset_still_waits_on_the_row_the_dynamic_engine_closed():
+    """Row 102 closed in phase 10a-2 and its preset-expansion phase (10b) has
+    shipped. A row still citing it would be citing work that is DONE, which is
+    the same as citing nothing -- so every preset that was gated on it has
+    either shipped or now names what actually blocks it.
+
+    ``DYNAMIC_ENGINE_ROW`` stays in the module: the packs' descriptions cite it
+    as the phase that shipped their engine, which is a different kind of
+    citation from a blocker.
+    """
+    still_waiting = [
+        preset.key for preset in CATALOG
+        if preset.gated_row == catalog.DYNAMIC_ENGINE_ROW
+    ]
+
+    assert still_waiting == []
+    assert {
+        catalog.BY_KEY[key].gated_row
+        for key in ("content_franchises", "location_region",
+                    "location_continent", "time_year")
+    } == {
+        catalog.TMDB_COLLECTION_TYPE_ROW,
+        catalog.TMDB_ORIGIN_COUNTRY_ROW,
+        catalog.RELATIVE_YEAR_ROW,
+    }
+
+
 def test_every_gated_key_is_refused_at_load_naming_its_row():
     """The refusal the picker's disabled state is backed by, over every gated
     row rather than one injected double: a key copied out of the picker by hand
