@@ -2142,6 +2142,26 @@ bucket values through this engine as buckets.derive_buckets does today."
 
 ### Task 4: The title machinery
 
+> **CORRECTION (2026-08-27, filed by Task 6's wrap — the plan text below is left
+> as written and is WRONG here).** Three places in this task claim that
+> `<<library_typeU>>` must be substituted FIRST because replacing
+> `<<library_type>>` first would "eat the prefix of the longer token and leave a
+> stray `U>>`": the oracle transcription's comment (this section's
+> `key_name_and_title`, "typeU FIRST"), `render_title`'s docstring ("substituted
+> FIRST and that is load-bearing, not tidiness"), and the test named
+> `test_the_library_type_tokens_substitute_in_the_order_that_survives_both`.
+> **There is no such prefix relationship.** `<<library_type>>` is not a substring
+> of `<<library_typeU>>` — the `U` sits between `type` and the closing `>>`, so
+> `"<<library_typeU>>".replace("<<library_type>>", x)` matches nothing and the
+> two replacements provably commute. Upstream itself does `<<library_type>>`
+> first (meta.py:1268-1271), which the plan's own citation points at and the
+> plan's prose then contradicts. The Task 4 review adjudicated this and the
+> SHIPPED code is upstream's order with the reason stated correctly
+> (`src/autoposter/collections/dynamic_titles.py::_substitute_library_type`);
+> what IS load-bearing is which of the two lowercases, not which runs first.
+> Recorded as a dated note rather than edited away, because the plan is the
+> record of what was believed when the tasks were dispatched.
+
 **Files:**
 
 - Modify: `tests/oracle/10a/kometa_dynamic.py` (append the titles half and `TITLE_CASES`; `main` prints both)

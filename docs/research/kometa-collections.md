@@ -119,8 +119,26 @@ for `ev0000003`, producing the **most recent 5 years** — this is why
 production currently shows `Oscars Winners 2022`…`Oscars Winners 2026` (5
 collections). This window slides forward automatically as new ceremony
 years are added to the dataset; it is **not** a fixed year list.
-`sync: true` makes each year-collection a `sync_mode: sync` collection
-(diffed and pruned every run — see §6).
+`sync: true` does **not** set `sync_mode: sync` on the generated collections
+— a claim this file made until phase 10a read the code. It is a **delete
+sweep**: `meta.py:1263-1267` reads the boolean, `meta.py:1300` immediately
+replaces it with `{str(i.title).casefold(): i for i in
+library.get_all_collections(label=str(map_name))}`, every generated title pops
+itself out of that map (`:1428-1429`, and `:1453-1454` for the `other`
+collection), and whatever is left is deleted (`:1456-1461`). So it means
+"delete any collection carrying this map's label that this pass did not
+regenerate" — Kometa's equivalent of this service's own `_sweep` /
+`delete_unconfigured`, not a membership mode. The label is applied
+unconditionally (`append_label: str(map_name)`, `:1421`/`:1450`), independent
+of `sync`. Matching is `casefold()`-insensitive, so a title that changes only
+in case survives and any other title change makes the old collection a delete
+target. (Phase 10a-1, `.superpowers/sdd/p10a-upstream-dynamic.md` §6, the
+`sync:` finding.)
+
+Do not read §6 as this claim's home either: the `sync_mode: sync` membership
+diff §6.1 describes is set by the `custom` **template**, a different knob that
+happens to share the word. `sync:` and `sync_mode:` are two mechanisms, and
+only the second one is about membership.
 
 ### 2.3 Data source and cost
 
