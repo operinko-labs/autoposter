@@ -54,19 +54,14 @@ class DynamicKey:
 
 @dataclass(frozen=True)
 class DerivedKeys:
-    """The whole family: its keys, its leftovers, and what it consumed.
+    """The whole family: its keys and its leftovers.
 
     ``other_keys`` is the ``other`` bucket's membership -- keys the library has
-    that no ``include`` entry named. ``used_keys`` is every value the built
-    keys consumed, which is upstream's ``used_keys`` (meta.py:1365): the
-    complement-shaped reading of the same leftovers, kept because it is the one
-    an ``other`` bucket written as "everything not already claimed" needs, and
-    because ``buckets.derive_buckets`` computes exactly it today.
+    that no ``include`` entry named.
     """
 
     keys: tuple[DynamicKey, ...]
     other_keys: tuple[str, ...]
-    used_keys: tuple[str, ...]
 
 
 def _strlist(value: object) -> list[str]:
@@ -76,12 +71,17 @@ def _strlist(value: object) -> list[str]:
     the enumeration's keys are strings, so without this the two never meet and
     the family silently builds nothing. The DE and UK certification tables are
     written with integer keys upstream.
+
+    ``util.py:931`` (``if v or v == 0``): a falsy element is dropped before
+    the ``str()`` -- ``include: [""]`` must skip the empty string rather than
+    coerce it into a key that matches nothing. ``0`` survives the ``or``
+    because upstream tests it by equality, not truthiness.
     """
     if value is None:
         return []
     if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
         value = [value]
-    return [str(one) for one in value]
+    return [str(one) for one in value if one or one == 0]
 
 
 def _dictliststr(value: object) -> dict[str, list[str]]:
@@ -151,7 +151,6 @@ def derive_keys(
 
     keys: list[DynamicKey] = []
     other_keys: list[str] = []
-    used_keys: list[str] = []
     for key, value in surviving.items():
         # meta.py:1348-1351.
         if included and key not in included:
@@ -163,11 +162,9 @@ def derive_keys(
         values.extend(
             [m for m in addon_table.get(key, ()) if m in present and m != key]
         )
-        used_keys.extend(values)
         keys.append(DynamicKey(key=key, value=value, values=tuple(values)))
 
     return DerivedKeys(
         keys=tuple(keys),
         other_keys=tuple(other_keys),
-        used_keys=tuple(used_keys),
     )

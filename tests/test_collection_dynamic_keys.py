@@ -59,16 +59,23 @@ def test_the_common_sense_table_derives_the_same_values_this_engine_would():
     ours = {k.key: tuple(sorted(k.values)) for k in derived.keys}
 
     matched = 0
+    dropped = 0
     for bucket in derive_buckets(present, "Movie"):
         if bucket.key == "other":
             assert tuple(sorted(derived.other_keys)) == bucket.values
             continue
         if not bucket.values:
+            # Addendum 3: buckets 15 and 16 are the two the shipped CS table
+            # resolves to an empty bucket for this ``present`` set -- assert
+            # the branch is actually exercised, so the difference this test
+            # documents cannot silently stop being tested.
             assert bucket.key not in ours, bucket.key
+            dropped += 1
             continue
         assert ours[bucket.key] == bucket.values, bucket.key
         matched += 1
     assert matched == len(ours)
+    assert dropped == 2
 
 
 def test_an_addon_key_the_library_carries_is_not_shadowed_by_a_synthetic_one():

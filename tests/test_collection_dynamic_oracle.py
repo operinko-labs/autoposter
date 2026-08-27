@@ -60,6 +60,9 @@ KEY_CASES = [
     ("custom-keys-false-with-a-key-the-library-has", RATINGS, {
         "addons": {"PG": ["G"]}, "custom_keys": False,
     }),
+    ("falsy-include-elements", [("", ""), ("0", "0"), ("PG", "PG")], {
+        "include": ["PG", "", 0],
+    }),
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
@@ -76,7 +79,6 @@ KOMETA_KEYS = {
             {"key": "Unrated", "value": "Unrated", "values": ["Unrated"]},
         ],
         "other_keys": [],
-        "used_keys": ["G", "PG", "PG-13", "R", "NC-17", "Unrated"],
     },
     "cs-shaped": {
         "keys": [
@@ -84,7 +86,6 @@ KOMETA_KEYS = {
             {"key": "Teens", "value": "Teens", "values": ["PG-13", "R"]},
         ],
         "other_keys": ["NC-17", "Unrated"],
-        "used_keys": ["G", "PG", "PG-13", "R"],
     },
     "custom-keys-false": {
         "keys": [
@@ -96,7 +97,6 @@ KOMETA_KEYS = {
             {"key": "PG", "value": "PG", "values": ["PG"]},
         ],
         "other_keys": [],
-        "used_keys": ["PG-13", "R", "NC-17", "Unrated", "G", "PG"],
     },
     "addon-key-the-library-has": {
         "keys": [
@@ -107,7 +107,6 @@ KOMETA_KEYS = {
             {"key": "Unrated", "value": "Unrated", "values": ["Unrated"]},
         ],
         "other_keys": [],
-        "used_keys": ["PG", "G", "PG-13", "R", "NC-17", "Unrated"],
     },
     "addon-list-holds-its-own-key": {
         "keys": [
@@ -118,7 +117,6 @@ KOMETA_KEYS = {
             {"key": "Teens", "value": "Teens", "values": ["PG-13", "R"]},
         ],
         "other_keys": [],
-        "used_keys": ["G", "PG", "NC-17", "Unrated", "PG-13", "R"],
     },
     "exclude-by-value": {
         "keys": [
@@ -126,22 +124,18 @@ KOMETA_KEYS = {
             {"key": "2000", "value": "2000s", "values": ["2000"]},
         ],
         "other_keys": [],
-        "used_keys": ["1980", "2000"],
     },
     "include-names-a-missing-key": {
         "keys": [{"key": "1980", "value": "1980s", "values": ["1980"]}],
         "other_keys": ["1990", "2000"],
-        "used_keys": ["1980"],
     },
     "integer-keys": {
         "keys": [{"key": "12", "value": "12", "values": ["12", "16"]}],
         "other_keys": ["18"],
-        "used_keys": ["12", "16"],
     },
     "addon-key-excluded-by-value": {
         "keys": [{"key": "2000", "value": "2000s", "values": ["2000"]}],
         "other_keys": [],
-        "used_keys": ["2000"],
     },
     "custom-keys-false-with-a-key-the-library-has": {
         "keys": [
@@ -152,7 +146,13 @@ KOMETA_KEYS = {
             {"key": "Unrated", "value": "Unrated", "values": ["Unrated"]},
         ],
         "other_keys": [],
-        "used_keys": ["PG", "G", "PG-13", "R", "NC-17", "Unrated"],
+    },
+    "falsy-include-elements": {
+        "keys": [
+            {"key": "0", "value": "0", "values": ["0"]},
+            {"key": "PG", "value": "PG", "values": ["PG"]},
+        ],
+        "other_keys": [""],
     },
 }
 
@@ -171,7 +171,6 @@ def _ours(pairs, options):
             for k in derived.keys
         ],
         "other_keys": list(derived.other_keys),
-        "used_keys": list(derived.used_keys),
     }
 
 

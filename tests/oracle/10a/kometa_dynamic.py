@@ -30,12 +30,17 @@ import json
 
 
 def strlist(value):
-    """modules/util.py:933 -- ``strlist``: every element ``str()``."""
+    """modules/util.py:933 -- ``strlist``: every element ``str()``.
+
+    util.py:931 (``if v or v == 0``): a falsy element is dropped before the
+    ``str()``. ``0`` survives the ``or`` because upstream tests it by
+    equality, not truthiness -- a naive ``if v`` would wrongly drop it too.
+    """
     if value is None:
         return []
     if not isinstance(value, list):
         value = [value]
-    return [str(v) for v in value]
+    return [str(v) for v in value if v or v == 0]
 
 
 def dictliststr(value):
@@ -73,9 +78,14 @@ def derive(all_pairs, *, include=None, exclude=None, addons=None, custom_keys=Tr
             pass  # logger.warning(f"{k} cannot be an addon for itself")
         exclude.extend([y for y in v if y != k and y not in exclude])
 
-    # The enumeration comprehension, :928-937: ``all_keys`` is everything the
-    # library reported; ``auto_list`` is what survived ``exclude``. A key is
-    # dropped when the KEY or the VALUE is excluded.
+    # The enumeration comprehension, meta.py:932-937: ``all_keys`` is
+    # everything the library reported; ``auto_list`` is what survived
+    # ``exclude``. A key is dropped when the KEY or the VALUE is excluded.
+    # (:928-931's three-value language variant is not this driver's shape:
+    # language names here come from Plex's ``choice.title`` rather than
+    # TMDb's ISO name, which collapses upstream's ``final_title`` and
+    # ``str(i.title)`` into one value and makes the two-value rule above
+    # exact.)
     all_keys = {}
     auto_list = {}
     for key, value in all_pairs:
@@ -102,7 +112,6 @@ def derive(all_pairs, *, include=None, exclude=None, addons=None, custom_keys=Tr
 
     keys = []
     other_keys = []
-    used_keys = []
     for key, value in auto_list.items():
         # :1348-1351 -- ``include`` is a whitelist applied LAST. An excluded key
         # is neither built nor swept into ``other``; an unincluded-but-not-
@@ -118,9 +127,8 @@ def derive(all_pairs, *, include=None, exclude=None, addons=None, custom_keys=Tr
         key_value = [key] if key in all_keys else []
         if key in addons:
             key_value.extend([a for a in addons[key] if a in all_keys and a != key])
-        used_keys.extend(key_value)
         keys.append({"key": key, "value": value, "values": key_value})
-    return {"keys": keys, "other_keys": other_keys, "used_keys": used_keys}
+    return {"keys": keys, "other_keys": other_keys}
 
 
 # The enumerations the cases run against. Shaped like a real
@@ -188,6 +196,16 @@ KEY_CASES = [
     #     4 -- which is the claim, not a coincidence.
     ("custom-keys-false-with-a-key-the-library-has", RATINGS, {
         "addons": {"PG": ["G"]}, "custom_keys": False,
+    }),
+    # 11. util.py:931's falsy skip (I1): an ``include`` list holding an empty
+    #     string, an integer zero, and a real key. "" is falsy and gets
+    #     dropped, so the "" key -- never whitelisted -- lands in
+    #     ``other_keys`` rather than getting a spurious collection of its own.
+    #     ``0`` survives the ``or v == 0`` clause and still matches the real
+    #     "0" key: a naive ``if v`` filter would wrongly drop it too, since
+    #     ``0`` is itself falsy in Python.
+    ("falsy-include-elements", [("", ""), ("0", "0"), ("PG", "PG")], {
+        "include": ["PG", "", 0],
     }),
 ]
 
