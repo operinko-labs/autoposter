@@ -682,10 +682,12 @@ async def test_an_all_excluded_family_leaves_no_record_not_an_empty_one(session)
 # --- delete-below-minimum -----------------------------------------------------
 
 
-def test_minimum_items_is_off_by_default_and_says_it_is_a_divergence():
+def test_minimum_items_is_off_by_default_and_zero_refuses_at_load():
     """Upstream has NO per-key minimum for the library dynamic types
     (p10a-upstream-dynamic.md 7.2), so the default cannot be a number an
-    operator would have to discover and turn off."""
+    operator would have to discover and turn off. (The divergence itself is
+    documented on the field, not asserted here -- this test only pins the two
+    load-time behaviours: off by default, and zero is not a floor.)"""
     assert DynamicParams(type="genre").minimum_items is None
     with pytest.raises(ValidationError):
         DynamicParams(type="genre", minimum_items=0)
@@ -846,3 +848,29 @@ async def test_an_addons_report_names_the_members_and_not_the_bucket(session):
     assert len(inert) == 1, actions
     assert "'Dama'" in inert[0] and "addons" in inert[0]
     assert "'Eighties'" not in inert[0]
+
+
+async def test_an_include_by_display_value_is_reported_inert_on_a_keyed_type(
+    session,
+):
+    """I-1. ``genre`` (key == value) cannot see this bug: ``include`` matches
+    the KEY only (``dynamic_keys.py:156``), but ``decade`` keys on
+    ``choice.key`` (``1980``) while titling the display value (``1980s``). An
+    operator who writes the display form is a typo the old single
+    ``present_keys`` union (keys and values both) could not detect. The key
+    form, spelled correctly, must build and must NOT be reported."""
+    definition = _definition(params={
+        "type": "decade", "include": ["1980", "1980s"],
+    })
+    section = FakeSection(choices=[
+        FakeChoice("1980", "1980s"), FakeChoice("1990", "1990s"),
+    ])
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert "Best movies of the 1980s" in section._existing
+    inert = [one for one in actions if "names no value" in one]
+    assert len(inert) == 1, actions
+    assert "include: '1980s'" in inert[0]
+    assert "include: '1980'" not in inert[0]

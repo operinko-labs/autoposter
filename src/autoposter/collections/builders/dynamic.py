@@ -23,8 +23,8 @@ second gate to keep in step.
 and how to title it; ``LibraryTagResolver.choices`` does the one Plex read;
 ``dynamic_keys`` decides which keys become collections and what each asks for;
 ``dynamic_titles`` names them. This module is the seam between them and the
-reconciler, and it holds exactly two decisions of its own: the fan-out cap and
-the family label.
+reconciler, and it holds exactly three decisions of its own: the fan-out cap,
+the family label and the per-key minimum.
 
 **The fan-out cap.** ``studio`` on the production movie library enumerates to
 824 values, which the phase's own probe measured; ``year`` on a seventy-year
@@ -45,6 +45,11 @@ title the family derived, written before anything is created, so a Plex write
 that failed cannot read as an operator narrowing their family. No record at all
 means the family did not decide, and the sweep then considers none of its
 collections.
+
+**The per-key minimum.** Whether a key's collection is built at all, once its
+match count against Plex is known, is this module's own call rather than one
+delegated to the four pure modules above -- ``minimum_items``'s field comment
+carries the rationale and the divergence from upstream.
 
 **No ``titles()``, deliberately.** ``engine.definition_titles`` offers a smart
 builder that hook, and ``cs_bucket`` uses it because its titles come from a
@@ -615,17 +620,22 @@ class DynamicBuilder:
                    params.type, ABSENT_KEY)
             )
 
-        # ``present`` is keys AND display values because ``exclude`` is matched
-        # against both (dynamic_keys.py:137) -- reporting a correct
-        # ``exclude: [1930s]`` as inert would be worse than not reporting at all
-        # -- and it carries the synthetic ``addons`` keys too, which are names
-        # the library never reported and ``include:`` may correctly name.
-        present_keys = (
-            {key for key, _ in enumerated}
-            | {value for _, value in enumerated}
-            | set(params.addons)
-        )
-        inert = self._inert(ctx, params, present_keys)
+        # Two present sets, because the five narrowing sources do not all
+        # match the same way. ``include``, ``key_name_override``,
+        # ``title_override`` and addon MEMBERS are all matched against the KEY
+        # ONLY (dynamic_keys.py:144/:156/:163, dynamic_titles.py:158/:289), so
+        # ``by_key`` is what they're checked against -- it also carries the
+        # synthetic ``addons`` keys, which are names the library never
+        # reported and ``include:`` may correctly name. ``exclude`` alone is
+        # matched against key OR display value (dynamic_keys.py:137) -- a
+        # correct ``exclude: [1930s]`` reported as inert would be worse than
+        # not reporting at all -- so it gets the wider ``by_key_or_value``.
+        # Reusing the wider set for the key-only sources would hide a real
+        # typo on any type keyed on ``choice.key`` (``decade``, ``resolution``):
+        # ``include: [1980s]`` would read as effective when it is inert.
+        by_key = {key for key, _ in enumerated} | set(params.addons)
+        by_key_or_value = by_key | {value for _, value in enumerated}
+        inert = self._inert(ctx, params, by_key, by_key_or_value)
         if inert is not None:
             actions.append(inert)
 
@@ -786,7 +796,8 @@ class DynamicBuilder:
         return actions
 
     def _inert(
-        self, ctx: SmartContext, params: DynamicParams, present: set[str]
+        self, ctx: SmartContext, params: DynamicParams,
+        by_key: set[str], by_key_or_value: set[str],
     ) -> str | None:
         """Narrowing and override entries naming a key the library never
         reported, as one line or none.
@@ -797,6 +808,15 @@ class DynamicBuilder:
         says nothing at all. One line rather than one per entry, because a
         config ported from another library can name a dozen at once.
 
+        Two present sets, not one: ``exclude`` alone is matched against key OR
+        display value (dynamic_keys.py:137); ``include``, ``key_name_override``,
+        ``title_override`` and addon MEMBERS are all matched against the KEY
+        ONLY (dynamic_keys.py:144/:156/:163, dynamic_titles.py:158/:289). On a
+        type keyed on ``choice.key`` (``decade``, ``resolution``, e.g. key
+        ``1980`` and title ``1980s``), reusing ``exclude``'s wider set for the
+        other four would report a genuinely inert ``include: [1980s]`` as if
+        it named the key.
+
         ``addons`` is checked by its MEMBERS rather than by its keys, which is
         the one place this differs from the other four. An addon key the library
         never reported is upstream's synthetic bucket (dynamic_keys.py:141-150):
@@ -806,12 +826,13 @@ class DynamicBuilder:
         and at :163 -- and is the invisible one.
         """
         named: list[str] = []
-        for where, keys in (
-            ("include", params.include),
-            ("exclude", params.exclude),
-            ("addons", [one for many in params.addons.values() for one in many]),
-            ("key_name_override", list(params.key_name_override)),
-            ("title_override", list(params.title_override)),
+        for where, keys, present in (
+            ("include", params.include, by_key),
+            ("exclude", params.exclude, by_key_or_value),
+            ("addons", [one for many in params.addons.values() for one in many],
+             by_key),
+            ("key_name_override", list(params.key_name_override), by_key),
+            ("title_override", list(params.title_override), by_key),
         ):
             named += [
                 "%s: %r" % (where, one)
