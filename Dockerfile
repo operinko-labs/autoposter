@@ -4,7 +4,7 @@
 # .forgejo/workflows/ci.yml's NODE_VERSION name that same patch, so the bundle
 # CI typechecks is built by the same Node as the bundle that ships.
 # tests/test_toolchain_versions.py fails if those three ever disagree.
-FROM node:26.7.0-alpine AS frontend
+FROM node:26.8.1-alpine AS frontend
 WORKDIR /frontend
 # The manifests alone first: a change to src/ then reuses this layer instead of
 # re-installing every dependency. .npmrc belongs in this copy rather than the
@@ -29,7 +29,7 @@ RUN npm run build
 # It exists so that the Node version stays declared in this file alone, rather
 # than being repeated as an `image:` tag in docker-compose.yml where nothing
 # would hold it to the same patch.
-FROM node:26.7.0-alpine AS webdev
+FROM node:26.8.1-alpine AS webdev
 WORKDIR /frontend
 
 # The lazy install lives here rather than only in docker-compose.yml's
