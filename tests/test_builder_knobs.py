@@ -598,6 +598,52 @@ async def test_the_award_years_keep_their_collections_out_of_the_sweep(session):
     assert "Oscars Winners (recent ceremonies)" not in titles
 
 
+async def test_a_dynamic_familys_collections_are_reported_by_the_sweep_never_deleted(
+    session,
+):
+    """A dynamic family's titles are the LIBRARY's, so no definition's title set
+    contains them and the sweep would otherwise see every one of them as an
+    orphan on the first pass after they were created.
+
+    The family is recognised by its LABEL -- which is how Kometa tracks the same
+    membership (``append_label``, meta.py:1421) and how phase 10a-2's own family
+    sweep will enumerate it, through this service's delete guards. Reported
+    rather than silently skipped: an operator who narrows ``include:`` has to
+    see the leftovers named, and the report says which phase removes them.
+    """
+    from autoposter.collections.builders.dynamic import family_label
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"},
+    )
+    orphan = FakeCollection(
+        "Top Horror movies", [FakeItem("m1")],
+        labels=[LABEL, family_label(definition)],
+    )
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[orphan])
+    session.add(ManagedCollection(
+        library="Movies", title="Top Horror movies", kind="smart",
+        plex_rating_key="c-Top Horror movies", definition_hash="seed",
+    ))
+    await session.flush()
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition],
+        _config(delete_unconfigured=True), sweep=True,
+    )
+
+    reported = [one for one in run.actions if "Top Horror movies" in one]
+    assert orphan.deleted is False
+    assert any("10a-2" in one for one in reported), run.actions
+    assert (
+        await session.execute(
+            select(ManagedCollection).where(
+                ManagedCollection.title == "Top Horror movies"
+            )
+        )
+    ).scalar_one_or_none() is not None
+
+
 async def test_a_failed_sweep_scan_does_not_fail_the_librarys_reconcile(
     session, registry_entry
 ):

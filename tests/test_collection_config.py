@@ -327,11 +327,15 @@ def test_the_commented_example_definition_is_one_the_schema_accepts():
 
     config = CollectionsConfig(**block)
 
-    assert len(config.definitions) == 1
-    assert config.definitions[0].builder in ("plex_id",)
+    assert [one.builder for one in config.definitions] == ["plex_id", "dynamic"]
     assert config.definitions[0].filters == {
         "year.gte": 2000, "content_rating": ["PG-13", "R"]
     }, "the documented filter has to be one the filter model accepts too"
+    assert config.definitions[1].params["type"] == "decade", (
+        "every key in the dynamic example is held to DynamicParams by "
+        "CollectionDefinition itself, so a documented `<<token>>` nothing "
+        "resolves, a dead upstream knob or an unknown type fails right here"
+    )
 
 
 def test_a_definition_colliding_with_a_shipped_collection_is_rejected():

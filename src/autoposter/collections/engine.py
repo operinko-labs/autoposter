@@ -655,6 +655,29 @@ async def _summary_for(
     return pulled, None
 
 
+def _family_labels(
+    definitions: list[CollectionDefinition], library: str
+) -> dict[str, str]:
+    """``{label: definition title}`` for every dynamic family this library builds.
+
+    Pure -- it reads the registry and the definitions, never Plex -- and
+    library-scoped for ``definition_titles_for``'s reason: a family aimed at
+    another library must not protect this one's collections.
+
+    The builder is asked rather than the module imported, so the engine keeps
+    knowing only the protocol: a builder that manages a family whose titles it
+    cannot enumerate offline says so by having a ``family_label``.
+    """
+    labels: dict[str, str] = {}
+    for definition in definitions:
+        if not _targets(definition, library):
+            continue
+        namer = getattr(REGISTRY[definition.builder], "family_label", None)
+        if namer is not None:
+            labels[namer(definition)] = definition.title
+    return labels
+
+
 async def _sweep(
     session: AsyncSession,
     section,
@@ -686,6 +709,11 @@ async def _sweep(
     - past ``max_deletes`` the sweep refuses **entirely**, with the numbers.
       Deleting "the first five" of a hundred would be the same accident,
       spread over twenty passes (the ``cleanup.max_orphans`` precedent).
+    - a **dynamic family's member** is reported and never deleted. Its titles
+      are the library's, so ``definition_titles_for`` cannot contain them and
+      every one of them would otherwise look like an orphan; the family's own
+      sweep (phase 10a-2) is what decides its lifecycle, through these same
+      guards.
 
     The enumeration is library-scoped (``definition_titles_for``) because a
     delete decision cannot use the leftovers report's deliberately
@@ -696,6 +724,7 @@ async def _sweep(
     managed = definition_titles_for(
         definitions, listing().values(), library, library_type, config
     )
+    families = _family_labels(definitions, library)
     rows = {
         row.title: row
         for row in (
@@ -728,6 +757,23 @@ async def _sweep(
         if protecting is not None:
             results.append(_swept(title, library, (
                 "protected: %r carries %r; leaving it untouched" % (title, protecting)
+            )))
+            continue
+        family = next(
+            (one for one in families if has_label(collection, one)), None
+        )
+        if family is not None:
+            # A dynamic family's titles are the library's, so no definition
+            # enumerates them and every member lands here on the first
+            # sweep-enabled pass after it was created. The family owns its own
+            # lifecycle -- phase 10a-2 gives it a sweep that runs through these
+            # same guards -- so this one reports and never deletes. Reported
+            # rather than skipped: an operator who narrowed the family has to
+            # see what is left behind.
+            results.append(_swept(title, library, (
+                "%r belongs to the dynamic family %r, whose own delete sweep "
+                "ships in phase 10a-2; nothing was deleted"
+                % (title, families[family])
             )))
             continue
         if not has_label(collection, label):

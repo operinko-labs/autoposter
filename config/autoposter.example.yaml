@@ -111,6 +111,40 @@ collections:
   #       schedule:
   #         every_n_runs: 1 # run on every Nth collections pass
   #         months: [7, 8] # ...and only during these months
+  #     # One collection per distinct value the library holds (Kometa's
+  #     # dynamic_collections). The definition's own title names the FAMILY and
+  #     # never becomes a collection; each collection is named by title_format.
+  #     - title: Decades
+  #       builder: dynamic
+  #       params:
+  #         type: decade # year | decade | content_rating | studio | genre |
+  #                      # country | resolution | audio_language |
+  #                      # subtitle_language | network -- an unknown one is
+  #                      # rejected when the config loads, listing these
+  #         # Which values become collections. include: is a whitelist applied
+  #         # last; every addon member stops getting a collection of its own.
+  #         # exclude: matches the key or the displayed value; include:,
+  #         # addons: and the override tables below match the KEY, which for
+  #         # decade is the bare year (1980, displayed as 1980s).
+  #         exclude: [1930s]
+  #         addons:
+  #           1980: [1970] # one collection asking for both
+  #         # How they are named. <<key_name>> is the value, <<library_type>>
+  #         # is `movie`/`show` and <<library_typeU>> is `Movie`/`Show`. A
+  #         # <<token>> nothing here resolves is rejected at load, by name.
+  #         title_format: Best <<library_type>>s of the <<key_name>>
+  #         key_name_override: {2000: The Noughties} # renamed BEFORE the format
+  #         title_override: {1980: Eighties Classics} # replaces the whole title
+  #         remove_prefix: ["The "] # ...unless key_name_override named the key
+  #         remove_suffix: [" Ltd"]
+  #         other_name: Everything Else # only ever built when include: is set
+  #         # What each collection asks Plex for.
+  #         sort_by: [critic_rating.desc] # the search's order IS the display order
+  #         limit: 50 # cap on the SEARCH, so with a sort_by it picks the top 50
+  #         max_collections: 50 # refuse (with the count) rather than create more
+  #       libraries: [Movies]
+  #       labels: [Decades] # every collection in the family carries them
+  #       sort_title: "!050_Decades" # ...and this, so the family sorts as a block
   definitions: []
 
 cleanup:

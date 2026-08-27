@@ -30,6 +30,7 @@ from autoposter.collections.builders.arr import (
     SonarrTagListBuilder,
 )
 from autoposter.collections.builders.cs_bucket import CsBucketBuilder
+from autoposter.collections.builders.dynamic import DynamicBuilder
 from autoposter.collections.builders.imdb_award import (
     ImdbAwardBuilder,
     ImdbAwardYearsBuilder,
@@ -142,6 +143,10 @@ register(ImdbAwardYearsBuilder("sundance"))
 register(ImdbAwardYearsBuilder("tiff"))
 register(ImdbAwardYearsBuilder("venice"))
 register(CsBucketBuilder())
+# The generic engine ``cs_bucket`` is one hardcoded instance of: one smart
+# collection per distinct value the library holds, written through
+# ``smart_filter``'s reconciler and grammar (10a decision C1).
+register(DynamicBuilder())
 
 __all__ = [
     "NAMESPACES",
