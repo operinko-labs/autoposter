@@ -26,6 +26,12 @@ LABEL = "autoposter"
 class FakeChoice:
     def __init__(self, title):
         self.title = title
+        # Plex answers contentRating's key and title with the same string (the
+        # 10a-1 dynamic probe measured it), so the resolver is the identity
+        # here. Added when the Common Sense family started resolving its values
+        # through ``LibraryTagResolver`` rather than handing plexapi the
+        # written words.
+        self.key = title
 
 
 class FakeCollection:
@@ -108,15 +114,32 @@ class FakeSection:
         self.key = "42"
         self.type = section_type
         self._server = self
-        self._session = type("Sess", (), {"post": "POST-SENTINEL"})()
+        self._session = type("Sess", (), {
+            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
+        })()
         self.raw_posts = []
+        self.queries = []
 
     def _uriRoot(self):
         return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
 
     def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        self.raw_posts.append({"key": key, "method": method})
-        title = parse_qs(urlsplit(key).query)["title"][0]
+        """Every raw section route lands here; ``raw_posts`` keeps only the
+        SEPARATOR's.
+
+        Since phase 10a-2 the age buckets are written through this same route
+        too -- a create POST carrying a ``title``, a filter-replacing PUT
+        carrying only a ``uri`` -- and every assertion in this file is about the
+        separator, so recording those here as well would make each of them read
+        as a claim about the buckets instead.
+        """
+        self.queries.append({"key": key, "method": method})
+        args = parse_qs(urlsplit(key).query)
+        if "title" not in args:
+            return None
+        title = args["title"][0]
+        if title == SEPARATOR_TITLE:
+            self.raw_posts.append({"key": key, "method": method})
         collection = FakeCollection(title, rating_key=str(len(self._existing) + 1))
         self._existing[title] = collection
         return None

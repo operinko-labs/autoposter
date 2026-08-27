@@ -22,6 +22,7 @@ Three properties hold the file together:
   rather than the library its pass.
 """
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -179,6 +180,13 @@ class FakeSection:
         self._hubs = list(hubs)
         self._ratings = list(ratings)
         self.created: list[str] = []
+        # The Common Sense family writes through the raw POST/PUT routes since
+        # phase 10a-2, so this fake stands in for ``section._server`` too.
+        self.key = "42"
+        self._server = self
+        self._session = type("Sess", (), {
+            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
+        })()
 
     def all(self):
         return list(self._items)
@@ -186,11 +194,32 @@ class FakeSection:
     def item_for(self, key):
         return next(i for i in self._items if i.ratingKey == key)
 
+    def _uriRoot(self):
+        return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
+
+    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
+        """The create POST (which carries a ``title``) and the filter-replacing
+        PUT (which carries only a ``uri``)."""
+        args = parse_qs(urlsplit(key).query)
+        if "title" not in args:
+            return None
+        title = args["title"][0]
+        self.created.append(title)
+        self._existing[title] = FakeCollection(title)
+        return None
+
+    def collection(self, title):
+        return self._existing[title]
+
     def listFilterChoices(self, field, libtype=None):
         """Empty unless a test asked for content ratings: with none present the
         Common Sense family derives no buckets, which is what keeps it out of
-        the way of the list-collection tests here."""
-        return [SimpleNamespace(title=rating) for rating in self._ratings]
+        the way of the list-collection tests here.
+
+        ``key`` matches ``title``: Plex answers contentRating's two the same
+        way, so the resolver the family builds its query through is the
+        identity here."""
+        return [SimpleNamespace(title=rating, key=rating) for rating in self._ratings]
 
     def collections(self, **kw):
         return list(self._existing.values())

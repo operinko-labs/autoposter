@@ -11,6 +11,7 @@ franchise collections, another tool's, or hand-made by the operator.
 """
 import hashlib
 import logging
+from types import SimpleNamespace
 
 import httpx
 from plexapi.utils import joinArgs
@@ -18,12 +19,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections.buckets import Bucket, derive_buckets
+from autoposter.collections.filters import parse_filters
 from autoposter.collections.posters import apply_poster, posters_enabled
+from autoposter.collections.search_url import (
+    SearchAttributeNotAvailable,
+    SearchProducedNothing,
+    TagValueNotFound,
+    build_search_url,
+)
 from autoposter.db.models import ManagedCollection
 
 logger = logging.getLogger(__name__)
 
-SORT = "originallyAvailableAt:desc"
 LIBTYPES = {"Movie": "movie", "Show": "show"}
 
 # The "Ratings Collections" separator: a permanently-empty divider for the
@@ -46,8 +53,19 @@ SEPARATOR_HASH = hashlib.sha256(
 ).hexdigest()
 
 
-def definition_hash(bucket: Bucket, settings=None) -> str:
+def definition_hash(bucket: Bucket, settings=None, url: str = "") -> str:
     """Hash the desired filter, summary, and ride-along settings.
+
+    ``url`` is the BUILT query string this bucket's collection stores in Plex,
+    and it is in the payload for the reason phase 10a-2 exists: the family's
+    write path moved from plexapi's ``filters=`` grammar onto the raw-POST 9b
+    one, and a hash over the bucket's VALUES alone would be unchanged by that
+    move -- so the first pass after the migration would find every hash current,
+    skip every bucket, and leave every collection's stored filter in the retired
+    grammar forever. Folding the URI is what makes the one-time re-PUT happen,
+    and what makes it happen exactly once. It defaults to empty so the shape of
+    a bucket's hash without one is still computable, which this module's own
+    tests rely on.
 
     ``settings`` folds in the same way ``lists._settings_parts`` folds it into
     the list-collection members hash, and for the same reason: a pass
@@ -55,14 +73,14 @@ def definition_hash(bucket: Bucket, settings=None) -> str:
     label or sort title would otherwise be recognised as already current and
     the edit would never be applied. Imported locally -- ``lists.py`` imports
     from this module at load time, so a module-level import here would be a
-    cycle. Settings contribute nothing at their defaults, which is what keeps
-    every hash already stored matching: this is not a re-render storm on
-    deploy.
+    cycle. Settings contribute nothing at their defaults, so a definition that
+    sets none hashes to the same string it would have without this term.
     """
     from autoposter.collections.lists import _settings_parts
 
     payload = "\x1f".join([
-        bucket.title, bucket.summary, *bucket.values, *_settings_parts(settings),
+        bucket.title, bucket.summary, *bucket.values, url,
+        *_settings_parts(settings),
     ])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -564,6 +582,7 @@ async def reconcile_content_ratings(
     http: httpx.AsyncClient | None = None,
     config=None,
     settings=None,
+    resolver=None,
 ) -> list[str]:
     """Bring this library's Common Sense collections in line with its ratings.
 
@@ -587,12 +606,53 @@ async def reconcile_content_ratings(
     defaults to ``False`` here so that direct callers not concerned with it
     (most tests) do not also need a ``section._server`` double.
 
+    ``resolver`` is the pass's ``LibraryTagResolver``, which answers both halves
+    of this reconcile: what content ratings the library holds, and which Plex
+    key each written rating resolves to. Passing the pass's own instance is what
+    keeps the whole family to ONE ``listFilterChoices`` round trip, memoised
+    beside every other builder's. Omitting it builds one from ``section`` here,
+    which is the same class with a private cache -- the fallback
+    ``reconcile_smart_collection``'s ``existing=None`` already has, and the
+    right answer for a direct caller with no pass around it.
+
     Returns a description of every action taken -- or, under ``dry_run``,
     every action that would be taken.
     """
-    present = {choice.title for choice in section.listFilterChoices("contentRating")}
-    existing = {collection.title: collection for collection in section.collections()}
+    # Both imports are local, and both for the same reason ``definition_hash``
+    # imports ``_settings_parts`` locally -- a module-level one would be a
+    # cycle. ``smart.py`` imports from this module at load time
+    # (smart.py:52-58); ``plex_search`` does not, but it lives in the
+    # ``builders`` package, whose ``__init__`` imports ``cs_bucket``, which
+    # imports this module. ``filters`` and ``search_url`` have no such edge and
+    # are imported at the top.
+    from autoposter.collections.builders.plex_search import (
+        LibraryTagResolver,
+        PlexSearchUnavailable,
+    )
+    from autoposter.collections.smart import (
+        create_smart_collection,
+        update_smart_collection,
+    )
+
     libtype = LIBTYPES[library_type]
+    if resolver is None:
+        # A pass-less caller. ``LibraryTagResolver`` needs only ``library`` and
+        # ``run_cache`` off its context, so a private one is a complete context
+        # for a single reconcile -- it simply memoises nothing beyond this call.
+        resolver = LibraryTagResolver(
+            SimpleNamespace(library=library_name, run_cache={}), section, libtype,
+        )
+    try:
+        present = {title for _, title in resolver.choices("content_rating")}
+    except PlexSearchUnavailable as refusal:
+        # The whole family's input. Returned rather than raised: this reconciler
+        # is reached through a SMART builder, and ``engine.py``'s smart dispatch
+        # does not wrap ``apply`` -- an escape here would cost the library its
+        # entire reconcile because one listing call failed.
+        logger.warning("%s: the Common Sense family was not built: %s",
+                       library_name, refusal)
+        return ["refused the Common Sense collections: %s" % refusal]
+    existing = {collection.title: collection for collection in section.collections()}
 
     stored = {
         row.title: row
@@ -608,10 +668,13 @@ async def reconcile_content_ratings(
     for bucket in derive_buckets(present, library_type):
         if not bucket.values:
             # An empty filter matches the entire library. Never create one,
-            # and leave any existing collection exactly as it is.
+            # and leave any existing collection exactly as it is. Addendum 3:
+            # Kometa DROPS such a bucket at derive time and we keep it, so this
+            # branch is the difference -- and ``cs_bucket.titles()`` still names
+            # it, which is what keeps an existing-but-now-empty collection out
+            # of the delete sweep's candidate set.
             continue
 
-        wanted = definition_hash(bucket, settings)
         collection = existing.get(bucket.title)
 
         if collection is not None:
@@ -624,6 +687,42 @@ async def reconcile_content_ratings(
             if not ok:
                 continue
 
+        try:
+            # The 9b grammar, under an ``any:`` base -- one term per value
+            # joined by ``or=1``, which is the reading this family has always
+            # relied on and which the equivalence proof
+            # (``tests/test_collection_cs_equivalence.py``) shows selects
+            # exactly the items plexapi's comma-joined form did. ``release.desc``
+            # is this engine's spelling of the ``originallyAvailableAt:desc``
+            # sort plexapi was asked for (``search_sorts.py:83``).
+            url = build_search_url(
+                parse_filters(
+                    {"content_rating": list(bucket.values)},
+                    field="params", searching=True, base="any",
+                ),
+                libtype=libtype,
+                sort_by=("release.desc",),
+                limit=None,
+                resolve_tag=resolver,
+            )
+        except (
+            ValueError, SearchAttributeNotAvailable, SearchProducedNothing,
+            TagValueNotFound,
+        ) as refusal:
+            # Contained to ONE bucket, for the reason above: seventeen working
+            # collections must not stop being managed because an eighteenth
+            # holds a rating Plex will not resolve.
+            logger.warning("%s: %r was not built: %s",
+                           library_name, bucket.title, refusal)
+            actions.append("refused %r: %s" % (bucket.title, refusal))
+            continue
+
+        # The hash is computed HERE and not before ``resolve_collision``,
+        # because it now folds the URL and building the URL costs a resolution:
+        # a protected or foreign collection is skipped without building its
+        # query at all. No action string moves -- ``resolve_collision``'s
+        # message was already appended before the skip decision.
+        wanted = definition_hash(bucket, settings, url)
         record = stored.get(bucket.title)
         definition_current = (
             collection is not None and record is not None and record.definition_hash == wanted
@@ -645,17 +744,13 @@ async def reconcile_content_ratings(
                 )
             else:
                 if collection is None:
-                    collection = section.createCollection(
-                        title=bucket.title, smart=True, libtype=libtype, sort=SORT,
-                        filters={"contentRating": list(bucket.values)},
+                    collection = create_smart_collection(
+                        section, libtype, bucket.title, url
                     )
                     collection.addLabel(label)
                     actions.append("created %r" % bucket.title)
                 else:
-                    collection.updateFilters(
-                        libtype=libtype, sort=SORT,
-                        filters={"contentRating": list(bucket.values)},
-                    )
+                    update_smart_collection(section, collection, url)
                     actions.append("updated %r" % bucket.title)
 
                 _edit_collection_summary(collection, bucket.summary)

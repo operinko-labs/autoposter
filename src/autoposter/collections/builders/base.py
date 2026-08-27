@@ -182,7 +182,9 @@ class SmartContext:
     ``listFilterChoices`` per (library, libtype-scope, field) per pass --
     failures included. Sharing the dict with the list builders is the point: two
     definitions naming ``genre: Horror`` cost one round trip whichever builders
-    they use. ``cs_bucket`` ignores it.
+    they use. ``cs_bucket`` shares it too since phase 10a-2: its resolver
+    answers both what content ratings the library holds and which key each one
+    resolves to, out of the same memo.
 
     ``listing`` is the pass's ``{title: collection}`` map of the section, as a
     CALLABLE so it is fetched only if a smart builder asks for it. Every list

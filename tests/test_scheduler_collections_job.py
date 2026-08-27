@@ -26,6 +26,10 @@ LABEL = "autoposter"
 class FakeChoice:
     def __init__(self, title):
         self.title = title
+        # Plex answers contentRating's key and title with the same string, so
+        # the resolver the Common Sense family builds its query through is the
+        # identity here.
+        self.key = title
 
 
 class FakeCollection:
@@ -68,18 +72,37 @@ class FakeSection:
         self._ratings = list(ratings)
         self._existing = {}
         self.type = section_type
+        # The Common Sense family writes through the raw POST/PUT routes since
+        # phase 10a-2, so this fake stands in for ``section._server`` too.
+        self.key = "42"
+        self._server = self
+        self._session = type("Sess", (), {
+            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
+        })()
+
+    def _uriRoot(self):
+        return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
+
+    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
+        """The create POST (which carries a ``title``) and the filter-replacing
+        PUT (which carries only a ``uri``)."""
+        args = parse_qs(urlsplit(key).query)
+        if "title" not in args:
+            return None
+        title = args["title"][0]
+        self._existing[title] = FakeCollection(
+            title, rating_key=str(len(self._existing) + 1),
+        )
+        return None
+
+    def collection(self, title):
+        return self._existing[title]
 
     def listFilterChoices(self, field, libtype=None):
         return [FakeChoice(r) for r in self._ratings]
 
     def collections(self, **kw):
         return list(self._existing.values())
-
-    def createCollection(self, title, items=None, smart=False, limit=None,
-                          libtype=None, sort=None, filters=None, **kw):
-        collection = FakeCollection(title, rating_key=str(len(self._existing) + 1))
-        self._existing[title] = collection
-        return collection
 
 
 class FakeLibrary:

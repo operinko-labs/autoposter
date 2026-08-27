@@ -12,10 +12,19 @@ with exactly the arguments ``reconcile_libraries`` used to pass it, plus the
 definition itself -- which carries the per-definition collection settings
 (labels, sort title, display mode, hub visibility) the reconciler applies to
 each bucket it creates or updates.
+
+Phase 10a-2 moved exactly one thing through it: the pass's ``LibraryTagResolver``,
+which is what lets the reconciler build its query in the 9b grammar (roadmap row
+185) on ONE listing round trip shared with every other builder in the pass.
 """
 from autoposter.collections.buckets import derive_buckets
 from autoposter.collections.builders.base import SmartContext
-from autoposter.collections.reconcile import SEPARATOR_TITLE, reconcile_content_ratings
+from autoposter.collections.builders.plex_search import LibraryTagResolver
+from autoposter.collections.reconcile import (
+    LIBTYPES,
+    SEPARATOR_TITLE,
+    reconcile_content_ratings,
+)
 
 
 class CsBucketBuilder:
@@ -83,6 +92,12 @@ class CsBucketBuilder:
             http=ctx.http,
             config=ctx.config,
             settings=ctx.definition,
+            # The pass's own resolver: one ``listFilterChoices`` for this
+            # library, memoised in ``run_cache`` beside every other builder's,
+            # and the same instance the dynamic engine enumerates through -- so
+            # a written rating cannot resolve to two different Plex keys in two
+            # builders in one pass.
+            resolver=LibraryTagResolver(ctx, ctx.section, LIBTYPES[ctx.library_type]),
         )
 
     def titles(self, library_type: str, config) -> set[str]:

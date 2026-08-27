@@ -170,7 +170,11 @@ async def test_smart_adopt_on_claims_and_reconciles(session):
         adopt=True, adopt_from=["Kometa"],
     )
     assert theirs.labels_added == [LABEL]
-    assert theirs.updated_filters is not None
+    # Reconciled: the claimed collection got the filter-replacing PUT.
+    assert any(
+        one["key"].startswith("/library/collections/%s/items?" % theirs.ratingKey)
+        for one in section.queries
+    ), section.queries
     assert any("claimed" in a.lower() for a in actions)
     rows = (await session.execute(select(ManagedCollection))).scalars().all()
     assert any(r.title == "Age 17+ Movies" for r in rows)

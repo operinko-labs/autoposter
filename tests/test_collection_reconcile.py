@@ -22,8 +22,13 @@ LABEL = "autoposter"
 
 
 class FakeChoice:
-    def __init__(self, title):
+    def __init__(self, title, key=None):
         self.title = title
+        # Plex answers this filter's key and title with the same string -- the
+        # 10a-1 probe measured it (``dynamic_types.py``'s content_rating note)
+        # -- so the resolver is the identity here, which is also what the
+        # equivalence proof's driver assumes and says out loud.
+        self.key = title if key is None else key
 
 
 class FakeCollection:
@@ -87,10 +92,47 @@ class FakeCollection:
 
 
 class FakeSection:
-    def __init__(self, ratings, existing=()):
+    """Also stands in for ``section._server``: since phase 10a-2 a bucket's
+    collection is created with a raw POST and its filter replaced with a raw
+    PUT, both against ``section._server.query``, exactly as the separator's
+    blank collection and every ``smart_filter`` collection already were.
+
+    ``createCollection`` is KEPT even though nothing calls it any more. Its job
+    is now to prove it is never called: a fake that simply lacked the method
+    would fail an accidental call with an ``AttributeError`` several frames
+    away, where recording it lets ``section.created == []`` say what is actually
+    being asserted.
+    """
+
+    def __init__(self, ratings, existing=(), section_type="movie"):
         self._ratings = list(ratings)
         self._existing = {c.title: c for c in existing}
         self.created = []
+        self.queries = []
+        self.key = "42"
+        self.type = section_type
+        self._server = self
+        self._session = type("Sess", (), {
+            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
+        })()
+
+    def _uriRoot(self):
+        return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
+
+    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
+        """Both raw routes: the create POST (which carries a ``title``) and the
+        filter-replacing PUT (which carries only a ``uri``)."""
+        self.queries.append({"key": key, "method": method})
+        args = parse_qs(urlsplit(key).query)
+        if "title" in args:
+            title = args["title"][0]
+            self._existing[title] = FakeCollection(
+                title, rating_key=str(len(self._existing) + 1),
+            )
+        return None
+
+    def collection(self, title):
+        return self._existing[title]
 
     def listFilterChoices(self, field, libtype=None):
         assert field == "contentRating"
@@ -107,10 +149,30 @@ class FakeSection:
         return collection
 
 
+def _posted(section, title):
+    """The ``uri`` of the create POST that made ``title``."""
+    for call in section.queries:
+        args = parse_qs(urlsplit(call["key"]).query)
+        if args.get("title", [None])[0] == title:
+            assert call["method"] == "POST-SENTINEL", call
+            return args["uri"][0]
+    raise AssertionError("%r was never created: %s" % (title, section.queries))
+
+
+def _put(section, collection):
+    """The ``uri`` of the single filter-replacing PUT against ``collection``."""
+    prefix = "/library/collections/%s/items?" % collection.ratingKey
+    calls = [one for one in section.queries if one["key"].startswith(prefix)]
+    assert len(calls) == 1, section.queries
+    assert calls[0]["method"] == "PUT-SENTINEL", calls[0]
+    return parse_qs(urlsplit(calls[0]["key"]).query)["uri"][0]
+
+
 async def test_dry_run_performs_no_writes(session):
     section = FakeSection({"R", "17"})
     actions = await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=True)
     assert section.created == []
+    assert section.queries == []
     assert any("Age 17+ Movies" in a for a in actions)
     rows = (await session.execute(select(ManagedCollection))).scalars().all()
     assert rows == []
@@ -119,31 +181,36 @@ async def test_dry_run_performs_no_writes(session):
 async def test_creates_a_smart_collection_with_the_derived_filter(session):
     section = FakeSection({"R", "17"})
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
-    created = {c[0]: c for c in section.created}
-    title, smart, libtype, sort, filters = created["Age 17+ Movies"]
-    assert smart is True
-    assert libtype == "movie"
-    assert sort == "originallyAvailableAt:desc"
-    assert sorted(filters["contentRating"]) == ["17", "R"]
+    uri = _posted(section, "Age 17+ Movies")
+    assert uri.startswith(
+        "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
+        "/library/sections/42/all?"
+    ), uri
+    args = parse_qs(urlsplit(uri).query)
+    assert args["type"] == ["1"], uri
+    # ``originallyAvailableAt:desc``, which is what plexapi was handed before
+    # the port -- ``release.desc`` is this engine's spelling of the same sort.
+    assert args["sort"] == ["originallyAvailableAt:desc"], uri
+    assert sorted(args["contentRating"]) == ["17", "R"], uri
+    # An ``any:`` base: one term per value, joined by the block's own
+    # conjunction and scoped by a push/pop pair.
+    assert args["or"] == ["1"] and args["push"] == ["1"] and args["pop"] == ["1"], uri
 
 
 async def test_an_empty_bucket_creates_nothing(session):
     """An empty filter would match the entire library."""
     section = FakeSection({"R"})
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
-    titles = [c[0] for c in section.created]
-    assert "Age 1+ Movies" not in titles
-    assert "Age 17+ Movies" in titles
+    assert "Age 1+ Movies" not in section._existing
+    assert "Age 17+ Movies" in section._existing
 
 
 async def test_a_second_pass_over_an_unchanged_library_writes_nothing(session):
     section = FakeSection({"R", "17"})
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
-    first = len(section.created)
-    for collection in section.collections():
-        collection.updated_filters = None
+    first = len(section.queries)
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
-    assert len(section.created) == first
+    assert len(section.queries) == first
     assert all(c.updated_filters is None for c in section.collections())
 
 
@@ -153,7 +220,9 @@ async def test_a_changed_rating_set_updates_the_existing_filter(session):
     section._ratings.append("TV-MA")
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
     collection = section._existing["Age 17+ Movies"]
-    assert sorted(collection.updated_filters["contentRating"]) == ["R", "TV-MA"]
+    args = parse_qs(urlsplit(_put(section, collection)).query)
+    assert sorted(args["contentRating"]) == ["R", "TV-MA"]
+    assert collection.updated_filters is None, "plexapi updateFilters is retired"
 
 
 async def test_an_unlabelled_collection_with_a_colliding_title_is_never_touched(session):
@@ -201,12 +270,13 @@ async def test_two_libraries_of_the_same_type_do_not_collide(session):
     assert len(rows) == len({(r.library, r.title) for r in rows}), "rows collided"
 
     for collection in list(movies.collections()) + list(kids.collections()):
-        collection.updated_filters = None
         collection.summary_set = None
+    written = (len(movies.queries), len(kids.queries))
     await reconcile_content_ratings(session, movies, "Movies", "Movie", LABEL, dry_run=False)
     await reconcile_content_ratings(session, kids, "Kids Movies", "Movie", LABEL, dry_run=False)
+    assert (len(movies.queries), len(kids.queries)) == written
     assert all(
-        c.updated_filters is None and c.summary_set is None
+        c.summary_set is None
         for c in list(movies.collections()) + list(kids.collections())
     )
 
@@ -239,13 +309,13 @@ async def test_a_labelled_collection_with_no_database_row_is_adopted(session):
     )
 
     assert not any("conflict" in a.lower() for a in actions)
-    assert orphan.updated_filters is not None
+    assert _put(section, orphan)
     rows = (await session.execute(select(ManagedCollection))).scalars().all()
     assert [r.title for r in rows] == ["Age 17+ Movies"]
 
-    orphan.updated_filters = None
+    written = len(section.queries)
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
-    assert orphan.updated_filters is None, "second pass must write nothing"
+    assert len(section.queries) == written, "second pass must write nothing"
     rows = (await session.execute(select(ManagedCollection))).scalars().all()
     assert len(rows) == 1, "must not duplicate the row"
 
@@ -405,6 +475,183 @@ def test_the_summary_helper_never_calls_plexapis_own_method():
 
     _edit_collection_summary(collection, "A new summary.")
     assert collection.summary == "A new summary."
+
+
+# --- phase 10a-2: the family writes the 9b grammar ---------------------------
+#
+# Roadmap row 185. ``section.createCollection(smart=True, filters=...)`` and
+# ``Collection.updateFilters()`` are gone; both write calls go through
+# ``smart.create_smart_collection``/``update_smart_collection`` over a
+# ``build_search_url`` query, which is the same oracle-proven URI every other
+# smart collection this service manages is written with. The two plexapi
+# entry points are KEPT on the fakes above so these tests can prove they are
+# never called, rather than merely observing that they were not.
+
+
+class RefusingResolver:
+    """The pass's ``LibraryTagResolver``, with one value it will not resolve.
+
+    The resolver answers two questions and this double splits them: ``choices``
+    says what the library HOLDS and ``__call__`` says which Plex key a written
+    value resolves to. A real ``LibraryTagResolver`` memoises ONE
+    ``listFilterChoices`` and serves both halves out of it, so no ``FakeSection``
+    can make the two disagree -- which is why an unresolvable value is injected
+    through the reconciler's own ``resolver`` seam here instead of being faked a
+    layer down.
+    """
+
+    def __init__(self, ratings, refuse=()):
+        self._ratings = list(ratings)
+        self._refuse = set(refuse)
+
+    def choices(self, attribute, /):
+        assert attribute == "content_rating"
+        return tuple((rating, rating) for rating in self._ratings)
+
+    def __call__(self, attribute, value, /):
+        return () if str(value) in self._refuse else (str(value),)
+
+
+async def test_a_bucket_is_created_with_a_raw_post_and_no_plexapi_filters(session):
+    """Roadmap row 185. The second query grammar is retired: this family now
+    writes the same oracle-proven URI ``smart_filter`` writes, through the same
+    two functions, so there is exactly one smart write path in this service."""
+    section = FakeSection(["G", "TV-G", "PG"])
+
+    actions = await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False,
+    )
+
+    assert "created 'Age 1+ Movies'" in actions, actions
+    assert section.created == [], "plexapi createCollection must not be called"
+    posted = [one for one in section.queries if one["method"] == "POST-SENTINEL"]
+    assert posted, section.queries
+    uri = parse_qs(urlsplit(posted[0]["key"]).query)["uri"][0]
+    assert uri.startswith("server://")
+    assert "push=1" in uri and "or=1" in uri and "contentRating=G" in uri
+
+
+async def test_a_bucket_whose_filter_changed_is_updated_with_a_put(session):
+    """The migration's own shape: an existing collection whose stored hash
+    predates the port is not current, so the pass re-PUTs its filter. One PUT
+    per collection, once."""
+    existing = FakeCollection("Age 1+ Movies", labels=[LABEL])
+    section = FakeSection(["G"], existing=[existing])
+    session.add(ManagedCollection(
+        library="Movies", title="Age 1+ Movies", kind="smart",
+        plex_rating_key="1", definition_hash="the-pre-port-hash",
+    ))
+    await session.flush()
+
+    actions = await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False,
+    )
+
+    assert "updated 'Age 1+ Movies'" in actions, actions
+    assert existing.updated_filters is None, (
+        "plexapi updateFilters must not be called"
+    )
+    put = [one for one in section.queries if one["method"] == "PUT-SENTINEL"]
+    assert len(put) == 1, section.queries
+    assert "/items?" in put[0]["key"] and "uri=" in put[0]["key"]
+
+
+def test_the_hash_folds_the_built_uri_so_the_migration_actually_happens():
+    """The one thing that could make this port a silent no-op in production: a
+    hash over the bucket's VALUES is unchanged by the port, so the first pass
+    would skip every collection and leave every stored filter in the old
+    grammar. The hash is over the URI, so it cannot."""
+    bucket = Bucket(key="1", title="Age 1+ Movies", summary="s", values=("G",))
+    assert definition_hash(bucket, None, "?type=1&push=1&contentRating=G&pop=1") != (
+        definition_hash(bucket, None, "?type=1&push=1&contentRating=PG&pop=1")
+    )
+
+
+async def test_an_unchanged_second_pass_still_writes_nothing(session):
+    """The migration is ONE pass. The second finds the new hash stored and
+    short-circuits exactly as it did before."""
+    section = FakeSection(["G", "TV-G", "PG"])
+    await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False,
+    )
+    before = len(section.queries)
+
+    actions = await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False,
+    )
+
+    assert actions == []
+    assert len(section.queries) == before
+
+
+async def test_an_empty_bucket_is_still_never_created_and_never_deleted(session):
+    """Addendum 3, pinned at the port. Kometa DROPS a bucket no library value
+    matches (meta.py:1224-1225); ``derive_buckets`` returns it with empty values
+    and this reconciler declines to create or modify it, so production never
+    creates one and never deletes one that already exists. The port does not
+    change that, and ``cs_bucket.titles()`` still names every bucket -- which is
+    what keeps an existing-but-now-empty Common Sense collection out of the
+    delete sweep's candidate set entirely."""
+    from types import SimpleNamespace
+
+    from autoposter.collections.builders.cs_bucket import CsBucketBuilder
+
+    stale = FakeCollection("Age 18+ Movies", labels=[LABEL])
+    section = FakeSection(["G"], existing=[stale])
+
+    actions = await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False,
+    )
+
+    assert not any("Age 18+ Movies" in one for one in actions), actions
+    assert stale.updated_filters is None
+    assert stale.summary_set is None
+    config = SimpleNamespace(collections=SimpleNamespace(separators=False))
+    assert "Age 18+ Movies" in CsBucketBuilder().titles("Movie", config)
+
+
+async def test_a_bucket_whose_query_cannot_be_built_refuses_only_itself(session):
+    """``build_search_url`` and ``parse_filters`` can refuse, and this
+    reconciler is reached through a SMART builder whose ``apply`` the engine
+    does not wrap -- so an uncaught refusal here costs the whole library its
+    reconcile. Contained to one bucket, like every other per-key refusal in this
+    service."""
+    section = FakeSection(["G", "PG"])
+
+    actions = await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False,
+        resolver=RefusingResolver(["G", "PG"], refuse={"PG"}),
+    )
+
+    assert any("created 'Age 1+ Movies'" in one for one in actions), actions
+    assert any("refused" in one and "PG" in one for one in actions), actions
+
+
+async def test_a_dead_filter_lookup_refuses_the_whole_family_rather_than_raising(
+    session,
+):
+    """The family's one input. Returned, not raised: this reconciler is reached
+    through a smart builder the engine does not wrap, so an escape here would
+    cost the library every other definition's work too."""
+    from autoposter.collections.builders.plex_search import PlexSearchUnavailable
+
+    class DeadResolver:
+        def choices(self, attribute, /):
+            raise PlexSearchUnavailable("Plex has no 'content_rating' filter")
+
+        def __call__(self, attribute, value, /):  # pragma: no cover - never reached
+            raise AssertionError("nothing may resolve after the listing failed")
+
+    section = FakeSection(["G"])
+
+    actions = await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False,
+        resolver=DeadResolver(),
+    )
+
+    assert len(actions) == 1, actions
+    assert actions[0].startswith("refused the Common Sense collections:"), actions
+    assert section.queries == []
 
 
 # --- C11: a definition that changes shape under an existing collection -------

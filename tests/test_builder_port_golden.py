@@ -95,6 +95,12 @@ class FakeItem:
 class FakeChoice:
     def __init__(self, title):
         self.title = title
+        # Plex answers contentRating's key and title with the same string (the
+        # 10a-1 dynamic probe measured it), so the resolver is the identity
+        # here. Added when the Common Sense family started resolving its values
+        # through LibraryTagResolver rather than handing plexapi the written
+        # words.
+        self.key = title
 
 
 class FakeCollection:
@@ -214,8 +220,31 @@ class FakeSection:
         return list(self._items)
 
     def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        title = parse_qs(urlsplit(key).query)["title"][0]
-        self._existing[title] = FakeCollection(title, rating_key=str(len(self._existing) + 1))
+        """Both raw routes now.
+
+        ``title`` is the create POST (the separator's, and since phase 10a-2
+        every Common Sense bucket's). A key with no ``title`` is the smart
+        filter's replacing PUT, whose only argument is the uri; no scenario here
+        reaches it, so it is accepted and dropped rather than given machinery
+        nothing exercises.
+
+        A SMART create's ``uri`` is recorded into ``updated_filters``
+        DELIBERATELY, and that is the one amendment to this harness the phase's
+        adjudication licensed (`.superpowers/sdd/p10a-facts.md`, Addendum 2
+        point 1): the cell used to hold a plexapi call shape, and now holds the
+        raw-POST evidence that replaced it. Same cell, same question ("what
+        filter was this collection given"), different grammar. ``smart=0`` --
+        the separator's blank POST -- is deliberately NOT recorded: its write
+        path did not move, and its cell is the capture's.
+        """
+        args = parse_qs(urlsplit(key).query)
+        if "title" not in args:
+            return None
+        title = args["title"][0]
+        collection = FakeCollection(title, rating_key=str(len(self._existing) + 1))
+        if args.get("smart", ["0"])[0] == "1":
+            collection.updated_filters = args["uri"][0]
+        self._existing[title] = collection
         return None
 
     def collection(self, title):
@@ -435,3 +464,16 @@ async def test_the_ported_sources_reproduce_the_recorded_run(
     for name in expected:
         assert recorded[name]["actions"] == expected[name]["actions"], name
         assert recorded[name]["state"] == expected[name]["state"], name
+
+
+async def test_the_common_sense_family_writes_no_plexapi_filters_at_all(
+    session, config_factory, tmp_path
+):
+    """The one cell the fixture's amendment is about, asserted directly rather
+    than only through the recorded state: after the port no collection in any
+    scenario is created or updated through plexapi's ``filters=``, so every
+    ``filters`` cell in the fixture is a POSTed uri or None and never a dict."""
+    recorded = await _scenarios(session, config_factory, tmp_path)
+    for name, scenario in recorded.items():
+        for title, state in scenario["state"].items():
+            assert not isinstance(state["filters"], dict), (name, title)

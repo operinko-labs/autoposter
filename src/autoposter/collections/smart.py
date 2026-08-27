@@ -5,7 +5,9 @@ siblings:
 
 - ``reconcile.py`` -- the Common Sense age buckets, a FAMILY of smart
   collections whose filters are derived from the library's own ratings and
-  written through plexapi's ``createCollection(smart=True)``.
+  written through ``create_smart_collection``/``update_smart_collection``
+  below, since phase 10a-2 retired the plexapi ``filters=`` grammar it used
+  to use (roadmap row 185).
 - ``lists.py`` -- every collection with a membership this service maintains.
 - here -- ONE smart collection per definition, whose filter is the operator's
   own ``smart_filter`` query, written as a RAW POST.

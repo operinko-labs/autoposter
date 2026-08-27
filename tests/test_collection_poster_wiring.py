@@ -53,6 +53,12 @@ def _refusing_handler():
 class FakeChoice:
     def __init__(self, title):
         self.title = title
+        # Plex answers contentRating's key and title with the same string (the
+        # 10a-1 dynamic probe measured it), so the resolver is the identity
+        # here. Added when the Common Sense family started resolving its values
+        # through ``LibraryTagResolver`` rather than handing plexapi the
+        # written words.
+        self.key = title
 
 
 class RatingCollection:
@@ -128,16 +134,26 @@ class RatingSection:
         self._ratings = list(ratings)
         self._existing = {c.title: c for c in existing}
         self.created = []
+        self.queries = []
         self.key = "42"
         self.type = section_type
         self._server = self
-        self._session = type("Sess", (), {"post": "POST-SENTINEL"})()
+        self._session = type("Sess", (), {
+            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
+        })()
 
     def _uriRoot(self):
         return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
 
     def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        title = parse_qs(urlsplit(key).query)["title"][0]
+        """Both raw routes: the create POST (which carries a ``title``) and,
+        since phase 10a-2, a bucket's filter-replacing PUT (which carries only
+        a ``uri``)."""
+        self.queries.append({"key": key, "method": method})
+        args = parse_qs(urlsplit(key).query)
+        if "title" not in args:
+            return None
+        title = args["title"][0]
         collection = RatingCollection(title, rating_key=str(len(self._existing) + 1))
         self._existing[title] = collection
         return None
@@ -299,6 +315,7 @@ async def test_a_smart_collection_with_an_unchanged_definition_still_gets_a_miss
     assert collection.uploaded_bytes == []
 
     config.collections.posters = True
+    written = len(section.queries)
     data = _jpeg_bytes()
     seen = []
     async with _client(_serving_handler(data, seen)) as http:
@@ -308,7 +325,9 @@ async def test_a_smart_collection_with_an_unchanged_definition_still_gets_a_miss
         )
 
     assert collection.uploaded_bytes == [data]
-    assert collection.updated_filters is None  # the definition was left alone
+    # The definition was left alone: no create POST and no filter-replacing PUT.
+    assert len(section.queries) == written
+    assert collection.updated_filters is None
     assert any("poster" in a for a in actions)
     row = (await session.execute(select(ManagedCollection))).scalars().one()
     assert row.poster_sha256 is not None
