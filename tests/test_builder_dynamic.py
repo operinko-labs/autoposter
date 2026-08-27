@@ -10,6 +10,7 @@ grammar and one drift hash for every smart collection this service manages
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from autoposter.collections.builders import REGISTRY
@@ -676,3 +677,172 @@ async def test_an_all_excluded_family_leaves_no_record_not_an_empty_one(session)
     assert "excluded" in actions[0]
     assert generated_titles(ctx.run_cache, definition) is None
     assert _generated_key(family_label(definition)) not in ctx.run_cache
+
+
+# --- delete-below-minimum -----------------------------------------------------
+
+
+def test_minimum_items_is_off_by_default_and_says_it_is_a_divergence():
+    """Upstream has NO per-key minimum for the library dynamic types
+    (p10a-upstream-dynamic.md 7.2), so the default cannot be a number an
+    operator would have to discover and turn off."""
+    assert DynamicParams(type="genre").minimum_items is None
+    with pytest.raises(ValidationError):
+        DynamicParams(type="genre", minimum_items=0)
+
+
+async def test_a_key_below_the_minimum_is_not_created(session):
+    definition = _definition(params={"type": "genre", "minimum_items": 4})
+    section = FakeSection()   # every search answers with three items
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert section._existing == {}
+    assert any(
+        "matches 3 item(s)" in one and "minimum_items" in one and "4" in one
+        for one in actions
+    ), actions
+
+
+async def test_a_key_below_the_minimum_leaves_the_sweeps_record(session):
+    """The whole of delete-below-minimum: the key drops out of the pass's
+    generated record and the family sweep -- one mechanism, through the same
+    guards -- deletes the collection if one already exists. Nothing here
+    deletes anything itself."""
+    from autoposter.collections.builders.dynamic import _generated_key
+
+    definition = _definition(params={"type": "genre", "minimum_items": 4})
+    section = FakeSection()
+    ctx = _ctx(session, section, definition)
+
+    await DynamicBuilder().apply(ctx)
+
+    assert ctx.run_cache[_generated_key(family_label(definition))] == set()
+
+
+async def test_a_key_whose_count_plex_refuses_stays_in_the_record(session):
+    """The fail-closed half of the same removal, and the reason the discard
+    sits AFTER a successful count rather than before one. A count that could
+    not be taken is not "below the minimum" -- it is one dead Plex read, and
+    reading it as a narrowing would hand the sweep a family it never measured.
+    The title stays, and the sweep protects the collection."""
+    from autoposter.collections.builders.dynamic import _generated_key
+
+    class Dead(FakeSection):
+        def fetchItems(self, path, **kw):
+            self.fetched.append(path)
+            raise RuntimeError("boom")
+
+    definition = _definition(params={"type": "genre", "minimum_items": 4})
+    section = Dead()
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert ctx.run_cache[_generated_key(family_label(definition))] == {
+        "Top Horror movies", "Top Drama movies",
+    }
+    assert len([one for one in actions if one.startswith("refused")]) == 2
+    assert all("RuntimeError" in one for one in actions)
+
+
+async def test_a_key_at_the_minimum_is_created(session):
+    """The boundary is inclusive: `minimum_items: 3` means three is enough."""
+    definition = _definition(params={"type": "genre", "minimum_items": 3})
+    section = FakeSection()
+    ctx = _ctx(session, section, definition)
+
+    await DynamicBuilder().apply(ctx)
+
+    assert set(section._existing) == {"Top Horror movies", "Top Drama movies"}
+
+
+async def test_no_minimum_costs_no_extra_plex_read(session):
+    """The count is a Plex round trip per key. It is paid only by an operator
+    who asked for it -- ``reconcile_smart_collection`` does its own C8 probe on
+    the create/update path, and doing it twice for every family in every pass
+    would double the read cost of the default configuration."""
+    definition = _definition()
+    section = FakeSection()
+    ctx = _ctx(session, section, definition)
+
+    await DynamicBuilder().apply(ctx)
+
+    # Two keys, one probe each, from reconcile_smart_collection's own C8 gate.
+    assert len(section.fetched) == 2
+
+
+# --- what the family tells the operator ---------------------------------------
+
+
+async def test_the_absent_value_key_is_reported_rather_than_silently_dropped(
+    session,
+):
+    """10a-1 review, T4's deferred minor. ``ABSENT_KEY`` is Plex's "these items
+    have no value for this field" and ``family_titles`` drops it, which is
+    right -- but silently, so an operator whose library has 40 unrated films
+    sees a family with no bucket for them and no reason why. And a real tag
+    named literally "None" is indistinguishable from the sentinel at this
+    layer, so the report has to say that too rather than pretend to know."""
+    definition = _definition()
+    section = FakeSection(choices=[
+        FakeChoice("1138", "Horror"), FakeChoice("None", "None"),
+    ])
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert any(
+        "'None'" in one and "no value" in one and "title_override" not in one
+        for one in actions
+    ), actions
+    assert "Top None movies" not in section._existing
+
+
+async def test_narrowing_entries_the_library_never_reports_are_named(session):
+    """10a-1 review, Minor N-5. An ``include:``/``exclude:``/``addons:``/
+    override entry naming a key the library does not hold is silently inert --
+    upstream parity, and the all-excluded family does refuse, so this is not a
+    correctness hole. It is a typo an operator cannot see: ``include: [Horor]``
+    builds a family with one fewer collection and says nothing."""
+    definition = _definition(params={
+        "type": "genre",
+        "include": ["Horror", "Horor"],
+        "key_name_override": {"Wsetern": "Western"},
+    })
+    section = FakeSection()
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    inert = [one for one in actions if "names no value" in one]
+    assert len(inert) == 1, actions
+    assert "'Horor'" in inert[0] and "include" in inert[0]
+    assert "'Wsetern'" in inert[0] and "key_name_override" in inert[0]
+    assert "'Horror'" not in inert[0]
+
+
+async def test_an_addons_report_names_the_members_and_not_the_bucket(session):
+    """``addons`` is the one narrowing key whose ENTRIES are not what goes
+    inert. An addon KEY the library never reported is upstream's synthetic
+    bucket (``dynamic_keys`` :140-151) -- it builds a real collection under
+    that name, which is the opposite of doing nothing, and a typo in it is
+    visible in the family's own titles. An addon MEMBER the library never
+    reported is dropped twice over, silently, and is the invisible typo this
+    report exists for."""
+    definition = _definition(params={
+        "type": "genre", "addons": {"Eighties": ["Horror", "Dama"]},
+    })
+    section = FakeSection()
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert "Top Eighties movies" in section._existing, (
+        "the synthetic bucket is built, so naming it inert would be a lie"
+    )
+    inert = [one for one in actions if "names no value" in one]
+    assert len(inert) == 1, actions
+    assert "'Dama'" in inert[0] and "addons" in inert[0]
+    assert "'Eighties'" not in inert[0]

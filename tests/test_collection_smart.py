@@ -18,6 +18,7 @@ from sqlalchemy import select
 from autoposter.collections.smart import (
     SmartCollectionUnavailable,
     SmartFilterMatchedNothing,
+    count_matches,
     reconcile_smart_collection,
     smart_definition_hash,
     smart_filter_uri,
@@ -395,6 +396,27 @@ async def test_the_match_probe_wraps_a_plex_failure_by_class_name_only(session):
     assert "RuntimeError" in str(caught.value)
     assert "SECRET" not in str(caught.value)
     assert "X-Plex-Token" not in str(caught.value)
+
+
+def test_counting_matches_does_not_refuse_at_zero():
+    """``require_matches`` refuses at zero because a permanently-empty smart
+    collection is not a collection. A per-key MINIMUM asks a different question
+    -- "how many, so I can compare" -- and zero is a legitimate answer to it.
+    Two functions rather than a flag, so neither caller can be read as the
+    other."""
+    assert count_matches(FakeSection(matches=0), "?type=1&genre=1138") == 0
+
+
+def test_counting_matches_still_wraps_a_dead_plex_class_name_only():
+    """The wrap is on the counting half, so both callers inherit it and neither
+    can leak a tokenised URL by being the one that forgot."""
+    boom = RuntimeError("https://plex.example:32400/library?X-Plex-Token=SECRET")
+    with pytest.raises(SmartCollectionUnavailable) as caught:
+        count_matches(FakeSection(matches=boom), "?type=1&genre=1138")
+    assert "RuntimeError" in str(caught.value)
+    assert "https://" not in str(caught.value)
+    assert "X-Plex-Token" not in str(caught.value)
+    assert "SECRET" not in str(caught.value)
 
 
 async def test_a_dry_run_probes_but_writes_nothing(session):

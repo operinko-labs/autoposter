@@ -63,6 +63,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "SmartCollectionUnavailable",
     "SmartFilterMatchedNothing",
+    "count_matches",
     "create_smart_collection",
     "reconcile_smart_collection",
     "require_matches",
@@ -100,18 +101,20 @@ def smart_filter_uri(server, section_key, url: str) -> str:
     return "%s/library/sections/%s/all%s" % (server._uriRoot(), section_key, url)
 
 
-def require_matches(section, url: str) -> int:
-    """Kometa's ``test_smart_filter`` (modules/plex.py:1580-1584), C8's half.
+def count_matches(section, url: str) -> int:
+    """How many items ``url`` matches right now. Zero is an answer, not a fault.
 
-    Returns how many items the filter matches right now, and refuses at zero.
-    The count is not stored anywhere -- a smart collection's membership is
-    Plex's and changes without us -- it exists only so the action string can say
-    what the operator's filter actually found.
+    Split out of ``require_matches`` because the dynamic engine's
+    ``minimum_items`` asks a different question of the same read: "how many, so
+    I can compare" rather than "is this collection worth creating at all". Two
+    functions rather than one with a flag, so a reader of either call site
+    cannot mistake it for the other.
 
     The catch is blanket and class-name-only, which is ``plex_search.build``'s
-    own reasoning (:342-359): this call returns the collection's whole reason to
-    exist, so any failure ends the reconcile the same way, and nothing is
-    memoised here that a coding bug could be mistaken for a library fact.
+    own reasoning (:342-359): any failure of this call ends the caller's
+    decision the same way, and nothing is memoised here that a coding bug could
+    be mistaken for a library fact. It lives on THIS half so both callers
+    inherit it.
     """
     try:
         items = section.fetchItems("/library/sections/%s/all%s" % (section.key, url))
@@ -119,7 +122,19 @@ def require_matches(section, url: str) -> int:
         raise SmartCollectionUnavailable(
             "Plex would not answer this smart filter: %s" % type(error).__name__
         ) from None
-    if not items:
+    return len(items)
+
+
+def require_matches(section, url: str) -> int:
+    """Kometa's ``test_smart_filter`` (modules/plex.py:1580-1584), C8's half.
+
+    Returns how many items the filter matches right now, and refuses at zero.
+    The count is not stored anywhere -- a smart collection's membership is
+    Plex's and changes without us -- it exists only so the action string can say
+    what the operator's filter actually found.
+    """
+    matched = count_matches(section, url)
+    if not matched:
         raise SmartFilterMatchedNothing(
             "this search matches nothing in this library right now, and a smart "
             "collection built from it would be permanently empty. Widen the "
@@ -128,7 +143,7 @@ def require_matches(section, url: str) -> int:
             "modules/plex.py:1580-1584 -- behind an `ignore_blank_results` "
             "switch this service deliberately does not offer.)"
         )
-    return len(items)
+    return matched
 
 
 def create_smart_collection(section, libtype: str, title: str, url: str):

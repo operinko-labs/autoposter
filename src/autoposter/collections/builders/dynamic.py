@@ -102,6 +102,7 @@ from autoposter.collections.search_url import (
 from autoposter.collections.smart import (
     SmartCollectionUnavailable,
     SmartFilterMatchedNothing,
+    count_matches,
     reconcile_smart_collection,
 )
 
@@ -259,7 +260,7 @@ class DynamicParams(BaseModel):
     (``include``/``exclude``/``addons``/``custom_keys``), names it
     (``title_format``, ``key_name_override``, ``title_override``,
     ``remove_prefix``/``remove_suffix``, ``other_name``) or bounds it
-    (``sort_by``, ``limit``, ``max_collections``).
+    (``sort_by``, ``limit``, ``max_collections``, ``minimum_items``).
 
     ``extra="forbid"`` so ``includes:`` for ``include:`` is an error rather than
     a silently-ignored key, and ``coerce_numbers_to_str`` because certification
@@ -294,6 +295,15 @@ class DynamicParams(BaseModel):
     # can hold in their head are exactly the ones that refuse until the cap is
     # raised on purpose.
     max_collections: int = Field(default=50, ge=1)
+    # Roadmap decomposition step 4's other half, and a deliberate DIVERGENCE:
+    # upstream has no per-key minimum for any of the thirteen library dynamic
+    # types (the nearest thing is the people types' `data: minimum`, which is a
+    # credit threshold on the ENUMERATION and not on the result). So the default
+    # is None and not a number -- a shipped floor an operator has to discover
+    # and switch off is the surprise this project refuses -- and switching it on
+    # costs one Plex read per key per pass, which is why it is opt-in twice
+    # over: by existing, and by being priced in its own docstring.
+    minimum_items: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="before")
     @classmethod
@@ -579,6 +589,46 @@ class DynamicBuilder:
                    params.max_collections, len(titled))
             ))
 
+        # Declared here rather than beside the emission loop because the two
+        # reports below are about the FAMILY -- what the library reported and
+        # what the operator's narrowing did with it -- and both are decided
+        # before any key is built.
+        actions: list[str] = []
+
+        # ``family_titles`` drops an ``ABSENT_KEY`` key outright and is right
+        # to: it is Plex's "these items have no value for this field", not a
+        # value, and a collection called "Top None movies" is nobody's ask. But
+        # dropping it silently leaves an operator whose library has forty
+        # unrated films with a family that has no bucket for them and no reason
+        # why. Reported, and honestly: at this layer a real tag named literally
+        # "None" is the same string, so the report says so instead of claiming
+        # to know which one this was.
+        if any(key == ABSENT_KEY for key, _ in enumerated):
+            actions.append(
+                "%r reports a %r value of %r, which is how Plex spells 'these "
+                "items have no value for this field'. No collection is built "
+                "for it -- the query would be `%s=None`, which is a real search "
+                "and a useless collection. If this library genuinely has a %s "
+                "tag named %r, the two are the same string here and there is no "
+                "way to tell them apart: rename the tag in Plex"
+                % (ctx.library, params.type, ABSENT_KEY, row.search_key,
+                   params.type, ABSENT_KEY)
+            )
+
+        # ``present`` is keys AND display values because ``exclude`` is matched
+        # against both (dynamic_keys.py:137) -- reporting a correct
+        # ``exclude: [1930s]`` as inert would be worse than not reporting at all
+        # -- and it carries the synthetic ``addons`` keys too, which are names
+        # the library never reported and ``include:`` may correctly name.
+        present_keys = (
+            {key for key, _ in enumerated}
+            | {value for _, value in enumerated}
+            | set(params.addons)
+        )
+        inert = self._inert(ctx, params, present_keys)
+        if inert is not None:
+            actions.append(inert)
+
         # The sweep's input, written HERE -- after the family-level refusals,
         # before a single collection is created. Seeded with every title the
         # family derived, so a key whose write refuses below is still a key this
@@ -607,7 +657,6 @@ class DynamicBuilder:
         # pass with no dynamic definition never fetches it at all.
         listing = ctx.listing() if ctx.listing is not None else None
 
-        actions: list[str] = []
         for unit in titled:
             # ``ABSENT_KEY`` is Plex's "these items have no value for this
             # field", not a value. ``family_titles`` drops such a KEY outright;
@@ -674,6 +723,35 @@ class DynamicBuilder:
                     resolve_tag=resolver,
                 )
                 logger.debug("dynamic: %s -> %s", unit.title, url)
+                if params.minimum_items is not None:
+                    matched = count_matches(ctx.section, url)
+                    if matched < params.minimum_items:
+                        # Out of the pass's record, which is the WHOLE of
+                        # delete-below-minimum: this key is not one the family
+                        # builds this pass, so an existing collection under this
+                        # title is an ordinary sweep candidate and goes through
+                        # the same guards every other one does -- the ownership
+                        # label and the managed row, a protecting label,
+                        # `delete_unconfigured` (off by default, and off means
+                        # reported) and `max_deletes`, past which the whole
+                        # library's sweep refuses. Nothing is deleted here.
+                        #
+                        # The discard is AFTER a count that succeeded, and that
+                        # ordering is the fail-closed half: a count Plex would
+                        # not answer raises out of here into `except REFUSALS`
+                        # below with the title still in the record, so one dead
+                        # read protects the collection instead of narrowing the
+                        # family that never measured it.
+                        generated.discard(unit.title)
+                        actions.append(
+                            "did not build %r: it matches %d item(s) and "
+                            "`minimum_items` is %d. If a collection already "
+                            "exists under that title, the delete sweep decides "
+                            "its fate through `delete_unconfigured` and "
+                            "`max_deletes` like any other"
+                            % (unit.title, matched, params.minimum_items)
+                        )
+                        continue
                 actions += await reconcile_smart_collection(
                     ctx.session,
                     ctx.section,
@@ -706,6 +784,49 @@ class DynamicBuilder:
                 )
                 actions.append("refused %r: %s" % (unit.title, refusal))
         return actions
+
+    def _inert(
+        self, ctx: SmartContext, params: DynamicParams, present: set[str]
+    ) -> str | None:
+        """Narrowing and override entries naming a key the library never
+        reported, as one line or none.
+
+        Silently inert is upstream's behaviour and is not a correctness hole --
+        an all-excluded family does refuse. It is a TYPO an operator cannot
+        see: ``include: [Horor]`` builds a family with one fewer collection and
+        says nothing at all. One line rather than one per entry, because a
+        config ported from another library can name a dozen at once.
+
+        ``addons`` is checked by its MEMBERS rather than by its keys, which is
+        the one place this differs from the other four. An addon key the library
+        never reported is upstream's synthetic bucket (dynamic_keys.py:141-150):
+        it builds a real collection under that name, so calling it inert would
+        be false, and a typo in it is visible in the family's own titles. An
+        addon MEMBER the library never reported is dropped -- twice, at :144
+        and at :163 -- and is the invisible one.
+        """
+        named: list[str] = []
+        for where, keys in (
+            ("include", params.include),
+            ("exclude", params.exclude),
+            ("addons", [one for many in params.addons.values() for one in many]),
+            ("key_name_override", list(params.key_name_override)),
+            ("title_override", list(params.title_override)),
+        ):
+            named += [
+                "%s: %r" % (where, one)
+                for one in keys if str(one) not in present
+            ]
+        if not named:
+            return None
+        return (
+            "%s names no value %r holds and does nothing: %s. Every entry is "
+            "matched against the key exactly -- for a type keyed on `choice.key`"
+            " that is the bare form (`1980`, not `1980s`) -- so a near miss is "
+            "silently inert rather than an error"
+            % ("One entry" if len(named) == 1 else "%d entries" % len(named),
+               ctx.library, ", ".join(named))
+        )
 
     def _refused(self, ctx: SmartContext, title: str, why: object) -> list[str]:
         """One definition-level refusal, logged and returned.
