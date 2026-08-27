@@ -744,6 +744,72 @@ async def test_a_family_that_did_not_run_protects_every_one_of_its_collections(
     ).scalar_one_or_none() is not None
 
 
+async def test_a_collection_carrying_two_family_labels_is_protected_by_either(
+    session,
+):
+    """T1 review Important, closed. ``reconcile._apply_labels`` is additive by
+    default, so one collection can carry two families' labels at once -- an
+    operator's config that has two ``dynamic`` definitions derive the same
+    title (e.g. ``Genres A`` with ``include: [Horror]`` and ``Genres B`` with
+    ``include: [Horror, Drama]``, both defaulting to the same title format).
+    Family A rebuilt this title this pass; family B narrowed away from it. The
+    collection must survive either way -- a candidate only when EVERY family
+    labelling it ran and NONE of them built it. Proven in both definition
+    orders, because the ``next(...)`` bug this replaces picked whichever
+    family's label the iteration reached first."""
+    from autoposter.collections.builders.dynamic import _generated_key, family_label
+
+    definition_a = CollectionDefinition(
+        title="Genres A", builder="dynamic", params={"type": "genre"},
+    )
+    definition_b = CollectionDefinition(
+        title="Genres B", builder="dynamic", params={"type": "genre"},
+    )
+    seed = {
+        # A rebuilt the title this pass; B's narrower family did not.
+        _generated_key(family_label(definition_a)): {"Top Horror movies"},
+        _generated_key(family_label(definition_b)): set(),
+    }
+
+    for order in ([definition_b, definition_a], [definition_a, definition_b]):
+        collection = FakeCollection(
+            "Top Horror movies", [FakeItem("m1")],
+            labels=[LABEL, family_label(definition_a), family_label(definition_b)],
+        )
+        section = FakeSection([("m1", ["imdb://tt1"])], existing=[collection])
+        session.add(ManagedCollection(
+            library="Movies", title="Top Horror movies", kind="smart",
+            plex_rating_key="c-Top Horror movies", definition_hash="seed",
+        ))
+        await session.flush()
+
+        run = await run_library(
+            session, section, "Movies", "Movie", order,
+            _config(delete_unconfigured=True), sweep=True,
+            run_cache_seed=seed,
+        )
+
+        assert collection.deleted is False, order
+        assert not any("deleted" in one for one in run.actions), (order, run.actions)
+        assert (
+            await session.execute(
+                select(ManagedCollection).where(
+                    ManagedCollection.title == "Top Horror movies"
+                )
+            )
+        ).scalar_one_or_none() is not None
+
+        leftover = (
+            await session.execute(
+                select(ManagedCollection).where(
+                    ManagedCollection.title == "Top Horror movies"
+                )
+            )
+        ).scalar_one()
+        await session.delete(leftover)
+        await session.flush()
+
+
 async def test_a_family_member_without_the_ownership_label_is_never_swept(
     session,
 ):

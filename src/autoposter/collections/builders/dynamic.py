@@ -586,6 +586,11 @@ class DynamicBuilder:
         # failed is not an operator narrowing their family. The set is
         # deliberately MUTABLE and is the object the sweep reads, so a per-key
         # decision below can take a title back out of it in place.
+        # ``titled`` is non-empty here -- every refusal above that could leave it
+        # empty or unreached already returned -- and that matters because the
+        # engine reads absence and emptiness as opposites: no record protects the
+        # whole family, an EMPTY record makes every member a candidate. Writing
+        # ``set()`` here would silently delete the family.
         generated: set[str] = {unit.title for unit in titled}
         ctx.run_cache[_generated_key(family_label(definition))] = generated
 

@@ -817,16 +817,20 @@ async def _sweep(
                 "protected: %r carries %r; leaving it untouched" % (title, protecting)
             )))
             continue
-        family = next(
-            (one for one in families if has_label(collection, one)), None
-        )
+        matched = [one for one in families if has_label(collection, one)]
         family_title: str | None = None
-        if family is not None:
-            if family not in generated or title in generated[family]:
-                # Either the family did not run (reported once, above) or this
-                # is a member it just rebuilt. Nothing to say per member.
+        if matched:
+            # A collection can carry more than one family's label (both
+            # reconciled it additively in the same or an earlier pass), so
+            # every matching family must protect it, not just the first one
+            # iteration happens to reach: a candidate only when EVERY family
+            # that labels it ran and NONE of them built it this pass.
+            if any(
+                one not in generated or title in generated[one]
+                for one in matched
+            ):
                 continue
-            family_title = families[family]
+            family_title = families[matched[0]]
         if not has_label(collection, label):
             logger.info(
                 "%s: %r has a managed row but not the %r label; not ours to delete",

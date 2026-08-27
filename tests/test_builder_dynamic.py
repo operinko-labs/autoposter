@@ -649,3 +649,30 @@ async def test_a_family_level_refusal_records_nothing_at_all(session):
 
     assert actions and actions[0].startswith("refused")
     assert generated_titles(ctx.run_cache, definition) is None
+
+
+async def test_an_all_excluded_family_leaves_no_record_not_an_empty_one(session):
+    """The other family-level refusal that can zero out ``titled``: every
+    enumerated value survives to ``derive_keys`` but none of them is in
+    ``include``, so ``family_titles`` claims nothing and ``if not titled:``
+    (dynamic.py:565-570) returns before the record write at :589-590 -- the
+    same refusal-before-write structure the empty-enumeration case above
+    exercises, reached a different way. Pinning this matters because the
+    engine reads absence and an empty set as OPPOSITES (None protects the
+    whole family; ``set()`` makes every member a candidate), so a record must
+    never be written here -- ``run_cache`` must lack the key entirely, not
+    hold ``set()``."""
+    from autoposter.collections.builders.dynamic import (
+        _generated_key, generated_titles,
+    )
+
+    definition = _definition(params={"type": "genre", "include": ["nothing-here"]})
+    section = FakeSection()
+    ctx = _ctx(session, section, definition)
+
+    actions = await DynamicBuilder().apply(ctx)
+
+    assert actions and actions[0].startswith("refused")
+    assert "excluded" in actions[0]
+    assert generated_titles(ctx.run_cache, definition) is None
+    assert _generated_key(family_label(definition)) not in ctx.run_cache
