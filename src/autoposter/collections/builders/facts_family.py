@@ -135,9 +135,14 @@ class FactsFamilyParams(BaseModel):
     (``engine._INHERITED_BY_EXPANSION``). ``minimum_items`` is absent because
     the thing it would count does not exist at this layer: a unit's membership
     is resolved by the unit's OWN builder one layer down, so a per-key minimum
-    here would mean resolving every key's membership twice. A shipped knob whose
-    cost is a second full pass, to enforce a floor upstream does not have for
-    any of these types, is not worth a line -- and a knob an operator sets that
+    here would mean resolving every key's membership twice, and for
+    ``tmdb_collection`` that second pass is a TMDb read per franchise taken
+    before deciding whether to build it. Upstream DOES apply a floor here --
+    ``franchise.yml``'s own templates block carries ``minimum_items: 2``, which
+    this service therefore diverges from, visibly and on purpose (roadmap row
+    199 carries the divergence and what closing it would cost). A shipped knob
+    whose cost is a second full pass is not worth a line -- and a knob an
+    operator sets that
     nothing reads is exactly what ``DynamicParams``' refusal of ``data:``
     exists to prevent.
     """
