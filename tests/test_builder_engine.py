@@ -40,7 +40,8 @@ from autoposter.collections.engine import (
 from autoposter.collections.service import _managed_titles
 from autoposter.collections.sources import AWARD_YEARS_TITLE, default_definitions
 from autoposter.config.schema import CollectionDefinition
-from autoposter.db.models import MediaItem
+from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.providers.tmdb_lists import TmdbListClient
 
 LABEL = "autoposter"
 
@@ -711,6 +712,52 @@ async def test_a_family_that_built_nothing_says_why_in_the_pass(session):
         "item(s) there; this family fills in as the ratings-drift sweep works "
         "through the rest (scheduler.drift_days, scheduler.drift_batch_size)"
     ]
+
+
+async def test_a_familys_notes_reach_the_pass_beside_the_units_it_did_build(session):
+    """The other half of the wire above: a family that builds SOMETHING and
+    still has something to say.
+
+    The refusal shapes return ``[]``, so the slice is the only thing the pass
+    reports for them. A franchise TMDb cannot name is the shape where both
+    halves run -- the key is dropped and reported, the rest of the family is
+    returned and built -- and ``deploy/README.md`` promises an operator that a
+    family refusing "for any other reason" says so too. The note has to land in
+    the same ``actions`` list as the unit's own line, and before it.
+    """
+    for rating_key, collection_id in (("m1", 1241), ("m2", 8091)):
+        item = MediaItem(rating_key=rating_key, library="Movies", kind="movie", title="X")
+        session.add(item)
+        await session.flush()
+        session.add(ItemFacts(item_id=item.id, tmdb_collection_id=collection_id))
+    await session.flush()
+
+    def handler(request):
+        if request.url.path.endswith("/8091"):
+            return httpx.Response(404, json={})
+        return httpx.Response(200, json={
+            "id": 1241, "name": "Harry Potter Collection", "parts": [{"id": 671}],
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        actions = await _run(
+            session, FakeSection([("m1", ["tmdb://671"])]),
+            [CollectionDefinition(
+                title="Franchises", builder="facts_family",
+                params={"type": "tmdb_collection"},
+            )],
+            _config(),
+            http=http,
+            sources=SourceClients(tmdb=TmdbListClient("tok", http)),
+        )
+
+    dropped = [
+        index for index, action in enumerate(actions)
+        if "8091" in action and "title_override" in action
+    ]
+    built = actions.index("created 'Harry Potter Collection' with 1 item(s)")
+    assert dropped, actions
+    assert dropped[0] < built, actions
 
 
 # --- roadmap row 96: the filter stage --------------------------------------

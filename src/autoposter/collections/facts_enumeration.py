@@ -229,7 +229,10 @@ async def coverage(
 
     The attempt, not the row: ``persist_facts`` stamps
     ``media_items.facts_attempted_at`` on every call including an empty gather
-    (adjudication C4), so an item TMDb has nothing for counts as VISITED. That
+    (adjudication C4), so an item TMDb has nothing for counts as VISITED -- and
+    so does an item the TMDb rate budget refused this pass, whose gather caught
+    ``TmdbRateLimited`` and stored nothing but was still stamped; it re-fills on
+    its next drift turn. That
     is the whole difference between "this family has enumerated 40% of the
     library" and "60% of the library has no origin country", which are very
     different sentences and only one of them is true.

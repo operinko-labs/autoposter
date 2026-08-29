@@ -388,7 +388,10 @@ async def run_library(
         # ``_family_state`` states. The slice is what keeps one family's notes
         # out of the next one's place: the list belongs to the pass, and every
         # family in it appends. A raise needs none of this -- the handler below
-        # reports a failed result under the definition's own title.
+        # reports a failed result under the definition's own title, and a note
+        # written before that raise is dropped with it: that visible failed
+        # result is the compensation, where a ``finally`` would emit a refused
+        # family's reasons for a pass that never finished expanding it.
         reporter = getattr(builder, "notes", None)
         reported = len(reporter(run_cache)) if reporter is not None else 0
 
