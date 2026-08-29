@@ -1496,6 +1496,26 @@ def test_the_universes_transcription():
     )
 
 
+def test_the_universe_ids_have_not_drifted_by_one_entry():
+    """The nine-id drift guard the DC re-point exposed a gap for: nothing else
+    in this suite pins the ids themselves, only the count and shape
+    (``test_the_universes_transcription``). One list has already died and been
+    swapped once (see the row comment above ``_UNIVERSE_LISTS``); this makes
+    the next such edit a deliberate two-site change -- table plus digest --
+    rather than a silent one.
+
+    Recomputing the digest after a DELIBERATE id edit: verify the new id
+    against its source first, then regenerate with ``_table_checksum`` over
+    the ids in table order and paste the new hex string in below. Never
+    adjust it just to turn a red test green.
+    """
+    ids = tuple(list_id for _title, list_id, _types in catalog._UNIVERSE_LISTS)
+    assert len(ids) == 9
+    assert _table_checksum(ids) == (
+        "c77343decd33f4630f499b7d4c316bcb3abb6c3631f293f5319c0c86b9ec8152"
+    )
+
+
 def test_the_starter_director_transcription():
     directors = catalog.BY_KEY["people_directors"].definitions("Movie")
     assert len(directors) == 6

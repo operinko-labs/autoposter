@@ -632,7 +632,6 @@ _KOMETA_DEFAULTS: frozenset[str] = frozenset(
         "defaults/both/streaming.yml",
         "defaults/both/studio.yml",
         "defaults/both/subtitle_language.yml",
-        "defaults/both/universe.yml",
         "defaults/both/year.yml",
         "defaults/chart/imdb.yml",
         "defaults/chart/tmdb.yml",
@@ -845,12 +844,12 @@ _UNIVERSE_LISTS: tuple[tuple[str, str, tuple[str, ...] | None], ...] = (
     # The one row in this table that is NOT Kometa's own transcription -- the
     # other eight are. Kometa's own defaults/both/universe.yml still cites
     # ls524274984, but that list's owner made it PRIVATE on IMDb (verified
-    # 2026-08-29), and there is no upstream replacement to transcribe --
-    # Kometa's master still points at the dead id. Re-pointed instead at
-    # ls046609392 ("DC Cinematic Universe - DCEU & DCU", owner Pietro_Pizzi,
-    # public, last modified 2026-06-23, 23 items spanning DCEU/DCU films AND
-    # TV including Superman (2025), Creature Commandos and Peacemaker, with
-    # forward entries through 2027; verified public 2026-08-29).
+    # 2026-08-29), and there is no upstream replacement to transcribe.
+    # Re-pointed instead at ls046609392 ("DC Cinematic Universe - DCEU & DCU",
+    # owner Pietro_Pizzi, public, last modified 2026-06-23, 23 items spanning
+    # DCEU/DCU films AND TV including Superman (2025), Creature Commandos and
+    # Peacemaker, with forward entries through 2027; verified public
+    # 2026-08-29).
     ("DC Universe", "ls046609392", None),
     ("Fast & Furious", "ls4102351575", _MOVIE),
     ("Marvel Cinematic Universe", "ls539646485", None),
@@ -878,7 +877,12 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
             "builder cannot address, so they are absent rather than guessed at."
             % ", ".join(title for title, _list, _types in _UNIVERSE_LISTS)
         ),
-        kometa_source="defaults/both/universe.yml",
+        kometa_source=NOT_KOMETA
+        + (
+            "eight of the nine lists are defaults/both/universe.yml's "
+            "transcriptions; the DC id is ours -- Kometa's went private "
+            "(verified 2026-08-29)"
+        ),
         library_types=_BOTH,
         collections=tuple(
             PresetCollection(
