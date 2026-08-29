@@ -546,6 +546,78 @@ async def test_an_explicit_sort_title_still_wins_end_to_end(session, chart_secti
     assert chart_section._collections["IMDb Top 250"].sort_title_set == "!999_mine"
 
 
+async def test_a_smart_collection_gets_its_groups_prefix_and_then_settles(
+    session, chart_section
+):
+    """The SMART reconciler's leg of the same road, both halves.
+
+    ``lists.py`` had three tests above and this reconciler had none, yet it is
+    the one ``dynamic`` drives once per generated key -- a whole family per
+    library. The title asserted is the COLLECTION's, not the definition's:
+    ``settings`` here is the family definition (``"Genres"``), and the derived
+    value has to come from the title this call names.
+
+    No ``sort_order``: neither shape reaching this reconciler has a natural
+    order, so the derived value is the plain ``!<NNN>_<title>`` form -- see the
+    reconciler's own docstring.
+
+    The second pass is the migration half. The derived value is folded in
+    BEFORE ``smart_definition_hash``, so the first pass writes it and the
+    second finds the hash current, short-circuits, and writes nothing again.
+    """
+    from autoposter.collections.smart import reconcile_smart_collection
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"}
+    )
+    args = (session, chart_section, "Movies", "Movie", "Top Horror movies",
+            "?type=1&genre=1138", "autoposter")
+    kwargs = dict(dry_run=False, settings=definition, sort_prefix="!100_")
+
+    actions = await reconcile_smart_collection(*args, **kwargs)
+    made = chart_section._collections["Top Horror movies"]
+    assert any("created 'Top Horror movies'" in one for one in actions)
+    assert made.sort_title_set == "!100_Top Horror movies"
+
+    # Plex's own create marks the collection smart; ``FakeSection.collection``
+    # is shape-agnostic, so without this the second pass meets ``shape_conflict``
+    # instead of the hash.
+    made.smart = True
+    made.sort_title_set = None
+    assert await reconcile_smart_collection(*args, **kwargs) == []
+    assert made.sort_title_set is None
+
+
+async def test_a_dynamic_family_forwards_its_contexts_prefix_to_every_member(session):
+    """``SmartContext.sort_prefix`` -> ``DynamicBuilder.apply`` -> the reconciler.
+
+    The forwarding line is one keyword in ``builders/dynamic.py``; dropping it
+    in a refactor would leave a whole generated family with no sort title at
+    all, and neither the golden fixture (which has no ``dynamic`` collection in
+    any scenario) nor the reconcile test above would notice. The doubles and
+    the context builder come from that builder's own test file by import, for
+    the reason ``chart_section`` above imports its section rather than forking
+    a fourth one.
+    """
+    import dataclasses
+
+    from test_builder_dynamic import FakeSection, _ctx, _definition
+
+    from autoposter.collections.builders import REGISTRY
+
+    section = FakeSection()
+    ctx = dataclasses.replace(
+        _ctx(session, section, _definition()), sort_prefix="!100_"
+    )
+    await REGISTRY["dynamic"].apply(ctx)
+
+    # One prefix, two titles -- the family shares a group, not a sort title.
+    assert {title: made.titleSort for title, made in section._existing.items()} == {
+        "Top Horror movies": "!100_Top Horror movies",
+        "Top Drama movies": "!100_Top Drama movies",
+    }
+
+
 def test_each_member_of_a_family_gets_its_own_title_in_the_prefix():
     """A family shares a GROUP, not a sort title.
 

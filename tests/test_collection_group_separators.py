@@ -135,6 +135,13 @@ class FakeSection:
         # see ``sortUpdate`` above for why this double answers both.
         return self.collection(title)
 
+    def fetchItems(self, path, **kw):
+        # ``smart.count_matches``'s probe. The separator never reaches it; the
+        # SMART reconcile in ``tests/test_collection_groups.py`` does, and it
+        # refuses at zero -- so ``items`` has to be non-empty there. Same
+        # reason ``sortUpdate`` above lives here rather than in a fourth fake.
+        return list(getattr(self, "items", []))
+
 
 def spec(group="charts", order=groups.CANONICAL_ORDER):
     return groups.SeparatorSpec(
