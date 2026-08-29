@@ -591,7 +591,11 @@ async def test_a_smart_collection_gets_its_groups_prefix_and_then_settles(
     # instead of the hash.
     made.smart = True
 
-    assert await reconcile_smart_collection(*args, **kwargs) != []
+    # The action string itself, not merely "something happened": what the
+    # migration pass has to report is the sort title it wrote.
+    assert "set the sort title of 'Top Horror movies' to '!100_Top Horror movies'" in (
+        await reconcile_smart_collection(*args, **kwargs)
+    )
     assert made.sort_title_set == "!100_Top Horror movies"
 
     made.sort_title_set = None
@@ -629,6 +633,30 @@ async def test_a_dynamic_family_forwards_its_contexts_prefix_to_every_member(ses
     }
 
 
+async def test_a_smart_filter_definition_forwards_its_contexts_prefix(session):
+    """The mirror of the test above, on the other smart builder.
+
+    ``builders/smart_filter.py``'s forward is the same one keyword, and the
+    golden fixture has no ``smart_filter`` collection in any scenario either --
+    so dropping it would leave every operator-written smart definition with no
+    group prefix and nothing would say so. One definition, not a family: this
+    builder builds the collection its definition names.
+    """
+    import dataclasses
+
+    from test_builder_smart_filter import FakeSection, _ctx, _definition
+
+    from autoposter.collections.builders import REGISTRY
+
+    section = FakeSection()
+    ctx = dataclasses.replace(
+        _ctx(session, section, _definition()), sort_prefix="!100_"
+    )
+    await REGISTRY["smart_filter"].apply(ctx)
+
+    assert section._existing["Recent Horror"].titleSort == "!100_Recent Horror"
+
+
 def test_each_member_of_a_family_gets_its_own_title_in_the_prefix():
     """A family shares a GROUP, not a sort title.
 
@@ -654,6 +682,14 @@ def test_the_derived_value_changes_the_definition_hash_exactly_once():
     A pass short-circuits on this hash. If the derived sort title did not reach
     it, the first pass after row 49 would find every hash current, skip every
     collection, and never write a sort title at all -- the trap C3 names.
+
+    What this pins is that ``with_derived_sort_title``'s view REACHES
+    ``definition_hash``, one call away. It is a characterization test, green
+    before the reconcilers were wired: the evidence that the wrap sits before
+    the hash IN A PASS is the golden fixture's ``movies_apply_again`` scenario,
+    which re-runs an already-reconciled library and carries the changed cells
+    with no new actions. Deleting that scenario believing this test covers it
+    would lose the only proof of the placement.
     """
     from autoposter.collections.buckets import Bucket
     from autoposter.collections.reconcile import definition_hash
@@ -681,7 +717,12 @@ def test_expansion_never_inherits_a_derived_sort_title():
     placeholder for every field the unit did not set -- reading
     ``model_fields_set``. A derived value written onto the placeholder would be
     marked set, and all five Oscars year collections would share one sort title
-    instead of each getting its own."""
+    instead of each getting its own.
+
+    Like the test above, this pins the proxy's read-only property directly and
+    was green before the reconcilers were wired; the golden's per-year cells
+    (``movies_apply``, four distinct ceremony sort titles) are what prove the
+    engine actually keeps them apart in a pass."""
     from autoposter.collections.engine import _completed
 
     placeholder = CollectionDefinition(

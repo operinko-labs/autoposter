@@ -135,8 +135,10 @@ _AWARD_YEARS_SUFFIX = "_award_years"
 SEPARATOR_POSTER_KEYS: dict[str, str] = {
     "charts": "chart",
     "awards": "award",
-    # The one already on record -- it is the key
-    # ``reconcile.reconcile_separator`` passes today.
+    # The one already on record: the key the content-ratings divider shipped
+    # with before separators were plural. Since then the reconciler passes
+    # whatever its ``SeparatorSpec`` carries, and this table is where that
+    # comes from -- so this row is the source of that key, not a copy of it.
     "content_ratings": "content_rating",
 }
 
@@ -192,8 +194,8 @@ def effective_order(config) -> tuple[str, ...]:
 
     Section numbers derive from POSITION, so reordering renumbers -- which is a
     one-off re-write of every managed collection's sort title, exactly like the
-    first pass after this feature ships. This will be said plainly in
-    ``deploy/README.md`` once row 49's wrap (T5) writes it.
+    first pass after this feature ships. ``deploy/README.md`` says so plainly,
+    in the ``group_order`` entry.
     """
     named = tuple(getattr(config.collections, "group_order", None) or ())
     return named + tuple(group for group in CANONICAL_ORDER if group not in named)

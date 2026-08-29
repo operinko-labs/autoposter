@@ -396,15 +396,23 @@ python -m autoposter.collections
     group_order: [awards, charts]
   ```
 
-  The valid names are the ten above. An unknown or repeated one is refused at
-  config load with the full list, not accepted as a reordering that silently
-  did nothing.
+  The valid names are the ten above, written as the keys themselves — the last
+  two are `content_ratings` and `operator`, not "content ratings" and "your own
+  `definitions:` entries". An unknown name is refused at config load with the
+  full list; a repeated one is refused as a name that means less than it looks
+  like. Neither is accepted as a reordering that silently did nothing.
 
 **The first pass after this feature ships re-writes one sort title per managed
 collection** — one `editSortTitle` PUT each, membership untouched — including
-replacing the prefixes on collections adopted from Kometa. Collections this
-service does not manage are never touched. The tab reorders once and then
-settles. Changing `group_order` later does the same thing again, once.
+replacing the prefixes on collections adopted from Kometa. The smart-shaped
+half of that set — the Common Sense buckets and every `smart_filter` or
+`dynamic` definition — also takes one re-PUT of its own unchanged filter (and a
+match-count probe) on that pass: the update branch re-asserts the whole desired
+state rather than working out which part of the hash moved, so a changed sort
+title re-sends the filter with it. Membership is still unchanged; Plex
+re-evaluates the same filter. Collections this service does not manage are
+never touched. The tab reorders once and then settles. Changing `group_order`
+later does the same thing again, once.
 
 **No collection is ever deleted by this service**, including ones that are
 empty or whose filter currently matches nothing in the library — that is
@@ -458,8 +466,9 @@ service manages get a poster:
 **Turning this on sets a poster on nearly every collection this service
 manages, adopted ones included** — not just newly created ones. The one
 exception is by design: only three of the ten groups have upstream separator
-artwork (`chart`, `award` and `content_rating`), so the other seven groups'
-dividers deliberately get no poster rather than a broken fetch. The first pass
+artwork — `charts`, `awards` and `content_ratings`, whose artwork files
+upstream are named `chart`, `award` and `content_rating` — so the other seven
+groups' dividers deliberately get no poster rather than a broken fetch. The first pass
 after enabling it fills in every managed collection whose poster we have never
 set, whether or not its definition changed. Adopted collections are already
 carrying these same images, set by the tool being replaced, so in practice

@@ -25,9 +25,13 @@ LABEL = "autoposter"
 SHIPPED_TITLE = "Ratings Collections"
 SHIPPED_SUMMARY = "Section separator for Ratings Collections."
 SHIPPED_SORT_TITLE = "!110_!Ratings Collections"
-# The constant this module shipped, as a literal. The function has to reproduce
-# it byte for byte or every live server takes a spurious re-write on the first
-# pass after row 49 -- the hash is what a pass short-circuits on.
+# The constant this module shipped, as a literal. What it hashes DID change
+# this phase -- the section number moved from "!110_" to "!030_" -- so every
+# live server re-writes this divider once regardless, and no ``group_order``
+# can put the group back at position 11. What the pin proves is that the
+# payload and the format are otherwise untouched: the hash the migration pass
+# stores short-circuits every pass after it, and nothing else about hashing
+# moved silently.
 SHIPPED_HASH = "e22a14288c7962ea13a31e307aedf7e1ca204f6bf93238d65d0e436dcd5a4fb5"
 
 
