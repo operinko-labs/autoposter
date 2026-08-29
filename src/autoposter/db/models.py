@@ -120,9 +120,12 @@ class Job(Base):
 
     __tablename__ = "jobs"
     __table_args__ = (
-        # Coalescing: at most one *pending* job per dedupe key. Running, done, failed
-        # and parked rows are excluded, so an event arriving after work has started
-        # still queues a fresh pass.
+        # Coalescing: at most one *pending* job per dedupe key. Running, deferred,
+        # done, failed and parked rows are excluded, so an event arriving after work
+        # has started still queues a fresh pass. Deferred is excluded on purpose:
+        # an item whose add-time job is still waiting on Plex must not swallow the
+        # download webhook that finally makes it resolvable. ``complete()`` retires
+        # the stranded deferred sibling once the fresh job succeeds.
         Index(
             "uq_jobs_pending_dedupe",
             "dedupe_key",
@@ -136,7 +139,15 @@ class Job(Base):
     kind: Mapped[str] = mapped_column(String(32))
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     dedupe_key: Mapped[str | None] = mapped_column(String(255))
-    # pending | running | done | failed | parked | dismissed
+    # pending | running | deferred | done | failed | parked | dismissed
+    #
+    # ``deferred`` is a wait, not a failure: Plex cannot see the item yet, so
+    # the job comes back on a long horizon with no attempt cap at all
+    # (queue/jobs.py's DEFER_INTERVAL_SECONDS). It is claimable exactly like
+    # pending once ``run_after`` passes, and it is presented as waiting rather
+    # than failed -- the Failures page never sees one. No CHECK constraint
+    # governs this column, in the model or in any migration, so the vocabulary
+    # widens here without a schema change.
     state: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

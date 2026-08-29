@@ -4,7 +4,15 @@ from datetime import timedelta
 from sqlalchemy import func, select, text
 
 from autoposter.db.models import Job
-from autoposter.queue.jobs import MAX_ATTEMPTS, claim, complete, enqueue, fail, reclaim_stale
+from autoposter.queue.jobs import (
+    DEFER_INTERVAL_SECONDS,
+    MAX_ATTEMPTS,
+    claim,
+    complete,
+    enqueue,
+    fail,
+    reclaim_stale,
+)
 
 
 async def test_enqueue_returns_a_job_id(session):
@@ -128,6 +136,96 @@ async def test_job_parks_after_max_attempts(session):
     await _make_due_now(session, job_id)
     await claim(session, "worker-a")
     assert await fail(session, job_id, "boom") == "parked"
+
+
+async def test_a_deferred_job_waits_the_long_horizon_and_never_parks(session):
+    # ``deferred`` is not a failure with a bigger budget -- it has no budget.
+    # Well past the attempt cap that parks an ordinary failure, this one is
+    # still waiting, because nothing about it is wrong.
+    job_id = await enqueue(session, "process_item", {})
+    for _ in range(MAX_ATTEMPTS + 3):
+        await _make_due_now(session, job_id)
+        await claim(session, "worker-a")
+        state = await fail(
+            session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS
+        )
+        assert state == "deferred"
+
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    # The horizon, not the backoff curve: this row is waiting for the library
+    # to catch up, which happens on a scale of days.
+    remaining = (job.run_after - db_now).total_seconds()
+    assert DEFER_INTERVAL_SECONDS - 300 < remaining <= DEFER_INTERVAL_SECONDS
+    assert job.attempts == 0
+
+
+async def test_claim_takes_a_deferred_job_once_its_horizon_passes(session):
+    # What makes the wait a wait rather than a grave: the same claim that
+    # picks up pending work picks a deferred row up when it comes due, with
+    # nothing else having to resurrect it.
+    job_id = await enqueue(session, "process_item", {})
+    await claim(session, "worker-a")
+    await fail(session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
+
+    assert await claim(session, "worker-a") is None, "claimed six hours early"
+
+    await session.execute(
+        text("UPDATE jobs SET run_after = now() WHERE id = :id"), {"id": job_id}
+    )
+    await session.commit()
+
+    job = await claim(session, "worker-a")
+    assert job is not None
+    assert job.id == job_id
+    assert job.state == "running"
+
+
+async def test_a_cancelled_job_is_dismissed_rather_than_deferred(session):
+    # Cancellation outranks the wait. It has to: the horizon is unbounded, so
+    # a deferral that ignored the cancel would be the operator's last word
+    # ignored forever.
+    job_id = await enqueue(session, "process_item", {})
+    await claim(session, "worker-a")
+    await session.execute(
+        text("UPDATE jobs SET cancel_requested = true WHERE id = :id"), {"id": job_id}
+    )
+    await session.commit()
+
+    state = await fail(
+        session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS
+    )
+    assert state == "dismissed"
+
+
+async def test_completing_a_job_dismisses_the_deferred_row_for_the_same_item(session):
+    # The Download webhook eventually queues a fresh job for the item whose
+    # earlier add is still deferred. Once that one succeeds the wait has no
+    # subject left, so it is dismissed rather than left to resolve, run and
+    # redo finished work six hours later.
+    waiting = await enqueue(session, "process_item", {}, dedupe_key="k-deferred")
+    await claim(session, "worker-a")
+    await fail(session, waiting, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
+
+    # The partial unique index covers pending rows only, so the deferred
+    # sibling does not block the new job.
+    fresh = await enqueue(session, "process_item", {}, dedupe_key="k-deferred")
+    assert fresh is not None
+    other = await enqueue(session, "process_item", {}, dedupe_key="k-other")
+    await claim(session, "worker-a")
+    await fail(session, other, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
+
+    await complete(session, fresh)
+
+    rows = {
+        job.id: job.state
+        for job in (await session.execute(select(Job))).scalars().all()
+    }
+    assert rows[waiting] == "dismissed"
+    assert rows[fresh] == "done"
+    # Another item's wait is not this item's business.
+    assert rows[other] == "deferred"
 
 
 async def test_complete_marks_done(session):

@@ -34,7 +34,7 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.intake.routes import router
 from autoposter.notify.dispatch import NullNotifier, build_notifier
 from autoposter.plex.artwork import artwork_provenance
-from autoposter.plex.client import ItemNotFound, PlexClient
+from autoposter.plex.client import PlexClient
 from autoposter.plex.health import PlexHealth
 from autoposter.providers.cache import ProviderCache
 from autoposter.providers.fanart import FanartClient
@@ -558,16 +558,20 @@ async def _handle_intent(
             session, config, http, plex, providers, intent,
             tmdb_facts=tmdb_facts, mdblist=mdblist, artwork_probe=artwork_probe,
         )
-    except (ItemNotFound, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         # PlexHealth (see plex/health.py) gating run_worker's claiming is now
         # the primary defence against a Plex outage burning through retry
         # attempts — an unhealthy server means jobs are never claimed in the
         # first place. This is the fallback for an outage that begins between
-        # health checks: threaded through to run_once via the exception
-        # itself, so the queue worker's own signature stays untouched. Waiting
-        # on Plex — whether it just hasn't scanned the file yet (ItemNotFound)
-        # or is unreachable entirely (a connection/timeout error surfacing
-        # from _LazyPlexServer's connect attempt, see main.py) — gets its own,
-        # configurable attempt budget instead of the generic retry limit.
+        # health checks: a Plex that is unreachable entirely (a connection or
+        # timeout error surfacing from _LazyPlexServer's connect attempt, see
+        # main.py) gets its own, configurable attempt budget instead of the
+        # generic retry limit, threaded through to run_once via the exception
+        # itself so the queue worker's own signature stays untouched.
+        #
+        # ItemNotFound is deliberately NOT tagged here any more: a Plex that
+        # simply has not scanned the file yet is not on a budget at all, it is
+        # deferred on an unbounded horizon (queue/worker.py, queue/jobs.py's
+        # fail()). A budget threaded onto it would be read by nothing.
         exc.max_attempts = config.plex.resolve_max_attempts
         raise

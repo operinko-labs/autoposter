@@ -1,5 +1,12 @@
 from dataclasses import dataclass
 
+# ``movieadded``/``seriesadd`` fire when the item is added to Radarr/Sonarr,
+# which for an unreleased title is months before Plex can see anything. Those
+# passes cannot succeed, and they are kept anyway: the queue defers such a job
+# on an unbounded horizon rather than parking it (queue/jobs.py's ``fail()``),
+# so the cost is a row that says "waiting for Plex" until the file lands. An
+# operator who has turned the trigger off on the Arr side simply never sends
+# one; dropping it here would instead break the operator who turns it back on.
 RADARR_EVENTS = {"download", "rename", "movieadded"}
 SONARR_EVENTS = {"download", "rename", "seriesadd"}
 

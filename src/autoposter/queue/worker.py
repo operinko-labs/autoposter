@@ -9,7 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autoposter.artwork_modes.base import WorkerPause
 from autoposter.db.models import Job
 from autoposter.plex.client import ItemNotFound
-from autoposter.queue.jobs import MAX_ATTEMPTS, claim, complete, fail, release
+from autoposter.queue.jobs import (
+    DEFER_INTERVAL_SECONDS,
+    MAX_ATTEMPTS,
+    claim,
+    complete,
+    fail,
+    release,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,16 +85,25 @@ async def run_once(
             await session.rollback()
             await release(session, job_id)
             raise
-        except (ItemNotFound, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
-            # Expected infrastructure conditions, not a job failure: either Plex
-            # has not scanned the new file yet (ItemNotFound), or Plex itself is
-            # unreachable (a connection/timeout error surfacing from
-            # _LazyPlexServer's connect attempt, see main.py). Both get the same
-            # larger, configurable attempt budget instead of the generic retry cap.
-            logger.info("job %s waiting for Plex: %s", job_id, exc)
+        except ItemNotFound as exc:
+            # Plex has not indexed this item yet. Nothing is wrong with the job
+            # and no budget can be the right one: a movie added to Radarr before
+            # its release is weeks from resolving, and every finite cap turns
+            # that wait into a permanent parked "failure". So it is deferred on
+            # a long, unbounded horizon instead -- see fail()'s docstring.
+            logger.info("job %s deferred, waiting for Plex: %s", job_id, exc)
             # The handler may have left the session mid-transaction (e.g. a DB error
             # surfaced first); fail() issues a SELECT, which would raise
             # PendingRollbackError on a failed transaction instead of rescheduling.
+            await session.rollback()
+            await fail(session, job_id, str(exc), defer_seconds=DEFER_INTERVAL_SECONDS)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            # Plex itself is unreachable (a connection/timeout error surfacing
+            # from _LazyPlexServer's connect attempt, see main.py). Unlike the
+            # branch above this one IS bounded, and deliberately: an outage ends
+            # in hours, so a job that cannot get through for the whole of the
+            # larger budget has a problem a human should see.
+            logger.info("job %s waiting for Plex: %s", job_id, exc)
             await session.rollback()
             # config.plex.resolve_max_attempts, threaded through via the exception
             # rather than a run_once parameter — see _handle_intent in app.py.

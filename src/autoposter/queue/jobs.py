@@ -7,6 +7,12 @@ from autoposter.db.models import Job
 MAX_ATTEMPTS = 5
 BACKOFF_BASE_SECONDS = 30
 
+# How long a ``deferred`` job waits between looks. Deliberately hours rather
+# than the backoff curve's minutes: a deferred job is waiting for the library
+# to catch up with a release, which happens on a scale of days, and there is no
+# attempt budget being spent to keep short.
+DEFER_INTERVAL_SECONDS = 6 * 60 * 60
+
 _CLAIM_SQL = text(
     """
     UPDATE jobs
@@ -18,7 +24,7 @@ _CLAIM_SQL = text(
      WHERE id = (
            SELECT id
              FROM jobs
-            WHERE state = 'pending'
+            WHERE state IN ('pending', 'deferred')
               AND run_after <= now()
             ORDER BY run_after, id
               FOR UPDATE SKIP LOCKED
@@ -152,25 +158,69 @@ async def release(session: AsyncSession, job_id: int) -> None:
     await session.commit()
 
 
+_DISMISS_DEFERRED_SIBLINGS_SQL = text(
+    """
+    UPDATE jobs
+       SET state = 'dismissed',
+           updated_at = now()
+     WHERE dedupe_key = :dedupe_key
+       AND state = 'deferred'
+       AND id <> :job_id
+    """
+)
+
+
 async def complete(session: AsyncSession, job_id: int) -> None:
+    """Mark a job done, and retire any deferred row still waiting on the same item.
+
+    The second half is the dedupe index's blind spot. ``uq_jobs_pending_dedupe``
+    coalesces *pending* rows only, so an item whose first job is deferred --
+    added to Radarr before release, say -- gets a second, independent job the
+    day the download webhook fires. That one succeeds; the deferred sibling is
+    then waiting for something that has already happened. It would resolve on
+    its own next look and redo finished work, which is harmless but not free,
+    and until then it reads as outstanding on the Jobs page. Dismissed, not
+    deleted, matching every other disposal in this project.
+    """
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     job.state = "done"
     job.last_error = None
+    if job.dedupe_key is not None:
+        await session.execute(
+            _DISMISS_DEFERRED_SIBLINGS_SQL,
+            {"dedupe_key": job.dedupe_key, "job_id": job_id},
+        )
     await session.commit()
 
 
 async def fail(
-    session: AsyncSession, job_id: int, error: str, max_attempts: int = MAX_ATTEMPTS
+    session: AsyncSession,
+    job_id: int,
+    error: str,
+    max_attempts: int = MAX_ATTEMPTS,
+    defer_seconds: int | None = None,
 ) -> str:
     """Reschedule with exponential backoff, or park once attempts are exhausted.
 
     A job an operator cancelled while it was running is dismissed here instead,
     whatever budget it had left. This is the only place that decides what
-    happens after a failed attempt -- both of ``run_once``'s failure branches
-    come through it, the ItemNotFound/Plex-wait one included, and that one
-    carries the far larger ``resolve_max_attempts`` budget. Honouring the
-    cancellation at the caller instead would have to be written twice and would
-    let the Plex-wait path keep retrying for another hour.
+    happens after an attempt that did not succeed -- every one of ``run_once``'s
+    non-success branches comes through it. Honouring the cancellation at the
+    caller instead would have to be written three times, and would let both the
+    Plex-connectivity path and the unbounded deferral below ignore it.
+
+    ``defer_seconds`` is the third outcome, and it is not a failure at all: the
+    attempt found nothing wrong with the job, only that Plex cannot see the item
+    yet (``run_once``'s ``ItemNotFound`` branch). Such a job goes ``deferred``
+    and comes back after that long a wait, with NO attempt cap -- an unreleased
+    movie added to Radarr can be weeks from resolving, and any finite budget
+    turns that wait into a permanent parked "failure" nothing resurrects.
+    ``attempts`` is reset with it, because a wait is not a failed attempt: a job
+    that has waited a dozen times still deserves its full retry budget the day
+    Plex answers and something else genuinely breaks.
+
+    Cancellation still outranks the deferral -- it has to, since the horizon is
+    unbounded and dismissing is the operator's only way to end one.
     """
     # Read without FOR UPDATE, unlike cancel_job's own read of this row: a
     # cancel that commits between this SELECT and the UPDATE below is missed
@@ -185,6 +235,11 @@ async def fail(
     job.claimed_at = None
     if job.cancel_requested:
         job.state = "dismissed"
+    elif defer_seconds is not None:
+        job.state = "deferred"
+        job.attempts = 0
+        # Database clock again, for the same reason as enqueue().
+        job.run_after = func.now() + func.make_interval(0, 0, 0, 0, 0, 0, defer_seconds)
     elif job.attempts >= max_attempts:
         job.state = "parked"
     else:

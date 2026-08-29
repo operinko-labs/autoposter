@@ -433,10 +433,13 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
 
 
 async def dismiss_jobs_for(session: AsyncSession, rating_keys: list[str]) -> int:
-    """Dismiss the pending and parked jobs queued for rows that were pruned.
+    """Dismiss the pending, deferred and parked jobs queued for rows that were pruned.
 
     A parked job for a pruned row is pure Failures-page noise, and a pending
-    one would park by construction -- nothing can resolve it any more. Jobs
+    one would park by construction -- nothing can resolve it any more. A
+    deferred one is worse than either: its horizon has no end, so a job left
+    waiting for an item that has been pruned would look for it every six hours
+    for the life of the deployment. Jobs
     carry no foreign key to ``media_items`` (``db/models.py``), so they are
     found the only way the payload allows: by the ``rating_key`` the
     ``RenderIntent`` carries. Payloads written before that field existed carry
@@ -460,7 +463,7 @@ async def dismiss_jobs_for(session: AsyncSession, rating_keys: list[str]) -> int
         await session.execute(
             select(QueuedJob)
             .where(QueuedJob.kind == "process_item")
-            .where(QueuedJob.state.in_(("pending", "parked")))
+            .where(QueuedJob.state.in_(("pending", "deferred", "parked")))
             .where(QueuedJob.payload["rating_key"].astext.in_(rating_keys))
             .with_for_update(skip_locked=True)
         )

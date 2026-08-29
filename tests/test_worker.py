@@ -49,7 +49,7 @@ async def test_run_once_returns_false_when_nothing_is_due(session):
     assert await run_once(session, "worker-1", _only_process_item(handler)) is False
 
 
-async def test_item_not_found_reschedules_rather_than_failing(session):
+async def test_item_not_found_defers_rather_than_failing(session):
     async def handler(session_, intent):
         raise ItemNotFound("plex has not scanned yet")
 
@@ -57,7 +57,10 @@ async def test_item_not_found_reschedules_rather_than_failing(session):
     await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     await run_once(session, "worker-1", _only_process_item(handler))
     job = (await session.execute(select(Job))).scalar_one()
-    assert job.state == "pending"
+    assert job.state == "deferred"
+    # The reason is kept on the row: it is what the Jobs page shows as the
+    # thing being waited for, in place of the message-prefix guess it used to
+    # make about a job that had already parked.
     assert "scanned" in job.last_error
 
 
@@ -137,41 +140,58 @@ async def _make_due_now(session, job_id: int) -> None:
     await session.commit()
 
 
-async def test_item_not_found_survives_more_attempts_than_a_generic_failure(session):
-    # Finding 2: config.plex.resolve_max_attempts gives waiting-on-Plex its own,
-    # larger attempt budget. It is threaded onto the exception (mirroring what
-    # app.py's _handle_intent does), not passed to run_once directly.
-    async def not_found_handler(session_, intent):
-        exc = ItemNotFound("plex has not scanned yet")
-        exc.max_attempts = MAX_ATTEMPTS + 3
-        raise exc
+async def _bring_horizon_forward(session, job_id: int) -> None:
+    """Make a job due without touching its state, using the database clock.
 
-    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=10)
+    ``_make_due_now`` above flips the row back to ``pending``, which would hide
+    the very thing the deferral tests are about: that ``claim()`` picks a
+    ``deferred`` row up by itself once ``run_after`` passes.
+    """
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    job.run_after = (await session.execute(select(func.now()))).scalar_one()
+    await session.commit()
+
+
+async def test_item_not_found_defers_forever_instead_of_parking(session):
+    # The production shape this exists for: a movie added to Radarr before it
+    # is released enqueues a job Plex cannot resolve for weeks. Retried against
+    # any finite budget it parks and reads as a permanent failure. It must wait
+    # on the long horizon instead, unbounded.
+    async def not_found_handler(session_, intent):
+        raise ItemNotFound("no Plex item for movie 'Dog Stars' (tmdb=12, tvdb=None)")
+
+    intent = RenderIntent(kind="movie", title="Dog Stars", tmdb_id=12)
     job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
-    for _ in range(MAX_ATTEMPTS):
-        await _make_due_now(session, job_id)
+    for _ in range(MAX_ATTEMPTS + 5):
+        await _bring_horizon_forward(session, job_id)
         await run_once(session, "worker-1", _only_process_item(not_found_handler))
 
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
-    # A generic failure would have parked by now (see test_job_parks_after_max_attempts
-    # in test_queue.py); the larger budget keeps this one retrying.
-    assert job.state == "pending"
+    # A generic failure would have parked long ago (test_job_parks_after_max_attempts
+    # in test_queue.py); this one is still waiting, and always will be.
+    assert job.state == "deferred"
+    # A wait is not a failed attempt. The budget a real error would spend is
+    # left untouched, so a job that waited a dozen times still gets its full
+    # retry count the day Plex answers and something else goes wrong.
+    assert job.attempts == 0
 
+
+async def test_a_generic_failure_still_parks(session):
+    # The contrast the test above is only meaningful against: nothing here
+    # widened the ordinary failure path into an unbounded one.
     async def generic_handler(session_, intent):
         raise RuntimeError("provider exploded")
 
-    intent2 = RenderIntent(kind="movie", title="Dune", tmdb_id=11)
-    job_id2 = await enqueue(
-        session, "process_item", asdict(intent2), dedupe_key=intent2.dedupe_key
-    )
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=11)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     for _ in range(MAX_ATTEMPTS):
-        await _make_due_now(session, job_id2)
+        await _make_due_now(session, job_id)
         await run_once(session, "worker-1", _only_process_item(generic_handler))
 
-    job2 = (await session.execute(select(Job).where(Job.id == job_id2))).scalar_one()
-    await session.refresh(job2)
-    assert job2.state == "parked"
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "parked"
 
 
 async def test_plex_connection_error_survives_more_attempts_than_a_generic_failure(session):
