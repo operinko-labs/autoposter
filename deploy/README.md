@@ -451,14 +451,17 @@ The same `collections:` block also controls whether the collections this
 service manages get a poster:
 
 - `posters` (default `true`) — give every managed collection (the Common
-  Sense buckets and separator, the IMDb charts, the Oscars collections) a
-  poster. Applied only after `resolve_collision` has approved the collection,
-  so a conflicting or protected collection is never touched.
+  Sense buckets and the group dividers, the IMDb charts, the Oscars
+  collections) a poster. Applied only after `resolve_collision` has approved
+  the collection, so a conflicting or protected collection is never touched.
 
-**Turning this on sets a poster on every collection this service manages,
-adopted ones included** — not just newly created ones. The first pass after
-enabling it fills in every managed collection whose poster we have never set,
-whether or not its definition changed. Adopted collections are already
+**Turning this on sets a poster on nearly every collection this service
+manages, adopted ones included** — not just newly created ones. The one
+exception is by design: only three of the ten groups have upstream separator
+artwork (`chart`, `award` and `content_rating`), so the other seven groups'
+dividers deliberately get no poster rather than a broken fetch. The first pass
+after enabling it fills in every managed collection whose poster we have never
+set, whether or not its definition changed. Adopted collections are already
 carrying these same images, set by the tool being replaced, so in practice
 this is a visual no-op for them.
 
@@ -974,7 +977,8 @@ holds 305 collections, of which 30 would be touched by adoption (29
 content/chart/award collections plus the `Ratings Collections` separator,
 which is now one of the per-group dividers this service manages rather than
 left over). TV Shows holds 20 collections, of which 19 would be touched. 49
-collections across both libraries carry the `Kometa` label, and — with the
+collections across both libraries carry the `Kometa` label (an adoption
+count, not any one feature's write count), and — with the
 separator now managed — **all 49 have titles this service manages**; none
 of them is expected to appear in the leftovers report. Two collections are
 deliberately never touched: Movies' `Deleted Soon` carries the `Collection

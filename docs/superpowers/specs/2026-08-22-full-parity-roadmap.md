@@ -67,7 +67,7 @@ endpoints + two UI pages; phases 2 and 3: the largest shipped units, multi-week 
 | 9b | Plex search DSL and sort matrix | **XL — multi-week even parallelised** | |
 | 9c | Native smart collections | medium | |
 | 10a | Dynamic collections engine | large | **SPLIT (C8): both halves delivered.** 10a-1 shipped `builder: dynamic`, ten probe-backed types and the key/title machinery against a `meta.py` oracle, create-only; 10a-2 shipped the family's own guarded delete sweep, delete-below-minimum and the Common Sense port onto the 9b grammar. Rows 102 and 185 both close |
-| 10b | Dynamic packs and defaults equivalents | medium–large | **delivered in part:** seven packs shipped (43 READY / 11 GATED); rows 93 and 49 stay open and the eleven gated families each name their own blocker |
+| 10b | Dynamic packs and defaults equivalents | medium–large | **delivered in part:** seven packs shipped (43 READY / 11 GATED); rows 93 and 49 stay open and the eleven gated families each name their own blocker [as of 10b; row 49 has since closed in the collection-groups phase] |
 | 10c | People: person builders and dynamic person types | medium | |
 | 11a | Asset-quality flags and backfill | medium | Action Center, part 1 |
 | 11b | Action Center review queue and bulk actions | large | Action Center, part 2 |
@@ -898,7 +898,8 @@ them on the production movie library — is refused in the row, because a preset
 builds something other than the pack it cites is worse than one that waits.
 `media_aspect` → **96** (listed as 155). `content_based_on` → **161** (TMDb keyword
 name→id). `time_seasonal` → **160** (day-level windows). The four people packs → **194**
-(phase 10c). Separators (**row 49**) are untouched by this phase and row 49 stays open.
+(phase 10c). Separators (**row 49**) are untouched by this phase and row 49 stays open
+[as of 10b; row 49 has since closed in the collection-groups phase].
 The `number` and `custom` dynamic types did not ship either and are not this phase's
 debt: 10a's type table names both among its deliberate absences, on the grounds that
 neither is a library enumeration (`collections/dynamic_types.py`'s scope note).
