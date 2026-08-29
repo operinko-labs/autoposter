@@ -29,6 +29,7 @@ from autoposter.config.schema import Config, Secrets
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
+from autoposter.facts.tmdb_budget import TmdbRateBudget
 from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.intake.arr import RenderIntent
 from autoposter.intake.routes import router
@@ -173,6 +174,12 @@ def create_app(
         app.state.tmdb_facts = TMDBFactsClient(
             secrets.tmdb_token, http, cache=cache,
             cache_ttl_seconds=config.providers.cache_ttl_seconds,
+            # The shared 429 window. Built here rather than inside the client
+            # because it needs a session factory and the client holds none --
+            # the same reason ProviderCache is constructed here.
+            budget=TmdbRateBudget(
+                session_factory, config.operations.tmdb_backoff_seconds
+            ),
         )
         # A stand-in (never None) when no key is configured: only the
         # content-rating field MDBList would have supplied is affected, so

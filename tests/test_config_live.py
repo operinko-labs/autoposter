@@ -178,6 +178,7 @@ def test_every_frozen_section_carries_a_reason():
         "plex.url",
         "operations.imdb_refresh_enabled",
         "operations.imdb_refresh_hours",
+        "operations.tmdb_backoff_seconds",
         "api_docs_enabled",
         "scheduler.enabled",
         "collections.enabled",

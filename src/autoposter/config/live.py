@@ -55,6 +55,10 @@ FROZEN_SECTIONS: dict[str, str] = {
         "the miss-triggered IMDb refresh is installed process-wide at startup "
         "(gather_facts carries no client of its own)"
     ),
+    "operations.tmdb_backoff_seconds": (
+        "the TMDb rate budget captures its window length when the facts client "
+        "is built at startup (facts/tmdb_budget.py)"
+    ),
     # The one entry here that a restart does not fix either. FastAPI builds
     # the docs routes into the application object, which exists before the
     # lifespan has read a single override -- so this value can only ever come

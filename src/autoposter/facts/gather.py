@@ -10,6 +10,7 @@ from autoposter.db.models import ItemFacts, MediaItem
 from autoposter.facts import imdb
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
+from autoposter.facts.tmdb_budget import TmdbRateLimited
 from autoposter.plex.client import ResolvedItem
 
 logger = logging.getLogger(__name__)
@@ -80,16 +81,25 @@ async def gather_facts(
 
     if item.kind == "episode":
         audience = None
-        if item.tmdb_id and item.season_number is not None:
-            ratings = await tmdb.season_episode_ratings(item.tmdb_id, item.season_number)
-            audience = ratings.get(item.episode_number)
+        try:
+            if item.tmdb_id and item.season_number is not None:
+                ratings = await tmdb.season_episode_ratings(item.tmdb_id, item.season_number)
+                audience = ratings.get(item.episode_number)
+        except TmdbRateLimited as exc:
+            # The MDBList precedent, one provider along: the budget is spent,
+            # and everything else this pass gathers is still good. The item is
+            # re-queued by the drift sweep like any other.
+            logger.warning("tmdb rate budget reached; skipping tmdb facts: %s", exc)
         if audience is not None:
             sources["audience_rating"] = "tmdb"
         facts = GatheredFacts(audience_rating=audience)
     elif item.tmdb_id:
-        facts = await (tmdb.movie(item.tmdb_id) if item.kind == "movie"
-                       else tmdb.show(item.tmdb_id))
-        sources.update(facts.sources)
+        try:
+            facts = await (tmdb.movie(item.tmdb_id) if item.kind == "movie"
+                           else tmdb.show(item.tmdb_id))
+            sources.update(facts.sources)
+        except TmdbRateLimited as exc:
+            logger.warning("tmdb rate budget reached; skipping tmdb facts: %s", exc)
 
     critic = await _critic_rating(session, item)
     if critic is not None:

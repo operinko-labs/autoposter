@@ -1,10 +1,18 @@
+import logging
 from datetime import date, datetime
 
 import httpx
 
 from autoposter.facts.models import GatheredFacts
+from autoposter.facts.tmdb_budget import (
+    TmdbRateBudget,
+    TmdbRateLimited,
+    retry_after_seconds,
+)
 from autoposter.providers.cache import ProviderCache
 from autoposter.providers.fetch import fetch_json
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.themoviedb.org/3"
 
@@ -195,25 +203,60 @@ class TMDBFactsClient:
         client: httpx.AsyncClient,
         cache: ProviderCache | None = None,
         cache_ttl_seconds: int = 24 * 3600,
+        budget: TmdbRateBudget | None = None,
     ):
         self._token = token
         self._client = client
         self._cache = cache
         self._cache_ttl_seconds = cache_ttl_seconds
+        # None means "no shared window": every 429 is then that one request's
+        # own failure, out of ``raise_for_status`` exactly as it shipped. The
+        # collections CLI (``collections/__main__.py``) constructs this client
+        # without one deliberately -- its single use is a `tmdb_summary:`
+        # definition's overview, where a refusal is one definition's problem
+        # and there is no pipeline behind it to protect.
+        self._budget = budget
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._token}", "accept": "application/json"}
 
     async def _get(self, path: str) -> dict | None:
         url = f"{BASE_URL}{path}"
-        return await fetch_json(
-            method="GET",
-            url=url,
-            params=None,
-            request=lambda: self._client.get(url, headers=self._headers()),
-            cache=self._cache,
-            ttl_seconds=self._cache_ttl_seconds,
-        )
+        if self._budget is not None and await self._budget.blocked():
+            raise TmdbRateLimited(
+                "tmdb is inside a backoff window a 429 opened; this read was "
+                "not attempted. It comes round again on the next drift sweep "
+                "(scheduler.drift_days), or sooner via a re-queued item; lower "
+                "operations.tmdb_backoff_seconds to shorten the window"
+            )
+        try:
+            return await fetch_json(
+                method="GET",
+                url=url,
+                params=None,
+                request=lambda: self._client.get(url, headers=self._headers()),
+                cache=self._cache,
+                ttl_seconds=self._cache_ttl_seconds,
+            )
+        except httpx.HTTPStatusError as exc:
+            # 429 ONLY. Everything else keeps raising exactly as it did -- a
+            # 500 is not a budget and must not open a window that stops the
+            # whole library being read.
+            #
+            # Nothing is cached on this path, and that is the row-147 promise:
+            # ``fetch_json`` writes the cache on a 404 and on a 2xx, both
+            # AFTER ``raise_for_status`` would have fired, so a refusal body
+            # cannot become an answer with a TTL.
+            if exc.response.status_code != 429 or self._budget is None:
+                raise
+            await self._budget.note_refusal(retry_after_seconds(exc.response))
+            # Class name only: an httpx error's ``str()`` carries the full URL.
+            logger.warning("tmdb refused a read: %s", type(exc).__name__)
+            raise TmdbRateLimited(
+                "tmdb answered 429. The window is now open and further reads "
+                "are skipped until it closes; lower "
+                "operations.tmdb_backoff_seconds to shorten it"
+            ) from exc
 
     async def movie(self, tmdb_id: int) -> GatheredFacts:
         payload = await self._get(f"/movie/{tmdb_id}")

@@ -208,6 +208,18 @@ class OperationsConfig(BaseModel):
     # ImdbMissRefresh) so a season-pack import cannot trigger one download
     # per episode. 0 disables miss-triggered refreshes entirely.
     imdb_miss_refresh_minutes: int = 60
+    # How long TMDb is left alone after it answers 429, when its own
+    # ``Retry-After`` says nothing. The window lives in the database
+    # (``tmdb_rate_state``) so every pod shares it -- see
+    # ``facts/tmdb_budget.py``. 0 disables the shared window entirely, exactly
+    # as ``imdb_miss_refresh_minutes`` above does for its cooldown, and means
+    # each 429 is simply that one request's failure.
+    #
+    # This section owns WHEN, not WHETHER, in the split ``SchedulerConfig``'s
+    # docstring states: there is no ``tmdb_budget_enabled`` beside this,
+    # because 0 already means that and two spellings of one setting is one
+    # spelling too many.
+    tmdb_backoff_seconds: int = 60
 
 
 class BadgesConfig(BaseModel):
