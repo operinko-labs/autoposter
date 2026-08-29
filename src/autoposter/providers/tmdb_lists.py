@@ -96,6 +96,7 @@ __all__ = [
     "CHART_ENDPOINTS_ACCEPTING_REGION",
     "MAX_PAGES",
     "PersonCredit",
+    "PersonDetail",
     "TmdbListClient",
     "TmdbListRefused",
 ]
@@ -127,6 +128,31 @@ class PersonCredit:
     kind: str
     job: str | None
     department: str | None
+
+
+@dataclass(frozen=True)
+class PersonDetail:
+    """``/person/{id}``, reduced to the two fields a collection can use.
+
+    ``PersonCredit``'s discipline, one endpoint along: the payload also carries
+    ``birthday``, ``deathday``, ``place_of_birth``, ``also_known_as``,
+    ``popularity`` and ``known_for_department``, and none of them crosses.
+    Birthday/deathday gating is filed (roadmap row 160), and a field nobody
+    reads is a field a builder can start reading without the decision being
+    made.
+
+    ``name`` is deliberately NOT here even though the client checks it: it is
+    the response-shape probe (see ``person_detail``), not something any caller
+    needs, and carrying it would make an unused field look like a considered
+    one.
+
+    Both fields are ``None`` for absence, and ``person_detail`` normalises the
+    two shapes TMDb uses -- ``""`` for a biography it has none of in the
+    requested language, ``null`` for a missing photo -- onto that one.
+    """
+
+    biography: str | None
+    profile_path: str | None
 
 
 class TmdbListRefused(Exception):
@@ -354,6 +380,57 @@ class TmdbListClient:
                 for entry, value in zip(entries, _ids(entries, subject), strict=True)
             ]
         return credits
+
+    async def person_detail(self, person_id: int) -> PersonDetail:
+        """One person's own record: their biography and their profile photo.
+
+        A second endpoint rather than a richer ``person_credits``, because the
+        credits endpoints do not carry a biography at all -- ``/person/{id}``
+        is where TMDb keeps it -- and because the two answer questions that
+        change at different rates: a filmography changes when someone works, a
+        biography changes about never, and two endpoints are two cache entries
+        rather than one that has to expire for the faster of them.
+
+        Not paged, like ``/collection/{id}``, so this sends no ``page``. No
+        ``append_to_response`` either, which is what upstream's own person read
+        sends on this path (Kometa's ``get_person`` passes ``partial=None``, so
+        the library's default append set is never applied). No ``language``:
+        upstream sends the operator's configured one and this service has no
+        such setting on any collection path, so sending nothing is the honest
+        shape rather than a value invented here -- see ``PersonDetail`` for
+        what an absent biography then means.
+
+        The name is read and thrown away on purpose. It is the only field TMDb
+        always sends for a person, so it is the one thing that distinguishes
+        "this person has no biography and no photo" -- a legitimate answer that
+        must leave the collection alone -- from "this response is not a person
+        record", which must be refused. Without the probe the two are the same
+        empty ``PersonDetail`` and the second one silently leaves a collection
+        without artwork on every pass.
+        """
+        subject = f"TMDb person {person_id}"
+        payload = await self._get(f"/person/{person_id}", {}, subject)
+        if not isinstance(payload.get("name"), str) or not payload["name"]:
+            raise TmdbListRefused(
+                f"{subject}: TMDb's response carries no 'name', so it is not a "
+                "person record. Reading that as 'this person has no biography "
+                "and no photo' would leave the collection without artwork on "
+                "every pass, with nothing to notice. Check the person id."
+            )
+        biography = payload.get("biography")
+        profile_path = payload.get("profile_path")
+        return PersonDetail(
+            biography=(
+                biography.strip()
+                if isinstance(biography, str) and biography.strip()
+                else None
+            ),
+            profile_path=(
+                profile_path
+                if isinstance(profile_path, str) and profile_path.startswith("/")
+                else None
+            ),
+        )
 
     async def discover(self, media_type: str, filters: Mapping[str, object]) -> list[str]:
         """``/discover/{movie,tv}`` under an arbitrary filter map.

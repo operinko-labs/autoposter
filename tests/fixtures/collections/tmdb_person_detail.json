@@ -1,0 +1,16 @@
+{
+  "id": 4242,
+  "name": "A Constructed Person",
+  "biography": "A constructed biography. It exists to be read as a collection summary, and it says so out loud, so that nothing in this fixture can be mistaken for a transcription of a real person's TMDb record.",
+  "profile_path": "/a-constructed-profile-path.jpg",
+  "birthday": "1970-01-01",
+  "deathday": null,
+  "place_of_birth": "Nowhere In Particular",
+  "also_known_as": ["Another Constructed Name"],
+  "known_for_department": "Directing",
+  "popularity": 12.5,
+  "adult": false,
+  "gender": 0,
+  "homepage": null,
+  "imdb_id": null
+}

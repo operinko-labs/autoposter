@@ -44,7 +44,12 @@ from autoposter.collections.builders.base import LibraryTypeMismatch
 from autoposter.collections.builders.tmdb import TmdbBuilderRefused
 from autoposter.collections.builders.tmdb_person import ROLES, CreditRole
 from autoposter.config.schema import CollectionDefinition
-from autoposter.providers.tmdb_lists import PersonCredit, TmdbListClient, TmdbListRefused
+from autoposter.providers.tmdb_lists import (
+    PersonCredit,
+    PersonDetail,
+    TmdbListClient,
+    TmdbListRefused,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "collections"
 
@@ -52,6 +57,7 @@ PERSON_BUILDERS = ("tmdb_actor", "tmdb_director", "tmdb_writer", "tmdb_producer"
 
 MOVIE_CREDITS = "/person/4242/movie_credits"
 TV_CREDITS = "/person/4242/tv_credits"
+PERSON_DETAIL = "/person/4242"
 
 
 def load(name):
@@ -76,15 +82,24 @@ def _routed(routes: dict, seen: list | None = None):
     return httpx.MockTransport(handler)
 
 
+def _detail(**overrides):
+    """The person-detail fixture, with fields replaced for the shape tests."""
+    return load("tmdb_person_detail.json") | overrides
+
+
 def _credits(**overrides):
     """The movie-credits fixture, with whole arrays replaced for the shape tests."""
-    return {MOVIE_CREDITS: load("tmdb_person_movie_credits.json") | overrides}
+    return {
+        MOVIE_CREDITS: load("tmdb_person_movie_credits.json") | overrides,
+        PERSON_DETAIL: _detail(),
+    }
 
 
 def _both():
     return {
         MOVIE_CREDITS: load("tmdb_person_movie_credits.json"),
         TV_CREDITS: load("tmdb_person_tv_credits.json"),
+        PERSON_DETAIL: _detail(),
     }
 
 
@@ -364,6 +379,72 @@ def test_a_credit_carries_only_what_the_role_table_reads():
     and biographies one attribute access away from a builder that must not
     grow them in this phase."""
     assert set(PersonCredit.__dataclass_fields__) == {"tmdb_id", "kind", "job", "department"}
+
+
+# --- the person's own record -------------------------------------------------
+
+
+async def _detail_of(routes: dict):
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        return await TmdbListClient("a-read-access-token", http).person_detail(4242)
+
+
+async def test_person_detail_carries_the_biography_and_the_profile_path():
+    detail = await _detail_of({PERSON_DETAIL: _detail()})
+
+    assert detail.biography.startswith("A constructed biography.")
+    assert detail.profile_path == "/a-constructed-profile-path.jpg"
+
+
+async def test_person_detail_carries_nothing_else():
+    """The same rule ``PersonCredit`` keeps, for the same reason. The payload
+    also holds ``birthday``, ``deathday``, ``place_of_birth``, ``also_known_as``
+    and ``popularity``; every one of them is a feature nobody has decided on
+    (birthday gating is roadmap row 160's filed work), and a field nobody reads
+    is a field a builder can start reading without the decision being made."""
+    assert set(PersonDetail.__dataclass_fields__) == {"biography", "profile_path"}
+
+
+async def test_the_detail_read_is_one_unpaged_request():
+    """``/person/{id}`` answers in one response, like ``/collection/{id}``, so
+    this sends no ``page`` -- and no ``append_to_response`` either, which is
+    also what upstream's own bare person read sends."""
+    seen: list = []
+    async with httpx.AsyncClient(transport=_routed({PERSON_DETAIL: _detail()}, seen)) as http:
+        await TmdbListClient("a-read-access-token", http).person_detail(4242)
+
+    assert [_path(request) for request in seen] == [PERSON_DETAIL]
+    assert "page" not in seen[0].url.params
+    assert "append_to_response" not in seen[0].url.params
+
+
+async def test_an_empty_biography_is_none_rather_than_an_empty_summary():
+    """TMDb answers ``""`` -- not null -- for a person with no biography in the
+    requested language. Passed through, that is a collection summary set to the
+    empty string, which reads as "somebody chose this" one layer down."""
+    detail = await _detail_of({PERSON_DETAIL: _detail(biography="   ")})
+
+    assert detail.biography is None
+
+
+async def test_a_missing_profile_photo_is_none_rather_than_a_guessable_path():
+    detail = await _detail_of({PERSON_DETAIL: _detail(profile_path=None)})
+
+    assert detail.profile_path is None
+
+
+async def test_a_response_with_no_name_is_refused():
+    """The response-shape probe. TMDb's person record always carries a name; a
+    payload without one is not "a person with no biography", it is a response
+    this client cannot read -- and the two must not be the same answer, because
+    the first quietly leaves a collection without artwork forever."""
+    with pytest.raises(TmdbListRefused, match="'name'"):
+        await _detail_of({PERSON_DETAIL: {"id": 4242}})
+
+
+async def test_an_unknown_person_id_raises_rather_than_returning_nothing():
+    with pytest.raises(TmdbListRefused, match="404"):
+        await _detail_of({})
 
 
 # --- params ------------------------------------------------------------------
