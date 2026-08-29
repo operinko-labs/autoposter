@@ -377,6 +377,21 @@ async def run_library(
             ))
             continue
 
+        # A family that REFUSES is the one definition shape a pass could report
+        # nothing at all about: the loop below appends one result per unit
+        # returned, so an empty enumeration, an all-excluded family or an
+        # over-cap fan-out leaves no row -- not that it ran, not why. The
+        # builder writes its reasons into the pass's scratch instead, and this
+        # is where they join the other "nothing was done, and here is why"
+        # strings (``_run_one``'s filter-emptied and nothing-owned branches).
+        # Asked off the registry entry rather than imported, the protocol
+        # ``_family_state`` states. The slice is what keeps one family's notes
+        # out of the next one's place: the list belongs to the pass, and every
+        # family in it appends. A raise needs none of this -- the handler below
+        # reports a failed result under the definition's own title.
+        reporter = getattr(builder, "notes", None)
+        reported = len(reporter(run_cache)) if reporter is not None else 0
+
         try:
             units = await _expand(builder, definition, context(definition))
         except Exception:
@@ -390,6 +405,9 @@ async def run_library(
                 title=definition.title, library=library, failed=True, skipped=True
             ))
             continue
+
+        if reporter is not None:
+            actions += reporter(run_cache)[reported:]
 
         for unit in units:
             result = await _run_one(

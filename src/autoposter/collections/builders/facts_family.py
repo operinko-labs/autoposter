@@ -33,10 +33,11 @@ through, the family is half the size it will be -- correct, incomplete, and
 converging as the drift sweep works the rest (``scheduler.drift_days``,
 ``scheduler.drift_batch_size``: 500 items a week by default). Every pack built
 on this says so in its own description, and the builder reports the coverage
-numbers into the run cache.
+numbers into the run cache, which the pass reads back into its actions
+(``engine.py``, above the unit loop).
 
-**Every refusal RETURNS**, as a note in the pass's run cache for the engine to
-surface: an empty enumeration, an all-excluded family, an over-cap fan-out, a
+**Every refusal RETURNS**, as a note in the pass's run cache the engine
+surfaces: an empty enumeration, an all-excluded family, an over-cap fan-out, a
 duplicate title and a franchise TMDb cannot name are all reported rather than
 raised. ``expand`` returning ``[]`` is a family that built nothing, and
 ``generated_titles`` answering ``None`` is what stops the sweep treating that as
@@ -91,9 +92,10 @@ def notes(run_cache: dict) -> list[str]:
     """Everything the families in this pass reported, for the engine to surface.
 
     A list on the run cache rather than a return value, because ``expand`` has
-    to answer with definitions and the engine logs an expansion failure without
-    a place to put an operator-facing note (``engine.py:379-391``). Task 5
-    decides where these appear in the pass report; nothing reads them today.
+    to answer with definitions and has nowhere else to put an operator-facing
+    note: the engine appends one ``DefinitionResult`` per unit RETURNED, so a
+    family that refuses produces no row of its own. ``run_library`` reads the
+    slice each definition added and appends it to the pass's actions.
     """
     return run_cache.setdefault(_NOTES_KEY, [])
 
@@ -199,6 +201,12 @@ class FactsFamilyBuilder:
         """What this definition's family built this pass; see the module
         function of the same name for what ``None`` means."""
         return generated_titles(run_cache, definition)
+
+    def notes(self, run_cache: dict) -> list[str]:
+        """Everything the families in this pass reported -- a method as well as
+        a module function for ``family_label``'s reason: the engine reads it off
+        the REGISTRY entry rather than importing this module by name."""
+        return notes(run_cache)
 
     async def build(self, ctx: BuilderContext) -> BuilderResult:
         """Never reached, and it raises rather than returning nothing.

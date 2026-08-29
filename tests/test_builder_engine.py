@@ -40,6 +40,7 @@ from autoposter.collections.engine import (
 from autoposter.collections.service import _managed_titles
 from autoposter.collections.sources import AWARD_YEARS_TITLE, default_definitions
 from autoposter.config.schema import CollectionDefinition
+from autoposter.db.models import MediaItem
 
 LABEL = "autoposter"
 
@@ -674,6 +675,42 @@ async def test_the_oscars_year_collections_inherit_the_placeholders_settings():
         )
         assert unit.sort == "release", "the builder's own choice survives"
         assert unit.summary.startswith("Academy Awards")
+
+
+async def test_a_family_that_built_nothing_says_why_in_the_pass(session):
+    """A refusing family is the one definition shape a pass could report
+    NOTHING about.
+
+    ``run_library`` appends one ``DefinitionResult`` per unit an expander
+    RETURNS, so a family that refuses -- an empty enumeration, an all-excluded
+    family, an over-cap fan-out, a franchise TMDb cannot name -- returns ``[]``
+    and produces no row at all: not that it ran, not why it built nothing, not
+    how far the facts pipeline has got. ``facts_family`` writes those reasons
+    into the pass's scratch for exactly this, and here is where they join the
+    other "nothing was done, and here is why" strings the pass already reports
+    (the filter-emptied and nothing-owned branches).
+
+    The engine asks the REGISTRY entry rather than importing the module -- the
+    same protocol ``_family_state`` states for ``family_label``.
+    """
+    session.add(MediaItem(rating_key="m1", library="Movies", kind="movie", title="X"))
+    await session.flush()
+
+    actions = await _run(
+        session, FakeSection([("m1", ["imdb://tt1"])]),
+        [CollectionDefinition(
+            title="Countries of origin", builder="facts_family",
+            params={"type": "origin_country"},
+        )],
+        _config(),
+    )
+
+    assert actions == [
+        "'Countries of origin' built nothing: no origin_country values are "
+        "stored for 'Movies' yet. The facts pipeline has visited 0 of 1 "
+        "item(s) there; this family fills in as the ratings-drift sweep works "
+        "through the rest (scheduler.drift_days, scheduler.drift_batch_size)"
+    ]
 
 
 # --- roadmap row 96: the filter stage --------------------------------------
