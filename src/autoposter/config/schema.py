@@ -658,10 +658,21 @@ class CollectionsConfig(BaseModel):
     charts: bool = True
     # Oscars winner list collections (movies only).
     awards: bool = True
-    # The blank "Ratings Collections" divider, part of the Common Sense
-    # family: a permanently-empty collection whose sort title makes it act
-    # as a visual separator in Plex's alphabetised collection list.
+    # Blank "index card" divider collections -- one per group of collections
+    # this service manages, each a permanently-empty collection whose sort
+    # title floats it above its block in Plex's alphabetised collections tab
+    # (roadmap row 49). Before row 49 this switch owned exactly one divider,
+    # the Common Sense family's "Ratings Collections"; it now governs them all,
+    # and that one is the content-ratings group's.
     separators: bool = True
+    # Reorder the collection groups in the tab. None is the canonical order
+    # (collections/groups.py: charts, awards, content ratings, content,
+    # location, media, people, production, time, and the operator's own
+    # definitions last). A PARTIAL list is the expected use: the groups it
+    # names lead, in that order, and the rest follow canonically. Section
+    # numbers derive from position, so changing this re-writes the sort title
+    # of every collection this service manages, once, on the next pass.
+    group_order: list[str] | None = None
     # Take over collections created by a tool this service replaces. Off by
     # default: it is a Plex write against collections we did not create, and
     # it should happen once, deliberately, as part of cutover.
@@ -766,6 +777,37 @@ class CollectionsConfig(BaseModel):
                     f"build: it needs roadmap row {preset.gated_row}. Refused "
                     "here rather than accepted as a key that would silently "
                     "build no collections at all"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _group_order_must_name_known_groups(self) -> "CollectionsConfig":
+        """Every name in ``group_order`` is a group, and names it once.
+
+        Refused here rather than discovered as a group whose collections
+        quietly kept the canonical number: a mis-typed group is a reordering an
+        operator believes they asked for, which is exactly the shape
+        ``_presets_must_be_known_and_ready`` above refuses one field along.
+
+        Imported at validation time, not module scope -- ``groups`` reaches back
+        into this module through ``catalog``, the cycle every validator in this
+        class documents.
+        """
+        from autoposter.collections.groups import CANONICAL_ORDER
+
+        seen: set[str] = set()
+        for name in self.group_order or []:
+            if name in seen:
+                raise ValueError(
+                    f"collection group {name!r} is listed twice in "
+                    "'group_order': a group has one position, so a repeated "
+                    "name means less than it looks like"
+                )
+            seen.add(name)
+            if name not in CANONICAL_ORDER:
+                raise ValueError(
+                    f"unknown collection group {name!r}: the groups are "
+                    + ", ".join(CANONICAL_ORDER)
                 )
         return self
 
