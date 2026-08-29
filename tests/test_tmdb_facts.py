@@ -174,6 +174,107 @@ async def test_without_a_cache_every_lookup_hits_the_api():
     assert len(calls) == 2
 
 
+# --- the three prefetch fields (roadmap rows 189/192) -----------------------
+
+
+def test_movie_facts_carry_the_three_prefetch_fields():
+    """The widening, read off the same payload the pipeline already fetches.
+
+    Zero new requests: these three fields ride the ``/movie/{id}`` read that
+    already pays for the rating, the genres and the studio. Roadmap rows 189
+    and 192 are what they are for.
+    """
+    facts = parse_movie_facts(load("tmdb_movie.json"))
+    assert facts.tmdb_origin_country == ["US"]
+    assert facts.tmdb_original_language == "en"
+    assert facts.tmdb_collection_id is None
+    assert facts.sources["tmdb_origin_country"] == "tmdb"
+    assert facts.sources["tmdb_original_language"] == "tmdb"
+
+
+def test_the_origin_country_read_is_not_production_countries():
+    """The two fields disagree on this very title, so reading the wrong one is
+    a red test rather than a silent pass.
+
+    The captured ``/movie/940143`` carries ``origin_country: ["US"]`` and
+    ``production_countries: [GB, US]`` -- which is the captured counter-example
+    that refutes the substitution roadmap row 189 rules out. Plex's own
+    ``<Country>`` already carries the production country; this column carries
+    the origin country, and they are not the same statement.
+    """
+    payload = load("tmdb_movie.json")
+    assert [entry["iso_3166_1"] for entry in payload["production_countries"]] == ["GB", "US"]
+    assert parse_movie_facts(payload).tmdb_origin_country == ["US"]
+
+
+def test_the_original_language_read_is_not_the_languages_list():
+    """``languages`` is the list of languages the show is available in;
+    ``original_language`` is the one it was made in. Reading the former would
+    yield a list where an ISO-639-1 code belongs."""
+    payload = load("tmdb_show.json")
+    assert payload["languages"] == ["en"]
+    assert parse_show_facts(payload).tmdb_original_language == "en"
+
+
+def test_a_movie_in_a_franchise_carries_its_collection_id():
+    """``belongs_to_collection`` is an object or ``null``; the id is what row
+    192's enumeration keys on."""
+    facts = parse_movie_facts(load("tmdb_movie_franchise.json"))
+    assert facts.tmdb_collection_id == 8091
+    assert facts.sources["tmdb_collection_id"] == "tmdb"
+
+
+def test_show_facts_carry_the_two_fields_a_show_has():
+    """A show has no ``belongs_to_collection`` -- TMDb collections are movie
+    franchises (``builders/tmdb.py``'s ``TmdbCollectionBuilder``)."""
+    facts = parse_show_facts(load("tmdb_show.json"))
+    assert facts.tmdb_origin_country == ["US"]
+    assert facts.tmdb_original_language == "en"
+    assert facts.tmdb_collection_id is None
+
+
+def test_the_three_fields_are_absent_rather_than_empty_when_tmdb_has_none():
+    """Absent must never be written as a value -- ``persist_facts``' Finding 4.
+    An empty ``origin_country`` list is the same statement as no key at all."""
+    facts = parse_movie_facts({"id": 1})
+    assert facts.tmdb_origin_country == []
+    assert facts.tmdb_original_language is None
+    assert facts.tmdb_collection_id is None
+    assert "tmdb_origin_country" not in facts.sources
+
+
+def test_a_null_collection_is_absent_not_a_shape_error():
+    """``belongs_to_collection: null`` is the normal case -- most films are in
+    no franchise -- and it must read exactly like the key being missing, which
+    is the shape ``/tv/{id}`` sends."""
+    assert parse_movie_facts({"belongs_to_collection": None}).tmdb_collection_id is None
+    assert "tmdb_collection_id" not in parse_movie_facts({"belongs_to_collection": None}).sources
+
+
+@pytest.mark.parametrize("payload", [
+    {"origin_country": "US"},
+    {"origin_country": [None, 5, "US"]},
+    {"belongs_to_collection": []},
+    {"belongs_to_collection": {"name": "no id here"}},
+    {"belongs_to_collection": {"id": "not-a-number"}},
+    {"original_language": 7},
+])
+def test_malformed_prefetch_fields_are_ignored_rather_than_raising(payload):
+    """Every other parser here degrades on malformed input rather than taking
+    the whole gather down (``_genres``, ``_first_name``, ``_as_date``); these
+    three do the same. ``origin_country: "US"`` -- a bare string where TMDb
+    documents a list -- is the one that would otherwise iterate to
+    ``["U", "S"]``, which is a plausible wrong value, not an absent one."""
+    facts = parse_movie_facts(payload)
+    assert facts.tmdb_origin_country in ([], ["US"])
+    if payload.get("origin_country") == [None, 5, "US"]:
+        assert facts.tmdb_origin_country == ["US"]
+    else:
+        assert facts.tmdb_collection_id is None or isinstance(
+            facts.tmdb_collection_id, int
+        )
+
+
 # --- the collection overview a ``tmdb_summary:`` definition borrows ---------
 
 

@@ -1,10 +1,20 @@
 {
-  "_provenance": "shape captured from TMDb /movie/940143 on 2026-08-29; vote_average, vote_count, release_date, genres and production_companies retained from the hand-trimmed fixture this replaced so the pinned assertions in tests/test_tmdb_facts.py keep meaning what they meant (live values on that date were 49 votes, 2023-12-08, [Thriller], 'Particular Crowd'); origin_country, original_language and belongs_to_collection are the real captured values",
+  "_provenance": "shape captured from TMDb /movie/940143 on 2026-08-29; vote_average, vote_count, release_date, genres and production_companies retained from the hand-trimmed fixture this replaced so the pinned assertions in tests/test_tmdb_facts.py keep meaning what they meant (live values on that date were 49 votes, 2023-12-08, [Thriller], 'Particular Crowd'); origin_country, original_language, belongs_to_collection and production_countries are the real captured values -- production_countries is carried precisely because it DISAGREES with origin_country on this title (GB+US against US), which is the substitution roadmap row 189 rules out and the trap test_the_origin_country_read_is_not_production_countries springs",
   "id": 940143,
   "title": "All Souls",
   "original_language": "en",
   "origin_country": [
     "US"
+  ],
+  "production_countries": [
+    {
+      "iso_3166_1": "GB",
+      "name": "United Kingdom"
+    },
+    {
+      "iso_3166_1": "US",
+      "name": "United States of America"
+    }
   ],
   "belongs_to_collection": null,
   "vote_average": 6.3,

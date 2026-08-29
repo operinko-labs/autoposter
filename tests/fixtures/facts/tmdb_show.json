@@ -1,8 +1,11 @@
 {
-  "_provenance": "shape captured from TMDb /tv/95396 on 2026-08-29; vote_average, vote_count, first_air_date, genres, networks and production_companies retained from the hand-trimmed fixture this replaced so the pinned assertions in tests/test_tmdb_facts.py keep meaning what they meant (live values on that date were 8.39, 2902 votes, 2022-02-17, a third genre, and the network named 'Apple TV'); origin_country and original_language are the real captured values. The capture carried NO belongs_to_collection key at all on /tv/{id}, so this fixture has none either -- that absence is the shape, not an omission.",
+  "_provenance": "shape captured from TMDb /tv/95396 on 2026-08-29; vote_average, vote_count, first_air_date, genres, networks and production_companies retained from the hand-trimmed fixture this replaced so the pinned assertions in tests/test_tmdb_facts.py keep meaning what they meant (live values on that date were 8.39, 2902 votes, 2022-02-17, a third genre, and the network named 'Apple TV'); origin_country, original_language and languages are the real captured values. `languages` is carried because it is a DIFFERENT field from original_language (the languages the show is available in, not the one it was made in) and reading it instead would yield a list where a code belongs -- the trap test_the_original_language_read_is_not_the_languages_list springs. The capture carried NO belongs_to_collection key at all on /tv/{id}, so this fixture has none either -- that absence is the shape, not an omission.",
   "id": 95396,
   "name": "Severance",
   "original_language": "en",
+  "languages": [
+    "en"
+  ],
   "origin_country": [
     "US"
   ],

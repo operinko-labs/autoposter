@@ -49,23 +49,84 @@ def _first_name(entries: object) -> str | None:
     return None
 
 
+def _countries(payload: dict) -> list[str]:
+    """``origin_country``, which TMDb sends as a list of ISO-3166-1 codes.
+
+    Deliberately NOT ``production_countries``: the two disagree on real titles
+    (``/movie/940143`` reads ``["US"]`` here and ``[GB, US]`` there), and the
+    production country is what Plex's own ``<Country>`` already carries.
+
+    A bare string is refused rather than iterated: ``"US"`` would otherwise
+    become ``["U", "S"]``, which is a plausible wrong value and therefore worse
+    than an absent one -- the same reasoning ``_genres`` applies to a
+    ``genres`` that is not a list.
+    """
+    countries = payload.get("origin_country")
+    if isinstance(countries, list):
+        return [one for one in countries if isinstance(one, str) and one]
+    return []
+
+
+def _language(payload: dict) -> str | None:
+    """``original_language``, an ISO-639-1 code. Titled from the code itself
+    downstream: neither this service nor Kometa's pack files carry a code->name
+    table, which is the divergence roadmap row 190 already records for the
+    audio/subtitle language families.
+
+    Not ``languages``, which a show payload also carries: that is the list of
+    languages the show is available in, not the one it was made in.
+    """
+    value = payload.get("original_language")
+    return value if isinstance(value, str) and value else None
+
+
+def _collection_id(payload: dict) -> int | None:
+    """``belongs_to_collection.id``, or None.
+
+    ``null`` is the normal case -- most films are in no franchise -- so it is
+    the absent case and not a shape error, and it must read identically to the
+    key being missing altogether, which is the shape ``/tv/{id}`` sends. The
+    NAME is deliberately not read: it is a property of the collection rather
+    than of the item, and the franchise family reads it once per franchise from
+    ``/collection/{id}``, which is the same URL (and therefore the same
+    provider-cache entry) its membership already comes from.
+    """
+    entry = payload.get("belongs_to_collection")
+    if not isinstance(entry, dict):
+        return None
+    try:
+        return int(entry["id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def parse_movie_facts(payload: dict) -> GatheredFacts:
     rating = _rating(payload)
     studio = _first_name(payload.get("production_companies"))
     genres = _genres(payload)
     released = _as_date(payload.get("release_date"))
+    countries = _countries(payload)
+    language = _language(payload)
+    collection_id = _collection_id(payload)
     sources = {}
     if rating is not None:
         sources["audience_rating"] = "tmdb"
     for key, value in (("genres", genres), ("studio", studio),
-                       ("originally_available", released)):
+                       ("originally_available", released),
+                       ("tmdb_origin_country", countries),
+                       ("tmdb_original_language", language)):
         if value:
             sources[key] = "tmdb"
+    if collection_id is not None:
+        sources["tmdb_collection_id"] = "tmdb"
     return GatheredFacts(
         audience_rating=rating,
         genres=genres,
         studio=studio,
         originally_available=released,
+        tmdb_origin_country=countries,
+        tmdb_original_language=language,
+        tmdb_collection_id=collection_id,
         sources=sources,
     )
 
@@ -76,11 +137,15 @@ def parse_show_facts(payload: dict) -> GatheredFacts:
     studio = _first_name(payload.get("networks"))
     genres = _genres(payload)
     aired = _as_date(payload.get("first_air_date"))
+    countries = _countries(payload)
+    language = _language(payload)
     sources = {}
     if rating is not None:
         sources["audience_rating"] = "tmdb"
     for key, value in (("genres", genres), ("studio", studio),
-                       ("originally_available", aired)):
+                       ("originally_available", aired),
+                       ("tmdb_origin_country", countries),
+                       ("tmdb_original_language", language)):
         if value:
             sources[key] = "tmdb"
     return GatheredFacts(
@@ -88,6 +153,8 @@ def parse_show_facts(payload: dict) -> GatheredFacts:
         genres=genres,
         studio=studio,
         originally_available=aired,
+        tmdb_origin_country=countries,
+        tmdb_original_language=language,
         sources=sources,
     )
 

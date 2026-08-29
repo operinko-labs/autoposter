@@ -16,6 +16,15 @@ class GatheredFacts:
     genres: list[str] = field(default_factory=list)
     studio: str | None = None
     originally_available: date | None = None
+    # The three prefetch fields (roadmap rows 189/192). Named OURS, never
+    # Kometa's filter names, and enumeration-only: row 156 owns the question of
+    # ever making a facts-backed value `filters:`-writable, and it needs a
+    # `facts` source tier this project does not have. `tmdb_origin_country` is
+    # a LIST because TMDb's is (a co-production carries several); the other two
+    # are scalars.
+    tmdb_origin_country: list[str] = field(default_factory=list)
+    tmdb_original_language: str | None = None
+    tmdb_collection_id: int | None = None
     sources: dict[str, str] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
@@ -27,5 +36,8 @@ class GatheredFacts:
                 self.genres,
                 self.studio,
                 self.originally_available,
+                self.tmdb_origin_country,
+                self.tmdb_original_language,
+                self.tmdb_collection_id is not None,
             )
         )
