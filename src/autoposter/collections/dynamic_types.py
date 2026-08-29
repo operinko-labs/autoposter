@@ -35,8 +35,20 @@ for its own reason:
 - show ``decade`` -- Plex's decade filter is movie-only (plex.py:437), so
   upstream falls back to a whole-library scan and REFUSES ``addons`` while doing
   it (meta.py:881-898). Out until that scan has a budget.
-- the people types (10c/row 83), ``tmdb_collection``, ``trakt_*``, ``number``,
-  ``custom`` and the music types -- none of them is a library enumeration.
+- the people types (``actor``/``director``/``writer``/``producer``) -- gated
+  twice, and neither gate is an enumeration problem this module could solve.
+  Upstream's pack is one collection per person with at least N appearances
+  (``data: {depth: N}``), and ``listFilterChoices`` answers with VALUES, never
+  COUNTS, so even an enumerable cast would not answer the question the pack
+  asks; the counting is a library-wide credit scan, the rows 155/180 budget
+  family. And the query each collection would carry cannot be written at all
+  today: ``actor``/``director``/``writer``/``producer`` are not
+  ``FILTER_ATTRIBUTES`` rows, so ``filters.BY_NAME`` has no entry for them
+  (roadmap row 169). Roadmap row 194.
+- ``tmdb_collection`` -- a full-library TMDb walk over every item's
+  ``belongs_to_collection``, not an enumeration (roadmap row 192).
+- ``trakt_*``, ``number``, ``custom`` and the music types -- none of them is a
+  library enumeration.
 
 **One documented divergence.** Upstream titles a language bucket from TMDb's
 ``_iso_639_1`` table -- ``en`` becomes "English" -- and falls back to the Plex
