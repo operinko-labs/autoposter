@@ -1237,12 +1237,31 @@ authenticated full pass, local catcher).
 
 ## Recovering parked jobs
 
+**Parked is not the same as deferred.** Parked means a job gave up and needs a
+human; deferred means a job is waiting for the library to catch up and needs
+nobody. They are separate states, and only the first belongs on this page.
+
 A job moves to `state='parked'` once it has been retried
-`config.plex.resolve_max_attempts` times (Plex-connectivity failures and
-"Plex hasn't scanned this yet") or `MAX_ATTEMPTS` times (everything else)
-without succeeding. Parked jobs are not retried automatically, so a Plex
-outage longer than the attempt budget silently drops the affected webhooks
-unless someone requeues them.
+`config.plex.resolve_max_attempts` times (Plex-connectivity failures) or
+`MAX_ATTEMPTS` times (everything else) without succeeding. Parked jobs are not
+retried automatically, so a Plex outage longer than the attempt budget
+silently drops the affected webhooks unless someone requeues them.
+
+A job moves to `state='deferred'` when Plex has no such item yet — a movie
+added to Radarr months before release is the usual cause. There is **no**
+attempt budget on this path: the job comes back every six hours
+(`DEFER_INTERVAL_SECONDS` in `queue/jobs.py`), indefinitely, and runs by
+itself the moment Plex can see the item. Nothing here needs recovering. A
+deferred job appears on the Jobs page (state `deferred`, "waiting for Plex")
+and on the dashboard's own tile, never on Failures, and the only way to end
+one early is the Jobs page's Cancel, which dismisses it. Once the item's real
+download webhook queues a fresh job that succeeds, the stranded deferred row
+is dismissed automatically.
+
+    SELECT count(*), state FROM jobs WHERE state = 'deferred' GROUP BY state;
+
+A large and growing deferred count is a library statement, not a fault: that
+many items are queued in Radarr/Sonarr that Plex does not hold.
 
 `GET /api/jobs/parked` lists parked jobs with why they parked;
 `POST /api/jobs/{id}/retry` resets one to pending with a fresh attempt count;
