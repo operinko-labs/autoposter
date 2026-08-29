@@ -37,6 +37,7 @@ class FakeCollection:
         self.title = title
         self.ratingKey = rating_key
         self.summary = None
+        self.titleSort = None
         self._labels = []
         # Stands in for ``collection._server``: the summary is written with a
         # raw item-level PUT, not ``editSummary``.
@@ -52,6 +53,11 @@ class FakeCollection:
 
     def updateFilters(self, **kw):
         pass
+
+    def editSortTitle(self, sortTitle, locked=True):
+        # Row 49: every managed collection derives its group's sort-title
+        # prefix now, so this route is reached on every apply.
+        self.titleSort = sortTitle
 
     def editSummary(self, summary, locked=True):
         """Raises the way the live server does -- the section route plexapi
@@ -194,8 +200,10 @@ async def test_a_successful_pass_returns_a_summary_naming_each_library(session):
         job = make_collections_job(ConfigHolder(config), lambda: server, http)
         summary = await job.run(session)
 
-    assert "Movies: 2 action(s)" in summary
-    assert "TV Shows: 4 action(s)" in summary
+    # Row 49 doubled these: every collection the pass writes now also gets its
+    # group's derived sort title, which is one more action apiece.
+    assert "Movies: 4 action(s)" in summary
+    assert "TV Shows: 8 action(s)" in summary
 
 
 async def test_a_failure_reconciling_one_library_does_not_prevent_the_other(session):
@@ -212,7 +220,7 @@ async def test_a_failure_reconciling_one_library_does_not_prevent_the_other(sess
             await job.run(session)
 
     detail = str(failure.value)
-    assert "Movies: 2 action(s)" in detail
+    assert "Movies: 4 action(s)" in detail
     assert "TV Shows" in detail and "failed" in detail.lower()
 
 

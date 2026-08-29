@@ -16,6 +16,7 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.collections import groups
 from autoposter.collections.posters import apply_poster, posters_enabled
 from autoposter.collections.reconcile import (
     _edit_collection_summary,
@@ -181,6 +182,8 @@ async def reconcile_list_collection(
     config=None,
     sync_mode: str = "sync",
     settings=None,
+    sort_prefix: str | None = None,
+    sort_order: str | None = None,
 ) -> list[str]:
     """Bring one list collection in line with ``items`` (already in source order).
 
@@ -199,11 +202,26 @@ async def reconcile_list_collection(
     and carries everything applied *besides* membership -- labels, sort title,
     display mode, hub visibility, member labels. Optional: the direct callers
     that predate definitions pass none and get exactly what they always got.
+
+    ``sort_prefix`` is the collection GROUP's sort-title prefix (``"!010_"``),
+    and ``sort_order`` the family's per-member ordering key (``"01"``), both
+    resolved engine-side (``collections/groups.py``, roadmap row 49). They are
+    applied here rather than by the caller because only here is the concrete
+    collection title known -- a family's members share a prefix and not a sort
+    title. A definition that names its own ``sort_title`` keeps it; None derives
+    nothing, which is what a direct caller with no pass around it gets.
     """
     if not items:
         return [
             "%r: source returned no items; leaving the collection untouched" % title
         ]
+
+    # Out of band and read-only: the definition itself is never touched, so
+    # nothing downstream can mistake a derived value for one the operator wrote
+    # (``groups._DerivedSortTitle``). Placed here so the value is in front of
+    # ``_settings_parts`` below -- the hash is what a pass short-circuits on, and
+    # a sort title that appeared only at write time would never trigger one.
+    settings = groups.with_derived_sort_title(settings, sort_prefix, title, sort_order)
 
     if existing is None:
         existing = {c.title: c for c in section.collections()}

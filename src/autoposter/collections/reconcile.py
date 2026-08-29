@@ -634,6 +634,7 @@ async def reconcile_content_ratings(
     config=None,
     settings=None,
     resolver=None,
+    sort_prefix: str | None = None,
 ) -> list[str]:
     """Bring this library's Common Sense collections in line with its ratings.
 
@@ -650,6 +651,14 @@ async def reconcile_content_ratings(
     sort-title prefix is for in the first place: the family sorts as one block.
     The separator is deliberately excluded -- its sort title is the constant
     that makes it a divider. None (the default) applies nothing.
+
+    ``sort_prefix`` is the content-ratings GROUP's sort-title prefix
+    (``"!030_"``), resolved engine-side (``collections/groups.py``, roadmap row
+    49) and applied per BUCKET below rather than to the definition here -- the
+    sentence above is exactly why. The family shares the prefix, which is what
+    makes it one block; inside that block each bucket sorts by its own age key
+    and its own title. A definition that names its own ``sort_title`` keeps it,
+    for every bucket, unchanged. None derives nothing.
 
     The family's divider is no longer reconciled here -- every group's separator
     is driven by the engine (``engine._separators``), which is what made one
@@ -784,7 +793,16 @@ async def reconcile_content_ratings(
         # a protected or foreign collection is skipped without building its
         # query at all. No action string moves -- ``resolve_collision``'s
         # message was already appended before the skip decision.
-        wanted = definition_hash(bucket, settings, url)
+        # Per BUCKET, not per definition: one definition names the whole
+        # family, and the group's prefix is what they share -- inside the block
+        # each bucket sorts by its own age key and its own title. That is why
+        # the wrap is here and not at the top of the function. Out of band and
+        # in front of the hash, for the two reasons
+        # ``groups._DerivedSortTitle`` gives.
+        bucket_settings = groups.with_derived_sort_title(
+            settings, sort_prefix, bucket.title, groups.age_order(bucket.key)
+        )
+        wanted = definition_hash(bucket, bucket_settings, url)
         record = stored.get(bucket.title)
         definition_current = (
             collection is not None and record is not None and record.definition_hash == wanted
@@ -817,7 +835,7 @@ async def reconcile_content_ratings(
 
                 _edit_collection_summary(collection, bucket.summary)
                 actions += apply_collection_settings(
-                    section, collection, settings, label, config
+                    section, collection, bucket_settings, label, config
                 )
 
                 if record is None:

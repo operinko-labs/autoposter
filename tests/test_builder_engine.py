@@ -78,6 +78,8 @@ class FakeCollection:
         self._labels = []
         self.summary = None
         self.sort_set = None
+        self.titleSort = None
+        self.sort_title_set = None
         self._server = self
         self._session = type("Sess", (), {"put": "PUT-SENTINEL"})()
 
@@ -113,6 +115,13 @@ class FakeCollection:
 
     def sortUpdate(self, sort=None):
         self.sort_set = sort
+
+    def editSortTitle(self, sortTitle, locked=True):
+        # Row 49: EVERY managed collection derives its group's sort-title
+        # prefix now, so this route is reached on every apply here rather than
+        # only for a definition that named one.
+        self.sort_title_set = sortTitle
+        self.titleSort = sortTitle
 
     def query(self, key, method=None, **kwargs):
         self.summary = key
@@ -227,6 +236,11 @@ async def test_a_dead_source_leaves_its_collection_alone_and_the_pass_goes_on(
     assert actions == [
         "'Dead Chart': source returned no items; leaving the collection untouched",
         "created 'Healthy' with 1 item(s)",
+        # Row 49: a test builder belongs to no catalog category, so its
+        # collections land in the operator group -- last in the canonical
+        # order, section 100. Every collection this service manages derives one
+        # now, which is why this line appears throughout this file.
+        "set the sort title of 'Healthy' to '!100_Healthy'",
     ]
     assert [i.ratingKey for i in live._live] == ["m1"], (
         "a failed source must not empty the collection it was going to fill"
@@ -266,7 +280,10 @@ async def test_the_limit_caps_members_after_resolution(session, registry_entry):
         _config(),
     )
 
-    assert actions == ["created 'Top Two' with 2 item(s)"]
+    assert actions == [
+        "created 'Top Two' with 2 item(s)",
+        "set the sort title of 'Top Two' to '!100_Top Two'",
+    ]
     assert [i.ratingKey for i in section._existing["Top Two"]._live] == ["m1", "m2"]
 
 
@@ -283,7 +300,10 @@ async def test_a_definition_gated_to_every_other_pass_runs_on_alternate_passes(
     second = await _run(session, section, [definition], _config(), run_index=1)
     third = await _run(session, section, [definition], _config(), run_index=2)
 
-    assert first == ["created 'Every Other' with 1 item(s)"]
+    assert first == [
+        "created 'Every Other' with 1 item(s)",
+        "set the sort title of 'Every Other' to '!100_Every Other'",
+    ]
     assert second == [], "a gated-off pass must contribute no actions"
     assert third == [], "and must not have been rebuilt -- the hash is unchanged"
     assert builder.builds == 2, (
@@ -308,7 +328,10 @@ async def test_a_months_window_skips_the_definition_outside_it(session, registry
     )
 
     assert in_july == []
-    assert in_december == ["created 'Christmas' with 1 item(s)"]
+    assert in_december == [
+        "created 'Christmas' with 1 item(s)",
+        "set the sort title of 'Christmas' to '!100_Christmas'",
+    ]
 
 
 async def test_a_definition_aimed_at_another_library_is_skipped(session, registry_entry):
@@ -822,7 +845,10 @@ async def test_the_filter_runs_before_the_limit(session, registry_entry):
         _config(),
     )
 
-    assert actions == ["created 'Two Modern' with 2 item(s)"]
+    assert actions == [
+        "created 'Two Modern' with 2 item(s)",
+        "set the sort title of 'Two Modern' to '!100_Two Modern'",
+    ]
     assert [i.ratingKey for i in section._existing["Two Modern"]._live] == ["m2", "m3"]
 
 

@@ -66,6 +66,8 @@ class FakeCollection:
         self._labels = []
         self.summary = None
         self.sort_set = None
+        self.titleSort = None
+        self.sort_title_set = None
         self.deleted = False
         self.moves = 0
         self._server = self
@@ -104,6 +106,12 @@ class FakeCollection:
 
     def sortUpdate(self, sort=None):
         self.sort_set = sort
+
+    def editSortTitle(self, sortTitle, locked=True):
+        # Row 49: every managed collection derives its group's sort-title
+        # prefix now, so this route is reached on every apply.
+        self.sort_title_set = sortTitle
+        self.titleSort = sortTitle
 
     def query(self, key, method=None, **kwargs):
         self.summary = key
@@ -231,7 +239,12 @@ async def test_append_adds_new_members_and_removes_none(session, registry_entry)
     assert [i.ratingKey for i in live._live] == ["m9", "m2"], (
         "append must add the new member and keep the one the source does not name"
     )
-    assert actions == ["updated 'Appended': +1 -0, 0 move(s)"]
+    assert actions == [
+        "updated 'Appended': +1 -0, 0 move(s)",
+        # Row 49: a test builder belongs to no catalog category, so its
+        # collections land in the operator group -- section 100.
+        "set the sort title of 'Appended' to '!100_Appended'",
+    ]
 
 
 async def test_append_leaves_the_existing_members_where_they_were(
@@ -277,7 +290,10 @@ async def test_append_creates_the_collection_when_there_is_none(
         _config(),
     )
 
-    assert actions == ["created 'Fresh' with 2 item(s)"]
+    assert actions == [
+        "created 'Fresh' with 2 item(s)",
+        "set the sort title of 'Fresh' to '!100_Fresh'",
+    ]
     assert [i.ratingKey for i in section._existing["Fresh"]._live] == ["m1", "m2"]
 
 
@@ -1276,7 +1292,8 @@ async def test_a_clean_pass_is_still_reported_as_ok(session, registry_entry):
 
     assert result.failed is False
     assert result.libraries[0].ok is True
-    assert "Movies: 1 action(s)" in result.summary
+    # Two now: the create, and row 49's derived sort title.
+    assert "Movies: 2 action(s)" in result.summary
 
 
 async def test_the_scheduled_job_fails_when_a_definition_failed(

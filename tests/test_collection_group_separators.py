@@ -97,6 +97,14 @@ class FakeCollection:
         self.sort_title_set = value
         self.titleSort = value
 
+    def sortUpdate(self, sort=None):
+        # A no-op the separator path never reaches. It is here because
+        # ``tests/test_collection_groups.py`` drives ``reconcile_list_collection``
+        # through this same double for the end-to-end sort-title assertions, and
+        # a third fake section in this phase's own files would be committing
+        # roadmap row 191's forked-double defect fresh rather than inheriting it.
+        self.sorted_by = sort
+
     def uploadPoster(self, filepath):
         with open(filepath, "rb") as handle:
             self.uploaded.append(handle.read())
@@ -120,6 +128,12 @@ class FakeSection:
         self._collections[title] = made
         self.created.append(title)
         return made
+
+    def createCollection(self, title, items=None, smart=False):
+        # plexapi's own create route, which the separator never uses (an empty
+        # collection has to be a raw POST) and which the list reconciler does --
+        # see ``sortUpdate`` above for why this double answers both.
+        return self.collection(title)
 
 
 def spec(group="charts", order=groups.CANONICAL_ORDER):

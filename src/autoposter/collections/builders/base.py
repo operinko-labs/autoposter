@@ -228,6 +228,13 @@ class SmartContext:
     http: httpx.AsyncClient | None = None
     dry_run: bool = True
     definition: Any = None
+    # The collection group's sort-title prefix for this definition, resolved by
+    # the engine (``collections/groups.py``, roadmap row 49). Handed to a smart
+    # builder for exactly the reason ``definition`` is: a smart builder applies
+    # its own collections, so everything the engine passes to
+    # ``reconcile_list_collection`` has to reach the smart reconcilers the same
+    # way. None for a direct caller that has no pass around it.
+    sort_prefix: str | None = None
     run_cache: dict[str, Any] = field(default_factory=dict)
     listing: Callable[[], dict] | None = None
 

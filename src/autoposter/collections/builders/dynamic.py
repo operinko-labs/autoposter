@@ -876,6 +876,11 @@ class DynamicBuilder:
                     http=ctx.http,
                     config=ctx.config,
                     settings=settings,
+                    # One call per generated key, and the reconciler wraps by
+                    # that key's OWN title -- so each generated collection gets
+                    # ``!<NNN>_<its own title>`` without this engine having to
+                    # know the scheme.
+                    sort_prefix=ctx.sort_prefix,
                 )
             except REFUSALS as refusal:
                 # Contained to ONE key: an unresolvable value or a filter that

@@ -198,6 +198,7 @@ class SmartFilterBuilder:
                 http=ctx.http,
                 config=ctx.config,
                 settings=definition,
+                sort_prefix=ctx.sort_prefix,
             )
         except REFUSALS as refusal:
             # Contained deliberately -- see the module docstring. Logged as well

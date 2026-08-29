@@ -43,6 +43,7 @@ class FakeCollection:
         self.title = title
         self.ratingKey = rating_key
         self.summary = None
+        self.titleSort = None
         self._labels = []
         # Stands in for ``collection._server``: the summary is written with a
         # raw item-level PUT, not ``editSummary``.
@@ -58,6 +59,11 @@ class FakeCollection:
 
     def updateFilters(self, **kw):
         pass
+
+    def editSortTitle(self, sortTitle, locked=True):
+        # Row 49: every managed collection derives its group's sort-title
+        # prefix now, so this route is reached on every apply.
+        self.titleSort = sortTitle
 
     def editSummary(self, summary, locked=True):
         """Raises the way the live server does -- the section route plexapi

@@ -295,19 +295,24 @@ def builtin_group(builder: str) -> str | None:
 def definition_order(definition, library_type: str) -> str | None:
     """The ordering key a shipped family gives this whole definition, or None.
 
-    Two families have one at definition level. Award winners (``imdb_award``)
+    Three families have one at definition level. Award winners (``imdb_award``)
     take ``LEADING_ORDER``, so they lead their own family's ceremony-year
     expansions instead of filing after them (Important 1 -- a group mixing an
     unkeyed parent with a keyed expansion otherwise sorts the parent last,
-    the reverse of Kometa's measured hand-order). Charts take a position in
-    the chart inventory, and that is not an omission on their part either: a
-    chart definition is one collection, so its ordering key is decided the
-    moment the definition and the library type are in hand. The remaining
-    ordered family -- Common Sense buckets -- expands at run time into
-    collections the definition does not name -- an age bucket per rating --
-    so its key belongs to the expansion and is ``age_order``'s. Everything
-    else has no natural order at all and takes the plain ``!<NNN>_<title>``
-    shape.
+    the reverse of Kometa's measured hand-order). A CEREMONY YEAR takes
+    ``year_order`` of the year it names: it reaches the engine as an ordinary
+    definition of exactly one collection (``imdb_award.expand`` returns one per
+    ceremony, carrying ``params={"year": ...}``), so by the time anything asks,
+    its key is decided the same way a chart's is. The PLACEHOLDER above it names
+    no year and gets none, which is right -- it never becomes a collection.
+    Charts take a position in the chart inventory, and that is not an omission
+    on their part either: a chart definition is one collection, so its ordering
+    key is decided the moment the definition and the library type are in hand.
+    The remaining ordered family -- Common Sense buckets -- expands INSIDE its
+    reconciler into collections no definition ever names -- an age bucket per
+    rating -- so its key cannot be decided here and is ``age_order``'s, applied
+    per bucket by ``reconcile_content_ratings``. Everything else has no natural
+    order at all and takes the plain ``!<NNN>_<title>`` shape.
 
     The chart inventory is read rather than copied, and read locally: it lives
     behind ``builders/__init__``, which imports the reconciler this module is
@@ -316,6 +321,15 @@ def definition_order(definition, library_type: str) -> str | None:
     """
     if definition.builder == "imdb_award":
         return LEADING_ORDER
+    if definition.builder.endswith(_AWARD_YEARS_SUFFIX):
+        # The year is a STRING on the way through ("2026" -- the ceremony keys
+        # of the dataset it comes from are, and ``ImdbAwardYearParams.year`` is
+        # declared ``str`` to match), and ``params`` here is the raw dict, which
+        # that model has not seen. Anything not a plain number has no place on
+        # the scale ``year_order`` inverts and takes no key at all, rather than
+        # raising inside a function the config validator reaches.
+        year = str(definition.params.get("year", ""))
+        return year_order(int(year)) if year.isdigit() else None
     if definition.builder != "imdb_chart":
         return None
 

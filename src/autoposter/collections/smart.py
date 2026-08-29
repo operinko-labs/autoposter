@@ -50,6 +50,7 @@ from plexapi.utils import joinArgs
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.collections import groups
 from autoposter.collections.posters import apply_poster, posters_enabled
 from autoposter.collections.reconcile import (
     LIBTYPES,
@@ -233,6 +234,7 @@ async def reconcile_smart_collection(
     http: httpx.AsyncClient | None = None,
     config=None,
     settings=None,
+    sort_prefix: str | None = None,
 ) -> list[str]:
     """Bring one smart collection in line with ``url``.
 
@@ -255,10 +257,27 @@ async def reconcile_smart_collection(
     own; there is no builder-derived one here, because the builder derives no
     membership either.
 
+    ``sort_prefix`` is the collection GROUP's sort-title prefix (``"!100_"``),
+    resolved engine-side (``collections/groups.py``, roadmap row 49). It is
+    applied here rather than by the caller because only here is the concrete
+    collection title known -- the dynamic engine calls this once per generated
+    key, and those collections share a definition but not a sort title. No
+    ordering key travels with it: neither shape that reaches this reconciler
+    (``smart_filter``'s single collection, ``dynamic``'s generated family) has a
+    natural order for one, so both take the plain ``!<NNN>_<title>`` form. A
+    definition that names its own ``sort_title`` keeps it; None derives nothing,
+    which is what a direct caller with no pass around it gets.
+
     Returns a description of every action taken -- or, under ``dry_run``, every
     action that would be taken. ``flush``, never ``commit``: the commit belongs
     to the caller, so a per-library rollback can take these rows with it.
     """
+    # Out of band, read-only, and BEFORE the hash below -- see
+    # ``groups._DerivedSortTitle`` and ``lists.reconcile_list_collection`` for
+    # both halves of why. A value that appeared only at write time would never
+    # change ``smart_definition_hash``, so an unchanged pass would short-circuit
+    # and the sort title would never be written at all.
+    settings = groups.with_derived_sort_title(settings, sort_prefix, title)
     libtype = LIBTYPES[library_type]
     listing = existing if existing is not None else {
         collection.title: collection for collection in section.collections()

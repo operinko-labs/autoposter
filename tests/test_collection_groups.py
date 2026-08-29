@@ -12,6 +12,21 @@ def config(**kwargs):
     return SimpleNamespace(collections=CollectionsConfig(**kwargs))
 
 
+@pytest.fixture
+def chart_section():
+    """A section double with two items in it, for the end-to-end reconciles.
+
+    The fakes come from this phase's other new file by import rather than by
+    copy: a fourth fake section would be roadmap row 191's forked-double debt
+    committed fresh instead of inherited.
+    """
+    from test_collection_group_separators import FakeSection
+
+    section = FakeSection()
+    section.items = [SimpleNamespace(ratingKey=1), SimpleNamespace(ratingKey=2)]
+    return section
+
+
 def test_canonical_order_is_the_nine_catalog_categories_plus_operator():
     from autoposter.collections.catalog import CATEGORIES
 
@@ -345,6 +360,37 @@ def test_a_definition_no_family_orders_has_no_ordering_key():
         assert groups.definition_order(definition, "Show") is None
 
 
+def test_a_ceremony_year_unit_orders_by_its_inverted_year():
+    """The expansion, not the placeholder.
+
+    ``imdb_award.expand`` returns one definition per ceremony carrying
+    ``params={"year": ...}``, and by the time the engine reconciles one it is an
+    ordinary definition naming exactly one collection -- so its key is decided
+    from the definition in hand, the same as a chart's. That is the one call
+    site ``year_order`` has: without it, Kometa's measured newest-first
+    hand-order (the one regression Task 1 measured rather than inferred) would
+    be replaced by an alphabetical block running oldest ceremony first.
+    """
+    for builder in ("imdb_award_years", "cannes_award_years"):
+        # A STRING year, which is the shape ``expand`` really produces --
+        # ``ImdbAwardYearParams.year`` is declared ``str`` because the dataset's
+        # ceremony keys are.
+        unit = CollectionDefinition(
+            title="Oscars Winners 2026", builder=builder, params={"year": "2026"},
+        )
+        assert groups.definition_order(unit, "Movie") == groups.year_order(2026)
+
+    # A year that is not a number takes no key rather than raising: ``params``
+    # is the raw dict here, and this function is reachable from the config
+    # validator.
+    assert groups.definition_order(
+        CollectionDefinition(
+            title="Oscars Winners", builder="imdb_award_years", params={"year": "n/a"},
+        ),
+        "Movie",
+    ) is None
+
+
 def test_the_awards_winners_definition_leads_its_ceremony_year_expansions():
     # Review Important 1: a group mixing an unkeyed parent with a keyed
     # expansion sorted the parent AFTER the keys -- a digit-first key always
@@ -443,3 +489,121 @@ def test_the_module_imports_nothing_from_the_package_at_module_scope():
             assert all(not alias.name.startswith("autoposter") for alias in node.names)
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith("autoposter")
+
+
+# --- the derived sort title, end to end (Task 4) -----------------------------
+
+
+async def test_a_chart_collection_gets_its_groups_prefix(session, chart_section):
+    """The end-to-end shape: no sort_title in the config, one in Plex."""
+    from autoposter.collections.lists import reconcile_list_collection
+
+    definition = CollectionDefinition(
+        title="IMDb Top 250", builder="imdb_chart", params={"chart": "top_movies"}
+    )
+    await reconcile_list_collection(
+        session, chart_section, "Movies", "IMDb Top 250",
+        chart_section.items, "autoposter", dry_run=False,
+        settings=definition, sort_prefix="!010_",
+    )
+    made = chart_section._collections["IMDb Top 250"]
+    assert made.sort_title_set == "!010_IMDb Top 250"
+
+
+async def test_a_chart_collection_carries_its_inventory_position(session, chart_section):
+    """The ordering key travels the same road as the prefix (LAW Addendum 1/2).
+
+    Without it a chart block would be alphabetical, which is not the order the
+    chart inventory lists them in and not the order the probe measured.
+    """
+    from autoposter.collections.lists import reconcile_list_collection
+
+    definition = CollectionDefinition(
+        title="IMDb Top 250", builder="imdb_chart", params={"chart": "top_movies"}
+    )
+    await reconcile_list_collection(
+        session, chart_section, "Movies", "IMDb Top 250",
+        chart_section.items, "autoposter", dry_run=False,
+        settings=definition, sort_prefix="!010_",
+        sort_order=groups.definition_order(definition, "Movie"),
+    )
+    made = chart_section._collections["IMDb Top 250"]
+    assert made.sort_title_set == "!010_01_IMDb Top 250"
+
+
+async def test_an_explicit_sort_title_still_wins_end_to_end(session, chart_section):
+    from autoposter.collections.lists import reconcile_list_collection
+
+    definition = CollectionDefinition(
+        title="IMDb Top 250", builder="imdb_chart", params={"chart": "top_movies"},
+        sort_title="!999_mine",
+    )
+    await reconcile_list_collection(
+        session, chart_section, "Movies", "IMDb Top 250",
+        chart_section.items, "autoposter", dry_run=False,
+        settings=definition, sort_prefix="!010_",
+    )
+    assert chart_section._collections["IMDb Top 250"].sort_title_set == "!999_mine"
+
+
+def test_each_member_of_a_family_gets_its_own_title_in_the_prefix():
+    """A family shares a GROUP, not a sort title.
+
+    ``CollectionDefinition.sort_title``'s docstring says an explicit one goes to
+    every collection of a family verbatim, and that is unchanged. A DERIVED one
+    is per collection: the block is what the section number makes, and inside it
+    each collection sorts by its own key and its own name.
+    """
+    family = CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket")
+    first = groups.with_derived_sort_title(
+        family, "!030_", "Age 13+ Movies", groups.age_order("13")
+    )
+    second = groups.with_derived_sort_title(
+        family, "!030_", "Age 17+ Movies", groups.age_order("17")
+    )
+    assert first.sort_title == "!030_13_Age 13+ Movies"
+    assert second.sort_title == "!030_17_Age 17+ Movies"
+
+
+def test_the_derived_value_changes_the_definition_hash_exactly_once():
+    """The migration, in one assertion.
+
+    A pass short-circuits on this hash. If the derived sort title did not reach
+    it, the first pass after row 49 would find every hash current, skip every
+    collection, and never write a sort title at all -- the trap C3 names.
+    """
+    from autoposter.collections.buckets import Bucket
+    from autoposter.collections.reconcile import definition_hash
+
+    bucket = Bucket(key="13", title="Age 13+ Movies",
+                    summary="...", values=("PG-13",))
+    family = CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket")
+    before = definition_hash(bucket, family, "url")
+    view = groups.with_derived_sort_title(
+        family, "!030_", bucket.title, groups.age_order(bucket.key)
+    )
+    after = definition_hash(bucket, view, "url")
+    assert before != after
+    assert after == definition_hash(
+        bucket,
+        groups.with_derived_sort_title(
+            family, "!030_", bucket.title, groups.age_order(bucket.key)
+        ),
+        "url",
+    )
+
+
+def test_expansion_never_inherits_a_derived_sort_title():
+    """The other C3 trap. ``engine._completed`` fills an expanded unit from the
+    placeholder for every field the unit did not set -- reading
+    ``model_fields_set``. A derived value written onto the placeholder would be
+    marked set, and all five Oscars year collections would share one sort title
+    instead of each getting its own."""
+    from autoposter.collections.engine import _completed
+
+    placeholder = CollectionDefinition(
+        title="Oscars Winners (recent ceremonies)", builder="imdb_award_years"
+    )
+    groups.with_derived_sort_title(placeholder, "!020_", placeholder.title)
+    unit = CollectionDefinition(title="Oscars Winners 2026", builder="imdb_award_years")
+    assert _completed(placeholder, unit).sort_title is None

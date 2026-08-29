@@ -92,6 +92,7 @@ class CsBucketBuilder:
             http=ctx.http,
             config=ctx.config,
             settings=ctx.definition,
+            sort_prefix=ctx.sort_prefix,
             # The pass's own resolver: one ``listFilterChoices`` for this
             # library, memoised in ``run_cache`` beside every other builder's,
             # and the same instance the dynamic engine enumerates through -- so

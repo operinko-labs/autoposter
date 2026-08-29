@@ -72,6 +72,8 @@ class FakeCollection:
         self._labels = []
         self.summary = None
         self.sort_set = None
+        self.titleSort = None
+        self.sort_title_set = None
         self.summary_set = None
         self.summary_queries = []
         # Stands in for ``collection._server``: the summary is written with a
@@ -106,6 +108,12 @@ class FakeCollection:
 
     def sortUpdate(self, sort=None):
         self.sort_set = sort
+
+    def editSortTitle(self, sortTitle, locked=True):
+        # Row 49: every managed collection derives its group's sort-title
+        # prefix now, so this route is reached on every apply.
+        self.sort_title_set = sortTitle
+        self.titleSort = sortTitle
 
     def editSummary(self, summary, locked=True):
         """Raises the way the live server does -- the section route plexapi

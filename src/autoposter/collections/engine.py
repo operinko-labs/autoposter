@@ -329,6 +329,13 @@ async def run_library(
         plex=PlexSectionAccess(section, owned_index),
     )
 
+    # The group index and the tab order, resolved ONCE for the library rather
+    # than per definition: ``preset_groups`` walks the catalog's active presets
+    # and expanding it forty times would be forty identical scans. Pure -- no
+    # Plex, no database -- so it costs nothing a dry run does not also pay.
+    group_order = groups.effective_order(config)
+    group_index = groups.preset_groups(config, library_type)
+
     def context(definition: CollectionDefinition) -> BuilderContext:
         return BuilderContext(
             library=library,
@@ -371,6 +378,9 @@ async def run_library(
                     session=session, section=section, library=library,
                     library_type=library_type, label=label, config=config,
                     http=http, dry_run=dry_run, definition=definition,
+                    sort_prefix=groups.sort_prefix_for(
+                        definition, group_index, group_order
+                    ),
                     run_cache=run_cache, listing=listing,
                 )
             )
@@ -425,6 +435,14 @@ async def run_library(
                 label=label, dry_run=dry_run, http=http, config=config,
                 owned_index=owned_index, listing=listing, preview=preview,
                 summaries=summaries,
+                # ``unit``, not ``definition`` -- the whole of the C3 expansion
+                # trap. An expanded unit carries the ceremony's own builder
+                # (``imdb_award_years``), its own title ("Oscars Winners 2026")
+                # and its own year, so it resolves its own group and its own
+                # ordering key; resolving from the placeholder would hand all
+                # five ceremony years one string.
+                sort_prefix=groups.sort_prefix_for(unit, group_index, group_order),
+                sort_order=groups.definition_order(unit, library_type),
             )
             actions += result.actions
             results.append(result)
@@ -482,6 +500,8 @@ async def _run_one(
     listing,
     preview: bool = False,
     summaries=None,
+    sort_prefix: str | None = None,
+    sort_order: str | None = None,
 ) -> DefinitionResult:
     """One collection: build, resolve, cap, apply."""
     outcome = DefinitionResult(title=definition.title, library=library)
@@ -594,6 +614,8 @@ async def _run_one(
             config=config,
             sync_mode=definition.sync_mode,
             settings=definition,
+            sort_prefix=sort_prefix,
+            sort_order=sort_order,
         )
     return outcome
 
