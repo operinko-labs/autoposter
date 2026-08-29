@@ -402,6 +402,11 @@ python -m autoposter.collections
   full list; a repeated one is refused as a name that means less than it looks
   like. Neither is accepted as a reordering that silently did nothing.
 
+  The **Groups** panel on the Collections page is this setting's UI: per-group
+  up/down moves, saved as the complete ten-key list through the settings
+  overrides, and its Reset removes the override so the file above (or the
+  built-in order) applies again.
+
 **The first pass after this feature ships re-writes one sort title per managed
 collection** — one `editSortTitle` PUT each, membership untouched — including
 replacing the prefixes on collections adopted from Kometa. The smart-shaped
