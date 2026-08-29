@@ -824,11 +824,13 @@ TRACEARR_PRESETS: tuple[Preset, ...] = (
 
 # --- the CONTENT category -----------------------------------------------------
 #
-# ``defaults/both/universe.yml`` is the one Content pack that reproduces
-# exactly: Kometa builds each universe from a hand-maintained list, and nine of
-# its sixteen are public IMDb lists whose ids are written out in the file
-# (``imdb_url``). Those nine are transcribed here as ``imdb_list`` definitions
-# and the titles are the file's own ``data`` names.
+# ``defaults/both/universe.yml`` is the Content pack this catalog transcribes
+# most closely: Kometa builds each universe from a hand-maintained list, and
+# nine of its sixteen are public IMDb lists whose ids are written out in the
+# file (``imdb_url``). Those nine are transcribed here as ``imdb_list``
+# definitions and the titles are the file's own ``data`` names -- eight of them
+# verbatim. The ninth, DC Universe, is the table's one divergence: its comment
+# below records why.
 #
 # The other seven universes are MDBList-hosted, and six of those seven URLs are
 # of the ``mdblist.com/lists/k0meta/external/<id>`` shape (the seventh is
@@ -840,7 +842,16 @@ _UNIVERSE_LISTS: tuple[tuple[str, str, tuple[str, ...] | None], ...] = (
     ("Alien / Predator", "ls543971628", _MOVIE),
     ("Arrowverse", "ls566667558", None),
     ("Conjuring Universe", "ls068768438", _MOVIE),
-    ("DC Universe", "ls524274984", None),
+    # The one row in this table that is NOT Kometa's own transcription -- the
+    # other eight are. Kometa's own defaults/both/universe.yml still cites
+    # ls524274984, but that list's owner made it PRIVATE on IMDb (verified
+    # 2026-08-29), and there is no upstream replacement to transcribe --
+    # Kometa's master still points at the dead id. Re-pointed instead at
+    # ls046609392 ("DC Cinematic Universe - DCEU & DCU", owner Pietro_Pizzi,
+    # public, last modified 2026-06-23, 23 items spanning DCEU/DCU films AND
+    # TV including Superman (2025), Creature Commandos and Peacemaker, with
+    # forward entries through 2027; verified public 2026-08-29).
+    ("DC Universe", "ls046609392", None),
     ("Fast & Furious", "ls4102351575", _MOVIE),
     ("Marvel Cinematic Universe", "ls539646485", None),
     ("Star Trek", "ls547463722", None),
@@ -854,9 +865,14 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
         category="content",
         name="Universes",
         description=(
-            "Nine cross-franchise universes -- %s -- each built from the public "
-            "IMDb list Kometa's own defaults name for it. The three that are "
-            "film-only are offered for Movie libraries only, as Kometa's "
+            "Nine cross-franchise universes -- %s -- eight of them built from "
+            "the public IMDb list Kometa's own defaults name for it. The "
+            "ninth, DC Universe, points at a replacement instead: Kometa's own "
+            "id went private on its owner's action (verified 2026-08-29) with "
+            "no upstream replacement to transcribe, so this one is built from "
+            "a maintained public list found and verified separately (see the "
+            "catalog row's comment for its id and provenance). The three that "
+            "are film-only are offered for Movie libraries only, as Kometa's "
             "allowed_libraries has them. Kometa's remaining seven universes are "
             "MDBList-hosted under a URL shape this service's mdblist_list "
             "builder cannot address, so they are absent rather than guessed at."
