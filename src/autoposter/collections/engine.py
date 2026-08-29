@@ -799,7 +799,7 @@ async def _sweep(
         # family that happened to be outside its schedule would otherwise emit
         # fifty identical lines saying nothing was deleted.
         results.append(_swept(family_title, library, (
-            "the dynamic family %r did not build anything this pass -- it was "
+            "the %r family did not build anything this pass -- it was "
             "outside its schedule, or it refused -- so none of its collections "
             "were considered for deletion" % family_title
         )))

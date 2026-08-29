@@ -33,17 +33,15 @@ through, the family is half the size it will be -- correct, incomplete, and
 converging as the drift sweep works the rest (``scheduler.drift_days``,
 ``scheduler.drift_batch_size``: 500 items a week by default). Every pack built
 on this says so in its own description, and the builder reports the coverage
-numbers in its actions so an operator can see where they are.
+numbers into the run cache.
 
-**Every refusal RETURNS**, as a note in the pass's run cache that the engine
-surfaces: an empty enumeration, an all-excluded family, an over-cap fan-out, a
+**Every refusal RETURNS**, as a note in the pass's run cache for the engine to
+surface: an empty enumeration, an all-excluded family, an over-cap fan-out, a
 duplicate title and a franchise TMDb cannot name are all reported rather than
 raised. ``expand`` returning ``[]`` is a family that built nothing, and
 ``generated_titles`` answering ``None`` is what stops the sweep treating that as
 narrowing.
 """
-import logging
-
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoposter.collections.builders.base import (
@@ -63,8 +61,6 @@ from autoposter.collections.facts_family import (
     FACTS_FAMILY_TYPES,
 )
 from autoposter.config.schema import CollectionDefinition
-
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "FAMILY_LABEL_PREFIX", "FactsFamilyBuilder", "FactsFamilyParams",
@@ -96,8 +92,8 @@ def notes(run_cache: dict) -> list[str]:
 
     A list on the run cache rather than a return value, because ``expand`` has
     to answer with definitions and the engine logs an expansion failure without
-    a place to put an operator-facing note (``engine.py:379-391``). The engine
-    surfaces these beside the pass's other actions.
+    a place to put an operator-facing note (``engine.py:379-391``). Task 5
+    decides where these appear in the pass report; nothing reads them today.
     """
     return run_cache.setdefault(_NOTES_KEY, [])
 
@@ -364,13 +360,6 @@ class FactsFamilyBuilder:
         label = family_label(definition)
         units: list[CollectionDefinition] = []
         for unit in titled:
-            if not unit.values:
-                report.append(
-                    "%r: %r resolved to no values and was not built"
-                    % (definition.title, unit.title)
-                )
-                generated.discard(unit.title)
-                continue
             if row.member_builder == "tmdb_collection":
                 # One franchise per collection: the shipped builder takes a
                 # single id, and an addon merge over franchises is upstream's
