@@ -875,10 +875,13 @@ TRACEARR_PRESETS: tuple[Preset, ...] = (
 # ``defaults/both/universe.yml`` is the Content pack this catalog transcribes
 # most closely: Kometa builds each universe from a hand-maintained list, and
 # nine of its sixteen are public IMDb lists whose ids are written out in the
-# file (``imdb_url``). Those nine are transcribed here as ``imdb_list``
-# definitions and the titles are the file's own ``data`` names -- eight of them
-# verbatim. The ninth, DC Universe, is the table's one divergence: its comment
-# below records why.
+# file (``imdb_url``). Eight of those nine are transcribed here as
+# ``imdb_list`` definitions with the file's own ``data`` names, verbatim. The
+# ninth, DC, is deliberately NOT reproduced: it split into the
+# three-collection ``content_dc`` preset below (operator directive,
+# 2026-08-30 -- the DCU, the DCEU and the rest of DC are not one universe),
+# and the one-line history above the Fast & Furious row is what remains of it
+# in this table.
 #
 # The other seven universes are MDBList-hosted, and six of those seven URLs are
 # of the ``mdblist.com/lists/k0meta/external/<id>`` shape (the seventh is
@@ -890,21 +893,21 @@ _UNIVERSE_LISTS: tuple[tuple[str, str, tuple[str, ...] | None], ...] = (
     ("Alien / Predator", "ls543971628", _MOVIE),
     ("Arrowverse", "ls566667558", None),
     ("Conjuring Universe", "ls068768438", _MOVIE),
-    # The one row in this table that is NOT Kometa's own transcription -- the
-    # other eight are. Kometa's own defaults/both/universe.yml still cites
-    # ls524274984, but that list's owner made it PRIVATE on IMDb (verified
-    # 2026-08-29), and there is no upstream replacement to transcribe.
-    # Re-pointed instead at ls046609392 ("DC Cinematic Universe - DCEU & DCU",
-    # owner Pietro_Pizzi, public, last modified 2026-06-23, 23 items spanning
-    # DCEU/DCU films AND TV including Superman (2025), Creature Commandos and
-    # Peacemaker, with forward entries through 2027; verified public
-    # 2026-08-29).
-    ("DC Universe", "ls046609392", None),
+    # No DC row any more. Its history, in one line: Kometa's ls524274984 went
+    # private (verified 2026-08-29), was re-pointed at ls046609392, and on
+    # 2026-08-30 the whole row split into the three-list ``content_dc``
+    # preset below.
     ("Fast & Furious", "ls4102351575", _MOVIE),
     ("Marvel Cinematic Universe", "ls539646485", None),
     ("Star Trek", "ls547463722", None),
     ("Star Wars Universe", "ls501373412", None),
     ("X-Men Universe", "ls567618635", None),
+)
+
+_DC_LISTS: tuple[tuple[str, str, tuple[str, object], tuple[str, ...] | None], ...] = (
+    ("DC Universe", "tmdb_list", ("id", 8642250), None),
+    ("DC Extended Universe", "mdblist_list", ("list", "fa11en82/dc-extended-universe"), None),
+    ("In Association With DC", "mdblist_list", ("list", "fa11en82/in-association-with-dc"), None),
 )
 
 CONTENT_PRESETS: tuple[Preset, ...] = (
@@ -913,24 +916,25 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
         category="content",
         name="Universes",
         description=(
-            "Nine cross-franchise universes -- %s -- eight of them built from "
-            "the public IMDb list Kometa's own defaults name for it. The "
-            "ninth, DC Universe, points at a replacement instead: Kometa's own "
-            "id went private on its owner's action (verified 2026-08-29) with "
-            "no upstream replacement to transcribe, so this one is built from "
-            "a maintained public list found and verified separately (see the "
-            "catalog row's comment for its id and provenance). The three that "
+            "Eight cross-franchise universes -- %s -- each built from the "
+            "public IMDb list Kometa's own defaults name for it. Kometa's "
+            "ninth universe, DC, is not here: it is the three-collection DC "
+            "preset beside this one (`content_dc`), which replaced the single "
+            "DC Universe row this pack used to carry -- tick that preset to "
+            "have DC, in three collections instead of one. The three that "
             "are film-only are offered for Movie libraries only, as Kometa's "
-            "allowed_libraries has them. Kometa's remaining seven universes are "
-            "MDBList-hosted under a URL shape this service's mdblist_list "
-            "builder cannot address, so they are absent rather than guessed at."
+            "allowed_libraries has them. Kometa's remaining seven universes "
+            "are MDBList-hosted under a URL shape this service's mdblist_list "
+            "builder cannot address, so they are absent rather than guessed "
+            "at."
             % ", ".join(title for title, _list, _types in _UNIVERSE_LISTS)
         ),
         kometa_source=NOT_KOMETA
         + (
-            "eight of the nine lists are defaults/both/universe.yml's "
-            "transcriptions; the DC id is ours -- Kometa's went private "
-            "(verified 2026-08-29)"
+            "the eight lists are defaults/both/universe.yml's transcriptions, "
+            "but not the file whole: its DC row is deliberately not "
+            "reproduced (it split into content_dc, whose three lists are not "
+            "Kometa's), and its seven MDBList universes are absent"
         ),
         library_types=_BOTH,
         collections=tuple(
@@ -941,6 +945,62 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
                 library_types=library_types,
             )
             for title, list_id, library_types in _UNIVERSE_LISTS
+        ),
+    ),
+    # The three-way DC split (operator directive, 2026-08-30): the DCU, the
+    # DCEU and everything DC that is canonically in neither are three
+    # different continuities, so they are three collections rather than one
+    # row of ``_UNIVERSE_LISTS``. Sources, the directive's own mapping:
+    #
+    #   themoviedb.org/list/8642250-dc-studios-dcu       -> "DC Universe"
+    #   mdblist.com/lists/fa11en82/dc-extended-universe  -> "DC Extended Universe"
+    #   mdblist.com/lists/fa11en82/in-association-with-dc -> "In Association With DC"
+    #
+    # All three verified live before transcription (the phase's T1 probe;
+    # counts and composition in its PR). Each row is (title, builder, one
+    # params pair, library_types) -- the params KEY differs per builder
+    # (``tmdb_list`` takes ``id``, ``mdblist_list`` takes ``list``), so the
+    # pair is written whole rather than derived. ``library_types`` narrows a
+    # single-media list below the preset's Movie+Show, exactly as
+    # ``_UNIVERSE_LISTS``' column does. The drift guard is
+    # ``test_the_dc_source_refs_have_not_drifted_by_one_entry``: editing a
+    # ref here is a two-site change, table plus digest.
+    Preset(
+        key="content_dc",
+        category="content",
+        name="DC",
+        description=(
+            "Three DC collections where the Universes pack used to have one, "
+            "because the three are technically not the same universe. 'DC "
+            "Universe' is DC Studios' current DCU slate, film and TV, from "
+            "public TMDb list 8642250. 'DC Extended Universe' is the "
+            "2013-2023 DCEU, from the public MDBList "
+            "fa11en82/dc-extended-universe. 'In Association With DC' is "
+            "everything DC that is not canonically in either universe, from "
+            "fa11en82/in-association-with-dc. Enabling this beside the "
+            "Universes pack does not collide: that pack's DC row moved here. "
+            "An operator who had the old DC Universe collection gets it back "
+            "under the same title with the new membership by ticking this "
+            "preset; until then the pass reports the old collection as "
+            "unmanaged every pass and deletes nothing (deleting it takes "
+            "collections.delete_unconfigured, which is off by default)."
+        ),
+        kometa_source=NOT_KOMETA
+        + (
+            "the three lists are an operator directive (TMDb 8642250; "
+            "MDBList fa11en82/dc-extended-universe and "
+            "fa11en82/in-association-with-dc) -- Kometa's universe.yml has "
+            "one DC row, not three"
+        ),
+        library_types=_BOTH,
+        collections=tuple(
+            PresetCollection(
+                title=title,
+                builder=builder,
+                params=(param,),
+                library_types=library_types,
+            )
+            for title, builder, param, library_types in _DC_LISTS
         ),
     ),
     Preset(
@@ -2120,12 +2180,12 @@ TIME_PRESETS: tuple[Preset, ...] = (
 # setting-backed):
 #
 #   awards           15 / 0 / 1     charts           10 / 0 / 1
-#   content           2 / 2 / 0     content_ratings   7 / 0 / 1
+#   content           4 / 1 / 0     content_ratings   7 / 0 / 1
 #   location          1 / 2 / 0     media             3 / 1 / 0
 #   people            1 / 4 / 0     production        3 / 0 / 0
 #   time              1 / 2 / 0
 #
-# -- 57 rows: 43 presets an operator can switch on today, 11 that name what
+# -- 58 rows: 45 presets an operator can switch on today, 10 that name what
 # they would build and the roadmap row that would let them, and 3 rendered
 # switches for families that already ship behind a boolean.
 CATALOG: tuple[Preset, ...] = (

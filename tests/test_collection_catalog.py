@@ -265,7 +265,7 @@ def test_the_awards_category_is_every_ceremony_but_the_oscars():
 CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "awards": (15, 0, 1),
     "charts": (10, 0, 1),
-    "content": (3, 1, 0),
+    "content": (4, 1, 0),
     "content_ratings": (7, 0, 1),
     "location": (1, 2, 0),
     "media": (3, 1, 0),
@@ -1691,7 +1691,7 @@ def test_the_resolution_transcription():
 
 def test_the_universes_transcription():
     universes = catalog.BY_KEY["content_universes"]
-    assert len(universes.definitions("Movie")) == 9
+    assert len(universes.definitions("Movie")) == 8
     # The three Kometa restricts to film libraries.
     assert {d.title for d in universes.definitions("Movie")} - {
         d.title for d in universes.definitions("Show")
@@ -1699,15 +1699,20 @@ def test_the_universes_transcription():
     assert all(
         d.params["list"].startswith("ls") for d in universes.definitions("Movie")
     )
+    # The split, held from this side too: DC left this pack for content_dc,
+    # and a row drifting back in would collide with that preset's first title
+    # the moment both were enabled.
+    assert "DC Universe" not in {d.title for d in universes.definitions("Movie")}
 
 
 def test_the_universe_ids_have_not_drifted_by_one_entry():
-    """The nine-id drift guard the DC re-point exposed a gap for: nothing else
+    """The eight-id drift guard the DC re-point exposed a gap for: nothing else
     in this suite pins the ids themselves, only the count and shape
     (``test_the_universes_transcription``). One list has already died and been
-    swapped once (see the row comment above ``_UNIVERSE_LISTS``); this makes
-    the next such edit a deliberate two-site change -- table plus digest --
-    rather than a silent one.
+    swapped once, and the swap's replacement has since left for ``content_dc``
+    (the one-line history above ``_UNIVERSE_LISTS``' Fast & Furious row); this
+    makes the next such edit a deliberate two-site change -- table plus digest
+    -- rather than a silent one.
 
     Recomputing the digest after a DELIBERATE id edit: verify the new id
     against its source first, then regenerate with ``_table_checksum`` over
@@ -1715,10 +1720,56 @@ def test_the_universe_ids_have_not_drifted_by_one_entry():
     adjust it just to turn a red test green.
     """
     ids = tuple(list_id for _title, list_id, _types in catalog._UNIVERSE_LISTS)
-    assert len(ids) == 9
+    assert len(ids) == 8
     assert _table_checksum(ids) == (
-        "c77343decd33f4630f499b7d4c316bcb3abb6c3631f293f5319c0c86b9ec8152"
+        "7470699d2bf5d0300047204cc68d6d2a968900383772164bf6551960882e5a5a"
     )
+
+
+def test_the_dc_transcription():
+    """The three-way split's shape: three rows, the exact titles in the
+    directive's order, the per-builder split (1x tmdb_list / 2x mdblist_list)
+    and the exact params -- each validated by its builder's own model at
+    expansion, which is what ``PresetCollection.definition`` does."""
+    dc = catalog.BY_KEY["content_dc"]
+    movie = dc.definitions("Movie")
+    assert [(d.title, d.builder) for d in movie] == [
+        ("DC Universe", "tmdb_list"),
+        ("DC Extended Universe", "mdblist_list"),
+        ("In Association With DC", "mdblist_list"),
+    ]
+    assert movie[0].params == {"id": 8642250}
+    assert movie[1].params == {"list": "fa11en82/dc-extended-universe"}
+    assert movie[2].params == {"list": "fa11en82/in-association-with-dc"}
+    assert [d.title for d in dc.definitions("Show")] == [d.title for d in movie]
+
+
+def test_the_dc_source_refs_have_not_drifted_by_one_entry():
+    """The two-site-change law, extended to the DC table the way
+    ``test_the_universe_ids_have_not_drifted_by_one_entry`` states it for the
+    universe ids: editing a source ref is a deliberate two-site change --
+    table plus this digest -- never a silent one. Recomputing after a
+    DELIBERATE edit: verify the new ref against its LIVE list first (the T1
+    probe pattern -- fetched through the shipped client, never assumed), then
+    regenerate with ``_table_checksum`` over the stringified refs in table
+    order and paste the new hex string in below. Never adjust it just to turn
+    a red test green.
+    """
+    refs = tuple(
+        str(param[1]) for _title, _builder, param, _types in catalog._DC_LISTS
+    )
+    assert len(refs) == 3
+    assert _table_checksum(refs) == (
+        "dbfa79b6745487ccaf24ffe4715a73eca6f9ac16533ea83427d6bbae5c186703"
+    )
+    # Params validity, the half a digest cannot see: a positive int where
+    # TmdbEntityParams demands one, the "<user>/<slug>" shape where
+    # MdblistListParams demands that.
+    _title, _builder, (key, tmdb_id), _types = catalog._DC_LISTS[0]
+    assert key == "id" and isinstance(tmdb_id, int) and tmdb_id > 0
+    for _title, _builder, (key, slug), _types in catalog._DC_LISTS[1:]:
+        assert key == "list"
+        assert re.fullmatch(r"[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+", slug)
 
 
 def test_the_starter_director_transcription():
