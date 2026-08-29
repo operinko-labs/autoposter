@@ -18,6 +18,7 @@ from plexapi.utils import joinArgs
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.collections import groups
 from autoposter.collections.buckets import Bucket, derive_buckets
 from autoposter.collections.filters import parse_filters
 from autoposter.collections.posters import apply_poster, posters_enabled
@@ -33,24 +34,36 @@ logger = logging.getLogger(__name__)
 
 LIBTYPES = {"Movie": "movie", "Show": "show"}
 
-# The "Ratings Collections" separator: a permanently-empty divider for the
-# Common Sense age buckets, identical in both libraries. Values measured off
-# the live server and the pinned Kometa image, not re-derived here: the
-# summary is Kometa's own translation string, and the sort title reproduces
-# its ``separator`` template (``defaults/templates.yml``) --
-# ``sort_title: <<sort_prefix>><<collection_section>>_!<<title>>`` with
-# ``sort_prefix: "!"`` and ``collection_section: "110"``
-# (``defaults/both/content_rating_cs.yml``). That prefix is what makes the
-# collection sort as a divider instead of alphabetically by title.
-SEPARATOR_TITLE = "Ratings Collections"
-SEPARATOR_SUMMARY = "Section separator for Ratings Collections."
-SEPARATOR_SORT_TITLE = "!110_!" + SEPARATOR_TITLE
-# The separator's desired state never varies by library, so its hash is a
-# constant -- computed once here rather than by ``definition_hash()``, whose
-# ``Bucket`` shape does not fit it.
-SEPARATOR_HASH = hashlib.sha256(
-    "\x1f".join([SEPARATOR_TITLE, SEPARATOR_SUMMARY, SEPARATOR_SORT_TITLE]).encode("utf-8")
-).hexdigest()
+# The Common Sense family's divider, kept as named constants because two
+# neighbours read them: ``cs_bucket`` and the catalog's setting row. Both values
+# are now DERIVED from the group machinery rather than written out here --
+# "Ratings Collections" is what the content-ratings group's separator is called,
+# and one spelling of it is the point (roadmap row 49).
+#
+# The two upstream formulas these values follow -- the separator's name and its
+# sort title -- are transcribed and cited in ``collections/groups.py``'s module
+# docstring. The section NUMBERS are ours (NOT_KOMETA), and so is the tenth
+# group.
+SEPARATOR_TITLE = groups.separator_title("content_ratings")
+SEPARATOR_SUMMARY = groups.separator_summary("content_ratings")
+
+
+def separator_hash(title: str, summary: str, sort_title: str) -> str:
+    """Hash one separator's whole desired state.
+
+    Was a module CONSTANT: there was one separator, its desired state never
+    varied by library, and ``definition_hash``'s ``Bucket`` shape does not fit
+    it. Row 49 made separators plural, so the constant became this -- and it
+    computes the SAME payload in the SAME order, which is what keeps the
+    shipped digest reproducible byte for byte
+    (``tests/test_collection_group_separators.py`` pins it). Anything else
+    would give every live server a spurious re-write of a collection whose
+    desired state had not changed, because the hash is what a pass
+    short-circuits on.
+    """
+    return hashlib.sha256(
+        "\x1f".join([title, summary, sort_title]).encode("utf-8")
+    ).hexdigest()
 
 
 def definition_hash(bucket: Bucket, settings=None, url: str = "") -> str:
@@ -487,12 +500,13 @@ def _edit_collection_summary(collection, summary: str) -> None:
     )
 
 
-async def _reconcile_separator(
+async def reconcile_separator(
     session: AsyncSession,
     section,
     library_name: str,
     libtype: str,
     label: str,
+    spec: groups.SeparatorSpec,
     existing: dict,
     stored: dict,
     adopt: bool,
@@ -503,12 +517,44 @@ async def _reconcile_separator(
     http: httpx.AsyncClient | None = None,
     config=None,
 ) -> list[str]:
-    """The blank ``Ratings Collections`` divider: same ownership and
-    adoption rules as every other collection this family manages, but it is
-    never populated -- nothing here ever calls ``addItems``.
+    """One group's blank divider: created, kept current, never populated.
+
+    Same ownership and adoption rules as every other collection this service
+    manages -- the shared ``resolve_collision`` -- and nothing here ever calls
+    ``addItems``. It owns its own sort title (the ``spec``'s), which is why the
+    shared ``apply_collection_settings`` is deliberately not called on it: that
+    would hand it the group's MEMBER prefix and sink the heading into its own
+    block.
+
+    Was ``_reconcile_separator``, a private routine over three module constants,
+    reached only from ``reconcile_content_ratings``. Row 49 made separators
+    plural, so it takes a ``SeparatorSpec`` and the engine drives it once per
+    active group -- which is the whole of "generalise the one into N".
+
+    **Deletion is not here, by design.** A group that stops having collections
+    stops being named by ``groups.separator_titles``, and its divider becomes an
+    ordinary candidate for ``engine._sweep`` -- through the ownership label, the
+    managed row, any protecting label, ``delete_unconfigured`` (off by default,
+    and off means reported) and ``max_deletes``. Nothing about a heading earns
+    it a shortcut past guards every other collection has.
     """
-    collection = existing.get(SEPARATOR_TITLE)
+    collection = existing.get(spec.title)
+    record = stored.get(spec.title)
     actions: list[str] = []
+
+    if record is not None and record.kind == "operator":
+        # The ops/blank hazard. An operator blanked a collection under a title
+        # a group now claims; the endpoint gave it OUR ownership label, so
+        # resolve_collision would approve it and this routine would write a
+        # summary and a sort title over something nobody asked it to touch.
+        # The managed row is what says whose it is, and "operator" is the kind
+        # ``api/collections_builders.py`` writes precisely so this decision is
+        # possible. Returned, not raised: one contested title must not cost the
+        # library its pass.
+        return [
+            "%r was created by an operator, not by any definition; the %r "
+            "group's separator is not written over it" % (spec.title, spec.group)
+        ]
 
     if collection is not None:
         ok, message = resolve_collision(
@@ -521,10 +567,10 @@ async def _reconcile_separator(
             return actions
 
     posters_on = posters_enabled(config, http)
-    record = stored.get(SEPARATOR_TITLE)
+    wanted = separator_hash(spec.title, spec.summary, spec.sort_title)
     definition_current = (
         collection is not None and record is not None
-        and record.definition_hash == SEPARATOR_HASH
+        and record.definition_hash == wanted
     )
     if definition_current and not (posters_on and record.poster_sha256 is None):
         return actions
@@ -532,34 +578,41 @@ async def _reconcile_separator(
     if not definition_current:
         if dry_run:
             actions.append(
-                "%s %r" % ("would update" if collection else "would create", SEPARATOR_TITLE)
+                "%s %r" % ("would update" if collection else "would create", spec.title)
             )
         else:
             if collection is None:
-                collection = create_blank_collection(section, libtype, SEPARATOR_TITLE)
+                collection = create_blank_collection(section, libtype, spec.title)
                 collection.addLabel(label)
-                actions.append("created %r" % SEPARATOR_TITLE)
+                actions.append("created %r" % spec.title)
             else:
-                actions.append("updated %r" % SEPARATOR_TITLE)
+                actions.append("updated %r" % spec.title)
 
-            _edit_collection_summary(collection, SEPARATOR_SUMMARY)
-            collection.editSortTitle(SEPARATOR_SORT_TITLE)
+            _edit_collection_summary(collection, spec.summary)
+            collection.editSortTitle(spec.sort_title)
 
             if record is None:
                 record = ManagedCollection(
-                    library=library_name, title=SEPARATOR_TITLE, kind="separator",
+                    library=library_name, title=spec.title, kind="separator",
                     plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
-                    definition_hash=SEPARATOR_HASH,
+                    definition_hash=wanted,
                 )
                 session.add(record)
             else:
-                record.definition_hash = SEPARATOR_HASH
+                record.definition_hash = wanted
                 record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
 
-    if posters_on and collection is not None and record is not None:
+    if (
+        posters_on and collection is not None and record is not None
+        and spec.poster_key is not None
+    ):
+        # A group with no measured artwork stem gets no poster rather than a
+        # guessed path: a wrong URL 404s and the collection quietly keeps none,
+        # which is harder to spot than an absence
+        # (``posters.hosted_poster_url``'s own rule, applied one level up).
         message = await apply_poster(
             session, http, config, collection, record, library_name,
-            "separator", "content_rating", dry_run=dry_run,
+            "separator", spec.poster_key, dry_run=dry_run,
         )
         if message:
             actions.append(message)
@@ -577,7 +630,6 @@ async def reconcile_content_ratings(
     adopt: bool = False,
     adopt_from: list[str] | None = None,
     adopt_removes_prior_label: bool = False,
-    separators: bool = False,
     protect_labels: list[str] | None = None,
     http: httpx.AsyncClient | None = None,
     config=None,
@@ -600,11 +652,9 @@ async def reconcile_content_ratings(
     The separator is deliberately excluded -- its sort title is the constant
     that makes it a divider. None (the default) applies nothing.
 
-    ``separators`` additionally maintains the blank ``Ratings Collections``
-    divider that belongs to this same family -- production always passes it
-    from ``config.collections.separators``, which defaults to ``True``; it
-    defaults to ``False`` here so that direct callers not concerned with it
-    (most tests) do not also need a ``section._server`` double.
+    The family's divider is no longer reconciled here -- every group's separator
+    is driven by the engine (``engine._separators``), which is what made one
+    divider into N (roadmap row 49).
 
     ``resolver`` is the pass's ``LibraryTagResolver``, which answers both halves
     of this reconcile: what content ratings the library holds, and which Plex
@@ -790,13 +840,6 @@ async def reconcile_content_ratings(
             )
             if message:
                 actions.append(message)
-
-    if separators:
-        actions += await _reconcile_separator(
-            session, section, library_name, libtype, label,
-            existing, stored, adopt, adopt_from or [], adopt_removes_prior_label, dry_run,
-            protect_labels or [], http, config,
-        )
 
     await session.flush()
     return actions

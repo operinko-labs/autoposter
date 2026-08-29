@@ -1,37 +1,48 @@
 """Reconciling the blank "Ratings Collections" separator.
 
-Part of the Common Sense family (``reconcile_content_ratings``), not a
-free-floating extra: same ownership/adoption rules as every other collection
-this service manages, via the shared ``resolve_collision`` -- but it must
-never be populated. The fakes mirror ``tests/test_collection_reconcile.py``;
-the raw-POST plexapi surface (``_uriRoot``, ``joinArgs``, ``query``) is
-pinned separately in ``tests/test_plexapi_collection_contract.py``.
+Same ownership/adoption rules as every other collection this service manages,
+via the shared ``resolve_collision`` -- but it must never be populated. The
+fakes mirror ``tests/test_collection_reconcile.py``; the raw-POST plexapi
+surface (``_uriRoot``, ``joinArgs``, ``query``) is pinned separately in
+``tests/test_plexapi_collection_contract.py``.
+
+Row 49 moved the reconcile itself out of ``reconcile_content_ratings`` and onto
+``reconcile_separator``, which takes a ``groups.SeparatorSpec``; these tests
+follow it there. The forked ``section`` double below is roadmap row 191's debt
+and is deliberately left forked -- consolidating it mid-phase would put a
+refactor of eight files inside a behaviour change.
 """
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 from plexapi.exceptions import NotFound
 from sqlalchemy import select
 
+from autoposter.collections import groups
 from autoposter.collections.reconcile import (
-    SEPARATOR_SORT_TITLE,
     SEPARATOR_SUMMARY,
     SEPARATOR_TITLE,
-    reconcile_content_ratings,
+    reconcile_separator,
 )
+from autoposter.config.schema import CollectionDefinition, CollectionsConfig
 from autoposter.db.models import ManagedCollection
 
 LABEL = "autoposter"
 
+# The content-ratings group's own section number, and the sort title it makes.
+# ``!110_!`` was the shipped constant's; row 49 renumbers it to this group's
+# canonical position, which is the golden fixture's one deliberate sort-title
+# cell.
+SEPARATOR_SORT_TITLE = "!030_!Ratings Collections"
 
-class FakeChoice:
-    def __init__(self, title):
-        self.title = title
-        # Plex answers contentRating's key and title with the same string (the
-        # 10a-1 dynamic probe measured it), so the resolver is the identity
-        # here. Added when the Common Sense family started resolving its values
-        # through ``LibraryTagResolver`` rather than handing plexapi the
-        # written words.
-        self.key = title
+
+def _spec():
+    """The content-ratings group's separator, as the engine derives it."""
+    config = SimpleNamespace(collections=CollectionsConfig())
+    definitions = [
+        CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket")
+    ]
+    return groups.separator_specs(definitions, "Movie", config)[0]
 
 
 class FakeCollection:
@@ -107,8 +118,7 @@ class FakeSection:
     an empty collection targets ``section._server.query(...)``, so this
     fake plays both roles rather than needing a second fake object."""
 
-    def __init__(self, ratings=(), existing=(), section_type="movie"):
-        self._ratings = list(ratings)
+    def __init__(self, existing=(), section_type="movie"):
         self._existing = {c.title: c for c in existing}
         self.created = []
         self.key = "42"
@@ -147,9 +157,6 @@ class FakeSection:
     def collection(self, title):
         return self._existing[title]
 
-    def listFilterChoices(self, field, libtype=None):
-        return [FakeChoice(r) for r in self._ratings]
-
     def collections(self, **kw):
         return list(self._existing.values())
 
@@ -170,11 +177,32 @@ def _query(raw_posts):
     return parse_qs(urlsplit(call["key"]).query)
 
 
-async def test_creates_the_separator_via_a_raw_post_with_no_items(session):
-    section = FakeSection({"R"})
-    actions = await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
+async def _reconcile(
+    session, section, library="Movies", libtype="movie", dry_run=False,
+    adopt=False, adopt_from=(), protect_labels=(), http=None, config=None,
+):
+    """``engine._separators``' one call, with this file's fakes for the two
+    things the engine hands the reconciler: the pass's collection listing and
+    the library's managed rows."""
+    stored = {
+        row.title: row
+        for row in (
+            await session.execute(
+                select(ManagedCollection).where(ManagedCollection.library == library)
+            )
+        ).scalars()
+    }
+    return await reconcile_separator(
+        session, section, library, libtype, LABEL, _spec(),
+        {c.title: c for c in section.collections()}, stored,
+        adopt, list(adopt_from), False, dry_run, list(protect_labels),
+        http, config,
     )
+
+
+async def test_creates_the_separator_via_a_raw_post_with_no_items(session):
+    section = FakeSection()
+    actions = await _reconcile(session, section)
 
     args = _query(section.raw_posts)
     assert args["smart"] == ["0"]
@@ -189,21 +217,17 @@ async def test_creates_the_separator_via_a_raw_post_with_no_items(session):
 
 
 async def test_creates_the_separator_with_type_2_for_a_show_library(session):
-    section = FakeSection({"TV-14"}, section_type="show")
-    await reconcile_content_ratings(
-        session, section, "TV Shows", "Show", LABEL, dry_run=False, separators=True,
-    )
+    section = FakeSection(section_type="show")
+    await _reconcile(session, section, library="TV Shows", libtype="show")
     args = _query(section.raw_posts)
     assert args["type"] == ["2"]
 
 
 async def test_the_sort_title_is_set_on_creation(session):
-    section = FakeSection({"R"})
-    await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
-    )
+    section = FakeSection()
+    await _reconcile(session, section)
     collection = section._existing[SEPARATOR_TITLE]
-    assert collection.sort_title_set == SEPARATOR_SORT_TITLE == "!110_!Ratings Collections"
+    assert collection.sort_title_set == SEPARATOR_SORT_TITLE == "!030_!Ratings Collections"
     assert collection.summary_set == SEPARATOR_SUMMARY
 
 
@@ -214,11 +238,9 @@ async def test_a_drifted_summary_and_sort_title_are_corrected(session):
     theirs = FakeCollection(
         SEPARATOR_TITLE, labels=[LABEL], summary="wrong", sort_title="wrong",
     )
-    section = FakeSection({"R"}, existing=[theirs])
+    section = FakeSection(existing=[theirs])
 
-    actions = await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
-    )
+    actions = await _reconcile(session, section)
 
     assert section.raw_posts == []
     assert theirs.summary_set == SEPARATOR_SUMMARY
@@ -242,11 +264,9 @@ async def test_a_separator_already_carrying_the_target_summary_is_not_rewritten(
         SEPARATOR_TITLE, labels=[LABEL], summary=SEPARATOR_SUMMARY, sort_title="wrong",
         summary_locked=True,
     )
-    section = FakeSection({"R"}, existing=[theirs])
+    section = FakeSection(existing=[theirs])
 
-    await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
-    )
+    await _reconcile(session, section)
 
     assert theirs.summary_queries == []
     assert theirs.sort_title_set == SEPARATOR_SORT_TITLE
@@ -261,11 +281,9 @@ async def test_a_matching_but_unlocked_separator_summary_is_still_written(sessio
         SEPARATOR_TITLE, labels=[LABEL], summary=SEPARATOR_SUMMARY, sort_title="wrong",
         summary_locked=False,
     )
-    section = FakeSection({"R"}, existing=[theirs])
+    section = FakeSection(existing=[theirs])
 
-    await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
-    )
+    await _reconcile(session, section)
 
     assert len(theirs.summary_queries) == 1
     args = parse_qs(urlsplit(theirs.summary_queries[0]["key"]).query)
@@ -291,28 +309,22 @@ async def test_no_members_are_ever_added(session):
     count -- see ``deploy/README.md``.
     """
     theirs = FakeCollection(SEPARATOR_TITLE, labels=[LABEL], summary="wrong")
-    section = FakeSection({"R"}, existing=[theirs])
+    section = FakeSection(existing=[theirs])
 
-    await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
-    )
+    await _reconcile(session, section)
 
     assert theirs.items_added == []
 
 
 async def test_a_second_pass_writes_nothing(session):
-    section = FakeSection({"R"})
-    await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
-    )
+    section = FakeSection()
+    await _reconcile(session, section)
     collection = section._existing[SEPARATOR_TITLE]
     collection.summary_set = None
     collection.sort_title_set = None
     section.raw_posts = []
 
-    actions = await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
-    )
+    actions = await _reconcile(session, section)
 
     assert section.raw_posts == []
     assert collection.summary_set is None
@@ -321,10 +333,8 @@ async def test_a_second_pass_writes_nothing(session):
 
 
 async def test_dry_run_writes_nothing(session):
-    section = FakeSection({"R"})
-    actions = await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=True, separators=True,
-    )
+    section = FakeSection()
+    actions = await _reconcile(session, section, dry_run=True)
     assert section.raw_posts == []
     assert section._existing == {}
     assert any("would create" in a.lower() and SEPARATOR_TITLE in a for a in actions)
@@ -332,21 +342,21 @@ async def test_dry_run_writes_nothing(session):
     assert rows == []
 
 
-async def test_the_toggle_disables_it(session):
-    section = FakeSection({"R"})
-    actions = await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=False,
-    )
-    assert section.raw_posts == []
-    assert SEPARATOR_TITLE not in section._existing
-    assert not any(SEPARATOR_TITLE in a for a in actions)
+def test_the_toggle_disables_it():
+    """``collections.separators`` is now upstream of this reconciler rather
+    than a parameter of it: with the toggle off the content-ratings group
+    yields no ``SeparatorSpec``, so ``engine._separators`` has nothing to call
+    and no divider is created, reported or recorded."""
+    off = SimpleNamespace(collections=CollectionsConfig(separators=False))
+    definitions = [
+        CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket")
+    ]
+    assert groups.separator_specs(definitions, "Movie", off) == []
 
 
 async def test_it_is_recorded_as_a_managed_collection(session):
-    section = FakeSection({"R"})
-    await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False, separators=True,
-    )
+    section = FakeSection()
+    await _reconcile(session, section)
     rows = (await session.execute(select(ManagedCollection))).scalars().all()
     row = next(r for r in rows if r.title == SEPARATOR_TITLE)
     assert row.library == "Movies"
@@ -355,12 +365,9 @@ async def test_it_is_recorded_as_a_managed_collection(session):
 
 async def test_an_existing_kometa_separator_is_a_conflict_when_adopt_is_off(session):
     theirs = FakeCollection(SEPARATOR_TITLE, labels=["Kometa"])
-    section = FakeSection({"R"}, existing=[theirs])
+    section = FakeSection(existing=[theirs])
 
-    actions = await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False,
-        separators=True, adopt=False,
-    )
+    actions = await _reconcile(session, section, adopt=False)
 
     assert theirs.labels_added == []
     assert theirs.items_added == []
@@ -374,11 +381,10 @@ async def test_an_existing_kometa_separator_is_adopted_when_adopt_is_on(session)
     theirs = FakeCollection(
         SEPARATOR_TITLE, labels=["Kometa"], summary="wrong", sort_title="wrong",
     )
-    section = FakeSection({"R"}, existing=[theirs])
+    section = FakeSection(existing=[theirs])
 
-    actions = await reconcile_content_ratings(
-        session, section, "Movies", "Movie", LABEL, dry_run=False,
-        separators=True, adopt=True, adopt_from=["Kometa"],
+    actions = await _reconcile(
+        session, section, adopt=True, adopt_from=["Kometa"],
     )
 
     assert theirs.labels_added == [LABEL]

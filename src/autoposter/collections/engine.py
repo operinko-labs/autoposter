@@ -38,6 +38,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.collections import groups
 from autoposter.collections.builders import REGISTRY
 from autoposter.collections.builders.base import (
     BuilderContext,
@@ -49,7 +50,13 @@ from autoposter.collections.builders.base import (
 from autoposter.collections.filter_values import PlexItemView
 from autoposter.collections.filters import evaluate, parse_filters
 from autoposter.collections.lists import member_diff, reconcile_list_collection
-from autoposter.collections.reconcile import has_label, load_labels, protected_label
+from autoposter.collections.reconcile import (
+    LIBTYPES,
+    has_label,
+    load_labels,
+    protected_label,
+    reconcile_separator,
+)
 from autoposter.collections.resolve import build_owned_index, resolve_external
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import EventLog, ManagedCollection
@@ -421,6 +428,18 @@ async def run_library(
             )
             actions += result.actions
             results.append(result)
+
+    # Deliberately NOT wrapped in a ``try``, unlike the sweep below. A separator
+    # write failing is a Plex write failing, which belongs to
+    # ``reconcile_libraries``' per-library rollback exactly like every other
+    # write in the pass; the sweep's wrapper exists because it runs READS below
+    # writes this pass already committed, and this does not.
+    for result in await _separators(
+        session, section, library, library_type, definitions, config,
+        label=label, dry_run=dry_run, listing=listing,
+    ):
+        actions += result.actions
+        results.append(result)
 
     if sweep:
         try:
@@ -945,6 +964,59 @@ def _swept(title: str, library: str, action: str, deleting: int = 0) -> Definiti
     )
 
 
+async def _separators(
+    session: AsyncSession,
+    section,
+    library: str,
+    library_type: str,
+    definitions: list[CollectionDefinition],
+    config,
+    label: str,
+    dry_run: bool,
+    listing,
+) -> list[DefinitionResult]:
+    """One blank divider per group these definitions put collections in.
+
+    After the definitions rather than before, for one reason: the set of active
+    groups is derived FROM them, so running first would mean deciding what the
+    pass built before it had built it. Before the sweep, because a divider
+    created this pass has to be in the managed set the sweep reads.
+
+    One result per separator, under its own title. The Common Sense divider used
+    to fold its actions into the family's single result; a heading is now its own
+    thing in every library, and a preview that hid three of them inside one
+    family's row would be reporting the shape this phase replaced.
+    """
+    specs = groups.separator_specs(
+        [d for d in definitions if _targets(d, library)], library_type, config,
+    )
+    if not specs:
+        return []
+
+    stored = {
+        row.title: row
+        for row in (
+            await session.execute(
+                select(ManagedCollection).where(ManagedCollection.library == library)
+            )
+        ).scalars()
+    }
+    collections = config.collections
+    results: list[DefinitionResult] = []
+    for spec in specs:
+        actions = await reconcile_separator(
+            session, section, library, LIBTYPES[library_type], label, spec,
+            listing(), stored,
+            collections.adopt, collections.adopt_from or [],
+            collections.adopt_removes_prior_label, dry_run,
+            collections.protect_labels or [],
+        )
+        results.append(DefinitionResult(
+            title=spec.title, library=library, actions=list(actions), skipped=True,
+        ))
+    return results
+
+
 def definition_titles_for(
     definitions: list[CollectionDefinition],
     collections,
@@ -983,6 +1055,10 @@ def definition_titles(
     Gated-off definitions are included deliberately -- a collection skipped this
     pass is still managed, and reporting it as a prior tool's leftover would
     invite an operator to delete it.
+
+    Plus one term that is not a definition's title at all: every active group's
+    separator (roadmap row 49). It is folded in at the end, from the same
+    ``groups`` derivation ``_separators`` reconciles through.
     """
     titles: set[str] = set()
     for definition in definitions:
@@ -1007,4 +1083,12 @@ def definition_titles(
             }
             continue
         titles.add(definition.title)
+    # Every active group's blank divider. Folded in here rather than by the
+    # callers, so the delete sweep, the leftovers report and the config-load
+    # collision check all see the same set -- a title one of them missed is a
+    # heading the sweep reads as an orphan or the report reads as a prior
+    # tool's. ``config`` is read only through ``config.collections``, which is
+    # what lets ``CollectionsConfig._titles_must_not_collide`` call this with a
+    # SimpleNamespace shim of that one section.
+    titles |= groups.separator_titles(definitions, library_type, config)
     return titles

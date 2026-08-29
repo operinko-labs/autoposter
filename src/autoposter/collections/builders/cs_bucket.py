@@ -6,12 +6,17 @@ there is no membership for the engine to resolve or diff. The whole reconcile is
 it -- so that one enumeration of definitions covers every collection this
 service manages, which is what the leftovers report depends on.
 
-It is deliberately a thin wrapper. Nothing about the bucket derivation, the
-ownership rules or the separator moved: ``reconcile_content_ratings`` is called
-with exactly the arguments ``reconcile_libraries`` used to pass it, plus the
-definition itself -- which carries the per-definition collection settings
-(labels, sort title, display mode, hub visibility) the reconciler applies to
-each bucket it creates or updates.
+It is deliberately a thin wrapper. Nothing about the bucket derivation or the
+ownership rules moved: ``reconcile_content_ratings`` is called with exactly the
+arguments ``reconcile_libraries`` used to pass it, plus the definition itself --
+which carries the per-definition collection settings (labels, sort title,
+display mode, hub visibility) the reconciler applies to each bucket it creates
+or updates.
+
+The family's separator DID move, in row 49. It is the content-ratings group's
+divider now, one of N the engine drives after the definitions
+(``engine._separators``), so neither the call above nor ``titles()`` below
+mentions it.
 
 Phase 10a-2 moved exactly one thing through it: the pass's ``LibraryTagResolver``,
 which is what lets the reconciler build its query in the 9b grammar (roadmap row
@@ -20,15 +25,11 @@ which is what lets the reconciler build its query in the 9b grammar (roadmap row
 from autoposter.collections.buckets import derive_buckets
 from autoposter.collections.builders.base import SmartContext
 from autoposter.collections.builders.plex_search import LibraryTagResolver
-from autoposter.collections.reconcile import (
-    LIBTYPES,
-    SEPARATOR_TITLE,
-    reconcile_content_ratings,
-)
+from autoposter.collections.reconcile import LIBTYPES, reconcile_content_ratings
 
 
 class CsBucketBuilder:
-    """Every age bucket for one library, plus the family's separator."""
+    """Every age bucket for one library."""
 
     type_name = "cs_bucket"
     # The engine's marker for "this one applies itself" -- see SmartContext.
@@ -87,7 +88,6 @@ class CsBucketBuilder:
             adopt=ctx.config.collections.adopt,
             adopt_from=ctx.config.collections.adopt_from,
             adopt_removes_prior_label=ctx.config.collections.adopt_removes_prior_label,
-            separators=ctx.config.collections.separators,
             protect_labels=ctx.config.collections.protect_labels,
             http=ctx.http,
             config=ctx.config,
@@ -107,8 +107,10 @@ class CsBucketBuilder:
         actually present -- its titles come from the key/library-type pair alone
         -- so an empty ``present`` set recovers every bucket title without a
         Plex round trip.
+
+        The family's divider is NOT here since row 49. It is the content-ratings
+        group's separator now, and ``engine.definition_titles`` enumerates every
+        group's through ``groups.separator_titles`` -- one owner for the title,
+        so a divider cannot be counted by one path and swept by another.
         """
-        titles = {bucket.title for bucket in derive_buckets(set(), library_type)}
-        if config.collections.separators:
-            titles.add(SEPARATOR_TITLE)
-        return titles
+        return {bucket.title for bucket in derive_buckets(set(), library_type)}

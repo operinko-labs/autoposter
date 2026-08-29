@@ -243,6 +243,23 @@ def test_group_order_moves_the_separators_number_too():
     assert [spec.sort_title for spec in specs] == ["!010_!Ratings Collections"]
 
 
+def test_definition_titles_counts_the_separator_titles():
+    """The engine's enumeration seam: one owner for a separator's title, so a
+    divider cannot be counted by one path and swept as an orphan by another."""
+    from autoposter.collections.engine import definition_titles
+
+    definitions = [
+        CollectionDefinition(title="IMDb Top 250", builder="imdb_chart",
+                             params={"chart": "top_movies"}),
+    ]
+    titles = definition_titles(definitions, [], "Movie", config())
+    assert "IMDb Top 250" in titles
+    assert "Chart Collections" in titles
+
+    off = config(separators=False)
+    assert "Chart Collections" not in definition_titles(definitions, [], "Movie", off)
+
+
 # --- the per-member ordering key (LAW Addendum 1/2) --------------------------
 
 

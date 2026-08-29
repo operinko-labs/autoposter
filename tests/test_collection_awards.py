@@ -53,7 +53,7 @@ from autoposter.collections.builders.imdb_award import (
 )
 from autoposter.collections.engine import definition_titles
 from autoposter.collections.posters import hosted_poster_url
-from autoposter.config.schema import CollectionDefinition
+from autoposter.config.schema import CollectionDefinition, CollectionsConfig
 
 FIXTURES = Path("tests/fixtures/collections")
 FIXTURE = (FIXTURES / "ev0000003.yml").read_text(encoding="utf-8")
@@ -432,7 +432,11 @@ async def test_a_ceremonys_own_pattern_cannot_claim_another_ceremonys_titles():
         builder="golden_globes_award_years",
     )]
 
-    assert definition_titles(globes_only, collections, "Movie", None) == {
+    # Separators off, so the set below is only what the PATTERN claimed: since
+    # row 49 ``definition_titles`` also folds in every active group's divider,
+    # and an awards heading here would say nothing about pattern isolation.
+    config = SimpleNamespace(collections=CollectionsConfig(separators=False))
+    assert definition_titles(globes_only, collections, "Movie", config) == {
         "Golden Globe 2026", "Golden Globe 1999",
     }
 

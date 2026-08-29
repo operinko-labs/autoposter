@@ -14,12 +14,44 @@ from PIL import Image
 from plexapi.exceptions import NotFound
 from sqlalchemy import select
 
+from autoposter.collections import groups
 from autoposter.collections.lists import reconcile_list_collection
 from autoposter.collections.posters import hosted_poster_url
-from autoposter.collections.reconcile import SEPARATOR_TITLE, reconcile_content_ratings
+from autoposter.collections.reconcile import (
+    SEPARATOR_TITLE,
+    reconcile_content_ratings,
+    reconcile_separator,
+)
+from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ManagedCollection
 
 LABEL = "autoposter"
+
+
+async def _separator_pass(session, section, http, config, dry_run=False):
+    """``engine._separators``' one call for the content-ratings group.
+
+    Since row 49 the divider is not reconciled by ``reconcile_content_ratings``
+    -- the engine drives one per active group -- so the poster wiring is
+    asserted where the call now lives.
+    """
+    spec = groups.separator_specs(
+        [CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket")],
+        "Movie", config,
+    )[0]
+    stored = {
+        row.title: row
+        for row in (
+            await session.execute(
+                select(ManagedCollection).where(ManagedCollection.library == "Movies")
+            )
+        ).scalars()
+    }
+    return await reconcile_separator(
+        session, section, "Movies", "movie", LABEL, spec,
+        {c.title: c for c in section.collections()}, stored,
+        False, [], False, dry_run, [], http, config,
+    )
 
 
 def _jpeg_bytes(color: str = "red") -> bytes:
@@ -224,10 +256,7 @@ async def test_the_separator_gets_the_separator_poster(session, config_factory, 
     seen = []
 
     async with _client(_serving_handler(data, seen)) as http:
-        await reconcile_content_ratings(
-            session, section, "Movies", "Movie", LABEL, dry_run=False,
-            separators=True, http=http, config=config,
-        )
+        await _separator_pass(session, section, http, config)
 
     collection = section._existing[SEPARATOR_TITLE]
     assert collection.uploaded_bytes == [data]
@@ -370,10 +399,7 @@ async def test_the_separator_with_an_unchanged_definition_still_gets_a_missing_p
     config.collections.posters = False
 
     async with _client(_refusing_handler()) as http:
-        await reconcile_content_ratings(
-            session, section, "Movies", "Movie", LABEL, dry_run=False,
-            separators=True, http=http, config=config,
-        )
+        await _separator_pass(session, section, http, config)
 
     collection = section._existing[SEPARATOR_TITLE]
     assert collection.uploaded_bytes == []
@@ -381,10 +407,7 @@ async def test_the_separator_with_an_unchanged_definition_still_gets_a_missing_p
     config.collections.posters = True
     data = _jpeg_bytes()
     async with _client(_serving_handler(data, [])) as http:
-        await reconcile_content_ratings(
-            session, section, "Movies", "Movie", LABEL, dry_run=False,
-            separators=True, http=http, config=config,
-        )
+        await _separator_pass(session, section, http, config)
 
     assert collection.uploaded_bytes == [data]
 
