@@ -52,9 +52,9 @@ Canonical order and section numbers (position × 10, zero-padded to three):
 
 | # | group key | section | separator title | member sort title |
 |---|-----------|---------|-----------------|-------------------|
-| 1 | `charts` | `010` | `Chart Collections` | `!010_IMDb Top 250` |
-| 2 | `awards` | `020` | `Award Collections` | `!020_Oscars Best Picture Winners` |
-| 3 | `content_ratings` | `030` | `Ratings Collections` | `!030_Age 13+ Movies` |
+| 1 | `charts` | `010` | `Chart Collections` | `!010_<ord>_IMDb Top 250` |
+| 2 | `awards` | `020` | `Award Collections` | `!020_<ord>_Oscars Best Picture Winners` |
+| 3 | `content_ratings` | `030` | `Ratings Collections` | `!030_<ord>_Age 13+ Movies` |
 | 4 | `content` | `040` | `Content Collections` | `!040_<title>` |
 | 5 | `location` | `050` | `Location Collections` | `!050_<title>` |
 | 6 | `media` | `060` | `Media Collections` | `!060_<title>` |
@@ -63,10 +63,25 @@ Canonical order and section numbers (position × 10, zero-padded to three):
 | 9 | `time` | `090` | `Time Collections` | `!090_<title>` |
 | 10 | `operator` | `100` | `Collections` | `!100_<title>` |
 
+**LAW Addendum 1/2 (2026-08-29):** rows 1-3 carry an `<ord>` slot — a
+per-member ordering key filled for families that supply a natural order (CS
+buckets by ascending age index, zero-padded; award years descending, inverted
+so newest files first, matching Kometa's hand-order intent; charts in
+`CHART_COLLECTIONS`' canonical order). Rows 4-10 have no natural order and
+keep the two-part `!<NNN>_<title>` shape (alphabetical within group). The `~`
+leftovers sentinel (Kometa's Not-Rated trick) is adopted for other/leftover
+buckets within a group. The keys' justification is collation-independence
+(an explicit key makes within-block order ours regardless of Plex's own
+collation, which T1's probe proved differs from Python's) plus the measured
+Oscars hand-order regression (`docs/research/collection-sort-probe/README.md`
+§3a) — not the Common Sense "Age 2+ after Age 18+" claim, which was an
+unlabelled Python-collation inference the same probe's capture contradicts
+for leading digit runs and leaves unverified mid-string.
+
 Formulas, both on record:
 
 - **Separator naming** — `docs/research/kometa-collections.md:429`, transcribed: title `<<key_name>> Collections`, summary `Section separator for <<key_name>> Collections.`
-- **Sort title** — `.superpowers/sdd/p-prefetch-upstream.md:388-389`: `sort_title: "!<<collection_section>><<pre>><<order_<<key>>>><<title>>"` with `pre: "_"` and `order_<<key>>: ""`, i.e. `!<section>_<title>`. The separator template (`collections/reconcile.py:36-44`) is the same with an extra `!` before the title, which is the float trick that puts a divider above its block.
+- **Sort title** — `.superpowers/sdd/p-prefetch-upstream.md:386-388`: `sort_title: "!<<collection_section>><<pre>><<order_<<key>>>><<title>>"` with `pre: "_"` and `order_<<key>>: ""`, i.e. `!<section>_<title>`. That is upstream's own rendering (an empty order in Kometa's defaults file), transcribed, not ours — it is our *fallback* case (rows 4-10 above) when no ordering key applies. The separator template (`collections/reconcile.py:36-44`) is the same with an extra `!` before the title, which is the float trick that puts a divider above its block.
 
 The nine group keys 1-9 are exactly `catalog.CATEGORIES`' keys (`collections/catalog.py:69-79`); `operator` is the tenth and is ours.
 
@@ -276,7 +291,7 @@ Write `D:\Sites\autoposter\.superpowers\sdd\p49-task-1-report.md` containing:
 
 - The three probe answers, each marked MEASURED or BLOCKED.
 - The full canonical-order table from this plan's "The scheme, pinned" section, marked **NOT_KOMETA**, with the sentence: *"These section numbers are ours. Kometa's own per-file `collection_section` values are not transcribed — only four are on record, and fetching ~40 defaults files for cosmetic arithmetic fails the value test. Where an adopted collection carries a Kometa prefix, our value replaces it on collections this service manages, and that replacement is the migration."*
-- The two formula citations, verbatim, with their line numbers: `docs/research/kometa-collections.md:429` and `.superpowers/sdd/p-prefetch-upstream.md:388-389`.
+- The two formula citations, verbatim, with their line numbers: `docs/research/kometa-collections.md:429` and `.superpowers/sdd/p-prefetch-upstream.md:386-388`.
 - `SEPARATOR_POSTER_KEYS` as measured: every candidate key that returned `200`, mapped to its group; every group whose key returned `404` recorded as **no poster**, which is graceful by design (`posters.hosted_poster_url` already returns `None` for an unrecognised kind, and `apply_poster` treats `None` as "leave the poster alone").
 
 Delete the scratch script and log:
@@ -568,7 +583,12 @@ and fetching some forty files to transcribe cosmetic arithmetic fails the value
 test this repository applies to every other borrowed table. So the numbers below
 are spaced tens in our own canonical order, and where an adopted collection
 carries a Kometa prefix, ours replaces it on collections this service manages.
-Collections it does not manage are never touched.
+Collections it does not manage are never touched. **The per-member ordering
+key is OURS too (NOT_KOMETA, LAW Addendum 1)** -- filled for families that
+supply a natural order (CS buckets ascending, award years descending, charts
+in ``CHART_COLLECTIONS`` order) and otherwise absent, on grounds of
+collation-independence and the measured Oscars hand-order regression, not the
+unverified Common Sense collation claim an earlier draft rested on.
 
 The two FORMULAS, by contrast, are transcribed and cited:
 
@@ -577,7 +597,9 @@ The two FORMULAS, by contrast, are transcribed and cited:
   ``docs/research/kometa-collections.md:429``;
 - the sort title -- ``!<<collection_section>><<pre>><<order>><<title>>`` with
   ``pre: "_"`` and an empty order, i.e. ``!<section>_<title>`` --
-  ``.superpowers/sdd/p-prefetch-upstream.md:388-389``. The separator template
+  ``.superpowers/sdd/p-prefetch-upstream.md:386-388``. That empty-order
+  rendering is upstream's own and is our fallback case when no ordering key
+  applies; see above for the filled case. The separator template
   (``collections/reconcile.py:36-44``) is the same with an extra ``!``.
 """
 from dataclasses import dataclass

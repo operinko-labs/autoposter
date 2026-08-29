@@ -60,7 +60,12 @@ REPLACING adopted Kometa prefixes on managed collections". Nothing in this
 codebase has ever written a family sort title — the operator's tidy blocks are
 adopted-Kometa inheritance — so what those prefixes actually *are* was never on
 record. Until this probe the migration claim rested on inference. It now rests
-on a count.
+on a count: **49 collections carry an adopted Kometa prefix today.** That is
+not C5's churn figure. 49 counts collections *carrying a prefix*, whether or
+not this service manages them; the churn count C5's PR body needs is the
+*managed* set, derived separately (T4/T5), and can differ from 49 in either
+direction — a managed collection with no prefix still takes a PUT, and a
+prefixed collection under a switched-off preset takes none.
 
 **(b) Does the tab honour `titleSort` at all?** The row-49 recon called this
 "very likely but not recorded". It is the load-bearing assumption of the entire
@@ -83,8 +88,15 @@ takes the graceful no-poster path by construction.
 
 ### 3a. Adopted sort titles — MEASURED
 
+*Partly superseded by LAW Addendum 2 (2026-08-29): the ordering-key scheme
+below stands on the corrected justification — collation-independence plus the
+measured Oscars regression — not the Common Sense collation inference this
+section originally asserted. See the NOT MEASURED note under the Ratings
+Collections bullet.*
+
 Three distinct Kometa prefixes are in use across the two real libraries, on 49
-collections in total:
+collections in total (49 = collections carrying an adopted prefix, not the
+churn count — see §2(a) above):
 
 | Prefix | Movies | TV Shows | Total | The family carrying it |
 | --- | --- | --- | --- | --- |
@@ -105,22 +117,56 @@ values replace:
   than the transient.
 - `Oscars Best Picture Winners` → `'!130_Oscars !1'`. Kometa's award
   collections carry a hand-ordered suffix (`!1`, `!2`) rather than the title,
-  so the sort title and the title diverge entirely. Our formula
-  (`!<section>_<title>`) restores the title, which is a **visible reordering**
-  of that block on first pass: the two winner collections stop leading their
-  section and file alphabetically among the ceremony years. Worth one sentence
-  in the PR body.
+  so the sort title and the title diverge entirely. Our original formula
+  (`!<section>_<title>`, no ordering slot) would have restored the title and
+  lost that hand-order — a **measured** regression, since it compares two
+  concrete strings under the same collation rather than inferring Plex's
+  behavior. This is the finding LAW Addendum 1/2 responded to: the derived
+  sort title now carries a per-member ordering key for families with a
+  natural order — award years descending (newest first, matching Kometa's
+  hand-order intent) — so the winner collections keep leading their section
+  instead of filing alphabetically among the ceremony years. Worth one
+  sentence in the PR body either way: the block's internal order changes on
+  first pass.
 - `Ratings Collections` → `'!110_!Ratings Collections'`, and `Age 13+ Movies` →
   `'!110_13_Age 13+ Movies'`. The divider's extra `!` is confirmed live: it is
   the float trick, and it works. The members carry a two-digit *ordering* key
-  (`13_`) between the section and the title — a slot our sort-title formula
-  leaves empty (`order_<<key>>: ""`), so `Age 2+` files after `Age 18+`
-  alphabetically once ours lands. Also a visible reordering, also worth the
-  sentence. The Common Sense block is the one place this phase's formula is
-  *less* ordered than what it replaces.
+  (`13_`) between the section and the title.
+
+  **NOT MEASURED:** an earlier draft of this section claimed our original
+  formula (no ordering slot) would file `Age 2+` after `Age 18+`
+  alphabetically once it landed. That was an unlabelled inference from
+  Python's `str.lower()` collation — §3b spends four paragraphs proving
+  Python's collation is *not* Plex's, and the capture directly undercuts the
+  claim: Plex orders `28 Days/Weeks/Years Later`, `101 Dalmatians`, `300
+  Collection` (`probe-output.txt:33-35`) by leading digit run *numerically*,
+  not lexically. If that extends to a digit run mid-string, `Age 2+` sorts
+  *before* `Age 10+` on Plex's own collation with no ordering key at all, and
+  no regression occurs. Whether Plex's numeric collation extends mid-string is
+  not settled by this capture — every prefixed `Age N+` row already carries an
+  explicit `NN_` key, so its listed position tests the key, not the
+  collation, and the one unprefixed `Age N+` row (`Age 12+ Shows`, see below)
+  has no sibling to compare against. LAW Addendum 2 keeps the per-member
+  ordering key regardless, on grounds that do not depend on this claim: (a)
+  **collation-independence** — an explicit zero-padded key makes within-block
+  order ours regardless of what Plex's collation turns out to do, which this
+  probe proved differs from Python's; and (b) the **measured** Oscars
+  hand-order regression above.
 
 `Not Rated Movies` carries `'!110_~Not Rated Movies'` — a `~` sentinel to pin
-it last. Ours drops that too, for the same reason.
+it last. LAW Addendum 1 adopts that sentinel for our own leftover/other
+buckets rather than dropping it.
+
+One more thing the inventory table doesn't show. TV's `!110_` block totals 17:
+`Ratings Collections`, `Not Rated Shows`, and 15 age-bracket collections
+carrying `!110_NN_` prefixes. `Age 12+ Shows` exists in the library
+(`probe-output.txt:412`) but carries **no prefix at all** — its titleSort is
+the bare title, sitting in the unprefixed tail alongside genre and
+audio-language collections, while its 15 age-bracket siblings keep theirs.
+That is the single clearest live instance of LAW's founding fact — adopted-
+Kometa inheritance decaying one collection per pass — caught mid-decay on the
+live server, and it makes 49 a **floor**, not a ceiling, on the set of
+collections that carry (or once carried) an adopted prefix.
 
 ### 3b. The collections tab honours `titleSort` — MEASURED, yes
 
@@ -134,7 +180,14 @@ listing are enough to make an exact-equality test say `False` about an ordering
 that is otherwise entirely `titleSort`'s.
 
 So the script was amended, after that first run, with two measurements no
-collation of punctuation can flip. Both are quoted from the output below.
+collation of punctuation can flip — the block test and the inversion count —
+plus two additional prints not in the plan's original script (`first 5 by
+title`, `first 5 by sort`; the plan's Step-2 script prints only `first 5 as
+listed`). Those two extra lines carry a large share of the argument below. All
+four are quoted from the output. The capture committed here is the **second**
+run's output — the first run's capture was discarded and the pre-amendment
+script version is not preserved. Both runs were read-only, so there is no
+safety consequence, but the first run is not independently auditable.
 
 **The block test** — does the tab keep whole `!<NNN>_` blocks together, in
 section order, ahead of every collection carrying no prefix?
@@ -166,8 +219,14 @@ order under each candidate key:
 
 Plex's own listing leads with the four `!`-prefixed families in section order.
 Under `title` it would lead with `101 Dalmatians`. The tab is sorted by
-`titleSort`, and the residual two-of-373 disagreement is Plex's collation of
-punctuation inside a block, not a different sort key.
+`titleSort`, and the residual two-of-373 disagreement is a collation artefact,
+not a different sort key — but the two disagreements are not the same
+artefact. One is Plex's collation of punctuation inside the `110` block
+(`'!110_~Not Rated Movies'` listed before `'!110_01_Age 1+ Movies'`,
+`probe-output.txt:7-8`); the other is numeric collation in the *unprefixed*
+tail — Plex orders `28 Days/Weeks/Years Later`, `101 Dalmatians`, `300
+Collection` (`probe-output.txt:33-35`) by leading digit run numerically, which
+ASCII order would not.
 
 **Verdict: MEASURED — the collections tab honours `titleSort`.** The scheme is
 not cosmetic. The PR body needs no disclaimer.
@@ -209,7 +268,7 @@ SEPARATOR_POSTER_KEYS: dict[str, str] = {
 The `operator` group is absent too, deliberately — there is no upstream art for
 "the operator's own collections" and inventing one is not this phase's job.
 
-Six of the ten groups therefore get a separator with **no poster**, which is
+Seven of the ten groups therefore get a separator with **no poster**, which is
 graceful by construction rather than by a branch anyone had to write:
 `posters.hosted_poster_url` returns `None` for a kind it cannot build a path
 for, and `apply_poster` reads `None` as "leave the poster alone" rather than
@@ -490,15 +549,20 @@ docker compose -p p49t1 -f docker-compose.yml -f .superpowers/isolated-db.yml \
 docker compose -p p49t1 down
 ```
 
-The scrub was then verified against the captured log by counting occurrences of
-each needle — the counts are printed, the needles never are:
+The scrub was then verified against the captured log and the scratch script by
+counting occurrences of each needle — the counts are printed, the needles
+never are:
 
 ```
 file=.superpowers/p49-probe.log url_hits=0 host_hits=0 token_hits=0
 file=probe_sort.py              url_hits=0 host_hits=0 token_hits=0
 ```
 
-Zero on all six. The `<plex-host>` placeholder does not appear in the captured
-output either, which is the stronger result: the scrub never had to fire,
-because no line the script printed ever contained the address or the token in
-the first place.
+Zero on all six — two files, three needles each; this README and
+`probe-output.txt` did not exist yet when the needle-count script ran, and
+were checked separately by direct read instead: `probe-output.txt` contains
+nothing but collection titles, sort titles and status codes, and this file's
+only URL is the public Default-Images constant. The `<plex-host>` placeholder
+does not appear in the captured output either, which is the stronger result:
+the scrub never had to fire, because no line the script printed ever contained
+the address or the token in the first place.
