@@ -118,10 +118,12 @@ class PersonCredit:
     ``department`` are TMDb's own strings (``"Director"``, ``"Writing"``) and
     are ``None`` on cast credits, which carry a ``character`` instead. Nothing
     else crosses: the payload also holds profile paths, characters, episode
-    counts and popularity, and every one of those is a *10c* feature
-    (``tmdb_person`` summaries and posters, appearance thresholds). Returning
-    the raw payload would put them one attribute access away from a builder
-    that must not grow them yet.
+    counts and popularity, and none of them belongs here. Summaries and
+    posters ship through ``person_detail`` instead -- the credit record stays
+    lean *because* the person's own record already carries them. Appearance
+    thresholds are the remaining reason: still unbuilt, filed on roadmap row
+    194. Returning the raw payload would put profile paths one attribute
+    access away from a builder that must not grow them.
     """
 
     tmdb_id: str

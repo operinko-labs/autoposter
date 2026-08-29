@@ -69,7 +69,8 @@ its poster -- ships, through ``TmdbListClient.person_detail`` and the
 contained (see ``_profile``): a dead person record leaves the membership
 reconciled. Everything below is still 10c's and none of it belongs here:
 
-- ``tmdb_popular_people``: TMDb's popular-people list as a source.
+- ``tmdb_popular_people``: filed on roadmap row 194 -- its upstream shape is
+  a Plex actor-tag search (row 169's machinery), not a list source.
 - ``tmdb_birthday`` / ``tmdb_deathday``: gating whether a definition runs at
   all on a date derived from the person. Filed on roadmap row 160, with the
   day-level window machinery it is really asking for; ``person_detail``
