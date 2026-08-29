@@ -1,12 +1,33 @@
 {
+  "_provenance": "shape captured from TMDb /movie/940143 on 2026-08-29; vote_average, vote_count, release_date, genres and production_companies retained from the hand-trimmed fixture this replaced so the pinned assertions in tests/test_tmdb_facts.py keep meaning what they meant (live values on that date were 49 votes, 2023-12-08, [Thriller], 'Particular Crowd'); origin_country, original_language and belongs_to_collection are the real captured values",
   "id": 940143,
   "title": "All Souls",
+  "original_language": "en",
+  "origin_country": [
+    "US"
+  ],
+  "belongs_to_collection": null,
   "vote_average": 6.3,
   "vote_count": 41,
   "release_date": "2023-05-12",
-  "genres": [{"id": 27, "name": "Horror"}, {"id": 18, "name": "Drama"}],
+  "genres": [
+    {
+      "id": 27,
+      "name": "Horror"
+    },
+    {
+      "id": 18,
+      "name": "Drama"
+    }
+  ],
   "production_companies": [
-    {"id": 1, "name": "First Studio"},
-    {"id": 2, "name": "Second Studio"}
+    {
+      "id": 1,
+      "name": "First Studio"
+    },
+    {
+      "id": 2,
+      "name": "Second Studio"
+    }
   ]
 }

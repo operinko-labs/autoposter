@@ -1,0 +1,38 @@
+{
+  "_provenance": "captured whole from TMDb /movie/348 on 2026-08-29. Reached fetched-not-recalled: Kometa v2.4.8 defaults/movie/franchise.yml's first addons key is collection 8091, /collection/8091 is 'Alien Collection', and parts[0] is movie 348. Every value below is the captured one -- no assertion predates this fixture, so nothing is retained.",
+  "id": 348,
+  "title": "Alien",
+  "original_language": "en",
+  "origin_country": [
+    "US"
+  ],
+  "belongs_to_collection": {
+    "backdrop_path": "/6X42JnSMdo3dPAswOHUuvebdTq7.jpg",
+    "id": 8091,
+    "name": "Alien Collection",
+    "poster_path": "/gWFHIY77cRVoBRGERwMHqpD27gc.jpg"
+  },
+  "vote_average": 8.172,
+  "vote_count": 16748,
+  "release_date": "1979-05-25",
+  "genres": [
+    {
+      "id": 27,
+      "name": "Horror"
+    },
+    {
+      "id": 878,
+      "name": "Science Fiction"
+    }
+  ],
+  "production_companies": [
+    {
+      "id": 401,
+      "name": "Brandywine Productions"
+    },
+    {
+      "id": 276266,
+      "name": "Twentieth Century-Fox Productions"
+    }
+  ]
+}
