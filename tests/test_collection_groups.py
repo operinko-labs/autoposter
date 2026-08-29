@@ -95,7 +95,7 @@ def test_group_order_refuses_an_unknown_name_and_lists_the_valid_set():
         CollectionsConfig(group_order=["chartz"])
     message = str(caught.value)
     assert "chartz" in message
-    assert "content_ratings" in message
+    assert ", ".join(groups.CANONICAL_ORDER) in message
 
 
 def test_group_order_refuses_a_repeated_name():
@@ -261,7 +261,7 @@ def test_common_sense_buckets_order_by_ascending_age_zero_padded():
 
 
 def test_the_leftovers_bucket_takes_the_sentinel():
-    assert groups.LEFTOVERS_ORDER == "~"
+    assert groups.LEFTOVERS_ORDER == "99"
     assert groups.age_order("other") == groups.LEFTOVERS_ORDER
 
 
@@ -269,12 +269,11 @@ def test_every_shipped_bucket_sorts_in_the_order_the_table_lists_them():
     from autoposter.collections.buckets import derive_buckets
 
     keys = [groups.age_order(bucket.key) for bucket in derive_buckets(set(), "Movie")]
-    # ``~`` is 0x7E, after every digit, so under ASCII this reproduces the
-    # table's own order -- ages ascending, the leftovers bucket last. Task 1
-    # measured Plex filing ``!110_~Not Rated`` BEFORE ``!110_01_Age 1+``, so
-    # the sentinel's own position on a live server is NOT what this asserts;
-    # what the padded keys buy is a total order we choose, whichever end Plex
-    # puts the sentinel at.
+    # LAW Addendum 3: "99" is higher than every zero-padded age key this table
+    # produces, so this is a real leftovers-last pin against Task 1's measured
+    # ascending block -- unlike the dropped ``~`` sentinel, which that same
+    # capture showed filing BEFORE the ages on this server's collation, the
+    # opposite of what the requirement needs.
     assert keys == sorted(keys)
     assert keys[-1] == groups.LEFTOVERS_ORDER
     assert len(set(keys)) == len(keys)
@@ -292,7 +291,7 @@ def test_a_chart_definition_orders_by_its_place_in_the_chart_inventory():
 
     for library_type, charts in CHARTS_FOR.items():
         keys = [
-            groups.builtin_order(
+            groups.definition_order(
                 CollectionDefinition(
                     title="whatever", builder="imdb_chart", params={"chart": chart}
                 ),
@@ -302,7 +301,7 @@ def test_a_chart_definition_orders_by_its_place_in_the_chart_inventory():
         ]
         assert keys == sorted(keys)
         assert len(set(keys)) == len(keys)
-    assert groups.builtin_order(
+    assert groups.definition_order(
         CollectionDefinition(
             title="IMDb Popular", builder="imdb_chart",
             params={"chart": "popular_movies"},
@@ -326,7 +325,29 @@ def test_a_definition_no_family_orders_has_no_ordering_key():
             params={"chart": "lowest_rated"},
         ),
     ):
-        assert groups.builtin_order(definition, "Show") is None
+        assert groups.definition_order(definition, "Show") is None
+
+
+def test_the_awards_winners_definition_leads_its_ceremony_year_expansions():
+    # Review Important 1: a group mixing an unkeyed parent with a keyed
+    # expansion sorted the parent AFTER the keys -- a digit-first key always
+    # sorts ahead of a letter-first title -- so every ceremony year filed
+    # ahead of the winners collection it belongs with, the reverse of
+    # Kometa's measured hand-order ('!130_Oscars !1', winners leading). The
+    # winners definition now takes LEADING_ORDER so it sorts first within its
+    # own family's block.
+    winners = CollectionDefinition(
+        title="Oscars Winners", builder="imdb_award", params={"award": "best_picture"}
+    )
+    winners_key = groups.definition_order(winners, "Movie")
+    assert winners_key == groups.LEADING_ORDER
+
+    prefix = groups.sort_prefix("awards", groups.CANONICAL_ORDER)
+    winners_sort_title = groups.member_sort_title(prefix, "Oscars Winners", winners_key)
+    year_sort_title = groups.member_sort_title(
+        prefix, "Oscars Winners 2026", groups.year_order(2026)
+    )
+    assert winners_sort_title < year_sort_title
 
 
 # --- the derived sort title, out of band ------------------------------------

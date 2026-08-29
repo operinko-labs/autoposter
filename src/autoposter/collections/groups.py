@@ -103,8 +103,10 @@ _KEY_NAMES: dict[str, str] = {
 
 # The one deliberate exception to the formula. The operator group's key name
 # would be "Collections", and the formula would render "Collections
-# Collections". The title drops the redundant half; the SUMMARY still follows
-# the formula, because there the doubling never occurs.
+# Collections". The title drops the redundant half; the SUMMARY is built from
+# that already-overridden title (``separator_summary`` calls
+# ``separator_title``, not the formula directly), so it reads "Section
+# separator for Collections." rather than doubling either.
 _OPERATOR_TITLE = "Collections"
 
 # Which group a built-in family belongs to, keyed by builder. Only the shipped
@@ -139,14 +141,29 @@ SEPARATOR_POSTER_KEYS: dict[str, str] = {
 }
 
 # The ordering key a leftovers/other bucket takes, so it files after the
-# buckets that name something. Kometa's own Not-Rated trick, transcribed from
-# the live value Task 1 measured (``'!110_~Not Rated Movies'``). ``~`` is 0x7E,
-# after every digit and every letter in ASCII.
-LEFTOVERS_ORDER = "~"
+# buckets that name something. OURS (NOT_KOMETA, LAW Addendum 3): Kometa's own
+# ``~`` Not-Rated trick does the opposite of what its own live value needs --
+# Task 1's capture measured Plex filing ``!110_~Not Rated`` BEFORE
+# ``!110_01_Age 1+`` on this server, contradicting the ASCII-order assumption
+# the trick relies on. A plain zero-padded high key is verified instead,
+# against the same capture's ascending block: two digits, matching the age
+# keys' width, and higher than any of them.
+LEFTOVERS_ORDER = "99"
 
 # What an inverted year is subtracted from. Four digits, so every ceremony year
 # this dataset can hold renders four digits and the keys compare as strings.
 _YEAR_CEILING = 9999
+
+# The ordering key a family's PARENT collection takes, in a group where its own
+# expansions are keyed -- so the parent leads its family's block instead of
+# filing wherever its title happens to land among the keys (a digit-first key
+# always sorts ahead of a letter-first title, so an unkeyed parent otherwise
+# files AFTER every keyed expansion). OURS (NOT_KOMETA): the mechanism that
+# reproduces Kometa's measured hand-order for the one shipped case that needs
+# it (award winners ahead of their ceremony years, ``'!130_Oscars !1'``). Four
+# digits wide to match ``year_order``'s width, and "0000" sorts before every
+# key that width can produce.
+LEADING_ORDER = "0000"
 
 
 @dataclass(frozen=True)
@@ -175,7 +192,8 @@ def effective_order(config) -> tuple[str, ...]:
 
     Section numbers derive from POSITION, so reordering renumbers -- which is a
     one-off re-write of every managed collection's sort title, exactly like the
-    first pass after this feature ships. Said plainly in ``deploy/README.md``.
+    first pass after this feature ships. This will be said plainly in
+    ``deploy/README.md`` once row 49's wrap (T5) writes it.
     """
     named = tuple(getattr(config.collections, "group_order", None) or ())
     return named + tuple(group for group in CANONICAL_ORDER if group not in named)
@@ -236,6 +254,10 @@ def age_order(bucket_key: str) -> str:
     Plex collates a digit run numerically -- which Task 1 measured it doing for
     LEADING runs and left unverified mid-string, and which is exactly the
     uncertainty an explicit key removes.
+
+    Two digits wide, matching ``LEFTOVERS_ORDER``: an age of 100 or more would
+    overflow that width and break the comparison this relies on, but
+    ``derive_buckets``'s current keys (1..18) never approach it.
     """
     if not bucket_key.isdigit():
         return LEFTOVERS_ORDER
@@ -270,23 +292,30 @@ def builtin_group(builder: str) -> str | None:
     return None
 
 
-def builtin_order(definition, library_type: str) -> str | None:
+def definition_order(definition, library_type: str) -> str | None:
     """The ordering key a shipped family gives this whole definition, or None.
 
-    Only the charts have one at definition level, and that is not an omission:
-    a chart definition is one collection, so its ordering key is decided the
-    moment the definition and the library type are in hand. The other two
-    ordered families expand at run time into collections the definition does
-    not name -- an age bucket per rating, a collection per ceremony year -- so
-    their keys belong to the expansion and are ``age_order``'s and
-    ``year_order``'s. Everything else has no natural order at all and takes the
-    plain ``!<NNN>_<title>`` shape.
+    Two families have one at definition level. Award winners (``imdb_award``)
+    take ``LEADING_ORDER``, so they lead their own family's ceremony-year
+    expansions instead of filing after them (Important 1 -- a group mixing an
+    unkeyed parent with a keyed expansion otherwise sorts the parent last,
+    the reverse of Kometa's measured hand-order). Charts take a position in
+    the chart inventory, and that is not an omission on their part either: a
+    chart definition is one collection, so its ordering key is decided the
+    moment the definition and the library type are in hand. The remaining
+    ordered family -- Common Sense buckets -- expands at run time into
+    collections the definition does not name -- an age bucket per rating --
+    so its key belongs to the expansion and is ``age_order``'s. Everything
+    else has no natural order at all and takes the plain ``!<NNN>_<title>``
+    shape.
 
     The chart inventory is read rather than copied, and read locally: it lives
     behind ``builders/__init__``, which imports the reconciler this module is
     imported by. A chart the library does not build has no position in that
     library's inventory and therefore no key.
     """
+    if definition.builder == "imdb_award":
+        return LEADING_ORDER
     if definition.builder != "imdb_chart":
         return None
 
@@ -361,8 +390,11 @@ class _DerivedSortTitle:
     the settings object puts the value in front of ``lists._settings_parts``,
     which is the one place that decides whether a pass has work to do.
 
-    Read-only and total: every attribute but ``sort_title`` reads through to the
-    definition, so this stands in wherever one does.
+    Read-only, and a ``__getattr__`` proxy rather than a true stand-in: every
+    attribute but ``sort_title`` reads through to the definition, but
+    ``isinstance(view, CollectionDefinition)``, ``model_dump()`` and
+    ``model_copy()`` all see straight through to the wrapped object and would
+    return it without the derived sort title.
     """
 
     __slots__ = ("_definition", "sort_title")
