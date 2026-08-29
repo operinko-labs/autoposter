@@ -50,7 +50,8 @@ collections:
     - TV Shows
   charts: true # IMDb Popular / Top 250 / Lowest Rated
   awards: true # Oscars winner collections
-  separators: true # the blank "Ratings Collections" section-divider collection
+  separators: true # a blank section-divider collection per collection group
+  # group_order: [awards, charts] # reorder the blocks; the rest follow
   posters: true # give managed collections a poster
   adopt: false # claim collections created by a tool being replaced; a Plex write, off by default
   adopt_from: # labels belonging to tools being replaced

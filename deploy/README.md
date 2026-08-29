@@ -376,10 +376,35 @@ python -m autoposter.collections
   they are not renamed or migrated, just no longer recognised as ours.
 - `libraries` (default `[Movies, TV Shows]`) — Plex library names to
   reconcile.
-- `separators` (default `true`) — manage the blank `Ratings Collections`
-  divider as part of this family: a permanently-empty collection whose sort
-  title makes it act as a visual separator in Plex's alphabetised collection
-  list.
+- `separators` (default `true`) — maintain a blank "index card" divider
+  collection for each GROUP of collections this service manages: `Chart
+  Collections`, `Award Collections`, `Ratings Collections` and so on. Each is a
+  permanently-empty collection whose sort title floats it above its own block in
+  Plex's alphabetised collections tab. Turning it off leaves the sort-title
+  prefixes in place and removes only the headings — and an existing heading is
+  then an ordinary orphan, reported by the pass and deleted only if
+  `delete_unconfigured` is on and `max_deletes` allows it, exactly like any
+  other collection this service no longer builds.
+- `group_order` (default unset) — reorder those blocks. Unset is the built-in
+  order: charts, awards, content ratings, content, location, media, people,
+  production, time, and your own `definitions:` entries last. A partial list is
+  the normal use — the groups you name lead, in that order, and the rest follow
+  behind them:
+
+  ```yaml
+  collections:
+    group_order: [awards, charts]
+  ```
+
+  The valid names are the ten above. An unknown or repeated one is refused at
+  config load with the full list, not accepted as a reordering that silently
+  did nothing.
+
+**The first pass after this feature ships re-writes one sort title per managed
+collection** — one `editSortTitle` PUT each, membership untouched — including
+replacing the prefixes on collections adopted from Kometa. Collections this
+service does not manage are never touched. The tab reorders once and then
+settles. Changing `group_order` later does the same thing again, once.
 
 **No collection is ever deleted by this service**, including ones that are
 empty or whose filter currently matches nothing in the library — that is
@@ -947,8 +972,8 @@ one collection this service must never touch.
 **Numbers for this library, audited against the live server:** Movies
 holds 305 collections, of which 30 would be touched by adoption (29
 content/chart/award collections plus the `Ratings Collections` separator,
-which is now managed as part of the Common Sense family rather than left
-over). TV Shows holds 20 collections, of which 19 would be touched. 49
+which is now one of the per-group dividers this service manages rather than
+left over). TV Shows holds 20 collections, of which 19 would be touched. 49
 collections across both libraries carry the `Kometa` label, and — with the
 separator now managed — **all 49 have titles this service manages**; none
 of them is expected to appear in the leftovers report. Two collections are
@@ -959,18 +984,19 @@ neither title collides with anything this service manages, and both are
 additionally covered by `protect_labels` and by the
 never-adopt-an-unlabelled-collection rule.
 
-**Unverified: creating a separator in a fresh library.** The blank
-`Ratings Collections` divider cannot be made through plexapi
-(`createCollection` rejects an empty item list), so it is created with a
-raw `POST /library/collections` carrying a `uri` that names no item keys —
-the same call Kometa makes. On this server both separators already exist,
-so only the update path ever runs and the create path is untested against
-live Plex; the test suite cannot cover it either, since no test may make a
-real outbound request. If you point `collections.libraries` at a library
-that has no `Ratings Collections` collection yet, **check its member count
-in Plex after the first run**: it must be empty. If it instead contains the
-whole library, remove it and report it — nothing in this service ever adds
-members to it, so the only way that can happen is the POST itself.
+**Unverified: creating a separator.** A blank divider collection cannot be
+made through plexapi (`createCollection` rejects an empty item list), so it
+is created with a raw `POST /library/collections` carrying a `uri` that names
+no item keys — the same call Kometa makes. Only the `Ratings Collections`
+divider existed on this server before the per-group dividers shipped, so
+until now only the update path ever ran and the create path is untested
+against live Plex; the test suite cannot cover it either, since no test may
+make a real outbound request. **The first pass after this feature ships is
+therefore the create path's first live exercise**, once per group that has no
+divider yet. **Check each new divider's member count in Plex after that run**:
+it must be empty. If it instead contains the whole library, remove it and
+report it — nothing in this service ever adds members to it, so the only way
+that can happen is the POST itself.
 
 Only the libraries named in `collections.libraries` are touched at all;
 everything else on the server is left completely alone. The default is
