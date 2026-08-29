@@ -74,7 +74,8 @@ collections:
   # config loads. The Oscars are the `awards:` toggle above, not a key here.
   #
   # Some presets are PACKS: one key builds one collection per value the library
-  # holds (every genre, every studio, every audio language). Switching a pack
+  # holds (every genre, every studio, every audio language), or per value this
+  # service has gathered facts for (every TMDb franchise). Switching a pack
   # ON creates that whole family on the next pass, and switching it OFF makes
   # every one of those collections an orphan at once -- which the sweep only
   # deletes if `delete_unconfigured` above is on, never more than `max_deletes`

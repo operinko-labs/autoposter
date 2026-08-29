@@ -116,10 +116,33 @@ DYNAMIC_LIBRARY_TYPE = "<Library type>"
 
 def _shape_line(what: str, shape: str) -> str:
     """One line for a family this table can name the SHAPE of and not the
-    members of. Shared by the two families that have one -- an award ceremony's
-    year collections and a dynamic pack -- because the picker renders one
-    string and there is no reason for it to be assembled two ways."""
+    members of. Shared by the three families that have one -- an award
+    ceremony's year collections, a dynamic pack and a facts-enumerated pack --
+    because the picker renders one string and there is no reason for it to be
+    assembled two ways."""
     return 'one per %s, named "%s"' % (what, shape)
+
+
+def _family_shape(row, params: dict, placeholder_title: str, values_clause: str) -> str:
+    """Shared body of ``dynamic_shape`` and ``facts_family_shape``: everything
+    but the type table each reads and the clause naming where its values come
+    from -- the one sentence an operator needs to read differently between
+    them (see each function's own docstring for why)."""
+    noun = row.name.replace("_", " ")
+    key_name = DYNAMIC_KEY_PLACEHOLDER % noun
+    shape = render_title(
+        params.get("title_format") or row.title_format,
+        key_name,
+        DYNAMIC_LIBRARY_TYPE,
+        key=key_name,
+        values=(),
+        auto_type=row.name,
+    )
+    line = _shape_line("%s %s" % (noun, values_clause), shape)
+    return (
+        '%s ("%s" above is the reserved definition title -- the family\'s own '
+        "collections are the ones per %s, named this way)" % (line, placeholder_title, noun)
+    )
 
 
 def dynamic_shape(params: dict, placeholder_title: str) -> str:
@@ -143,21 +166,7 @@ def dynamic_shape(params: dict, placeholder_title: str) -> str:
     left for the picker to invent.
     """
     row = DYNAMIC_TYPES[params["type"]]
-    noun = row.name.replace("_", " ")
-    key_name = DYNAMIC_KEY_PLACEHOLDER % noun
-    shape = render_title(
-        params.get("title_format") or row.title_format,
-        key_name,
-        DYNAMIC_LIBRARY_TYPE,
-        key=key_name,
-        values=(),
-        auto_type=row.name,
-    )
-    line = _shape_line("%s the library holds" % noun, shape)
-    return (
-        '%s ("%s" above is the reserved definition title -- the family\'s own '
-        "collections are the ones per %s, named this way)" % (line, placeholder_title, noun)
-    )
+    return _family_shape(row, params, placeholder_title, "the library holds")
 
 
 def facts_family_shape(params: dict, placeholder_title: str) -> str:
@@ -178,22 +187,7 @@ def facts_family_shape(params: dict, placeholder_title: str) -> str:
     a small lie on every freshly-deployed deployment.
     """
     row = FACTS_FAMILY_TYPES[params["type"]]
-    noun = row.name.replace("_", " ")
-    key_name = DYNAMIC_KEY_PLACEHOLDER % noun
-    shape = render_title(
-        params.get("title_format") or row.title_format,
-        key_name,
-        DYNAMIC_LIBRARY_TYPE,
-        key=key_name,
-        values=(),
-        auto_type=row.name,
-    )
-    line = _shape_line("%s this service has gathered facts for" % noun, shape)
-    return (
-        '%s ("%s" above is the reserved definition title -- the family\'s own '
-        "collections are the ones per %s, named this way)"
-        % (line, placeholder_title, noun)
-    )
+    return _family_shape(row, params, placeholder_title, "this service has gathered facts for")
 
 
 def collection_title(template: str, library_type: str) -> str:
@@ -1013,16 +1007,23 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
             "ceiling from, so the number is five times the engine's own default "
             "of 50. Past it the family creates nothing and reports both "
             "numbers rather than building a plausible fraction of itself. "
-            "Two more things this pack does differently from upstream, because "
-            "an operator can see both. Kometa builds no franchise collection "
-            "until the library holds TWO of its films (`minimum_items: 2`); "
-            "this family has no such floor, so a franchise you own one film of "
-            "still gets a collection. And where Kometa's addons fold two TMDb "
-            "collections into one (Prometheus into Alien), the builder here "
-            "takes a single collection id -- so such a bucket builds the first "
-            "of the two and names the other in the pass report, where you can "
-            "write it as a definition of your own. Twelve buckets can do that, "
-            "and only if you hold both halves. "
+            "Three more things this pack does differently from upstream, "
+            "because an operator can see all three. Kometa builds no "
+            "franchise collection until the library holds TWO of its films "
+            "(`minimum_items: 2`); this family has no such floor, so a "
+            "franchise you own one film of still gets a collection. Where "
+            "Kometa's addons fold two TMDb collections into one (Prometheus "
+            "into Alien), the builder here takes a single collection id -- so "
+            "such a bucket builds the first of the two and names the other in "
+            "the pass report, where you can write it as a definition of your "
+            "own. Twelve buckets can do that, and only if you hold both "
+            "halves. And where upstream merges extra movie ids into a "
+            "collection's own membership (`template_variables.movie` -- "
+            "Hobbs & Shaw into The Fast and the Furious, Once Upon a Deadpool "
+            "into X-Men), this family's membership is the franchise's own "
+            "`parts` through the `tmdb_collection` builder alone, so 29 "
+            "franchise collections are missing the films Kometa adds to "
+            "them. "
             "To build something other than what this pack builds, copy it into "
             "a `definitions:` entry of your own and edit it there -- a preset "
             "is a key, not a copy of the definitions it stands for."
@@ -1489,8 +1490,8 @@ CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
 # reason.
 _LOCATION_PACKS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("location_region", "Regions", "defaults/movie/region.yml",
-     "One collection per world region (Nordic, Balkan, Southeast Asia and the "
-     "rest of Kometa's grouping).", _MOVIE),
+     "One collection per world region (Northern Europe, Southern Europe, "
+     "South-Eastern Asia and the rest of Kometa's grouping).", _MOVIE),
     ("location_continent", "Continents", "defaults/movie/continent.yml",
      "One collection per continent -- the coarsest of the three location "
      "packs.", _MOVIE),
@@ -1544,10 +1545,11 @@ LOCATION_PRESETS: tuple[Preset, ...] = (_COUNTRY_PRESET,) + tuple(
             "origin-country values -- the ones Kometa groups -- are stored and "
             "enumerable here since the prefetch phase closed row %d. What is "
             "missing is the JOIN between them, and it is a table nobody has. "
-            "Kometa's grouping vocabulary ('Nordic', 'Balkan', 'Southeast "
-            "Asia') is a set of country display NAMES -- 647 of them across "
-            "the two files, with not one ISO code among them, and deliberate "
-            "alias spellings ('Turkiye' beside 'Turkey') because upstream is "
+            "Kometa's grouping vocabulary ('Northern Europe', 'Southern "
+            "Europe', 'South-Eastern Asia') is a set of country display "
+            "NAMES -- 647 of them across the two files, with not one ISO "
+            "code among them, and deliberate alias spellings ('Türkiye' "
+            "beside 'Turkey') because upstream is "
             "matching free text a Plex agent emitted. TMDb's `origin_country` "
             "is ISO-3166-1 alpha-2 codes. Building this pack would therefore "
             "not be a transcription of `%s`: it would be that file's grouping "

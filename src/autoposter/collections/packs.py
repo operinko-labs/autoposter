@@ -1025,7 +1025,7 @@ _FRANCHISE_ADDONS: dict[str, list[str]] = {
     "91361": ["126209"],     # Halloween <- Halloween (Rob Zombie Series)
     "9818": ["931431"],      # Mortal Kombat <- Mortal Kombat
     "495": ["608103"],       # Shaft <- Shaft (Reboot)
-    "1582": ["401562"],      # Teenage Mutant Ninja Turtles <- TMNT (Remake)
+    "1582": ["401562"],      # Teenage Mutant Ninja Turtles <- Teenage Mutant Ninja Turtles (Remake)
     "111751": ["425175"],    # Texas Chainsaw Massacre <- Texas Chainsaw (Reboot)
     "748": ["453993"],       # X-Men <- The Wolverine
 }
