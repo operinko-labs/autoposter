@@ -289,6 +289,20 @@ date — replacing Kometa's `mass_*_update`):
   refresh entirely, for operators who prefer to run it by hand.
 - `imdb_miss_refresh_minutes` (default `60`) — rate limit for the
   miss-triggered refresh described below. `0` disables it.
+- `tmdb_backoff_seconds` (default `60`) — how long TMDb is left alone after
+  it answers `429` without a usable `Retry-After`. `0` disables the shared
+  window entirely, restoring the behaviour before it existed: each `429` is
+  then simply that one request's failure. **Restart to apply** — the budget
+  captures its window length when the facts client is built at startup, so a
+  saved override reaches it at the next restart rather than immediately; the
+  config editor marks it as such rather than reporting the edit as live.
+  Two properties worth knowing before tuning it. The window lives in the
+  database, not in the pod, so every replica shares one: two pods do not each
+  have to discover the same `429`. And it can only be widened, never
+  shortened — a refusal carrying a longer `Retry-After` extends an open
+  window, a shorter one leaves it alone, and nothing shortens one that is
+  already open. If you need to clear a window early, the way out is to
+  restart with `0` rather than to lower this number.
 
 See `config/autoposter.example.yaml` for the full block.
 
@@ -838,6 +852,46 @@ posters/backgrounds do get re-badged on the sweep's cadence.
 
 If you want the season and episode artwork re-badged sooner than Sonarr
 activity will manage, drive it by hand rather than waiting for the sweep.
+
+### What the drift sweep fills in for TMDb-backed collections
+
+Three fields now come off the TMDb payload the facts pipeline was already
+fetching — `tmdb_origin_country`, `tmdb_original_language` and
+`tmdb_collection_id`, all on `item_facts`. They cost no extra requests: they
+ride the `/movie/{id}` and `/tv/{id}` reads a facts gather already makes, so
+turning them on added zero calls to any pass.
+
+What they are FOR is collections Plex cannot express. Plex has no
+`origin_country` field and no concept of a TMDb franchise, so a collection
+family over those values cannot be a Plex smart filter — it is built from
+this service's own stored facts instead. The `content_franchises` preset is
+the first one shipped on them.
+
+**The consequence an operator should expect, stated up front: such a family
+is only as complete as the facts pipeline's coverage of the library.** It
+enumerates what has been VISITED, not what exists. A library the pipeline
+has half worked through builds a half-sized family — correct, incomplete,
+and converging as the sweep works the rest. At the defaults above
+(`scheduler.drift_batch_size` 500 every `scheduler.drift_days` 7) a
+~16,000-item library is worked through in about 32 weeks; raising the batch
+size or shortening the cadence converges it faster, at the usual cost of
+more provider traffic per run.
+
+Two things make this visible rather than something to infer:
+
+- A family that builds **nothing** says so in the pass's own actions, with
+  both numbers — "the facts pipeline has visited N of M item(s) there" — and
+  names the two knobs above. So does a family that refuses for any other
+  reason (everything excluded, more collections than its cap allows, a
+  franchise TMDb cannot name).
+- A family that has enumerated nothing is never treated as a family the
+  operator narrowed, so the delete sweep will not remove its collections on
+  a pass that could not see them. Coverage gaps make a family smaller; they
+  never make it delete.
+
+There is nothing to wait for before enabling such a preset — an incomplete
+family is a working family that grows. Enable it in preview first
+(`collections.apply_to_plex: false`) and read the coverage line.
 
 ### Taking over Kometa's collections
 
