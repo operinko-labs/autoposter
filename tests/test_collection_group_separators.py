@@ -9,7 +9,10 @@ managed row AND no protected label AND ``delete_unconfigured`` AND
 ``max_deletes``). With the sweep off, which is the default, it is reported and
 left standing.
 """
+import io
+
 import httpx
+from PIL import Image
 from sqlalchemy import select
 
 from autoposter.collections import groups
@@ -314,6 +317,42 @@ async def test_a_key_with_no_hosted_path_leaves_the_poster_alone(session, config
     assert message == "no poster source for 'Chart Collections'"
     assert collection.uploaded == []
     assert row.poster_sha256 is None
+
+
+async def test_the_engine_hands_a_separator_its_poster(session, config_factory, tmp_path):
+    """The wiring ``golden_port.json`` records, pinned directly.
+
+    ``engine._separators`` has to thread the pass's HTTP client and config
+    through to the reconciler; without them ``posters_enabled`` reads False and
+    every divider silently loses the poster the Common Sense one has shipped
+    with, which would make ``SeparatorSpec.poster_key`` dead in production.
+    """
+    from autoposter.collections.engine import _separators
+    from autoposter.config.schema import CollectionDefinition
+
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(buffer, format="JPEG")
+    data = buffer.getvalue()
+    seen = []
+
+    async def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, content=data)
+
+    section = FakeSection()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        results = await _separators(
+            session, section, "Movies", "Movie",
+            [CollectionDefinition(title="Common Sense age ratings",
+                                  builder="cs_bucket")],
+            config, label=LABEL, dry_run=False, listing=dict, http=http,
+        )
+
+    assert [result.title for result in results] == ["Ratings Collections"]
+    assert seen == [hosted_poster_url("separator", "content_rating")]
+    assert section._collections["Ratings Collections"].uploaded == [data]
 
 
 def test_a_group_that_goes_quiet_leaves_an_ordinary_sweep_candidate():

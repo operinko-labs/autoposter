@@ -436,7 +436,7 @@ async def run_library(
     # writes this pass already committed, and this does not.
     for result in await _separators(
         session, section, library, library_type, definitions, config,
-        label=label, dry_run=dry_run, listing=listing,
+        label=label, dry_run=dry_run, listing=listing, http=http,
     ):
         actions += result.actions
         results.append(result)
@@ -974,6 +974,7 @@ async def _separators(
     label: str,
     dry_run: bool,
     listing,
+    http: httpx.AsyncClient | None = None,
 ) -> list[DefinitionResult]:
     """One blank divider per group these definitions put collections in.
 
@@ -986,6 +987,13 @@ async def _separators(
     to fold its actions into the family's single result; a heading is now its own
     thing in every library, and a preview that hid three of them inside one
     family's row would be reporting the shape this phase replaced.
+
+    ``http`` and ``config`` are threaded through because a separator carries a
+    poster like any other collection this service manages -- the three groups
+    with measured ``Default-Images`` artwork, at least. Without them
+    ``posters_enabled`` reads False and every divider would silently lose the
+    poster the Common Sense one has shipped with (``golden_port.json`` records
+    it), which is what makes ``SeparatorSpec.poster_key`` mean anything.
     """
     specs = groups.separator_specs(
         [d for d in definitions if _targets(d, library)], library_type, config,
@@ -1009,7 +1017,7 @@ async def _separators(
             listing(), stored,
             collections.adopt, collections.adopt_from or [],
             collections.adopt_removes_prior_label, dry_run,
-            collections.protect_labels or [],
+            collections.protect_labels or [], http, config,
         )
         results.append(DefinitionResult(
             title=spec.title, library=library, actions=list(actions), skipped=True,
