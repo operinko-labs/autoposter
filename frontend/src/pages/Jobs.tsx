@@ -152,7 +152,7 @@ export function Jobs() {
                   <th>Attempts</th>
                   <th>Next try</th>
                   <th>Queued</th>
-                  <th>Last error</th>
+                  <th>Last error / reason</th>
                   <th />
                 </tr>
               </thead>

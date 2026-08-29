@@ -182,6 +182,22 @@ describe("Dashboard", () => {
     expect(screen.getByText("queued")).toBeInTheDocument();
   });
 
+  it("gives the deferred tile its own class, not the one failed and parked share", async () => {
+    // A deferred job is waiting, not broken -- the tile is styled --warn in
+    // dashboard.css, deliberately not the --error that .stat-failed and
+    // .stat-parked carry. jsdom does not compute CSS, so the class name
+    // itself is what pins the rule this test guards.
+    stubFetch();
+
+    render(<Dashboard />);
+
+    const label = await screen.findByText("deferred");
+    const tile = label.parentElement;
+    expect(tile).toHaveClass("stat-deferred");
+    expect(tile).not.toHaveClass("stat-failed");
+    expect(tile).not.toHaveClass("stat-parked");
+  });
+
   it("keeps its timestamps on one line and both tables inside their own scroller", async () => {
     // At 500px the localized timestamp broke into five lines and crushed the
     // Run now button beside it. jsdom lays nothing out, so the assertion is
