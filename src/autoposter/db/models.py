@@ -217,6 +217,24 @@ class ItemFacts(Base):
     genres: Mapped[list] = mapped_column(JSONB, default=list)
     studio: Mapped[str | None] = mapped_column(Text)
     originally_available: Mapped[date | None] = mapped_column(Date)
+    # The three prefetch fields (roadmap rows 189/192), named OURS rather than
+    # Kometa's -- row 156's law. They are ENUMERATION-only: nothing in this
+    # service makes them `filters:`-writable, because a facts-backed filter
+    # needs the `facts` source tier and the sparsity story row 156 owns.
+    #
+    # NOT NULL with a server-side default for the array, exactly like
+    # ``genres``: an item TMDb reports no origin country for is honestly `[]`,
+    # and ``persist_facts`` never writes a field the gather did not populate,
+    # so "found nothing" is a row that keeps whatever it had.
+    tmdb_origin_country: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    # ISO-639-1 is two characters; 16 leaves room for the locale variants TMDb
+    # occasionally sends (``pt-BR``) without inviting a free-text column.
+    tmdb_original_language: Mapped[str | None] = mapped_column(String(16))
+    # ``belongs_to_collection.id``. The NAME is not stored: see
+    # ``facts/tmdb_facts._collection_id``.
+    tmdb_collection_id: Mapped[int | None] = mapped_column(Integer, index=True)
     # Which provider supplied each field, so a later source change is traceable.
     sources: Mapped[dict] = mapped_column(JSONB, default=dict)
     fetched_at: Mapped[datetime] = mapped_column(
@@ -431,4 +449,30 @@ class ScheduledRun(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TmdbRateState(Base):
+    """The shared TMDb backoff window (see ``facts/tmdb_budget.py``).
+
+    A single row, pinned to ``id=1``, holding the moment past which TMDb may be
+    asked again, on the database clock. Held here rather than in a process
+    variable for ``ImdbMissRefreshState``'s reason: every pod behind one
+    database then shares one window instead of each discovering the 429 for
+    itself.
+
+    ``blocked_until`` is NULL when nothing is known -- the state before the
+    first refusal -- and is never cleared afterwards, only moved: a window in
+    the past is the same statement as no window at all, and comparing against
+    ``now()`` is cheaper than deleting a row on a schedule nobody runs.
+    """
+
+    __tablename__ = "tmdb_rate_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the last refusal was seen, for an operator reading the table. Never
+    # compared against anything: the window is ``blocked_until``.
+    refused_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )

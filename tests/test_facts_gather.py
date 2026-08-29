@@ -6,7 +6,7 @@ import gzip
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from autoposter.db.models import ItemFacts, MediaItem
 from autoposter.facts import imdb as imdb_module
@@ -327,6 +327,83 @@ async def test_fetched_at_advances_on_second_persist_facts(session_factory):
     # Verify fetched_at advanced
     assert fetched_at_2 > fetched_at_1
     assert row2.audience_rating == pytest.approx(7.5)
+
+
+# --- the three prefetch columns, and the "we looked" stamp -------------------
+
+
+async def test_persist_writes_the_three_prefetch_columns(session):
+    media = MediaItem(rating_key="pf1", library="Movies", kind="movie", title="X")
+    session.add(media)
+    await session.flush()
+    await persist_facts(session, media.id, GatheredFacts(
+        tmdb_origin_country=["US", "GB"],
+        tmdb_original_language="en",
+        tmdb_collection_id=1241,
+        sources={"tmdb_origin_country": "tmdb"},
+    ))
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.tmdb_origin_country == ["US", "GB"]
+    assert row.tmdb_original_language == "en"
+    assert row.tmdb_collection_id == 1241
+
+
+async def test_a_later_gather_without_them_does_not_blank_them(session):
+    """Finding 4, one field along: a pass with no ``tmdb_id`` must not erase
+    what a complete pass stored. ``tmdb_origin_country`` is the interesting one
+    -- it is a NOT NULL JSONB defaulting to ``[]``, so a plain SQL COALESCE
+    could not tell 'found nothing' from 'honestly empty', which is exactly why
+    ``persist_facts`` builds its SET clause from populated fields only."""
+    media = MediaItem(rating_key="pf2", library="Movies", kind="movie", title="X")
+    session.add(media)
+    await session.flush()
+    await persist_facts(session, media.id, GatheredFacts(
+        tmdb_origin_country=["FI"], tmdb_original_language="fi",
+        tmdb_collection_id=7,
+    ))
+    await persist_facts(session, media.id, GatheredFacts(critic_rating=4.9))
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.tmdb_origin_country == ["FI"]
+    assert row.tmdb_original_language == "fi"
+    assert row.tmdb_collection_id == 7
+    assert row.critic_rating == pytest.approx(4.9)
+
+
+async def test_an_empty_gather_still_records_that_we_looked(session):
+    """C4, and the whole reason rows 189/192 can tell 'TMDb has nothing for
+    this item' from 'nobody has asked yet'.
+
+    ``persist_facts`` still writes NO ``item_facts`` row for an empty gather --
+    an all-NULL row is pure noise and that rule is unchanged -- but the ATTEMPT
+    is now stamped on ``media_items`` regardless, which is the shape
+    ``facts_attempted_at`` already had for the drift sweep
+    (``scheduler/jobs.py:142-151``). Before this, an item TMDb has never heard
+    of and an item nothing ever fetched were the same two NULLs.
+    """
+    media = MediaItem(rating_key="pf3", library="Movies", kind="movie", title="X")
+    session.add(media)
+    await session.flush()
+    assert media.facts_attempted_at is None
+
+    result = await persist_facts(session, media.id, GatheredFacts())
+
+    assert result is None, "an empty gather must still write no facts row"
+    assert (await session.execute(
+        select(func.count()).select_from(ItemFacts)
+    )).scalar_one() == 0
+    await session.refresh(media)
+    assert media.facts_attempted_at is not None
+
+
+async def test_a_non_empty_gather_stamps_the_attempt_too(session):
+    """The stamp is unconditional -- one statement on both paths, not two
+    statements that can drift apart."""
+    media = MediaItem(rating_key="pf4", library="Movies", kind="movie", title="X")
+    session.add(media)
+    await session.flush()
+    await persist_facts(session, media.id, GatheredFacts(critic_rating=4.9))
+    await session.refresh(media)
+    assert media.facts_attempted_at is not None
 
 
 # --- miss-triggered IMDb refresh --------------------------------------------

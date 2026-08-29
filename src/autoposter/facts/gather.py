@@ -2,11 +2,11 @@ import logging
 from dataclasses import replace
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import ItemFacts
+from autoposter.db.models import ItemFacts, MediaItem
 from autoposter.facts import imdb
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
@@ -150,7 +150,30 @@ async def persist_facts(
     must not erase the entries a previous pass recorded for fields it did not
     touch this time. A field the new gather DID populate always overwrites
     the old value, per-field, via ``ON CONFLICT``.
+
+    ``tmdb_origin_country`` joins ``genres``/``sources`` in the group a plain
+    SQL ``COALESCE`` could not serve: it is ``NOT NULL`` JSONB defaulting to
+    ``[]``, so "this round found no origin country" and "this item honestly has
+    none" are the same value and only the populated-fields rule can tell them
+    apart.
     """
+    # C4, and the whole point of it: "we looked and found nothing" and "nobody
+    # has looked" were the same two NULLs before this, and rows 189/192 need to
+    # tell them apart -- an enumeration that cannot say how much of the library
+    # it has actually visited cannot state its own coverage honestly.
+    #
+    # Unconditional, above the short-circuit, on the DATABASE clock like every
+    # other timestamp here. It rides ``facts_attempted_at``'s existing shape:
+    # the drift sweep already stamps it at selection time for exactly this
+    # reason (``scheduler/jobs.py:142-151``), and stamping it again at persist
+    # time is the same statement made by the path that actually did the work --
+    # so an item reached by a webhook rather than by the sweep is recorded too.
+    await session.execute(
+        update(MediaItem)
+        .where(MediaItem.id == media_item_id)
+        .values(facts_attempted_at=func.now())
+    )
+    await session.commit()
     if facts.is_empty():
         return (
             await session.execute(
@@ -171,6 +194,12 @@ async def persist_facts(
         values["studio"] = facts.studio
     if facts.originally_available:
         values["originally_available"] = facts.originally_available
+    if facts.tmdb_origin_country:
+        values["tmdb_origin_country"] = facts.tmdb_origin_country
+    if facts.tmdb_original_language:
+        values["tmdb_original_language"] = facts.tmdb_original_language
+    if facts.tmdb_collection_id is not None:
+        values["tmdb_collection_id"] = facts.tmdb_collection_id
     if facts.sources:
         values["sources"] = facts.sources
 
