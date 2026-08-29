@@ -17,41 +17,35 @@ from sqlalchemy import select
 from autoposter.collections import groups
 from autoposter.collections.lists import reconcile_list_collection
 from autoposter.collections.posters import hosted_poster_url
-from autoposter.collections.reconcile import (
-    SEPARATOR_TITLE,
-    reconcile_content_ratings,
-    reconcile_separator,
-)
+from autoposter.collections.reconcile import reconcile_content_ratings
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ManagedCollection
 
 LABEL = "autoposter"
 
+# The content-ratings group's divider title, as the engine derives it -- no
+# longer a name ``reconcile`` exports, since row 49 left that module with no
+# reader of its own for it (roadmap row 49, task 3 review Important 1).
+SEPARATOR_TITLE = groups.separator_title("content_ratings")
+
 
 async def _separator_pass(session, section, http, config, dry_run=False):
-    """``engine._separators``' one call for the content-ratings group.
+    """``engine._separators``' one call for the content-ratings group, called
+    the same way the engine calls it rather than restating its body.
 
     Since row 49 the divider is not reconciled by ``reconcile_content_ratings``
     -- the engine drives one per active group -- so the poster wiring is
     asserted where the call now lives.
     """
-    spec = groups.separator_specs(
+    from autoposter.collections.engine import _separators
+
+    results = await _separators(
+        session, section, "Movies", "Movie",
         [CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket")],
-        "Movie", config,
-    )[0]
-    stored = {
-        row.title: row
-        for row in (
-            await session.execute(
-                select(ManagedCollection).where(ManagedCollection.library == "Movies")
-            )
-        ).scalars()
-    }
-    return await reconcile_separator(
-        session, section, "Movies", "movie", LABEL, spec,
-        {c.title: c for c in section.collections()}, stored,
-        False, [], False, dry_run, [], http, config,
+        config, label=LABEL, dry_run=dry_run,
+        listing=lambda: {c.title: c for c in section.collections()}, http=http,
     )
+    return [action for result in results for action in result.actions]
 
 
 def _jpeg_bytes(color: str = "red") -> bytes:

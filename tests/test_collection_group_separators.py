@@ -76,9 +76,13 @@ class FakeCollection:
         self.labels_added = []
         self.sort_title_set = None
         self.uploaded = []
+        self.deleted = False
 
     def reload(self):
         self.labels = list(self._real_labels)
+
+    def delete(self):
+        self.deleted = True
 
     def addLabel(self, tag):
         self.labels_added.append(tag)
@@ -372,3 +376,78 @@ def test_a_group_that_goes_quiet_leaves_an_ordinary_sweep_candidate():
 
     off = SimpleNamespace(collections=CollectionsConfig(separators=False))
     assert groups.separator_titles(charts, "Movie", off) == set()
+
+
+async def test_a_switched_off_groups_separator_sweeps_like_any_other_orphan(session):
+    """The clause the test above only asserts one link of: a switched-off
+    group's separator is not merely absent from ``separator_titles`` -- it is
+    an ORDINARY delete-sweep candidate, driven through ``engine._sweep``'s
+    full guard chain, the same as any other orphan carrying our label and a
+    managed row. Pinned directly, the armed-sweep pattern
+    ``tests/test_builder_knobs.py`` already uses for every other guard.
+
+    And the other half of the lifecycle: with the group back on, the same
+    title is in this pass's managed set, so the row is never a sweep
+    candidate at all -- protected simply by being wanted, before any of the
+    label or ``delete_unconfigured`` guards are even reached.
+    """
+    from types import SimpleNamespace
+
+    from autoposter.collections.engine import _sweep
+    from autoposter.config.schema import CollectionDefinition, CollectionsConfig
+
+    chart_definitions = [CollectionDefinition(
+        title="IMDb Top 250", builder="imdb_chart", params={"chart": "top_movies"},
+    )]
+    armed = SimpleNamespace(collections=CollectionsConfig(delete_unconfigured=True))
+
+    # The group is off (no definition builds a chart): the row is an
+    # ordinary orphan, and armed ``delete_unconfigured`` deletes it.
+    orphan = FakeCollection("Chart Collections", labels=[LABEL])
+    row = ManagedCollection(
+        library="Movies", title="Chart Collections", kind="separator",
+        plex_rating_key="1", definition_hash="",
+    )
+    session.add(row)
+    await session.flush()
+
+    results = await _sweep(
+        session, FakeSection([orphan]), "Movies", "Movie", [], armed,
+        label=LABEL, dry_run=False,
+        listing=lambda: {"Chart Collections": orphan}, run_cache={},
+    )
+
+    assert orphan.deleted is True
+    assert any(
+        "deleted 'Chart Collections'" in action
+        for result in results for action in result.actions
+    )
+    assert (
+        await session.execute(
+            select(ManagedCollection).where(ManagedCollection.title == "Chart Collections")
+        )
+    ).scalar_one_or_none() is None
+
+    # The group is back on: the same title is in this pass's managed set
+    # (``groups.separator_titles`` folded into ``definition_titles_for``), so
+    # a freshly-recreated row for it is protected before any candidacy check
+    # runs at all -- not deleted, and not even reported on.
+    kept = FakeCollection("Chart Collections", labels=[LABEL])
+    row = ManagedCollection(
+        library="Movies", title="Chart Collections", kind="separator",
+        plex_rating_key="2", definition_hash="",
+    )
+    session.add(row)
+    await session.flush()
+
+    results = await _sweep(
+        session, FakeSection([kept]), "Movies", "Movie", chart_definitions, armed,
+        label=LABEL, dry_run=False,
+        listing=lambda: {"Chart Collections": kept}, run_cache={},
+    )
+
+    assert kept.deleted is False
+    assert not any(
+        "Chart Collections" in action
+        for result in results for action in result.actions
+    )

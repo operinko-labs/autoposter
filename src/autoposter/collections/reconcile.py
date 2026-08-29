@@ -34,18 +34,17 @@ logger = logging.getLogger(__name__)
 
 LIBTYPES = {"Movie": "movie", "Show": "show"}
 
-# The Common Sense family's divider, kept as named constants because two
-# neighbours read them: ``cs_bucket`` and the catalog's setting row. Both values
-# are now DERIVED from the group machinery rather than written out here --
-# "Ratings Collections" is what the content-ratings group's separator is called,
-# and one spelling of it is the point (roadmap row 49).
-#
-# The two upstream formulas these values follow -- the separator's name and its
-# sort title -- are transcribed and cited in ``collections/groups.py``'s module
-# docstring. The section NUMBERS are ours (NOT_KOMETA), and so is the tenth
-# group.
-SEPARATOR_TITLE = groups.separator_title("content_ratings")
-SEPARATOR_SUMMARY = groups.separator_summary("content_ratings")
+# Row 49 retired the module constants ``SEPARATOR_TITLE`` and
+# ``SEPARATOR_SUMMARY`` that used to live here: neither has a production
+# reader any more (the content-ratings divider is one of ten now, driven by
+# ``groups.separator_specs`` rather than this module), and the two tests that
+# used them call ``groups.separator_title("content_ratings")`` /
+# ``groups.separator_summary("content_ratings")`` directly instead -- one
+# spelling of it, in ``groups.py``. The byte-history the retired constants
+# would have documented is not lost: ``separator_hash`` below still has to
+# reproduce the shipped digest exactly, and
+# ``tests/test_collection_group_separators.py``'s ``SHIPPED_TITLE`` /
+# ``SHIPPED_SUMMARY`` / ``SHIPPED_HASH`` pin it as literals.
 
 
 def separator_hash(title: str, summary: str, sort_title: str) -> str:

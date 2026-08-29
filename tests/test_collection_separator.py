@@ -19,16 +19,18 @@ from plexapi.exceptions import NotFound
 from sqlalchemy import select
 
 from autoposter.collections import groups
-from autoposter.collections.reconcile import (
-    SEPARATOR_SUMMARY,
-    SEPARATOR_TITLE,
-    reconcile_separator,
-)
+from autoposter.collections.reconcile import reconcile_separator
 from autoposter.config.schema import CollectionDefinition, CollectionsConfig
 from autoposter.db.models import ManagedCollection
 
 LABEL = "autoposter"
 
+# The content-ratings group's own name and summary. Row 49 retired
+# ``reconcile.SEPARATOR_TITLE`` / ``SEPARATOR_SUMMARY`` -- neither has a
+# production reader any more -- so this module, the one place that still needs
+# the literals, derives them the same way the engine does.
+SEPARATOR_TITLE = groups.separator_title("content_ratings")
+SEPARATOR_SUMMARY = groups.separator_summary("content_ratings")
 # The content-ratings group's own section number, and the sort title it makes.
 # ``!110_!`` was the shipped constant's; row 49 renumbers it to this group's
 # canonical position, which is the golden fixture's one deliberate sort-title

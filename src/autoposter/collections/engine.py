@@ -974,14 +974,17 @@ async def _separators(
     label: str,
     dry_run: bool,
     listing,
-    http: httpx.AsyncClient | None = None,
+    http: httpx.AsyncClient | None,
 ) -> list[DefinitionResult]:
     """One blank divider per group these definitions put collections in.
 
     After the definitions rather than before, for one reason: the set of active
     groups is derived FROM them, so running first would mean deciding what the
-    pass built before it had built it. Before the sweep, because a divider
-    created this pass has to be in the managed set the sweep reads.
+    pass built before it had built it. Before the sweep, though ordering
+    against it does not matter for correctness: ``listing()`` is memoised
+    once per library on its first call, well before this function ever runs,
+    so a divider created here is invisible to whichever of the two reads it
+    -- the sweep cannot delete it in the same pass, in either order.
 
     One result per separator, under its own title. The Common Sense divider used
     to fold its actions into the family's single result; a heading is now its own
@@ -1020,7 +1023,12 @@ async def _separators(
             collections.protect_labels or [], http, config,
         )
         results.append(DefinitionResult(
-            title=spec.title, library=library, actions=list(actions), skipped=True,
+            title=spec.title, library=library, actions=list(actions),
+            # ``skipped`` covers every reason nothing was applied
+            # (``DefinitionResult``'s own docstring) -- a divider this pass
+            # created or updated is not that, so it is only true when the
+            # reconcile had no actions to report (already current).
+            skipped=not actions,
         ))
     return results
 

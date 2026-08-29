@@ -136,7 +136,7 @@ SEPARATOR_POSTER_KEYS: dict[str, str] = {
     "charts": "chart",
     "awards": "award",
     # The one already on record -- it is the key
-    # ``reconcile._reconcile_separator`` passes today.
+    # ``reconcile.reconcile_separator`` passes today.
     "content_ratings": "content_rating",
 }
 

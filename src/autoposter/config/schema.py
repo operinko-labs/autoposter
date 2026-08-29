@@ -837,6 +837,7 @@ class CollectionsConfig(BaseModel):
         # Imported at validation time, not module scope: both reach back into
         # this module -- the same cycle CollectionDefinition's builder
         # validator documents.
+        from autoposter.collections import groups
         from autoposter.collections.engine import definition_titles
         from autoposter.collections.service import LIBRARY_TYPES
         from autoposter.collections.sources import default_definitions
@@ -846,14 +847,29 @@ class CollectionsConfig(BaseModel):
         # it stands in as the whole config for the enumeration.
         shim = SimpleNamespace(collections=self)
         built_in: set[str] = set()
+        # Which of the built-in titles is a group separator's, so the refusal
+        # below can name the group and the toggle that frees it instead of
+        # sending the operator hunting for a built-in collection that does not
+        # exist under that name.
+        separator_group_by_title: dict[str, str] = {}
         for library_type in LIBRARY_TYPES.values():
-            built_in |= definition_titles(
-                default_definitions(shim, library_type), [], library_type, shim
-            )
+            defs = default_definitions(shim, library_type)
+            built_in |= definition_titles(defs, [], library_type, shim)
+            for group in groups.separator_groups(defs, library_type, shim):
+                separator_group_by_title[groups.separator_title(group)] = group
 
         seen: dict[str, CollectionDefinition] = {}
         for definition in self.definitions:
             if definition.title in built_in:
+                group = separator_group_by_title.get(definition.title)
+                if group is not None:
+                    raise ValueError(
+                        f"collection definition {definition.title!r} has the "
+                        f"same title as a built-in collection this service "
+                        f"already builds -- the {group!r} group's separator; "
+                        "rename your definition, or set "
+                        "collections.separators to false to free the title"
+                    )
                 raise ValueError(
                     f"collection definition {definition.title!r} has the same "
                     "title as a built-in collection this service already "

@@ -372,6 +372,34 @@ def test_the_collision_error_names_what_it_collided_with():
         build_config(document)
 
 
+def test_a_collision_with_a_group_separator_names_the_group_and_the_toggle():
+    """"Ratings Collections" is not itself a built-in collection -- it is the
+    content-ratings group's blank divider, folded into the reserved set by
+    ``groups.separator_titles``. The refusal above says only "a built-in
+    collection this service already builds", which sends an operator hunting
+    through the built-in toggles for a collection by that name; there is none.
+    The message has to name the group and ``collections.separators``, the
+    setting that actually frees the title."""
+    document = _document_with_definitions(
+        [{"title": "Ratings Collections", "builder": "plex_id", "params": {"ids": ["1"]}}]
+    )
+
+    with pytest.raises(ValidationError, match="content_ratings.*separator"):
+        build_config(document)
+
+
+def test_a_collision_with_a_group_separator_is_freed_by_the_toggle():
+    """The other half of the message's claim: switching the toggle off is
+    what actually frees the title, mirroring
+    ``test_a_definition_may_take_a_shipped_title_the_toggle_switched_off``."""
+    document = _document_with_definitions(
+        [{"title": "Ratings Collections", "builder": "plex_id", "params": {"ids": ["1"]}}]
+    )
+    document["collections"]["separators"] = False
+
+    assert len(build_config(document).collections.definitions) == 1
+
+
 def test_two_operator_definitions_may_not_share_a_title_in_one_library():
     document = _document_with_definitions([
         {"title": "Hand Picked", "builder": "plex_id", "params": {"ids": ["1"]}},
