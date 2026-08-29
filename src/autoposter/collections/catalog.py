@@ -60,6 +60,7 @@ from autoposter.collections import packs
 from autoposter.collections.builders.imdb_award import EVENTS
 from autoposter.collections.dynamic_titles import render_title
 from autoposter.collections.dynamic_types import DYNAMIC_TYPES
+from autoposter.collections.facts_family import FACTS_FAMILY_TYPES
 from autoposter.config.schema import CollectionDefinition
 from autoposter.providers.tmdb_lists import CHART_ENDPOINTS
 
@@ -156,6 +157,42 @@ def dynamic_shape(params: dict, placeholder_title: str) -> str:
     return (
         '%s ("%s" above is the reserved definition title -- the family\'s own '
         "collections are the ones per %s, named this way)" % (line, placeholder_title, noun)
+    )
+
+
+def facts_family_shape(params: dict, placeholder_title: str) -> str:
+    """The family-shape line for one facts-enumerated pack.
+
+    ``dynamic_shape``'s twin, and deliberately its near-copy rather than a
+    generalisation of it: the two read different type tables
+    (``FACTS_FAMILY_TYPES`` against ``DYNAMIC_TYPES``) and say a different
+    thing about where the values come from, which is the one sentence an
+    operator needs to read differently. Everything else is the same contract --
+    derived rather than restated, rendered through the same
+    ``dynamic_titles.render_title`` the family names collections with, with the
+    key and the library type as placeholders because neither is knowable here.
+
+    The clause that differs: a dynamic family's values are the LIBRARY's, and a
+    facts family's are the ones this service's own facts pipeline has visited
+    so far. A picker line that said "the library holds" of this family would be
+    a small lie on every freshly-deployed deployment.
+    """
+    row = FACTS_FAMILY_TYPES[params["type"]]
+    noun = row.name.replace("_", " ")
+    key_name = DYNAMIC_KEY_PLACEHOLDER % noun
+    shape = render_title(
+        params.get("title_format") or row.title_format,
+        key_name,
+        DYNAMIC_LIBRARY_TYPE,
+        key=key_name,
+        values=(),
+        auto_type=row.name,
+    )
+    line = _shape_line("%s this service has gathered facts for" % noun, shape)
+    return (
+        '%s ("%s" above is the reserved definition title -- the family\'s own '
+        "collections are the ones per %s, named this way)"
+        % (line, placeholder_title, noun)
     )
 
 
@@ -370,12 +407,13 @@ class Preset:
     def years_title(self) -> str | None:
         """The shape of this preset's dynamic titles, or None if it has none.
 
-        Two families build collections this table cannot name. An award
+        THREE families build collections this table cannot name. An award
         ceremony's year collections are named by the years the dataset carries;
-        a dynamic pack's family is named by the values the library holds.
-        Neither is knowable here, and both answer with the same one-line SHAPE
+        a dynamic pack's family is named by the values the library holds; a
+        facts pack's is named by the values this service has gathered facts for.
+        None is knowable here, and all three answer with the same one-line SHAPE
         through the same payload key the picker already renders -- one field,
-        one UI branch, no second shape for the second family to drift from
+        one UI branch, no second shape for a second family to drift from
         (10b decision C3).
         """
         if self.award_event is not None:
@@ -385,6 +423,8 @@ class Preset:
         for collection in self.collections:
             if collection.builder == "dynamic":
                 return dynamic_shape(dict(collection.params), collection.title)
+            if collection.builder == "facts_family":
+                return facts_family_shape(dict(collection.params), collection.title)
         return None
 
 
@@ -673,16 +713,26 @@ SEASONAL_WINDOW_ROW = 160  # day-level windows, and a collection fed by several
 KEYWORD_RESOLUTION_ROW = 161  # TMDb keyword name -> id, which no earlier row owns
 RELATIVE_YEAR_ROW = 171    # the `current_year`/`current_year-N` value grammar,
                            # the half of that row phase 10a did NOT ship
-TMDB_ORIGIN_COUNTRY_ROW = 189  # the two dynamic types that are a TMDb walk and
+TMDB_COUNTRY_NAME_ROW = 196  # the region/continent packs group country display
+                             # NAMES and `origin_country` carries ISO codes,
+                             # with no code->name table in Kometa's files or in
+                             # this tree -- filed by the prefetch phase when row
+                             # 189 closed without being able to help them, and
+                             # the reason those two packs are still GATED
+TMDB_ORIGIN_COUNTRY_ROW = 189  # the two dynamic types that were a TMDb walk and
                                # not an enumeration -- filed by phase 10a-1's
-                               # wrap, and cited (not waited on) by the two
-                               # remaining location packs, whose values are that
-                               # walk's, not the Plex `country` tag's
-TMDB_COLLECTION_TYPE_ROW = 192  # the franchise pack's dynamic type: a TMDb
-                                # walk over every item's belongs_to_collection,
-                                # not a listFilterChoices enumeration -- filed
-                                # by phase 10b when row 102 closed without
-                                # being able to help it
+                               # wrap and CLOSED by the prefetch phase, which
+                               # made the walk this service's own facts pipeline.
+                               # A CITED row now, not a blocker: the two location
+                               # packs name it as the thing that shipped, and
+                               # wait on row 196 instead
+TMDB_COLLECTION_TYPE_ROW = 192  # the franchise pack's enumeration: a TMDb walk
+                                # over every item's belongs_to_collection, not a
+                                # listFilterChoices enumeration -- filed by phase
+                                # 10b when row 102 closed without being able to
+                                # help it, and CLOSED by the prefetch phase.
+                                # A CITED row now, not a blocker:
+                                # `content_franchises` ships on it
 TMDB_LANGUAGE_NAME_ROW = 190  # upstream names a language bucket from TMDb's
                               # ISO-639-1 table and we name it from Plex's own
                               # choice.title -- names only, never membership,
@@ -940,28 +990,55 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
         description=(
             "One collection per TMDb franchise collection the library holds, "
             "with Kometa's addon merges (Prometheus into Alien, Minions into "
-            "Despicable Me) and its 'Collection' suffix removed. The pack is a "
-            "per-value enumeration of what the library owns, not a fixed list "
-            "of franchises. The engine that does per-value enumeration SHIPPED "
-            "in phase 10a -- but not a type this pack can use: "
-            "`tmdb_collection` is not a library enumeration at all, and "
-            "`collections/dynamic_types.py`'s scope note names it among the "
-            "deliberate absences, so there is no `type:` an operator can write "
-            "for this family today. "
-            "The single-collection tmdb_collection builder it would call "
-            "is already here; what is outstanding is the enumeration, and "
-            "that is a TMDb walk over every item's `belongs_to_collection` "
-            "rather than a Plex listing -- row %d, filed for exactly this "
-            "pack. Phase 10b shipped the seven packs whose values Plex can "
-            "enumerate today and deliberately added no new enumeration seam, "
-            "so this one waits for the metadata-prefetch budget rows 155, 180 "
-            "and 189 also wait on."
-            % TMDB_COLLECTION_TYPE_ROW
+            "Despicable Me) and its 'Collection' suffix removed, transcribed "
+            "from `defaults/movie/franchise.yml`. Movie libraries only, as "
+            "upstream has it: TMDb collections are movie franchises. Built by "
+            "`builder: facts_family`, `type: tmdb_collection` -- the family "
+            "enumerates the franchises this library's items belong to from the "
+            "`belongs_to_collection` id the facts pipeline stores off the "
+            "`/movie/{id}` read it already makes, and each collection's MEMBERS "
+            "are that franchise's own parts through the `tmdb_collection` "
+            "builder, so a film the library owns but has not been gathered yet "
+            "still joins its collection. That enumeration is what row %d was "
+            "filed for, and it closed with this pack. "
+            "What that costs, said plainly: the family is as complete as the "
+            "facts pipeline's coverage. A freshly-deployed library starts small "
+            "and grows as the ratings-drift sweep works through it "
+            "(`scheduler.drift_days`, `scheduler.drift_batch_size` -- 500 items "
+            "a week by default), and each pass reports how many items it has "
+            "visited. "
+            "`max_collections` is pinned at %d, which is this service's "
+            "judgement and not Kometa's -- upstream caps nothing, and unlike "
+            "the packs beside this one there is no include list to compute a "
+            "ceiling from, so the number is five times the engine's own default "
+            "of 50. Past it the family creates nothing and reports both "
+            "numbers rather than building a plausible fraction of itself. "
+            "Two more things this pack does differently from upstream, because "
+            "an operator can see both. Kometa builds no franchise collection "
+            "until the library holds TWO of its films (`minimum_items: 2`); "
+            "this family has no such floor, so a franchise you own one film of "
+            "still gets a collection. And where Kometa's addons fold two TMDb "
+            "collections into one (Prometheus into Alien), the builder here "
+            "takes a single collection id -- so such a bucket builds the first "
+            "of the two and names the other in the pass report, where you can "
+            "write it as a definition of your own. Twelve buckets can do that, "
+            "and only if you hold both halves. "
+            "To build something other than what this pack builds, copy it into "
+            "a `definitions:` entry of your own and edit it there -- a preset "
+            "is a key, not a copy of the definitions it stands for."
+            % (
+                TMDB_COLLECTION_TYPE_ROW,
+                dict(packs.FRANCHISE_PARAMS)["max_collections"],
+            )
         ),
         kometa_source="defaults/movie/franchise.yml",
         library_types=_MOVIE,
-        readiness=GATED,
-        gated_row=TMDB_COLLECTION_TYPE_ROW,
+        collections=(
+            PresetCollection(
+                title="Franchises", builder="facts_family",
+                params=packs.FRANCHISE_PARAMS,
+            ),
+        ),
     ),
     Preset(
         key="content_based_on",
@@ -1398,13 +1475,18 @@ CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
 
 # --- the LOCATION category ----------------------------------------------------
 #
-# Two packs, one blocker, plus one that shipped. The include/exclude, addon-
-# merge and title-format machinery each of these three files configures IS the
-# dynamic engine, and that engine shipped in phase 10a. What separates them now
-# is where their VALUES come from: ``country`` is a Plex tag this service can
-# enumerate, so that pack ships; ``region`` and ``continent`` are groupings of
-# TMDb's origin-country data, which is a full-library TMDb walk and not an
-# enumeration at all.
+# Two packs, one blocker, plus one that shipped -- and the blocker is no longer
+# the one it was. The include/exclude, addon-merge and title-format machinery
+# each of these three files configures IS the dynamic engine, which shipped in
+# phase 10a; the origin-country VALUES the two gated packs were waiting for
+# shipped with the prefetch phase's facts enumeration (row 189). What stops them
+# now was found by fetching the two files whole rather than recalling them: they
+# group country display NAMES and ``origin_country`` carries ISO codes, and the
+# code->name table that would join the two exists neither upstream nor here. So
+# they re-filed at row 196 rather than shipping upstream's grouping tables over
+# a mapping this phase would have had to invent -- the pack discipline phase 10b
+# set, in its own words: a pack that cannot ship honestly re-files with its
+# reason.
 _LOCATION_PACKS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("location_region", "Regions", "defaults/movie/region.yml",
      "One collection per world region (Nordic, Balkan, Southeast Asia and the "
@@ -1457,24 +1539,30 @@ LOCATION_PRESETS: tuple[Preset, ...] = (_COUNTRY_PRESET,) + tuple(
         category="location",
         name=name,
         description=(
-            "%s The per-value engine shipped in phase 10a and the country pack "
-            "beside this one ships today -- so what this row waits on is "
-            "neither machinery nor a preset. It is the VALUES: Kometa reads "
-            "them off TMDb's origin-country data, which is a full-library TMDb "
-            "walk rather than an enumeration (row %d), and the grouping "
-            "vocabulary on top of it is upstream's own -- 'Nordic', 'Balkan', "
-            "'Southeast Asia' are Kometa's names for sets of those countries, "
-            "not values any library holds. The Plex `country` tag this "
-            "service CAN enumerate is a different value set and cannot be "
-            "grouped into these regions without that same table. Phase 10b "
-            "shipped `location_country` on the Plex tag and left this pack "
-            "where its data is."
-            % (description, TMDB_ORIGIN_COUNTRY_ROW)
+            "%s Neither the machinery nor the data is what this row waits on "
+            "any more: the per-value engine shipped in phase 10a, and TMDb's "
+            "origin-country values -- the ones Kometa groups -- are stored and "
+            "enumerable here since the prefetch phase closed row %d. What is "
+            "missing is the JOIN between them, and it is a table nobody has. "
+            "Kometa's grouping vocabulary ('Nordic', 'Balkan', 'Southeast "
+            "Asia') is a set of country display NAMES -- 647 of them across "
+            "the two files, with not one ISO code among them, and deliberate "
+            "alias spellings ('Turkiye' beside 'Turkey') because upstream is "
+            "matching free text a Plex agent emitted. TMDb's `origin_country` "
+            "is ISO-3166-1 alpha-2 codes. Building this pack would therefore "
+            "not be a transcription of `%s`: it would be that file's grouping "
+            "table plus a code-to-name mapping this service invented, which is "
+            "the one thing this catalog refuses to ship under Kometa's name. "
+            "Row %d carries the evidence and what closing it takes. The "
+            "`Countries` pack beside this one is unaffected and ships today, "
+            "because it enumerates Plex's own `country` tag and its keys ARE "
+            "those display names."
+            % (description, TMDB_ORIGIN_COUNTRY_ROW, source, TMDB_COUNTRY_NAME_ROW)
         ),
         kometa_source=source,
         library_types=library_types,
         readiness=GATED,
-        gated_row=TMDB_ORIGIN_COUNTRY_ROW,
+        gated_row=TMDB_COUNTRY_NAME_ROW,
     )
     for key, name, source, description, library_types in _LOCATION_PACKS
 )

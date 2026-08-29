@@ -1,11 +1,22 @@
 """Kometa's dynamic packs, transcribed.
 
-``catalog.py`` says what a preset IS; this module is what seven of them are
-made of. A dynamic pack is one ``builder: dynamic`` definition whose ``params``
-carry Kometa's own answer to "which values get a collection, and what is each
-one called" -- the include list, the addon merges, the name overrides and the
-title format that live in a ``defaults/`` YAML file upstream. The engine that
-consumes them shipped in phase 10a and is not touched by this module.
+``catalog.py`` says what a preset IS; this module is what eight of them are
+made of. A pack is one expanding definition whose ``params`` carry Kometa's own
+answer to "which values get a collection, and what is each one called" -- the
+include list, the addon merges, the name overrides and the title format that
+live in a ``defaults/`` YAML file upstream. The engine that consumes them
+shipped in phase 10a and is not touched by this module.
+
+**Two builders, one vocabulary.** Seven packs are ``builder: dynamic``, whose
+values Plex enumerates. The eighth -- ``FRANCHISE_PARAMS`` -- is ``builder:
+facts_family``, whose values come from this service's own ``item_facts`` rows
+because Plex holds none of them (``collections/facts_family.py``'s module
+docstring says why the two type tables are separate). The params vocabulary is
+deliberately the same one, because both are consumed by the same two pure
+modules (``dynamic_keys.derive_keys``, ``dynamic_titles.family_titles``); the
+two knobs that differ are named where they are used, ``sort_by``/``limit``
+being ``DynamicParams``' alone (``FactsFamilyParams``' own docstring records
+that a list family has no search to cap).
 
 Separate from ``catalog.py`` for one reason: these are TABLES, several hundred
 rows of somebody else's data, and ``catalog.py`` is already 1900 lines of
@@ -16,15 +27,17 @@ with the decision and the reason.
 **Provenance.** Every file cited here was fetched from
 github.com/Kometa-Team/Kometa at tag ``v2.4.8`` and read while these tables
 were written; the fetch record, with byte counts and the full extracted tables,
-is the phase's transcription document (``.superpowers/sdd/
-p10b-upstream-packs.md``, whose section and line numbers each table below
-cites). The ids, keys, names and filter values below are transcriptions of
-those files, not recollections of them -- the discipline ``catalog.py``'s
-provenance section states for the whole catalog.
+is the transcribing phase's own document, whose section and line numbers each
+table below cites -- ``.superpowers/sdd/p10b-upstream-packs.md`` for the seven
+dynamic packs, and ``.superpowers/sdd/p-prefetch-upstream.md`` §4 for the
+franchise pack the prefetch phase added. The ids, keys, names and filter values
+below are transcriptions of those files, not recollections of them -- the
+discipline ``catalog.py``'s provenance section states for the whole catalog.
 
 **Shape.** Each pack exports one ``*_PARAMS`` tuple of pairs, which is exactly
 what a ``PresetCollection.params`` field takes and what
-``PresetCollection.definition`` hands to ``DynamicParams``. Three of the params
+``PresetCollection.definition`` hands to its builder's params model. Three of
+the params
 are MAPPINGS (``addons``, ``key_name_override``, ``title_override``) and are
 real dicts: pydantic will not build a ``dict[str, list[str]]`` from a tuple of
 pairs (measured -- ``Input should be a valid dictionary``), so the pairs
@@ -41,13 +54,18 @@ too: ``DynamicParams.limit`` takes ``0`` as a documented no-limit sentinel
 leaving it unset, since unset means "the type row's default" and that is 50.
 So every pack below pins what its own file says -- ``limit: 0`` on the six
 upstream leaves unlimited, ``limit: 100`` on ``decade`` -- and no row here
-ships the engine's default wearing a transcription's name.
+ships the engine's default wearing a transcription's name. The franchise pack
+is outside that paragraph in both directions: its file passes ``template:
+collection`` rather than ``smart_filter`` and carries no ``sort_by`` or
+``limit`` anywhere (record §4.4, verified absent), and ``FactsFamilyParams``
+has neither field to put one in.
 """
 
 __all__ = [
     "AUDIO_LANGUAGE_PARAMS",
     "COUNTRY_PARAMS",
     "DECADE_PARAMS",
+    "FRANCHISE_PARAMS",
     "GENRE_PARAMS",
     "NETWORK_PARAMS",
     "STUDIO_PARAMS",
@@ -957,4 +975,145 @@ NETWORK_PARAMS: tuple[tuple[str, object], ...] = (
     # nothing today; what it buys is that a wider library is not refused by a
     # number nobody set. Record §2, §5 row 6.
     ("max_collections", len(_NETWORK_INCLUDE)),
+)
+
+
+# --- franchises: defaults/movie/franchise.yml ----------------------------------
+#
+# One collection per TMDb franchise the library's items belong to. The
+# enumeration is `item_facts.tmdb_collection_id`, which the facts pipeline
+# stores off the `/movie/{id}` read it already makes (roadmap row 192), and
+# each collection's MEMBERSHIP is the franchise's own `parts` through the
+# shipped `tmdb_collection` builder -- so a franchise film the library owns but
+# has never gathered facts for still joins its collection.
+#
+# The one pack here that is not `builder: dynamic`, and the first with no
+# `include:` of any kind: upstream ships no allow-list, because the family IS
+# whatever the library turns out to belong to. That is also why this is the one
+# table below with no structural ceiling to compute a cap from.
+#
+# Keys are the numeric TMDb collection id throughout -- record §4.5's
+# `FRANCHISE KEY: id` verdict, which PyYAML confirms for all four of upstream's
+# maps. The human-readable names live only in `#` comments upstream, so they are
+# reproduced here as comments too and carry no meaning to anything that reads
+# this file. They are written as STRINGS for the reason `_NETWORK_INCLUDE`'s two
+# non-string entries are: the enumeration yields the id stringified
+# (`facts_enumeration.FACTS_FIELDS["tmdb_collection"]`'s note) and
+# `dynamic_keys._strlist` matches every narrowing entry as a string, so a string
+# here is the value actually compared rather than one relying on a coercion.
+
+# Transcribed from `defaults/movie/franchise.yml`, `addons:`, in file order --
+# record §4.1 (`.superpowers/sdd/p-prefetch-upstream.md:449-473`), counted at
+# §4.4: 12 keys, 12 merged members.
+#
+# What an addon merge MEANS for this family, said here because it is not what it
+# means for the seven above: a merged bucket asks the `tmdb_collection` builder
+# for one id and it takes one id, so the bucket builds its FIRST franchise and
+# the builder reports the rest as a note the operator can act on
+# (`builders/facts_family.py`'s `len(unit.values) > 1` branch). Upstream folds
+# Prometheus's collection into Alien's by giving one Kometa collection two TMDb
+# sources; this service builds Alien and says out loud that Prometheus was not
+# merged into it. Twelve buckets are affected, and only when the library holds
+# both halves.
+_FRANCHISE_ADDONS: dict[str, list[str]] = {
+    "8091": ["135416"],      # Alien <- Prometheus
+    "2806": ["298820"],      # American Pie <- American Pie (Spin-off)
+    "87800": ["371526"],     # Appleseed <- Appleseed XIII
+    "477208": ["557495"],    # DC Super Hero Girls <- LEGO DC Super Hero Girls
+    "86066": ["544669"],     # Despicable Me <- Minions
+    "86115": ["373918"],     # Garfield <- Garfield CGI
+    "91361": ["126209"],     # Halloween <- Halloween (Rob Zombie Series)
+    "9818": ["931431"],      # Mortal Kombat <- Mortal Kombat
+    "495": ["608103"],       # Shaft <- Shaft (Reboot)
+    "1582": ["401562"],      # Teenage Mutant Ninja Turtles <- TMNT (Remake)
+    "111751": ["425175"],    # Texas Chainsaw Massacre <- Texas Chainsaw (Reboot)
+    "748": ["453993"],       # X-Men <- The Wolverine
+}
+
+# Transcribed from `defaults/movie/franchise.yml`, `title_override:`, in file
+# order -- record §4.1 (`:474-477`) and §4.4 (3 entries, integer-keyed).
+#
+# A `title_override` and NOT a `key_name_override`: upstream writes these as the
+# finished collection title, which `title_format` is never applied to
+# (`dynamic_titles`' rule 4, meta.py:1382-1383). They exist because TMDb's own
+# names for these three are ambiguous or wrong once the " Collection" suffix is
+# stripped -- three "Godzilla" collections would otherwise be two, under one
+# name, and the duplicate-title refusal would take the whole family with it.
+_FRANCHISE_TITLE_OVERRIDE: dict[str, str] = {
+    "10": "Star Wars: Skywalker Saga",
+    "535313": "Godzilla (MonsterVerse)",
+    "535790": "Godzilla (Anime)",
+}
+
+FRANCHISE_PARAMS: tuple[tuple[str, object], ...] = (
+    ("type", "tmdb_collection"),
+    # No `title_format`. Record §4.4 read `franchise.yml` and found none at all,
+    # and §5 row 2 fixes the consequence: whatever this family titles with is
+    # OURS, not a divergence from a spelled-out upstream value. Leaving the key
+    # out rather than writing the type row's own `<<key_name>>` back in is the
+    # same "an absent key is written as nothing at all" rule the studio pack
+    # keeps -- the row's default then applies, and it is a default rather than a
+    # transcription wearing one's name.
+    #
+    # Upstream's own (`remove_suffix: "Collection"`, record §4.4), and the whole
+    # of what it does: TMDb names these objects "Alien Collection", and a family
+    # of collections all ending in "Collection" is nobody's ask.
+    # `dynamic_titles._key_name` strips it and `.strip()`s the result, so
+    # "Alien Collection" titles a collection "Alien". Written as the one-item
+    # list the param takes, where upstream's YAML scalar is coerced to one by
+    # Kometa's own `_dictliststr`-style handling -- the same shape note
+    # `_GENRE_ADDONS` carries.
+    ("remove_suffix", ["Collection"]),
+    # Upstream's own, and load-bearing rather than incidental. With custom keys
+    # ON, an addons key the library does NOT hold becomes a SYNTHETIC bucket
+    # whose display value is the key itself (`dynamic_keys.py:146`) -- and this
+    # family's keys are numeric ids, so a library holding Prometheus but not
+    # Alien would get a collection titled `8091`. `custom_keys: false` is
+    # upstream's answer and is the right one here for a reason upstream never
+    # had to state: it promotes each held member back to a collection of its own
+    # (`dynamic_keys.py:148-150`), which is a collection TMDb can name.
+    ("custom_keys", False),
+    ("title_override", _FRANCHISE_TITLE_OVERRIDE),
+    ("addons", _FRANCHISE_ADDONS),
+    # NOT KOMETA: upstream has no cap concept at all, and this is the one pack
+    # here whose number is not arithmetic over a table. The seven above compute
+    # their pin from `len(include)` because `include` is applied last and is a
+    # hard ceiling on the family whatever the library holds; `franchise.yml`
+    # ships no include list, so no such ceiling exists and there is nothing to
+    # count. Nor is there a measurement to stand on: the value set is this
+    # service's own `item_facts`, which no probe has ever enumerated, and which
+    # converges over weeks rather than answering in one call.
+    #
+    # So it is a judgement, and the asymmetry it is chosen against is stated
+    # rather than hidden. Too low refuses a library that would have been fine --
+    # loudly, reversibly, naming both numbers and the knob
+    # (`builders/facts_family.py`'s over-cap branch). Too high creates hundreds
+    # of collections an operator then deletes one at a time, at `max_deletes` a
+    # pass. 250 is five times the engine's own default of 50, which is the
+    # number a franchise family would hit on a mid-sized library and be refused
+    # by for no reason anybody chose. Record §5 row 1.
+    ("max_collections", 250),
+    # Three of upstream's keys are deliberately NOT here, each because nothing
+    # in this service can consume it rather than because it was overlooked:
+    #
+    # `minimum_items: 2` (record §4.4's "other keys carried") -- upstream builds
+    # no franchise collection until the library holds two of its films.
+    # `FactsFamilyParams` has no `minimum_items` and its docstring says why (the
+    # count lives one layer down, in the unit's OWN builder, so a per-key
+    # minimum here means resolving every key's membership twice). The visible
+    # consequence, and it is a real divergence: a library holding ONE film of a
+    # franchise gets a collection for it where Kometa would build none. NOT
+    # KOMETA by omission, stated in the preset row.
+    #
+    # `template_variables.movie` (29 keys, 44 members) -- extra movie ids merged
+    # into a collection's membership, e.g. "Hobbs & Shaw" into The Fast and the
+    # Furious. Membership here is the franchise's own `parts` through a builder
+    # that takes one collection id and reads TMDb for the rest, so there is no
+    # seam to add loose ids at. Record §4.4.
+    #
+    # `name_mapping` (10 keys) -- upstream's ASSET-folder name for a collection
+    # ("28 Days-Weeks Later" for a title carrying a `/`), which exists because
+    # Kometa looks posters up by directory name. This service resolves posters
+    # through its own providers and has no asset-folder concept, so there is
+    # nothing to map. Record §4.1.
 )

@@ -177,6 +177,56 @@ async def test_a_franchise_family_with_no_tmdb_client_builds_nothing(session):
     )
 
 
+async def test_a_franchise_familys_leftovers_bucket_builds_one_of_its_ids(session):
+    """The ``other`` bucket on a FRANCHISE family, which is the one shape the
+    task that shipped this builder could not reach (its T3b review's minor 7).
+
+    It matters because the leftovers bucket is the one unit whose ``values``
+    are not a single enumerated key: they are every key ``include`` left over,
+    and ``tmdb_collection`` takes ONE id. So the bucket is well-defined -- the
+    leftover keys are ids, ``int(unit.values[0])`` is a real franchise -- and it
+    is also lossy in exactly the way a merged addon bucket is, which is why the
+    same report line has to fire for it. A bucket that silently built one of
+    three franchises under a name promising all the others is the failure this
+    pins.
+
+    No shipped pack reaches this: ``packs.FRANCHISE_PARAMS`` carries no
+    ``include``, and ``other_name`` is gated on one (upstream gates it the same
+    way). It is exercised here rather than left to a future pack to discover.
+    """
+    for rating_key, collection_id in (("1", 1241), ("2", 2806), ("3", 8091)):
+        await _item(session, rating_key, tmdb_collection_id=collection_id)
+
+    names = {1241: "Harry Potter Collection", 2806: "American Pie Collection",
+             8091: "Alien Collection"}
+
+    def handler(request):
+        collection_id = int(request.url.path.rsplit("/", 1)[1])
+        return httpx.Response(200, json={
+            "id": collection_id, "name": names[collection_id], "parts": [],
+        })
+
+    definition = _definition(title="Franchises", params={
+        "type": "tmdb_collection", "remove_suffix": ["Collection"],
+        "include": ["1241"], "other_name": "Other Franchises",
+    })
+    async with _tmdb(handler) as http:
+        sources = SourceClients(tmdb=TmdbListClient("tok", http))
+        ctx = _ctx(session, definition, sources=sources, http=http)
+        units = await FactsFamilyBuilder().expand(ctx)
+
+    assert [unit.title for unit in units] == ["Harry Potter", "Other Franchises"]
+    # The leftovers bucket's own id, and an ``int`` -- the param the shipped
+    # ``tmdb_collection`` builder takes. 2806 rather than 8091 because
+    # ``enumerate_values`` orders ties by the value ascending and the column is
+    # an Integer, so the leftovers keep the family's own order.
+    assert units[1].params == {"id": 2806}
+    notes = ctx.run_cache.get("facts_family:notes", [])
+    assert any(
+        "Other Franchises" in note and "8091" in note for note in notes
+    ), notes
+
+
 async def test_an_empty_enumeration_builds_nothing_and_protects_everything(session):
     """The fail-closed state ``generated_titles`` documents: a family that did
     not enumerate has NOT narrowed, and the sweep must not treat its

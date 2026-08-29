@@ -265,7 +265,7 @@ def test_the_awards_category_is_every_ceremony_but_the_oscars():
 CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "awards": (15, 0, 1),
     "charts": (10, 0, 1),
-    "content": (2, 2, 0),
+    "content": (3, 1, 0),
     "content_ratings": (7, 0, 1),
     "location": (1, 2, 0),
     "media": (3, 1, 0),
@@ -1048,6 +1048,171 @@ def test_every_packs_title_format_is_pinned_here_as_well_as_in_the_pack():
     assert set(_PINNED_FORMATS) == {preset.key for preset, _, _ in _dynamic_rows()}
 
 
+# --- the facts-enumerated packs ----------------------------------------------
+#
+# The same contract as the dynamic packs above, over the family whose values
+# come from this service's own ``item_facts`` rather than from Plex. A separate
+# helper rather than a widened ``_dynamic_rows`` because the two families have
+# separate type tables and separate params models, and a single loop would have
+# to branch on the builder in every assertion.
+
+
+def _facts_family_rows() -> list[tuple[Preset, catalog.PresetCollection, dict]]:
+    """Every READY row that ships a facts-enumerated pack, with its params."""
+    return [
+        (preset, collection, dict(collection.params))
+        for preset in READY_PRESETS
+        for collection in preset.collections
+        if collection.builder == "facts_family"
+    ]
+
+
+def test_there_are_facts_family_packs_to_hold_to_the_contract():
+    """The guard the tests below need: an empty list is a pass that proves
+    nothing, and pytest reports it as a pass.
+
+    UPDATE THIS SET when a pack re-files instead of shipping -- and if all of
+    them re-file, delete these tests with the packs rather than leaving a green
+    suite asserting over nothing. ``location_region`` and ``location_continent``
+    are deliberately absent: they RE-FILED rather than shipping, because their
+    grouping tables key on country display NAMES and ``origin_country`` carries
+    ISO codes, with no code->name table in Kometa's files or in this tree
+    (``catalog.TMDB_COUNTRY_NAME_ROW``).
+    """
+    assert {preset.key for preset, _, _ in _facts_family_rows()} == {
+        "content_franchises",
+    }
+
+
+def test_a_facts_pack_is_one_definition_whose_type_this_service_enumerates():
+    from autoposter.collections.facts_family import FACTS_FAMILY_TYPES
+
+    for preset, collection, params in _facts_family_rows():
+        assert params["type"] in FACTS_FAMILY_TYPES, preset.key
+        row = FACTS_FAMILY_TYPES[params["type"]]
+        # The pack's library types are the FIELD's -- a movie-only field under
+        # a both-libraries preset would build nothing on half its libraries and
+        # say nothing about it.
+        assert set(preset.library_types) <= set(row.field.kinds), preset.key
+        for library_type in preset.library_types:
+            definitions = preset.definitions(library_type)
+            assert len(definitions) == 1, (preset.key, library_type)
+            assert definitions[0].builder == "facts_family"
+            assert definitions[0].title == collection.title
+
+
+def test_every_facts_pack_says_which_type_it_is_in_words():
+    for preset, _collection, params in _facts_family_rows():
+        assert "`type: %s`" % params["type"] in preset.description, preset.key
+
+
+def test_every_facts_pack_states_its_coverage_story():
+    """The one thing these packs must say that the Plex-enumerated ones need
+    not: their values come from what the facts pipeline has VISITED, so a
+    freshly-deployed library gets a small, correct, growing family. An
+    operator who is not told that reads a half-built family as a bug.
+
+    Three assertions rather than the one the plan named, because the one has
+    no teeth on its own: the sweep's two config knobs both carry ``drift`` in
+    their names, so a description that deleted the whole coverage paragraph and
+    kept ``scheduler.drift_days`` would still contain the substring. What makes
+    the story actionable is naming the sweep AND the knobs that move it, so
+    both are asserted -- measured, not assumed: deleting the word ``drift``
+    from the sentence alone left this test green.
+    """
+    for preset, _collection, _params in _facts_family_rows():
+        description = preset.description
+        assert "drift" in description.lower(), preset.key
+        assert "scheduler.drift_days" in description, preset.key
+        assert "scheduler.drift_batch_size" in description, preset.key
+
+
+def test_every_opinion_a_facts_pack_pins_is_stated_in_the_row():
+    for preset, _collection, params in _facts_family_rows():
+        cap = params.get("max_collections")
+        if cap is not None:
+            assert str(cap) in preset.description, (preset.key, cap)
+        else:
+            # The converse the check above cannot see, exactly as the dynamic
+            # packs' own opinion test spells it: a pin DELETED from the params
+            # leaves the sentence that announced it standing.
+            assert "`max_collections` is pinned" not in preset.description, preset.key
+        if params.get("include"):
+            assert "include" in preset.description, preset.key
+        if params.get("title_format"):
+            assert "title" in preset.description.lower(), preset.key
+
+
+def test_a_facts_packs_placeholder_title_is_listed_and_reserved():
+    """The same pair C3 asks to read honestly for a dynamic pack. The
+    placeholder IS a title this service manages -- ``facts_family`` declares no
+    ``titles``, so ``engine.definition_titles`` falls through to the
+    definition's own -- and ``years_title()`` reports the SHAPE of what the
+    family really builds."""
+    for preset, collection, _params in _facts_family_rows():
+        assert collection.title in preset.titles(), preset.key
+        shape = preset.years_title()
+        assert shape is not None, preset.key
+        assert shape.startswith("one per "), (preset.key, shape)
+        assert "named " in shape, (preset.key, shape)
+
+
+def test_a_facts_packs_shape_line_comes_from_the_renderer_the_builder_uses():
+    """Derived, not restated -- ``dynamic_shape``'s own property, applied to
+    the second family that has a shape line. If it were written by hand it
+    could name a title format the builder does not use; here it comes out of
+    the same ``render_title`` ``family_titles`` names collections with."""
+    from autoposter.collections.dynamic_titles import render_title
+    from autoposter.collections.facts_family import FACTS_FAMILY_TYPES
+
+    for preset, _collection, params in _facts_family_rows():
+        row = FACTS_FAMILY_TYPES[params["type"]]
+        noun = row.name.replace("_", " ")
+        key_name = catalog.DYNAMIC_KEY_PLACEHOLDER % noun
+        expected = render_title(
+            params.get("title_format") or row.title_format,
+            key_name,
+            catalog.DYNAMIC_LIBRARY_TYPE,
+            key=key_name,
+            values=(),
+            auto_type=row.name,
+        )
+        assert expected in preset.years_title(), preset.key
+
+
+def test_the_new_pack_tables_have_not_drifted_by_one_entry():
+    """The same digest discipline ``test_the_big_pack_tables_have_not_drifted_
+    by_one_entry`` applies to the shipped seven: the record these tables
+    transcribe is gitignored, so ``packs.py`` is the only in-repo copy.
+
+    Recomputing a digest after a DELIBERATE table edit: re-verify against the
+    record's §4 FIRST, then regenerate with ``_table_checksum``. Never adjust a
+    digest to make a red test green without that check.
+    """
+    assert len(packs._FRANCHISE_ADDONS) == 12
+    assert _table_checksum(packs._FRANCHISE_ADDONS) == (
+        "f9deaf7c7a547be038ea241eca719fe620a75df573083a34551258ae18114dce"
+    )
+
+    assert len(packs._FRANCHISE_TITLE_OVERRIDE) == 3
+    assert _table_checksum(
+        {key: [value] for key, value in packs._FRANCHISE_TITLE_OVERRIDE.items()}
+    ) == (
+        "882f5ed719355d5bf868fc4f3cb094962aceea2bb6f883726ba1dce1b5af7cb1"
+    )
+
+    # Every key in both tables is a numeric TMDb collection id written as the
+    # STRING the enumeration yields (record §4.5's `FRANCHISE KEY: id`). A
+    # transcription that wrote them as Python integers would still validate --
+    # `coerce_numbers_to_str` and `_strlist` would both take them -- and would
+    # move neither count nor digest away from a reader's eye, so the shape is
+    # asserted rather than left to the digest to imply.
+    for key in (*packs._FRANCHISE_ADDONS, *packs._FRANCHISE_TITLE_OVERRIDE):
+        assert isinstance(key, str) and key.isdigit(), key
+    for members in packs._FRANCHISE_ADDONS.values():
+        assert all(member.isdigit() for member in members), members
+
+
 # --- the gated rows ----------------------------------------------------------
 
 
@@ -1083,15 +1248,40 @@ def test_no_preset_still_waits_on_the_row_the_dynamic_engine_closed():
     ]
 
     assert still_waiting == []
+    assert catalog.BY_KEY["content_franchises"].gated_row is None
     assert {
         catalog.BY_KEY[key].gated_row
-        for key in ("content_franchises", "location_region",
-                    "location_continent", "time_year")
+        for key in ("location_region", "location_continent", "time_year")
     } == {
-        catalog.TMDB_COLLECTION_TYPE_ROW,
-        catalog.TMDB_ORIGIN_COUNTRY_ROW,
+        catalog.TMDB_COUNTRY_NAME_ROW,
         catalog.RELATIVE_YEAR_ROW,
     }
+
+
+def test_no_preset_still_waits_on_the_rows_the_facts_enumeration_closed():
+    """Rows 189 and 192 closed with the prefetch phase: the TMDb walk both were
+    filed for is this service's own facts pipeline now, and ``facts_family``
+    consumes it. A row still citing either as a BLOCKER would be citing work
+    that is done -- which is the same as citing nothing.
+
+    Both constants stay in the module, in the shape ``TMDB_LANGUAGE_NAME_ROW``
+    already had: cited rather than waited on. ``content_franchises`` names 192
+    as the enumeration it ships on, and the two location packs name 189 as the
+    values that arrived and did not turn out to be enough.
+    """
+    assert [
+        preset.key for preset in CATALOG
+        if preset.gated_row in (catalog.TMDB_ORIGIN_COUNTRY_ROW,
+                                catalog.TMDB_COLLECTION_TYPE_ROW)
+    ] == []
+
+    assert "row %d" % catalog.TMDB_COLLECTION_TYPE_ROW in catalog.BY_KEY[
+        "content_franchises"
+    ].description
+    for key in ("location_region", "location_continent"):
+        description = catalog.BY_KEY[key].description
+        assert "row %d" % catalog.TMDB_ORIGIN_COUNTRY_ROW in description, key
+        assert "Row %d" % catalog.TMDB_COUNTRY_NAME_ROW in description, key
 
 
 def test_no_preset_still_waits_on_the_person_builders_row():
