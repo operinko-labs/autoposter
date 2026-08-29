@@ -1058,7 +1058,7 @@ def test_every_gated_row_cites_a_roadmap_row_that_exists():
     rows = _roadmap_rows()
     # The parse works: rows this catalog cites -- including the two filed for
     # it (160, 161) -- and one it does not.
-    assert {96, 102, 155, 160, 161} <= rows
+    assert {96, 102, 155, 160, 161, 194} <= rows
     assert 999999 not in rows
 
     gated = [preset for preset in CATALOG if preset.readiness == GATED]
@@ -1092,6 +1092,21 @@ def test_no_preset_still_waits_on_the_row_the_dynamic_engine_closed():
         catalog.TMDB_ORIGIN_COUNTRY_ROW,
         catalog.RELATIVE_YEAR_ROW,
     }
+
+
+def test_no_preset_still_waits_on_the_person_builders_row():
+    """Row 83 closed in phase 10c-lite -- the filmographies, their TMDb
+    biographies and their profile photos all ship. A preset still citing it
+    would be citing work that is DONE, which is the same as citing nothing, so
+    the four people packs now name the credit scan that actually blocks them."""
+    assert [
+        preset.key for preset in CATALOG if preset.gated_row == 83
+    ] == []
+    assert {
+        catalog.BY_KEY[key].gated_row
+        for key in ("people_top_actors", "people_top_directors",
+                    "people_top_writers", "people_top_producers")
+    } == {catalog.PERSON_SCAN_ROW}
 
 
 def test_every_gated_key_is_refused_at_load_naming_its_row():

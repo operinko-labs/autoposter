@@ -658,7 +658,12 @@ _KOMETA_DEFAULTS: frozenset[str] = frozenset(
 # and a test reads the row numbers out of it rather than trusting these -- a
 # citation nobody can look up is worse than no citation at all.
 DYNAMIC_ENGINE_ROW = 102   # phase 10a: one collection per distinct value
-PERSON_DYNAMIC_ROW = 83    # phase 10c: the dynamic half of the person builders
+PERSON_SCAN_ROW = 194      # the library-wide credit scan the four people packs
+                           # need to NAME anyone, plus row 169's people search
+                           # attributes, which the per-person query needs to
+                           # exist at all. Row 83 (the person BUILDERS) closed
+                           # in 10c-lite: the filmographies, their TMDb
+                           # biographies and their profile photos all ship.
 STRANDED_FILTER_ROW = 155  # the six tier-1 filter attributes the listing strands
 FILTER_TIER_TWO_ROW = 96   # the filters subsystem; tier 1 shipped, tier 2 did not
 DATE_WINDOW_ROW = 70       # per-collection cadence and date windows: DELIVERED
@@ -1698,12 +1703,16 @@ PEOPLE_PRESETS: tuple[Preset, ...] = (
         name="Director starter set",
         description=(
             "One filmography collection for each of six directors -- %s -- read "
-            "from TMDb's credits. The six are OUR choice, not Kometa's: "
+            "from TMDb's credits. Each collection takes its summary from the "
+            "director's TMDb biography and its poster from their TMDb profile "
+            "photo; a `summary:` of your own, or a poster file in the assets "
+            "folder, still wins. The six are OUR choice, not Kometa's: "
             "defaults/movie/director.yml names no directors at all, it "
-            "enumerates them from the library, which needs the credit scan the "
-            "Top directors row below waits on. The only thing borrowed from "
+            "enumerates them from the library, which needs the library-wide "
+            "credit scan of roadmap row %d -- the same scan the Top directors "
+            "rows below wait on. The only thing borrowed from "
             "that file is the '<name> (Director)' title shape."
-            % ", ".join(name for name, _id in _STARTER_DIRECTORS)
+            % (", ".join(name for name, _id in _STARTER_DIRECTORS), PERSON_SCAN_ROW)
         ),
         kometa_source=NOT_KOMETA + "the six people are ours",
         library_types=_MOVIE,
@@ -1722,15 +1731,19 @@ PEOPLE_PRESETS: tuple[Preset, ...] = (
         category="people",
         name=name,
         description=(
-            "One collection per person: %s, with a poster and biography from "
-            "TMDb. Waiting on the credit scan -- naming the people means "
-            "reading every credit of every item, which is the expensive walk "
-            "phase 10c is scoped around." % what
+            "One collection per person: %s. The poster and biography half is "
+            "built -- a person collection takes its summary from their TMDb "
+            "biography and its poster from their TMDb profile photo, which is "
+            "what the Director starter set above does today. What is missing "
+            "is NAMING the people: that means counting every credit of every "
+            "item in the library, and then writing a per-person query out of "
+            "search attributes this service does not have yet. Both are "
+            "roadmap row %d." % (what, PERSON_SCAN_ROW)
         ),
         kometa_source=source,
         library_types=library_types,
         readiness=GATED,
-        gated_row=PERSON_DYNAMIC_ROW,
+        gated_row=PERSON_SCAN_ROW,
     )
     for key, name, source, what, library_types in _PERSON_PACKS
 )
