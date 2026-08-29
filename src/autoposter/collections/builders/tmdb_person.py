@@ -61,26 +61,30 @@ person, the role and how many credits were actually read, so the two cases
 are distinguishable from the log alone.
 ``tmdb_discover`` warns at its page cap for the same reason.
 
-**Deliberately absent -- this is the 10c line, and it is a hard stop.**
-Phase 10c (People) owns all of the following and none of it belongs here:
+**Deliberately absent -- this is the 10c line, and it is still a hard stop.**
+Phase 10c-lite lifted the FIRST item off this list: ``tmdb_person`` -- the
+person's biography as the collection summary and their TMDb profile photo as
+its poster -- ships, through ``TmdbListClient.person_detail`` and the
+``tmdb_profile`` poster source (``collections/posters.py``). The read is
+contained (see ``_profile``): a dead person record leaves the membership
+reconciled. Everything below is still 10c's and none of it belongs here:
 
-- ``tmdb_person``: the person's biography as the collection summary and their
-  TMDb profile photo as its poster. Both are left ``None``, exactly as the
-  TMDb chart builders leave them, so the definition's own ``summary:`` is how
-  an operator sets one today.
 - ``tmdb_popular_people``: TMDb's popular-people list as a source.
 - ``tmdb_birthday`` / ``tmdb_deathday``: gating whether a definition runs at
-  all on a date derived from the person.
+  all on a date derived from the person. Filed on roadmap row 160, with the
+  day-level window machinery it is really asking for; ``person_detail``
+  deliberately does not carry ``birthday``/``deathday`` out of the transport.
 - appearance thresholds and the dynamic ``actor``/``director``/``writer``/
   ``producer`` collection *types* -- "every actor with at least N titles in
-  this library" -- which need the library-wide credit scan below.
+  this library" -- which need the library-wide credit scan below. Roadmap row
+  194, and gated twice over: the scan, and row 169's people search attributes.
 - library-wide credit scans: enumerating every credit of every item in a
   library. That is 10c's expensive piece and its caching is a design decision
-  10c makes; this module reads one person, by id, in one request.
+  the row records; this module reads one person, by id, in two requests.
 
 The roadmap's row 83 lists the summaries and the birthday gating alongside
-these builders; 10c's later and more specific entry is the one that governs,
-and this phase implements the filmographies only.
+these builders; it CLOSED with 10c-lite, and row 194 is where the expensive
+half went.
 """
 import logging
 from dataclasses import dataclass
@@ -96,6 +100,11 @@ from autoposter.collections.builders.base import (
 # builders take, and the absent-client refusal must read identically wherever
 # it comes from. ``tmdb_discover.py`` imports ``_TmdbBuilder`` the same way.
 from autoposter.collections.builders.tmdb import TmdbEntityParams, _TmdbBuilder
+
+# The poster kind is ``posters.py``'s constant rather than a literal here, so
+# the builder that emits it and the dispatch that reads it cannot drift into two
+# spellings of one string -- which would fail silently, as "no poster source".
+from autoposter.collections.posters import TMDB_PROFILE_KIND
 from autoposter.providers.tmdb_lists import PersonCredit
 
 logger = logging.getLogger(__name__)
@@ -198,7 +207,49 @@ class _TmdbPersonBuilder(_TmdbBuilder):
                 "Check the person id and that this role is one they hold.",
                 self.type_name, params.id, role.described(), len(credits),
             )
-        return BuilderResult(ids=[("tmdb", value) for value in ids])
+
+        summary, profile_path = await self._profile(client, params.id)
+        return BuilderResult(
+            ids=[("tmdb", value) for value in ids],
+            summary=summary,
+            poster_kind=TMDB_PROFILE_KIND if profile_path else None,
+            poster_key=profile_path,
+        )
+
+    async def _profile(self, client, person_id: int) -> tuple[str | None, str | None]:
+        """The person's biography and profile path, or ``(None, None)``.
+
+        CONTAINED, unlike the credits read above, and the asymmetry is the
+        point. The credits ARE this collection's membership: a failure there
+        has to raise, because an empty list one layer down means "remove every
+        member" (``lists.reconcile_list_collection``). A biography and a poster
+        are cosmetic -- ``posters.apply_poster`` says exactly that for every
+        other source -- so a second endpoint being down must leave the
+        membership reconciled and the artwork untouched rather than fail the
+        definition over an ornament.
+
+        Read AFTER the credits, so a wrong id fails once on the membership call
+        instead of making a second doomed request first.
+
+        ``poster_kind`` is left None when there is no photo rather than being
+        set with an empty key: ``apply_poster`` would resolve that to no URL
+        and report "no poster source" on every pass, which is a line in every
+        report for a person who simply has no photo.
+        """
+        try:
+            detail = await client.person_detail(person_id)
+        except Exception:
+            # The engine's containment invariant, one level down: the class
+            # name and traceback go to the log and nothing derived from the
+            # exception is returned, because a provider error commonly carries
+            # the URL it failed on.
+            logger.exception(
+                "%s: could not read TMDb person %d's own record; the collection "
+                "keeps whatever summary and poster it already has",
+                self.type_name, person_id,
+            )
+            return None, None
+        return detail.biography, detail.profile_path
 
 
 class TmdbActorBuilder(_TmdbPersonBuilder):

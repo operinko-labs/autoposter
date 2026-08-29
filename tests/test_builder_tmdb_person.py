@@ -29,7 +29,9 @@ nesting, the movie-vs-tv ``title``/``name`` difference and above all the
 ``job``/``department`` vocabulary are TMDb's, while the credits themselves are
 constructed to exercise every branch of the role table. The titles say what
 they are for, so nothing here can be mistaken for a transcription of a real
-filmography.
+filmography. ``tmdb_person_detail.json`` is the same kind of construction --
+TMDb's ``/person/{id}`` response shape, a person who does not exist, and a
+biography whose own text says it is a constructed one.
 """
 import json
 import logging
@@ -43,6 +45,7 @@ from autoposter.collections.builders import REGISTRY, BuilderContext, SourceClie
 from autoposter.collections.builders.base import LibraryTypeMismatch
 from autoposter.collections.builders.tmdb import TmdbBuilderRefused
 from autoposter.collections.builders.tmdb_person import ROLES, CreditRole
+from autoposter.collections.posters import TMDB_PROFILE_KIND, tmdb_profile_url
 from autoposter.config.schema import CollectionDefinition
 from autoposter.providers.tmdb_lists import (
     PersonCredit,
@@ -68,6 +71,14 @@ def _path(request) -> str:
     """The TMDb path, without the ``/3`` API-version prefix (see
     ``tests/test_tmdb_lists_client.py``, which pins that the prefix is sent)."""
     return request.url.path.removeprefix("/3")
+
+
+def _credit_paths(seen: list) -> list[str]:
+    """Only the filmography requests. A build makes two kinds now -- the
+    credits, which are the membership, and the person's own record, which is
+    the summary and the poster -- and the tests about one must not move when
+    the other changes."""
+    return [_path(request) for request in seen if _path(request).endswith("_credits")]
 
 
 def _routed(routes: dict, seen: list | None = None):
@@ -270,11 +281,14 @@ async def test_the_role_filter_applies_on_the_tv_endpoint_too():
 
 @pytest.mark.parametrize("builder", PERSON_BUILDERS)
 async def test_every_person_builder_serves_both_library_types(builder):
+    """The credits endpoints only: a build also reads the person's own record,
+    which is one endpoint for both library types and is counted by its own
+    tests below."""
     seen: list = []
     await _build(builder, _both(), seen)
     await _build(builder, _both(), seen, library_type="Show")
 
-    assert [_path(request) for request in seen] == [MOVIE_CREDITS, TV_CREDITS]
+    assert _credit_paths(seen) == [MOVIE_CREDITS, TV_CREDITS]
 
 
 @pytest.mark.parametrize("builder", PERSON_BUILDERS)
@@ -324,12 +338,15 @@ async def test_a_role_that_matches_something_does_not_warn(caplog):
 async def test_the_credits_read_is_one_request_and_sends_no_page():
     """``/person/{id}/*_credits`` answers with every credit at once, so this
     is the ``collection_parts`` shape: no pager, no ``page`` parameter, and
-    therefore one cache key per person per media type."""
+    therefore one cache key per person per media type. The person's own record
+    is a *second* endpoint, deliberately -- it is one more request and one more
+    cache entry, not a page of this one."""
     seen: list = []
     await _build("tmdb_crew", _both(), seen)
 
-    assert len(seen) == 1
-    assert "page" not in seen[0].url.params
+    credits = [request for request in seen if _path(request).endswith("_credits")]
+    assert len(credits) == 1
+    assert "page" not in credits[0].url.params
 
 
 async def test_a_missing_person_raises_naming_the_id_rather_than_building_nothing():
@@ -374,10 +391,12 @@ async def test_a_person_with_no_credits_at_all_is_not_an_error():
 
 
 def test_a_credit_carries_only_what_the_role_table_reads():
-    """The 10c line, enforced by the transport's return type rather than by
-    everyone remembering. A raw payload would put profile paths, characters
-    and biographies one attribute access away from a builder that must not
-    grow them in this phase."""
+    """The transport's return type as the enforcement, rather than everyone
+    remembering. It matters MORE now that a person's biography and photo do
+    ship: they come from the person's own record (``person_detail``), which is
+    one call and one cache entry, and a credit entry also carries a profile
+    path of its own. Widening this dataclass is how a later hand would end up
+    reading artwork off whichever credit happened to be first."""
     assert set(PersonCredit.__dataclass_fields__) == {"tmdb_id", "kind", "job", "department"}
 
 
@@ -495,18 +514,82 @@ async def test_every_person_builder_raises_when_tmdb_is_not_configured(builder):
         await REGISTRY[builder].build(_ctx(SourceClients(), id=4242))
 
 
-# --- the 10c boundary --------------------------------------------------------
+# --- the person's biography and photo ----------------------------------------
 
 
 @pytest.mark.parametrize("builder", PERSON_BUILDERS)
-async def test_a_person_builder_offers_no_summary_and_no_poster(builder):
-    """``tmdb_person`` -- the person's biography as the collection summary and
-    their profile photo as its poster -- is 10c's, and so is every other
-    person feature (popular-people, birthday/deathday gating, appearance
-    thresholds, library-wide credit scans). A summary invented here would not
-    be parity and a guessed poster key is a hosted URL that 404s, leaving the
-    collection quietly without artwork."""
+async def test_a_person_builder_takes_its_summary_and_poster_from_the_person(builder):
+    """The first item off the 8c hard stop. The biography is the collection's
+    summary and the TMDb profile photo is its poster -- for all five names,
+    because all five are one build path and a person's own record has nothing to
+    do with which credits the role table keeps."""
     result = await _build(builder, _both())
 
+    assert result.summary.startswith("A constructed biography.")
+    assert result.poster_kind == TMDB_PROFILE_KIND
+    assert result.poster_key == "/a-constructed-profile-path.jpg"
+
+
+async def test_the_poster_kind_is_the_one_the_poster_module_dispatches_on():
+    """Producer and consumer, pinned to one constant. Two spellings of
+    ``"tmdb_profile"`` would not fail anything: ``apply_poster`` would fall
+    through to ``hosted_poster_url``, get ``None``, and report "no poster
+    source" forever."""
+    result = await _build("tmdb_actor", _both())
+
+    assert tmdb_profile_url(result.poster_key) is not None
+
+
+async def test_a_person_with_no_biography_and_no_photo_offers_neither():
+    """Data, not failure. The definition's own ``summary:`` is still how an
+    operator sets one, and a collection with no poster simply keeps none."""
+    routes = _both() | {PERSON_DETAIL: _detail(biography="", profile_path=None)}
+    result = await _build("tmdb_actor", routes)
+
+    assert result.ids
     assert result.summary is None
     assert (result.poster_kind, result.poster_key) == (None, None)
+
+
+async def test_a_dead_person_record_leaves_the_membership_built(caplog):
+    """The containment, and it is the asymmetry this build path is built
+    around. The credits ARE the membership, so a failure there raises -- an
+    empty list one layer down means "remove every member". A biography and a
+    poster are cosmetic, so the second endpoint being down must leave the
+    collection reconciled and its artwork untouched, not fail the definition."""
+    routes = {
+        MOVIE_CREDITS: load("tmdb_person_movie_credits.json"),
+        TV_CREDITS: load("tmdb_person_tv_credits.json"),
+    }
+    with caplog.at_level(logging.WARNING):
+        result = await _build("tmdb_actor", routes)
+
+    assert result.ids
+    assert result.summary is None
+    assert (result.poster_kind, result.poster_key) == (None, None)
+    assert "tmdb_actor" in caplog.text
+
+
+async def test_a_dead_credits_call_still_fails_the_definition():
+    """The other half of the same sentence, pinned so a later hand cannot
+    contain both reads with one ``try``."""
+    with pytest.raises(TmdbListRefused):
+        await _build("tmdb_actor", {PERSON_DETAIL: _detail()})
+
+
+async def test_the_persons_own_record_is_read_once_per_build():
+    """One extra request per definition, not one per credit."""
+    seen: list = []
+    await _build("tmdb_actor", _both(), seen)
+
+    assert [_path(request) for request in seen].count(PERSON_DETAIL) == 1
+
+
+async def test_the_persons_record_is_read_after_their_credits():
+    """A wrong id fails once, on the membership call, rather than making a
+    second doomed request first."""
+    seen: list = []
+    with pytest.raises(TmdbListRefused):
+        await _build("tmdb_actor", {PERSON_DETAIL: _detail()}, seen)
+
+    assert [_path(request) for request in seen] == [MOVIE_CREDITS]
