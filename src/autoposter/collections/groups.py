@@ -493,3 +493,28 @@ def separator_titles(definitions, library_type: str, config) -> set[str]:
         separator_title(group)
         for group in separator_groups(definitions, library_type, config)
     }
+
+
+def group_listing(config) -> list[dict]:
+    """Every group as the catalog endpoint serves it, in effective order.
+
+    ``{key, title, section, position}`` per group: the config-legal name, the
+    divider's display title, the ``!NNN`` section number, and the group's index
+    under the RUNNING config's ``group_order`` — so ``position`` equals the
+    array index, and a UI that renders the array in order is rendering the tab.
+
+    This is the group-order panel's enumeration source, and the reason it
+    exists is the reason ``CANONICAL_ORDER`` is written out above: the keys
+    live in exactly one place. A frontend holding its own copy of the ten
+    names would be the drift this module's other tables refuse.
+    """
+    order = effective_order(config)
+    return [
+        {
+            "key": group,
+            "title": separator_title(group),
+            "section": section_number(group, order),
+            "position": order.index(group),
+        }
+        for group in order
+    ]

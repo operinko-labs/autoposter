@@ -731,3 +731,37 @@ def test_expansion_never_inherits_a_derived_sort_title():
     groups.with_derived_sort_title(placeholder, "!020_", placeholder.title)
     unit = CollectionDefinition(title="Oscars Winners 2026", builder="imdb_award_years")
     assert _completed(placeholder, unit).sort_title is None
+
+
+def test_group_listing_serves_every_group_in_effective_order():
+    """The catalog endpoint's `groups` array, one layer down: the whole
+    enumeration, effective order, position == index — so the frontend never
+    holds a copy of the keys (the row-156 instinct, applied to TypeScript)."""
+    listing = groups.group_listing(config())
+
+    assert [entry["key"] for entry in listing] == list(groups.CANONICAL_ORDER)
+    assert listing[0] == {
+        "key": "charts", "title": "Chart Collections",
+        "section": "010", "position": 0,
+    }
+    assert listing[-1] == {
+        "key": "operator", "title": "Collections",
+        "section": "100", "position": 9,
+    }
+
+
+def test_group_listing_reorders_and_renumbers_under_group_order():
+    """`position` and `section` are both EFFECTIVE, not canonical: a partial
+    `group_order` moves the named group to the front and renumbers everything,
+    exactly as `effective_order`/`section_number` decide for the pass itself."""
+    listing = groups.group_listing(config(group_order=["operator"]))
+
+    assert listing[0] == {
+        "key": "operator", "title": "Collections",
+        "section": "010", "position": 0,
+    }
+    assert [entry["key"] for entry in listing][1:4] == [
+        "charts", "awards", "content_ratings",
+    ]
+    assert listing[1]["section"] == "020"
+    assert [entry["position"] for entry in listing] == list(range(10))

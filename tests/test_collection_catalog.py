@@ -2211,6 +2211,51 @@ async def test_the_catalog_endpoint_reports_which_presets_are_active(
     assert {p["key"] for p in awards["presets"] if p["active"]} == {"award_venice"}
 
 
+async def test_the_catalog_endpoint_serves_the_groups_in_effective_order(
+    client, auth_headers
+):
+    """The Groups panel's enumeration source (group-order UI phase, C2): the
+    server serves the groups so the frontend never transcribes the ten keys.
+    The example config leaves `group_order` unset, so this is canonical."""
+    body = (await client.get("/api/collections/catalog", headers=auth_headers)).json()
+
+    assert [entry["key"] for entry in body["groups"]] == [
+        "charts", "awards", "content_ratings", "content", "location",
+        "media", "people", "production", "time", "operator",
+    ]
+    assert body["groups"][0] == {
+        "key": "charts", "title": "Chart Collections",
+        "section": "010", "position": 0,
+    }
+    assert body["groups"][-1] == {
+        "key": "operator", "title": "Collections",
+        "section": "100", "position": 9,
+    }
+
+
+async def test_the_catalog_endpoint_reports_the_live_group_order(
+    client, app, auth_headers
+):
+    """The same live-config read the active-presets test above proves: a
+    swapped `group_order` reorders and renumbers the served array without a
+    restart, which is what makes the panel's re-read after save truthful."""
+    config = app.state.config_holder.current
+    app.state.config_holder.swap(config.model_copy(
+        update={
+            "collections": config.collections.model_copy(
+                update={"group_order": ["operator"]}
+            )
+        }
+    ))
+
+    body = (await client.get("/api/collections/catalog", headers=auth_headers)).json()
+
+    assert body["groups"][0]["key"] == "operator"
+    assert body["groups"][0]["section"] == "010"
+    assert body["groups"][1]["key"] == "charts"
+    assert [entry["position"] for entry in body["groups"]] == list(range(10))
+
+
 def test_the_listing_is_the_endpoints_only_source_of_truth():
     """The handler is a lookup and a dump; everything it says comes from
     ``catalog_listing``, so the shape can be tested without a request.

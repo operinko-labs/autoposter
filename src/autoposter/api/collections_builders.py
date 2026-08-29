@@ -48,6 +48,7 @@ from sqlalchemy import select
 from autoposter.api.auth import require_session
 from autoposter.collections.catalog import catalog_listing
 from autoposter.collections.engine import run_library
+from autoposter.collections.groups import group_listing
 from autoposter.collections.reconcile import (
     LIBTYPES,
     COLLECTION_MODES,
@@ -137,6 +138,10 @@ async def collections_catalog(
     _: SessionModel = Depends(require_session),
 ) -> dict:
     """The preset catalog: every collection this service can build, by category.
+    Also carries ``groups``: every collection group as ``{key, title, section,
+    position}`` in the running config's effective order, which is the Groups
+    panel's enumeration source — served so the frontend never holds a copy of
+    the group keys.
 
     The one endpoint in this module that touches neither Plex nor the database.
     It is a dump of a pure table (``collections/catalog.py``) plus which keys
@@ -152,8 +157,14 @@ async def collections_catalog(
     back on would otherwise be shown an empty page instead of the thing they
     came to configure.
     """
+    config = request.app.state.config_holder.current
     return {
-        "categories": catalog_listing(request.app.state.config_holder.current)
+        "categories": catalog_listing(config),
+        # The group-order panel's enumeration (group-order UI phase, C2):
+        # served rather than transcribed, so the ten keys exist in exactly
+        # one language. Effective order, not canonical -- the panel shows
+        # the tab as the running config orders it.
+        "groups": group_listing(config),
     }
 
 
