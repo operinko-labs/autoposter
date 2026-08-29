@@ -780,9 +780,9 @@ async def test_a_static_summary_beats_a_person_builders_biography(session, regis
     the person's TMDb biography (``builders/tmdb_person.py::_profile``, pinned
     by ``test_a_person_builder_takes_its_summary_and_poster_from_the_person``).
     ``_summary_for`` is unchanged and already prefers the definition's own
-    ``summary:`` over whatever the builder derived, but until this phase no
-    shipped builder derived one, so that preference was never exercised on a
-    real conflict.
+    ``summary:`` over whatever the builder derived, but no shipped person
+    builder derived one, so that preference had never been pinned for the
+    case amendment 4 asked about.
 
     The double stands in for the builder deliberately: ``_summary_for`` reads
     ``result.summary`` and never learns which builder produced it, so driving a

@@ -1709,9 +1709,10 @@ PEOPLE_PRESETS: tuple[Preset, ...] = (
             "folder, still wins. The six are OUR choice, not Kometa's: "
             "defaults/movie/director.yml names no directors at all, it "
             "enumerates them from the library, which needs the library-wide "
-            "credit scan of roadmap row %d -- the same scan the Top directors "
-            "rows below wait on. The only thing borrowed from "
-            "that file is the '<name> (Director)' title shape."
+            "credit scan of roadmap row %d -- the same scan the four Top "
+            "actors/directors/writers/producers rows below wait on. The "
+            "only thing borrowed from that file is the '<name> (Director)' "
+            "title shape."
             % (", ".join(name for name, _id in _STARTER_DIRECTORS), PERSON_SCAN_ROW)
         ),
         kometa_source=NOT_KOMETA + "the six people are ours",
@@ -1737,8 +1738,9 @@ PEOPLE_PRESETS: tuple[Preset, ...] = (
             "what the Director starter set above does today. What is missing "
             "is NAMING the people: that means counting every credit of every "
             "item in the library, and then writing a per-person query out of "
-            "search attributes this service does not have yet. Both are "
-            "roadmap row %d." % (what, PERSON_SCAN_ROW)
+            "search attributes this service does not have yet -- the scan "
+            "and its threshold are roadmap row %d, and the search attributes "
+            "are row 169, which %d depends on." % (what, PERSON_SCAN_ROW, PERSON_SCAN_ROW)
         ),
         kometa_source=source,
         library_types=library_types,
