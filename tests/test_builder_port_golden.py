@@ -33,6 +33,23 @@ ONLY cells that moved are separator ones, it landed as its own reviewed commit,
 and `tests/test_collection_group_separators.py` grades the behaviour this
 fixture can only witness.
 
+**Third deliberate amendment, row 49 (sort titles).** Every collection this
+service manages now derives its group's `!<NNN>_` sort-title prefix, so the
+`sort_title` cell moved from null to a derived string for every collection in
+every APPLIED scenario, and the pass that wrote it reports one
+`set the sort title of ...` action apiece. Adjudicated in advance
+(`.superpowers/sdd/p49-facts.md` C5), and nothing else moved: every removed
+line is a `"sort_title": null` cell, every added line is either that cell's
+derived replacement or the action that wrote it, and no other cell -- summary,
+sort, label, member list, filters, poster count -- differs in any scenario. It
+landed as its own reviewed commit. The migration settling is visible here too:
+`movies_apply_again`, the second unchanged pass, carries all twenty derived
+cells and produces NOT ONE of those actions, which is C3's "exactly once" as
+recorded behaviour rather than an assertion. What this fixture cannot reach --
+that the value gets in out of band, that an explicit `sort_title` still wins,
+and that expansion never inherits a derived one -- is graded by
+`tests/test_collection_groups.py`.
+
 ``_library_pass`` below is the one seam: it is the per-library sequence
 ``service.reconcile_libraries`` runs, and the port rewrites it from "the smart
 reconciler, then ``build_all``" into the single engine call. Everything else in

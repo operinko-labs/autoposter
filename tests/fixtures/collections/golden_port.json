@@ -31,25 +31,45 @@
   "movies_apply": {
     "actions": [
       "created 'Age 1+ Movies'",
+      "set the sort title of 'Age 1+ Movies' to '!030_01_Age 1+ Movies'",
       "created 'Age 2+ Movies'",
+      "set the sort title of 'Age 2+ Movies' to '!030_02_Age 2+ Movies'",
       "created 'Age 3+ Movies'",
+      "set the sort title of 'Age 3+ Movies' to '!030_03_Age 3+ Movies'",
       "created 'Age 4+ Movies'",
+      "set the sort title of 'Age 4+ Movies' to '!030_04_Age 4+ Movies'",
       "created 'Age 5+ Movies'",
+      "set the sort title of 'Age 5+ Movies' to '!030_05_Age 5+ Movies'",
       "created 'Age 6+ Movies'",
+      "set the sort title of 'Age 6+ Movies' to '!030_06_Age 6+ Movies'",
       "created 'Age 13+ Movies'",
+      "set the sort title of 'Age 13+ Movies' to '!030_13_Age 13+ Movies'",
       "created 'Age 14+ Movies'",
+      "set the sort title of 'Age 14+ Movies' to '!030_14_Age 14+ Movies'",
       "created 'Age 17+ Movies'",
+      "set the sort title of 'Age 17+ Movies' to '!030_17_Age 17+ Movies'",
       "created 'Age 18+ Movies'",
+      "set the sort title of 'Age 18+ Movies' to '!030_18_Age 18+ Movies'",
       "created 'Not Rated Movies'",
+      "set the sort title of 'Not Rated Movies' to '!030_99_Not Rated Movies'",
       "created 'IMDb Popular' with 3 item(s)",
+      "set the sort title of 'IMDb Popular' to '!010_00_IMDb Popular'",
       "created 'IMDb Top 250' with 3 item(s)",
+      "set the sort title of 'IMDb Top 250' to '!010_01_IMDb Top 250'",
       "created 'IMDb Lowest Rated' with 3 item(s)",
+      "set the sort title of 'IMDb Lowest Rated' to '!010_02_IMDb Lowest Rated'",
       "created 'Oscars Best Picture Winners' with 4 item(s)",
+      "set the sort title of 'Oscars Best Picture Winners' to '!020_0000_Oscars Best Picture Winners'",
       "created 'Oscars Best Director Winners' with 2 item(s)",
+      "set the sort title of 'Oscars Best Director Winners' to '!020_0000_Oscars Best Director Winners'",
       "created 'Oscars Winners 2026' with 2 item(s)",
+      "set the sort title of 'Oscars Winners 2026' to '!020_7973_Oscars Winners 2026'",
       "created 'Oscars Winners 2025' with 2 item(s)",
+      "set the sort title of 'Oscars Winners 2025' to '!020_7974_Oscars Winners 2025'",
       "created 'Oscars Winners 2024' with 1 item(s)",
+      "set the sort title of 'Oscars Winners 2024' to '!020_7975_Oscars Winners 2024'",
       "created 'Oscars Winners 2023' with 1 item(s)",
+      "set the sort title of 'Oscars Winners 2023' to '!020_7976_Oscars Winners 2023'",
       "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
       "created 'Chart Collections'",
       "created 'Award Collections'",
@@ -59,7 +79,7 @@
       "Age 1+ Movies": {
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_01_Age 1+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -70,7 +90,7 @@
       "Age 2+ Movies": {
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_02_Age 2+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -81,7 +101,7 @@
       "Age 3+ Movies": {
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_03_Age 3+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -92,7 +112,7 @@
       "Age 4+ Movies": {
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_04_Age 4+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -103,7 +123,7 @@
       "Age 5+ Movies": {
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_05_Age 5+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -114,7 +134,7 @@
       "Age 6+ Movies": {
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_06_Age 6+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -125,7 +145,7 @@
       "Age 13+ Movies": {
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_13_Age 13+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -136,7 +156,7 @@
       "Age 14+ Movies": {
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_14_Age 14+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -147,7 +167,7 @@
       "Age 17+ Movies": {
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_17_Age 17+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -158,7 +178,7 @@
       "Age 18+ Movies": {
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_18_Age 18+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -169,7 +189,7 @@
       "Not Rated Movies": {
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_99_Not Rated Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
@@ -180,7 +200,7 @@
       "IMDb Popular": {
         "summary": "List of IMDb Popular movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_00_IMDb Popular",
         "filters": null,
         "labels": [
           "autoposter"
@@ -195,7 +215,7 @@
       "IMDb Top 250": {
         "summary": "List of IMDb Top 250 movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_01_IMDb Top 250",
         "filters": null,
         "labels": [
           "autoposter"
@@ -210,7 +230,7 @@
       "IMDb Lowest Rated": {
         "summary": "List of IMDb Lowest Rated movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_02_IMDb Lowest Rated",
         "filters": null,
         "labels": [
           "autoposter"
@@ -225,7 +245,7 @@
       "Oscars Best Picture Winners": {
         "summary": "The Academy Award for Best Picture is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!020_0000_Oscars Best Picture Winners",
         "filters": null,
         "labels": [
           "autoposter"
@@ -241,7 +261,7 @@
       "Oscars Best Director Winners": {
         "summary": "The Academy Award for Best Director is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!020_0000_Oscars Best Director Winners",
         "filters": null,
         "labels": [
           "autoposter"
@@ -255,7 +275,7 @@
       "Oscars Winners 2026": {
         "summary": "Academy Awards (Oscars) Winners for 2026.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7973_Oscars Winners 2026",
         "filters": null,
         "labels": [
           "autoposter"
@@ -269,7 +289,7 @@
       "Oscars Winners 2025": {
         "summary": "Academy Awards (Oscars) Winners for 2025.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7974_Oscars Winners 2025",
         "filters": null,
         "labels": [
           "autoposter"
@@ -283,7 +303,7 @@
       "Oscars Winners 2024": {
         "summary": "Academy Awards (Oscars) Winners for 2024.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7975_Oscars Winners 2024",
         "filters": null,
         "labels": [
           "autoposter"
@@ -296,7 +316,7 @@
       "Oscars Winners 2023": {
         "summary": "Academy Awards (Oscars) Winners for 2023.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7976_Oscars Winners 2023",
         "filters": null,
         "labels": [
           "autoposter"
@@ -349,7 +369,7 @@
       "Age 1+ Movies": {
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_01_Age 1+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -360,7 +380,7 @@
       "Age 2+ Movies": {
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_02_Age 2+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -371,7 +391,7 @@
       "Age 3+ Movies": {
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_03_Age 3+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -382,7 +402,7 @@
       "Age 4+ Movies": {
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_04_Age 4+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -393,7 +413,7 @@
       "Age 5+ Movies": {
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_05_Age 5+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -404,7 +424,7 @@
       "Age 6+ Movies": {
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_06_Age 6+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -415,7 +435,7 @@
       "Age 13+ Movies": {
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_13_Age 13+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -426,7 +446,7 @@
       "Age 14+ Movies": {
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_14_Age 14+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -437,7 +457,7 @@
       "Age 17+ Movies": {
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_17_Age 17+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -448,7 +468,7 @@
       "Age 18+ Movies": {
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_18_Age 18+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -459,7 +479,7 @@
       "Not Rated Movies": {
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_99_Not Rated Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
@@ -470,7 +490,7 @@
       "IMDb Popular": {
         "summary": "List of IMDb Popular movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_00_IMDb Popular",
         "filters": null,
         "labels": [
           "autoposter"
@@ -485,7 +505,7 @@
       "IMDb Top 250": {
         "summary": "List of IMDb Top 250 movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_01_IMDb Top 250",
         "filters": null,
         "labels": [
           "autoposter"
@@ -500,7 +520,7 @@
       "IMDb Lowest Rated": {
         "summary": "List of IMDb Lowest Rated movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_02_IMDb Lowest Rated",
         "filters": null,
         "labels": [
           "autoposter"
@@ -515,7 +535,7 @@
       "Oscars Best Picture Winners": {
         "summary": "The Academy Award for Best Picture is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!020_0000_Oscars Best Picture Winners",
         "filters": null,
         "labels": [
           "autoposter"
@@ -531,7 +551,7 @@
       "Oscars Best Director Winners": {
         "summary": "The Academy Award for Best Director is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!020_0000_Oscars Best Director Winners",
         "filters": null,
         "labels": [
           "autoposter"
@@ -545,7 +565,7 @@
       "Oscars Winners 2026": {
         "summary": "Academy Awards (Oscars) Winners for 2026.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7973_Oscars Winners 2026",
         "filters": null,
         "labels": [
           "autoposter"
@@ -559,7 +579,7 @@
       "Oscars Winners 2025": {
         "summary": "Academy Awards (Oscars) Winners for 2025.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7974_Oscars Winners 2025",
         "filters": null,
         "labels": [
           "autoposter"
@@ -573,7 +593,7 @@
       "Oscars Winners 2024": {
         "summary": "Academy Awards (Oscars) Winners for 2024.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7975_Oscars Winners 2024",
         "filters": null,
         "labels": [
           "autoposter"
@@ -586,7 +606,7 @@
       "Oscars Winners 2023": {
         "summary": "Academy Awards (Oscars) Winners for 2023.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7976_Oscars Winners 2023",
         "filters": null,
         "labels": [
           "autoposter"
@@ -654,18 +674,31 @@
   "shows_apply": {
     "actions": [
       "created 'Age 1+ Shows'",
+      "set the sort title of 'Age 1+ Shows' to '!030_01_Age 1+ Shows'",
       "created 'Age 2+ Shows'",
+      "set the sort title of 'Age 2+ Shows' to '!030_02_Age 2+ Shows'",
       "created 'Age 3+ Shows'",
+      "set the sort title of 'Age 3+ Shows' to '!030_03_Age 3+ Shows'",
       "created 'Age 4+ Shows'",
+      "set the sort title of 'Age 4+ Shows' to '!030_04_Age 4+ Shows'",
       "created 'Age 5+ Shows'",
+      "set the sort title of 'Age 5+ Shows' to '!030_05_Age 5+ Shows'",
       "created 'Age 6+ Shows'",
+      "set the sort title of 'Age 6+ Shows' to '!030_06_Age 6+ Shows'",
       "created 'Age 14+ Shows'",
+      "set the sort title of 'Age 14+ Shows' to '!030_14_Age 14+ Shows'",
       "created 'Age 15+ Shows'",
+      "set the sort title of 'Age 15+ Shows' to '!030_15_Age 15+ Shows'",
       "created 'Age 16+ Shows'",
+      "set the sort title of 'Age 16+ Shows' to '!030_16_Age 16+ Shows'",
       "created 'Age 17+ Shows'",
+      "set the sort title of 'Age 17+ Shows' to '!030_17_Age 17+ Shows'",
       "created 'Age 18+ Shows'",
+      "set the sort title of 'Age 18+ Shows' to '!030_18_Age 18+ Shows'",
       "created 'IMDb Popular' with 2 item(s)",
+      "set the sort title of 'IMDb Popular' to '!010_00_IMDb Popular'",
       "created 'IMDb Top 250' with 2 item(s)",
+      "set the sort title of 'IMDb Top 250' to '!010_01_IMDb Top 250'",
       "created 'Chart Collections'",
       "created 'Ratings Collections'"
     ],
@@ -673,7 +706,7 @@
       "Age 1+ Shows": {
         "summary": "Shows that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_01_Age 1+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
@@ -684,7 +717,7 @@
       "Age 2+ Shows": {
         "summary": "Shows that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_02_Age 2+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
@@ -695,7 +728,7 @@
       "Age 3+ Shows": {
         "summary": "Shows that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_03_Age 3+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
@@ -706,7 +739,7 @@
       "Age 4+ Shows": {
         "summary": "Shows that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_04_Age 4+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
@@ -717,7 +750,7 @@
       "Age 5+ Shows": {
         "summary": "Shows that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_05_Age 5+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
@@ -728,7 +761,7 @@
       "Age 6+ Shows": {
         "summary": "Shows that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_06_Age 6+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-G&pop=1",
         "labels": [
           "autoposter"
@@ -739,7 +772,7 @@
       "Age 14+ Shows": {
         "summary": "Shows that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_14_Age 14+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-14&pop=1",
         "labels": [
           "autoposter"
@@ -750,7 +783,7 @@
       "Age 15+ Shows": {
         "summary": "Shows that are rated 15 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_15_Age 15+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-14&pop=1",
         "labels": [
           "autoposter"
@@ -761,7 +794,7 @@
       "Age 16+ Shows": {
         "summary": "Shows that are rated 16 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_16_Age 16+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-14&pop=1",
         "labels": [
           "autoposter"
@@ -772,7 +805,7 @@
       "Age 17+ Shows": {
         "summary": "Shows that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_17_Age 17+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-14&or=1&show.contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -783,7 +816,7 @@
       "Age 18+ Shows": {
         "summary": "Shows that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_18_Age 18+ Shows",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=2&sort=originallyAvailableAt%3Adesc&push=1&show.contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -794,7 +827,7 @@
       "IMDb Popular": {
         "summary": "List of IMDb Popular shows.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_00_IMDb Popular",
         "filters": null,
         "labels": [
           "autoposter"
@@ -808,7 +841,7 @@
       "IMDb Top 250": {
         "summary": "List of IMDb Top 250 shows.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_01_IMDb Top 250",
         "filters": null,
         "labels": [
           "autoposter"
@@ -846,44 +879,64 @@
   "movies_posters_missing": {
     "actions": [
       "created 'Age 1+ Movies'",
+      "set the sort title of 'Age 1+ Movies' to '!030_01_Age 1+ Movies'",
       "could not fetch a usable poster for 'Age 1+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/1.jpg",
       "created 'Age 2+ Movies'",
+      "set the sort title of 'Age 2+ Movies' to '!030_02_Age 2+ Movies'",
       "could not fetch a usable poster for 'Age 2+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/2.jpg",
       "created 'Age 3+ Movies'",
+      "set the sort title of 'Age 3+ Movies' to '!030_03_Age 3+ Movies'",
       "could not fetch a usable poster for 'Age 3+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/3.jpg",
       "created 'Age 4+ Movies'",
+      "set the sort title of 'Age 4+ Movies' to '!030_04_Age 4+ Movies'",
       "could not fetch a usable poster for 'Age 4+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/4.jpg",
       "created 'Age 5+ Movies'",
+      "set the sort title of 'Age 5+ Movies' to '!030_05_Age 5+ Movies'",
       "could not fetch a usable poster for 'Age 5+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/5.jpg",
       "created 'Age 6+ Movies'",
+      "set the sort title of 'Age 6+ Movies' to '!030_06_Age 6+ Movies'",
       "could not fetch a usable poster for 'Age 6+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/6.jpg",
       "created 'Age 13+ Movies'",
+      "set the sort title of 'Age 13+ Movies' to '!030_13_Age 13+ Movies'",
       "could not fetch a usable poster for 'Age 13+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/13.jpg",
       "created 'Age 14+ Movies'",
+      "set the sort title of 'Age 14+ Movies' to '!030_14_Age 14+ Movies'",
       "could not fetch a usable poster for 'Age 14+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/14.jpg",
       "created 'Age 17+ Movies'",
+      "set the sort title of 'Age 17+ Movies' to '!030_17_Age 17+ Movies'",
       "could not fetch a usable poster for 'Age 17+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/17.jpg",
       "created 'Age 18+ Movies'",
+      "set the sort title of 'Age 18+ Movies' to '!030_18_Age 18+ Movies'",
       "could not fetch a usable poster for 'Age 18+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/18.jpg",
       "created 'Not Rated Movies'",
+      "set the sort title of 'Not Rated Movies' to '!030_99_Not Rated Movies'",
       "could not fetch a usable poster for 'Not Rated Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/NR.jpg",
       "created 'IMDb Popular' with 3 item(s)",
+      "set the sort title of 'IMDb Popular' to '!010_00_IMDb Popular'",
       "could not fetch a usable poster for 'IMDb Popular' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/chart/color/IMDb%20Popular.jpg",
       "created 'IMDb Top 250' with 3 item(s)",
+      "set the sort title of 'IMDb Top 250' to '!010_01_IMDb Top 250'",
       "could not fetch a usable poster for 'IMDb Top 250' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/chart/color/IMDb%20Top%20250.jpg",
       "created 'IMDb Lowest Rated' with 3 item(s)",
+      "set the sort title of 'IMDb Lowest Rated' to '!010_02_IMDb Lowest Rated'",
       "could not fetch a usable poster for 'IMDb Lowest Rated' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/chart/color/IMDb%20Lowest%20Rated.jpg",
       "created 'Oscars Best Picture Winners' with 4 item(s)",
+      "set the sort title of 'Oscars Best Picture Winners' to '!020_0000_Oscars Best Picture Winners'",
       "could not fetch a usable poster for 'Oscars Best Picture Winners' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/best_picture_winner.jpg",
       "created 'Oscars Best Director Winners' with 2 item(s)",
+      "set the sort title of 'Oscars Best Director Winners' to '!020_0000_Oscars Best Director Winners'",
       "could not fetch a usable poster for 'Oscars Best Director Winners' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/best_director_winner.jpg",
       "created 'Oscars Winners 2026' with 2 item(s)",
+      "set the sort title of 'Oscars Winners 2026' to '!020_7973_Oscars Winners 2026'",
       "could not fetch a usable poster for 'Oscars Winners 2026' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2026.jpg",
       "created 'Oscars Winners 2025' with 2 item(s)",
+      "set the sort title of 'Oscars Winners 2025' to '!020_7974_Oscars Winners 2025'",
       "could not fetch a usable poster for 'Oscars Winners 2025' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2025.jpg",
       "created 'Oscars Winners 2024' with 1 item(s)",
+      "set the sort title of 'Oscars Winners 2024' to '!020_7975_Oscars Winners 2024'",
       "could not fetch a usable poster for 'Oscars Winners 2024' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2024.jpg",
       "created 'Oscars Winners 2023' with 1 item(s)",
+      "set the sort title of 'Oscars Winners 2023' to '!020_7976_Oscars Winners 2023'",
       "could not fetch a usable poster for 'Oscars Winners 2023' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2023.jpg",
       "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
       "created 'Chart Collections'",
@@ -897,7 +950,7 @@
       "Age 1+ Movies": {
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_01_Age 1+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -908,7 +961,7 @@
       "Age 2+ Movies": {
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_02_Age 2+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -919,7 +972,7 @@
       "Age 3+ Movies": {
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_03_Age 3+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -930,7 +983,7 @@
       "Age 4+ Movies": {
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_04_Age 4+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -941,7 +994,7 @@
       "Age 5+ Movies": {
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_05_Age 5+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -952,7 +1005,7 @@
       "Age 6+ Movies": {
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_06_Age 6+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -963,7 +1016,7 @@
       "Age 13+ Movies": {
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_13_Age 13+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -974,7 +1027,7 @@
       "Age 14+ Movies": {
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_14_Age 14+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -985,7 +1038,7 @@
       "Age 17+ Movies": {
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_17_Age 17+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -996,7 +1049,7 @@
       "Age 18+ Movies": {
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_18_Age 18+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -1007,7 +1060,7 @@
       "Not Rated Movies": {
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_99_Not Rated Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
@@ -1018,7 +1071,7 @@
       "IMDb Popular": {
         "summary": "List of IMDb Popular movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_00_IMDb Popular",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1033,7 +1086,7 @@
       "IMDb Top 250": {
         "summary": "List of IMDb Top 250 movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_01_IMDb Top 250",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1048,7 +1101,7 @@
       "IMDb Lowest Rated": {
         "summary": "List of IMDb Lowest Rated movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_02_IMDb Lowest Rated",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1063,7 +1116,7 @@
       "Oscars Best Picture Winners": {
         "summary": "The Academy Award for Best Picture is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!020_0000_Oscars Best Picture Winners",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1079,7 +1132,7 @@
       "Oscars Best Director Winners": {
         "summary": "The Academy Award for Best Director is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!020_0000_Oscars Best Director Winners",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1093,7 +1146,7 @@
       "Oscars Winners 2026": {
         "summary": "Academy Awards (Oscars) Winners for 2026.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7973_Oscars Winners 2026",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1107,7 +1160,7 @@
       "Oscars Winners 2025": {
         "summary": "Academy Awards (Oscars) Winners for 2025.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7974_Oscars Winners 2025",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1121,7 +1174,7 @@
       "Oscars Winners 2024": {
         "summary": "Academy Awards (Oscars) Winners for 2024.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7975_Oscars Winners 2024",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1134,7 +1187,7 @@
       "Oscars Winners 2023": {
         "summary": "Academy Awards (Oscars) Winners for 2023.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7976_Oscars Winners 2023",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1182,44 +1235,64 @@
   "movies_posters_served": {
     "actions": [
       "created 'Age 1+ Movies'",
+      "set the sort title of 'Age 1+ Movies' to '!030_01_Age 1+ Movies'",
       "set the poster for 'Age 1+ Movies' from the hosted default",
       "created 'Age 2+ Movies'",
+      "set the sort title of 'Age 2+ Movies' to '!030_02_Age 2+ Movies'",
       "set the poster for 'Age 2+ Movies' from the hosted default",
       "created 'Age 3+ Movies'",
+      "set the sort title of 'Age 3+ Movies' to '!030_03_Age 3+ Movies'",
       "set the poster for 'Age 3+ Movies' from the hosted default",
       "created 'Age 4+ Movies'",
+      "set the sort title of 'Age 4+ Movies' to '!030_04_Age 4+ Movies'",
       "set the poster for 'Age 4+ Movies' from the hosted default",
       "created 'Age 5+ Movies'",
+      "set the sort title of 'Age 5+ Movies' to '!030_05_Age 5+ Movies'",
       "set the poster for 'Age 5+ Movies' from the hosted default",
       "created 'Age 6+ Movies'",
+      "set the sort title of 'Age 6+ Movies' to '!030_06_Age 6+ Movies'",
       "set the poster for 'Age 6+ Movies' from the hosted default",
       "created 'Age 13+ Movies'",
+      "set the sort title of 'Age 13+ Movies' to '!030_13_Age 13+ Movies'",
       "set the poster for 'Age 13+ Movies' from the hosted default",
       "created 'Age 14+ Movies'",
+      "set the sort title of 'Age 14+ Movies' to '!030_14_Age 14+ Movies'",
       "set the poster for 'Age 14+ Movies' from the hosted default",
       "created 'Age 17+ Movies'",
+      "set the sort title of 'Age 17+ Movies' to '!030_17_Age 17+ Movies'",
       "set the poster for 'Age 17+ Movies' from the hosted default",
       "created 'Age 18+ Movies'",
+      "set the sort title of 'Age 18+ Movies' to '!030_18_Age 18+ Movies'",
       "set the poster for 'Age 18+ Movies' from the hosted default",
       "created 'Not Rated Movies'",
+      "set the sort title of 'Not Rated Movies' to '!030_99_Not Rated Movies'",
       "set the poster for 'Not Rated Movies' from the hosted default",
       "created 'IMDb Popular' with 3 item(s)",
+      "set the sort title of 'IMDb Popular' to '!010_00_IMDb Popular'",
       "set the poster for 'IMDb Popular' from the hosted default",
       "created 'IMDb Top 250' with 3 item(s)",
+      "set the sort title of 'IMDb Top 250' to '!010_01_IMDb Top 250'",
       "set the poster for 'IMDb Top 250' from the hosted default",
       "created 'IMDb Lowest Rated' with 3 item(s)",
+      "set the sort title of 'IMDb Lowest Rated' to '!010_02_IMDb Lowest Rated'",
       "set the poster for 'IMDb Lowest Rated' from the hosted default",
       "created 'Oscars Best Picture Winners' with 4 item(s)",
+      "set the sort title of 'Oscars Best Picture Winners' to '!020_0000_Oscars Best Picture Winners'",
       "set the poster for 'Oscars Best Picture Winners' from the hosted default",
       "created 'Oscars Best Director Winners' with 2 item(s)",
+      "set the sort title of 'Oscars Best Director Winners' to '!020_0000_Oscars Best Director Winners'",
       "set the poster for 'Oscars Best Director Winners' from the hosted default",
       "created 'Oscars Winners 2026' with 2 item(s)",
+      "set the sort title of 'Oscars Winners 2026' to '!020_7973_Oscars Winners 2026'",
       "set the poster for 'Oscars Winners 2026' from the hosted default",
       "created 'Oscars Winners 2025' with 2 item(s)",
+      "set the sort title of 'Oscars Winners 2025' to '!020_7974_Oscars Winners 2025'",
       "set the poster for 'Oscars Winners 2025' from the hosted default",
       "created 'Oscars Winners 2024' with 1 item(s)",
+      "set the sort title of 'Oscars Winners 2024' to '!020_7975_Oscars Winners 2024'",
       "set the poster for 'Oscars Winners 2024' from the hosted default",
       "created 'Oscars Winners 2023' with 1 item(s)",
+      "set the sort title of 'Oscars Winners 2023' to '!020_7976_Oscars Winners 2023'",
       "set the poster for 'Oscars Winners 2023' from the hosted default",
       "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
       "created 'Chart Collections'",
@@ -1233,7 +1306,7 @@
       "Age 1+ Movies": {
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_01_Age 1+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1244,7 +1317,7 @@
       "Age 2+ Movies": {
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_02_Age 2+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1255,7 +1328,7 @@
       "Age 3+ Movies": {
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_03_Age 3+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1266,7 +1339,7 @@
       "Age 4+ Movies": {
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_04_Age 4+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1277,7 +1350,7 @@
       "Age 5+ Movies": {
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_05_Age 5+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1288,7 +1361,7 @@
       "Age 6+ Movies": {
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_06_Age 6+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1299,7 +1372,7 @@
       "Age 13+ Movies": {
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_13_Age 13+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -1310,7 +1383,7 @@
       "Age 14+ Movies": {
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_14_Age 14+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -1321,7 +1394,7 @@
       "Age 17+ Movies": {
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_17_Age 17+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -1332,7 +1405,7 @@
       "Age 18+ Movies": {
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_18_Age 18+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -1343,7 +1416,7 @@
       "Not Rated Movies": {
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_99_Not Rated Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
@@ -1354,7 +1427,7 @@
       "IMDb Popular": {
         "summary": "List of IMDb Popular movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_00_IMDb Popular",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1369,7 +1442,7 @@
       "IMDb Top 250": {
         "summary": "List of IMDb Top 250 movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_01_IMDb Top 250",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1384,7 +1457,7 @@
       "IMDb Lowest Rated": {
         "summary": "List of IMDb Lowest Rated movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_02_IMDb Lowest Rated",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1399,7 +1472,7 @@
       "Oscars Best Picture Winners": {
         "summary": "The Academy Award for Best Picture is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!020_0000_Oscars Best Picture Winners",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1415,7 +1488,7 @@
       "Oscars Best Director Winners": {
         "summary": "The Academy Award for Best Director is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!020_0000_Oscars Best Director Winners",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1429,7 +1502,7 @@
       "Oscars Winners 2026": {
         "summary": "Academy Awards (Oscars) Winners for 2026.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7973_Oscars Winners 2026",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1443,7 +1516,7 @@
       "Oscars Winners 2025": {
         "summary": "Academy Awards (Oscars) Winners for 2025.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7974_Oscars Winners 2025",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1457,7 +1530,7 @@
       "Oscars Winners 2024": {
         "summary": "Academy Awards (Oscars) Winners for 2024.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7975_Oscars Winners 2024",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1470,7 +1543,7 @@
       "Oscars Winners 2023": {
         "summary": "Academy Awards (Oscars) Winners for 2023.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7976_Oscars Winners 2023",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1518,25 +1591,42 @@
   "movies_chart_source_down": {
     "actions": [
       "created 'Age 1+ Movies'",
+      "set the sort title of 'Age 1+ Movies' to '!030_01_Age 1+ Movies'",
       "created 'Age 2+ Movies'",
+      "set the sort title of 'Age 2+ Movies' to '!030_02_Age 2+ Movies'",
       "created 'Age 3+ Movies'",
+      "set the sort title of 'Age 3+ Movies' to '!030_03_Age 3+ Movies'",
       "created 'Age 4+ Movies'",
+      "set the sort title of 'Age 4+ Movies' to '!030_04_Age 4+ Movies'",
       "created 'Age 5+ Movies'",
+      "set the sort title of 'Age 5+ Movies' to '!030_05_Age 5+ Movies'",
       "created 'Age 6+ Movies'",
+      "set the sort title of 'Age 6+ Movies' to '!030_06_Age 6+ Movies'",
       "created 'Age 13+ Movies'",
+      "set the sort title of 'Age 13+ Movies' to '!030_13_Age 13+ Movies'",
       "created 'Age 14+ Movies'",
+      "set the sort title of 'Age 14+ Movies' to '!030_14_Age 14+ Movies'",
       "created 'Age 17+ Movies'",
+      "set the sort title of 'Age 17+ Movies' to '!030_17_Age 17+ Movies'",
       "created 'Age 18+ Movies'",
+      "set the sort title of 'Age 18+ Movies' to '!030_18_Age 18+ Movies'",
       "created 'Not Rated Movies'",
+      "set the sort title of 'Not Rated Movies' to '!030_99_Not Rated Movies'",
       "'IMDb Popular': source returned no items; leaving the collection untouched",
       "'IMDb Top 250': source returned no items; leaving the collection untouched",
       "'IMDb Lowest Rated': source returned no items; leaving the collection untouched",
       "created 'Oscars Best Picture Winners' with 4 item(s)",
+      "set the sort title of 'Oscars Best Picture Winners' to '!020_0000_Oscars Best Picture Winners'",
       "created 'Oscars Best Director Winners' with 2 item(s)",
+      "set the sort title of 'Oscars Best Director Winners' to '!020_0000_Oscars Best Director Winners'",
       "created 'Oscars Winners 2026' with 2 item(s)",
+      "set the sort title of 'Oscars Winners 2026' to '!020_7973_Oscars Winners 2026'",
       "created 'Oscars Winners 2025' with 2 item(s)",
+      "set the sort title of 'Oscars Winners 2025' to '!020_7974_Oscars Winners 2025'",
       "created 'Oscars Winners 2024' with 1 item(s)",
+      "set the sort title of 'Oscars Winners 2024' to '!020_7975_Oscars Winners 2024'",
       "created 'Oscars Winners 2023' with 1 item(s)",
+      "set the sort title of 'Oscars Winners 2023' to '!020_7976_Oscars Winners 2023'",
       "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
       "created 'Chart Collections'",
       "created 'Award Collections'",
@@ -1546,7 +1636,7 @@
       "Age 1+ Movies": {
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_01_Age 1+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1557,7 +1647,7 @@
       "Age 2+ Movies": {
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_02_Age 2+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1568,7 +1658,7 @@
       "Age 3+ Movies": {
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_03_Age 3+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1579,7 +1669,7 @@
       "Age 4+ Movies": {
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_04_Age 4+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1590,7 +1680,7 @@
       "Age 5+ Movies": {
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_05_Age 5+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1601,7 +1691,7 @@
       "Age 6+ Movies": {
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_06_Age 6+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1612,7 +1702,7 @@
       "Age 13+ Movies": {
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_13_Age 13+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -1623,7 +1713,7 @@
       "Age 14+ Movies": {
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_14_Age 14+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -1634,7 +1724,7 @@
       "Age 17+ Movies": {
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_17_Age 17+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -1645,7 +1735,7 @@
       "Age 18+ Movies": {
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_18_Age 18+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -1656,7 +1746,7 @@
       "Not Rated Movies": {
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_99_Not Rated Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
@@ -1667,7 +1757,7 @@
       "Oscars Best Picture Winners": {
         "summary": "The Academy Award for Best Picture is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!020_0000_Oscars Best Picture Winners",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1683,7 +1773,7 @@
       "Oscars Best Director Winners": {
         "summary": "The Academy Award for Best Director is one of the Academy Awards presented annually by the Academy of Motion Picture Arts and Sciences since the awards debuted in 1929.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!020_0000_Oscars Best Director Winners",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1697,7 +1787,7 @@
       "Oscars Winners 2026": {
         "summary": "Academy Awards (Oscars) Winners for 2026.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7973_Oscars Winners 2026",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1711,7 +1801,7 @@
       "Oscars Winners 2025": {
         "summary": "Academy Awards (Oscars) Winners for 2025.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7974_Oscars Winners 2025",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1725,7 +1815,7 @@
       "Oscars Winners 2024": {
         "summary": "Academy Awards (Oscars) Winners for 2024.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7975_Oscars Winners 2024",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1738,7 +1828,7 @@
       "Oscars Winners 2023": {
         "summary": "Academy Awards (Oscars) Winners for 2023.",
         "sort": "release",
-        "sort_title": null,
+        "sort_title": "!020_7976_Oscars Winners 2023",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1786,19 +1876,33 @@
   "movies_award_source_down": {
     "actions": [
       "created 'Age 1+ Movies'",
+      "set the sort title of 'Age 1+ Movies' to '!030_01_Age 1+ Movies'",
       "created 'Age 2+ Movies'",
+      "set the sort title of 'Age 2+ Movies' to '!030_02_Age 2+ Movies'",
       "created 'Age 3+ Movies'",
+      "set the sort title of 'Age 3+ Movies' to '!030_03_Age 3+ Movies'",
       "created 'Age 4+ Movies'",
+      "set the sort title of 'Age 4+ Movies' to '!030_04_Age 4+ Movies'",
       "created 'Age 5+ Movies'",
+      "set the sort title of 'Age 5+ Movies' to '!030_05_Age 5+ Movies'",
       "created 'Age 6+ Movies'",
+      "set the sort title of 'Age 6+ Movies' to '!030_06_Age 6+ Movies'",
       "created 'Age 13+ Movies'",
+      "set the sort title of 'Age 13+ Movies' to '!030_13_Age 13+ Movies'",
       "created 'Age 14+ Movies'",
+      "set the sort title of 'Age 14+ Movies' to '!030_14_Age 14+ Movies'",
       "created 'Age 17+ Movies'",
+      "set the sort title of 'Age 17+ Movies' to '!030_17_Age 17+ Movies'",
       "created 'Age 18+ Movies'",
+      "set the sort title of 'Age 18+ Movies' to '!030_18_Age 18+ Movies'",
       "created 'Not Rated Movies'",
+      "set the sort title of 'Not Rated Movies' to '!030_99_Not Rated Movies'",
       "created 'IMDb Popular' with 3 item(s)",
+      "set the sort title of 'IMDb Popular' to '!010_00_IMDb Popular'",
       "created 'IMDb Top 250' with 3 item(s)",
+      "set the sort title of 'IMDb Top 250' to '!010_01_IMDb Top 250'",
       "created 'IMDb Lowest Rated' with 3 item(s)",
+      "set the sort title of 'IMDb Lowest Rated' to '!010_02_IMDb Lowest Rated'",
       "'Oscars Best Picture Winners': source returned no items; leaving the collection untouched",
       "'Oscars Best Director Winners': source returned no items; leaving the collection untouched",
       "created 'Chart Collections'",
@@ -1809,7 +1913,7 @@
       "Age 1+ Movies": {
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_01_Age 1+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1820,7 +1924,7 @@
       "Age 2+ Movies": {
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_02_Age 2+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1831,7 +1935,7 @@
       "Age 3+ Movies": {
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_03_Age 3+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1842,7 +1946,7 @@
       "Age 4+ Movies": {
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_04_Age 4+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1853,7 +1957,7 @@
       "Age 5+ Movies": {
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_05_Age 5+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1864,7 +1968,7 @@
       "Age 6+ Movies": {
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_06_Age 6+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -1875,7 +1979,7 @@
       "Age 13+ Movies": {
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_13_Age 13+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -1886,7 +1990,7 @@
       "Age 14+ Movies": {
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_14_Age 14+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -1897,7 +2001,7 @@
       "Age 17+ Movies": {
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_17_Age 17+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -1908,7 +2012,7 @@
       "Age 18+ Movies": {
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_18_Age 18+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -1919,7 +2023,7 @@
       "Not Rated Movies": {
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_99_Not Rated Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
@@ -1930,7 +2034,7 @@
       "IMDb Popular": {
         "summary": "List of IMDb Popular movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_00_IMDb Popular",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1945,7 +2049,7 @@
       "IMDb Top 250": {
         "summary": "List of IMDb Top 250 movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_01_IMDb Top 250",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1960,7 +2064,7 @@
       "IMDb Lowest Rated": {
         "summary": "List of IMDb Lowest Rated movies.",
         "sort": "custom",
-        "sort_title": null,
+        "sort_title": "!010_02_IMDb Lowest Rated",
         "filters": null,
         "labels": [
           "autoposter"
@@ -2010,16 +2114,27 @@
   "movies_owning_nothing": {
     "actions": [
       "created 'Age 1+ Movies'",
+      "set the sort title of 'Age 1+ Movies' to '!030_01_Age 1+ Movies'",
       "created 'Age 2+ Movies'",
+      "set the sort title of 'Age 2+ Movies' to '!030_02_Age 2+ Movies'",
       "created 'Age 3+ Movies'",
+      "set the sort title of 'Age 3+ Movies' to '!030_03_Age 3+ Movies'",
       "created 'Age 4+ Movies'",
+      "set the sort title of 'Age 4+ Movies' to '!030_04_Age 4+ Movies'",
       "created 'Age 5+ Movies'",
+      "set the sort title of 'Age 5+ Movies' to '!030_05_Age 5+ Movies'",
       "created 'Age 6+ Movies'",
+      "set the sort title of 'Age 6+ Movies' to '!030_06_Age 6+ Movies'",
       "created 'Age 13+ Movies'",
+      "set the sort title of 'Age 13+ Movies' to '!030_13_Age 13+ Movies'",
       "created 'Age 14+ Movies'",
+      "set the sort title of 'Age 14+ Movies' to '!030_14_Age 14+ Movies'",
       "created 'Age 17+ Movies'",
+      "set the sort title of 'Age 17+ Movies' to '!030_17_Age 17+ Movies'",
       "created 'Age 18+ Movies'",
+      "set the sort title of 'Age 18+ Movies' to '!030_18_Age 18+ Movies'",
       "created 'Not Rated Movies'",
+      "set the sort title of 'Not Rated Movies' to '!030_99_Not Rated Movies'",
       "'IMDb Popular': the source returned 3 id(s), none of which this library owns; leaving the collection untouched",
       "'IMDb Top 250': the source returned 3 id(s), none of which this library owns; leaving the collection untouched",
       "'IMDb Lowest Rated': the source returned 3 id(s), none of which this library owns; leaving the collection untouched",
@@ -2038,7 +2153,7 @@
       "Age 1+ Movies": {
         "summary": "Movies that are rated 1 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_01_Age 1+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -2049,7 +2164,7 @@
       "Age 2+ Movies": {
         "summary": "Movies that are rated 2 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_02_Age 2+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -2060,7 +2175,7 @@
       "Age 3+ Movies": {
         "summary": "Movies that are rated 3 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_03_Age 3+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -2071,7 +2186,7 @@
       "Age 4+ Movies": {
         "summary": "Movies that are rated 4 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_04_Age 4+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -2082,7 +2197,7 @@
       "Age 5+ Movies": {
         "summary": "Movies that are rated 5 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_05_Age 5+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -2093,7 +2208,7 @@
       "Age 6+ Movies": {
         "summary": "Movies that are rated 6 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_06_Age 6+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=G&pop=1",
         "labels": [
           "autoposter"
@@ -2104,7 +2219,7 @@
       "Age 13+ Movies": {
         "summary": "Movies that are rated 13 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_13_Age 13+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -2115,7 +2230,7 @@
       "Age 14+ Movies": {
         "summary": "Movies that are rated 14 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_14_Age 14+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=PG-13&pop=1",
         "labels": [
           "autoposter"
@@ -2126,7 +2241,7 @@
       "Age 17+ Movies": {
         "summary": "Movies that are rated 17 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_17_Age 17+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -2137,7 +2252,7 @@
       "Age 18+ Movies": {
         "summary": "Movies that are rated 18 according to the Common Sense Rating System.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_18_Age 18+ Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=R&or=1&contentRating=TV-MA&pop=1",
         "labels": [
           "autoposter"
@@ -2148,7 +2263,7 @@
       "Not Rated Movies": {
         "summary": "Movies that are Unrated, Not Rated or any other uncommon Ratings.",
         "sort": null,
-        "sort_title": null,
+        "sort_title": "!030_99_Not Rated Movies",
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
         "labels": [
           "autoposter"
