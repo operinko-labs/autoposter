@@ -260,6 +260,33 @@ async def test_an_operator_blank_is_never_written_over(session):
     assert row.definition_hash == ""
 
 
+async def test_a_row_a_definition_already_owns_is_never_written_over(session):
+    # The same hazard one kind over, and the one the operator group's own
+    # divider title reaches: a DEFINITION titled "Collections" builds the
+    # collection this group's separator is named for. Config load refuses that
+    # document, so this is the second belt -- and it is not blank-shaped: the
+    # row says "manual", written by ``lists.py``, carrying the members hash.
+    # Unrefused, each writer would overwrite what the other stored -- summary,
+    # sort title, hash -- every pass, forever.
+    theirs = FakeCollection("Collections", labels=[LABEL])
+    row = ManagedCollection(
+        library="Movies", title="Collections", kind="manual",
+        plex_rating_key="1", definition_hash="the-members-hash",
+    )
+    session.add(row)
+    await session.flush()
+
+    actions = await run(session, FakeSection([theirs]), spec("operator"),
+                        existing={"Collections": theirs},
+                        stored={"Collections": row})
+    assert actions == [
+        "'Collections' is already managed as a 'manual' collection, not as a "
+        "separator; the 'operator' group's separator is not written over it"
+    ]
+    assert theirs.sort_title_set is None
+    assert (row.kind, row.definition_hash) == ("manual", "the-members-hash")
+
+
 async def test_a_protected_label_wins(session):
     theirs = FakeCollection("Chart Collections",
                             labels=[LABEL, "Collection managed by Maintainerr"])

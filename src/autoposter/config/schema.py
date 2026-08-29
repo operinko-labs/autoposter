@@ -832,7 +832,9 @@ class CollectionsConfig(BaseModel):
         presets ship, of all sixteen ceremonies alike -- so a definition
         titled "Oscars Winners 2026" is not caught here; the reconcile leaves
         whichever definition runs second in charge, and the roadmap has that
-        as the known gap.
+        as the known gap. The operator group's divider is reserved separately,
+        below: that enumeration runs before operator config and so cannot see
+        the one group these very definitions activate.
         """
         # Imported at validation time, not module scope: both reach back into
         # this module -- the same cycle CollectionDefinition's builder
@@ -857,6 +859,21 @@ class CollectionsConfig(BaseModel):
             built_in |= definition_titles(defs, [], library_type, shim)
             for group in groups.separator_groups(defs, library_type, shim):
                 separator_group_by_title[groups.separator_title(group)] = group
+
+        # The operator group's own divider, which that enumeration cannot see:
+        # ``default_definitions`` is built "before operator config"
+        # (``sources.py``), so the group that activates from the entries below
+        # contributes no title to the set above. Its divider is titled
+        # "Collections", and a definition claiming it would leave two writers on
+        # one row -- the list reconciler storing a members hash and a member
+        # sort title, ``reconcile_separator`` overwriting the summary, the sort
+        # title and the hash, each reversing the other every pass. Reserved on
+        # the same terms as every other divider: only while ``separators`` is on
+        # and only when there is an operator definition to activate the group.
+        if self.definitions and self.separators:
+            operator_title = groups.separator_title(groups.OPERATOR_GROUP)
+            built_in.add(operator_title)
+            separator_group_by_title[operator_title] = groups.OPERATOR_GROUP
 
         seen: dict[str, CollectionDefinition] = {}
         for definition in self.definitions:

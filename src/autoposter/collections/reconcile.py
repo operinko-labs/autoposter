@@ -555,6 +555,22 @@ async def reconcile_separator(
             "group's separator is not written over it" % (spec.title, spec.group)
         ]
 
+    if record is not None and record.kind not in (None, "separator"):
+        # The same hazard one kind over. A DEFINITION already owns this row --
+        # "manual" from ``lists.py``, "smart" from ``smart.py`` -- and its hash
+        # is a members or filter hash, never this routine's. Without this the
+        # two writers would each overwrite what the other stored, every pass,
+        # forever: the definition's summary and member sort title, then the
+        # divider's, then the definition's again. Reachable on the operator
+        # group's own divider title, which config load also refuses; this is
+        # the belt that holds for a row already in the database when the
+        # refusal ships. Returned, not raised, for the reason above.
+        return [
+            "%r is already managed as a %r collection, not as a separator; "
+            "the %r group's separator is not written over it"
+            % (spec.title, record.kind, spec.group)
+        ]
+
     if collection is not None:
         ok, message = resolve_collision(
             collection, label, adopt, adopt_from, adopt_removes_prior_label, dry_run,
@@ -571,7 +587,14 @@ async def reconcile_separator(
         collection is not None and record is not None
         and record.definition_hash == wanted
     )
-    if definition_current and not (posters_on and record.poster_sha256 is None):
+    if definition_current and not (
+        posters_on and spec.poster_key is not None and record.poster_sha256 is None
+    ):
+        # ``poster_key`` is in the condition because a group with no measured
+        # stem can never fill ``poster_sha256`` (the block below is gated on the
+        # same key), so without it the seven poster-less dividers would fall
+        # through this short-circuit every pass forever -- no I/O either way,
+        # but a fast path that never fires for most of the groups.
         return actions
 
     if not definition_current:

@@ -400,6 +400,31 @@ def test_a_collision_with_a_group_separator_is_freed_by_the_toggle():
     assert len(build_config(document).collections.definitions) == 1
 
 
+def test_a_definition_may_not_claim_the_operator_groups_own_divider_title():
+    """"Collections" is the one divider title the enumeration above cannot see.
+
+    It reserves the separator titles of the groups ``default_definitions``
+    implies -- and that runs "before operator config" (``sources.py``), so the
+    operator group, which activates from these very ``definitions:`` entries,
+    contributes nothing to the reserved set. Unrefused, both writers own the
+    row: the list reconciler stores a members hash and a member sort title,
+    ``reconcile_separator`` overwrites the summary, the sort title and the hash,
+    and the next pass reverses it -- forever, silently. Reserved here for the
+    same reason every other separator title is.
+    """
+    document = _document_with_definitions(
+        [{"title": "Collections", "builder": "plex_id", "params": {"ids": ["1"]}}]
+    )
+
+    with pytest.raises(ValidationError, match="operator.*separator"):
+        build_config(document)
+
+    # The other half of the message's claim, as for the built-in dividers:
+    # the toggle is what actually frees the title.
+    document["collections"]["separators"] = False
+    assert len(build_config(document).collections.definitions) == 1
+
+
 def test_two_operator_definitions_may_not_share_a_title_in_one_library():
     document = _document_with_definitions([
         {"title": "Hand Picked", "builder": "plex_id", "params": {"ids": ["1"]}},
