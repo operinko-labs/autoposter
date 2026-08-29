@@ -156,12 +156,14 @@ def tmdb_profile_url(profile_path: str) -> str | None:
     (``modules/library.py:453``) outranks ``tmdb_person``
     (``modules/library.py:462``) on a first-match-wins ladder -- so in a stock
     run the hosted photo wins and the TMDb one is only reached when it is
-    absent. We ship the fallback alone: the hosted source is keyed by the
-    person's *name* across six per-style repositories, and our person
-    collections are keyed by TMDb *id*, so adopting it would be new machinery
-    rather than reuse. There is no ``Default-Images`` people folder to fall back
-    on either -- checked 2026-08-29, it does not exist -- so no people URL is to
-    be derived from ``AWARD_SEGMENTS``' pattern.
+    absent. Our kind name is ours; upstream's attribute for this behaviour is
+    ``tmdb_person``, and its own ``tmdb_profile`` -- higher on that same
+    ladder -- is something else. We ship the fallback alone: the hosted
+    source is keyed by the person's *name* across six per-style repositories,
+    and our person collections are keyed by TMDb *id*, so adopting it would
+    be new machinery rather than reuse. There is no ``Default-Images`` people
+    folder to fall back on either -- checked 2026-08-29, it does not exist --
+    so no people URL is to be derived from ``AWARD_SEGMENTS``' pattern.
 
     ``IMAGE_BASE`` is ``providers/tmdb.py``'s, the same base the artwork
     pipeline fetches every other TMDb image from, so the size segment is
@@ -349,7 +351,7 @@ async def apply_poster(
     Both branches are validated with ``_is_image``: an operator's file can be
     truncated, zero-byte, or an HTML error page saved as ``poster.jpg`` just
     as easily as a response body can. An unusable local file falls through to
-    the hosted default rather than failing the collection outright.
+    whatever source ``kind`` names rather than failing the collection outright.
 
     plexapi's ``uploadPoster`` only accepts a filepath, so the bytes are
     written to a temporary file, never through its ``url=`` form: that makes
@@ -386,7 +388,8 @@ async def apply_poster(
             source = "local file %s" % local
         else:
             logger.info(
-                "local poster %s did not decode as an image; using the hosted default", local
+                "local poster %s did not decode as an image; using whatever source kind names",
+                local,
             )
     if data is None:
         # Two poster SOURCES now, dispatched on ``kind`` here rather than inside

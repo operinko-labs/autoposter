@@ -145,7 +145,8 @@ class TmdbEntityParams(BaseModel):
 
     No ``region``/``language``: neither changes which titles a list, a
     collection or a discover-by-id holds, and every extra parameter is a
-    second cache key for an identical answer.
+    second cache key for an identical answer (the person builders' second
+    read, the biography, *would* vary by language; see ``person_detail``).
 
     ``gt=0`` because ``0`` is what a mis-read config or an unfilled template
     renders to, and TMDb answers it with a 404 the operator then has to go and

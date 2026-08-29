@@ -394,11 +394,11 @@ class TmdbListClient:
         Not paged, like ``/collection/{id}``, so this sends no ``page``. No
         ``append_to_response`` either, which is what upstream's own person read
         sends on this path (Kometa's ``get_person`` passes ``partial=None``, so
-        the library's default append set is never applied). No ``language``:
-        upstream sends the operator's configured one and this service has no
-        such setting on any collection path, so sending nothing is the honest
-        shape rather than a value invented here -- see ``PersonDetail`` for
-        what an absent biography then means.
+        the library's default append set is never applied). NOT KOMETA: no
+        ``language``: upstream sends the operator's configured one and this
+        service has no such setting on any collection path, so sending nothing
+        is the honest shape rather than a value invented here -- see
+        ``PersonDetail`` for what an absent biography then means.
 
         The name is read and thrown away on purpose. It is the only field TMDb
         always sends for a person, so it is the one thing that distinguishes
