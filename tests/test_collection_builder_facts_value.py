@@ -6,7 +6,9 @@ or ``original_language`` family runs. Useful on its own: an operator who wants
 exactly "the Finnish films" writes this and nothing else.
 """
 import pytest
+from sqlalchemy import func, select, text
 
+from autoposter.collections.builders import facts_value as facts_value_module
 from autoposter.collections.builders.base import BuilderContext
 from autoposter.collections.builders.facts_value import (
     FactsValueBuilder,
@@ -97,3 +99,34 @@ async def test_an_empty_values_list_is_refused_at_config_load():
     """A membership query with no terms matches the whole library."""
     with pytest.raises(ValueError):
         FactsValueParams.model_validate({"field": "origin_country", "values": []})
+
+
+async def test_a_failing_query_leaves_the_session_usable_for_what_runs_next(
+    session, monkeypatch,
+):
+    """``engine.py:447`` contains every builder exception and substitutes an
+    empty result, on the invariant that a dead source does not stop the pass.
+    That invariant is false unless a failed read here leaves the shared
+    `AsyncSession`'s transaction usable for whatever the pass runs next --
+    without the `begin_nested()` savepoint around the read, a real DB error
+    (a transient one, or Important 1's type mismatch before its own fix)
+    poisons the transaction and every later statement in the pass raises too."""
+    async def _broken_query(*args, **kwargs):
+        # A genuine Postgres-level error, not a Python one, so it poisons the
+        # transaction the same way a live failure would.
+        await session.execute(text("SELECT * FROM this_table_does_not_exist"))
+        return []  # pragma: no cover - the execute above always raises first
+
+    monkeypatch.setattr(facts_value_module, "items_with_values", _broken_query)
+
+    with pytest.raises(Exception):
+        await FactsValueBuilder().build(BuilderContext(
+            library="Movies", library_type="Movie", session=session,
+            config={"field": "origin_country", "values": ["FI"]},
+        ))
+
+    # The pass continues: the next statement on the same session -- standing
+    # in for the next definition's query, or the engine's own bookkeeping --
+    # must succeed rather than raise the poisoned-transaction cascade.
+    result = await session.execute(select(func.count()).select_from(MediaItem))
+    assert result.scalar_one() == 0

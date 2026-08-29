@@ -71,6 +71,16 @@ class FactsField:
     the field's own property rather than a type row's: TMDb has no
     ``belongs_to_collection`` for a series, so ``tmdb_collection`` is
     movie-only wherever it is used.
+
+    ``value_type`` is the Python type ``items_with_values``' scalar branch
+    binds a value as. SQLAlchemy infers a bind parameter's Postgres type from
+    the Python value it is given, not from the column being compared, so a
+    scalar column that is not text -- ``tmdb_collection_id`` is an Integer
+    (``db/models.py:237``) -- needs its own coercion here, or the asyncpg
+    dialect renders a cast the column refuses (``integer = character
+    varying``). Unused for a ``multi`` field: the membership side is always
+    ``jsonb_exists_any`` against text, matching what
+    ``jsonb_array_elements_text`` -- the enumeration side -- always yields.
     """
 
     name: str
@@ -78,6 +88,7 @@ class FactsField:
     multi: bool
     kinds: tuple[str, ...]
     note: str
+    value_type: type = str
 
 
 FACTS_FIELDS: dict[str, FactsField] = {
@@ -107,6 +118,7 @@ FACTS_FIELDS: dict[str, FactsField] = {
             "(`builders/tmdb.TmdbCollectionBuilder`). Enumerated as the id "
             "stringified, because `dynamic_keys._strlist` matches every "
             "narrowing entry as a string.",
+            int,
         ),
     )
 }
@@ -199,7 +211,7 @@ async def items_with_values(
     if field.multi:
         matches = func.jsonb_exists_any(column, list(values))
     else:
-        matches = column.in_([str(one) for one in values])
+        matches = column.in_([field.value_type(one) for one in values])
     stmt = (
         select(MediaItem.rating_key)
         .select_from(ItemFacts)

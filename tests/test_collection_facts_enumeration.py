@@ -123,6 +123,43 @@ async def test_the_franchise_field_enumerates_ids_as_strings(session):
     assert values == [("1241", 2), ("87096", 1)]
 
 
+async def test_the_franchise_field_membership_binds_ids_as_integers(session):
+    """``tmdb_collection_id`` is an Integer column (``db/models.py:237``), but
+    every value ``items_with_values`` receives is a string -- ``enumerate_values``
+    stringifies the id, and ``FactsValueParams.coerce_numbers_to_str`` does the
+    same for a config value. SQLAlchemy infers a bind's Postgres type from the
+    Python value it is given, not from the column being compared, so passing
+    the string straight through renders ``IN ($1::VARCHAR)`` against an Integer
+    column and Postgres refuses it: ``operator does not exist: integer =
+    character varying``. ``FactsField.value_type`` is what coerces it back."""
+    await _item(session, "a", tmdb_collection_id=1241)
+    await _item(session, "b", tmdb_collection_id=87096)
+    keys = await items_with_values(
+        session, FACTS_FIELDS["tmdb_collection"], ["1241"],
+        library="Movies", library_type="Movie",
+    )
+    assert keys == ["a"]
+
+
+async def test_the_franchise_field_round_trips_through_enumerate_and_membership(session):
+    """The natural pairing the field's own `note` describes: an id enumerated
+    as a string has to be usable as a membership value on the same field --
+    exactly the query `facts_value` runs when it expands a franchise family."""
+    await _item(session, "a", tmdb_collection_id=1241)
+    await _item(session, "b", tmdb_collection_id=1241)
+    await _item(session, "c", tmdb_collection_id=87096)
+    values = await enumerate_values(
+        session, FACTS_FIELDS["tmdb_collection"],
+        library="Movies", library_type="Movie",
+    )
+    ids = [value for value, _count in values]
+    keys = await items_with_values(
+        session, FACTS_FIELDS["tmdb_collection"], ids,
+        library="Movies", library_type="Movie",
+    )
+    assert keys == ["a", "b", "c"]
+
+
 async def test_membership_is_every_item_carrying_any_of_the_values(session):
     """``DynamicKey.values`` is the key plus every addon member the library
     carries, so membership is an OR over the list -- the same ``any:`` base the

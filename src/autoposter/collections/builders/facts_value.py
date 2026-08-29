@@ -81,8 +81,16 @@ class FactsValueBuilder:
                 "and was given no session. Every engine path supplies one; a "
                 "direct caller has to pass `session=` on the BuilderContext"
             )
-        keys = await items_with_values(
-            ctx.session, field, params.values,
-            library=ctx.library, library_type=ctx.library_type,
-        )
+        # A savepoint around the read, not the bare session: `engine.py`'s
+        # per-definition containment (the try/except around `builder.build`)
+        # assumes a swallowed exception leaves the shared session usable for
+        # whatever the pass runs next. That held for every source before this
+        # builder because none of them touched the database -- a failed query
+        # here would otherwise poison the whole transaction, turning one bad
+        # definition into every later statement in the pass raising.
+        async with ctx.session.begin_nested():
+            keys = await items_with_values(
+                ctx.session, field, params.values,
+                library=ctx.library, library_type=ctx.library_type,
+            )
         return BuilderResult(ids=[("plex", key) for key in keys])
