@@ -133,6 +133,16 @@ class BuilderContext:
     fetch. A builder that memoises there must memoise the *failure* too, or a
     dead source is re-fetched once per collection.
 
+    ``session`` is this service's own database, read-only by convention and by
+    every use of it: the facts builders' membership IS a query over
+    ``item_facts`` joined back to ``media_items``, because the values they build
+    on are TMDb's and Plex holds none of them (roadmap rows 189/192). A smart
+    builder has had one since 9c (``SmartContext.session``); the asymmetry was a
+    gap rather than a rule, and the engine has the session in hand at the
+    construction site. None for a direct caller with no database, and a builder
+    that needs one says so by raising -- ``build`` raises on failure, so a
+    missing session must never be answered with an empty membership.
+
     Still absent: application config, raw secrets, and any way to *write*.
     Builders do not resolve and do not apply. The library itself is reachable
     only through ``sources.plex`` (``PlexSectionAccess``), read-only and
@@ -147,6 +157,7 @@ class BuilderContext:
     cache: ProviderCache | None = None
     run_cache: dict[str, Any] = field(default_factory=dict)
     sources: SourceClients = field(default_factory=SourceClients)
+    session: AsyncSession | None = None
 
 
 @dataclass(frozen=True)

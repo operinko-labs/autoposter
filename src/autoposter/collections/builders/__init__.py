@@ -31,6 +31,7 @@ from autoposter.collections.builders.arr import (
 )
 from autoposter.collections.builders.cs_bucket import CsBucketBuilder
 from autoposter.collections.builders.dynamic import DynamicBuilder
+from autoposter.collections.builders.facts_value import FactsValueBuilder
 from autoposter.collections.builders.imdb_award import (
     ImdbAwardBuilder,
     ImdbAwardYearsBuilder,
@@ -147,6 +148,11 @@ register(CsBucketBuilder())
 # collection per distinct value the library holds, written through
 # ``smart_filter``'s reconciler and grammar (10a decision C1).
 register(DynamicBuilder())
+# The list family, and the only builder here whose source is this
+# service's own database: Plex holds none of TMDb's origin country,
+# original language or collection id, so there is no filter to store and
+# the membership is resolved here (``builders/facts_value.py``).
+register(FactsValueBuilder())
 
 __all__ = [
     "NAMESPACES",

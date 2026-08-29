@@ -331,6 +331,7 @@ async def run_library(
             cache=cache,
             run_cache=run_cache,
             sources=bound_sources,
+            session=session,
         )
 
     for definition in definitions:
