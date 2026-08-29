@@ -775,6 +775,33 @@ async def test_a_static_summary_beats_the_tmdb_pull(session, registry_entry):
     assert summaries.asked == []
 
 
+async def test_a_static_summary_beats_a_person_builders_biography(session, registry_entry):
+    """Phase 10c-lite gave the five person builders a summary of their own --
+    the person's TMDb biography (``builders/tmdb_person.py::_profile``, pinned
+    by ``test_a_person_builder_takes_its_summary_and_poster_from_the_person``).
+    ``_summary_for`` is unchanged and already prefers the definition's own
+    ``summary:`` over whatever the builder derived, but until this phase no
+    shipped builder derived one, so that preference was never exercised on a
+    real conflict.
+
+    The double stands in for the builder deliberately: ``_summary_for`` reads
+    ``result.summary`` and never learns which builder produced it, so driving a
+    real ``tmdb_actor`` through HTTP doubles here would test the same branch
+    with more machinery. What it carries is exactly what a person builder now
+    puts there."""
+    registry_entry(_Listing("settings_person_bio", [("imdb", "tt1")], summary="Theirs"))
+    section = _one_item_section()
+
+    await _run(session, section, [CollectionDefinition(
+        title="Fresh", builder="settings_person_bio", summary="Mine",
+    )])
+
+    writes = section._existing["Fresh"].summary_writes
+    assert writes, "the summary was written to Plex"
+    assert all("Mine" in write for write in writes)
+    assert not any("Theirs" in write for write in writes)
+
+
 async def test_a_failed_tmdb_pull_is_contained(session, registry_entry):
     """A summary is cosmetic. A TMDB outage must leave the membership
     reconciled and report the miss, not fail the definition -- and whatever
