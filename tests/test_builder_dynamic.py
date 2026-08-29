@@ -230,7 +230,7 @@ def test_a_zero_limit_is_the_no_limit_sentinel_and_a_negative_one_still_refuses(
     whole match set" -- which is precisely what Kometa's shipped packs do: they
     pass ``template: [smart_filter, shared]``, whose ``limit`` is an OPTIONAL
     variable, and a pack that does not supply it emits a search with no
-    ``limit=`` byte (record §1.8, ``defaults/templates.yml:238-255``). Five of
+    ``limit=`` byte (record §1.8, ``defaults/templates.yml:238-255``). Six of
     the seven packs are in that position, so without a sentinel every one of
     them would ship a 50-item divergence in what its collections CONTAIN.
 

@@ -1,7 +1,7 @@
 """Kometa's dynamic packs, transcribed.
 
-``catalog.py`` says what a preset IS; this module is what four of them are made
-of. A dynamic pack is one ``builder: dynamic`` definition whose ``params``
+``catalog.py`` says what a preset IS; this module is what seven of them are
+made of. A dynamic pack is one ``builder: dynamic`` definition whose ``params``
 carry Kometa's own answer to "which values get a collection, and what is each
 one called" -- the include list, the addon merges, the name overrides and the
 title format that live in a ``defaults/`` YAML file upstream. The engine that

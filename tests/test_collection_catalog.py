@@ -1655,6 +1655,14 @@ def test_the_catalog_module_imports_nothing_that_could_reach_the_world():
         "sqlalchemy", "asyncpg",
     }), sorted(imported_roots)
 
+    # ``packs.py`` is the tables ``catalog.py`` draws its dynamic rows from --
+    # its own docstring's claim that it imports nothing is pinned the same way,
+    # not left incidental to the fact that nothing in it has needed one yet.
+    packs_tree = ast.parse(pathlib.Path(packs.__file__).read_text(encoding="utf-8"))
+    assert not any(
+        isinstance(node, (ast.Import, ast.ImportFrom)) for node in ast.walk(packs_tree)
+    ), "packs.py is documented as importing nothing"
+
 
 def test_expanding_every_preset_reaches_no_network(monkeypatch):
     """The run-time half. ``tests/conftest.py``'s autouse
