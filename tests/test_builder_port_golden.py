@@ -21,6 +21,18 @@ string, summary, sort, label, member list and poster count -- is the original
 capture, unchanged, and so is the separator's own ``filters`` cell: its write
 path did not move.
 
+**Second deliberate amendment, row 49 (separators).** The one hand-built
+"Ratings Collections" divider became one divider per collection GROUP
+(`collections/groups.py`), driven by the engine after the definitions rather
+than from inside the Common Sense reconciler. So the charts and awards families
+gained headings of their own, the Ratings heading moved to the end of the
+pass's actions with them, and its own sort title took the content-ratings
+group's section number (`!110_!` -> `!030_!`) -- ours, not Kometa's, and stated
+as such in `.superpowers/sdd/p49-facts.md` C2. Adjudicated in advance (C4), the
+ONLY cells that moved are separator ones, it landed as its own reviewed commit,
+and `tests/test_collection_group_separators.py` grades the behaviour this
+fixture can only witness.
+
 ``_library_pass`` below is the one seam: it is the per-library sequence
 ``service.reconcile_libraries`` runs, and the port rewrites it from "the smart
 reconciler, then ``build_all``" into the single engine call. Everything else in

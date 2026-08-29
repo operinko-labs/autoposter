@@ -12,7 +12,6 @@
       "would create 'Age 17+ Movies' -> R, TV-MA",
       "would create 'Age 18+ Movies' -> R, TV-MA",
       "would create 'Not Rated Movies' -> NR",
-      "would create 'Ratings Collections'",
       "would create 'IMDb Popular' with 3 item(s)",
       "would create 'IMDb Top 250' with 3 item(s)",
       "would create 'IMDb Lowest Rated' with 3 item(s)",
@@ -22,7 +21,10 @@
       "would create 'Oscars Winners 2025' with 2 item(s)",
       "would create 'Oscars Winners 2024' with 1 item(s)",
       "would create 'Oscars Winners 2023' with 1 item(s)",
-      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
+      "would create 'Chart Collections'",
+      "would create 'Award Collections'",
+      "would create 'Ratings Collections'"
     ],
     "state": {}
   },
@@ -39,7 +41,6 @@
       "created 'Age 17+ Movies'",
       "created 'Age 18+ Movies'",
       "created 'Not Rated Movies'",
-      "created 'Ratings Collections'",
       "created 'IMDb Popular' with 3 item(s)",
       "created 'IMDb Top 250' with 3 item(s)",
       "created 'IMDb Lowest Rated' with 3 item(s)",
@@ -49,7 +50,10 @@
       "created 'Oscars Winners 2025' with 2 item(s)",
       "created 'Oscars Winners 2024' with 1 item(s)",
       "created 'Oscars Winners 2023' with 1 item(s)",
-      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
+      "created 'Chart Collections'",
+      "created 'Award Collections'",
+      "created 'Ratings Collections'"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -167,17 +171,6 @@
         "sort": null,
         "sort_title": null,
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
-        "labels": [
-          "autoposter"
-        ],
-        "members": [],
-        "posters_uploaded": 0
-      },
-      "Ratings Collections": {
-        "summary": "Section separator for Ratings Collections.",
-        "sort": null,
-        "sort_title": "!110_!Ratings Collections",
-        "filters": null,
         "labels": [
           "autoposter"
         ],
@@ -311,6 +304,39 @@
         "members": [
           "m9"
         ],
+        "posters_uploaded": 0
+      },
+      "Chart Collections": {
+        "summary": "Section separator for Chart Collections.",
+        "sort": null,
+        "sort_title": "!010_!Chart Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Award Collections": {
+        "summary": "Section separator for Award Collections.",
+        "sort": null,
+        "sort_title": "!020_!Award Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!030_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
         "posters_uploaded": 0
       }
     }
@@ -441,17 +467,6 @@
         "members": [],
         "posters_uploaded": 0
       },
-      "Ratings Collections": {
-        "summary": "Section separator for Ratings Collections.",
-        "sort": null,
-        "sort_title": "!110_!Ratings Collections",
-        "filters": null,
-        "labels": [
-          "autoposter"
-        ],
-        "members": [],
-        "posters_uploaded": 0
-      },
       "IMDb Popular": {
         "summary": "List of IMDb Popular movies.",
         "sort": "custom",
@@ -580,6 +595,39 @@
           "m9"
         ],
         "posters_uploaded": 0
+      },
+      "Chart Collections": {
+        "summary": "Section separator for Chart Collections.",
+        "sort": null,
+        "sort_title": "!010_!Chart Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Award Collections": {
+        "summary": "Section separator for Award Collections.",
+        "sort": null,
+        "sort_title": "!020_!Award Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!030_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
       }
     }
   },
@@ -596,9 +644,10 @@
       "would create 'Age 16+ Shows' -> TV-14",
       "would create 'Age 17+ Shows' -> TV-14, TV-MA",
       "would create 'Age 18+ Shows' -> TV-MA",
-      "would create 'Ratings Collections'",
       "would create 'IMDb Popular' with 2 item(s)",
-      "would create 'IMDb Top 250' with 2 item(s)"
+      "would create 'IMDb Top 250' with 2 item(s)",
+      "would create 'Chart Collections'",
+      "would create 'Ratings Collections'"
     ],
     "state": {}
   },
@@ -615,9 +664,10 @@
       "created 'Age 16+ Shows'",
       "created 'Age 17+ Shows'",
       "created 'Age 18+ Shows'",
-      "created 'Ratings Collections'",
       "created 'IMDb Popular' with 2 item(s)",
-      "created 'IMDb Top 250' with 2 item(s)"
+      "created 'IMDb Top 250' with 2 item(s)",
+      "created 'Chart Collections'",
+      "created 'Ratings Collections'"
     ],
     "state": {
       "Age 1+ Shows": {
@@ -741,17 +791,6 @@
         "members": [],
         "posters_uploaded": 0
       },
-      "Ratings Collections": {
-        "summary": "Section separator for Ratings Collections.",
-        "sort": null,
-        "sort_title": "!110_!Ratings Collections",
-        "filters": null,
-        "labels": [
-          "autoposter"
-        ],
-        "members": [],
-        "posters_uploaded": 0
-      },
       "IMDb Popular": {
         "summary": "List of IMDb Popular shows.",
         "sort": "custom",
@@ -778,6 +817,28 @@
           "s1",
           "s2"
         ],
+        "posters_uploaded": 0
+      },
+      "Chart Collections": {
+        "summary": "Section separator for Chart Collections.",
+        "sort": null,
+        "sort_title": "!010_!Chart Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!030_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
         "posters_uploaded": 0
       }
     }
@@ -806,8 +867,6 @@
       "could not fetch a usable poster for 'Age 18+ Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/18.jpg",
       "created 'Not Rated Movies'",
       "could not fetch a usable poster for 'Not Rated Movies' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/content_rating/cs/NR.jpg",
-      "created 'Ratings Collections'",
-      "could not fetch a usable poster for 'Ratings Collections' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/separators/orig/content_rating.jpg",
       "created 'IMDb Popular' with 3 item(s)",
       "could not fetch a usable poster for 'IMDb Popular' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/chart/color/IMDb%20Popular.jpg",
       "created 'IMDb Top 250' with 3 item(s)",
@@ -826,7 +885,13 @@
       "could not fetch a usable poster for 'Oscars Winners 2024' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2024.jpg",
       "created 'Oscars Winners 2023' with 1 item(s)",
       "could not fetch a usable poster for 'Oscars Winners 2023' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/award/oscars/winner/2023.jpg",
-      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
+      "created 'Chart Collections'",
+      "could not fetch a usable poster for 'Chart Collections' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/separators/orig/chart.jpg",
+      "created 'Award Collections'",
+      "could not fetch a usable poster for 'Award Collections' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/separators/orig/award.jpg",
+      "created 'Ratings Collections'",
+      "could not fetch a usable poster for 'Ratings Collections' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/separators/orig/content_rating.jpg"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -944,17 +1009,6 @@
         "sort": null,
         "sort_title": null,
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
-        "labels": [
-          "autoposter"
-        ],
-        "members": [],
-        "posters_uploaded": 0
-      },
-      "Ratings Collections": {
-        "summary": "Section separator for Ratings Collections.",
-        "sort": null,
-        "sort_title": "!110_!Ratings Collections",
-        "filters": null,
         "labels": [
           "autoposter"
         ],
@@ -1088,6 +1142,39 @@
         "members": [
           "m9"
         ],
+        "posters_uploaded": 0
+      },
+      "Chart Collections": {
+        "summary": "Section separator for Chart Collections.",
+        "sort": null,
+        "sort_title": "!010_!Chart Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Award Collections": {
+        "summary": "Section separator for Award Collections.",
+        "sort": null,
+        "sort_title": "!020_!Award Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!030_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
         "posters_uploaded": 0
       }
     }
@@ -1116,8 +1203,6 @@
       "set the poster for 'Age 18+ Movies' from the hosted default",
       "created 'Not Rated Movies'",
       "set the poster for 'Not Rated Movies' from the hosted default",
-      "created 'Ratings Collections'",
-      "set the poster for 'Ratings Collections' from the hosted default",
       "created 'IMDb Popular' with 3 item(s)",
       "set the poster for 'IMDb Popular' from the hosted default",
       "created 'IMDb Top 250' with 3 item(s)",
@@ -1136,7 +1221,13 @@
       "set the poster for 'Oscars Winners 2024' from the hosted default",
       "created 'Oscars Winners 2023' with 1 item(s)",
       "set the poster for 'Oscars Winners 2023' from the hosted default",
-      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
+      "created 'Chart Collections'",
+      "set the poster for 'Chart Collections' from the hosted default",
+      "created 'Award Collections'",
+      "set the poster for 'Award Collections' from the hosted default",
+      "created 'Ratings Collections'",
+      "set the poster for 'Ratings Collections' from the hosted default"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -1254,17 +1345,6 @@
         "sort": null,
         "sort_title": null,
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
-        "labels": [
-          "autoposter"
-        ],
-        "members": [],
-        "posters_uploaded": 1
-      },
-      "Ratings Collections": {
-        "summary": "Section separator for Ratings Collections.",
-        "sort": null,
-        "sort_title": "!110_!Ratings Collections",
-        "filters": null,
         "labels": [
           "autoposter"
         ],
@@ -1398,6 +1478,39 @@
         "members": [
           "m9"
         ],
+        "posters_uploaded": 1
+      },
+      "Chart Collections": {
+        "summary": "Section separator for Chart Collections.",
+        "sort": null,
+        "sort_title": "!010_!Chart Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Award Collections": {
+        "summary": "Section separator for Award Collections.",
+        "sort": null,
+        "sort_title": "!020_!Award Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 1
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!030_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
         "posters_uploaded": 1
       }
     }
@@ -1415,7 +1528,6 @@
       "created 'Age 17+ Movies'",
       "created 'Age 18+ Movies'",
       "created 'Not Rated Movies'",
-      "created 'Ratings Collections'",
       "'IMDb Popular': source returned no items; leaving the collection untouched",
       "'IMDb Top 250': source returned no items; leaving the collection untouched",
       "'IMDb Lowest Rated': source returned no items; leaving the collection untouched",
@@ -1425,7 +1537,10 @@
       "created 'Oscars Winners 2025' with 2 item(s)",
       "created 'Oscars Winners 2024' with 1 item(s)",
       "created 'Oscars Winners 2023' with 1 item(s)",
-      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
+      "created 'Chart Collections'",
+      "created 'Award Collections'",
+      "created 'Ratings Collections'"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -1543,17 +1658,6 @@
         "sort": null,
         "sort_title": null,
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
-        "labels": [
-          "autoposter"
-        ],
-        "members": [],
-        "posters_uploaded": 0
-      },
-      "Ratings Collections": {
-        "summary": "Section separator for Ratings Collections.",
-        "sort": null,
-        "sort_title": "!110_!Ratings Collections",
-        "filters": null,
         "labels": [
           "autoposter"
         ],
@@ -1643,6 +1747,39 @@
           "m9"
         ],
         "posters_uploaded": 0
+      },
+      "Chart Collections": {
+        "summary": "Section separator for Chart Collections.",
+        "sort": null,
+        "sort_title": "!010_!Chart Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Award Collections": {
+        "summary": "Section separator for Award Collections.",
+        "sort": null,
+        "sort_title": "!020_!Award Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!030_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
       }
     }
   },
@@ -1659,12 +1796,14 @@
       "created 'Age 17+ Movies'",
       "created 'Age 18+ Movies'",
       "created 'Not Rated Movies'",
-      "created 'Ratings Collections'",
       "created 'IMDb Popular' with 3 item(s)",
       "created 'IMDb Top 250' with 3 item(s)",
       "created 'IMDb Lowest Rated' with 3 item(s)",
       "'Oscars Best Picture Winners': source returned no items; leaving the collection untouched",
-      "'Oscars Best Director Winners': source returned no items; leaving the collection untouched"
+      "'Oscars Best Director Winners': source returned no items; leaving the collection untouched",
+      "created 'Chart Collections'",
+      "created 'Award Collections'",
+      "created 'Ratings Collections'"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -1782,17 +1921,6 @@
         "sort": null,
         "sort_title": null,
         "filters": "server://FAKE-MACHINE-ID/com.plexapp.plugins.library/library/sections/42/all?type=1&sort=originallyAvailableAt%3Adesc&push=1&contentRating=NR&pop=1",
-        "labels": [
-          "autoposter"
-        ],
-        "members": [],
-        "posters_uploaded": 0
-      },
-      "Ratings Collections": {
-        "summary": "Section separator for Ratings Collections.",
-        "sort": null,
-        "sort_title": "!110_!Ratings Collections",
-        "filters": null,
         "labels": [
           "autoposter"
         ],
@@ -1843,6 +1971,39 @@
           "m3"
         ],
         "posters_uploaded": 0
+      },
+      "Chart Collections": {
+        "summary": "Section separator for Chart Collections.",
+        "sort": null,
+        "sort_title": "!010_!Chart Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Award Collections": {
+        "summary": "Section separator for Award Collections.",
+        "sort": null,
+        "sort_title": "!020_!Award Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Ratings Collections": {
+        "summary": "Section separator for Ratings Collections.",
+        "sort": null,
+        "sort_title": "!030_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
       }
     }
   },
@@ -1859,7 +2020,6 @@
       "created 'Age 17+ Movies'",
       "created 'Age 18+ Movies'",
       "created 'Not Rated Movies'",
-      "created 'Ratings Collections'",
       "'IMDb Popular': the source returned 3 id(s), none of which this library owns; leaving the collection untouched",
       "'IMDb Top 250': the source returned 3 id(s), none of which this library owns; leaving the collection untouched",
       "'IMDb Lowest Rated': the source returned 3 id(s), none of which this library owns; leaving the collection untouched",
@@ -1869,7 +2029,10 @@
       "'Oscars Winners 2025': the source returned 2 id(s), none of which this library owns; leaving the collection untouched",
       "'Oscars Winners 2024': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
       "'Oscars Winners 2023': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
-      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched"
+      "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
+      "created 'Chart Collections'",
+      "created 'Award Collections'",
+      "created 'Ratings Collections'"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -1993,10 +2156,32 @@
         "members": [],
         "posters_uploaded": 0
       },
+      "Chart Collections": {
+        "summary": "Section separator for Chart Collections.",
+        "sort": null,
+        "sort_title": "!010_!Chart Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Award Collections": {
+        "summary": "Section separator for Award Collections.",
+        "sort": null,
+        "sort_title": "!020_!Award Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
       "Ratings Collections": {
         "summary": "Section separator for Ratings Collections.",
         "sort": null,
-        "sort_title": "!110_!Ratings Collections",
+        "sort_title": "!030_!Ratings Collections",
         "filters": null,
         "labels": [
           "autoposter"
