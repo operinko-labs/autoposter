@@ -443,7 +443,12 @@ async def dismiss_jobs_for(session: AsyncSession, rating_keys: list[str]) -> int
     carry no foreign key to ``media_items`` (``db/models.py``), so they are
     found the only way the payload allows: by the ``rating_key`` the
     ``RenderIntent`` carries. Payloads written before that field existed carry
-    none; those are out of scope, already parked, and dismissible by hand.
+    none; those are out of scope and unreachable here. That is harmless rather
+    than a gap: webhook-born payloads carry no ``rating_key`` by design
+    (``intake/arr.py`` -- Sonarr and Radarr know nothing about Plex), and an
+    item Plex never held has no ``media_items`` row for this sweep to have
+    been retiring in the first place. Such a job -- deferred or otherwise --
+    ends only by operator Cancel.
 
     ``running`` jobs are deliberately left alone. A claimed job is never
     interrupted anywhere in this project (``api/jobs.py``), and one running

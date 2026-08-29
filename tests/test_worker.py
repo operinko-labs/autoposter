@@ -7,7 +7,7 @@ from sqlalchemy import func, select, text
 
 from autoposter.db.models import Job
 from autoposter.intake.arr import RenderIntent
-from autoposter.plex.client import ItemNotFound
+from autoposter.plex.client import ItemNotFound, PlexPathMismatch
 from autoposter.artwork_modes.base import WorkerPause
 from autoposter.queue.jobs import MAX_ATTEMPTS, enqueue
 from autoposter.queue.worker import run_once, run_worker
@@ -62,6 +62,30 @@ async def test_item_not_found_defers_rather_than_failing(session):
     # thing being waited for, in place of the message-prefix guess it used to
     # make about a job that had already parked.
     assert "scanned" in job.last_error
+
+
+async def test_path_mismatch_parks_instead_of_deferring_forever(session):
+    # Site :488's raise (PlexPathMismatch) is a permanent path-mapping
+    # misconfiguration, not a "Plex hasn't scanned yet" wait -- the item
+    # resolved fine, but its file does not map under any of the library's
+    # roots, and no amount of retrying fixes that. Unlike the other two
+    # ItemNotFound raise sites, it must reach Failures like any other genuine
+    # error rather than defer on the six-hour horizon forever.
+    async def handler(session_, intent):
+        raise PlexPathMismatch(
+            "Plex item 123 ('/data/movies/Dune (2021)') is not inside any of "
+            "the library roots ['/media/movies'] for library 'Movies'"
+        )
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=13)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    for _ in range(MAX_ATTEMPTS):
+        await _make_due_now(session, job_id)
+        await run_once(session, "worker-1", _only_process_item(handler))
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "parked"
 
 
 async def test_unexpected_errors_also_reschedule(session):

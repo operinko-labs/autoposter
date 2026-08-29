@@ -1258,6 +1258,11 @@ one early is the Jobs page's Cancel, which dismisses it. Once the item's real
 download webhook queues a fresh job that succeeds, the stranded deferred row
 is dismissed automatically.
 
+A webhook-born row carries no Plex rating key (Sonarr and Radarr know nothing
+about Plex), so the pruner's retirement sweep can never reach it; if the item
+is also never released, no sibling job ever succeeds to dismiss it either. Such
+a row lives until it is cancelled by hand — there is no age-based retirement.
+
     SELECT count(*), state FROM jobs WHERE state = 'deferred' GROUP BY state;
 
 A large and growing deferred count is a library statement, not a fault: that

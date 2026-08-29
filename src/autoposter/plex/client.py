@@ -14,6 +14,18 @@ class ItemNotFound(Exception):
     """Plex has no matching item — usually it has not scanned the file yet."""
 
 
+class PlexPathMismatch(ItemNotFound):
+    """The item resolved in Plex, but its file path maps into none of the
+    library's roots.
+
+    Unlike the class it subclasses, this is not a scan-in-progress wait -- it
+    is a path-mapping mismatch between this container's view of the
+    filesystem and Plex's, which no amount of retrying fixes. Raised only at
+    the third ``resolve()`` raise site; see ``queue/worker.py``'s ordered
+    except clause for how this is kept off the unbounded defer path.
+    """
+
+
 @dataclass(frozen=True)
 class ResolvedItem:
     rating_key: str
@@ -485,7 +497,7 @@ class PlexClient:
             except ValueError:
                 continue
         if root_folder is None:
-            raise ItemNotFound(
+            raise PlexPathMismatch(
                 f"Plex item {match.rating_key} ({target_path!r}) is not inside any of the "
                 f"library roots {match.section_locations!r} for library {match.library!r}"
             )

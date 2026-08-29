@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import WorkerPause
 from autoposter.db.models import Job
-from autoposter.plex.client import ItemNotFound
+from autoposter.plex.client import ItemNotFound, PlexPathMismatch
 from autoposter.queue.jobs import (
     DEFER_INTERVAL_SECONDS,
     MAX_ATTEMPTS,
@@ -85,6 +85,23 @@ async def run_once(
             await session.rollback()
             await release(session, job_id)
             raise
+        except PlexPathMismatch as exc:
+            # A subclass of ItemNotFound, so it must be caught here, ahead of
+            # the ItemNotFound clause below: Python matches except clauses
+            # top to bottom by isinstance, so a broader clause listed first
+            # would take it, and a bare re-raise from inside that clause exits
+            # the whole try/except rather than falling through to a sibling
+            # clause -- catch order is what keeps this from being swallowed,
+            # not a condition inside the ItemNotFound branch.
+            #
+            # This one is not a wait: the item resolved in Plex, but its file
+            # path does not map under any of the library's roots, which is a
+            # path-mapping misconfiguration that no amount of deferring fixes.
+            # It needs a human, so it parks and reaches Failures exactly like
+            # the generic failure below, instead of deferring forever.
+            logger.warning("job %s failed: %s", job_id, exc, exc_info=True)
+            await session.rollback()
+            await fail(session, job_id, f"{type(exc).__name__}: {exc}")
         except ItemNotFound as exc:
             # Plex has not indexed this item yet. Nothing is wrong with the job
             # and no budget can be the right one: a movie added to Radarr before

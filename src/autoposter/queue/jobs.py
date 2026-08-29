@@ -158,6 +158,14 @@ async def release(session: AsyncSession, job_id: int) -> None:
     await session.commit()
 
 
+# Matches on dedupe_key alone, so this sweep inherits RenderIntent.dedupe_key's
+# precision exactly (intake/arr.py) -- including its title-fallback: two
+# same-kind, same-title items with no external id at all (a remake, a
+# re-release) share a key, and here that means the second item's success can
+# dismiss the first item's still-waiting deferred row rather than merely
+# suppressing its enqueue. Requires a webhook carrying no tmdb/tvdb/imdb id,
+# which Radarr/Sonarr essentially always send, so the risk is narrow; not
+# special-cased.
 _DISMISS_DEFERRED_SIBLINGS_SQL = text(
     """
     UPDATE jobs
@@ -200,7 +208,8 @@ async def fail(
     max_attempts: int = MAX_ATTEMPTS,
     defer_seconds: int | None = None,
 ) -> str:
-    """Reschedule with exponential backoff, or park once attempts are exhausted.
+    """Decide what happens after an attempt that did not succeed: dismiss,
+    defer, park, or reschedule with backoff -- in that order of precedence.
 
     A job an operator cancelled while it was running is dismissed here instead,
     whatever budget it had left. This is the only place that decides what
