@@ -183,8 +183,8 @@ async def persist_facts(
         .where(MediaItem.id == media_item_id)
         .values(facts_attempted_at=func.now())
     )
-    await session.commit()
     if facts.is_empty():
+        await session.commit()
         return (
             await session.execute(
                 select(ItemFacts).where(ItemFacts.item_id == media_item_id)

@@ -226,8 +226,10 @@ class TMDBFactsClient:
             raise TmdbRateLimited(
                 "tmdb is inside a backoff window a 429 opened; this read was "
                 "not attempted. It comes round again on the next drift sweep "
-                "(scheduler.drift_days), or sooner via a re-queued item; lower "
-                "operations.tmdb_backoff_seconds to shorten the window"
+                "(scheduler.drift_days), or sooner via a re-queued item; the "
+                "window itself cannot be shortened once open -- only waiting "
+                "it out, or restarting with operations.tmdb_backoff_seconds "
+                "= 0 to disable it, clears it early"
             )
         try:
             return await fetch_json(
@@ -254,8 +256,9 @@ class TMDBFactsClient:
             logger.warning("tmdb refused a read: %s", type(exc).__name__)
             raise TmdbRateLimited(
                 "tmdb answered 429. The window is now open and further reads "
-                "are skipped until it closes; lower "
-                "operations.tmdb_backoff_seconds to shorten it"
+                "are skipped until it closes; nothing shortens an open window "
+                "-- wait it out, or restart with operations.tmdb_backoff_seconds "
+                "= 0 to disable it"
             ) from exc
 
     async def movie(self, tmdb_id: int) -> GatheredFacts:

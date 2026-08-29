@@ -14,8 +14,10 @@ and keeps discovering it.
   it -- a process variable would give each pod its own;
 - both sides of every comparison come from the DATABASE clock (``func.now()``
   and the stored timestamp), never this host's, because the two can disagree;
-- the ``asyncio.Lock`` prevents only THIS process from writing two refusals at
-  once, and the state is re-read once the lock is held;
+- the ``asyncio.Lock`` only orders this process's writes -- it does not
+  re-read state before writing. What actually keeps a shorter refusal from
+  shortening an already-open window, in this process or across pods, is that
+  the write is ``GREATEST(blocked_until, until)`` rather than an overwrite;
 - the state row is written whether or not anything else succeeds.
 
 **What this deliberately does NOT do.** It does not retry, sleep or queue. A
@@ -47,6 +49,11 @@ logger = logging.getLogger(__name__)
 __all__ = ["TmdbRateBudget", "TmdbRateLimited", "retry_after_seconds"]
 
 _STATE_ROW_ID = 1
+# An hour: TMDb's real 429s carry Retry-After values in seconds. This only
+# bounds a hostile or broken header (a WAF, a misconfigured intermediary)
+# from writing a window that outlives the process that would otherwise clear
+# it -- the state row is persistent and its only off switch is frozen.
+_MAX_BACKOFF_SECONDS = 3600.0
 
 
 class TmdbRateLimited(Exception):
@@ -66,6 +73,12 @@ def retry_after_seconds(response: httpx.Response) -> float | None:
     set a window this module keeps on the DATABASE clock, which is the one
     mixing of clocks the pattern exists to avoid. An unreadable value falls
     back to the configured backoff, which is the safe direction.
+
+    Capped at ``_MAX_BACKOFF_SECONDS`` and non-finite/non-positive values
+    (``inf``, ``nan``, 0 or negative) are treated as unreadable -- a header
+    this permissive would otherwise write a decade-long window into a
+    persistent row, or reach ``make_interval`` with ``Infinity`` and raise a
+    DBAPI error the caller does not catch.
     """
     raw = response.headers.get("Retry-After")
     if raw is None:
@@ -74,7 +87,9 @@ def retry_after_seconds(response: httpx.Response) -> float | None:
         value = float(raw)
     except (TypeError, ValueError):
         return None
-    return value if value > 0 else None
+    if not (0 < value < float("inf")):
+        return None
+    return min(value, _MAX_BACKOFF_SECONDS)
 
 
 class TmdbRateBudget:
@@ -129,7 +144,12 @@ class TmdbRateBudget:
                 )
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["id"],
-                    set_={"blocked_until": until, "refused_at": func.now()},
+                    set_={
+                        "blocked_until": func.greatest(
+                            TmdbRateState.blocked_until, until
+                        ),
+                        "refused_at": func.now(),
+                    },
                 )
                 await session.execute(stmt)
                 await session.commit()

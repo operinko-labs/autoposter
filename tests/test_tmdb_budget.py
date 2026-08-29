@@ -12,7 +12,12 @@ from sqlalchemy import func, insert, select
 
 from conftest import session_factory_for
 from autoposter.db.models import ProviderCache as ProviderCacheRow, TmdbRateState
-from autoposter.facts.tmdb_budget import TmdbRateBudget, TmdbRateLimited
+from autoposter.facts.tmdb_budget import (
+    _MAX_BACKOFF_SECONDS,
+    TmdbRateBudget,
+    TmdbRateLimited,
+    retry_after_seconds,
+)
 from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.providers.cache import ProviderCache
 
@@ -66,13 +71,71 @@ async def test_retry_after_wins_over_the_configured_backoff(session):
     # The window really is the hour TMDb asked for and not the configured
     # second: a second-long window would already have closed by the time the
     # database compared it, and an assertion that only reads "blocked" cannot
-    # tell those two apart.
+    # tell those two apart. The margin below is 30 MINUTES -- make_interval's
+    # sixth positional argument is mins, not secs -- comfortably inside the
+    # honoured 3600s window and comfortably past anything a second-long window
+    # could reach.
     still_open = (
         await session.execute(
             select(TmdbRateState.blocked_until > func.now() + func.make_interval(0, 0, 0, 0, 0, 30))
         )
     ).scalar_one()
     assert still_open, "Retry-After was ignored in favour of backoff_seconds"
+
+
+async def test_a_shorter_refusal_does_not_shorten_an_open_window(session):
+    """LAW C5's multi-pod trace: pod A's honoured 3600s window must survive
+    pod B's no-Retry-After 429 landing second and falling back to the
+    configured 60s. Before the fix, ``note_refusal`` overwrote unconditionally
+    and this collapsed the hour to a minute regardless of which pod won the
+    race -- this test writes the longer window first and the shorter one
+    second, the exact order the review's trace describes."""
+    budget = TmdbRateBudget(session_factory_for(session), backoff_seconds=60)
+    await budget.note_refusal(3600)
+    await budget.note_refusal(None)
+    still_open = (
+        await session.execute(
+            select(TmdbRateState.blocked_until > func.now() + func.make_interval(0, 0, 0, 0, 0, 30))
+        )
+    ).scalar_one()
+    assert still_open, "a later, shorter refusal collapsed the longer window"
+
+
+async def test_the_longer_window_wins_regardless_of_write_order(session):
+    """The other ordering: the shorter (fallback) refusal lands first, then
+    the honoured Retry-After arrives. ``GREATEST`` makes the outcome the same
+    either way, which is the whole point of writing it instead of an
+    unconditional overwrite."""
+    budget = TmdbRateBudget(session_factory_for(session), backoff_seconds=60)
+    await budget.note_refusal(None)
+    await budget.note_refusal(3600)
+    still_open = (
+        await session.execute(
+            select(TmdbRateState.blocked_until > func.now() + func.make_interval(0, 0, 0, 0, 0, 30))
+        )
+    ).scalar_one()
+    assert still_open, "the longer refusal did not survive"
+
+
+def test_retry_after_seconds_rejects_a_non_finite_value():
+    """``float("inf")`` parses and passes a bare ``> 0`` guard, which would
+    otherwise reach Postgres's ``make_interval`` as ``Infinity`` and raise a
+    DBAPI error ``_get``'s ``except httpx.HTTPStatusError`` does not catch."""
+    response = httpx.Response(429, headers={"Retry-After": "inf"})
+    assert retry_after_seconds(response) is None
+
+
+def test_retry_after_seconds_caps_an_absurd_value():
+    """A hostile or broken intermediary's ``Retry-After`` must not write a
+    window that outlives the process which could otherwise clear it -- the
+    state row is persistent and its only off switch is frozen."""
+    response = httpx.Response(429, headers={"Retry-After": "999999999"})
+    assert retry_after_seconds(response) == _MAX_BACKOFF_SECONDS
+
+
+def test_retry_after_seconds_still_reads_an_ordinary_value():
+    response = httpx.Response(429, headers={"Retry-After": "120"})
+    assert retry_after_seconds(response) == 120.0
 
 
 async def test_a_429_notes_the_refusal_and_raises_its_own_class(session):
