@@ -1,0 +1,119 @@
+/* The Groups panel. Its own stylesheet, catalog.css's precedent: the rules a
+ * later reorder surface would copy should be findable in a file named after
+ * the thing. */
+
+.groups-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.groups-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.groups-note {
+  margin: 0 0 8px;
+  font-size: 13px;
+  white-space: normal;
+}
+
+.groups-unsaved {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+.groups-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.groups-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.groups-row:first-child {
+  border-top: none;
+}
+
+.groups-position {
+  flex: 0 0 1.6rem;
+  text-align: right;
+}
+
+.groups-title {
+  font-weight: 600;
+  flex: 0 1 auto;
+}
+
+.groups-key,
+.groups-section {
+  font-size: 12px;
+}
+
+/* The move buttons at the row's end, past a gap that soaks up the width — so
+ * the two targets sit in a stable column the pointer does not have to chase
+ * as titles change length. */
+.groups-moves {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* Arrow glyphs alone are small targets; give them button-sized boxes. The
+ * accessible name is the aria-label, not the glyph. */
+.groups-moves button {
+  min-width: 2.2rem;
+  min-height: 2rem;
+}
+
+.groups-errors {
+  margin: 8px 0 0;
+  padding-left: 1.1rem;
+  font-size: 13px;
+}
+
+.groups-error-message {
+  color: var(--error);
+}
+
+.groups-saved {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.groups-saved p {
+  margin: 0 0 4px;
+  white-space: normal;
+}
+
+.groups-saved p:last-child {
+  margin-bottom: 0;
+}
+
+/* "Saved, but the re-read failed" — a warning inside the success panel, not a
+ * page error beside it, because the save itself did succeed. */
+.groups-stale {
+  color: var(--warn);
+  font-size: 13px;
+}

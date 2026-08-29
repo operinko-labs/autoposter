@@ -14,6 +14,7 @@ import type {
 import { formatTime } from "../format";
 import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
 import { CatalogPanel } from "./CatalogPanel";
+import { GroupsPanel } from "./GroupsPanel";
 import { ScheduledRunStatusPill } from "./ScheduledRunStatus";
 // dashboard.css, not duplicated: the reconcile bar shows the same job state
 // the dashboard does, now through the same pill component -- see
@@ -589,6 +590,12 @@ export function Collections() {
           panel here that touches neither Plex nor the database, so it renders
           on a replica where the two above it report 503. */}
       <CatalogPanel />
+
+      {/* The group order below the catalog that fills the groups: an operator
+          picks what to build, then arranges the blocks it lands in. Like the
+          catalog it touches neither Plex nor the database, so it renders on a
+          replica where the top panels report 503. */}
+      <GroupsPanel />
     </>
   );
 }

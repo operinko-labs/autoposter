@@ -454,10 +454,25 @@ export interface CatalogCategory {
   presets: CatalogPreset[];
 }
 
+/** One collection group as the catalog endpoint enumerates it: the
+ * config-legal key, the divider's display title, the `!NNN` section number
+ * the RUNNING config gives it, and its index under that config's
+ * `collections.group_order`. Served in effective order — `position` equals
+ * the array index — so the Groups panel renders the array and never holds
+ * its own copy of the keys. */
+export interface CatalogGroup {
+  key: string;
+  title: string;
+  section: string;
+  position: number;
+}
+
 /** GET /api/collections/catalog. Touches neither Plex nor the database -- it
- * is a pure table plus which keys the live config has switched on. */
+ * is a pure table plus which keys the live config has switched on, and the
+ * group enumeration in the running config's effective order. */
 export interface CollectionsCatalogResponse {
   categories: CatalogCategory[];
+  groups: CatalogGroup[];
 }
 
 /** The JSON outcome of POST /api/testing/sample when the title does not fit at

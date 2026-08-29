@@ -114,6 +114,10 @@ const CATALOG = {
     },
     { key: "charts", label: "Charts", presets: [] },
   ],
+  groups: [
+    { key: "awards", title: "Award Collections", section: "010", position: 0 },
+    { key: "charts", title: "Chart Collections", section: "020", position: 1 },
+  ],
 };
 
 const CONFIG = {
@@ -828,6 +832,16 @@ describe("Collections", () => {
     expect(within(strip).getByRole("tab", { name: "Awards" })).toBeInTheDocument();
     expect(
       await screen.findByRole("checkbox", { name: /Cannes Film Festival/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("mounts the groups panel below the catalog", async () => {
+    stubFetch();
+
+    render(<Collections />);
+
+    expect(
+      await screen.findByRole("list", { name: "Collection group order" }),
     ).toBeInTheDocument();
   });
 });
