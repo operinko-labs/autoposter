@@ -1,9 +1,11 @@
 """Choosing which poster a managed collection should carry.
 
-Two pure decisions: which hosted URL a collection's default poster lives at
-(``hosted_poster_url``), and whether the operator has placed a local override
-that should win instead (``local_poster_path``). Fetching and uploading is a
-separate, later step -- this module never makes a network call.
+Three pure decisions: which hosted URL a collection's default poster lives at
+(``hosted_poster_url``), which TMDb image URL a person's profile path points to
+(``tmdb_profile_url`` -- the one source that is not Kometa's ``Default-Images``,
+and the reason is on the function), and whether the operator has placed a local
+override that should win instead (``local_poster_path``). Fetching and uploading
+is a separate, later step -- these three never make a network call.
 
 The hosted defaults come from ``Kometa-Team/Default-Images``, a repository
 with no LICENSE file and no licence statement, so the sibling
@@ -32,10 +34,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.schema import Config
 from autoposter.db.models import ManagedCollection
+from autoposter.providers.tmdb import IMAGE_BASE
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_IMAGES_BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master"
+
+# The one poster kind whose URL is not a ``Default-Images`` path. Named here and
+# imported by the builder that emits it, so the producer and the consumer cannot
+# drift into two spellings of one string.
+TMDB_PROFILE_KIND = "tmdb_profile"
 
 _LOCAL_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
 
@@ -127,6 +135,49 @@ def hosted_poster_url(kind: str, key: str) -> str | None:
     if kind == "separator":
         return f"{DEFAULT_IMAGES_BASE}/separators/orig/{key}.jpg"
     return None
+
+
+def tmdb_profile_url(profile_path: str) -> str | None:
+    """The image-CDN URL for one TMDb profile path, or ``None``.
+
+    Deliberately not a row of ``hosted_poster_url``'s table. Every kind there is
+    a ``Default-Images`` path built from a key THIS SERVICE chose -- a chart
+    name, a ceremony year, a content-rating bucket -- and the whole reason that
+    function can refuse an unrecognised kind is that it owns the vocabulary. A
+    profile path is an opaque file path TMDb handed back on a person's own
+    record; the two share nothing but returning a string, and one table holding
+    both would have a column of curated folder names with a provider's opaque
+    path in it.
+
+    NOT KOMETA: this is upstream's *fallback* person poster, not its primary
+    one. Kometa's people packs set ``url_poster`` from the
+    ``Kometa-Team/People-Images-<<style>>`` repositories
+    (``defaults/templates.yml:216``), and ``url_poster``
+    (``modules/library.py:453``) outranks ``tmdb_person``
+    (``modules/library.py:462``) on a first-match-wins ladder -- so in a stock
+    run the hosted photo wins and the TMDb one is only reached when it is
+    absent. We ship the fallback alone: the hosted source is keyed by the
+    person's *name* across six per-style repositories, and our person
+    collections are keyed by TMDb *id*, so adopting it would be new machinery
+    rather than reuse. There is no ``Default-Images`` people folder to fall back
+    on either -- checked 2026-08-29, it does not exist -- so no people URL is to
+    be derived from ``AWARD_SEGMENTS``' pattern.
+
+    ``IMAGE_BASE`` is ``providers/tmdb.py``'s, the same base the artwork
+    pipeline fetches every other TMDb image from, so the size segment is
+    configured in one place rather than two. Its ``original`` segment matches
+    upstream's byte-for-byte, though upstream reads the base from TMDb's
+    ``/configuration`` at startup and we pin the string -- same value, and one
+    fewer request per run.
+
+    A path TMDb did not shape -- empty, or not rooted at ``/`` -- returns
+    ``None`` by the same rule an unrecognised kind does: a guessed URL 404s and
+    the collection quietly keeps no poster, which is harder to spot than an
+    error.
+    """
+    if not profile_path or not profile_path.startswith("/"):
+        return None
+    return f"{IMAGE_BASE}{profile_path}"
 
 
 def _poster_candidates(config: Config, library: str, title: str) -> tuple[Path, ...]:
@@ -289,7 +340,8 @@ async def apply_poster(
     """Give ``collection`` its poster, uploading only when something changed.
 
     Resolution order: a local override first (read directly off disk, no
-    request made), the hosted default second, nothing third. The bytes are
+    request made), the source ``kind`` names second -- a hosted default, or a
+    person's TMDb profile photo -- nothing third. The bytes are
     hashed and compared against ``record.poster_sha256`` -- a match means an
     unchanged pass uploads nothing, the same guarantee ``definition_hash``
     already gives the collection's filter.
@@ -337,13 +389,33 @@ async def apply_poster(
                 "local poster %s did not decode as an image; using the hosted default", local
             )
     if data is None:
-        url = hosted_poster_url(kind, key)
+        # Two poster SOURCES now, dispatched on ``kind`` here rather than inside
+        # ``hosted_poster_url`` -- see ``tmdb_profile_url`` for why a TMDb file
+        # path is not a row of that table. Everything past this line is
+        # unchanged: the same fetch, the same ``_is_image`` validation, the same
+        # hash-compare and the same locked upload serve both.
+        #
+        # NOT KOMETA, and the divergence is here rather than in the source
+        # function because this is the line that could undo it: upstream hands
+        # the profile URL straight to Plex (``modules/plex.py:1216-1217``,
+        # ``item.uploadPoster(url=...)``) and never sees the bytes. Reaching for
+        # plexapi's ``url=`` form for this kind would destroy the hash-compare
+        # below -- we would have nothing to hash -- so every source, this one
+        # included, is downloaded first. See the docstring above.
+        url = (
+            tmdb_profile_url(key) if kind == TMDB_PROFILE_KIND
+            else hosted_poster_url(kind, key)
+        )
         if url is None:
             return "no poster source for %r" % record.title
         data = await fetch_poster(http, url)
         if data is None:
             return "could not fetch a usable poster for %r from %s" % (record.title, url)
-        source = "the hosted default"
+        source = (
+            "the TMDb profile photo"
+            if kind == TMDB_PROFILE_KIND
+            else "the hosted default"
+        )
 
     digest = hashlib.sha256(data).hexdigest()
     if digest == record.poster_sha256:

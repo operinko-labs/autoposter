@@ -14,13 +14,22 @@ import httpx
 import pytest
 from PIL import Image
 
-from autoposter.collections.posters import _write_and_upload, apply_poster
+from autoposter.collections.posters import (
+    TMDB_PROFILE_KIND,
+    _write_and_upload,
+    apply_poster,
+    hosted_poster_url,
+    tmdb_profile_url,
+)
 from autoposter.db.models import ManagedCollection
 
 LIBRARY = "Movies"
 TITLE = "IMDb Top 250"
 KIND = "chart"
 KEY = "IMDb Top 250"
+
+PROFILE_PATH = "/a-constructed-profile-path.jpg"
+PROFILE_URL = "https://image.tmdb.org/t/p/original/a-constructed-profile-path.jpg"
 
 
 def _jpeg_bytes(color: str = "red") -> bytes:
@@ -418,3 +427,138 @@ async def test_a_title_that_escapes_the_assets_root_refuses_the_whole_step(
     assert fetches == [], "a refused collection must not reach the network"
     assert collection.uploaded_paths == []
     assert record.poster_sha256 is None
+
+
+# --- the TMDb profile photo, the one source that is not a hosted default -----
+
+
+def test_a_tmdb_profile_path_becomes_an_image_cdn_url():
+    """The one poster source that is not a Kometa ``Default-Images`` path. The
+    base is ``providers/tmdb.py``'s, the same one the artwork pipeline fetches
+    every other TMDb image from, so a size change happens in one place."""
+    assert tmdb_profile_url(PROFILE_PATH) == PROFILE_URL
+
+
+def test_a_profile_path_tmdb_did_not_shape_has_no_url():
+    """Same rule as an unrecognised ``hosted_poster_url`` kind: a guessed URL
+    404s and the collection quietly keeps no poster, which is harder to spot
+    than an error. TMDb's file paths are rooted at ``/``."""
+    assert tmdb_profile_url("") is None
+    assert tmdb_profile_url("a-constructed-profile-path.jpg") is None
+
+
+def test_the_profile_kind_is_not_a_row_of_the_hosted_table():
+    """``hosted_poster_url`` must keep answering ``None`` for it -- if it ever
+    grew a matching row, two functions would both claim the kind and the
+    dispatch in ``apply_poster`` would silently stop mattering."""
+    assert hosted_poster_url(TMDB_PROFILE_KIND, PROFILE_PATH) is None
+
+
+async def test_apply_poster_fetches_a_profile_photo_from_the_image_cdn(
+    tmp_path, config_factory, session
+):
+    """The end-to-end proof that the new source reaches the existing upload
+    machinery: same fetch, same ``_is_image`` validation, same hash-compare,
+    same ``poster_sha256`` write. The transport answers only the image-CDN URL,
+    so the dispatch is pinned by what was actually requested rather than by the
+    message alone."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    data = _jpeg_bytes()
+    record = await _record(session)
+    collection = _FakeCollection()
+    fetched: list[str] = []
+
+    async def handler(request):
+        fetched.append(str(request.url))
+        if str(request.url) != PROFILE_URL:
+            return httpx.Response(404)
+        return httpx.Response(200, content=data)
+
+    async with _client(handler) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY,
+            TMDB_PROFILE_KIND, PROFILE_PATH, dry_run=False,
+        )
+
+    assert fetched == [PROFILE_URL]
+    assert "set the poster" in message
+    assert collection.uploaded_bytes == [data]
+    assert record.poster_sha256 == hashlib.sha256(data).hexdigest()
+
+
+async def test_a_person_with_no_profile_photo_reports_no_source(
+    tmp_path, config_factory, session
+):
+    """A person whose record carries no photo reaches here with an empty key,
+    and an empty key is not a URL. Cosmetic, so it is reported rather than
+    raised -- the same answer an unrecognised hosted kind gets."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        raise AssertionError("must not fetch without a resolvable URL")
+
+    async with _client(handler) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY,
+            TMDB_PROFILE_KIND, "", dry_run=False,
+        )
+
+    assert message == "no poster source for %r" % TITLE
+    assert record.poster_sha256 is None
+
+
+async def test_a_local_poster_still_wins_over_a_profile_photo(
+    tmp_path, config_factory, session
+):
+    """The override order is the source's, not the kind's. An operator file at
+    ``<assets_root>/<library>/<title>/poster.jpg`` beats every hosted source
+    (``prioritize_assets: true`` in the tool being replaced), and adding a
+    seventh source must not have carved out an exception."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    folder = tmp_path / LIBRARY / TITLE
+    folder.mkdir(parents=True)
+    local_bytes = _jpeg_bytes("blue")
+    (folder / "poster.jpg").write_bytes(local_bytes)
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        raise AssertionError("must not fetch when a local poster exists")
+
+    async with _client(handler) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY,
+            TMDB_PROFILE_KIND, PROFILE_PATH, dry_run=False,
+        )
+
+    assert "local file" in message
+    assert collection.uploaded_bytes == [local_bytes]
+
+
+async def test_the_hosted_defaults_are_untouched_by_the_new_branch(
+    tmp_path, config_factory, session
+):
+    """The dispatch is on ``kind``, so every other kind must still reach
+    ``hosted_poster_url`` and its ``Default-Images`` URL -- the regression a
+    new branch in front of it could introduce without any test noticing."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    data = _jpeg_bytes()
+    record = await _record(session)
+    fetched: list[str] = []
+
+    async def handler(request):
+        fetched.append(str(request.url))
+        return httpx.Response(200, content=data)
+
+    async with _client(handler) as http:
+        await apply_poster(
+            session, http, config, _FakeCollection(), record, LIBRARY, KIND, KEY,
+            dry_run=False,
+        )
+
+    assert fetched == [hosted_poster_url(KIND, KEY)]
+    assert fetched[0].startswith(
+        "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/"
+    )
