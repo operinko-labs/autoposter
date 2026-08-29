@@ -561,9 +561,14 @@ async def test_a_smart_collection_gets_its_groups_prefix_and_then_settles(
     order, so the derived value is the plain ``!<NNN>_<title>`` form -- see the
     reconciler's own docstring.
 
-    The second pass is the migration half. The derived value is folded in
-    BEFORE ``smart_definition_hash``, so the first pass writes it and the
-    second finds the hash current, short-circuits, and writes nothing again.
+    The three passes are the MIGRATION DIRECTION, not just idempotency: the
+    first runs with no prefix, so the row it stores carries the un-prefixed
+    hash an existing deployment already has. The derived value is folded in
+    BEFORE ``smart_definition_hash``, so the second pass -- the first one after
+    this feature ships -- no longer matches that row and rewrites the sort
+    title; the third finds the hash current, short-circuits, and writes nothing
+    again. A first pass that started from its own prefixed hash would prove
+    only the settling half.
     """
     from autoposter.collections.smart import reconcile_smart_collection
 
@@ -574,15 +579,21 @@ async def test_a_smart_collection_gets_its_groups_prefix_and_then_settles(
             "?type=1&genre=1138", "autoposter")
     kwargs = dict(dry_run=False, settings=definition, sort_prefix="!100_")
 
-    actions = await reconcile_smart_collection(*args, **kwargs)
+    actions = await reconcile_smart_collection(
+        *args, dry_run=False, settings=definition
+    )
     made = chart_section._collections["Top Horror movies"]
     assert any("created 'Top Horror movies'" in one for one in actions)
-    assert made.sort_title_set == "!100_Top Horror movies"
+    assert made.sort_title_set is None
 
     # Plex's own create marks the collection smart; ``FakeSection.collection``
-    # is shape-agnostic, so without this the second pass meets ``shape_conflict``
+    # is shape-agnostic, so without this the passes below meet ``shape_conflict``
     # instead of the hash.
     made.smart = True
+
+    assert await reconcile_smart_collection(*args, **kwargs) != []
+    assert made.sort_title_set == "!100_Top Horror movies"
+
     made.sort_title_set = None
     assert await reconcile_smart_collection(*args, **kwargs) == []
     assert made.sort_title_set is None
