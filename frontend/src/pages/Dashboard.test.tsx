@@ -10,6 +10,7 @@ const STATUS = {
   jobs_by_state: {
     pending: 3,
     running: 1,
+    deferred: 5,
     done: 412,
     failed: 2,
     parked: 7,

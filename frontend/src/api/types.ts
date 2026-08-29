@@ -10,10 +10,16 @@
  * event, and neither exists.
  */
 
-/** JOB_STATES in src/autoposter/api/routes.py, in the same order. */
+/** JOB_STATES in src/autoposter/api/snapshots.py, in the same order.
+ *
+ * `deferred` is a wait, not a failure: Plex cannot see the item yet, so the
+ * queue holds the job on an unbounded horizon and claims it again when the
+ * library catches up. It gets its own tile because it is neither pending work
+ * nor a parked one. */
 export const JOB_STATES = [
   "pending",
   "running",
+  "deferred",
   "done",
   "failed",
   "parked",
@@ -104,9 +110,15 @@ export interface ParkedJobsResponse {
  * that name the item and keeps the rest (provider ids, source URLs, mode
  * filters) in the database.
  *
- * `max_attempts` is not a constant. A job waiting on Plex to index a new file
- * is retried against a much larger budget than any other failure, so the two
- * travel together and `attempts`/`max_attempts` is only meaningful as a pair.
+ * `max_attempts` is null for a deferred job and only for one: that job is
+ * waiting on Plex to index the item, on a horizon with no end, so there is no
+ * cap to count it against. `attempts`/`max_attempts` is only meaningful as a
+ * pair, and a null half means "no deadline", not "unknown".
+ *
+ * `last_error` and `waiting_reason` are the same stored string sorted by which
+ * one is true of the row: a deferred job has not failed, so it reports a
+ * reason and no error, and every other row reports an error and no reason.
+ * At most one of them is ever non-null.
  *
  * `run_in_seconds` is how long until the next attempt, and is negative for a
  * job that is already due -- every running job included.
@@ -116,7 +128,7 @@ export interface QueuedJob {
   kind: string;
   state: string;
   attempts: number;
-  max_attempts: number;
+  max_attempts: number | null;
   waiting_for_plex: boolean;
   title: string | null;
   item_kind: string | null;
@@ -124,6 +136,7 @@ export interface QueuedJob {
   episode_number: number | null;
   run_in_seconds: number;
   last_error: string | null;
+  waiting_reason: string | null;
   created_at: string | null;
   /** Set once a running job's cancel has been requested, and persists across
    * reloads -- unlike the client-only note the cancel click shows, this is

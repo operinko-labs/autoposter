@@ -46,7 +46,9 @@ const COLLECTIONS = {
 
 function status(overrides: Record<string, unknown> = {}) {
   return {
-    jobs_by_state: { pending: 0, running: 0, done: 0, failed: 0, parked: 0, dismissed: 0 },
+    jobs_by_state: {
+      pending: 0, running: 0, deferred: 0, done: 0, failed: 0, parked: 0, dismissed: 0,
+    },
     workers: 2,
     processed_last_24h: 0,
     scheduled_jobs: [

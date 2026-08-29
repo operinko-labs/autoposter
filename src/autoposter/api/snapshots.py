@@ -20,8 +20,13 @@ from autoposter.db.models import EventLog, Job, ScheduledRun
 
 # jobs.state values (see db/models.py's Job docstring); always reported even
 # when zero, so an empty database returns zeroed counts rather than an
-# incomplete dict.
-JOB_STATES = ("pending", "running", "done", "failed", "parked", "dismissed")
+# incomplete dict. ``deferred`` gets its own tile rather than being folded into
+# pending or counted with parked: it is neither. It is live work that is
+# waiting for the library to catch up, and an operator seeing a hundred of them
+# is seeing a hundred items Plex has not indexed, which is its own fact.
+JOB_STATES = (
+    "pending", "running", "deferred", "done", "failed", "parked", "dismissed",
+)
 
 
 def _run_status(row: ScheduledRun, started_at: datetime) -> str | None:

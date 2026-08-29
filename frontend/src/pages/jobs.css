@@ -1,6 +1,6 @@
 /* The Jobs overview. The `.pill` base and the shared table hooks
  * (`.table-scroll`, `.cell-time`, `.cell-wrap`, `.row-actions`) come from
- * dashboard.css and shell.css; only what is specific to the two live queue
+ * dashboard.css and shell.css; only what is specific to the three live queue
  * states and the per-row cancel outcome lives here. */
 
 .pill-pending {
@@ -11,6 +11,21 @@
 .pill-running {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
   color: var(--accent);
+}
+
+/* Warn, not error: a deferred job is waiting for Plex to index the item, which
+ * is a thing to notice and never a thing to fix. It shares the badge's colour
+ * for that reason -- the pill and the "waiting for Plex" note under the
+ * attempt count are one statement about the same row. */
+.pill-deferred {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--warn);
+}
+
+/* What a deferred row is waiting for, in the column that otherwise holds
+ * errors. Muted so it does not read as one. */
+.jobs-reason {
+  color: var(--text-muted);
 }
 
 /* Sits under the N/M count rather than beside it: the two are one statement

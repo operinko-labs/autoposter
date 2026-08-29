@@ -128,7 +128,7 @@ export function Jobs() {
         <h1>Jobs</h1>
         {jobs !== null && (
           <span className="muted">
-            {total} pending or running job{total === 1 ? "" : "s"}
+            {total} queued, running or waiting job{total === 1 ? "" : "s"}
             {jobs.length < total ? ` (showing ${jobs.length})` : ""}
           </span>
         )}
@@ -140,7 +140,7 @@ export function Jobs() {
         {jobs === null ? (
           <p className="muted">Loading…</p>
         ) : jobs.length === 0 ? (
-          <p className="empty">No pending or running jobs.</p>
+          <p className="empty">No queued, running or waiting jobs.</p>
         ) : (
           <div className="table-scroll">
             <table>
@@ -174,12 +174,12 @@ export function Jobs() {
                         {suffix !== null && <span className="muted mono"> {suffix}</span>}
                       </td>
                       <td className="cell-time">
-                        {job.attempts}/{job.max_attempts}
+                        {/* An infinity where the cap would be, because a
+                            deferred job has one: it waits for Plex to index
+                            the item however long that takes. The badge says
+                            why, since the count alone would read as broken. */}
+                        {job.attempts}/{job.max_attempts ?? "∞"}
                         {job.waiting_for_plex && (
-                          /* The badge and the larger budget travel together:
-                             4/10 without the reason looks like a different
-                             queue, and the reason without the count looks
-                             like a failure. */
                           <span className="jobs-waiting">waiting for Plex</span>
                         )}
                       </td>
@@ -189,9 +189,18 @@ export function Jobs() {
                       <td className="muted cell-time">{formatTime(job.created_at)}</td>
                       {/* Unbounded provider error strings, same as Failures:
                           unwrapped they widen the table past the viewport and
-                          take the row's own button off screen with it. */}
-                      <td className="mono cell-wrap">
-                        {job.last_error ?? "—"}
+                          take the row's own button off screen with it.
+                          A deferred row's text is what it is waiting for, not
+                          something that went wrong, and is muted so it does
+                          not read as a failure in a column of them. */}
+                      <td
+                        className={
+                          job.waiting_reason !== null
+                            ? "mono cell-wrap jobs-reason"
+                            : "mono cell-wrap"
+                        }
+                      >
+                        {job.waiting_reason ?? job.last_error ?? "—"}
                         {message !== undefined && (
                           <span className={`jobs-message jobs-message-${message.tone}`}>
                             {message.text}

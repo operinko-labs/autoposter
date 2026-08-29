@@ -20,7 +20,9 @@ EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
 
 # The message ItemNotFound raises when Plex has not indexed the file yet
-# (plex/client.py). The overview classifies on this prefix.
+# (plex/client.py). The overview no longer classifies on it -- the state does
+# that -- but it is still the text a deferred row reports as its reason, and
+# the text a *pending* row must not be classified by.
 WAITING_ERROR = "no Plex item for movie 'Dune' (tmdb=1, tvdb=None)"
 
 
@@ -110,15 +112,28 @@ async def test_finished_jobs_are_not_listed(client, auth_headers, session):
     assert [job["id"] for job in response.json()["jobs"]] == [pending]
 
 
+async def test_a_deferred_job_is_live_work_and_is_listed(client, auth_headers, session):
+    """Deferred is not terminal: the job runs itself the moment Plex catches
+    up. Leaving it off this page would hide live work while the Failures page,
+    which is where it used to end up, is deliberately never shown it."""
+    deferred = await _make_job(session, state="deferred", dedupe_key="deferred")
+
+    response = await client.get("/api/jobs", headers=auth_headers)
+    assert [job["id"] for job in response.json()["jobs"]] == [deferred]
+
+
 async def test_the_state_filter_narrows_the_list(client, auth_headers, session):
     pending = await _make_job(session, dedupe_key="pending")
     running = await _make_job(session, state="running", dedupe_key="running")
+    deferred = await _make_job(session, state="deferred", dedupe_key="deferred")
 
     only_pending = await client.get("/api/jobs?state=pending", headers=auth_headers)
     only_running = await client.get("/api/jobs?state=running", headers=auth_headers)
+    only_deferred = await client.get("/api/jobs?state=deferred", headers=auth_headers)
 
     assert [job["id"] for job in only_pending.json()["jobs"]] == [pending]
     assert [job["id"] for job in only_running.json()["jobs"]] == [running]
+    assert [job["id"] for job in only_deferred.json()["jobs"]] == [deferred]
 
 
 async def test_an_unknown_state_filter_is_rejected(client, auth_headers, session):
@@ -172,47 +187,58 @@ async def test_a_payload_without_item_fields_reports_them_as_null(
     assert job["episode_number"] is None
 
 
-async def test_a_job_waiting_for_plex_is_flagged_and_gets_the_plex_budget(
-    app, client, auth_headers, session
+async def test_a_deferred_job_is_listed_as_waiting_with_no_attempt_cap(
+    client, auth_headers, session
 ):
-    """The Plex wait has its own, much larger attempt budget
-    (config.plex.resolve_max_attempts), so showing it against the generic
-    queue cap would tell the operator a job is nearly dead when it is not."""
-    await _make_job(session, attempts=3, last_error=WAITING_ERROR)
+    """A deferred job is waiting for Plex to index the item, on a horizon with
+    no end. There is no cap to count it against, and reporting one would put it
+    on a deadline it does not have."""
+    await _make_job(session, state="deferred", last_error=WAITING_ERROR)
 
     job = (await client.get("/api/jobs", headers=auth_headers)).json()["jobs"][0]
 
+    assert job["state"] == "deferred"
     assert job["waiting_for_plex"] is True
-    assert job["attempts"] == 3
-    assert job["max_attempts"] == app.state.config_holder.current.plex.resolve_max_attempts
+    assert job["max_attempts"] is None
 
 
-async def test_any_other_failure_gets_the_queue_attempt_cap(
-    app, client, auth_headers, session
+async def test_a_deferred_job_reports_a_reason_and_no_error(client, auth_headers, session):
+    """Row 139's fold. The flag and the text now come from the state the worker
+    wrote, not from matching the stored message against a prefix -- and the
+    message is served as what is being waited for rather than as a failure,
+    because nothing about the job failed."""
+    await _make_job(session, state="deferred", last_error=WAITING_ERROR)
+
+    job = (await client.get("/api/jobs", headers=auth_headers)).json()["jobs"][0]
+
+    assert job["waiting_reason"] == WAITING_ERROR
+    assert job["last_error"] is None
+
+
+async def test_a_pending_job_whose_error_reads_like_a_wait_is_not_one(
+    client, auth_headers, session
 ):
+    """The retired heuristic's exact failure mode, pinned so it cannot come
+    back: this row's stored message is the one the old prefix matched, but the
+    row is pending, so it is a job between retries and not a wait."""
+    await _make_job(session, attempts=3, state="pending", last_error=WAITING_ERROR)
+
+    job = (await client.get("/api/jobs", headers=auth_headers)).json()["jobs"][0]
+
+    assert job["waiting_for_plex"] is False
+    assert job["waiting_reason"] is None
+    assert job["last_error"] == WAITING_ERROR
+    assert job["max_attempts"] == MAX_ATTEMPTS
+
+
+async def test_any_other_failure_gets_the_queue_attempt_cap(client, auth_headers, session):
     await _make_job(session, attempts=3, last_error="RuntimeError: provider exploded")
 
     job = (await client.get("/api/jobs", headers=auth_headers)).json()["jobs"][0]
 
     assert job["waiting_for_plex"] is False
+    assert job["attempts"] == 3
     assert job["max_attempts"] == MAX_ATTEMPTS
-    # The two budgets must actually differ, or the assertion above passes for
-    # a handler that never switches.
-    assert MAX_ATTEMPTS != app.state.config_holder.current.plex.resolve_max_attempts
-
-
-async def test_the_plex_budget_is_read_from_the_live_config(app, client, auth_headers, session):
-    """Config is swapped in place at runtime (config/live.py), and
-    resolve_max_attempts is one of the values documented as read per use. A
-    handler holding the startup config would keep reporting the old budget."""
-    await _make_job(session, attempts=1, last_error=WAITING_ERROR)
-
-    swapped = load_config(EXAMPLE)
-    swapped.plex.resolve_max_attempts = 17
-    app.state.config_holder.swap(swapped)
-
-    job = (await client.get("/api/jobs", headers=auth_headers)).json()["jobs"][0]
-    assert job["max_attempts"] == 17
 
 
 async def test_run_in_seconds_counts_down_to_the_next_attempt(client, auth_headers, session):
@@ -257,6 +283,21 @@ async def test_an_ordinary_job_reports_no_pending_cancel(client, auth_headers, s
 
 async def test_cancelling_a_pending_job_dismisses_it(client, auth_headers, session):
     job_id = await _make_job(session)
+
+    response = await client.post(f"/api/jobs/{job_id}/cancel", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()["cancelled"] is True
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "dismissed"
+
+
+async def test_cancelling_a_deferred_job_dismisses_it(client, auth_headers, session):
+    """The only way a deferred job ever ends by an operator's hand: its horizon
+    is unbounded, so a 409 here would make the wait unstoppable short of the
+    database."""
+    job_id = await _make_job(session, state="deferred")
 
     response = await client.post(f"/api/jobs/{job_id}/cancel", headers=auth_headers)
 

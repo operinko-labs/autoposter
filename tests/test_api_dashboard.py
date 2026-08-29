@@ -61,7 +61,8 @@ async def test_status_on_an_empty_database_returns_zeroed_counts(client, auth_he
     assert response.status_code == 200
     body = response.json()
     assert body["jobs_by_state"] == {
-        "pending": 0, "running": 0, "done": 0, "failed": 0, "parked": 0, "dismissed": 0,
+        "pending": 0, "running": 0, "deferred": 0, "done": 0, "failed": 0,
+        "parked": 0, "dismissed": 0,
     }
     assert body["processed_last_24h"] == 0
     assert body["scheduled_jobs"] == []
@@ -100,7 +101,7 @@ async def test_status_reports_dismissed_jobs_in_the_same_shape(client, auth_head
     body = response.json()
     assert body["jobs_by_state"]["dismissed"] == 1
     assert set(body["jobs_by_state"]) == {
-        "pending", "running", "done", "failed", "parked", "dismissed",
+        "pending", "running", "deferred", "done", "failed", "parked", "dismissed",
     }
 
 

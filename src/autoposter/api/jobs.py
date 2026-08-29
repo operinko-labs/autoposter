@@ -2,8 +2,8 @@
 
 The Failures page already answers "what gave up". This answers the question an
 operator has *while* a pass is running -- what is queued, what is in flight,
-what is stuck waiting on Plex, and how long until the next attempt -- and lets
-them cancel a job without going to the database.
+what is waiting on Plex, and how long until the next attempt -- and lets them
+cancel a job without going to the database.
 
 Two things shape the response:
 
@@ -12,17 +12,22 @@ Two things shape the response:
   for other kinds, source URLs. The page needs to *name* the item, so the four
   fields that do that are lifted out by name and everything else stays in the
   database.
-* **The attempt budget is not one number.** A job failing because Plex has not
-  indexed the file yet is retried against ``config.plex.resolve_max_attempts``
-  (worker.py hands that budget to ``fail()`` via the exception), while every
-  other failure gets the queue's ``MAX_ATTEMPTS``. Showing 3/5 for a job that
-  actually has ten tries would read as nearly dead when it is fine, so the
-  budget shown follows the same fork the worker takes.
+* **A deferred job is waiting, not failing.** Plex cannot see the item yet, so
+  the queue holds it on an unbounded horizon (queue/jobs.py's ``fail()``) --
+  there is no attempt cap to show and no error to report, and the stored
+  message is served as ``waiting_reason`` rather than as ``last_error``.
+  This is read straight off ``state``, which is what the worker wrote. It used
+  to be guessed by matching the stored error text against a fixed prefix, a
+  guess that was wrong in both directions -- it missed the two other messages
+  ``resolve()`` raises, and it vanished entirely once the job parked.
 
 Cancelling forks on the state the row is *actually* in, not on what the page
 last saw:
 
-* ``pending`` -- nothing has started, so the job is dismissed outright.
+* ``pending`` and ``deferred`` -- nothing has started, so the job is dismissed
+  outright. Deferred belongs here rather than with the terminal states: its
+  horizon never runs out, so dismissing is the only way an operator can end
+  one, and refusing here would make the wait unstoppable.
 * ``running`` -- a worker holds it. It is not interrupted: a render that has
   happened cannot be un-rendered, and killing a handler mid-upload would leave
   Plex holding half a change. ``cancel_requested`` is set instead and the
@@ -50,15 +55,9 @@ router = APIRouter()
 
 # The states this page is about. Terminal ones are excluded on purpose: done
 # and dismissed jobs are history, and parked ones belong to Failures, which can
-# retry them.
-LIVE_STATES = ("running", "pending")
-
-# The prefix of the ItemNotFound message raised when Plex has not indexed the
-# file yet (plex/client.py's resolve()). Classifying on the stored error string
-# is a heuristic -- it is all a finished attempt leaves behind -- and it is
-# deliberately the narrow prefix rather than anything looser: over-claiming
-# "waiting for Plex" would also over-report the attempt budget.
-WAITING_FOR_PLEX_PREFIX = "no Plex item"
+# retry them. ``deferred`` is live -- the job is waiting for Plex to catch up
+# and will run itself when it does -- so it belongs here and never on Failures.
+LIVE_STATES = ("running", "pending", "deferred")
 
 # A full pass enqueues one job per library item -- fifteen thousand of them on
 # the library this was built for -- and the page polls every few seconds. The
@@ -81,21 +80,16 @@ def _number(payload: dict, key: str) -> int | None:
 @router.get("/jobs")
 async def list_jobs(
     request: Request,
-    state: Literal["pending", "running"] | None = None,
+    state: Literal["pending", "running", "deferred"] | None = None,
     _: SessionModel = Depends(require_session),
 ) -> dict:
-    """Pending and running jobs, soonest first.
+    """Pending, running and deferred jobs, soonest first.
 
-    ``state`` narrows to one of the two; omitted, both are returned. Any other
+    ``state`` narrows to one of the three; omitted, all are returned. Any other
     value is a 422 from validation rather than an empty list, so a typo in the
     query string cannot read as "the queue is empty".
     """
     states = LIVE_STATES if state is None else (state,)
-    # config is read per request off the live holder, not captured at startup:
-    # resolve_max_attempts is one of the values config/live.py documents as
-    # read per use, so a swap must be visible in the very next response.
-    config = request.app.state.config_holder.current
-    plex_max_attempts = config.plex.resolve_max_attempts
 
     # Computed by the database clock, matching the one that stamped run_after
     # (queue/jobs.py enqueues with func.now() for exactly this reason). Doing
@@ -125,14 +119,17 @@ async def list_jobs(
     jobs = []
     for job, run_in_seconds in rows:
         payload = job.payload if isinstance(job.payload, dict) else {}
-        waiting = (job.last_error or "").startswith(WAITING_FOR_PLEX_PREFIX)
+        waiting = job.state == "deferred"
         jobs.append(
             {
                 "id": job.id,
                 "kind": job.kind,
                 "state": job.state,
                 "attempts": job.attempts,
-                "max_attempts": plex_max_attempts if waiting else MAX_ATTEMPTS,
+                # None, not a number: a deferred job has no cap to be counted
+                # against. Reporting one would put it on a deadline it does not
+                # have and cannot miss.
+                "max_attempts": None if waiting else MAX_ATTEMPTS,
                 "waiting_for_plex": waiting,
                 # The four payload fields that name the item, and nothing else.
                 "title": _text(payload, "title"),
@@ -143,7 +140,11 @@ async def list_jobs(
                 # job, whose run_after is in the past). The page renders that as
                 # "now" rather than a countdown, which is the truth.
                 "run_in_seconds": round(run_in_seconds),
-                "last_error": job.last_error,
+                # The same stored string, sorted into the column that tells the
+                # truth about it: a deferred job has not failed, so what it is
+                # waiting for is a reason, and its error is nothing.
+                "last_error": None if waiting else job.last_error,
+                "waiting_reason": job.last_error if waiting else None,
                 "created_at": job.created_at,
                 "cancel_requested": job.cancel_requested,
             }
@@ -172,9 +173,11 @@ async def cancel_job(
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
 
-        if job.state == "pending":
+        if job.state in ("pending", "deferred"):
             # Dismissed, not deleted: what was queued and why is worth keeping,
-            # and this is the same disposal the Failures page uses.
+            # and this is the same disposal the Failures page uses. A deferred
+            # job takes this branch for a reason of its own -- its horizon is
+            # unbounded, so this is the only thing that ends one.
             job.state = "dismissed"
             await session.commit()
             return {"id": job_id, "state": "dismissed", "cancelled": True}

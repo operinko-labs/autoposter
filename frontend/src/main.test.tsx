@@ -87,7 +87,7 @@ it("mounts the routed shell when a session already exists", async () => {
         ? jsonResponse({ events: [] })
         : jsonResponse({
             jobs_by_state: {
-              pending: 0, running: 0, done: 0,
+              pending: 0, running: 0, deferred: 0, done: 0,
               failed: 0, parked: 0, dismissed: 0,
             },
             workers: 1,

@@ -18,6 +18,7 @@ const PENDING = {
   episode_number: null,
   run_in_seconds: 150,
   last_error: "RuntimeError: provider exploded",
+  waiting_reason: null,
   created_at: "2026-01-02T03:04:05Z",
 };
 
@@ -34,14 +35,17 @@ const RUNNING = {
   last_error: null,
 };
 
-const WAITING = {
+const DEFERRED = {
   ...PENDING,
   id: 9,
-  attempts: 4,
-  max_attempts: 10,
+  state: "deferred",
+  attempts: 0,
+  max_attempts: null,
   waiting_for_plex: true,
   title: "Sinners",
-  last_error: "no Plex item for movie 'Sinners' (tmdb=1, tvdb=None)",
+  run_in_seconds: 21600,
+  last_error: null,
+  waiting_reason: "no Plex item for movie 'Sinners' (tmdb=1, tvdb=None)",
 };
 
 function json(body: unknown, status = 200): Response {
@@ -81,7 +85,7 @@ describe("Jobs", () => {
 
     render(<Jobs />);
 
-    expect(await screen.findByText("No pending or running jobs.")).toBeInTheDocument();
+    expect(await screen.findByText("No queued, running or waiting jobs.")).toBeInTheDocument();
   });
 
   it("names the episode with its season and episode numbers", async () => {
@@ -92,16 +96,34 @@ describe("Jobs", () => {
     expect(await screen.findByText("S02E05")).toBeInTheDocument();
   });
 
-  it("shows attempts against the budget that job actually has", async () => {
-    // The Plex-wait budget is the operator's whole reason for the badge: 4/5
-    // reads as one try from parked, 4/10 reads as fine.
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(list(WAITING, PENDING)));
+  it("shows a deferred job as waiting against no budget at all", async () => {
+    // The whole point of the state: a deferred job is not counting down to
+    // anything. "0/5" would read as a job four failures from parked; "0/∞"
+    // plus the badge reads as what it is.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(list(DEFERRED, PENDING)));
 
     render(<Jobs />);
 
-    expect(await screen.findByText("4/10")).toBeInTheDocument();
+    expect(await screen.findByText("0/∞")).toBeInTheDocument();
     expect(screen.getByText("1/5")).toBeInTheDocument();
     expect(screen.getByText("waiting for Plex")).toBeInTheDocument();
+    expect(screen.getByText("deferred")).toBeInTheDocument();
+    // Six hours out, and said as such rather than as a stalled countdown.
+    expect(screen.getByText("in 6h")).toBeInTheDocument();
+  });
+
+  it("shows what a deferred job waits for as a reason, not as an error", async () => {
+    // The row has no error -- nothing failed. Rendering its reason in the
+    // error column unmarked is the "parked movie" reading this whole state
+    // exists to stop.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(list(DEFERRED)));
+
+    render(<Jobs />);
+
+    const reason = await screen.findByText(
+      "no Plex item for movie 'Sinners' (tmdb=1, tvdb=None)",
+    );
+    expect(reason).toHaveClass("jobs-reason");
   });
 
   it("counts down to the next attempt, and says now for a job already due", async () => {
@@ -125,7 +147,7 @@ describe("Jobs", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
 
     await waitFor(() =>
-      expect(screen.getByText("No pending or running jobs.")).toBeInTheDocument(),
+      expect(screen.getByText("No queued, running or waiting jobs.")).toBeInTheDocument(),
     );
     expect(fetchMock.mock.calls[1][0]).toBe("/api/jobs/7/cancel");
     expect(fetchMock.mock.calls[1][1].method).toBe("POST");

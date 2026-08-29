@@ -49,6 +49,12 @@
   border-top-color: var(--ok);
 }
 
+/* Warn, deliberately not --error: these jobs are waiting for Plex to index
+ * their items, not failing at it. The two tiles must not read alike. */
+.stat-deferred {
+  border-top-color: var(--warn);
+}
+
 .stat-failed,
 .stat-parked {
   border-top-color: var(--error);
