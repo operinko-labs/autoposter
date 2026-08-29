@@ -323,6 +323,42 @@ async def test_a_missing_collection_raises_and_names_the_id():
             await _client(http).collection_parts(10)
 
 
+async def test_a_collection_name_is_read_from_the_same_response_as_its_parts(session):
+    """One ``/collection/{id}`` read serves both halves of a franchise family:
+    the name it titles the collection with, and the parts its membership is.
+    Same path and same (empty) params, so ``build_cache_key`` agrees and the
+    second call is served from the ``provider_cache`` row the first wrote."""
+    from autoposter.providers.cache import ProviderCache
+
+    seen: list = []
+    cache = ProviderCache(session_factory_for(session))
+    routes = {"/collection/10": load("tmdb_collection.json")}
+    async with httpx.AsyncClient(transport=_routed(routes, seen)) as http:
+        client = _client(http, cache=cache, cache_ttl_seconds=3600)
+        name = await client.collection_name(10)
+        parts = await client.collection_parts(10)
+
+    assert name == "Star Wars Collection"
+    assert parts == ["11", "1891", "1892"]
+    assert len(seen) == 1, "titling the family should cost no extra request"
+
+
+async def test_a_collection_tmdb_does_not_know_has_no_name():
+    """A dead id is one collection a family drops and reports, not a dead pass
+    -- the one place here that degrades a 404 rather than raising it, and the
+    method docstring says why."""
+    async with httpx.AsyncClient(transport=_routed({})) as http:
+        assert await _client(http).collection_name(999) is None
+
+
+async def test_a_collection_with_no_name_at_all_has_none():
+    """A 200 carrying no usable ``name`` is the same answer as a 404 here: a
+    family cannot title a collection from it either way."""
+    routes = {"/collection/10": {"id": 10, "name": "", "parts": []}}
+    async with httpx.AsyncClient(transport=_routed(routes)) as http:
+        assert await _client(http).collection_name(10) is None
+
+
 async def test_discover_sends_the_filter_and_reads_results():
     seen: list = []
     routes = {"/discover/movie": load("tmdb_discover_movie.json")}

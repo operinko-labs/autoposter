@@ -143,6 +143,15 @@ class BuilderContext:
     that needs one says so by raising -- ``build`` raises on failure, so a
     missing session must never be answered with an empty membership.
 
+    ``definition`` is the definition this context was built for, and only a
+    FAMILY builder needs it: an expanding builder returns whole
+    ``CollectionDefinition``s, and a family's units have to carry both the
+    operator's own labels and the family label the delete sweep finds them by.
+    ``engine._completed`` fills an unset field from the placeholder, so a
+    builder that sets ``labels`` at all has to set both halves -- and it cannot
+    read the first half from anywhere else. None for a direct caller, and for
+    every builder that does not expand.
+
     Still absent: application config, raw secrets, and any way to *write*.
     Builders do not resolve and do not apply. The library itself is reachable
     only through ``sources.plex`` (``PlexSectionAccess``), read-only and
@@ -158,6 +167,7 @@ class BuilderContext:
     run_cache: dict[str, Any] = field(default_factory=dict)
     sources: SourceClients = field(default_factory=SourceClients)
     session: AsyncSession | None = None
+    definition: Any = None
 
 
 @dataclass(frozen=True)

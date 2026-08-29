@@ -31,6 +31,7 @@ from autoposter.collections.builders.arr import (
 )
 from autoposter.collections.builders.cs_bucket import CsBucketBuilder
 from autoposter.collections.builders.dynamic import DynamicBuilder
+from autoposter.collections.builders.facts_family import FactsFamilyBuilder
 from autoposter.collections.builders.facts_value import FactsValueBuilder
 from autoposter.collections.builders.imdb_award import (
     ImdbAwardBuilder,
@@ -153,6 +154,11 @@ register(DynamicBuilder())
 # original language or collection id, so there is no filter to store and
 # the membership is resolved here (``builders/facts_value.py``).
 register(FactsValueBuilder())
+# The family shape over the same enumeration: one list collection per value
+# the stored facts hold, expanded through ``engine._expand`` and swept through
+# the family protocol ``builders/dynamic.py`` names
+# (``builders/facts_family.py``).
+register(FactsFamilyBuilder())
 
 __all__ = [
     "NAMESPACES",

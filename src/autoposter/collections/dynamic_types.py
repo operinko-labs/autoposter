@@ -31,7 +31,11 @@ for its own reason:
 - ``original_language``/``origin_country`` -- upstream builds these as PLAIN
   collections whose membership comes from a full-library TMDb walk
   (meta.py:36-37, :971-993, builder.py:360-374), which is the metadata-prefetch
-  budget family (rows 155/180), not an enumeration.
+  budget family (rows 155/180), not an enumeration. **They ship, as of the
+  prefetch phase, as a different family shape:** ``builder: facts_family``,
+  enumerated from this service's own ``item_facts`` and built as LIST
+  collections, because a Plex smart filter cannot express membership Plex has
+  no field for. See ``collections/facts_family.py``.
 - show ``decade`` -- Plex's decade filter is movie-only (plex.py:437), so
   upstream falls back to a whole-library scan and REFUSES ``addons`` while doing
   it (meta.py:881-898). Out until that scan has a budget.
@@ -46,7 +50,10 @@ for its own reason:
   ``FILTER_ATTRIBUTES`` rows, so ``filters.BY_NAME`` has no entry for them
   (roadmap row 169). Roadmap row 194.
 - ``tmdb_collection`` -- a full-library TMDb walk over every item's
-  ``belongs_to_collection``, not an enumeration (roadmap row 192).
+  ``belongs_to_collection``, not an enumeration (roadmap row 192). It ships, as
+  of the prefetch phase, as ``builder: facts_family`` too -- enumerated from the
+  ``tmdb_collection_id`` that walk now stores, with each collection's membership
+  built by the shipped ``tmdb_collection`` builder.
 - ``trakt_*``, ``number``, ``custom`` and the music types -- none of them is a
   library enumeration.
 
@@ -60,6 +67,14 @@ either way, so membership is unaffected; only the collection's name differs, and
 anyway for the common codes (``en=English``, ``fi=Finnish``); where they part is
 a locale variant such as ``es-419``, which Plex already titles
 "Spanish (Latin America)".
+
+**Why the facts families are not rows here.** ``DYNAMIC_TYPES``' only consumer
+is ``DynamicBuilder``, which is smart end to end -- ``listFilterChoices`` in,
+``reconcile_smart_collection`` out. A row it cannot build would still be
+advertised to operators by ``DynamicParams``' own error message, so the three
+facts-enumerated families live in ``collections/facts_family.py`` and share what
+is actually shareable: ``dynamic_keys`` and ``dynamic_titles``, both of which
+take the enumeration as data and neither of which changed to accommodate them.
 """
 from dataclasses import dataclass
 

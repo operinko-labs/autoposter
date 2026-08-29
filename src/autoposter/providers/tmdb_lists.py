@@ -332,6 +332,36 @@ class TmdbListClient:
             raise TmdbListRefused(f"{subject}: TMDb's response carries no 'parts' array")
         return _ids(parts, subject)
 
+    async def collection_name(self, collection_id: int) -> str | None:
+        """A franchise collection's own name, or None if TMDb does not know it.
+
+        The SAME request ``collection_parts`` makes -- same path, same (empty)
+        params, therefore the same ``build_cache_key`` and the same
+        ``provider_cache`` row. So a franchise family that titles a collection
+        here and builds its membership one layer down pays for ONE
+        ``/collection/{id}`` read per franchise per TTL, not two.
+
+        That is also why the name is not stored on ``item_facts``: it is a
+        property of the collection rather than of the item, storing it per item
+        would invite drift between rows, and the read it would save is a read
+        the membership already pays for.
+
+        ``None`` rather than a raise for an unknown id, unlike
+        ``collection_parts``: a family drops a key it cannot name and reports
+        it, where a single ``tmdb_collection`` definition naming a dead id is
+        one collection that genuinely cannot be built. Only the 404 degrades --
+        a transport error or a 500 still raises, because "TMDb was unreachable
+        this pass" is not "this franchise has no name".
+        """
+        try:
+            payload = await self._get(
+                f"/collection/{collection_id}", {}, f"TMDb collection {collection_id}"
+            )
+        except TmdbListRefused:
+            return None
+        name = payload.get("name")
+        return name if isinstance(name, str) and name else None
+
     async def person_credits(self, person_id: int, media_type: str) -> list[PersonCredit]:
         """Every credit one person holds on ``media_type``, in TMDb's order.
 
