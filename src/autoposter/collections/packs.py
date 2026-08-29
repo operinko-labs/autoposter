@@ -739,6 +739,19 @@ STUDIO_PARAMS: tuple[tuple[str, object], ...] = (
     # this one, the plan's decision table, which stays distinct from
     # `content_genres`' `<<key_name>> <<library_typeU>>s` on both library types.
     # The row states the divergence in words. Record §4, §5 row 1.
+    #
+    # A THIRD shape is on file as a deferred rename candidate, from the T4
+    # review and deliberately not taken here: `<<library_typeU>>s from
+    # <<key_name>>` ("Movies from Studio Ghibli"). It clears the same two
+    # collisions and is the more accurate of the two, because "Top" promises a
+    # ranking nothing backs -- this pack transcribes upstream's `release.desc`
+    # with no limit, so the collection holds every title the studio has and is
+    # ordered newest-first, not best-first. Deferred rather than adopted
+    # because a rename here renames every collection a shipped family has
+    # already created, which is a migration and not a wording fix, and because
+    # it is a two-site edit by design: the literal is pinned again in
+    # `tests/test_collection_catalog.py`'s `_PINNED_FORMATS`, and both sites
+    # plus the preset row's own prose move together or not at all.
     ("title_format", "Top <<key_name>> <<library_typeU>>s"),
     ("include", _STUDIO_INCLUDE),
     # `include` is a whitelist applied LAST (`dynamic_keys`' module docstring,
