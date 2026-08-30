@@ -70,10 +70,18 @@ async def backfill_status(
     walked. Reads only -- pressing nothing costs nothing."""
     async with request.app.state.session_factory() as session:
         done, total, cursor = await _progress(session)
-    if cursor is None:
+    # Completion is derived FIRST, and by the one rule that is provably the
+    # POST's own: ``done >= total`` <=> no parent past the cursor <=>
+    # ``backfill_facts`` selects 0. Testing ``cursor is None`` first would let
+    # an empty library answer ``not_started`` here forever while every POST
+    # answered ``complete`` -- the two endpoints disagreeing about one state,
+    # and the state a disabled-button consumer keys off.
+    if done >= total:
+        status = "complete"
+    elif cursor is None:
         status = "not_started"
     else:
-        status = "complete" if done >= total else "in_progress"
+        status = "in_progress"
     return {"status": status, "done": done, "total": total}
 
 

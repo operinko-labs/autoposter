@@ -280,3 +280,21 @@ async def test_get_reports_progress_without_enqueuing(session, session_factory):
     assert during.json() == {"status": "in_progress", "done": 1, "total": 2}
     assert after.json() == {"status": "complete", "done": 2, "total": 2}
     assert len(await _titles(session)) == 2
+
+
+async def test_an_empty_library_reads_complete_on_both_endpoints(session_factory):
+    """No movie/show parents means the cursor is never written, so a
+    cursor-first GET would answer ``not_started`` forever while every POST
+    answered ``complete`` -- the one state the two endpoints could disagree
+    about, and the one a disabled-button consumer keys off. Completion is
+    derived the same way on both paths, so they agree."""
+    app = _app(session_factory)
+    client, headers = await _client_and_headers(app)
+    try:
+        get = await client.get("/api/facts/backfill", headers=headers)
+        post = await client.post("/api/facts/backfill", headers=headers)
+    finally:
+        await client.aclose()
+
+    assert get.json() == {"status": "complete", "done": 0, "total": 0}
+    assert post.json()["status"] == "complete"
