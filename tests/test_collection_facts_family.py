@@ -116,6 +116,21 @@ async def test_a_code_the_table_cannot_name_keys_as_itself(session):
     assert units[0].params["values"] == ["XX"]
 
 
+async def test_two_codes_that_share_one_name_key_once_and_query_both(session):
+    """The join record's D5, end to end. TMDb gives both `CD` and `CG` the
+    `english_name` `Congo`, so the family builds ONE collection whose
+    membership folds back to BOTH codes: `country_codes` answers a tuple, and
+    `derive_keys` keys on the name, so nothing is dropped and no duplicate
+    title refuses the family. The forward direction stays lossy -- one key for
+    two countries -- which `iso_names`' docstring records."""
+    assert iso_names.country_codes(iso_names.COUNTRY_NAMES["CD"]) == ("CD", "CG")
+    await _item(session, "1", tmdb_origin_country=["CD"])
+    await _item(session, "2", tmdb_origin_country=["CG"])
+    units = await FactsFamilyBuilder().expand(_ctx(session, _definition()))
+    assert [unit.title for unit in units] == [iso_names.COUNTRY_NAMES["CD"]]
+    assert units[0].params["values"] == ["CD", "CG"]
+
+
 async def test_a_language_family_titles_from_the_vendored_table(session):
     """Row 190: only the TITLE renders through the table -- the key stays the
     code (row 156's law), so the membership query and every narrowing knob
