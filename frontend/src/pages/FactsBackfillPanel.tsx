@@ -30,7 +30,9 @@ const PARK_NOTE =
   "A press is refused up front while TMDb is inside its 429 window, but the " +
   "check is only as fresh as the press: if TMDb starts refusing after a batch " +
   "is enqueued, those items are walked with the columns still empty and the " +
-  "next press resumes past them. The weekly sweep is what collects those.";
+  "next press resumes past them. The weekly sweep is what collects those, but " +
+  "not quickly — they wait out its staleness window and then queue behind " +
+  "everything older, so it is the same multi-week wait this button shortens.";
 
 /** The one-shot facts catch-up: standing progress plus one button.
  *

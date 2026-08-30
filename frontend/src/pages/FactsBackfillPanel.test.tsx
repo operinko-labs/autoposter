@@ -43,10 +43,10 @@ function stubFetch(options: StubOptions = {}) {
   return { fetchMock, posts };
 }
 
-/** How many times the standing progress was read. The POST answers with
- * counts of its own, so "the panel re-read" is only demonstrable by counting
- * the GETs -- matching the numbers on screen cannot tell a re-read from a
- * patch of the POST body. */
+/** How many times the standing progress was read. The rendered numbers say
+ * *where* the state came from (given a GET fixture that diverges from the
+ * POST's counts); this says *how many* reads it took, which no assertion
+ * about the screen can. */
 function getCalls(fetchMock: ReturnType<typeof stubFetch>["fetchMock"]) {
   return fetchMock.mock.calls.filter(([, init]) => init?.method !== "POST").length;
 }
@@ -74,15 +74,17 @@ describe("FactsBackfillPanel", () => {
     const { fetchMock, posts } = await renderPanel({
       gets: [
         { status: "not_started", done: 0, total: 4 },
-        { status: "in_progress", done: 2, total: 4 },
+        // Deliberately NOT the POST's `done: 2`: a panel that patched from the
+        // POST body renders "2 of 4" and fails here, so the rendered numbers
+        // are proof the state came from the re-read, not merely that a GET
+        // was also issued.
+        { status: "in_progress", done: 3, total: 4 },
       ],
     });
     fireEvent.click(screen.getByRole("button", { name: "Enqueue next batch" }));
     await waitFor(() => expect(posts).toHaveLength(1));
     await waitFor(() => expect(getCalls(fetchMock)).toBe(2));
-    // The progress line specifically: the server's detail below it carries
-    // "2 of 4" too, so a bare /2 of 4/ matches both paragraphs.
-    await screen.findByText(/2 of 4 movies and shows walked/);
+    await screen.findByText(/3 of 4 movies and shows walked/);
     expect(screen.getByText(/enqueued 2 item\(s\)/i)).toBeInTheDocument();
   });
 

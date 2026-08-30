@@ -225,11 +225,15 @@ class TMDBFactsClient:
         if self._budget is not None and await self._budget.blocked():
             raise TmdbRateLimited(
                 "tmdb is inside a backoff window a 429 opened; this read was "
-                "not attempted. It comes round again on the next drift sweep "
-                "(scheduler.drift_days), or sooner via a re-queued item; the "
-                "window itself cannot be shortened once open -- only waiting "
-                "it out, or restarting with operations.tmdb_backoff_seconds "
-                "= 0 to disable it, clears it early"
+                "not attempted. A drift sweep comes round to it again, but not "
+                "quickly: if the rest of the gather succeeded the refreshed "
+                "fetched_at holds the item out for scheduler.drift_max_age_days "
+                "and then sorts it behind everything older in a "
+                "scheduler.drift_batch_size rotation, so a re-queued item is "
+                "the only quick route back. The window itself cannot be "
+                "shortened once open -- only waiting it out, or restarting "
+                "with operations.tmdb_backoff_seconds = 0 to disable it, "
+                "clears it early"
             )
         try:
             return await fetch_json(
