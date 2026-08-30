@@ -262,7 +262,7 @@ SRC	audience_rating	tmdb	12452
 SRC	genres	tmdb	2252
 ```
 
-Every number is byte-identical to the 06:59Z capture. **No tick has run**, so
+Every number in the substantive rows is byte-identical to the 06:59Z capture. **No tick has run**, so
 the third case — a tick that ran and left the columns empty — did not arise and
 the writer-bug hypothesis stays excluded. The `SRC` breakdown is unchanged too:
 the TMDb writer is still demonstrably working on the six fields it knows.
