@@ -891,11 +891,16 @@ def _rendered_formats(
 # Important 1, which is also the review that widened this guard past the
 # dynamic packs it could see to the facts-enumerated ones it could not).
 #
-# All four packs below title with the bare ``<<key_name>>`` on Movie, which is
-# Kometa's own format for every one of them. So these are not collisions to fix
-# by renaming a transcription: they are rows 135/162's documented residual --
-# families whose formats agree, colliding only where their KEY spaces touch --
-# with the touching part measured rather than assumed.
+# All four packs below title with the bare ``<<key_name>>`` on Movie. For the
+# three location packs that is Kometa's own format, transcribed; for
+# ``content_franchises`` it is the type row's DEFAULT, because
+# ``franchise.yml`` spells out no ``title_format`` at all and
+# ``FRANCHISE_PARAMS`` deliberately writes the absent key as nothing
+# (``packs.py:1434-1439``) -- so that one is OURS, arrived at rather than
+# copied. Either way these are not collisions to fix by renaming a
+# transcription: they are rows 135/162's documented residual -- families whose
+# formats agree, colliding only where their KEY spaces touch -- with the
+# touching part measured rather than assumed.
 _ALLOWED_FORMAT_SHARERS: frozenset[frozenset[str]] = frozenset({
     # MEASURED overlaps, so a certain duplicate title the moment both are
     # enabled on a library holding such a film, not a hypothetical one:
