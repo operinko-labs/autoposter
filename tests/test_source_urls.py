@@ -129,6 +129,13 @@ CREDENTIAL_PASTES = [
     "https://user:pass@exam[ple.com/list",
     # Dotless host: used to reach MDBList's own {value!r} error string.
     "http://user:pass@localhost/x",
+    # The same dotless host WITHOUT a scheme -- the fourth variant, found by
+    # the branch review. No scheme and no leading '//' means the unknown-host
+    # gate never fires, and a dotless head sent the whole paste to
+    # ``MdblistListParams``, whose {value!r} echoed it. The intranet form is
+    # the plausible operator paste, not the contrived one.
+    "user:pass@localhost/x",
+    "admin:hunter2@nas/library",
 ]
 
 

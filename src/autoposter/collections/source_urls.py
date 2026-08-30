@@ -195,6 +195,23 @@ def _parse_bare(value: str) -> ParsedSource:
     not go through this heuristic at all.
     """
     head, _, _tail = value.partition("/")
+    if "/" in value and (":" in head or "@" in head):
+        # A head carrying userinfo or a port (``user:pass@localhost/x``) is
+        # not an MDBList reference and must never be offered to
+        # ``MdblistListParams``, whose own error string interpolates
+        # ``{value!r}`` -- which is how a schemeless credential paste to a
+        # DOTLESS host used to come back with the password in it. Nothing
+        # valid is refused here: ``_SEGMENT`` (``builders/mdblist.py:58``)
+        # admits neither ':' nor '@' in either half of ``<user>/<slug>``, so
+        # the guard is lossless by MDBList's own grammar. The scheme-ful and
+        # protocol-relative shapes of the same paste are already caught by
+        # the unknown-host gate in ``parse_source``; this is the schemeless
+        # one, which never reaches it.
+        raise SourceUrlRefused(
+            "that looks like a URL to a host this form does not know (its "
+            "first segment carries a ':' or an '@'), and it is not repeated "
+            "back in case it carries credentials -- supported: " + SUPPORTED
+        )
     if "/" in value and "." not in head:
         # user/slug, MDBList's own two-part reference. A dotted first segment
         # reads as a host this parser does not know, not as a user name.
