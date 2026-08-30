@@ -145,9 +145,11 @@ _AWARD_YEARS_SUFFIX = "_award_years"
 
 # The ``Default-Images`` separator artwork stem for each group, as MEASURED --
 # see ``docs/research/collection-sort-probe/README.md``. Three of the ten
-# resolved, and those three are the hosted half of the hybrid: upstream's own
-# art whose baked-in word matches our divider's title, so fetching it is exact
-# and costs nothing. The other seven have no such art -- upstream names its
+# groups probed resolved, and those three are the hosted half of the hybrid:
+# upstream's own art whose baked-in word matches our divider's title, so
+# fetching it is exact and costs nothing. Every other group -- the seven the
+# probe measured, plus ``franchises`` and the fence added since -- and every
+# group added in future has no such art either: upstream names its
 # separators by defaults FILE, not by category, so mapping them to near-miss
 # art would put GENRE on a divider titled "Content Collections". They are
 # GENERATED instead (``separator_art.py``), which ``separator_poster_key``
@@ -248,7 +250,7 @@ def effective_order(config) -> tuple[str, ...]:
     A partial list is allowed and is the expected use: the groups it names lead,
     in the order it names them, and every group it does not name follows in the
     canonical order. That keeps "put my own collections at the top" a one-line
-    setting instead of a ten-name permutation an operator has to keep in sync
+    setting instead of an eleven-name permutation an operator has to keep in sync
     with a table they cannot see.
 
     Section numbers derive from POSITION, so reordering renumbers -- which is a
@@ -596,8 +598,10 @@ def group_listing(config) -> list[dict]:
 
     This is the group-order panel's enumeration source, and the reason it
     exists is the reason ``CANONICAL_ORDER`` is written out above: the keys
-    live in exactly one place. A frontend holding its own copy of the ten
-    names would be the drift this module's other tables refuse.
+    live in exactly one place. A frontend holding its own copy of the eleven
+    names would be the drift this module's other tables refuse. The fence
+    (``TAIL_GROUP``) is deliberately absent: it takes no position, so a panel
+    built from this array can never offer it as a row to move.
     """
     order = effective_order(config)
     return [

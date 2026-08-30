@@ -163,7 +163,7 @@ async def collections_catalog(
     return {
         "categories": catalog_listing(config),
         # The group-order panel's enumeration (group-order UI phase, C2):
-        # served rather than transcribed, so the ten keys exist in exactly
+        # served rather than transcribed, so the eleven keys exist in exactly
         # one language. Effective order, not canonical -- the panel shows
         # the tab as the running config orders it.
         "groups": group_listing(config),
