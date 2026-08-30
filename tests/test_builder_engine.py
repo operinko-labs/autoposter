@@ -1483,8 +1483,14 @@ async def test_an_expanded_family_member_files_under_its_placeholders_group(
     section = FakeSection([("m1", ["imdb://tt1"])])
     config = _config(presets=["content_franchises"])
 
+    order = groups.effective_order(config)
     index = groups.preset_groups(config, "Movie")
-    prefix = groups.sort_prefix(index["Franchises"], groups.effective_order(config))
+    prefix = groups.sort_prefix(index["Franchises"], order)
+    # The prefix the bug produced, DERIVED rather than spelled '!100_': the
+    # operator group's number is its position in the effective order, so a
+    # group inserted ahead of it renumbers this and a literal would go
+    # vacuously true -- passing while looking like a regression guard.
+    misrouted = groups.sort_prefix(groups.OPERATOR_GROUP, order)
 
     actions = await _run(
         session, section,
@@ -1493,4 +1499,5 @@ async def test_an_expanded_family_member_files_under_its_placeholders_group(
     )
 
     assert f"set the sort title of 'Ant-Man' to '{prefix}Ant-Man'" in actions
-    assert not any("!100_Ant-Man" in action for action in actions)
+    assert prefix != misrouted
+    assert not any(f"{misrouted}Ant-Man" in action for action in actions)
