@@ -50,6 +50,20 @@ that the value gets in out of band, that an explicit `sort_title` still wins,
 and that expansion never inherits a derived one -- is graded by
 `tests/test_collection_groups.py`.
 
+**Fourth deliberate amendment, the divider-polish phase (fence).** Every
+scenario with separators on gained exactly one new collection: the closing
+"Other Collections" fence divider (`!999_!Other Collections`), created after
+the group dividers -- C5 of `.superpowers/sdd/p-dividers-facts.md`,
+adjudicated in advance. Its generated poster art is deliberately unreachable
+here (the handler 404s the `@base` layer so generation fails before its
+ImageMagick step, keeping this fixture environment-independent), so the
+posters-on scenarios record `no poster source for 'Other Collections'`. The
+ONLY changed lines are the fence's own actions and cells; the franchises
+group's renumbering moved nothing (no scenario reaches section 050).
+`tests/test_separator_art.py` and `tests/test_collection_groups.py`'s fence
+tests grade the behaviour this fixture can only witness. It landed as its own
+reviewed commit.
+
 ``_library_pass`` below is the one seam: it is the per-library sequence
 ``service.reconcile_libraries`` runs, and the port rewrites it from "the smart
 reconciler, then ``build_all``" into the single engine call. Everything else in
@@ -337,6 +351,13 @@ def _handler(charts_ok=True, awards_ok=True, posters="none"):
                 return httpx.Response(500, text="boom")
             return httpx.Response(200, text=AWARD_FIXTURE)
         if "Default-Images" in url:
+            if "separators/@base/" in url:
+                # The fence divider's generated art asks for the textless
+                # layer; 404ing it here -- even in "served" mode -- keeps
+                # generation refused BEFORE its magick step, so this fixture
+                # never depends on an ImageMagick install.
+                # tests/test_separator_art.py grades generation itself.
+                return httpx.Response(404, text="not found")
             if posters == "missing":
                 return httpx.Response(404, text="not found")
             if posters == "served":

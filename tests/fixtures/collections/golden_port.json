@@ -24,7 +24,8 @@
       "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
       "would create 'Chart Collections'",
       "would create 'Award Collections'",
-      "would create 'Ratings Collections'"
+      "would create 'Ratings Collections'",
+      "would create 'Other Collections'"
     ],
     "state": {}
   },
@@ -73,7 +74,8 @@
       "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
       "created 'Chart Collections'",
       "created 'Award Collections'",
-      "created 'Ratings Collections'"
+      "created 'Ratings Collections'",
+      "created 'Other Collections'"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -352,6 +354,17 @@
         "summary": "Section separator for Ratings Collections.",
         "sort": null,
         "sort_title": "!030_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Other Collections": {
+        "summary": "Section separator for Other Collections.",
+        "sort": null,
+        "sort_title": "!999_!Other Collections",
         "filters": null,
         "labels": [
           "autoposter"
@@ -648,6 +661,17 @@
         ],
         "members": [],
         "posters_uploaded": 0
+      },
+      "Other Collections": {
+        "summary": "Section separator for Other Collections.",
+        "sort": null,
+        "sort_title": "!999_!Other Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
       }
     }
   },
@@ -667,7 +691,8 @@
       "would create 'IMDb Popular' with 2 item(s)",
       "would create 'IMDb Top 250' with 2 item(s)",
       "would create 'Chart Collections'",
-      "would create 'Ratings Collections'"
+      "would create 'Ratings Collections'",
+      "would create 'Other Collections'"
     ],
     "state": {}
   },
@@ -700,7 +725,8 @@
       "created 'IMDb Top 250' with 2 item(s)",
       "set the sort title of 'IMDb Top 250' to '!010_01_IMDb Top 250'",
       "created 'Chart Collections'",
-      "created 'Ratings Collections'"
+      "created 'Ratings Collections'",
+      "created 'Other Collections'"
     ],
     "state": {
       "Age 1+ Shows": {
@@ -873,6 +899,17 @@
         ],
         "members": [],
         "posters_uploaded": 0
+      },
+      "Other Collections": {
+        "summary": "Section separator for Other Collections.",
+        "sort": null,
+        "sort_title": "!999_!Other Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
       }
     }
   },
@@ -944,7 +981,9 @@
       "created 'Award Collections'",
       "could not fetch a usable poster for 'Award Collections' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/separators/orig/award.jpg",
       "created 'Ratings Collections'",
-      "could not fetch a usable poster for 'Ratings Collections' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/separators/orig/content_rating.jpg"
+      "could not fetch a usable poster for 'Ratings Collections' from https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/separators/orig/content_rating.jpg",
+      "created 'Other Collections'",
+      "no poster source for 'Other Collections'"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -1223,6 +1262,17 @@
         "summary": "Section separator for Ratings Collections.",
         "sort": null,
         "sort_title": "!030_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Other Collections": {
+        "summary": "Section separator for Other Collections.",
+        "sort": null,
+        "sort_title": "!999_!Other Collections",
         "filters": null,
         "labels": [
           "autoposter"
@@ -1300,7 +1350,9 @@
       "created 'Award Collections'",
       "set the poster for 'Award Collections' from the hosted default",
       "created 'Ratings Collections'",
-      "set the poster for 'Ratings Collections' from the hosted default"
+      "set the poster for 'Ratings Collections' from the hosted default",
+      "created 'Other Collections'",
+      "no poster source for 'Other Collections'"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -1585,6 +1637,17 @@
         ],
         "members": [],
         "posters_uploaded": 1
+      },
+      "Other Collections": {
+        "summary": "Section separator for Other Collections.",
+        "sort": null,
+        "sort_title": "!999_!Other Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
       }
     }
   },
@@ -1630,7 +1693,8 @@
       "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
       "created 'Chart Collections'",
       "created 'Award Collections'",
-      "created 'Ratings Collections'"
+      "created 'Ratings Collections'",
+      "created 'Other Collections'"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -1870,6 +1934,17 @@
         ],
         "members": [],
         "posters_uploaded": 0
+      },
+      "Other Collections": {
+        "summary": "Section separator for Other Collections.",
+        "sort": null,
+        "sort_title": "!999_!Other Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
       }
     }
   },
@@ -1907,7 +1982,8 @@
       "'Oscars Best Director Winners': source returned no items; leaving the collection untouched",
       "created 'Chart Collections'",
       "created 'Award Collections'",
-      "created 'Ratings Collections'"
+      "created 'Ratings Collections'",
+      "created 'Other Collections'"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -2108,6 +2184,17 @@
         ],
         "members": [],
         "posters_uploaded": 0
+      },
+      "Other Collections": {
+        "summary": "Section separator for Other Collections.",
+        "sort": null,
+        "sort_title": "!999_!Other Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
       }
     }
   },
@@ -2147,7 +2234,8 @@
       "'Oscars Winners 2022': the source returned 1 id(s), none of which this library owns; leaving the collection untouched",
       "created 'Chart Collections'",
       "created 'Award Collections'",
-      "created 'Ratings Collections'"
+      "created 'Ratings Collections'",
+      "created 'Other Collections'"
     ],
     "state": {
       "Age 1+ Movies": {
@@ -2297,6 +2385,17 @@
         "summary": "Section separator for Ratings Collections.",
         "sort": null,
         "sort_title": "!030_!Ratings Collections",
+        "filters": null,
+        "labels": [
+          "autoposter"
+        ],
+        "members": [],
+        "posters_uploaded": 0
+      },
+      "Other Collections": {
+        "summary": "Section separator for Other Collections.",
+        "sort": null,
+        "sort_title": "!999_!Other Collections",
         "filters": null,
         "labels": [
           "autoposter"
