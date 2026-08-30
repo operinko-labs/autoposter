@@ -743,9 +743,16 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "naive datetime in the RUNNER's local clock, not the Plex server's. "
         "Compared at the MOMENT, time of day included -- see the date "
         "convention in `_as_moment` -- so `added.after: 2026-06-01` keeps "
-        "something added at 09:15 that day, and two runs of the same "
-        "collection in different timezones can disagree about an item added "
-        "near midnight (roadmap row 154).",
+        "something added at 09:15 that day. ADJUDICATED sweep-2 (row 154, "
+        "9b's D6 one module over): the runner-dependence is documented, not "
+        "converted -- since the comparison moved to the moment (9a Task 4), a "
+        "runner-clock offset shifts EVERY `added` comparison by that offset, "
+        "not only ones near midnight; the Plex server's own zone (what an "
+        "operator means) is not in the listing, and any fixed zone would make "
+        "membership depend on where the pass ran. Prefer the relative forms "
+        "(`added: 30`), day-granular and insensitive to any offset short of a "
+        "day -- the same recommendation plex_search.py documents for search "
+        "dates.",
         search_field="addedAt", show_search_field="show.addedAt",
         search_kinds=_BOTH, filterable=True,
     ),
@@ -1817,7 +1824,9 @@ def _as_moment(value: object, attribute: str) -> dt.datetime:
     datetime in the RUNNER's local clock by the time this function sees it, not
     the Plex server's. This function's zone-preserving policy is correct for a
     value that already carries the right zone; it does not undo ``added``'s
-    pre-existing runner-dependence (roadmap row 154).
+    pre-existing runner-dependence (roadmap row 154). Row 154 closed on exactly
+    that posture (sweep 2): documented on the `added` row and here, per 9b's D6
+    -- document the divergence, do not reconcile.
     """
     if isinstance(value, dt.datetime):
         return value.replace(tzinfo=None)
