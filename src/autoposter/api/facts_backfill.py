@@ -18,8 +18,6 @@ columns this sweep exists to fill until the drift sweep ages them back in.
 load. Progress is measured against the LIVE parent count, never the 2252 the
 roadmap row measured in production.
 """
-import logging
-
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 
@@ -28,8 +26,6 @@ from autoposter.db.models import EventLog, FactsBackfillState, MediaItem
 from autoposter.db.models import Session as SessionModel
 from autoposter.facts.tmdb_budget import TmdbRateBudget
 from autoposter.scheduler.jobs import backfill_facts
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -123,8 +119,9 @@ async def backfill_trigger(
                 batch.enqueued, done, total,
             )
         # The ops rule: a write nobody can find afterwards is not an operator
-        # action, it is a mystery. One row per trigger, the completes included
-        # -- an operator reading the table should see the walk.
+        # action, it is a mystery. One row per trigger that reaches this point,
+        # the completes included -- an operator reading the table should see
+        # the walk. (The park above returns before here and writes no row.)
         session.add(EventLog(
             source="facts",
             event_type="facts_backfill",

@@ -446,17 +446,21 @@ conditions gate it, and both matter:
 locks the field too, and the lock is the only signal available. So on a
 collection this service manages whose definition has no `summary:`, a summary
 you typed into Plex is cleared by the next pass that writes the collection —
-and what makes a pass write it differs by family. For the Common Sense
-buckets and `smart_filter`, that is the next pass whose definition, settings
-or summary actually changed, because membership itself is evaluated live by
-Plex and plays no part in the hash. For the list collections below (IMDb
-charts, the Oscars collections, and the hand-written `imdb_list`), it is any
-pass where the source's **membership** changed too, not only a definition
-edit — those collections hash their resolved members as part of the desired
-state, so a chart or list that simply gained or lost an entry reaches the
-same clear. That is the same sync-mode stance the rest of this block takes —
-the definition is the source of truth, and hand edits to managed fields do
-not survive it. Keep the text in the definition, not in Plex.
+and what makes a pass write it differs by family. For `smart_filter`, that is
+the next pass whose definition, settings or summary actually changed, because
+membership itself is evaluated live by Plex and plays no part in the hash.
+For the list collections below and every other list-membership definition
+(IMDb charts, the Oscars collections and the hand-written `imdb_list` among
+them), it is any pass where the source's **membership** changed too, not only
+a definition edit — those collections hash their resolved members as part of
+the desired state, so a chart or list that simply gained or lost an entry
+reaches the same clear. The Common Sense buckets are different in kind: they
+refuse `summary:` at config load entirely, so a hand-typed summary there is
+never cleared by this mechanism — it is **overwritten** with the bucket's own
+derived summary on every pass that writes the collection. That is the same
+sync-mode stance the rest of this block takes — the definition is the source
+of truth, and hand edits to managed fields do not survive it. Keep the text
+in the definition, not in Plex.
 
 See `config/autoposter.example.yaml` for the full block.
 
@@ -498,12 +502,16 @@ resolve, because episodes are filed under their show's guid — are dropped
 before they reach the library instead of counting as misses. A request IMDb
 *rejects* is loud: it comes back as an error and the build refuses, leaving
 the collection untouched, exactly as above. A request IMDb *accepts* but
-answers null for is not: the entries fold to nothing, every one is dropped,
-and the build hands back an empty collection, which under sync semantics
-empties the collection it built last time. That is the posture these list
-fetches have always shipped with rather than anything introduced here, and
-nothing observed produces it today — but "a failed source never empties a
-collection" holds for the refusal half only.
+answers null for is not, but it does not "empty" the collection either. If
+every entry nulls, the entries fold to nothing and the build hands back an
+empty membership, which the reconciler reads as "make no changes" — the
+collection silently **freezes** instead of erroring, not "empties". If only
+some entries null, those members are silently **removed** under sync, since
+they no longer count as re-selected. That is the posture these list fetches
+have always shipped with rather than anything introduced here, and nothing
+observed produces either behaviour today — but "a failed source never empties
+a collection" holds in both halves; what the accepted-null half loses is the
+loudness, not the members.
 
 IMDb's API response carries a non-commercial-use disclaimer. This deployment
 is a private, single-operator install, which is within it; nothing here
