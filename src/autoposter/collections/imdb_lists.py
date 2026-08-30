@@ -290,10 +290,11 @@ def _entries(
     and a shape change would skip all of them at once.
 
     The title type is deliberately *not* pinned, and the asymmetry is the
-    point. It is asked for on one root only (``type_path`` is None for the
-    others), and its consumer treats an unknown type as one entry to drop --
-    so a missing one costs a single list member, where raising would cost the
-    whole collection. Non-string values fold to None for the same reason.
+    point. It is asked for on the two list roots only (``type_path`` is None
+    for the search root), and its consumer treats an unknown type as one
+    entry to drop -- so a missing one costs a single list member, where
+    raising would cost the whole collection. Non-string values fold to None
+    for the same reason.
     """
     entries: list[tuple[str, str | None]] = []
     for position, edge in enumerate(edges, start=offset + 1):
