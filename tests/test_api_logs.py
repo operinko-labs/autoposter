@@ -100,6 +100,50 @@ def test_buffer_includes_the_traceback_when_a_record_carries_one():
     assert "ValueError: the underlying failure" in entry["message"]
 
 
+def test_credential_query_params_are_scrubbed_from_the_served_message():
+    """Roadmap row 117: Fanart's api_key rides the query string, httpx embeds
+    the full URL in an HTTPStatusError's message, and ladder.py:81 (and the
+    candidates fan-out) log provider failures with exc_info -- the traceback's
+    last line landed in this buffer and was served by /api/logs and the
+    stream. The scrub is here, at the one point the served surface's text is
+    assembled: stdout keeps the full traceback under the repo's host-only
+    rule."""
+    buffer = LogBuffer()
+    try:
+        raise ValueError(
+            "Client error '401 Unauthorized' for url "
+            "'https://webservice.fanart.tv/v3/movies/603?api_key=SECRETKEY'"
+        )
+    except ValueError:
+        import sys
+
+        buffer.emit(
+            logging.LogRecord(
+                name="autoposter.providers.ladder", level=logging.WARNING,
+                pathname=__file__, lineno=1, msg="provider Fanart failed, continuing",
+                args=(), exc_info=sys.exc_info(),
+            )
+        )
+    (entry,) = buffer.lines()
+    assert "SECRETKEY" not in entry["message"]
+    assert "api_key=REDACTED" in entry["message"]
+    # The traceback itself survives -- only the credential goes.
+    assert "ValueError" in entry["message"]
+    assert "provider Fanart failed" in entry["message"]
+
+
+def test_a_token_param_in_a_plain_message_is_scrubbed_too():
+    """The same law for a message that was never an exception: a URL with
+    X-Plex-Token pasted into an ordinary log line must not be served intact."""
+    buffer = LogBuffer()
+    buffer.emit(record(
+        "GET http://plex.internal:32400/library/all?X-Plex-Token=PLEXSECRET failed"
+    ))
+    (entry,) = buffer.lines()
+    assert "PLEXSECRET" not in entry["message"]
+    assert "X-Plex-Token=REDACTED" in entry["message"]
+
+
 async def test_a_full_subscriber_queue_drops_lines_rather_than_blocking():
     """One slow stream reader must not cost the process memory without bound
     or stall the emitting thread."""

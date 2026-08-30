@@ -16,6 +16,7 @@ import asyncio
 import collections
 import json
 import logging
+import re
 import threading
 from datetime import datetime, timezone
 
@@ -36,6 +37,22 @@ SUBSCRIBER_QUEUE_SIZE = 500
 # enough to be negligible traffic, short enough that a dead connection is
 # noticed by the write failing rather than lingering for hours.
 HEARTBEAT_SECONDS = 15.0
+
+# Roadmap row 117: Fanart's api_key rides the query string, httpx embeds full
+# URLs in HTTPStatusError messages, and ladder.py:81 plus api/candidates.py's
+# two fan-out sites log provider failures with exc_info -- so a credential
+# could reach this buffer inside a traceback's last line and be served by
+# /api/logs and the stream. Scrubbed HERE, where the served surface's text is
+# assembled, rather than at the logging sites: stdout (the pod log) keeps the
+# full traceback under the repo's host-only rule, and a future exc_info site
+# is covered without knowing about this module. Matches any query-param name
+# ending in api_key/apikey/token (X-Plex-Token, plex_token, ...); the name
+# survives, the value never does.
+_CREDENTIAL_PARAM = re.compile(r"(?i)([-\w]*(?:api_?key|token))=[^&\s'\"]+")
+
+
+def _scrub(text: str) -> str:
+    return _CREDENTIAL_PARAM.sub(r"\1=REDACTED", text)
 
 
 class LogBuffer(logging.Handler):
@@ -73,7 +90,7 @@ class LogBuffer(logging.Handler):
                 "level": record.levelname,
                 "logger": record.name,
                 # format() appends the traceback when the record carries one.
-                "message": self.format(record),
+                "message": _scrub(self.format(record)),
             }
         except Exception:
             self.handleError(record)
