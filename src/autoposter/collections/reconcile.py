@@ -556,6 +556,28 @@ def create_blank_collection(section, libtype: str, title: str):
     return section.collection(title)
 
 
+def _summary_is_locked(collection) -> bool:
+    """Whether this collection's summary carries Plex's field lock.
+
+    The lock is the marker the managed route leaves: every write below sends
+    ``summary.locked=1``. So the set reads it to decide whether a
+    matching-but-unlocked summary still needs the repair write, and the clear
+    reads it to decide whether the summary is this service's to revert at all --
+    one predicate for one question, because two copies of it drift and the two
+    answers would then disagree about the same field.
+
+    ``fields`` is a ``cached_data_property`` populated the same lazy way
+    ``labels`` is (see ``load_labels``) -- callers reconciling an existing
+    collection call ``resolve_collision``, which reloads it first. Missing or
+    empty ``fields`` is treated as NOT locked, the same defensiveness
+    ``has_label`` uses for ``labels``.
+    """
+    return any(
+        field.name == "summary" and field.locked
+        for field in (getattr(collection, "fields", None) or [])
+    )
+
+
 def _edit_collection_summary(collection, summary: str) -> None:
     """Set a collection's summary through the item-level route, via a raw PUT.
 
@@ -582,18 +604,10 @@ def _edit_collection_summary(collection, summary: str) -> None:
     field is already locked. ``editSummary(locked=True)`` always locked the
     field; skipping on text alone would leave a matching-but-unlocked
     summary unlocked forever -- exactly the Kometa-era separators' starting
-    state, which a later Plex metadata refresh could then clear. ``fields``
-    is a ``cached_data_property`` populated the same lazy way ``labels`` is
-    (see ``load_labels``) -- callers reconciling an existing collection call
-    ``resolve_collision``, which reloads it first. Missing or empty
-    ``fields`` is treated as NOT locked, the same defensiveness ``has_label``
-    uses for ``labels``.
+    state, which a later Plex metadata refresh could then clear. The lock is
+    read through ``_summary_is_locked`` above, shared with the clear.
     """
-    locked = any(
-        field.name == "summary" and field.locked
-        for field in (getattr(collection, "fields", None) or [])
-    )
-    if getattr(collection, "summary", None) == summary and locked:
+    if getattr(collection, "summary", None) == summary and _summary_is_locked(collection):
         return
     server = collection._server
     args = {"summary.value": summary, "summary.locked": 1}
@@ -620,12 +634,13 @@ def _clear_collection_summary(collection) -> bool:
     handing the field back to Plex -- through the same item-level route as
     the set (the section-level route 404s; see the sibling above). Returns
     whether a write was issued, so the caller can report it.
+
+    The caller decides WHETHER to ask: this reverts what the managed route
+    asserted, so it may only be called when the definition asserts that there
+    is no summary (``smart``/``lists``' ``summary_asserted``). This helper
+    answers the narrower question of whether there is anything of ours there.
     """
-    locked = any(
-        field.name == "summary" and field.locked
-        for field in (getattr(collection, "fields", None) or [])
-    )
-    if not locked:
+    if not _summary_is_locked(collection):
         return False
     server = collection._server
     args = {"summary.value": "", "summary.locked": 0}
