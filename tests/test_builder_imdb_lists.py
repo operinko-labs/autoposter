@@ -12,7 +12,11 @@ the edge field is ``title`` and not ``listItem``, and there is no
 The one thing the recordings do not carry is the ``titleType`` selection, which
 was added afterwards: the recorded list really is five films, so its entries are
 typed ``movie`` here, and the mixed list the filter is actually about is built
-inline where it is used.
+inline where it is used. Row 168 extended the same selection to the watchlist
+and the recording was typed by the same rule -- its three entries really are
+films, so they are typed ``movie`` too. In both files the types are this
+repository's, not IMDb's: hand-added to a genuine 2026-08-25 recording, true of
+those titles, and never a claim that IMDb sent them.
 """
 import json
 import logging
@@ -97,6 +101,23 @@ def _typed(entries, has_next=False):
         "pageInfo": {"hasNextPage": has_next, "endCursor": None},
         "edges": edges,
     }}}})
+
+
+def _typed_watchlist(entries, has_next=False):
+    """One page of ``(id, titleType)`` entries, in IMDb's WATCHLIST shape --
+    the ``predefinedList`` root ``_typed`` serves for a list. Built inline
+    like the mixed list, because the recorded watchlist really is three
+    films (see the module docstring's note on types and recordings)."""
+    edges = [
+        {"title": {"id": value, "titleType": {"id": kind} if kind else None}}
+        for value, kind in entries
+    ]
+    return _answers({"data": {"predefinedList": {"id": "ls000000000",
+        "titleListItemSearch": {
+            "total": len(edges),
+            "pageInfo": {"hasNextPage": has_next, "endCursor": None},
+            "edges": edges,
+        }}}})
 
 
 def _ctx(http, library_type: str = "Movie", **params) -> BuilderContext:
@@ -481,6 +502,49 @@ async def test_the_watchlist_builder_reads_a_public_watchlist():
     assert "WATCH_LIST" in body["query"], (
         "the enum value is WATCH_LIST -- the endpoint rejects 'WATCHLIST'"
     )
+
+
+async def test_the_watchlist_query_asks_for_title_types():
+    """Roadmap row 168: an episode's ``tt`` id is in NEITHER library's guid
+    space -- Plex files episodes under their show's guid -- so a watchlist
+    that comes to hold one reproduces exactly the unresolved-ids shape the
+    ``imdb_list`` fix closed. Asking for the type is what makes the entry
+    filterable at all."""
+    assert "titleType { id }" in WATCHLIST_QUERY
+
+
+async def test_the_watchlist_builder_drops_what_a_movie_library_cannot_own():
+    async with httpx.AsyncClient(transport=_typed_watchlist(MIXED)) as http:
+        result = await REGISTRY["imdb_watchlist"].build(_ctx(http, user="ur000000001"))
+
+    assert result.ids == [
+        ("imdb", "tt1000001"), ("imdb", "tt1000002"),
+        ("imdb", "tt1000003"), ("imdb", "tt1000004"),
+    ]
+
+
+async def test_the_watchlist_builder_drops_what_a_show_library_cannot_own():
+    async with httpx.AsyncClient(transport=_typed_watchlist(MIXED)) as http:
+        result = await REGISTRY["imdb_watchlist"].build(
+            _ctx(http, library_type="Show", user="ur000000001")
+        )
+
+    assert result.ids == [("imdb", "tt2000001"), ("imdb", "tt2000002")]
+
+
+async def test_the_watchlist_drop_line_names_the_watchlist_not_a_list(caplog):
+    """Both builders share ``_library_owned``, so the only thing that can go
+    wrong in the move is the source each drop is attributed to -- a line
+    reading "IMDb list 'ur000000001'" would send an operator looking for a
+    list that does not exist."""
+    logger = "autoposter.collections.builders.imdb_lists"
+    with caplog.at_level(logging.DEBUG, logger=logger):
+        async with httpx.AsyncClient(transport=_typed_watchlist(MIXED)) as http:
+            await REGISTRY["imdb_watchlist"].build(_ctx(http, user="ur000000001"))
+
+    assert "watchlist of 'ur000000001'" in caplog.text
+    assert "dropped 5 entries" in caplog.text
+    assert "tvEpisode" in caplog.text and "unknown" in caplog.text
 
 
 async def test_a_private_watchlist_is_refused_naming_the_user():

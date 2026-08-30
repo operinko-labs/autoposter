@@ -50,15 +50,18 @@ status check, the cursor loop and the page cap are written once and every root
 gets the same loud failure. The alternative, a second copy of that walk for the
 search root, is exactly the copy that would drift into being defensive.
 
-**One root asks for more than an id.** ``LIST_QUERY`` also selects each entry's
-``titleType { id }``, because a public list can hold anything IMDb has a page
-for -- including the ~950 ``tvEpisode`` entries on Kometa's Star Trek universe
-list, whose ids belong to no Plex library's guid space at all. So ``_fetch``
-takes a second, optional edge path and ``fetch_list`` returns ``(id, type)``
-pairs where the other two roots still return bare ids. That path is the one
-piece of the shape below not covered by the 2026-08-25 live recordings; it was
-read off the live lists during the universe diagnosis, and unlike the id path
-it is *not* pinned -- see ``_entries`` for why a missing type is data.
+**The two list roots ask for more than an id.** ``LIST_QUERY`` and
+``WATCHLIST_QUERY`` both select each entry's ``titleType { id }``, because a
+list of either kind can hold anything IMDb has a page for -- including the ~950
+``tvEpisode`` entries on Kometa's Star Trek universe list, whose ids belong to
+no Plex library's guid space at all. So ``_fetch`` takes a second, optional edge
+path and both list fetchers return ``(id, type)`` pairs where the search root
+still returns bare ids -- it constrains the title types on the way out
+(``builders/imdb_search.TITLE_TYPE_IDS``) and so is never sent one it did not
+ask for. That path is the one piece of the shape below not covered by the
+2026-08-25 live recordings; it was read off the live lists during the universe
+diagnosis, and unlike the id path it is *not* pinned -- see ``_entries`` for why
+a missing type is data.
 """
 import logging
 import re
@@ -115,11 +118,16 @@ LIST_QUERY = (
 # ``$after`` is ``String``, not ``ID``: the endpoint rejects the ``ID`` form
 # outright ("used in position expecting type String"), which is the kind of
 # detail only a live request can settle.
+#
+# ``titleType { id }`` rides along for ``LIST_QUERY``'s reason (roadmap row
+# 168): a watchlist can hold anything IMDb has a page for, an episode included,
+# and an episode's id resolves in no library.
 WATCHLIST_QUERY = (
     "query WatchlistItems($user: ID!, $first: Int!, $after: String) {"
     " predefinedList(classType: WATCH_LIST, userId: $user) { id"
     " titleListItemSearch(first: $first, after: $after) {"
-    " total pageInfo { hasNextPage endCursor } edges { title { id } } } } }"
+    " total pageInfo { hasNextPage endCursor }"
+    " edges { title { id titleType { id } } } } } }"
 )
 
 # ``constraints`` and ``sort`` travel as variables rather than inline literals
@@ -363,26 +371,32 @@ async def fetch_list(
     )
 
 
-async def fetch_watchlist(http: httpx.AsyncClient, user_id: str) -> list[str]:
-    """The user's public watchlist ids, in watchlist order.
+async def fetch_watchlist(
+    http: httpx.AsyncClient, user_id: str
+) -> list[tuple[str, str | None]]:
+    """The user's public watchlist ``(IMDb id, title type id)`` entries, in
+    watchlist order.
 
     Public only. There is no anonymous route to a private one, and IMDb says
     so with a FORBIDDEN error rather than an empty list -- which
     ``_connection`` turns into ``ImdbListRefused`` naming the watchlist.
 
-    Ids only. ``WATCHLIST_QUERY`` does not ask for title types and this does
-    not filter on them -- a watchlist is one person's own shortlist of things
-    to watch, not the bulk episode dump a curated list can be.
+    The type rides along for ``fetch_list``'s reason (roadmap row 168): a
+    watchlist can hold anything IMDb has a page for, an episode included,
+    and an episode's ``tt`` id belongs to no Plex library's guid space at
+    all. The caller decides what a type means; see ``builders/imdb_lists.py``
+    for why it has to. Like the list root's, the type is not pinned -- a
+    missing one is one entry for the builder to drop, not a raise.
     """
-    entries = await _fetch(
+    return await _fetch(
         http,
         WATCHLIST_QUERY,
         ("predefinedList", "titleListItemSearch"),
         ("title", "id"),
         {"user": user_id},
         f"the public IMDb watchlist of {user_id!r}",
+        type_path=("title", "titleType", "id"),
     )
-    return [value for value, _ in entries]
 
 
 async def fetch_search(
