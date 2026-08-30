@@ -280,7 +280,7 @@ async def test_a_dead_source_leaves_its_collection_alone_and_the_pass_goes_on(
         "created 'Healthy' with 1 item(s)",
         # Row 49: a test builder belongs to no catalog category, so its
         # collections land in the operator group -- last in the canonical
-        # order, section 100. Every collection this service manages derives one
+        # order, section 110. Every collection this service manages derives one
         # now, which is why this line appears throughout this file.
         "set the sort title of 'Healthy' to '!110_Healthy'",
     ]

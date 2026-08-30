@@ -9,7 +9,7 @@ mistake this file exists to prevent.
 
     Comfortaa-Medium.ttf
     sha256 992f89f3c26be37ccebf784b294d36f40b96ed96ad9a3cc1396f4d389fc69d0c
-    108 728 bytes, fetched 2026-08-30 from
+    111 316 bytes, fetched 2026-08-30 from
     https://raw.githubusercontent.com/Kometa-Team/Defaults-Image-Creation/a9e02e9d001f9516a48f2706646b66170c80c32e/create_defaults/fonts/Comfortaa-Medium.ttf
 
     OFL.txt

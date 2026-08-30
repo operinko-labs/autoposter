@@ -127,7 +127,8 @@ async def _base_layer(config, http, style: str) -> Path | None:
     verification render used (``5b0413792e4e60f384740d781a84652cf0976e31``,
     152119 B for ``orig``; checked 2026-08-30, task-1 review), and all 22 style
     PNGs are present -- so the RMSE result transfers to this fetch path
-    unchanged and nothing here needs re-measuring.
+    unchanged. That is validated as an image, not pinned by digest -- a
+    reworked upstream layer is picked up only on a cache loss.
     """
     target = _cache_root(config) / "@base" / f"{style}.png"
     if target.is_file():
