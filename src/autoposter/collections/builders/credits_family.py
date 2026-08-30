@@ -113,7 +113,7 @@ _KINDS_FOR_TYPE = {
 # ``Exception`` so a genuine bug in THIS module still reaches the engine as a
 # failure instead of being reported to the operator as something about their
 # family. Copied rather than shared because the two families' per-key paths are
-# free to diverge; the eight classes come from the same four modules
+# free to diverge; the eight classes come from the same five modules
 # ``dynamic.py`` imports them from. ``parse_filters`` raises a bare
 # ``ValueError`` and is deliberately NOT here -- see ``apply``.
 _REFUSALS = (
@@ -371,7 +371,8 @@ class CreditsFamilyBuilder:
         if not titled:
             return actions + [
                 "%r built nothing: every eligible %s was excluded. Widen "
-                "`include:`, or remove the definition"
+                "`include:`, raise `limit:` (a person ranked below it never "
+                "reached the exclusions), or remove the definition"
                 % (definition.title, params.type)
             ]
         if len(titled) > params.max_collections:
@@ -383,6 +384,16 @@ class CreditsFamilyBuilder:
                 % (definition.title, len(titled), ctx.library,
                    params.max_collections, len(titled))
             ]
+
+        # The narrowing between the cap and the built family, reported rather
+        # than left to be inferred from a short list (review F13).
+        if len(titled) < len(capped):
+            actions.append(
+                "%r: %d of the %d most-credited %s(s) built no collection "
+                "(`include:`/`exclude:`/`addons:`)"
+                % (definition.title, len(capped) - len(titled), len(capped),
+                   params.type)
+            )
 
         # The sweep's record -- seeded with every derived title BEFORE any
         # reconcile, ``dynamic.py``'s law: a write failure is not narrowing.

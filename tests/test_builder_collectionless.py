@@ -1,7 +1,7 @@
 """plex_collectionless: membership from the batched read, never a reload."""
 import pytest
 
-from autoposter.collections.builders.base import BuilderContext
+from autoposter.collections.builders.base import REGISTRY, BuilderContext
 from autoposter.collections.builders.collectionless import (
     CollectionlessRefused, PlexCollectionlessBuilder,
 )
@@ -92,3 +92,10 @@ async def test_no_library_accessor_raises_by_name():
     ctx = BuilderContext(library="Movies", library_type="Movie")
     with pytest.raises(PlexLibraryUnavailable):
         await PlexCollectionlessBuilder().build(ctx)
+
+
+def test_plex_collectionless_is_registered_under_its_own_name():
+    # Every test above builds the class directly, so deleting the module's
+    # ``register(...)`` line stays green. The sibling's own precedent:
+    # test_builder_plex_trivial.py::test_plex_all_is_registered_under_its_own_name.
+    assert REGISTRY["plex_collectionless"].type_name == "plex_collectionless"

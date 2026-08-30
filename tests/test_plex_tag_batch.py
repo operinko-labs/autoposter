@@ -8,7 +8,7 @@ import math
 
 import pytest
 
-from autoposter.plex.client import ItemTags, fetch_tag_index
+from autoposter.plex.client import TAG_BATCH_CHUNK, ItemTags, fetch_tag_index
 
 
 class FakeTag:
@@ -63,6 +63,13 @@ class FakeSection:
 
 def _items(n):
     return [FakeItem(str(k), genres=("Action", "Crime")) for k in range(1, n + 1)]
+
+
+def test_the_default_chunk_is_the_probed_two_hundred():
+    # The ceil pin below passes chunk_size explicitly, so the DEFAULT was free
+    # to drift (TAG_BATCH_CHUNK = 1 ships green). Probe decision D2 chose 200:
+    # 8-12 ms/item at 50-200 against 15.5 at 400 and 36.7 at 1200.
+    assert TAG_BATCH_CHUNK == 200
 
 
 def test_call_count_is_ceil_n_over_chunk_exactly():

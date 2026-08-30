@@ -12,7 +12,8 @@ The enumeration is ``facts_enumeration.enumerate_values``' GROUP BY shape --
 it returns (value, count), which is the depth/limit semantics row 194 needs
 and which no ``listFilterChoices`` call can answer (values, never counts).
 
-**No count here means a complete cast.** The phase-B probe measured a
+**No count here is a complete cast, and none may ever be read as one.** The
+phase-B probe measured a
 server-side cap of **200 ``Role`` children per item**
 (docs/research/plex-batch-probe/README.md, D1) -- 54 of 200 sampled shows and
 2 of 200 movies return exactly 200 and none more, and a single-key fetch of
@@ -43,15 +44,16 @@ __all__ = [
     "scan_library_credits",
 ]
 
-CREDIT_KINDS = ("actor", "director", "writer", "producer")
-
-# credit kind -> the CreditTags field carrying it.
+# credit kind -> the CreditTags field carrying it. ONE source of truth: the
+# public tuple is derived from it rather than repeated beside it.
 _FIELD_FOR_KIND = {
     "actor": "actors",
     "director": "directors",
     "writer": "writers",
     "producer": "producers",
 }
+
+CREDIT_KINDS = tuple(_FIELD_FOR_KIND)
 
 # Library-type spelling -> media_items.kind rows, facts_enumeration's own map:
 # a Show library's credits are the SHOWS' (episode credits are not scanned).

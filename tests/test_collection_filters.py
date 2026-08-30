@@ -345,7 +345,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     assert BY_NAME["duration"].search_kinds == ("movie",)
 
 
-def test_every_row_is_searchable_and_twentytwo_are_filterable():
+def test_every_row_is_searchable_and_twentythree_are_filterable():
     """The set arithmetic, pinned so it cannot rot silently.
 
     Kometa's search vocabulary is 55 non-music attributes and its filter

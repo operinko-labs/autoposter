@@ -5,22 +5,24 @@ memoised too (BuilderContext.run_cache's own law), and so is a fetched-but-
 absent key, so a gone item costs one fetch per pass, not one per definition.
 """
 import pytest
+import requests
 from plexapi.exceptions import BadRequest
 
 from autoposter.collections.enrichment import EnrichmentUnavailable, ensure_tags
 
 
 class FakeSection:
-    def __init__(self, items, fail=False):
+    def __init__(self, items, fail=None):
         self._items = items
+        # ``fail`` is the exception CLASS to raise, so both arms of the
+        # narrowed catch can be driven through the same section.
         self.fail = fail
         self.calls = []
 
     def fetchItems(self, ekey):
         self.calls.append(list(ekey))
-        if self.fail:
-            # D2's measured refusal shape: a PlexApiException subclass.
-            raise BadRequest("boom")
+        if self.fail is not None:
+            raise self.fail("boom")
         return [self._items[k] for k in ekey if k in self._items]
 
 
@@ -55,12 +57,17 @@ async def test_fully_cached_ask_makes_no_call_at_all():
     assert len(section.calls) == 1
 
 
-async def test_failure_is_memoised_for_the_pass():
-    section = FakeSection({}, fail=True)
+# Both arms of ``enrichment.py:73``'s narrowed catch: ``BadRequest`` is D2's
+# measured refusal shape (a ``PlexApiException`` subclass); ``ConnectionError``
+# is the dropped connection that comes off plexapi's bare ``requests`` call
+# unwrapped, which had no test of its own.
+@pytest.mark.parametrize("failure", [BadRequest, requests.ConnectionError])
+async def test_failure_is_memoised_for_the_pass(failure):
+    section = FakeSection({}, fail=failure)
     run_cache = {}
     with pytest.raises(EnrichmentUnavailable) as first:
         await ensure_tags(section, run_cache, ["1"])
-    assert "BadRequest" in str(first.value) and "boom" not in str(first.value)
+    assert failure.__name__ in str(first.value) and "boom" not in str(first.value)
     with pytest.raises(EnrichmentUnavailable):
         await ensure_tags(section, run_cache, ["1"])
     assert len(section.calls) == 1, "a dead server is one fetch per pass, not one per definition"
@@ -77,7 +84,7 @@ async def test_a_fully_cached_ask_survives_an_earlier_failure_in_the_pass():
     run_cache = {}
     await ensure_tags(section, run_cache, ["1"])
 
-    section.fail = True
+    section.fail = BadRequest
     with pytest.raises(EnrichmentUnavailable):
         await ensure_tags(section, run_cache, ["2"])
 
