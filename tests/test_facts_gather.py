@@ -290,8 +290,14 @@ async def test_updated_at_advances_on_second_persist_facts(session_factory):
         row2 = (await s.execute(select(ItemFacts).where(ItemFacts.item_id == media_id))).scalar_one()
         updated_at_2 = row2.updated_at
 
-    # Verify updated_at advanced and created_at stayed the same
-    assert updated_at_2 > updated_at_1
+    # The contract is that the conflict path RE-STAMPS updated_at (onupdate=
+    # never fires on INSERT ... ON CONFLICT DO UPDATE); equality is the one
+    # shape the regression produces -- drop `set_["updated_at"]` from
+    # persist_facts and the two readings are byte-identical. Strict `>`
+    # additionally assumed the DB wall clock is monotonic across the sleep, and
+    # the hardening-sweep loop reproduced a backwards step (row 195's close has
+    # the numbers) -- an environment fact, not an upsert defect.
+    assert updated_at_2 != updated_at_1
     assert row2.critic_rating == pytest.approx(5.1)
 
 
@@ -324,8 +330,13 @@ async def test_fetched_at_advances_on_second_persist_facts(session_factory):
         row2 = (await s.execute(select(ItemFacts).where(ItemFacts.item_id == media_id))).scalar_one()
         fetched_at_2 = row2.fetched_at
 
-    # Verify fetched_at advanced
-    assert fetched_at_2 > fetched_at_1
+    # Same shape as updated_at above: the contract is the RE-STAMP, and equality
+    # is the one shape the regression produces -- drop `set_["fetched_at"]` from
+    # persist_facts and the two readings are byte-identical. Strict `>` also
+    # assumed a monotonic DB wall clock across the sleep, which this environment
+    # violates (~2.7 s backwards step every ~30 s; row 195's close has the
+    # numbers).
+    assert fetched_at_2 != fetched_at_1
     assert row2.audience_rating == pytest.approx(7.5)
 
 
