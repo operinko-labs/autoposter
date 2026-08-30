@@ -518,6 +518,14 @@ def _with_tmdb_spellings(addons: dict[str, list[str]]) -> dict[str, list[str]]:
     """``addons``, plus TMDb's spelling beside each aliased member it carries.
 
     A copy: the transcription this is handed is never mutated.
+
+    An alias whose upstream spelling appears in no group is added nowhere, and
+    that silence is the DESIGNED path rather than a missing `else`: the name
+    then matches no member and falls to the pack's own leftovers bucket, which
+    is what an unplaced country does here anyway and what the row discloses
+    (docs/research/tmdb-iso-names/README.md section 3). Unreachable today --
+    all ten land in exactly one group, asserted in both directions by
+    `test_the_ten_tmdb_spellings_upstream_misses_land_in_their_own_group`.
     """
     merged = {key: list(members) for key, members in addons.items()}
     for tmdb_name, upstream_name in iso_names.COUNTRY_NAME_ALIASES.items():
