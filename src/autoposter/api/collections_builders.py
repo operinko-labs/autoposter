@@ -62,6 +62,7 @@ from autoposter.collections.service import (
     build_source_clients,
     library_definitions,
 )
+from autoposter.config.overrides import load_overrides_document
 from autoposter.db.models import EventLog, ManagedCollection
 from autoposter.db.models import Session as SessionModel
 
@@ -165,6 +166,60 @@ async def collections_catalog(
         # one language. Effective order, not canonical -- the panel shows
         # the tab as the running config orders it.
         "groups": group_listing(config),
+    }
+
+
+@router.get("/collections/definitions")
+async def collections_definitions(
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """The operator-configured collection definitions, without running anything.
+
+    Row 137's listing: ``collections.definitions`` off the RUNNING config --
+    the same list ``service.library_definitions`` appends after the built-in
+    defaults on every pass -- with no Plex read and no engine run. The
+    Definitions panel's preview stays the only dry run; this is the plain
+    listing it never had.
+
+    ``provenance`` is per entry in shape and uniform in value by construction:
+    the overrides layer replaces a list WHOLESALE (``merge_overrides``), so
+    when the stored overrides document carries ``collections.definitions``
+    every effective entry came through it ("override"), and when it does not,
+    every entry is the mounted file's ("file"). The distinction is what makes
+    the Custom collections panel's writes safe: "override" rows are the
+    panel's to rewrite, and "file" rows must never be copied into the stored
+    document -- copying them would freeze today's file values against every
+    future edit of the YAML (the delta rule ``frontend/src/api/overrides.ts``
+    opens with).
+
+    ``libraries`` is ``collections.libraries`` -- the names the create form
+    offers as scope checkboxes. There is no library-type enum anywhere in a
+    definition; the config speaks names, so the form does too.
+
+    Not behind ``_enabled``, for the catalog's reason: reading config changes
+    nothing, and the panel must render on a replica with no Plex connection.
+    """
+    config = request.app.state.config_holder.current
+    async with request.app.state.session_factory() as session:
+        stored = await load_overrides_document(session)
+    section = stored.get("collections")
+    overridden = isinstance(section, dict) and "definitions" in section
+    provenance = "override" if overridden else "file"
+    return {
+        "libraries": list(config.collections.libraries),
+        "definitions": [
+            {
+                "title": definition.title,
+                "builder": definition.builder,
+                "params": definition.params,
+                "libraries": definition.libraries,
+                "sort": definition.sort,
+                "sync_mode": definition.sync_mode,
+                "provenance": provenance,
+            }
+            for definition in config.collections.definitions
+        ],
     }
 
 
