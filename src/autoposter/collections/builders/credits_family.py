@@ -452,7 +452,11 @@ class CreditsFamilyBuilder:
                     url,
                     ctx.label,
                     # No summary: a family has no single summary to write, and
-                    # the definition's own is refused above.
+                    # the definition's own is refused above. Deliberately
+                    # WITHOUT ``summary_asserted``, exactly as ``dynamic`` does
+                    # it: a definition that cannot carry a summary cannot assert
+                    # the absence of one, so a person's collection keeps
+                    # whatever Plex or an operator put there.
                     summary=None,
                     dry_run=ctx.dry_run,
                     existing=listing,

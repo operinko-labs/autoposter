@@ -138,14 +138,21 @@ class FakeSection:
 
 
 class FakeSummaries:
-    """The TMDB facts client's one method the engine's pull uses."""
+    """The TMDB facts client's one method the engine's pull uses.
 
-    def __init__(self, text="Borrowed from TMDb."):
+    ``raises`` is the outage: ``_summary_for`` contains whatever the client
+    throws and reports the miss, so the failure reaches the reconciler as an
+    unresolved summary rather than as a failed definition."""
+
+    def __init__(self, text="Borrowed from TMDb.", raises=None):
         self.text = text
+        self.raises = raises
         self.asked = []
 
     async def collection_summary(self, collection_id):
         self.asked.append(collection_id)
+        if self.raises is not None:
+            raise self.raises
         return self.text
 
 
@@ -263,6 +270,38 @@ async def test_a_written_summary_still_wins_over_tmdb_summary(session):
     assert any(
         "summary.value=Written" in key for key, _ in created._server.queries
     )
+
+
+async def test_a_failed_tmdb_pull_leaves_the_locked_summary_alone(session):
+    """Row 186's pull and row 187's clear, composed. ``_summary_for`` contains
+    a failed pull by returning the BUILDER's summary -- None for a smart
+    definition, whose ``BuilderResult`` is empty -- alongside a note. That None
+    is not the definition asserting "no summary"; it is the effective summary
+    being unresolvable this pass. Clearing on it would let a transient TMDB
+    outage wipe and unlock the summary the last healthy pass wrote, while the
+    same actions list reported "the summary is unchanged" -- and the next
+    healthy pass would write it back, churning the hash both ways."""
+    existing = FakeCollection("Recent Horror", labels=[LABEL], rating_key="12345")
+    # The healthy state this pass must not destroy: the pulled text, and the
+    # lock every managed summary write leaves behind.
+    existing.summary = "Borrowed from TMDb."
+    existing._real_fields[0].locked = True
+    section = FakeSection(matches=3, existing=[existing])
+    await _managed_row(session, "Movies", "Recent Horror")
+    summaries = FakeSummaries(
+        raises=RuntimeError("https://api.themoviedb.org/3?key=SECRET")
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [_definition(tmdb_summary=603)],
+        _config(), summaries=summaries,
+    )
+
+    assert existing._server.queries == [], "no summary write of any kind"
+    assert existing.summary == "Borrowed from TMDb."
+    assert existing._real_fields[0].locked is True
+    assert any("could not read the TMDB summary" in one for one in run.actions)
+    assert not any("cleared the summary" in one for one in run.actions), run.actions
 
 
 async def test_a_second_pass_writes_nothing(session):

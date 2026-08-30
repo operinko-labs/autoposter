@@ -865,7 +865,12 @@ class DynamicBuilder:
                     ctx.label,
                     # No summary: upstream's dynamic engine writes none either
                     # (its generated config is a template call and a label), and
-                    # a family has no single summary to write.
+                    # a family has no single summary to write. Deliberately
+                    # WITHOUT ``summary_asserted``: this definition refuses both
+                    # ``summary:`` and ``tmdb_summary:`` at config load, so it
+                    # could never have had one to drop, and the only summary a
+                    # generated collection can carry is Plex's own or an
+                    # operator's -- never this service's to clear.
                     summary=None,
                     dry_run=ctx.dry_run,
                     existing=listing,

@@ -182,6 +182,11 @@ class SmartFilterBuilder:
                 url,
                 ctx.label,
                 summary=ctx.summary if ctx.summary is not None else definition.summary,
+                # Carried, never inferred here: only the engine knows whether an
+                # absent summary is this definition asserting it has none (which
+                # licenses the clear) or a ``tmdb_summary:`` that could not be
+                # resolved this pass (which must leave the summary alone).
+                summary_asserted=ctx.summary_asserted,
                 dry_run=ctx.dry_run,
                 # The pass's one listing, not a second one per definition.
                 # Called here rather than at context construction so a

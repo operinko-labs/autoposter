@@ -570,7 +570,9 @@ async def test_a_removed_summary_is_cleared_and_unlocked(session):
     summary edit at all and stored the new hash as current: the operator's
     edit recognised, acted on by nothing, recorded as done. Now it clears:
     empty value, lock released -- the full revert of what this service
-    writes. The gate is the LOCK, the marker every managed write leaves."""
+    writes. The gate is the LOCK, the marker every managed write leaves, and
+    ``summary_asserted`` is the caller saying that the absent summary IS the
+    definition's answer rather than one it could not resolve."""
     existing = FakeCollection(
         TITLE, labels=[LABEL], rating_key="12345", smart=True, summary="Old."
     )
@@ -583,7 +585,8 @@ async def test_a_removed_summary_is_cleared_and_unlocked(session):
     await session.flush()
 
     actions = await reconcile_smart_collection(
-        session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=False,
+        session, section, "Movies", "Movie", TITLE, URL, LABEL,
+        summary_asserted=True, dry_run=False,
     )
 
     keys = [key for key, _ in existing.queries]
@@ -609,11 +612,38 @@ async def test_a_summary_this_service_never_wrote_is_left_alone(session):
     await session.flush()
 
     await reconcile_smart_collection(
-        session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=False,
+        session, section, "Movies", "Movie", TITLE, URL, LABEL,
+        summary_asserted=True, dry_run=False,
     )
 
     assert existing.queries == []
     assert existing.summary == "Theirs."
+
+
+async def test_a_caller_that_asserts_no_summary_clears_nothing(session):
+    """The other gate, and the default. ``summary=None`` on its own means only
+    "nothing to write" -- the family builders pass it because their definitions
+    cannot carry a summary at all, and the engine passes it when a
+    ``tmdb_summary:`` pull could not be resolved. Neither is the definition
+    asserting there is no summary, so neither may revert one."""
+    existing = FakeCollection(
+        TITLE, labels=[LABEL], rating_key="12345", smart=True, summary="Ours, once."
+    )
+    existing._real_fields[0].locked = True
+    section = FakeSection(matches=7, existing=[existing])
+    session.add(ManagedCollection(
+        library="Movies", title=TITLE, kind="smart", plex_rating_key="12345",
+        definition_hash="stale",
+    ))
+    await session.flush()
+
+    actions = await reconcile_smart_collection(
+        session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=False,
+    )
+
+    assert existing.queries == []
+    assert existing.summary == "Ours, once."
+    assert not any("cleared the summary" in action for action in actions)
 
 
 async def test_the_update_action_does_not_claim_the_filter_changed(session):

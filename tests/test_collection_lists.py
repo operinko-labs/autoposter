@@ -357,7 +357,9 @@ async def test_a_matching_but_unlocked_summary_is_still_locked(session):
 async def test_a_removed_summary_is_cleared_on_the_update_path(session):
     """Row 187's list half: ``lists.py`` took the same set-only stance
     (``if summary:``). The hash gate means the clear runs when the
-    definition changed -- here, a member was added and the summary is gone."""
+    definition changed -- here, a member was added and the summary is gone.
+    ``summary_asserted`` is the engine saying that the absence is the
+    definition's answer and not an unresolved pull."""
     existing = FakeCollection(
         "IMDb Top 250", items=[FakeItem("a")],
         summary="The old text.", summary_locked=True,
@@ -366,7 +368,8 @@ async def test_a_removed_summary_is_cleared_on_the_update_path(session):
 
     actions = await reconcile_list_collection(
         session, section, "Movies", "IMDb Top 250",
-        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=False,
+        [FakeItem("a"), FakeItem("b")], LABEL,
+        summary_asserted=True, dry_run=False,
     )
 
     assert len(existing.summary_queries) == 1
@@ -387,11 +390,33 @@ async def test_an_unlocked_summary_is_not_cleared_on_the_update_path(session):
 
     await reconcile_list_collection(
         session, section, "Movies", "IMDb Top 250",
-        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=False,
+        [FakeItem("a"), FakeItem("b")], LABEL,
+        summary_asserted=True, dry_run=False,
     )
 
     assert existing.summary_queries == []
     assert existing.summary == "An operator's own text."
+
+
+async def test_a_caller_that_asserts_no_summary_clears_nothing(session):
+    """The gate in front of the clear, and its default. A caller that passes no
+    summary is not thereby saying there is none: the provider entry points pass
+    none because they have no definition at all, and the engine passes none when
+    a ``tmdb_summary:`` pull failed. A locked summary survives both."""
+    existing = FakeCollection(
+        "IMDb Top 250", items=[FakeItem("a")],
+        summary="Ours, once.", summary_locked=True,
+    )
+    section = FakeSection([existing])
+
+    actions = await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=False,
+    )
+
+    assert existing.summary_queries == []
+    assert existing.summary == "Ours, once."
+    assert not any("cleared the summary" in action for action in actions)
 
 
 async def test_the_sort_mode_is_configurable(session):

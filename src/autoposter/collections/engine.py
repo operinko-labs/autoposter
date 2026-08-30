@@ -390,6 +390,12 @@ async def run_library(
                     library_type=library_type, label=label, config=config,
                     http=http, dry_run=dry_run, definition=definition,
                     summary=smart_summary,
+                    # A note means the pull could not be RESOLVED, and the
+                    # summary above is then ``_summary_for``'s fallback (None
+                    # here: a smart builder's ``BuilderResult`` is empty), not
+                    # the definition asserting it has no summary. Only the
+                    # latter may reach the reconciler's clear.
+                    summary_asserted=summary_note is None,
                     sort_prefix=groups.sort_prefix_for(
                         definition, group_index, group_order
                     ),
@@ -666,6 +672,10 @@ async def _run_one(
         outcome.actions += await reconcile_list_collection(
             session, section, library, definition.title, items, label,
             summary=summary,
+            # As on the smart path above: an action string from ``_summary_for``
+            # means the effective summary is unresolved this pass, so an absent
+            # one asserts nothing and the reconciler must not clear on it.
+            summary_asserted=summary_action is None,
             sort=definition.sort,
             dry_run=dry_run,
             existing=listing(),

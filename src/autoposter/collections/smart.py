@@ -248,6 +248,7 @@ async def reconcile_smart_collection(
     url: str,
     label: str,
     summary: str | None = None,
+    summary_asserted: bool = False,
     dry_run: bool = True,
     existing: dict | None = None,
     adopt: bool = False,
@@ -279,6 +280,23 @@ async def reconcile_smart_collection(
     shared ``apply_collection_settings`` applies. ``summary`` is the definition's
     own; there is no builder-derived one here, because the builder derives no
     membership either.
+
+    ``summary_asserted`` says whether an absent ``summary`` is an ASSERTION --
+    "this definition has no summary" -- rather than merely nothing to write, and
+    it alone licenses the clear below. Two callers must not have it, and the
+    default is off so that neither can acquire it by omission:
+
+    - the engine, when ``_summary_for`` could not RESOLVE the effective summary
+      (no TMDB client, a pull that raised, an overview TMDB does not hold). It
+      falls back to the builder's summary -- always None for a smart definition,
+      whose ``BuilderResult`` is empty -- and returns a note saying so. Clearing
+      on that None would let a transient outage wipe and unlock the summary the
+      last healthy pass wrote, while the same pass reported it unchanged;
+    - the FAMILY builders (``dynamic``, ``credits_family``), which pass
+      ``summary=None`` unconditionally and refuse ``summary:`` and
+      ``tmdb_summary:`` on their definitions at config load. Their definitions
+      could never carry a summary to drop, so the only summary on a generated
+      collection is Plex's own or an operator's.
 
     ``sort_prefix`` is the collection GROUP's sort-title prefix (``"!100_"``),
     resolved engine-side (``collections/groups.py``, roadmap row 49). It is
@@ -383,13 +401,20 @@ async def reconcile_smart_collection(
                     % (title, matched)
                 )
 
-            if summary is not None:
+            # Truthy, matching ``lists.py``'s gate rather than the ``is not
+            # None`` this used to read: an empty summary is not a summary to
+            # write, and with a destructive false arm behind it the two
+            # reconcilers must not disagree about what ``""`` means -- one
+            # writing empty-but-LOCKED where the other clears and unlocks.
+            # Both hashes already fold the value in as ``summary or ""``.
+            if summary:
                 _edit_collection_summary(collection, summary)
-            elif _clear_collection_summary(collection):
+            elif summary_asserted and _clear_collection_summary(collection):
                 # Row 187 (M-B): the summary is in the definition hash, so
                 # deleting ``summary:`` triggers exactly this pass -- which
                 # used to perform no summary edit at all and store the new
-                # hash as done.
+                # hash as done. Only under ``summary_asserted``: see above for
+                # the two callers for whom an absent summary asserts nothing.
                 actions.append("cleared the summary of %r" % title)
             actions += apply_collection_settings(
                 section, collection, settings, label, config

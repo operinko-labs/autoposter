@@ -612,6 +612,35 @@ async def test_an_unchanged_second_pass_writes_nothing(session):
     assert actions == []
 
 
+async def test_a_locked_summary_on_a_family_member_survives_a_definition_change(session):
+    """The same stance ``builders/dynamic.py`` takes, for the same reason: this
+    builder passes ``summary=None`` unconditionally and its definitions refuse
+    ``summary:`` and ``tmdb_summary:`` at load, so that None cannot mean "the
+    definition asserts no summary". A person's collection carries only the
+    summary Plex or an operator put there, and a definition change (here: a new
+    label) must not delete it."""
+    await _seed(session, {"Ann": 3})
+    section = FakeSection(people=("Ann",))
+    definition = _definition(params={"type": "actor", "depth": 1})
+    await REGISTRY["credits_family"].apply(_ctx(session, section, definition))
+    member = section._existing["Ann"]
+    # A hand-edit through Plex's UI: the text, and the lock Plex sets on every
+    # field it writes -- the marker the managed clear reads as "ours".
+    member.summary = "An operator's own text."
+    member._real_fields[0].locked = True
+    before = len(member._server.queries)
+
+    actions = await REGISTRY["credits_family"].apply(_ctx(
+        session, section,
+        _definition(params={"type": "actor", "depth": 1}, labels=["Curated"]),
+    ))
+
+    assert member.summary == "An operator's own text."
+    assert member._real_fields[0].locked is True
+    assert len(member._server.queries) == before, "no summary write"
+    assert not any("cleared the summary" in one for one in actions), actions
+
+
 async def test_the_enumeration_is_this_librarys_and_this_kinds(session):
     """Two containments in one: a person credited only in ANOTHER library is
     not in this family, and a DIRECTOR is not in an actor family. Both are

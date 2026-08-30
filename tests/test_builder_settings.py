@@ -86,14 +86,19 @@ class FailingMoveHub(FakeHub):
 class FakeCollection:
     """``test_builder_knobs.py``'s fake plus the ride-along surface."""
 
-    def __init__(self, title, items=(), labels=(), title_sort=None, mode=-1, hub=None):
+    def __init__(self, title, items=(), labels=(), title_sort=None, mode=-1, hub=None,
+                 summary=None, summary_locked=False):
         self.title = title
         self.ratingKey = "c-" + title
         self._live = list(items)
         self._cache = list(items)
         self._real_labels = [type("L", (), {"tag": t})() for t in labels]
         self._labels = []
-        self.summary = None
+        self.summary = summary
+        # The lock is what marks a summary as this service's own (every managed
+        # write carries ``summary.locked=1``), so it is the gate both the clear
+        # and its refusals read.
+        self._fields = [type("F", (), {"name": "summary", "locked": summary_locked})()]
         self.summary_writes: list[str] = []
         self.titleSort = title_sort
         self.collectionMode = mode
@@ -111,7 +116,7 @@ class FakeCollection:
 
     @property
     def fields(self):
-        return []
+        return self._fields
 
     def reload(self, **kw):
         self._cache = list(self._live)
@@ -893,6 +898,42 @@ async def test_a_collection_tmdb_has_no_summary_for_is_reported(
     )
 
     assert "TMDB has no summary for the collection 'Fresh' names" in actions
+
+
+async def test_a_failed_tmdb_pull_does_not_clear_the_locked_summary(
+    session, registry_entry
+):
+    """The other half of the containment above, since row 187 gave the update
+    path a clear. A failed pull falls back to the builder's summary (None here)
+    and reports the miss -- and that None means "could not be resolved", never
+    "the definition asserts no summary". Clearing on it would wipe and unlock
+    the last healthy pull's text while the same actions list said the summary
+    was unchanged."""
+    registry_entry(_Listing("settings_tmdb_keeps", [("imdb", "tt1")]))
+    live = FakeCollection(
+        "Fresh", labels=[LABEL],
+        summary="The last healthy pull.", summary_locked=True,
+    )
+    section = _one_item_section(existing=[live])
+    summaries = _Summaries(
+        raises=RuntimeError("https://api.themoviedb.org/3?key=SECRET")
+    )
+
+    actions = await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Fresh", builder="settings_tmdb_keeps", tmdb_summary=10,
+        )],
+        summaries=summaries,
+    )
+
+    assert live.summary_writes == [], "no summary write of any kind"
+    assert live.summary == "The last healthy pull."
+    assert (
+        "could not read the TMDB summary for 'Fresh'; the summary is unchanged"
+        in actions
+    )
+    assert not any("cleared the summary" in action for action in actions), actions
 
 
 async def test_an_instance_without_a_tmdb_client_says_so(session, registry_entry):

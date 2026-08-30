@@ -496,6 +496,31 @@ async def test_an_unchanged_second_pass_writes_nothing(session):
     assert actions == []
 
 
+async def test_a_locked_summary_on_a_family_member_survives_a_definition_change(session):
+    """This builder passes ``summary=None`` to the reconciler unconditionally,
+    and its definitions refuse ``summary:`` and ``tmdb_summary:`` at load -- so
+    that None can never mean "the definition asserts no summary". The only
+    summary a generated collection can carry is Plex's own or an operator's,
+    and a definition change (here: a new label) is not a licence to delete it."""
+    section = FakeSection()
+    await REGISTRY["dynamic"].apply(_ctx(session, section, _definition()))
+    member = section._existing["Top Horror movies"]
+    # What Plex's UI leaves behind on a hand-edit: the text, and the lock it
+    # sets on every field it writes -- the same marker the managed clear reads.
+    member.summary = "An operator's own text."
+    member._real_fields[0].locked = True
+    before = len(member._server.queries)
+
+    actions = await REGISTRY["dynamic"].apply(
+        _ctx(session, section, _definition(labels=["Curated"]))
+    )
+
+    assert member.summary == "An operator's own text."
+    assert member._real_fields[0].locked is True
+    assert len(member._server.queries) == before, "no summary write"
+    assert not any("cleared the summary" in one for one in actions), actions
+
+
 async def test_a_dry_run_reports_the_whole_family_and_writes_nothing(session):
     section = FakeSection()
     actions = await REGISTRY["dynamic"].apply(

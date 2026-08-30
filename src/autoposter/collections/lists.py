@@ -170,6 +170,7 @@ async def reconcile_list_collection(
     items: list,
     label: str,
     summary: str | None = None,
+    summary_asserted: bool = False,
     sort: str = "custom",
     dry_run: bool = True,
     existing: dict | None = None,
@@ -203,6 +204,17 @@ async def reconcile_list_collection(
     and carries everything applied *besides* membership -- labels, sort title,
     display mode, hub visibility, member labels. Optional: the direct callers
     that predate definitions pass none and get exactly what they always got.
+
+    ``summary_asserted`` says whether an absent ``summary`` is the definition
+    ASSERTING that there is none, which is what licenses the clear on the update
+    path below. The engine sets it only when ``_summary_for`` RESOLVED the
+    summary: a pull that failed (no TMDB client, an exception, an overview TMDB
+    does not hold) falls back to the builder's summary and returns a note, and
+    clearing on that fallback would wipe and unlock the text the last healthy
+    pass wrote while the same pass reported the summary unchanged. Off by
+    default, so a direct caller with no definition behind it -- the provider
+    entry points, and the tests -- never reverts a summary it knows nothing
+    about. See ``reconcile._clear_collection_summary`` for what the clear does.
 
     ``sort_prefix`` is the collection GROUP's sort-title prefix (``"!010_"``),
     and ``sort_order`` the family's per-member ordering key (``"01"``), both
@@ -321,10 +333,12 @@ async def reconcile_list_collection(
                 if getattr(collection, "summary", None) != summary:
                     actions.append("updated the summary of %r" % title)
                 _edit_collection_summary(collection, summary)
-            elif _clear_collection_summary(collection):
+            elif summary_asserted and _clear_collection_summary(collection):
                 # Row 187: the summary is part of the members hash, so a
                 # deleted ``summary:`` reaches this branch; a definition that
                 # never set one finds the field unlocked and writes nothing.
+                # ``summary_asserted`` is what separates that deletion from an
+                # effective summary that could not be RESOLVED this pass.
                 actions.append("cleared the summary of %r" % title)
 
             adding, removing = member_diff(collection, items, sync_mode)

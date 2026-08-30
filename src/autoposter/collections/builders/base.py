@@ -243,6 +243,13 @@ class SmartContext:
     # transcribed into a builder. A direct caller that leaves it None gets
     # ``definition.summary`` back from the one builder that reads it.
     summary: str | None = None
+    # Whether ``summary`` above is what the definition ASSERTS -- so that None
+    # means "this definition has no summary" rather than "the effective summary
+    # could not be resolved this pass". Only the engine can tell the two apart
+    # (``_summary_for`` returns a note for the second), and only the first
+    # licenses the summary CLEAR in the smart reconciler. Off for a direct
+    # caller, which reverts nothing it did not resolve.
+    summary_asserted: bool = False
     run_cache: dict[str, Any] = field(default_factory=dict)
     listing: Callable[[], dict] | None = None
 
