@@ -165,6 +165,29 @@ async def test_the_listing_reports_override_provenance_when_the_document_carries
     assert [entry["provenance"] for entry in body["definitions"]] == ["override"]
 
 
+async def test_a_corrupt_overrides_row_is_named_rather_than_an_opaque_500(
+    client, app, auth_headers, session_factory
+):
+    """A hand-edited ``config_overrides`` document that is not a JSON object.
+
+    Unreachable through the application (only ``PUT /api/config/overrides``
+    writes the column, and it only ever writes an object), but JSONB will hold
+    a list quite happily for anyone editing the row by hand. ``GET /api/config``
+    already answers that row with a sentence naming what to fix; this listing
+    reads the same document through the same loader and must not answer it with
+    an opaque 500 instead.
+    """
+    async with session_factory() as session:
+        session.add(ConfigOverride(id=OVERRIDES_ROW_ID, document=["not", "an", "object"]))
+        await session.commit()
+    _swap_definitions(app, [A_DEFINITION])
+
+    response = await client.get("/api/collections/definitions", headers=auth_headers)
+
+    assert response.status_code == 500
+    assert "config overrides row is corrupt" in response.json()["detail"]
+
+
 # --- the parse endpoint (T2) ------------------------------------------------
 
 

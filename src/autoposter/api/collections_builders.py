@@ -203,7 +203,17 @@ async def collections_definitions(
     """
     config = request.app.state.config_holder.current
     async with request.app.state.session_factory() as session:
-        stored = await load_overrides_document(session)
+        try:
+            stored = await load_overrides_document(session)
+        except ValueError as exc:
+            # A hand-edited config_overrides row whose document is not a JSON
+            # object. The same answer ``GET /api/config`` gives the same row
+            # (``routes.py``): an operator needs to know what to fix, not an
+            # opaque 500 from an AttributeError three frames down.
+            raise HTTPException(
+                status_code=500,
+                detail="config overrides row is corrupt (not a JSON object); fix or delete it",
+            ) from exc
     section = stored.get("collections")
     overridden = isinstance(section, dict) and "definitions" in section
     provenance = "override" if overridden else "file"
