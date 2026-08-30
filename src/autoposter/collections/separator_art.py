@@ -32,7 +32,7 @@ view:
 - ``compositor._caption_group`` emits ``-trim +repage -extent``; upstream emits
   ``-trim -extent`` with no ``+repage``. That divergence was MEASURED rather
   than assumed harmless (``.superpowers/run-pdiv-t2-repage.log``): the two
-  argvs produce byte-identical output here, RMSE 0 against each other and
+  argvs produce pixel-identical output here, RMSE 0 against each other and
   0.000158 against upstream's shipped file. So the shared builder is reused
   rather than forked.
 
