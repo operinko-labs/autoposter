@@ -113,19 +113,41 @@ def count_matches(section, url: str) -> int:
     functions rather than one with a flag, so a reader of either call site
     cannot mistake it for the other.
 
+    A container-size-0 read, not a fetch (roadmap row 198, closed by the
+    phase-B probe: Plex answers the same search URL with a ``totalSize``
+    attrib when asked for zero items -- ``docs/research/plex-batch-probe/
+    README.md``, probe e, measured ``totalSize='17' size='0' children=0``
+    against a full fetch of 17). Validating a filter that matches four
+    thousand items no longer pulls four thousand items to learn "more than
+    none"; ``require_matches`` and the dynamic engine's ``minimum_items``
+    both inherit the cheap read through this one function.
+
     The catch is blanket and class-name-only, which is ``plex_search.build``'s
     own reasoning (:342-359): any failure of this call ends the caller's
     decision the same way, and nothing is memoised here that a coding bug could
     be mistaken for a library fact. It lives on THIS half so both callers
-    inherit it.
+    inherit it -- and a response with no ``totalSize`` is a failure too, never
+    a zero: zero MATCHES is an answer, an unreadable count is not, and reading
+    one as the other would refuse a perfectly good filter at
+    ``require_matches``.
+
+    ``section._server`` joins the plexapi internals this module already
+    depends on; it is pinned in ``tests/test_plexapi_collection_contract.py``
+    with ``_uriRoot`` and the session, for the same reason.
     """
     try:
-        items = section.fetchItems("/library/sections/%s/all%s" % (section.key, url))
+        data = section._server.query(
+            "/library/sections/%s/all%s" % (section.key, url),
+            headers={"X-Plex-Container-Start": "0", "X-Plex-Container-Size": "0"},
+        )
+        total = data.attrib.get("totalSize")
+        if total is None:
+            raise ValueError("no totalSize attrib on the container response")
+        return int(total)
     except Exception as error:  # class name only, never the message
         raise SmartCollectionUnavailable(
             "Plex would not answer this smart filter: %s" % type(error).__name__
         ) from None
-    return len(items)
 
 
 def require_matches(section, url: str) -> int:

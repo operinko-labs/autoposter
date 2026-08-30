@@ -724,9 +724,17 @@ class _EnumeratingSection(FakeSection):
     def __init__(self, choice_title, **kwargs):
         super().__init__(**kwargs)
         self._choice_title = choice_title
+        # ``query`` answers two callers: the raw POST/PUT, which names a
+        # ``method`` and wants nothing back, and ``smart.count_matches``'s
+        # container-size-0 count (roadmap row 198), which names none and reads
+        # ``totalSize`` off the container. One item matches, matching
+        # ``fetchItems`` below.
         self._server = type("Server", (), {
             "_uriRoot": lambda self: "server://fake/com.plexapp.plugins.library",
-            "query": lambda self, path, method=None: None,
+            "query": lambda self, path, method=None, headers=None, **kw: (
+                None if method is not None
+                else SimpleNamespace(attrib={"totalSize": "1"})
+            ),
             "_session": type("Sess", (), {"put": "PUT", "post": "POST"})(),
         })()
 

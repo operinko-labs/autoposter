@@ -48,14 +48,26 @@ class FakeItem:
 
 
 class FakeServer:
-    def __init__(self):
+    """``queries`` holds WRITES. A write always names a ``method``; the only
+    read through here is ``smart.count_matches``'s container-size-0 count
+    (roadmap row 198), which names none -- answered from the section's own
+    ``fetchItems`` so the count and the fetch cannot disagree."""
+
+    def __init__(self, section=None):
         self.queries = []
+        self.reads = []
+        self._section = section
         self._session = type("Sess", (), {"post": "POST", "put": "PUT"})()
 
     def _uriRoot(self):
         return "server://abc123/com.plexapp.plugins.library"
 
-    def query(self, key, method=None, **kwargs):
+    def query(self, key, method=None, headers=None, **kwargs):
+        if method is None:
+            self.reads.append((key, headers))
+            return SimpleNamespace(
+                attrib={"totalSize": str(len(self._section.fetchItems(key)))}
+            )
         self.queries.append((key, method))
 
 
@@ -104,7 +116,7 @@ class FakeCollection:
 class FakeSection:
     def __init__(self, matches=3, existing=()):
         self.key = SECTION_KEY
-        self._server = FakeServer()
+        self._server = FakeServer(self)
         self._existing = {c.title: c for c in existing}
         self._matches = matches
         self.listings = 0

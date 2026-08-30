@@ -53,22 +53,41 @@ URL_15 = "?type=1&sort=titleSort&genre!=1138&and=1&studio!%3D=A24&and=1&studio%3
 KOMETA_POST_15 = "/library/collections?sectionId=2&smart=1&title=Oracle%20Collection&type=1&uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D1%26sort%3DtitleSort%26genre%21%3D1138%26and%3D1%26studio%21%253D%3DA24%26and%3D1%26studio%253E%3DPictures%2520%2526%2520Co%26and%3D1%26label%3D3%26and%3D1%26collection%3D77%26and%3D1%26viewCount%253E%253E%3D3%26and%3D1%26viewCount%253C%3D10"
 
 
-class FakeItem:
-    def __init__(self, rating_key):
-        self.ratingKey = rating_key
+class FakeContainer:
+    """What ``PlexServer.query`` hands back -- an ElementTree element. The
+    container-size-0 read carries ``totalSize`` in its attribs and no children
+    at all, which is what the probe measured (``docs/research/plex-batch-probe/
+    README.md``, probe e: ``totalSize='17' size='0' children=0``)."""
+
+    def __init__(self, attrib):
+        self.attrib = attrib
 
 
 class FakeServer:
-    """``section._server``: the three internals the raw POST/PUT reach for."""
+    """``section._server``: the internals the raw POST/PUT and the counting
+    read reach for.
 
-    def __init__(self):
+    ``queries`` holds WRITES only. A write always names a ``method``, and the
+    counting read never does, so the absence of one is what tells the two
+    apart -- which keeps the "nothing may be written" assertions below meaning
+    what they say now that a read goes through this same method.
+    """
+
+    def __init__(self, matches=0):
         self.queries = []
+        self.reads = []
+        self._matches = matches
         self._session = type("Sess", (), {"post": "POST", "put": "PUT"})()
 
     def _uriRoot(self):
         return "server://%s/com.plexapp.plugins.library" % MACHINE_IDENTIFIER
 
-    def query(self, key, method=None, **kwargs):
+    def query(self, key, method=None, headers=None, **kwargs):
+        if method is None:
+            self.reads.append((key, headers))
+            if isinstance(self._matches, Exception):
+                raise self._matches
+            return FakeContainer({"totalSize": str(self._matches), "size": "0"})
         self.queries.append((key, method))
 
 
@@ -138,10 +157,9 @@ class FakeCollection:
 class FakeSection:
     def __init__(self, matches=1, existing=(), key=SECTION_KEY):
         self.key = key
-        self._server = FakeServer()
+        self._server = FakeServer(matches)
         self._existing = {c.title: c for c in existing}
         self._matches = matches
-        self.fetched = []
         self.listings = 0
 
     def collections(self, **kw):
@@ -156,10 +174,10 @@ class FakeSection:
         return self._existing[title]
 
     def fetchItems(self, path, **kw):
-        self.fetched.append(path)
-        if isinstance(self._matches, Exception):
-            raise self._matches
-        return [FakeItem(str(i)) for i in range(self._matches)]
+        """Poisoned. Counting a filter's matches is a container-size-0 read,
+        not a fetch (roadmap row 198) -- nothing in this reconciler may pull
+        four thousand items across the wire to learn "more than none"."""
+        raise AssertionError("count_matches must not materialise the items")
 
 
 async def _row(session, library, title):
@@ -398,6 +416,38 @@ async def test_the_match_probe_wraps_a_plex_failure_by_class_name_only(session):
     assert "X-Plex-Token" not in str(caught.value)
 
 
+def test_counting_matches_reads_totalsize_at_container_size_zero():
+    """Roadmap row 198, closed by the phase-B probe (``docs/research/
+    plex-batch-probe/README.md``, probe e). Validating a filter that matches
+    four thousand items used to pull four thousand items across the wire to
+    learn "more than none"; Plex answers the same search URL with a
+    ``totalSize`` attrib and zero children when asked for a container of size
+    zero, so the count costs one tiny GET. ``FakeSection.fetchItems`` is
+    poisoned, which is what makes "never materialises them" an assertion here
+    rather than a claim."""
+    section = FakeSection(matches=4123)
+    assert count_matches(section, "?type=1&genre=1138") == 4123
+    path, headers = section._server.reads[0]
+    assert path == "/library/sections/2/all?type=1&genre=1138"
+    assert headers == {"X-Plex-Container-Start": "0", "X-Plex-Container-Size": "0"}
+
+
+def test_a_container_with_no_totalsize_is_a_failure_and_not_a_zero():
+    """Zero MATCHES is an answer; an unreadable count is not. A response
+    without the attrib would otherwise read as "this filter matches nothing"
+    and refuse a perfectly good smart collection at ``require_matches`` -- so
+    the missing attrib raises, and the caller learns Plex would not answer."""
+
+    class Silent(FakeSection):
+        def __init__(self):
+            super().__init__(matches=0)
+            self._server.query = lambda *a, **kw: FakeContainer({"size": "0"})
+
+    with pytest.raises(SmartCollectionUnavailable) as caught:
+        count_matches(Silent(), "?type=1&genre=1138")
+    assert "ValueError" in str(caught.value)
+
+
 def test_counting_matches_does_not_refuse_at_zero():
     """``require_matches`` refuses at zero because a permanently-empty smart
     collection is not a collection. A per-key MINIMUM asks a different question
@@ -427,7 +477,9 @@ async def test_a_dry_run_probes_but_writes_nothing(session):
     actions = await reconcile_smart_collection(
         session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=True,
     )
-    assert section.fetched == ["/library/sections/2/all" + URL]
+    assert [path for path, _ in section._server.reads] == [
+        "/library/sections/2/all" + URL
+    ]
     assert section._server.queries == []
     assert any("would create" in action and "3" in action for action in actions)
     assert await _row(session, "Movies", TITLE) is None
@@ -472,7 +524,7 @@ async def test_an_unchanged_definition_writes_nothing_and_probes_nothing(session
         session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=False,
     )
     assert actions == []
-    assert section.fetched == []
+    assert section._server.reads == []
     assert section._server.queries == []
 
 

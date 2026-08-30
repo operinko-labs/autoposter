@@ -10,6 +10,7 @@ managed row AND no protected label AND ``delete_unconfigured`` AND
 left standing.
 """
 import io
+from types import SimpleNamespace
 
 import httpx
 from PIL import Image
@@ -56,14 +57,26 @@ class FakeField:
 
 
 class FakeServer:
-    def __init__(self):
+    """``queries`` holds WRITES. A write always names a ``method``; the only
+    read through here is ``smart.count_matches``'s container-size-0 count
+    (roadmap row 198), which names none -- answered from the section's own
+    ``fetchItems`` so the count and the fetch cannot disagree."""
+
+    def __init__(self, section=None):
         self.queries = []
+        self.reads = []
+        self._section = section
         self._session = type("S", (), {"post": "POST", "put": "PUT"})()
 
     def _uriRoot(self):
         return "server://FAKE/com.plexapp.plugins.library"
 
-    def query(self, path, method=None):
+    def query(self, path, method=None, headers=None, **kwargs):
+        if method is None:
+            self.reads.append((path, headers))
+            return SimpleNamespace(
+                attrib={"totalSize": str(len(self._section.fetchItems(path)))}
+            )
         self.queries.append((path, method))
 
 
@@ -120,7 +133,7 @@ class FakeCollection:
 class FakeSection:
     def __init__(self, collections=()):
         self.key = 42
-        self._server = FakeServer()
+        self._server = FakeServer(self)
         self._collections = {c.title: c for c in collections}
         self.created = []
 

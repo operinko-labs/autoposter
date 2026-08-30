@@ -20,6 +20,8 @@ returns a FLOOR, not a census: the phase-B probe measured a server-side cap of
 are what the cache holds, which is the only thing this builder can be right
 about.
 """
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import select
 
@@ -50,14 +52,27 @@ class FakeItem:
 
 
 class FakeServer:
-    def __init__(self):
+    """``queries`` holds WRITES. A write always names a ``method``; the only
+    read through here is ``smart.count_matches``'s container-size-0 count
+    (roadmap row 198), which names none -- answered from the section's own
+    ``fetchItems`` so the count and the fetch cannot disagree, and so a
+    person Plex cannot resolve still refuses the same way."""
+
+    def __init__(self, section=None):
         self.queries = []
+        self.reads = []
+        self._section = section
         self._session = type("Sess", (), {"post": "POST", "put": "PUT"})()
 
     def _uriRoot(self):
         return "server://abc123/com.plexapp.plugins.library"
 
-    def query(self, key, method=None, **kwargs):
+    def query(self, key, method=None, headers=None, **kwargs):
+        if method is None:
+            self.reads.append((key, headers))
+            return SimpleNamespace(
+                attrib={"totalSize": str(len(self._section.fetchItems(key)))}
+            )
         self.queries.append((key, method))
 
 
@@ -114,7 +129,7 @@ class FakeSection:
                  matches_nothing=()):
         self.key = SECTION_KEY
         self.type = section_type
-        self._server = FakeServer()
+        self._server = FakeServer(self)
         self._existing = {}
         # The key is deliberately NOT the name: a resolver that returned the
         # written word unchanged would pass every assertion below if they were

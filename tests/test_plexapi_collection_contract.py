@@ -10,6 +10,7 @@ import inspect
 import pytest
 import requests
 from plexapi import utils
+from plexapi.base import PlexObject
 from plexapi.collection import Collection
 from plexapi.library import LibrarySection
 from plexapi.server import PlexServer
@@ -191,6 +192,23 @@ def test_plex_server_exposes_the_requests_session_the_post_is_issued_through():
     source = inspect.getsource(PlexServer.__init__)
     assert "self._session = session or requests.Session()" in source
     assert callable(requests.Session().post)
+
+
+def test_a_library_section_carries_the_server_the_counting_read_goes_through():
+    """``smart.count_matches`` reaches ``section._server.query(path,
+    headers=...)`` for the container-size-0 count (roadmap row 198). Two
+    private internals in one call: the attribute a ``LibrarySection`` carries
+    its server on, and ``query``'s ``headers`` parameter -- pinned here beside
+    ``_uriRoot`` for the same reason, since the fakes stand in for both."""
+    assert "server" in inspect.signature(LibrarySection.__init__).parameters
+    source = inspect.getsource(PlexObject.__init__)
+    assert "self._server = server" in source
+    params = inspect.signature(PlexServer.query).parameters
+    assert "headers" in params
+    query_source = inspect.getsource(PlexServer.query)
+    assert "headers=headers" in query_source, (
+        "query must still forward headers to the request it issues"
+    )
 
 
 def test_join_args_url_encodes_a_dict_into_a_query_string():
