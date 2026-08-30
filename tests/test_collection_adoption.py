@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from autoposter.collections.lists import _members_hash, reconcile_list_collection
 from autoposter.collections.reconcile import (
+    adoptable_labels,
     claim_ownership,
     has_label,
     load_labels,
@@ -278,3 +279,102 @@ async def test_lists_dry_run_reports_would_adopt_and_claims_nothing(session):
     )
     assert LABEL not in {label.tag for label in theirs.labels}
     assert any("would adopt" in a.lower() for a in actions)
+
+
+# --- Label CASE: Plex canonicalises it, so every reader folds both sides ---
+#
+# Measured against the live server on 2026-08-30 (recorded in
+# ``docs/superpowers/specs/2026-08-22-full-parity-roadmap.md`` row 135): the
+# Movies library held exactly ONE ownership tag, ``'Autoposter'``, tagID
+# 214239, and ``section.collections(label=...)`` returned the same 99
+# collections for ``autoposter``, ``Autoposter`` and ``AUTOPOSTER``. The
+# service itself had written that tag, from a config that said ``autoposter``.
+
+
+def test_our_own_label_is_recognised_whatever_case_plex_stored_it_in():
+    """THE production failure. Every collection this service had created read
+    as FOREIGN, so one pass wrote zero sort titles and reported 103 ownership
+    conflicts against its own work."""
+    assert has_label(_loaded("Action Movies", ["Autoposter"]), "autoposter") is True
+    assert has_label(_loaded("Action Movies", ["autoposter"]), "AUTOPOSTER") is True
+    assert has_label(_loaded("Action Movies", ["AutoPoster"]), "autoPOSTER") is True
+
+
+def test_folding_does_not_make_every_label_ours():
+    assert has_label(_loaded("Deleted Soon", ["Kometa"]), "autoposter") is False
+
+
+def test_a_prior_tool_label_is_matched_case_insensitively():
+    """The same hazard pointing the other way: the server-side filter that
+    SELECTED the candidate matched case-insensitively, so a Python check that
+    did not would drop an adoption the operator had asked for."""
+    assert prior_tool_label(_loaded("Age 17+ Movies", ["Kometa"]), ["kometa"]) == "Kometa"
+
+
+def test_a_matched_prior_label_is_returned_as_the_server_spells_it():
+    """``claim_ownership`` hands this straight to ``removeLabel``, and the
+    action string names it to the operator -- both want the tag that is
+    actually on the collection, not the config's spelling of it."""
+    assert prior_tool_label(_loaded("Age 17+ Movies", ["KOMETA"]), ["kometa"]) == "KOMETA"
+
+
+def test_a_protected_label_is_matched_case_insensitively():
+    collection = _loaded("Deleted Soon", ["Collection Managed By Maintainerr"])
+    assert protected_label(collection, ["collection managed by maintainerr"]) == (
+        "Collection Managed By Maintainerr"
+    )
+
+
+async def test_a_case_variant_of_our_label_reconciles_instead_of_conflicting(session):
+    """End to end through the real collision branch: the shipped config said
+    ``autoposter``, the server says ``Autoposter``, and the collection has to
+    reconcile rather than be refused as somebody else's."""
+    ours = SmartCollection("Age 17+ Movies", labels=["Autoposter"])
+    section = SmartSection({"R", "17"}, existing=[ours])
+    actions = await reconcile_content_ratings(
+        session, section, "Movies", "Movie", "autoposter", dry_run=False, adopt=False,
+    )
+    assert not any("conflict" in one.lower() for one in actions), actions
+    assert any(
+        one["key"].startswith("/library/collections/%s/items?" % ours.ratingKey)
+        for one in section.queries
+    ), section.queries
+
+
+# --- The self-adoption guard ---
+
+
+def test_an_adopt_from_entry_that_is_our_own_label_is_dropped(caplog):
+    """With both sides folded, an ``adopt_from`` entry spelled ``autoposter``
+    against ``ownership_label='Autoposter'`` names OUR OWN label as a prior
+    tool's. The live config held exactly that pair."""
+    with caplog.at_level("WARNING"):
+        assert adoptable_labels(["Kometa", "autoposter"], "Autoposter") == ["Kometa"]
+    assert any("autoposter" in record.getMessage() for record in caplog.records), (
+        caplog.records
+    )
+
+
+def test_adopt_from_is_otherwise_left_exactly_as_configured(caplog):
+    with caplog.at_level("WARNING"):
+        assert adoptable_labels(["Kometa", "Plex Meta Manager"], "Autoposter") == [
+            "Kometa", "Plex Meta Manager",
+        ]
+    assert caplog.records == []
+
+
+def test_a_self_adopting_config_never_claims_our_own_collection():
+    """The consequence guarded against: ``claim_ownership`` under
+    ``adopt_removes_prior_label`` would REMOVE the label saying the collection
+    is ours. ``has_label``'s early return in ``resolve_collision`` is the first
+    thing that stops it and ``adoptable_labels`` is the second -- this pins
+    both, because either one alone leaves the write one edit away."""
+    ours = FakeCollection("Age 17+ Movies", labels=["Autoposter"])
+
+    ok, message = resolve_collision(
+        ours, "Autoposter", adopt=True, adopt_from=["Kometa", "autoposter"],
+        remove_prior=True, dry_run=False,
+    )
+
+    assert (ok, message) == (True, None)
+    assert ours.removed == [], "our own ownership label was stripped"

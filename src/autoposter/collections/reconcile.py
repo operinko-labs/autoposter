@@ -113,23 +113,60 @@ def load_labels(collection) -> None:
     collection.reload()
 
 
+def _folded_labels(collection) -> dict[str, str]:
+    """``{casefolded tag: the tag as the server spells it}``.
+
+    The one place the three readers below agree on what a label match IS, and
+    they all fold because **Plex canonicalises label case**. Measured against
+    the live server on 2026-08-30 (recorded on roadmap row 135): the Movies
+    library held exactly ONE ownership tag, ``'Autoposter'`` -- tagID 214239 --
+    and ``section.collections(label=...)`` returned the same 99 collections
+    when queried for ``autoposter``, ``Autoposter`` and ``AUTOPOSTER``. The tag
+    had been written by this service, from a config that said ``autoposter``.
+
+    So an exact compare here was asymmetric with the server on both sides. Our
+    own collections read as FOREIGN -- one production pass wrote zero sort
+    titles and logged 103 ownership conflicts against its own work -- and, in
+    the other direction, a candidate the server-side filter had already
+    selected for an ``adopt_from`` or ``protect_labels`` entry failed to match
+    in Python and was silently passed over.
+
+    ``builders/arr.py:187`` folds an operator-typed label against a service's
+    stored one for the same reason and in the same way; this is that precedent
+    applied to Plex. Value, not key, is what is returned: ``claim_ownership``
+    hands a matched label straight to ``removeLabel`` and the action strings
+    name it to the operator, and both want the tag actually on the collection
+    rather than the config's spelling of it. Later duplicates cannot occur --
+    Plex holds one tag per case-folded name, which is the whole finding.
+    """
+    return {
+        tag.tag.casefold(): tag.tag
+        for tag in (getattr(collection, "labels", None) or [])
+    }
+
+
 def has_label(collection, label: str) -> bool:
-    """Pure reader -- ``load_labels`` must have been called on ``collection``."""
-    return any(tag.tag == label for tag in (getattr(collection, "labels", None) or []))
+    """Pure reader -- ``load_labels`` must have been called on ``collection``.
+
+    Case-insensitive, and that is the production fix -- see ``_folded_labels``.
+    """
+    return label.casefold() in _folded_labels(collection)
 
 
 def prior_tool_label(collection, adopt_from: list[str]) -> str | None:
     """Return the first label ``collection`` carries that belongs to a tool
     being replaced, or ``None`` if it carries none of them.
 
-    Pure reader -- ``load_labels`` must have been called on ``collection``
-    first. A collection with no label at all (the operator's hand-made ones)
-    must never match here.
+    Matched case-insensitively (``_folded_labels``) and returned as the SERVER
+    spells it, not as ``adopt_from`` does. Pure reader -- ``load_labels`` must
+    have been called on ``collection`` first. A collection with no label at all
+    (the operator's hand-made ones) must never match here.
     """
-    tags = {tag.tag for tag in (getattr(collection, "labels", None) or [])}
+    tags = _folded_labels(collection)
     for candidate in adopt_from:
-        if candidate in tags:
-            return candidate
+        stored = tags.get(candidate.casefold())
+        if stored is not None:
+            return stored
     return None
 
 
@@ -140,13 +177,58 @@ def protected_label(collection, protect_labels: list[str]) -> str | None:
 
     Checked before ownership or adoption -- a protected label wins even when
     the collection also carries our own label or an ``adopt_from`` label.
-    Pure reader -- ``load_labels`` must have been called on ``collection``.
+    Matched case-insensitively and returned as the server spells it, both for
+    ``_folded_labels``' reasons -- and here the folding is the one that
+    protects rather than the one that claims: a ``protect_labels`` entry whose
+    case did not match the stored tag left Maintainerr's collections
+    unprotected. Pure reader -- ``load_labels`` must have been called.
     """
-    tags = {tag.tag for tag in (getattr(collection, "labels", None) or [])}
+    tags = _folded_labels(collection)
     for candidate in protect_labels:
-        if candidate in tags:
-            return candidate
+        stored = tags.get(candidate.casefold())
+        if stored is not None:
+            return stored
     return None
+
+
+def adoptable_labels(adopt_from: list[str], label: str) -> list[str]:
+    """``adopt_from`` without any entry that is our own ownership label.
+
+    The guard the casefolded match above makes necessary. An ``adopt_from``
+    entry spelled ``autoposter`` against ``ownership_label='Autoposter'`` is
+    now the same label, so it names OUR OWN collections as a prior tool's --
+    and the live config held exactly that pair: the 2026-08-30 override wrote
+    ``ownership_label='Autoposter'`` beside ``adopt_from=['Kometa',
+    'autoposter']``, which is what working around the exact-compare bug above
+    looks like from the operator's side.
+
+    Two consequences, and dropping the entry is what prevents both. In the
+    adoption path ``claim_ownership`` under ``adopt_removes_prior_label``
+    would REMOVE the label that says the collection is ours -- reachable only
+    if ``resolve_collision``'s ownership check ever stopped running first, so
+    this is the second lock on a door that already has one. In the leftovers
+    report there is no such first lock and the damage was measured: the
+    candidate query is ONE server-side ``collections(label=...)`` per entry,
+    that filter is case-insensitive, so the entry returned all 99 of this
+    service's own collections as prior-tool candidates.
+
+    A warning rather than a refusal: the entry is redundant, not dangerous
+    once dropped, and a config load that refused it would take the whole
+    settings save down over something this can simply ignore. One line per
+    dropped entry per call -- the report calls this once per library pass, and
+    ``resolve_collision`` reaches it only for a collection that is NOT already
+    ours, which after the fix above is a genuinely foreign collision.
+    """
+    folded = label.casefold()
+    keep = [one for one in adopt_from if one.casefold() != folded]
+    for dropped in (one for one in adopt_from if one.casefold() == folded):
+        logger.warning(
+            "adopt_from entry %r is this service's own ownership label %r "
+            "(Plex matches label case-insensitively); ignoring it -- our own "
+            "collections are not a prior tool's to adopt or to report",
+            dropped, label,
+        )
+    return keep
 
 
 def claim_ownership(collection, label: str, prior: str, remove_prior: bool) -> None:
@@ -198,7 +280,10 @@ def resolve_collision(
     if has_label(collection, label):
         return True, None
 
-    prior = prior_tool_label(collection, adopt_from) if adopt else None
+    prior = (
+        prior_tool_label(collection, adoptable_labels(adopt_from, label))
+        if adopt else None
+    )
     if prior is None:
         return False, (
             "conflict: %r exists without the %r label; leaving it untouched"
