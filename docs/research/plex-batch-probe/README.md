@@ -146,7 +146,7 @@ sits just under it, and the 10232-character path is far over.
 chunk size: 15.5 ms/item at 400, 25.2 at 800, 36.7 at 1200, against 8–12
 ms/item at 50–200 in §1. The 400-key point sits against a governing prior: 9a
 measured the same movie section at chunk=400 in 3.25 s (8.1 ms/item; archive
-`p9a-task-2-report.md:319-322`) — a 1.9× divergence from this run's 6.20 s
+`p9a-task-2-report.md:319-323`) — a 1.9× divergence from this run's 6.20 s
 (15.5 ms/item) at the one directly comparable point, same server, same
 section, overlapping key range. The variance is unexplained (different day,
 load, or item set) and is named here rather than left standing as an
@@ -206,6 +206,14 @@ returns `totalSize="17"` while shipping **zero** child elements (`size="0"`,
 0 children), and the full fetch of the identical search URL returns exactly 17
 items. Row 198's count-without-payload idea works: a filtered result set can be
 counted in one tiny GET.
+
+**Unmeasured, and named here rather than assumed:** this probe used a filter
+matching 17 items, so whether Plex still emits `totalSize` (as `"0"`) on a
+container whose result set is genuinely EMPTY was never measured. If it omits
+the attrib there, `smart.count_matches` raises `SmartCollectionUnavailable`
+("no totalSize attrib") instead of returning 0 — the same refusal
+`require_matches` would give anyway, but under the unreadable-count message
+rather than the matched-nothing one.
 
 ---
 
@@ -399,7 +407,7 @@ say("VERDICT:", "CONFIRMED" if str(actual) == data.attrib.get("totalSize") else 
 | D3 | Show-library batch economics (probe a) | 286 shows: **2 calls at chunk=200**; measured 2.41 s for the 200-chunk and 0.82 s for a 100-chunk, so ≈**3.2 s** for the whole show library, ≈**11 ms/item**. Per-chunk measured: 50 → 0.47 s (9.4 ms/item), 100 → 0.82 s (8.2), 200 → 2.41 s (12.05). | recorded; informs nothing structural |
 | D4 | `viewCount`/`lastViewedAt`/`userRating` in the listing (probe d) | **SPARSE, present-when-set** — `viewCount` movie 79/1962, show 55/286, **never `0`** (absent ⇒ unwatched); `lastViewedAt` movie 98/1962, show 64/286 (exceeds `viewCount` — in-progress items, do not infer one from the other); `userRating` movie 2/1962, show 0/286 — **effectively ABSENT** on this library. | **This verdict supersedes the plan's binary ALL-PRESENT/SPARSE branch** (Step 2, `docs/superpowers/plans/2026-08-30-phase-b-plex-read.md:2448-2450`) — the three attributes split rather than moving together, so T7 adjudicates per-attribute instead of picking one branch by keyword match. `plays` **SHIPS listing-tier**: plexapi already defaults `viewCount` to 0 (`video.py:64`, `utils.cast(int, data.attrib.get('viewCount', 0))`), so absent-is-zero is safe regardless of accessor mechanism — add to `_LISTING_ATTRIBS`. `last_played` is **DECIDED AT T7** against Kometa's own None handling: plexapi leaves `lastViewedAt` None when absent (`video.py:50`), so a never-played item reads as MISSING and a recency filter's missing-excludes rule would exclude it unconditionally — T7 ships it listing-tier only if missing-excludes is the wanted semantics for `last_played`, else re-files that half of row 180 honestly (not closed). `user_rating` **ships** per the plan's sparse-ships resolution (`:2471`) — missing-excludes is the correct semantics for an unrated item. |
 | D5 | `totalSize` at container-size 0 (probe e) | **CONFIRMED** — `totalSize='17'`, `size='0'`, 0 children; full fetch of the same URL returned 17. | T7's row-198 commit |
-| D6 | Stream `language` attrib spelling (probe a) | **All three carry values** on audio (`streamType=2`) and subtitle (`streamType=3`) streams: `language='English'`, `languageCode='eng'`, `languageTag='en'`. Sample is one movie's streams, all English. | T3's `_stream_languages` field — `languageCode` (ISO 639-2) is the safe key; `languageTag` (ISO 639-1) matches 9b's `_base_language_code` shape. |
+| D6 | Stream `language` attrib spelling (probe a) | **All three carry values** on audio (`streamType=2`) and subtitle (`streamType=3`) streams: `language='English'`, `languageCode='eng'`, `languageTag='en'`. Sample is one movie's streams, all English. | T3's `_stream_languages` field — `languageCode` (ISO 639-2) is the safe key; `languageTag` (ISO 639-1) matches 9b's `_base_language_code` shape. **Shipped: `languageTag`** — see `client._stream_languages`, which argues the normaliser match makes the comparison an identity for the common case. |
 | D7 | `listFilterChoices` enumerates actor/director/writer/producer (probe b) | **movie: all four answer** — actor 3268, director 1394, writer 2813, producer 3071. **show: actor 789 only** — director/writer/producer answer **0 values** (no refusal, an empty enumeration). | T5's resolver: sufficient for movies and for show *actors*; a show director/writer/producer resolver has nothing to enumerate (C5's hubSearch fallback is the only route if that is ever needed). |
 
 ---
