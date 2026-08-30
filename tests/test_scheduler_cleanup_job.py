@@ -78,6 +78,28 @@ async def test_an_unreferenced_directory_is_reported(session, tmp_path):
     assert scan.scanned == 2
 
 
+async def test_the_generated_divider_cache_is_never_scanned(session, tmp_path):
+    """``<assets_root>/.generated/`` is service-owned render cache, not a media
+    asset directory -- see ``collections/separator_art.py``. No ``renders`` row
+    ever points inside it, so an unguarded walk would report it as orphaned
+    forever; it must instead be pruned from the walk entirely, which also keeps
+    it out of ``scanned``."""
+    cache = tmp_path / ".generated" / "separators" / "orig"
+    cache.mkdir(parents=True)
+    (cache / "genre.jpg").write_bytes(b"data")
+    # A referenced directory must exist too, or the empty-renders guard would
+    # apply instead.
+    kept = tmp_path / "Movies" / "Kept Movie (2020)"
+    kept.mkdir(parents=True)
+    (kept / "poster.jpg").write_bytes(b"data")
+    await _make_render(session, kept / "poster.jpg")
+
+    scan = await find_orphaned_assets(session, tmp_path)
+
+    assert cache not in scan.orphaned
+    assert scan.scanned == 1
+
+
 def test_move_to_backup_preserves_the_relative_path_and_returns_the_count(tmp_path):
     assets_root = tmp_path / "assets"
     backup_root = tmp_path / "backup"

@@ -511,6 +511,16 @@ async def find_orphaned_assets(session: AsyncSession, assets_root: Path) -> Orph
     contains files: it is not an orphan of itself, and treating it as one
     would make ``relative_to`` yield ``Path('.')`` and move the entire asset
     tree in a single ``shutil.move``.
+
+    Dot-prefixed directories -- ``<assets_root>/.generated/`` in particular --
+    are pruned from the walk entirely, not merely excluded from the result.
+    ``collections/separator_art.py`` caches generated divider art there; the
+    cache is service-owned, deliberately losable, and by construction never
+    referenced by a ``renders`` row, so an unguarded walk would report it as
+    orphaned forever. Pruning it out of ``dirnames`` also keeps it out of
+    ``scanned``, which ``_implausible_orphan_count`` divides by -- counting a
+    directory that can never be "kept" would understate every real orphan
+    share.
     """
     rows = (await session.execute(select(Render.asset_path))).all()
     recorded = [path for (path,) in rows]
@@ -523,7 +533,8 @@ async def find_orphaned_assets(session: AsyncSession, assets_root: Path) -> Orph
 
         orphaned: list[Path] = []
         scanned = 0
-        for dirpath, _dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [name for name in dirnames if not name.startswith(".")]
             if not filenames:
                 continue
             directory = Path(dirpath).resolve()
