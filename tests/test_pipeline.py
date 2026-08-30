@@ -346,7 +346,13 @@ async def test_second_upsert_of_the_same_rating_key_refreshes_updated_at(session
         ).scalar_one()
 
     assert second.created_at == first.created_at
-    assert second.updated_at > first.updated_at
+    # The contract is that the conflict path RE-STAMPS updated_at (onupdate=
+    # never fires on INSERT ... ON CONFLICT DO UPDATE); equality is the one
+    # shape the regression produces. Strict `>` additionally assumed the DB
+    # wall clock is monotonic across the sleep, and the hardening-sweep loop
+    # reproduced a backwards step (row 195's close has the numbers) -- an
+    # environment fact, not an upsert defect.
+    assert second.updated_at != first.updated_at
 
 
 async def test_show_two_seasons_and_two_episodes_produce_five_distinct_rows(
