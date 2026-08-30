@@ -481,7 +481,7 @@ def test_collection_exposes_the_smart_flag_the_shape_check_reads():
 
 
 def test_no_reconciler_reads_a_collections_content_echo():
-    """9c decision C10, asserted rather than promised.
+    r"""9c decision C10, asserted rather than promised.
 
     ``Collection.content`` is Plex's echo of a smart collection's stored uri,
     and Kometa compares against it on every pass
