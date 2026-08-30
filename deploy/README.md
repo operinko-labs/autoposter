@@ -425,6 +425,31 @@ once.
 empty or whose filter currently matches nothing in the library — that is
 expected and normal, not a bug to fix.
 
+**Deleting `summary:` from a definition now clears the summary in Plex.**
+Previously that edit changed the definition hash, triggered a pass, and then
+performed no summary edit at all — recognised, acted on by nothing, recorded
+as done. The pass now writes an empty summary and releases the lock. Two
+conditions gate it, and both matter:
+
+- The pass must be able to **assert** the definition carries no summary. Two
+  cases cannot, and are structurally out of reach of the clear: a
+  `tmdb_summary` pull that *fails* resolves to the same "no summary" an
+  absent one does, so it leaves the existing summary alone rather than
+  destroying a healthy one on a bad TMDb day; and the `dynamic` and
+  `credits` families refuse `summary:` at config load, so a summary on one
+  of their collections can only be Plex's own or something you wrote, and is
+  never touched.
+- The field must carry the **lock** that every managed write leaves. An
+  unlocked summary — one this service never wrote — is never cleared.
+
+**The consequence to know about:** editing a summary by hand in the Plex UI
+locks the field too, and the lock is the only signal available. So on a
+collection this service manages whose definition has no `summary:`, a summary
+you typed into Plex is cleared by the next pass that sees the definition
+change. That is the same sync-mode stance the rest of this block takes — the
+definition is the source of truth, and hand edits to managed fields do not
+survive it. Keep the text in the definition, not in Plex.
+
 See `config/autoposter.example.yaml` for the full block.
 
 ## IMDb chart and Oscars collections
@@ -453,6 +478,20 @@ normally removed — so a failed IMDb or GitHub request is treated as "make no
 changes" rather than "remove everything". One dead chart also cannot block
 the others: each source is fetched independently, so an IMDb outage still
 lets the Oscars collections (or vice versa) update normally.
+
+**That guarantee is narrower for the hand-written `imdb_list` and
+`imdb_watchlist` definitions**, and the boundary is worth knowing. Both now
+ask IMDb for each entry's title type so episode ids — which Plex can never
+resolve, because episodes are filed under their show's guid — are dropped
+before they reach the library instead of counting as misses. A request IMDb
+*rejects* is loud: it comes back as an error and the build refuses, leaving
+the collection untouched, exactly as above. A request IMDb *accepts* but
+answers null for is not: the entries fold to nothing, every one is dropped,
+and the build hands back an empty collection, which under sync semantics
+empties the collection it built last time. That is the posture these list
+fetches have always shipped with rather than anything introduced here, and
+nothing observed produces it today — but "a failed source never empties a
+collection" holds for the refusal half only.
 
 IMDb's API response carries a non-commercial-use disclaimer. This deployment
 is a private, single-operator install, which is within it; nothing here
@@ -943,6 +982,36 @@ a candidate only once its facts are older than `drift_max_age_days`, so
 immediately after a backfill *nothing* is eligible and the columns stay empty
 until the oldest rows age past the threshold. That is the sweep waiting, not
 the pipeline failing.
+
+**You no longer have to wait out either of those. The Collections page now
+carries a facts catch-up button**, and it turns the five weeks above into
+hours. It is the drift sweep's own walk with the age predicate removed: same
+population (`kind IN ('movie', 'show')`), same per-item job, same queue, so
+it costs what the sweep costs and nothing new is in the path. Each press
+enqueues one `scheduler.drift_batch_size` batch and moves a stored cursor;
+press again until it reports complete; a re-press resumes where the cursor
+sits rather than starting over, and a drained population answers complete
+however many times you press it. Progress is counted against the live
+population, so it tracks the library you have rather than a number measured
+once. There is no migration hook and nothing fires on upgrade — the catch-up
+happens because you asked for it.
+
+**Two honest limits on that button.** First, a press is refused up front
+while TMDb's shared 429 window is open: the cursor does not move and nothing
+is enqueued, because a batch gathered with TMDb skipped would still stamp
+`fetched_at` and leave exactly the columns the catch-up exists to fill empty.
+Second — and this is the one an operator has to know — that check is only as
+fresh as the press. If TMDb starts refusing *after* a batch is enqueued, the
+workers walk those items with the columns still empty, the cursor has already
+moved past them, and the next press resumes ahead rather than revisiting.
+"Complete" therefore means the walk reached the end of the population, not
+that every item came back with its columns filled. The weekly sweep is what
+eventually collects the items lost that way, and it is not quick about it:
+they wait out `drift_max_age_days` and then queue behind everything older —
+the same multi-week wait the button exists to shorten. The cursor only ever
+moves forward, so a walk that has reported complete cannot be sent round
+again from the button; if you know a catch-up coincided with a TMDb outage,
+the weekly sweep is what will collect the affected rows.
 
 Two things make this visible rather than something to infer:
 
