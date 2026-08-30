@@ -52,6 +52,7 @@ collections:
   awards: true # Oscars winner collections
   separators: true # a blank section-divider collection per collection group
   # group_order: [awards, charts] # reorder the blocks; the rest follow
+  # separator_style: orig # divider colour; one of upstream's 22 sep_style names. Changing it re-posters every divider once
   posters: true # give managed collections a poster
   adopt: false # claim collections created by a tool being replaced; a Plex write, off by default
   adopt_from: # labels belonging to tools being replaced

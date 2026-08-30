@@ -380,30 +380,62 @@ python -m autoposter.collections
   collection for each GROUP of collections this service manages: `Chart
   Collections`, `Award Collections`, `Ratings Collections` and so on. Each is a
   permanently-empty collection whose sort title floats it above its own block in
-  Plex's alphabetised collections tab. Turning it off leaves the sort-title
-  prefixes in place and removes only the headings — and an existing heading is
-  then an ordinary orphan, reported by the pass and deleted only if
+  Plex's alphabetised collections tab. It also maintains the closing `Other
+  Collections` divider described under `group_order` below, which is not a
+  group but is governed by this same switch. Turning it off leaves the
+  sort-title prefixes in place and removes only the headings — and an existing
+  heading is then an ordinary orphan, reported by the pass and deleted only if
   `delete_unconfigured` is on and `max_deletes` allows it, exactly like any
   other collection this service no longer builds.
+- `separator_style` (default `orig`) — which of upstream's 22 separator colour
+  styles the dividers wear. The valid names are upstream's own `sep_style`
+  values: `amethyst`, `aqua`, `blue`, `forest`, `fuchsia`, `gold`, `gray`,
+  `green`, `navy`, `ocean`, `olive`, `orchid`, `orig`, `pink`, `plum`,
+  `purple`, `red`, `rust`, `salmon`, `sand`, `stb`, `tan`. An unknown name is
+  refused at config load with the full list. `orig` is upstream's own default
+  and the value this service has always effectively used, so an untouched
+  config picks the same artwork it picked before.
+
+  It governs **both** kinds of divider art: the three groups with matching
+  upstream artwork fetch from this style's folder, and every other divider is
+  generated from this style's textless base layer (see "Collection posters"
+  below). **Changing it re-writes and re-posters every divider once** on the
+  next pass, then settles — the style is part of each divider's content hash,
+  so an unchanged style uploads nothing. The **Groups** panel on the
+  Collections page offers it as a 22-swatch grid preview.
 - `group_order` (default unset) — reorder those blocks. Unset is the built-in
-  order: charts, awards, content ratings, content, location, media, people,
-  production, time, and your own `definitions:` entries last. A partial list is
-  the normal use — the groups you name lead, in that order, and the rest follow
-  behind them:
+  order: charts, awards, content ratings, content, franchises, location, media,
+  people, production, time, and your own `definitions:` entries last. A partial
+  list is the normal use — the groups you name lead, in that order, and the
+  rest follow behind them:
 
   ```yaml
   collections:
     group_order: [awards, charts]
   ```
 
-  The valid names are the ten above, written as the keys themselves — the last
-  two are `content_ratings` and `operator`, not "content ratings" and "your own
+  The valid names are the eleven above, written as the keys themselves — they
+  are `content_ratings` and `operator`, not "content ratings" and "your own
   `definitions:` entries". An unknown name is refused at config load with the
   full list; a repeated one is refused as a name that means less than it looks
   like. Neither is accepted as a reordering that silently did nothing.
 
+  **`franchises` is new, and it is why there are eleven names now rather than
+  ten.** It sits fifth, after `content`, and it is not cosmetic: franchise
+  collections previously fell through into the operator block at `!100_` with
+  no heading above them at all. Giving them their own block renumbered every
+  group behind it once — see the churn note below.
+
+  **The closing "Other Collections" divider cannot be named here.** It is
+  pinned at `!999_`, above the collections Plex generates for itself, and it is
+  deliberately not a group: it has no members, takes no position in this list,
+  and adding a twelfth group renumbers everything except it. `group_order` has
+  no name for it — `other` is refused like any other unknown name — and there
+  is no setting that moves it. Turning `separators` off removes it along with
+  every other heading.
+
   The **Groups** panel on the Collections page is this setting's UI: per-group
-  up/down moves, saved as the complete ten-key list through the settings
+  up/down moves, saved as the complete eleven-key list through the settings
   overrides, and its Reset removes the override so the file above (or the
   built-in order) applies again.
 
@@ -420,6 +452,34 @@ matches. Membership is still unchanged; Plex re-evaluates the same filter.
 Collections this service does not manage are never touched. The tab reorders
 once and then settles. Changing `group_order` later does the same thing again,
 once.
+
+**The divider release does the same thing once more, and this is the whole of
+it.** Three changes land together and their write costs add up to a single
+pass, not three:
+
+- **The `franchises` group.** It files after `content`, which renumbers every
+  group behind it. On the reference deployment that was counted, not estimated:
+  **79 sort-title writes** from the renumber (36 in `media`, 43 in `people`;
+  `location`, `production` and `time` hold no live rows there, so they cost
+  nothing), plus the **65 franchise collections** moving out of the operator
+  block at `!100_` into the new `!050` block — one write each. Two divider
+  collections are created: the `Franchise Collections` heading and the closing
+  `Other Collections` fence. **144 `editSortTitle` PUTs and 2 creates**,
+  membership untouched throughout.
+- **The divider content hash gains the style.** Every divider's poster key now
+  carries the separator style, so every live divider re-hashes once and is
+  re-written on that same pass. This is what makes a later `separator_style`
+  change actually re-poster — before it, the key could not tell two styles
+  apart and a style change would have changed the config and repainted nothing.
+- **The default style adds nothing on top.** `separator_style` ships as `orig`,
+  which is the artwork this service was already fetching, so an operator who
+  never touches the setting gets no *extra* work from it — but that is not the
+  same as no work: the re-hash above happens regardless, because the key's
+  FORMAT changed, not its value. Anything that told you this upgrade was
+  churn-free was wrong; it is one accounted pass.
+
+All of it settles after that pass. Dividers whose art is generated are rendered
+once and cached, so the pass after this one uploads nothing.
 
 **No collection is ever deleted by this service**, including ones that are
 empty or whose filter currently matches nothing in the library — that is
@@ -567,16 +627,54 @@ service manages get a poster:
   collections) a poster. Applied only after `resolve_collision` has approved
   the collection, so a conflicting or protected collection is never touched.
 
-**Turning this on sets a poster on nearly every collection this service
-manages, adopted ones included** — not just newly created ones. The one
-exception is by design: only three of the ten groups have upstream separator
-artwork — `charts`, `awards` and `content_ratings`, whose artwork files
-upstream are named `chart`, `award` and `content_rating` — so the other seven
-groups' dividers deliberately get no poster rather than a broken fetch. The first pass
-after enabling it fills in every managed collection whose poster we have never
-set, whether or not its definition changed. Adopted collections are already
-carrying these same images, set by the tool being replaced, so in practice
-this is a visual no-op for them.
+**Turning this on sets a poster on every collection this service manages,
+adopted ones included** — not just newly created ones. The first pass after
+enabling it fills in every managed collection whose poster we have never set,
+whether or not its definition changed. Adopted collections are already carrying
+these same images, set by the tool being replaced, so in practice this is a
+visual no-op for them.
+
+**Divider artwork comes from two places, and which one a divider uses depends
+on whether upstream happens to have art with the right word on it.** Upstream
+names its separator images after the Kometa *defaults file* they belong to, not
+after the group we file collections under, so three of them line up with our
+divider titles exactly and the rest do not line up at all:
+
+- **Fetched.** `charts`, `awards` and `content_ratings` use upstream's own
+  finished separator image, from the `separator_style` folder you picked —
+  their files upstream are `chart`, `award` and `content_rating`, and the word
+  baked into the image is the word on our divider.
+- **Generated.** Every other divider — the remaining group headings,
+  `Franchise Collections`, and the closing `Other Collections` fence — is
+  composited here: our own title, in upstream's own separator typography, onto
+  upstream's *textless* base layer for the same style. The result is cached
+  under `<assets_root>/.generated/separators/` and rendered once; a cached
+  divider is never re-rendered.
+
+The near-miss alternative was rejected deliberately. Reusing upstream's closest
+image would have put the word GENRE on a divider titled "Content Collections",
+which is worse than no poster and much worse than the right word. Generating is
+what lets a divider we invented — the `Other Collections` fence — carry art at
+all.
+
+A divider whose artwork can be neither fetched nor rendered reports **`no
+poster source`** and is retried on the next pass. Nothing is written to Plex
+for it in the meantime, and the rest of the pass is unaffected.
+
+*On licensing, because three different sources are involved and their postures
+are not the same.* **The parameters** — the typography and layout the generator
+follows — are transcribed from Kometa's `Defaults-Image-Creation` repository,
+which is MIT-licensed. **The images** — both the finished separators we fetch
+and the textless base layers we composite onto — come from `Default-Images`,
+which carries **no licence, and deliberately so**: per the maintainer on
+Discord, 2026-08-29, *"nearly all the default images are based on other work,
+so I'm not sure it's reasonable or valid to apply a license to derivative
+works."* Generating our own caption does not change that — only the caption
+layer is ours; the pixels underneath are still theirs, fetched at runtime and
+never vendored into this repository. Generating buys an exact label, not a
+cleaner licence position. **The font** (Comfortaa) is licensed under the SIL
+Open Font License by its own author, independently of either repository above,
+which is why it *is* vendored here, with its provenance recorded alongside it.
 
 A file at `<assets_root>/<library>/<collection title>/poster.{jpg,jpeg,png,webp}`
 overrides the hosted default, and is the supported way to pin your own poster
@@ -593,9 +691,21 @@ the run continues normally. A content hash on each collection's database row
 means an unchanged pass uploads nothing.
 
 `apply_to_plex` still gates every write, the same dry-run-by-default posture
-as the rest of this block. A dry run resolves and fetches each poster — so it
-can tell you whether the source is reachable — and reports the ones it would
-set without uploading anything.
+as the rest of this block. **Nothing is uploaded to Plex on a dry run**, and
+that is what the gate promises. A dry run resolves and fetches each poster — so
+it can tell you whether the source is reachable — and reports the ones it would
+set.
+
+One clarification, since "a dry run writes nothing" is easy to over-read: for a
+divider whose art is *generated*, resolving the poster **is** rendering it, and
+the render lands in the cache under `<assets_root>/.generated/`. A dry run that
+refused to render could not answer the question a dry run exists to answer.
+This only happens for a divider that **already exists** in Plex with a row in
+this service's database — the poster step needs both — so a **first** dry run
+against a deployment that has never applied anything generates nothing at all:
+it reports the dividers it would create and stops there. The cache is not Plex
+state, it costs one file per divider, and it makes the subsequent real pass
+upload immediately instead of rendering again.
 
 See `config/autoposter.example.yaml` for the full block.
 

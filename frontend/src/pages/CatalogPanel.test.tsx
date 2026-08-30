@@ -20,10 +20,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setToken } from "../api/client";
 import { CatalogPanel } from "./CatalogPanel";
 
-/** The nine categories the server always lists, in its own order. Six of them
- * carry no rows, which is an ordinary state and not an error -- the picker
- * shows the tab anyway, because a category that vanished when its rows were
- * unwritten would read as a category this service does not have. */
+/** The server always lists ten categories, in its own order -- `franchises` is
+ * the newest, which is why it is ten and not nine. This fixture is the
+ * row-less tail of that listing: the six here get no rows, which is an
+ * ordinary state and not an error -- the picker shows the tab anyway, because
+ * a category that vanished when its rows were unwritten would read as a
+ * category this service does not have. `franchises` is deliberately absent
+ * from the fixture rather than added
+ * empty: it carries rows in the real catalog, so an empty one here would pin a
+ * state the server never serves. */
 const EMPTY_CATEGORIES = [
   { key: "content", label: "Content" },
   { key: "location", label: "Location" },
