@@ -270,7 +270,9 @@ the TMDb writer is still demonstrably working on the six fields it knows.
 The re-check also replaced "about now" with a computed moment. The sweep's
 predicate is `fetched_at < now() - drift_max_age_days` over
 `kind IN ('movie','show')` (`scheduler/jobs.py:154,161-162`), so eligibility
-begins at `min(fetched_at) + 7 days`. Asked directly
+begins at `min(fetched_at) + 7 days` at the shipped default
+`drift_max_age_days: 7` — a deployment that overrides it moves this moment.
+Asked directly
 (`.superpowers/sdd/p-locnames-db3.txt`, second block):
 
 ```

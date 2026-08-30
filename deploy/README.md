@@ -920,7 +920,7 @@ family over those values cannot be a Plex smart filter — it is built from
 this service's own stored facts instead. Three presets ship on them today —
 `content_franchises` on the collection id, and `location_region` /
 `location_continent` on the country codes — plus the `original_language`
-dynamic type, which a hand-written definition can build a family from.
+facts family type, which a hand-written definition can build a family from.
 
 **The consequence an operator should expect, stated up front: such a family
 is only as complete as the facts pipeline's coverage of the library.** It
