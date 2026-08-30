@@ -541,7 +541,16 @@ class FactsBackfillState(Base):
     __tablename__ = "facts_backfill_state"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    cursor_item_id: Mapped[int | None] = mapped_column(Integer)
+    # BigInteger, not Integer, and not by analogy to ``id`` above: ``id`` is
+    # this row's own identity, pinned to a literal 1 forever, while
+    # ``cursor_item_id`` COPIES ``media_items.id`` -- which is BigInteger, and
+    # whose width is not this table's question to answer. Live id values also
+    # track upsert ATTEMPTS rather than row count: the pipeline's
+    # ``on_conflict_do_update`` (render/pipeline.py:309-312) burns a sequence
+    # value on every re-processed item, because Postgres evaluates ``nextval``
+    # before the conflict check. Any column that copies that value inherits
+    # its width.
+    cursor_item_id: Mapped[int | None] = mapped_column(BigInteger)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

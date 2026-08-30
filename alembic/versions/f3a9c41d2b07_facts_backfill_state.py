@@ -23,7 +23,7 @@ def upgrade() -> None:
     op.create_table(
         'facts_backfill_state',
         sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('cursor_item_id', sa.Integer(), nullable=True),
+        sa.Column('cursor_item_id', sa.BigInteger(), nullable=True),
         sa.Column(
             'updated_at', sa.DateTime(timezone=True),
             server_default=sa.text('now()'), nullable=False,
