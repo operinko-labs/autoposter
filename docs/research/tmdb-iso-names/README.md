@@ -353,6 +353,94 @@ accents, or hard-code the eight remaining spelling bridges as NOT_KOMETA
 additions, or let all ten fall into `Other Regions`/`Other Continents` and
 disclose them, is a decision for the plan's owner and not one T1 makes.
 
+### What Task 2 decided: `COUNTRY_NAME_ALIASES`, and the rule that derived it
+
+T1 left the choice open; T2 took the second option and carries all **ten**
+bridges as an OURS-marked table in `src/autoposter/collections/iso_names.py`
+(`COUNTRY_NAME_ALIASES`, digest-guarded in `tests/test_collection_iso_names.py`).
+Ten rather than the eight the phase Addendum names, because the eight presumes
+the accent fold measured above and **no accent fold exists anywhere at
+runtime** — `derive_keys` compares raw strings, the family layer does a plain
+dict lookup, and `iso_names` folds nothing. Carrying `CI` and `RE` here too
+means no caller has to fold; the eight are a subset of the ten.
+
+The generator that emitted the table was deleted after its run, as the plan
+requires. **The rule it applied is recorded here** so the table stays
+reconstructible from committed artifacts alone. Three layers, tried in order,
+each requiring the **same** answer in `region.yml` **and** `continent.yml`, over
+a country whose `english_name` is a member of neither:
+
+| layer | rule | pairs |
+| --- | --- | --- |
+| A | TMDb's own `native_name` for that code is an exact member of both universes | 8 — `CC`, `CI`, `FO`, `GP`, `KG`, `LY`, `PN`, `RE` |
+| B | an accent/punctuation/**ampersand** fold of the `english_name` matches exactly one member of each universe | 1 — `SJ` |
+| C | exactly one member of each universe shares a **six**-character folded prefix with the `english_name` | 1 — `PS` |
+
+The fold used by layer B (and by C's prefix) is: NFKD-normalise, read `&` as
+`and`, drop combining marks, keep lowercased alphanumerics only.
+
+There is no layer D. A divergence no layer reaches **halts the generation** —
+`assert target, "no derivation for %s %r -- refusing to invent one"` — rather
+than being typed in from memory. Layer A is this section's own `FO` derivation
+generalised, and it answers 8 of the 10 on its own, so the two weaker rules
+carry one pair each.
+
+The ten pairs, with the line the upstream member sits on in each file (the
+generator printed these; `FO -> region.yml:328, continent.yml:315` is the pair
+derived by hand above, reproduced by the rule):
+
+```
+CC 'Cocos  Islands'               -> 'Cocos (Keeling) Islands'        via A native_name  region.yml:379 continent.yml:367
+CI "Cote D'Ivoire"                -> 'Côte d’Ivoire'                  via A native_name  region.yml:131 continent.yml:115
+FO 'Faeroe Islands'               -> 'Faroe Islands'                  via A native_name  region.yml:328 continent.yml:315
+GP 'Guadaloupe'                   -> 'Guadeloupe'                     via A native_name  region.yml:170 continent.yml:155
+KG 'Kyrgyz Republic'              -> 'Kyrgyzstan'                     via A native_name  region.yml:234 continent.yml:220
+LY 'Libyan Arab Jamahiriya'       -> 'Libya'                          via A native_name  region.yml:76  continent.yml:60
+PN 'Pitcairn Island'              -> 'Pitcairn Islands'               via A native_name  region.yml:411 continent.yml:400
+PS 'Palestinian Territory'        -> 'Palestine'                      via C prefix6      region.yml:297 continent.yml:283
+RE 'Reunion'                      -> 'Réunion'                        via A native_name  region.yml:95  continent.yml:79
+SJ 'Svalbard & Jan Mayen Islands' -> 'Svalbard and Jan Mayen Islands' via B fold         region.yml:337 continent.yml:324
+```
+
+Two of those rows resolve a candidate list this section left plural, and both
+resolve **by rule** rather than by taste:
+
+- **`PN`** takes `Pitcairn Islands`, not the `Pitcairn` this section's
+  divergence list names — layer A takes TMDb's `native_name`, which is the
+  longer spelling. Both are members of the **same** group in both files
+  (`Polynesia` / `Oceania`), so grouping is identical either way; only the
+  displayed string differs. Noted so the next reader diffing this document
+  against the module does not have to re-derive it.
+- **`SJ`** takes `Svalbard and Jan Mayen Islands` over the also-present
+  `Svalbard and Jan Mayen` because the fold of TMDb's `english_name` carries
+  "Islands" and so matches that member exactly. Both spellings sit in one group
+  in both files (`Northern Europe` / `Europe`), so this too is display-only.
+
+**Layer C's free parameter, and why six.** A prefix heuristic is only honest if
+its length was not tuned until it produced an answer, so the one pair it
+decides was measured across lengths 3–10 against both universes:
+
+| prefix length | members whose folded form shares it with `palestinianterritory` |
+| --- | --- |
+| 3 (`pal`) | `Palau`, `Palestine` — **ambiguous**, which is why this section's prefix-3 column shows two candidates |
+| 4–8 | `Palestine` — **unique at every length in this range** |
+| 9+ | none — `palestinianterritory` and `palestine` diverge at the 9th character |
+
+Six sits in the middle of a five-wide plateau, not on a knife edge, and it is
+the *more* conservative parameter than the prefix-3 this section measured, not
+the looser one. Layer A genuinely fails for `PS` before C is reached: TMDb's
+`native_name` there is `Palestinian Territories` (plural), a member of neither
+universe. `Palestine` is a real member of a real group in both files
+(`Western Asia` / `Asia`), so dropping the pair would send `PS`-origin items to
+`Other Regions` / `Other Continents` for a country upstream demonstrably does
+carry.
+
+**The table is data, not behaviour.** `COUNTRY_NAMES` stays TMDb's bytes
+verbatim so `country_codes` can still fold a family key back to the stored code;
+nothing in `iso_names` applies an alias. **Applying** them is the packs' job
+(Task 3), as an OURS/NOT_KOMETA-marked overlay beside the verbatim
+transcription.
+
 ---
 
 ## 4. §Decisions
