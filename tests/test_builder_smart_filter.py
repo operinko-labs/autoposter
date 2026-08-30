@@ -237,13 +237,21 @@ def test_summary_is_accepted_on_a_smart_filter_definition():
     assert _definition(summary="Everything that scared us lately").summary
 
 
+def test_tmdb_summary_is_accepted_on_a_smart_filter_definition():
+    """Roadmap row 186. The original refusal reasoned about a FAMILY of
+    collections with no single summary -- true of cs_bucket, false of
+    smart_filter, which names exactly one collection whose summary the
+    reconciler writes. Mechanically nothing was ever in the way; it was
+    refused only because 9c's C7 had not adjudicated it."""
+    assert _definition(tmdb_summary=603).tmdb_summary == 603
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
         ("limit", 10),
         ("sync_mode", "append"),
         ("item_label", ["Scary"]),
-        ("tmdb_summary", 10),
         ("filters", {"year.gte": 2000}),
     ],
 )

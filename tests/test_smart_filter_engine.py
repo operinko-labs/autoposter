@@ -137,6 +137,18 @@ class FakeSection:
         return [FakeChoice("Horror", "1138"), FakeChoice("Drama", "9")]
 
 
+class FakeSummaries:
+    """The TMDB facts client's one method the engine's pull uses."""
+
+    def __init__(self, text="Borrowed from TMDb."):
+        self.text = text
+        self.asked = []
+
+    async def collection_summary(self, collection_id):
+        self.asked.append(collection_id)
+        return self.text
+
+
 def _config(**overrides):
     options = {
         "ownership_label": LABEL, "apply_to_plex": True, "adopt": False,
@@ -211,6 +223,46 @@ async def test_the_row_it_writes_is_a_smart_row(session):
     # membership this service could count or stamp a time against.
     assert member_count is None
     assert last_reconciled is None
+
+
+async def test_a_smart_filter_definition_borrows_its_summary_from_tmdb(session):
+    """Row 186's acceptance, end to end: the engine resolves the pull where
+    the ``summaries`` client lives and hands it down as the definition's
+    effective summary; the reconciler writes it through the item-level PUT."""
+    section = FakeSection(matches=3)
+    summaries = FakeSummaries()
+    definition = _definition(tmdb_summary=603)
+
+    await run_library(
+        session, section, "Movies", "Movie", [definition], _config(),
+        summaries=summaries,
+    )
+
+    assert summaries.asked == [603]
+    created = section._existing[definition.title]
+    assert any(
+        "summary.value=Borrowed" in key for key, _ in created._server.queries
+    )
+
+
+async def test_a_written_summary_still_wins_over_tmdb_summary(session):
+    """``_summary_for``'s standing rule, inherited: a summary written in the
+    config is an explicit choice, and a pull that silently overrode it would
+    be a setting that reads as applied and is not."""
+    section = FakeSection(matches=3)
+    summaries = FakeSummaries()
+    definition = _definition(summary="Written out.", tmdb_summary=603)
+
+    await run_library(
+        session, section, "Movies", "Movie", [definition], _config(),
+        summaries=summaries,
+    )
+
+    assert summaries.asked == []
+    created = section._existing[definition.title]
+    assert any(
+        "summary.value=Written" in key for key, _ in created._server.queries
+    )
 
 
 async def test_a_second_pass_writes_nothing(session):

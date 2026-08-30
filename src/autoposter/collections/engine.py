@@ -374,17 +374,30 @@ async def run_library(
             # a Plex write or that shared listing failing, and both belong to
             # the caller's per-library rollback rather than being swallowed here
             # as a dead source.
+            #
+            # Row 186: the tmdb_summary pull happens HERE, where ``summaries``
+            # lives, through the same ``_summary_for`` every list definition
+            # uses -- for every smart builder that refuses ``tmdb_summary`` at
+            # config load this returns ``definition.summary`` untouched. The
+            # empty BuilderResult stands in for "no builder-derived summary",
+            # which is what a smart builder has.
+            smart_summary, summary_note = await _summary_for(
+                definition, BuilderResult(ids=[]), summaries
+            )
             smart_actions = await builder.apply(
                 SmartContext(
                     session=session, section=section, library=library,
                     library_type=library_type, label=label, config=config,
                     http=http, dry_run=dry_run, definition=definition,
+                    summary=smart_summary,
                     sort_prefix=groups.sort_prefix_for(
                         definition, group_index, group_order
                     ),
                     run_cache=run_cache, listing=listing,
                 )
             )
+            if summary_note:
+                smart_actions = [*smart_actions, summary_note]
             actions += smart_actions
             # One result for the family, under the definition's own title: a
             # smart builder owns several collections and Plex evaluates each

@@ -235,6 +235,14 @@ class SmartContext:
     # ``reconcile_list_collection`` has to reach the smart reconcilers the same
     # way. None for a direct caller that has no pass around it.
     sort_prefix: str | None = None
+    # The definition's EFFECTIVE summary, resolved by the ENGINE: the written
+    # ``summary:`` when there is one, else the ``tmdb_summary:`` pull (row
+    # 186), else None. Resolved engine-side because the TMDB client lives
+    # with the engine's callers and ``_summary_for``'s containment (a summary
+    # is cosmetic; an outage must not fail the definition) must not be
+    # transcribed into a builder. A direct caller that leaves it None gets
+    # ``definition.summary`` back from the one builder that reads it.
+    summary: str | None = None
     run_cache: dict[str, Any] = field(default_factory=dict)
     listing: Callable[[], dict] | None = None
 

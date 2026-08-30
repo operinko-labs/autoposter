@@ -101,8 +101,10 @@ class SmartFilterBuilder:
     # (``config/schema.py``), so an operator learns at the moment of the edit
     # rather than from a setting that reads as applied and never is.
     #
-    # ``summary`` is deliberately ABSENT -- a smart_filter definition names one
-    # collection and the reconciler writes its summary, exactly as the Common
+    # ``summary`` -- and since row 186, ``tmdb_summary`` -- are deliberately
+    # ABSENT: a smart_filter definition names one collection and the reconciler
+    # writes its summary (the tmdb pull resolved engine-side, through the same
+    # ``_summary_for`` every list definition uses), exactly as the Common
     # Sense reconciler writes each bucket's. ``sort_title``, ``collection_mode``
     # and the ``visible_*`` flags are absent for the reason they always were:
     # they are properties of the collection OBJECT, not of its membership, and
@@ -126,10 +128,6 @@ class SmartFilterBuilder:
         "item_label": (
             "this service never resolves this collection's members -- Plex "
             "does -- so there is no list of items to label"
-        ),
-        "tmdb_summary": (
-            "not supported on a smart definition. Write the summary out with "
-            "`summary:`, which this builder does apply"
         ),
         "filters": (
             "a `filters:` block narrows a membership this service resolved, and "
@@ -183,7 +181,7 @@ class SmartFilterBuilder:
                 definition.title,
                 url,
                 ctx.label,
-                summary=definition.summary,
+                summary=ctx.summary if ctx.summary is not None else definition.summary,
                 dry_run=ctx.dry_run,
                 # The pass's one listing, not a second one per definition.
                 # Called here rather than at context construction so a
