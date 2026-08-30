@@ -104,6 +104,13 @@ REFUSED = [
     # of an IPv6 literal) is still a refusal, not a traceback -- and its own
     # refusal, not MDBList's error string about a value never offered to it.
     ("https://exam[ple.com/list", "is not a URL this form can read"),
+    # A scheme-ful URL to a *dotless* host used to fall through to
+    # ``_parse_bare`` and draw MDBList's error string. It now gets the same
+    # clean unknown-host refusal as a dotted one, dotted or not, scheme
+    # required or protocol-relative.
+    ("http://localhost:32400/library/x", "is not a supported source"),
+    ("https://[::1]/list/x", "is not a supported source"),
+    ("//imdb.com/list/ls1", "is not a supported source"),
 ]
 
 
@@ -111,3 +118,34 @@ REFUSED = [
 def test_refused_shapes_name_what_is_wrong(text, fragment):
     with pytest.raises(SourceUrlRefused, match=re.escape(fragment)):
         parse_source(text)
+
+
+# Pastes that carry credentials and would once have echoed them into the 422
+# detail (the redaction law -- collections_builders.py:74-82 -- forbids it).
+CREDENTIAL_PASTES = [
+    # Schemeless, dotted host: falls through to the generic bare-id refusal.
+    "admin:hunter2@myplex.example/list",
+    # A urlsplit ValueError (the '[' IPv6 guard) used to echo the whole value.
+    "https://user:pass@exam[ple.com/list",
+    # Dotless host: used to reach MDBList's own {value!r} error string.
+    "http://user:pass@localhost/x",
+]
+
+
+@pytest.mark.parametrize("text", CREDENTIAL_PASTES)
+def test_refusals_never_echo_the_pasted_credentials(text):
+    with pytest.raises(SourceUrlRefused) as excinfo:
+        parse_source(text)
+
+    assert "hunter2" not in str(excinfo.value)
+    assert "user:pass" not in str(excinfo.value)
+
+
+def test_refusal_message_drops_pydantics_value_error_prefix():
+    """A field_validator's ValueError comes back from pydantic as
+    "Value error, <message>" -- that framing is pydantic's, not the model's
+    own sentence, and does not belong in an operator-facing refusal."""
+    with pytest.raises(SourceUrlRefused) as excinfo:
+        parse_source("ls12x4")
+
+    assert "Value error" not in str(excinfo.value)

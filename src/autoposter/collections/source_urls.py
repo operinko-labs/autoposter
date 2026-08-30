@@ -102,8 +102,12 @@ def _validated(
     try:
         valid = model.model_validate(params)
     except ValidationError as error:
+        # pydantic prefixes a field_validator's ValueError with "Value error, "
+        # -- the model's own sentence, not pydantic's framing around it.
         raise SourceUrlRefused(
-            "; ".join(item["msg"] for item in error.errors())
+            "; ".join(
+                item["msg"].removeprefix("Value error, ") for item in error.errors()
+            )
         ) from error
     return ParsedSource(builder, valid.model_dump(exclude_none=True), display_note)
 
@@ -157,7 +161,7 @@ def _parse_tvdb(segments: list[str]) -> ParsedSource:
     )
 
 
-def _refuse_trakt(segments: list[str]) -> ParsedSource:
+def _refuse_trakt(_segments: list[str]) -> ParsedSource:
     raise SourceUrlRefused(
         "trakt.tv is not a supported source: no trakt builder is shipped, so "
         "a pasted trakt URL has nothing to parse to -- trakt support is its "
@@ -182,6 +186,13 @@ def _parse_bare(value: str) -> ParsedSource:
     ``<user>/<slug>`` is the only one carrying a ``/``, so it is recognised
     first and an MDBList user whose name begins ``ls``/``ur`` is still a user
     name here rather than a mangled IMDb id.
+
+    Residual narrowing, honestly stated: the ``"." not in head`` heuristic
+    reads a dotted first segment as an unknown host, not a user name, so a
+    real MDBList user whose name contains a dot (``a.b/c``, valid per
+    ``MdblistListParams``' own pattern) is refused here rather than accepted.
+    The escape hatch is the full URL (``mdblist.com/lists/a.b/c``), which does
+    not go through this heuristic at all.
     """
     head, _, _tail = value.partition("/")
     if "/" in value and "." not in head:
@@ -211,7 +222,7 @@ def _parse_bare(value: str) -> ParsedSource:
             "list id; paste the full URL for an MDBList or TVDb list",
         )
     raise SourceUrlRefused(
-        f"{value!r} is not a URL or a bare id this form recognises. Supported "
+        "that is not a URL or a bare id this form recognises. Supported "
         "URLs: " + SUPPORTED + ". Bare values accepted: an IMDb ls…/ur… id, "
         "an MDBList <user>/<slug>, or a TMDb numeric list id."
     )
@@ -237,15 +248,18 @@ def parse_source(text: str) -> ParsedSource:
         # shapes, which would answer a broken URL with MDBList's error string.
         # What it must not do either way is reach the operator as a traceback.
         raise SourceUrlRefused(
-            f"{value!r} is not a URL this form can read -- supported: " + SUPPORTED
+            "that is not a URL this form can read -- supported: " + SUPPORTED
         ) from None
     host = (parts.hostname or "").lower().removeprefix("www.")
     handler = _HOSTS.get(host)
     if handler is not None:
         return handler([segment for segment in parts.path.split("/") if segment])
-    if "." in host and _SCHEME.match(value):
-        # A real URL to a host this parser does not know. The bare fallbacks
-        # below exist for ids, not for other services' pages.
+    if _SCHEME.match(value) or value.startswith("//"):
+        # A real (scheme-ful or protocol-relative) URL to a host this parser
+        # does not know -- dotted or not: ``localhost``, ``[::1]`` and an
+        # empty host (``https:///x``) are all refused here now too, rather
+        # than falling into the bare shapes below and drawing MDBList's
+        # error string about a value that was never an MDBList reference.
         raise SourceUrlRefused(
             f"{host!r} is not a supported source -- supported: " + SUPPORTED
         )
