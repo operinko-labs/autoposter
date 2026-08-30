@@ -91,6 +91,108 @@ def as_int(value: str | None) -> int | None:
         return None
 
 
+# The batched metadata read (roadmap row 197). Chunk default from phase 9a's
+# probe F (10 calls / 16.90s for 1955 movies at chunk=200, ~8ms/item flat
+# across chunk sizes -- .superpowers/sdd/archive/p9a-task-2-report.md) and
+# bounded by the URL-length cap the phase-B probe measured
+# (docs/research/plex-batch-probe/README.md, D2).
+TAG_BATCH_CHUNK = 200
+
+
+@dataclass(frozen=True)
+class ItemTags:
+    """One item's tag families from the metadata endpoint, as plain data.
+
+    The section listing truncates or strips these (9a's probe verdicts,
+    quoted in the FILTER_ATTRIBUTES rows); the batch endpoint returns them
+    full. Empty tuples are an ANSWER -- "this item has none" -- which is why
+    the fetch stores them: absence from the index means "not fetched", and
+    the two must never be conflated (the enrichment refusal law).
+    """
+
+    genres: tuple[str, ...]
+    labels: tuple[str, ...]
+    collections: tuple[str, ...]
+    audio_languages: tuple[str, ...]
+    subtitle_languages: tuple[str, ...]
+
+
+def _safe_attr(item: object, name: str) -> object | None:
+    """``object.__getattribute__``, so a falsy value can never trigger plexapi's
+    partial-object reload -- the same load-bearing read
+    ``collections/filter_values._listing_value`` uses, for the same reason."""
+    try:
+        return object.__getattribute__(item, name)
+    except AttributeError:
+        return None
+
+
+def _uniq(values) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(v for v in values if v))
+
+
+def _tag_names(item: object, attr: str) -> tuple[str, ...]:
+    children = _safe_attr(item, attr) or []
+    return _uniq(getattr(child, "tag", None) for child in children)
+
+
+def _stream_languages(item: object, stream_type: int) -> tuple[str, ...]:
+    """streamType 2 is audio, 3 is subtitles. The value read is the stream's
+    ``language`` display title (probe decision D6 -- the production server
+    carries ``language``, ``languageCode`` and ``languageTag`` on both audio
+    and subtitle streams, so no adjustment is called for). ``Media``,
+    ``MediaPart`` and streams are plain PlexObjects with no reload guard of
+    their own (``filter_values._resolutions`` documents the same)."""
+    found = []
+    for media in _safe_attr(item, "media") or []:
+        for part in getattr(media, "parts", None) or []:
+            for stream in getattr(part, "streams", None) or []:
+                if getattr(stream, "streamType", None) == stream_type:
+                    found.append(getattr(stream, "language", None))
+    return _uniq(found)
+
+
+def _iter_metadata_batches(section, rating_keys, chunk_size):
+    """Full metadata for the given keys, ``ceil(N/chunk)`` fetches exactly.
+
+    The seam is plexapi's own list-of-ints translation: ``fetchItems`` turns a
+    list of ints into ``/library/metadata/{k1,k2,...}`` (base.py:334-335). A
+    non-numeric key raises ValueError: rating keys handed here come off
+    plexapi items and are always numeric, so a failure to parse is a caller
+    bug, not a library state. BLOCKING -- callers on the event loop go
+    through ``asyncio.to_thread`` (``collections/enrichment.py`` does).
+    """
+    keys = [int(key) for key in rating_keys]
+    for start in range(0, len(keys), chunk_size):
+        yield from section.fetchItems(keys[start:start + chunk_size])
+
+
+def fetch_tag_index(
+    section, rating_keys, chunk_size: int = TAG_BATCH_CHUNK
+) -> dict[str, ItemTags]:
+    """``{rating_key: ItemTags}`` for every key Plex still answers.
+
+    A key in the request but not the result is an item Plex no longer holds
+    (or held back): the caller decides what that means -- a ``filters:``
+    enrichment REFUSES the definition rather than evaluating without it.
+    Plain data out: nothing returned is a plexapi object, the same
+    discipline as ``SectionItem``.
+    """
+    index: dict[str, ItemTags] = {}
+    for item in _iter_metadata_batches(section, rating_keys, chunk_size):
+        rating_key = _safe_attr(item, "ratingKey")
+        if rating_key is None:
+            continue
+        index[str(rating_key)] = ItemTags(
+            genres=_tag_names(item, "genres"),
+            labels=_tag_names(item, "labels"),
+            collections=_tag_names(item, "collections"),
+            audio_languages=_stream_languages(item, 2),
+            subtitle_languages=_stream_languages(item, 3),
+        )
+    return index
+
+
 @dataclass(frozen=True)
 class _RawMatch:
     """Plain data extracted from a matched ``plexapi`` item, inside the search thread.
