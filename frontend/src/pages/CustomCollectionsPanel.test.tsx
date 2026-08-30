@@ -257,18 +257,24 @@ describe("the custom collections panel", () => {
     // The freezing hazard from the other side (facts C1/C3): the write is
     // seeded from the STORED document, never from the listing, so a row the
     // listing shows but the overrides document does not hold cannot reach the
-    // payload. Here the guard is not in play — every listed row is an
-    // override — and the file's own "Hand Picked" is nowhere in the document.
+    // payload. Driven through Remove (the guard does not disable it) with a
+    // genuinely mixed listing, so "Hand Picked" is on screen and provenance
+    // "file" — the only way it could be absent from the payload is because
+    // the write never reads the listing at all. The `toEqual` also pins
+    // `overrideOrdinal`'s counting: a raw index (2) would filter nothing and
+    // leave both stored entries, instead of dropping "Weekly Watched" at its
+    // true override-only ordinal (1).
     const { puts } = await renderPanel({
-      definitions: listing(OVERRIDE_ROWS),
+      definitions: listing([FILE_ROW, ...OVERRIDE_ROWS]),
       config: overriddenConfig(),
     });
 
-    await fillAndParse();
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Weekly Watched" }));
 
     await waitFor(() => expect(puts).toHaveLength(1));
-    expect(JSON.stringify(sentDocument(puts))).not.toContain("Hand Picked");
+    const document = sentDocument(puts);
+    expect(document.collections.definitions).toEqual([STORED_ENTRIES[0]]);
+    expect(JSON.stringify(document)).not.toContain("Hand Picked");
   });
 
   it("writes the stored entries, not the listing's seven-field projection", async () => {
