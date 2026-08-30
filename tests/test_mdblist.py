@@ -248,6 +248,36 @@ async def test_the_first_ask_after_rollover_reaches_the_transport_again(session)
     assert [(kind, entry["title"]) for kind, entry in items] == [("movie", "Dune")]
 
 
+async def test_a_non_limit_error_body_is_cached_on_purpose(session):
+    """The inverse of the two tests above, and the reason they are narrow.
+    ``_not_a_limit_body`` vetoes the cache write for the daily-budget refusal
+    ONLY; a list that was deleted or made private also answers 200 with an
+    error body, and THAT one is written to the cache deliberately -- a stable
+    answer whose caching saves budget, the analogue of the 404 ``fetch_json``
+    has always cached. Pinned here because the veto could otherwise be
+    widened to every error body in a single edit (``if payload.get("error")``
+    in place of the ``in _LIMIT_ERRORS`` membership) with the whole suite
+    still green, turning one dead definition into a repeated request every
+    pass for the entire TTL."""
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"error": "List not found"})
+
+    cache = ProviderCache(session_factory_for(session))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = MDBListClient("KEY", http, cache=cache, cache_ttl_seconds=3600)
+        with pytest.raises(MDBListRefused):
+            await client.list_items("user/gone-list")
+        with pytest.raises(MDBListRefused):
+            await client.list_items("user/gone-list")
+
+    rows = (await session.execute(select(ProviderCacheRow))).scalars().all()
+    assert len(rows) == 1, "a non-limit error body stays cacheable on purpose"
+    assert len(calls) == 1, "the second ask must be served from the cache"
+
+
 def test_a_mediatype_value_mdblist_has_never_served_raises():
     """Fix round, finding 1: ``parse_list_items`` accepted any ``mediatype``
     string and left filtering to the builder, which compares it to the one
