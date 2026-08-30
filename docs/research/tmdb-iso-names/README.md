@@ -181,7 +181,7 @@ independent facts, all above:
   after 2026-08-29. Phase A — the commit that first reads `origin_country`,
   `original_language` and the collection id off the TMDb payload and persists
   them (`253519e`, `2026-08-29T19:21:58+03:00` = `16:21Z`, on `main`) — landed
-  **more than 27 hours after** the last write. Deploys here are Flux-automated,
+  **26 hours after** the last write (`26:21:05`, from the two timestamps above). Deploys here are Flux-automated,
   so production has been running Phase A code since roughly `2026-08-29 16:30Z`;
   the deployed schema confirms the rollout independently (all three `tmdb_*`
   columns present in the `DIAGCOL` list above, and `media_items.facts_attempted_at`
@@ -209,16 +209,25 @@ So hypothesis (b) — "the sweep runs but the writer never populates these field
 — is **excluded by measurement**, not set aside by argument.
 
 **How long the fill takes.** The refill is the ratings-drift sweep
-(`scheduler/jobs.py:211,216`), and its pace is the reason the columns will stay
-empty for a while yet. It ticks every `drift_days = 7` (`config/schema.py:1078`)
+(`scheduler/jobs.py:211,216`), and its pace decides how long the columns stay
+empty. It ticks every `drift_days = 7` (`config/schema.py:1078`)
 and enqueues at most `drift_batch_size = 500` items per tick
 (`config/schema.py:1082`) whose facts are older than `drift_max_age_days = 7`
-(`config/schema.py:1083`). Every one of the 13590 fact rows was written in the
-2026-08-23 21:50Z – 2026-08-28 14:00Z backfill window, so rows only begin
-ageing past the 7-day threshold from ~2026-08-30 onward; at 500 per weekly tick,
-a full revisit of 13590 rows is ≈28 ticks, on the order of **six months** at the
-default knobs. The 1961 movie rows the two location packs serve fill on the same
-schedule, interleaved with everything else.
+(`config/schema.py:1083`).
+
+The candidate pool is **not** the 13590 fact rows, and getting that denominator
+right is what makes this number safe to repeat to an operator. The sweep selects
+`MediaItem.kind IN ('movie', 'show')` (`scheduler/jobs.py:161`); seasons and
+episodes are deliberately excluded and ride their parent's pass
+(`jobs.py:131-132`). So the population is **1961 movies + 291 shows = 2252
+items** — corroborated by this document's own capture, where `SRC genres tmdb
+2252` is exactly that parent count. Every one of the 13590 fact rows was written
+in the 2026-08-23 21:50Z – 2026-08-28 14:00Z backfill window, so rows only begin
+ageing past the 7-day threshold from ~2026-08-30 onward; at 500 candidates per
+weekly tick, a full revisit is `ceil(2252 / 500)` = **5 ticks ≈ 5 weeks** at the
+default knobs. The 1961 movie rows the two location packs serve sit inside that
+population, so pack membership substantially fills within about a month — not
+the half-year a 13590-row denominator would predict.
 
 **What this means for the packs.** The Addendum's binding disclosure — that
 membership *converges as the drift sweep fills `origin_country`* — is honest: the
@@ -302,8 +311,8 @@ the forbidden move.
 
 | spelling | artifact | where |
 | --- | --- | --- |
-| `Faeroe Islands` | `.superpowers/sdd/p-locnames-countries.json` (TMDb `/configuration/countries`, sha256 `fb4609a1…`) | the `FO` record's `english_name`, byte offset 5412 |
-| `Faroe Islands` | *the same TMDb record*, `native_name` | byte offset 5412, same object |
+| `Faeroe Islands` | `.superpowers/sdd/p-locnames-countries.json` (TMDb `/configuration/countries`, sha256 `fb4609a1…`) | the `FO` record's `english_name`; the record object begins at byte offset 5398 (the `"FO"` token itself is at 5412) |
+| `Faroe Islands` | *the same TMDb record*, `native_name` | the same object at 5398 |
 | `Faroe Islands` | `.superpowers/kometa-v2.4.8/region.yml` (sha256 `9409fee7…`) | line 328, an addon member of group `Northern Europe` (key at line 321) |
 | `Faroe Islands` | `.superpowers/kometa-v2.4.8/continent.yml` (sha256 `fbc20666…`) | line 315, an addon member of group `Europe` (key at line 291) |
 
