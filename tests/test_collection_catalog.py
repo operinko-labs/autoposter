@@ -32,7 +32,7 @@ from pydantic import ValidationError
 
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
-from autoposter.collections import catalog, packs
+from autoposter.collections import catalog, iso_names, packs
 from autoposter.collections.builders import REGISTRY
 from autoposter.collections.builders.imdb_award import EVENTS
 from autoposter.collections.catalog import (
@@ -856,11 +856,19 @@ def _rendered_formats(
     serves. Defaults to the sentinel no real value can be, for the
     family-vs-family check below; the cs_bucket check passes
     ``_BUCKET_SHAPED_KEY`` instead, since that comparison needs a
-    substitution that CAN equal a real title."""
+    substitution that CAN equal a real title.
+
+    Either engine's type table, because the collision check below spans both
+    (task-3 review, Important 1): the two tables are separate for the reasons
+    ``facts_family.py``'s docstring gives, but both rows carry the ``name`` and
+    ``title_format`` this needs, and ``family_titles`` renders both families
+    through the same ``render_title``. A type in neither table raises here
+    rather than rendering something nothing builds."""
     from autoposter.collections.dynamic_titles import render_title
     from autoposter.collections.dynamic_types import DYNAMIC_TYPES
+    from autoposter.collections.facts_family import FACTS_FAMILY_TYPES
 
-    row = DYNAMIC_TYPES[params["type"]]
+    row = DYNAMIC_TYPES.get(params["type"]) or FACTS_FAMILY_TYPES[params["type"]]
     return [
         (
             library_type,
@@ -877,7 +885,44 @@ def _rendered_formats(
     ]
 
 
-def _assert_no_two_formats_collide(rows) -> None:
+# The preset-key pairs allowed to render ONE format on one library type, as
+# frozenset literals -- pinned, not derived, so a pair that is not one of these
+# fails the guard loudly and has to be argued for here (task-3 review,
+# Important 1, which is also the review that widened this guard past the
+# dynamic packs it could see to the facts-enumerated ones it could not).
+#
+# All four packs below title with the bare ``<<key_name>>`` on Movie, which is
+# Kometa's own format for every one of them. So these are not collisions to fix
+# by renaming a transcription: they are rows 135/162's documented residual --
+# families whose formats agree, colliding only where their KEY spaces touch --
+# with the touching part measured rather than assumed.
+_ALLOWED_FORMAT_SHARERS: frozenset[frozenset[str]] = frozenset({
+    # MEASURED overlaps, so a certain duplicate title the moment both are
+    # enabled on a library holding such a film, not a hypothetical one:
+    #     country ∩ region    = {Antarctica, Micronesia}
+    #     country ∩ continent = {Antarctica}
+    #     region  ∩ continent = {Antarctica}
+    # Upstream's own region.yml/continent.yml carry `Antarctica` in both files,
+    # so refusing this would mean a NOT KOMETA title on a pack whose whole
+    # claim is that it is a transcription. Disclosed in all three descriptions
+    # instead -- named packs, named titles, named consequence, pinned by
+    # ``test_the_three_location_packs_disclose_the_titles_they_share``.
+    frozenset({"location_country", "location_region"}),
+    frozenset({"location_country", "location_continent"}),
+    frozenset({"location_region", "location_continent"}),
+    # No measured overlap: TMDb franchise names against place names. Allowed
+    # rather than argued away because this guard compares FORMATS and not key
+    # spaces, and `content_franchises` ships no `include:` at all -- its keys
+    # are whatever the library turns out to belong to, so there is no offline
+    # set to intersect. A franchise TMDb names `Antarctica` would collide, and
+    # nothing offline can see it; that is the same residual, stated.
+    frozenset({"content_franchises", "location_country"}),
+    frozenset({"content_franchises", "location_region"}),
+    frozenset({"content_franchises", "location_continent"}),
+})
+
+
+def _assert_no_two_formats_collide(rows, allowed=frozenset()) -> set[frozenset[str]]:
     """The family-vs-family half of the check below, pulled out so the
     red-first proof (``test_the_collision_test_can_actually_fail``) can drive
     the SAME code the real test runs instead of a copy of it (task-4 review,
@@ -888,25 +933,40 @@ def _assert_no_two_formats_collide(rows) -> None:
     co-enabled packs sharing one -- on the same library type -- would build
     the same collection with nobody the wiser, since neither pack's real
     titles appear anywhere offline for the whole-table title test to catch.
+
+    ``allowed`` is the set of key pairs that may share one rendered title, and
+    the default is empty, so a caller that passes nothing gets the flat "no two
+    families may agree" rule this always was. EVERY pair among the packs
+    sharing a title is checked rather than only the first pair seen, so an
+    allowlisted pair cannot shield a third pack behind it; the pairs actually
+    exercised are returned, so the caller can pin the allowlist to reality
+    instead of letting a stale entry sit forever (task-3 review, Important 1).
     """
     from autoposter.collections.dynamic_titles import _other_title
 
-    seen: dict[tuple[str, str], str] = {}
+    seen: dict[tuple[str, str], list[str]] = {}
+    exercised: set[frozenset[str]] = set()
+
+    def _record(library_type: str, rendered: str, key: str) -> None:
+        sharers = seen.setdefault((library_type, rendered), [])
+        for previous in sharers:
+            pair = frozenset({previous, key})
+            assert pair in allowed, (library_type, rendered, previous, key)
+            exercised.add(pair)
+        sharers.append(key)
+
     for preset, _collection, params in rows:
         for library_type, rendered in _rendered_formats(preset, params):
-            previous = seen.get((library_type, rendered))
-            assert previous is None, (library_type, rendered, previous, preset.key)
-            seen[(library_type, rendered)] = preset.key
+            _record(library_type, rendered, preset.key)
 
         other_name = params.get("other_name")
         if other_name:
             for library_type in preset.library_types:
-                other_title = _other_title(other_name, library_type)
-                previous = seen.get((library_type, other_title))
-                assert previous is None, (
-                    library_type, other_title, previous, preset.key,
+                _record(
+                    library_type, _other_title(other_name, library_type), preset.key,
                 )
-                seen[(library_type, other_title)] = preset.key
+
+    return exercised
 
 
 def _assert_no_bucket_collisions(rows) -> None:
@@ -949,6 +1009,16 @@ def test_no_two_families_an_operator_can_co_enable_share_a_title_format():
     runtime values -- is rows 135/162's documented gap and is not caught here
     or anywhere else.
 
+    BOTH engines' rows, not just the dynamic ones (task-3 review, Important 1).
+    Until the location-names phase the facts-enumerated set was one pack and
+    this guard never looked at it; then two more shipped, sharing Kometa's bare
+    ``<<key_name>>`` with the ``Countries`` pack on the same Movie libraries and
+    with measurably overlapping include lists, and the guard could not see a
+    duplicate title that was already certain. The four packs that share that
+    format are allowlisted BY PAIR in ``_ALLOWED_FORMAT_SHARERS``, with the
+    measurement and the reason each is not renamed; anything new that renders
+    into an existing title fails here.
+
     ``cs_bucket``'s static titles are in the comparison because it is a
     shipped family an operator cannot switch off, so a pack that rendered
     into one of its titles would collide with something always present. That
@@ -956,8 +1026,16 @@ def test_no_two_families_an_operator_can_co_enable_share_a_title_format():
     above, because the sentinel can never equal a real bucket title -- see
     ``_assert_no_bucket_collisions``.
     """
-    _assert_no_two_formats_collide(_dynamic_rows())
-    _assert_no_bucket_collisions(_dynamic_rows())
+    rows = _dynamic_rows() + _facts_family_rows()
+
+    exercised = _assert_no_two_formats_collide(rows, _ALLOWED_FORMAT_SHARERS)
+    # No stale entry: an allowlisted pair that no longer shares a title is a
+    # permission nobody needs, and leaving it standing is how the allowlist
+    # would grow into "anything goes" one dead line at a time.
+    assert exercised == _ALLOWED_FORMAT_SHARERS, sorted(
+        sorted(pair) for pair in _ALLOWED_FORMAT_SHARERS - exercised
+    )
+    _assert_no_bucket_collisions(rows)
 
 
 def test_the_collision_test_can_actually_fail():
@@ -1279,6 +1357,56 @@ def test_the_ten_tmdb_spellings_upstream_misses_land_in_their_own_group():
     assert "Palestinian Territory" in region["Western Asia"]
     assert "Faeroe Islands" in continent["Europe"]
     assert "Palestinian Territory" in continent["Asia"]
+
+
+def test_the_three_location_packs_disclose_the_titles_they_share():
+    """The disclosure half of the collision answer (task-3 review, Important 1).
+
+    ``_ALLOWED_FORMAT_SHARERS`` lets these three render one title format
+    because the alternative is a NOT KOMETA rename of a transcription. What an
+    operator gets in exchange is being TOLD, so the telling is pinned here
+    rather than left to survive the next edit of a three-hundred-word row.
+
+    The overlap is re-MEASURED off the shipped include lists rather than
+    restated, so a table that regenerated wider fails this test instead of
+    leaving three descriptions naming yesterday's titles -- and the failure
+    lands next to the allowlist that would then also be understating things.
+    """
+    universes = {
+        key: set(dict(params)["include"])
+        for key, params in (
+            ("location_country", packs.COUNTRY_PARAMS),
+            ("location_region", packs.REGION_PARAMS),
+            ("location_continent", packs.CONTINENT_PARAMS),
+        )
+    }
+
+    assert universes["location_country"] & universes["location_region"] == {
+        "Antarctica", "Micronesia",
+    }
+    assert universes["location_country"] & universes["location_continent"] == {
+        "Antarctica"
+    }
+    assert universes["location_region"] & universes["location_continent"] == {
+        "Antarctica"
+    }
+
+    # Each row names the packs it collides with, the title(s) it collides on,
+    # and the consequence. The consequence is pinned as a substring for the
+    # same reason the coverage story's three assertions are: a row that kept
+    # the word `Antarctica` in some other sentence and dropped the warning
+    # would otherwise still pass.
+    for key, others, shared in (
+        ("location_country", ("Regions", "Continents"), ("Antarctica", "Micronesia")),
+        ("location_region", ("Countries", "Continents"), ("Antarctica", "Micronesia")),
+        ("location_continent", ("Countries", "Regions"), ("Antarctica",)),
+    ):
+        description = catalog.BY_KEY[key].description
+        for other in others:
+            assert other in description, (key, other)
+        for title in shared:
+            assert title in description, (key, title)
+        assert "one title" in description, key
 
 
 # --- the gated rows ----------------------------------------------------------
@@ -2078,6 +2206,31 @@ def test_a_preset_reaches_default_definitions_at_all():
 # --- purity -----------------------------------------------------------------
 
 
+# The roots that can reach the world, in one place because two modules are now
+# held to the same rule (task-3 review, Important 2) and a denylist copied per
+# module is a denylist that grows in one copy only.
+_ROOTS_THAT_REACH_THE_WORLD = {
+    "httpx", "requests", "urllib", "socket", "http",
+    "plexapi", "pathlib", "os", "io", "open",
+    "sqlalchemy", "asyncpg",
+}
+
+
+def _imported_roots(module) -> set[str]:
+    """The top-level package name of every import in ``module``'s source, read
+    off the AST rather than off ``sys.modules``: an import guarded by
+    ``TYPE_CHECKING`` or hidden inside a function still counts, because it is
+    still a line somebody can make run."""
+    tree = ast.parse(pathlib.Path(module.__file__).read_text(encoding="utf-8"))
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            roots.add(node.module.split(".")[0])
+    return roots
+
+
 def test_the_catalog_module_imports_nothing_that_could_reach_the_world():
     """The module docstring's central claim, pinned structurally the way
     ``test_collection_filters.py`` pins ``filters.py``'s: read the import list
@@ -2086,21 +2239,11 @@ def test_the_catalog_module_imports_nothing_that_could_reach_the_world():
     ``_titles_must_not_collide`` runs this expansion on every config write, so
     an import of httpx here is a network call inside config validation -- and
     its failure is a 500 on a settings save."""
-    tree = ast.parse(
-        pathlib.Path(catalog.__file__).read_text(encoding="utf-8")
-    )
-    imported_roots = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported_roots.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported_roots.add(node.module.split(".")[0])
+    imported_roots = _imported_roots(catalog)
 
-    assert imported_roots.isdisjoint({
-        "httpx", "requests", "urllib", "socket", "http",
-        "plexapi", "pathlib", "os", "io", "open",
-        "sqlalchemy", "asyncpg",
-    }), sorted(imported_roots)
+    assert imported_roots.isdisjoint(_ROOTS_THAT_REACH_THE_WORLD), sorted(
+        imported_roots
+    )
 
     # ``packs.py`` is the tables ``catalog.py`` draws its dynamic rows from,
     # and was import-free until the location-names phase gave the two location
@@ -2121,6 +2264,17 @@ def test_the_catalog_module_imports_nothing_that_could_reach_the_world():
             )
 
     assert packs_imports == {"autoposter.collections.iso_names"}, sorted(packs_imports)
+
+    # The property that allow-list DEPENDS on, one hop out (task-3 review,
+    # Important 2). Permitting `iso_names` here is only safe while `iso_names`
+    # itself reaches nothing: an httpx import THERE is the same network call
+    # inside config validation, the same 500 on a settings save, and the
+    # allow-list above would stay green straight through it. The denylist is
+    # the catalog's own, not a count of zero -- `iso_names` imports nothing
+    # today, and a future `dataclasses` there would be nobody's problem.
+    iso_roots = _imported_roots(iso_names)
+
+    assert iso_roots.isdisjoint(_ROOTS_THAT_REACH_THE_WORLD), sorted(iso_roots)
 
 
 def test_expanding_every_preset_reaches_no_network(monkeypatch):
