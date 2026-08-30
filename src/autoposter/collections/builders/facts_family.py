@@ -324,9 +324,14 @@ class FactsFamilyBuilder:
             # Row 190: only the TITLE renders through the table; the KEY
             # stays the code, so include/exclude/addons and both override
             # tables keep speaking ISO -- and a code with no entry titles as
-            # the code, upstream's own fallback branch.
+            # the code, upstream's own fallback branch. ``language_title``
+            # rather than ``language_name`` because the key staying the code is
+            # exactly what stops two codes sharing a name from collapsing the
+            # way `Congo` does above: it appends the code where the vendored
+            # table is ambiguous, so `nr`/`nd` build two collections instead of
+            # refusing the whole family (`iso_names`' docstring carries it).
             enumerated = [
-                (value, iso_names.language_name(value) or value)
+                (value, iso_names.language_title(value) or value)
                 for value, _count in counted
             ]
         else:

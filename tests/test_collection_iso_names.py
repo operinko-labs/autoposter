@@ -80,6 +80,36 @@ def test_the_lookups_normalise_case_and_answer_none_for_the_unknown():
     assert iso_names.language_name("not a code") is None
 
 
+def test_a_language_name_two_codes_share_titles_with_its_code_appended():
+    """The mirror of the countries' `Congo`, on the seam where the protective
+    collapse does NOT happen: `original_language` keys on the CODE, so two
+    codes sharing a name would reach `family_titles` as two keys claiming one
+    title and refuse the whole family. `language_title` appends the code; only
+    where the table is actually ambiguous, and `language_name` is untouched."""
+    shared = {name for name in iso_names.LANGUAGE_NAMES.values()
+              if list(iso_names.LANGUAGE_NAMES.values()).count(name) > 1}
+    assert shared == {"Ndebele"}, shared  # measured, not recalled
+    assert iso_names.LANGUAGE_NAMES["nr"] == iso_names.LANGUAGE_NAMES["nd"]
+    assert iso_names.language_title("nr") == "Ndebele (nr)"
+    assert iso_names.language_title("ND") == "Ndebele (nd)"
+    # ...and TMDb's bytes still answer as themselves.
+    assert iso_names.language_name("nr") == "Ndebele"
+    # Every other code -- 185 of the 187 -- titles as its plain name, and an
+    # unknown code answers None so the family falls back to the bare code.
+    unshared = [c for c, n in iso_names.LANGUAGE_NAMES.items() if n not in shared]
+    assert len(unshared) == 185
+    for code in unshared:
+        assert iso_names.language_title(code) == iso_names.LANGUAGE_NAMES[code], code
+    assert iso_names.language_title("not a code") is None
+
+
+def test_every_language_title_is_unique_so_no_family_can_refuse_itself():
+    """The invariant the disambiguator exists to hold: no two codes can claim
+    one title, which is the precondition `family_titles` raises on."""
+    titles = [iso_names.language_title(code) for code in iso_names.LANGUAGE_NAMES]
+    assert len(set(titles)) == len(titles) == 187
+
+
 def test_the_reverse_fold_answers_every_vendored_name():
     """`country_codes` must be total over the table: every vendored name folds
     back to (at least) its own code, and an unknown name folds to nothing --

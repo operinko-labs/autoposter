@@ -148,6 +148,27 @@ async def test_a_language_family_titles_from_the_vendored_table(session):
     assert units[0].params == {"field": "original_language", "values": ["en"]}
 
 
+async def test_two_languages_that_share_one_name_both_build_and_neither_refuses(session):
+    """The Congo hazard's mirror, on the seam where the collapse does not save
+    it. TMDb gives `nr` and `nd` one `english_name`; `names="titles"` keys on
+    the CODE, so both reach `family_titles` and would claim the title
+    `Ndebele` -- a `DuplicateFamilyTitle` the builder turns into `return []`
+    for EVERY collection in the family. `language_title` appends the code, so
+    both build, the keys and the membership queries stay ISO, and the family
+    survives."""
+    assert iso_names.LANGUAGE_NAMES["nr"] == iso_names.LANGUAGE_NAMES["nd"]
+    await _item(session, "1", tmdb_original_language="nr")
+    await _item(session, "2", tmdb_original_language="nd")
+    await _item(session, "3", tmdb_original_language="nr")
+    definition = _definition(
+        title="Original languages", params={"type": "original_language"},
+    )
+    units = await FactsFamilyBuilder().expand(_ctx(session, definition))
+    assert [unit.title for unit in units] == ["Ndebele (nr)", "Ndebele (nd)"]
+    assert units[0].params == {"field": "original_language", "values": ["nr"]}
+    assert units[1].params == {"field": "original_language", "values": ["nd"]}
+
+
 async def test_a_language_familys_narrowing_still_speaks_the_code(session):
     await _item(session, "1", tmdb_original_language="en")
     await _item(session, "2", tmdb_original_language="fi")

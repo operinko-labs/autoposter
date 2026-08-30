@@ -37,6 +37,23 @@ region.yml, ``Africa`` in continent.yml), so no item is mis-grouped and only the
 displayed key is lossy. Recorded here so it is met knowingly rather than
 rediscovered.
 
+**One LANGUAGE name is not unique to one code either, and that one is not
+harmless.** TMDb gives both ``nr`` and ``nd`` the ``english_name`` ``Ndebele``
+-- the only duplicate in the 187. ``Congo`` above is survivable because
+``origin_country`` keys on the NAME (``names="keys"``), so its two codes
+collapse to one key BEFORE the title layer ever sees them.
+``original_language`` keys on the CODE (``names="titles"``, row 190), so
+nothing collapses: ``family_titles`` would see two keys claiming the one title
+``Ndebele`` and raise ``DuplicateFamilyTitle``, which the builder turns into
+``return []`` for the WHOLE family -- every language collection, not just the
+clashing pair. ``language_title`` closes that by appending the code to a name
+more than one code carries (``Ndebele (nr)``, ``Ndebele (nd)``). The suffix is
+OURS, but it invents no vocabulary: it is the family key itself, the string
+every narrowing knob already speaks. It is a property of the TABLE, not of a
+library's enumeration, so a scan holding only one Ndebele titles it the same
+way -- stable across passes, and never silently claiming the other one.
+``language_name`` still answers TMDb's bytes unchanged.
+
 **``COUNTRY_NAME_ALIASES`` is OURS** -- the one table in this module that is not
 TMDb's bytes. 10 of the 251 fetched country names are
 spelled differently by Kometa's grouping tables, so a family key carrying TMDb's
@@ -70,6 +87,7 @@ __all__ = [
     "country_codes",
     "country_name",
     "language_name",
+    "language_title",
 ]
 
 # /configuration/countries, verbatim, fetched order.
@@ -539,6 +557,17 @@ for _code, _name in COUNTRY_NAMES.items():
     _CODES_BY_NAME[_name] = _CODES_BY_NAME.get(_name, ()) + (_code,)
 del _code, _name
 
+# Measured from the table, never typed: the language names more than one code
+# carries. ``Ndebele`` (``nr``/``nd``) is the only one today, and a
+# regeneration that adds or drops a clash needs no edit here.
+_LANGUAGE_NAME_COUNTS: dict[str, int] = {}
+for _name in LANGUAGE_NAMES.values():
+    _LANGUAGE_NAME_COUNTS[_name] = _LANGUAGE_NAME_COUNTS.get(_name, 0) + 1
+_SHARED_LANGUAGE_NAMES: frozenset[str] = frozenset(
+    name for name, count in _LANGUAGE_NAME_COUNTS.items() if count > 1
+)
+del _name, _LANGUAGE_NAME_COUNTS
+
 
 def country_name(code: str) -> str | None:
     """TMDb's English name for an ISO-3166-1 alpha-2 code, or None."""
@@ -548,6 +577,31 @@ def country_name(code: str) -> str | None:
 def language_name(code: str) -> str | None:
     """TMDb's English name for an ISO-639-1 code, or None."""
     return LANGUAGE_NAMES.get(str(code).lower())
+
+
+def language_title(code: str) -> str | None:
+    """What a language code may safely TITLE a collection, or None.
+
+    ``language_name`` answers TMDb's bytes and only those. This answers the
+    same string EXCEPT where the vendored table gives one name to more than one
+    code, where it appends the code -- ``Ndebele (nr)``, ``Ndebele (nd)``.
+    The module docstring says why that matters on this seam and not on the
+    countries one: ``names="titles"`` keys on the CODE, so two codes sharing a
+    name reach ``family_titles`` as two keys claiming one title and refuse the
+    whole family rather than collapsing into one collection.
+
+    Deliberately a property of the TABLE and not of any one enumeration: a
+    library holding only ``nr`` still gets ``Ndebele (nr)``. A collision-time
+    rule would read a set the include/exclude narrowing has not been applied to
+    yet, so the same code could title two ways in two scans. ``title_override:
+    {nr: …}`` renames it by hand, as it renames any key.
+    """
+    name = language_name(code)
+    if name is None:
+        return None
+    if name in _SHARED_LANGUAGE_NAMES:
+        return "%s (%s)" % (name, str(code).lower())
+    return name
 
 
 def country_codes(name: str) -> tuple[str, ...]:
