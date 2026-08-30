@@ -78,7 +78,12 @@ BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master"
         ("content_rating", "17", f"{BASE}/content_rating/cs/17.jpg"),
         ("content_rating", "1", f"{BASE}/content_rating/cs/1.jpg"),
         ("content_rating_other", "", f"{BASE}/content_rating/cs/NR.jpg"),
-        ("separator", "content_rating", f"{BASE}/separators/orig/content_rating.jpg"),
+        # Style-scoped since C4, the award kinds' idiom: the style half names
+        # the folder, so the shipped default and a picked style are the same
+        # code path rather than a hardcoded ``orig`` and an exception to it.
+        ("separator", "orig:content_rating",
+         f"{BASE}/separators/orig/content_rating.jpg"),
+        ("separator", "sand:chart", f"{BASE}/separators/sand/chart.jpg"),
     ],
 )
 def test_hosted_urls_match_the_verified_paths(kind, key, expected):

@@ -127,11 +127,13 @@ _AWARD_YEARS_SUFFIX = "_award_years"
 
 # The ``Default-Images`` separator artwork stem for each group, as MEASURED --
 # see ``docs/research/collection-sort-probe/README.md``. Three of the ten
-# resolved; the other seven have no upstream art and get no poster, which is
-# graceful by construction: ``posters.hosted_poster_url`` returns None for a key
-# it cannot build a path for, and ``apply_poster`` reads None as "leave the
-# poster alone" rather than guessing a URL that would 404 and leave the
-# collection quietly bare.
+# resolved, and those three are the hosted half of the hybrid: upstream's own
+# art whose baked-in word matches our divider's title, so fetching it is exact
+# and costs nothing. The other seven have no such art -- upstream names its
+# separators by defaults FILE, not by category, so mapping them to near-miss
+# art would put GENRE on a divider titled "Content Collections". They are
+# GENERATED instead (``separator_art.py``), which ``separator_poster_key``
+# marks with a leading '@'.
 SEPARATOR_POSTER_KEYS: dict[str, str] = {
     "charts": "chart",
     "awards": "award",
@@ -141,6 +143,45 @@ SEPARATOR_POSTER_KEYS: dict[str, str] = {
     # comes from -- so this row is the source of that key, not a copy of it.
     "content_ratings": "content_rating",
 }
+
+# The 22 separator colour styles, exactly upstream's ``sep_style`` values --
+# TRANSCRIBED from ``$colors`` at ``create_default_posters.ps1:5538`` in
+# ``Kometa-Team/Defaults-Image-Creation@a9e02e9``, and confirmed against the
+# contents-API listing of ``Default-Images/separators/``, which agrees exactly
+# (2026-08-30, ``.superpowers/sdd/p-div-font.md`` §2d). ``@base`` is
+# deliberately absent: it is the TEXTLESS layer generation draws on, not a
+# style an operator can pick. Sorted, and a test pins that, so a future
+# addition files predictably.
+SEPARATOR_STYLES: tuple[str, ...] = (
+    "amethyst", "aqua", "blue", "forest", "fuchsia", "gold", "gray", "green",
+    "navy", "ocean", "olive", "orchid", "orig", "pink", "plum", "purple",
+    "red", "rust", "salmon", "sand", "stb", "tan",
+)
+
+# The marker a generated poster key's stem starts with. '@' because no hosted
+# stem can start with it (upstream's only '@' entry is the @base folder
+# itself), so the two kinds cannot collide in one namespace.
+GENERATED_STEM_PREFIX = "@"
+
+
+def separator_poster_key(group: str, config) -> str:
+    """``"<style>:<stem>"`` -- one string naming both the art and the style.
+
+    The style lives IN the key -- ``hosted_poster_url``'s own award idiom
+    (``"<event>:<stem>"``) -- so that function stays pure and config-free, and
+    so the key can fold into ``separator_hash``: a style change then reads as
+    a definition change, which is what makes it rewrite once and settle
+    (``reconcile.py``'s short-circuit would otherwise never re-poster). A
+    group with a measured upstream stem keeps it; every other group gets the
+    generated marker, ``"<style>:@<group>"``, which ``reconcile_separator``
+    routes to ``separator_art`` and ``hosted_poster_url`` refuses.
+    """
+    style = getattr(config.collections, "separator_style", None) or "orig"
+    stem = SEPARATOR_POSTER_KEYS.get(group)
+    if stem is None:
+        stem = GENERATED_STEM_PREFIX + group
+    return "%s:%s" % (style, stem)
+
 
 # The ordering key a leftovers/other bucket takes, so it files after the
 # buckets that name something. OURS (NOT_KOMETA, LAW Addendum 3): Kometa's own
@@ -493,7 +534,7 @@ def separator_specs(definitions, library_type: str, config) -> list[SeparatorSpe
             title=separator_title(group),
             summary=separator_summary(group),
             sort_title=separator_sort_title(group, order),
-            poster_key=SEPARATOR_POSTER_KEYS.get(group),
+            poster_key=separator_poster_key(group, config),
         )
         for group in separator_groups(definitions, library_type, config)
     ]

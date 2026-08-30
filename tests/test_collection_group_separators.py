@@ -160,13 +160,29 @@ class FakeSection:
         return list(getattr(self, "items", []))
 
 
-def spec(group="charts", order=groups.CANONICAL_ORDER):
+def spec(group="charts", order=groups.CANONICAL_ORDER, config=None):
+    cfg = config or SimpleNamespace(
+        collections=SimpleNamespace(separator_style="orig")
+    )
     return groups.SeparatorSpec(
         group=group,
         title=groups.separator_title(group),
         summary=groups.separator_summary(group),
         sort_title=groups.separator_sort_title(group, order),
-        poster_key=groups.SEPARATOR_POSTER_KEYS.get(group),
+        poster_key=groups.separator_poster_key(group, cfg),
+    )
+
+
+def wanted_hash(target):
+    """The digest ``reconcile_separator`` computes for this spec.
+
+    Spelled once here because every spec carries a poster key since the hybrid,
+    so the fourth component is never absent in these tests -- and a test that
+    recomputed it three-argument would be asserting the pre-C4 payload while
+    reading like the current one.
+    """
+    return separator_hash(
+        target.title, target.summary, target.sort_title, target.poster_key or ""
     )
 
 
@@ -196,9 +212,7 @@ async def test_a_missing_separator_is_created_with_its_groups_sort_title(session
 
     row = (await session.execute(select(ManagedCollection))).scalars().one()
     assert (row.title, row.kind) == ("Chart Collections", "separator")
-    assert row.definition_hash == separator_hash(
-        target.title, target.summary, target.sort_title
-    )
+    assert row.definition_hash == wanted_hash(target)
 
 
 async def test_a_current_separator_writes_nothing(session):
@@ -208,7 +222,7 @@ async def test_a_current_separator_writes_nothing(session):
     row = ManagedCollection(
         library="Movies", title="Chart Collections", kind="separator",
         plex_rating_key="1",
-        definition_hash=separator_hash(target.title, target.summary, target.sort_title),
+        definition_hash=wanted_hash(target),
     )
     session.add(row)
     await session.flush()
@@ -335,23 +349,30 @@ async def test_a_foreign_looking_sort_title_is_corrected_not_read_as_ownership(s
     assert theirs.sort_title_set == "!010_!Chart Collections"
 
 
-async def test_a_group_with_no_measured_artwork_gets_no_poster(session, config_factory,
+async def test_generation_unavailable_reports_no_poster_source(session, config_factory,
                                                                tmp_path):
-    """Seven of the ten groups have no ``Default-Images`` separator stem, so
-    their spec carries ``poster_key=None`` and the poster step is not reached at
-    all -- no request, and no guessed URL that would 404 and leave the
-    collection quietly bare."""
+    """The graceful half of the hybrid. A group with no upstream stem carries a
+    GENERATED key now (``orig:@operator``) rather than ``None``; when the art
+    cannot be produced -- here because nothing answers for the ``@base`` layer
+    -- ``hosted_poster_url`` refuses the '@' stem, the divider reports "no
+    poster source", and ``poster_sha256`` stays NULL so a later pass retries.
+    The same posture as a 404ing hosted default, and what the golden harness
+    records for the fence."""
     config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
     target = spec(groups.OPERATOR_GROUP)
-    assert target.poster_key is None
+    assert target.poster_key == "orig:@operator"
 
     async def handler(request):
-        raise AssertionError("a group with no measured stem must not be fetched for")
+        return httpx.Response(404, text="not found")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         actions = await run(session, FakeSection(), target, http=http, config=config)
 
-    assert actions == ["created 'Collections'"]
+    assert actions == [
+        "created 'Collections'",
+        "no poster source for 'Collections'",
+    ]
     row = (await session.execute(select(ManagedCollection))).scalars().one()
     assert row.poster_sha256 is None
 
@@ -420,7 +441,7 @@ async def test_the_engine_hands_a_separator_its_poster(session, config_factory, 
         )
 
     assert [result.title for result in results] == ["Ratings Collections"]
-    assert seen == [hosted_poster_url("separator", "content_rating")]
+    assert seen == [hosted_poster_url("separator", "orig:content_rating")]
     assert section._collections["Ratings Collections"].uploaded == [data]
 
 
@@ -516,3 +537,93 @@ async def test_a_switched_off_groups_separator_sweeps_like_any_other_orphan(sess
         "Chart Collections" in action
         for result in results for action in result.actions
     )
+
+
+def test_hosted_separator_urls_carry_the_style_and_refuse_generated_stems():
+    assert hosted_poster_url("separator", "orig:chart") == (
+        "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master"
+        "/separators/orig/chart.jpg"
+    )
+    assert hosted_poster_url("separator", "sand:chart") == (
+        "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master"
+        "/separators/sand/chart.jpg"
+    )
+    # A generated stem has no hosted path -- None, never a guessed URL.
+    assert hosted_poster_url("separator", "orig:@content") is None
+    # An unknown style is refused the same way (the config validator is the
+    # loud refusal; this is the quiet belt behind it).
+    assert hosted_poster_url("separator", "taupe:chart") is None
+    # The pre-style bare key no longer resolves: nothing composes it any more,
+    # and a silent orig-fallback would hide a composition bug.
+    assert hosted_poster_url("separator", "chart") is None
+
+
+def test_the_poster_key_folds_into_the_separator_hash():
+    base = separator_hash(SHIPPED_TITLE, SHIPPED_SUMMARY, SHIPPED_SORT_TITLE)
+    # No key -> the shipped digest, byte for byte: the pin survives.
+    assert base == SHIPPED_HASH
+    keyed = separator_hash(
+        SHIPPED_TITLE, SHIPPED_SUMMARY, SHIPPED_SORT_TITLE, "orig:content_rating"
+    )
+    assert keyed != base
+    # Style change -> different hash -> the pass has work; same style -> same
+    # hash -> it settles. This is the whole C4 mechanism.
+    sand = separator_hash(
+        SHIPPED_TITLE, SHIPPED_SUMMARY, SHIPPED_SORT_TITLE, "sand:content_rating"
+    )
+    assert sand not in (base, keyed)
+    assert keyed == separator_hash(
+        SHIPPED_TITLE, SHIPPED_SUMMARY, SHIPPED_SORT_TITLE, "orig:content_rating"
+    )
+    # An empty key is the no-key case, not a fourth component of "": that is
+    # what keeps SHIPPED_HASH reproducible while every LIVE divider, whose spec
+    # always carries a key, re-hashes exactly once.
+    assert separator_hash(SHIPPED_TITLE, SHIPPED_SUMMARY, SHIPPED_SORT_TITLE, "") == base
+
+
+async def test_a_style_change_rewrites_once_and_settles(session, config_factory,
+                                                        tmp_path):
+    """C4's whole point, as behaviour. Pass 1 under orig posters the chart
+    divider; the style flips to sand; pass 2 has work (the key is in the
+    hash), rewrites, fetches the sand art, uploads once; pass 3 writes
+    nothing. A HOSTED group so no magick is involved -- the generated half
+    settles through the identical hash/sha mechanics."""
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+
+    def image_bytes(color):
+        buffer = io.BytesIO()
+        Image.new("RGB", (4, 4), color).save(buffer, format="JPEG")
+        return buffer.getvalue()
+
+    bodies = {"orig": image_bytes("red"), "sand": image_bytes("yellow")}
+
+    async def handler(request):
+        url = str(request.url)
+        style = "sand" if "/separators/sand/" in url else "orig"
+        return httpx.Response(200, content=bodies[style])
+
+    section = FakeSection()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        first = await run(session, section, spec("charts"), http=http, config=config)
+        made = section._collections["Chart Collections"]
+        existing = {"Chart Collections": made}
+        stored = {
+            row.title: row
+            for row in (await session.execute(select(ManagedCollection))).scalars()
+        }
+
+        config.collections.separator_style = "sand"
+        sand_spec = spec("charts", config=SimpleNamespace(collections=config.collections))
+        assert sand_spec.poster_key == "sand:chart"
+
+        second = await run(session, section, sand_spec, existing=existing,
+                           stored=stored, http=http, config=config)
+        third = await run(session, section, sand_spec, existing=existing,
+                          stored=stored, http=http, config=config)
+
+    assert first[0] == "created 'Chart Collections'"
+    assert second[0] == "updated 'Chart Collections'"
+    assert any("set the poster" in action for action in second)
+    assert made.uploaded[-1] == bodies["sand"]
+    assert third == []

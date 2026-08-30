@@ -205,7 +205,7 @@ def test_separator_specs_cover_the_groups_present_in_order():
     assert specs[1].sort_title == "!030_!Ratings Collections"
 
 
-def test_separator_specs_carry_the_measured_poster_key_or_none():
+def test_separator_specs_carry_a_style_bearing_poster_key_for_every_group():
     definitions = [
         CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket"),
         CollectionDefinition(title="Hand Picked", builder="plex_all"),
@@ -214,10 +214,10 @@ def test_separator_specs_carry_the_measured_poster_key_or_none():
         spec.group: spec.poster_key
         for spec in groups.separator_specs(definitions, "Movie", config())
     }
-    assert by_group["content_ratings"] == "content_rating"
-    # Task 1 measured no separators/orig stem for the operator group; no poster
-    # is the graceful answer, not a guessed URL that 404s.
-    assert by_group[groups.OPERATOR_GROUP] is None
+    assert by_group["content_ratings"] == "orig:content_rating"
+    # The operator group has no measured upstream stem (the recon's inventory);
+    # it GENERATES now instead of going bare -- the '@' marks the kind.
+    assert by_group[groups.OPERATOR_GROUP] == "orig:@operator"
 
 
 def test_the_measured_poster_keys_are_the_three_that_returned_200():
@@ -832,3 +832,41 @@ def test_sort_prefix_for_threads_the_parent_through():
     assert groups.sort_prefix_for(
         unit, {}, groups.CANONICAL_ORDER, parent="content"
     ) == groups.sort_prefix("content", groups.CANONICAL_ORDER)
+
+
+# --- the style-bearing poster key (C4) ---------------------------------------
+
+
+def test_the_poster_key_carries_the_style_and_the_art_kind():
+    """Hosted groups keep their measured stem behind the style; every other
+    group gets the generated marker -- '<style>:@<group>' -- so one key names
+    both which art and which style, and folding it into the separator hash is
+    what makes a style change a definition change."""
+    cfg = config()
+    assert groups.separator_poster_key("charts", cfg) == "orig:chart"
+    assert groups.separator_poster_key("content_ratings", cfg) == "orig:content_rating"
+    assert groups.separator_poster_key("content", cfg) == "orig:@content"
+    assert groups.separator_poster_key("operator", cfg) == "orig:@operator"
+    sand = config(separator_style="sand")
+    assert groups.separator_poster_key("charts", sand) == "sand:chart"
+    assert groups.separator_poster_key("media", sand) == "sand:@media"
+
+
+def test_the_22_styles_are_the_measured_folder_names():
+    # p-div-font.md §2d: `$colors` at create_default_posters.ps1:5538 and the
+    # contents-API listing of separators/ agree exactly, 2026-08-30 -- @base
+    # excluded (it is the textless layer, not a style).
+    assert len(groups.SEPARATOR_STYLES) == 22
+    assert "orig" in groups.SEPARATOR_STYLES
+    assert "@base" not in groups.SEPARATOR_STYLES
+    assert groups.SEPARATOR_STYLES == tuple(sorted(groups.SEPARATOR_STYLES))
+
+
+def test_separator_style_is_validated_against_the_styles():
+    assert CollectionsConfig().separator_style == "orig"
+    assert CollectionsConfig(separator_style="sand").separator_style == "sand"
+    with pytest.raises(ValidationError) as caught:
+        CollectionsConfig(separator_style="taupe")
+    message = str(caught.value)
+    assert "taupe" in message
+    assert "sand" in message  # the refusal lists the valid set

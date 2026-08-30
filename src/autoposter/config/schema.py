@@ -699,6 +699,14 @@ class CollectionsConfig(BaseModel):
     # numbers derive from position, so changing this re-writes the sort title
     # of every collection this service manages, once, on the next pass.
     group_order: list[str] | None = None
+    # Which of upstream's 22 separator colour styles the dividers wear --
+    # "orig" is upstream's own default and the shipped value, so an untouched
+    # config changes nothing on upgrade. Governs BOTH art kinds: the three
+    # groups with matching upstream art fetch from this style's folder, and
+    # every other divider is generated from this style's textless @base layer.
+    # Changing it re-writes and re-posters every divider once on the next
+    # pass, then settles (the key is part of the separator's definition hash).
+    separator_style: str = "orig"
     # Take over collections created by a tool this service replaces. Off by
     # default: it is a Plex write against collections we did not create, and
     # it should happen once, deliberately, as part of cutover.
@@ -835,6 +843,22 @@ class CollectionsConfig(BaseModel):
                     f"unknown collection group {name!r}: the groups are "
                     + ", ".join(CANONICAL_ORDER)
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _separator_style_must_be_a_known_style(self) -> "CollectionsConfig":
+        """Refused here rather than discovered as a divider that quietly kept
+        its old artwork: ``hosted_poster_url`` answers None for an unknown
+        style, which is the quiet belt -- this is the loud one. Imported at
+        validation time for the cycle every validator in this class documents.
+        """
+        from autoposter.collections.groups import SEPARATOR_STYLES
+
+        if self.separator_style not in SEPARATOR_STYLES:
+            raise ValueError(
+                f"unknown separator style {self.separator_style!r}: the styles "
+                "are " + ", ".join(SEPARATOR_STYLES)
+            )
         return self
 
     @model_validator(mode="after")

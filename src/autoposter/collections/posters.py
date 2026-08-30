@@ -32,6 +32,7 @@ import httpx
 from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.collections.groups import SEPARATOR_STYLES
 from autoposter.config.schema import Config
 from autoposter.db.models import ManagedCollection
 from autoposter.providers.tmdb import IMAGE_BASE
@@ -118,6 +119,13 @@ def hosted_poster_url(kind: str, key: str) -> str | None:
     is a key of ``AWARD_SEGMENTS``; anything else returns ``None`` by the same
     rule as an unrecognised kind, which is what makes "this ceremony has no
     hosted artwork" expressible rather than a wrong path.
+
+    The separator kind takes a **style-scoped** key in the same shape,
+    ``"<style>:<stem>"`` -- ``"orig:chart"``, ``"sand:@content"``. The style
+    half is one of ``groups.SEPARATOR_STYLES``, and a stem starting with ``@``
+    names art this service GENERATES rather than fetches, so both return
+    ``None`` here: "no hosted path for this key" is the honest answer for a
+    style that does not exist and for art that was never upstream's.
     """
     if kind in ("award_static", "award_year"):
         event, _, stem = key.partition(":")
@@ -133,7 +141,16 @@ def hosted_poster_url(kind: str, key: str) -> str | None:
     if kind == "content_rating_other":
         return f"{DEFAULT_IMAGES_BASE}/content_rating/cs/NR.jpg"
     if kind == "separator":
-        return f"{DEFAULT_IMAGES_BASE}/separators/orig/{key}.jpg"
+        # "<style>:<stem>", the award kinds' idiom one branch up. A stem
+        # starting with '@' is GENERATED art (``separator_art.py``) and has no
+        # hosted path; an unknown style is refused the same way -- a wrong URL
+        # 404s and the collection quietly keeps no poster, which is harder to
+        # spot than an absence. The config validator is the loud refusal for a
+        # bad style; this is the belt behind it.
+        style, _, stem = key.partition(":")
+        if style not in SEPARATOR_STYLES or not stem or stem.startswith("@"):
+            return None
+        return f"{DEFAULT_IMAGES_BASE}/separators/{style}/{stem}.jpg"
     return None
 
 

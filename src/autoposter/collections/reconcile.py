@@ -47,7 +47,9 @@ LIBTYPES = {"Movie": "movie", "Show": "show"}
 # ``SHIPPED_SUMMARY`` / ``SHIPPED_HASH`` pin it as literals.
 
 
-def separator_hash(title: str, summary: str, sort_title: str) -> str:
+def separator_hash(
+    title: str, summary: str, sort_title: str, poster_key: str = ""
+) -> str:
     """Hash one separator's whole desired state.
 
     Was a module CONSTANT: there was one separator, its desired state never
@@ -59,10 +61,21 @@ def separator_hash(title: str, summary: str, sort_title: str) -> str:
     would give every live server a spurious re-write of a collection whose
     desired state had not changed, because the hash is what a pass
     short-circuits on.
+
+    ``poster_key`` joined the payload with the style select (C4): the key
+    carries the style ("orig:chart", "sand:@content"), so a style change makes
+    ``definition_current`` false, the pass rewrites the summary and sort title
+    (idempotent no-ops), reaches ``apply_poster``, finds new bytes, uploads
+    once, stores this new hash -- and the next pass short-circuits again.
+    Settles in exactly one pass; no schema change. Appended ONLY when
+    non-empty so the no-key digest still reproduces the shipped constant byte
+    for byte -- the byte-history stays readable while every live divider, whose
+    spec now always carries a key, re-hashes exactly once.
     """
-    return hashlib.sha256(
-        "\x1f".join([title, summary, sort_title]).encode("utf-8")
-    ).hexdigest()
+    parts = [title, summary, sort_title]
+    if poster_key:
+        parts.append(poster_key)
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
 def definition_hash(bucket: Bucket, settings=None, url: str = "") -> str:
@@ -734,7 +747,9 @@ async def reconcile_separator(
             return actions
 
     posters_on = posters_enabled(config, http)
-    wanted = separator_hash(spec.title, spec.summary, spec.sort_title)
+    wanted = separator_hash(
+        spec.title, spec.summary, spec.sort_title, spec.poster_key or ""
+    )
     definition_current = (
         collection is not None and record is not None
         and record.definition_hash == wanted
