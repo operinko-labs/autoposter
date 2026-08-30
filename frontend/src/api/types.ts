@@ -702,3 +702,31 @@ export interface VersionResponse {
   latest: string | null;
   update_available: boolean | null;
 }
+
+/** `GET /api/facts/backfill` -- the one-shot facts backfill's standing progress.
+ *
+ * `complete` is derived server-side by the POST's own rule (`done >= total`),
+ * which is why an empty library reads `complete` on both endpoints rather than
+ * `not_started` here and `complete` there -- see
+ * src/autoposter/api/facts_backfill.py. `not_started` means what it says: a
+ * population that exists and has not been walked.
+ */
+export interface FactsBackfillStatus {
+  status: "not_started" | "in_progress" | "complete";
+  done: number;
+  total: number;
+}
+
+/** `POST /api/facts/backfill` -- one triggered batch's outcome.
+ *
+ * `parked` (TMDb's shared 429 window is open) and `complete` are answers, not
+ * failures: both arrive as a 200 with real counts and a `detail` that says
+ * what happened. Only a non-2xx is an error.
+ */
+export interface FactsBackfillTrigger {
+  status: "enqueued" | "parked" | "complete";
+  enqueued: number;
+  done: number;
+  total: number;
+  detail: string;
+}

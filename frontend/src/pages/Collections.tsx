@@ -14,6 +14,7 @@ import type {
 import { formatTime } from "../format";
 import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
 import { CatalogPanel } from "./CatalogPanel";
+import { FactsBackfillPanel } from "./FactsBackfillPanel";
 import { GroupsPanel } from "./GroupsPanel";
 import { ScheduledRunStatusPill } from "./ScheduledRunStatus";
 // dashboard.css, not duplicated: the reconcile bar shows the same job state
@@ -590,6 +591,12 @@ export function Collections() {
           panel here that touches neither Plex nor the database, so it renders
           on a replica where the two above it report 503. */}
       <CatalogPanel />
+
+      {/* The backfill sits below the catalog whose packs it feeds: an
+          operator switches a facts-reading pack on, then catches the table
+          up instead of waiting five weekly sweeps. DB-and-queue only, so it
+          renders on a replica where the Plex-touching panels report 503. */}
+      <FactsBackfillPanel />
 
       {/* The group order below the catalog that fills the groups: an operator
           picks what to build, then arranges the blocks it lands in. Like the

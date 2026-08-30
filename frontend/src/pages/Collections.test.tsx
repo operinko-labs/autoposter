@@ -145,6 +145,11 @@ function stubFetch(options: StubOptions = {}) {
     // Before the /api/collections/ prefix below, which would otherwise swallow
     // the catalog and hand the picker a list of managed collections.
     if (path === "/api/collections/catalog") return json(CATALOG);
+    // The facts-backfill panel mounted on this page fetches its own standing
+    // progress; its behaviour is covered in FactsBackfillPanel.test.tsx.
+    if (path === "/api/facts/backfill") {
+      return json({ status: "not_started", done: 0, total: 4 });
+    }
     if (path === "/api/config") return json(CONFIG);
     if (path === "/api/collections/preview") {
       if (options.preview) return options.preview(path, init);
