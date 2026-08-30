@@ -5,6 +5,8 @@ byte-identical against Kometa). What is proven here is the surface an operator
 touches: which spellings load, which refuse and what they say, what the builder
 asks Plex, and how many times it asks.
 """
+from xml.etree import ElementTree
+
 import pytest
 import requests
 from plexapi.exceptions import NotFound
@@ -324,6 +326,27 @@ async def test_a_transport_failure_in_the_lookup_is_wrapped_class_name_only():
     assert "Boom" in message
     assert "SECRET" not in message
     assert "X-Plex-Token" not in message
+
+
+async def test_a_parse_error_in_the_lookup_is_wrapped_class_name_only():
+    """Roadmap row 205. plexapi's ``utils.parseXMLString`` (utils.py:836-844,
+    v4.18.2) catches the first ``ParseError`` only to retry ``fromstring`` on
+    a cleaned string, and that retry is UNGUARDED -- a body that is not XML at
+    all (a reverse proxy answering 200 with an HTML error page) fails the
+    retry the same way, and the second ``ParseError`` -- a ``SyntaxError``
+    subclass, in neither ``PlexApiException`` nor ``RequestException`` --
+    escaped both catch tuples: the operator got a raw traceback instead of
+    the named refusal, and the pass re-attempted a read that would fail again
+    instead of memoising the failure."""
+    section = FakeSection(
+        raise_on={"genre": ElementTree.ParseError("syntax error: line 1, column 0")}
+    )
+    ctx = context(section, config={"all": {"genre": "Horror"}})
+    with pytest.raises(PlexSearchUnavailable) as error:
+        await PlexSearchBuilder().build(ctx)
+    message = str(error.value)
+    assert "ParseError" in message
+    assert "syntax error" not in message
 
 
 async def test_a_misspelled_tag_value_refuses_at_build_naming_value_and_attribute():

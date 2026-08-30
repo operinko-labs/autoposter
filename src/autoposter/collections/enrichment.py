@@ -13,6 +13,7 @@ law that a failure must be memoised too:
 - the pass-level failure (so a dead server costs one fetch per pass).
 """
 import asyncio
+from xml.etree import ElementTree
 
 import requests
 from plexapi.exceptions import PlexApiException
@@ -70,7 +71,15 @@ async def ensure_tags(
     # subclass, so the refusal this message is written for is still caught;
     # a dropped connection or a timeout comes off plexapi's bare ``requests``
     # call unwrapped, hence the second class.
-    except (PlexApiException, requests.RequestException) as error:
+    # A body that is not XML at all -- a reverse proxy or captive portal
+    # answering 200 with an HTML error page -- escapes BOTH: plexapi's
+    # ``utils.parseXMLString`` (utils.py:836-844, v4.18.2) catches the first
+    # ``ParseError`` only to retry ``fromstring`` on a cleaned string, that
+    # retry is unguarded, and ``ParseError`` is a ``SyntaxError`` subclass in
+    # neither hierarchy above -- hence the third (roadmap row 205; the class
+    # list is deliberately coupled to plex_search.py's, which documents the
+    # same mechanism).
+    except (PlexApiException, requests.RequestException, ElementTree.ParseError) as error:
         failure = EnrichmentUnavailable(
             "the batched Plex metadata read failed (%s); every definition "
             "needing tier-2 attributes is refused this pass. If Plex is up, "

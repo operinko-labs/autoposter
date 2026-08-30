@@ -4,6 +4,8 @@ Scoped to the asked-for keys, never the whole library; the failure is
 memoised too (BuilderContext.run_cache's own law), and so is a fetched-but-
 absent key, so a gone item costs one fetch per pass, not one per definition.
 """
+from xml.etree import ElementTree
+
 import pytest
 import requests
 from plexapi.exceptions import BadRequest
@@ -57,11 +59,16 @@ async def test_fully_cached_ask_makes_no_call_at_all():
     assert len(section.calls) == 1
 
 
-# Both arms of ``enrichment.py:73``'s narrowed catch: ``BadRequest`` is D2's
+# All three arms of ``enrichment.py``'s narrowed catch: ``BadRequest`` is D2's
 # measured refusal shape (a ``PlexApiException`` subclass); ``ConnectionError``
 # is the dropped connection that comes off plexapi's bare ``requests`` call
-# unwrapped, which had no test of its own.
-@pytest.mark.parametrize("failure", [BadRequest, requests.ConnectionError])
+# unwrapped; ``ParseError`` is the 200-with-an-HTML-body a reverse proxy or
+# captive portal answers, which escapes plexapi's unguarded cleaned retry
+# (utils.py:836-844) as a ``SyntaxError`` subclass in NEITHER hierarchy
+# (roadmap row 205).
+@pytest.mark.parametrize(
+    "failure", [BadRequest, requests.ConnectionError, ElementTree.ParseError]
+)
 async def test_failure_is_memoised_for_the_pass(failure):
     section = FakeSection({}, fail=failure)
     run_cache = {}

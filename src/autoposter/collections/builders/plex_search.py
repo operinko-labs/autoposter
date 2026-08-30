@@ -48,6 +48,7 @@ is a build-time check (``builders/base.py:246-269``).
 """
 import logging
 from typing import Any
+from xml.etree import ElementTree
 
 import requests
 from plexapi.exceptions import BadRequest, NotFound, PlexApiException
@@ -456,20 +457,26 @@ class LibraryTagResolver:
             self._ctx.run_cache[key] = failure
             raise failure from None
         # A second, DIFFERENT kind of Plex-originating failure -- not "this
-        # filter does not exist" but "Plex did not answer at all". ``query()``
-        # hands the request straight to a bare ``requests`` call
-        # (``self._session.get``), so a dropped connection or a timeout is a
-        # ``requests.RequestException``, not a ``PlexApiException``, and
-        # reaches here unwrapped; a malformed response or an auth failure is
+        # filter does not exist" but "Plex did not answer at all", or answered
+        # something that is not XML. ``query()`` hands the request straight to
+        # a bare ``requests`` call (``self._session.get``), so a dropped
+        # connection or a timeout is a ``requests.RequestException``, not a
+        # ``PlexApiException``, and reaches here unwrapped; an auth failure is
         # ``PlexApiException`` itself, above ``NotFound``/``BadRequest`` in
-        # its hierarchy. Caught here rather than folded into the clause above
-        # because "Plex has no such filter" would be a FALSE claim about the
-        # library for either one -- class-name-only, like the other Plex
-        # exception this module wraps, because either can carry a tokenised
+        # its hierarchy. A body that is not XML at all -- a reverse proxy or
+        # captive portal answering 200 with an HTML error page -- is NEITHER:
+        # plexapi's ``utils.parseXMLString`` (utils.py:836-844, v4.18.2)
+        # catches the first ``ParseError`` only to retry ``fromstring`` on a
+        # cleaned string, that retry is unguarded, and the second
+        # ``ParseError`` is a ``SyntaxError`` subclass outside both classes
+        # (roadmap row 205). Caught here rather than folded into the clause
+        # above because "Plex has no such filter" would be a FALSE claim about
+        # the library for any of the three -- class-name-only, like the other
+        # Plex exception this module wraps, because each can carry a tokenised
         # URL in its own message (Task 4 review, Fix-round Carry 1: the
         # narrowing above, alone, silently dropped this wrap and let that
         # message reach the engine's logger intact).
-        except (PlexApiException, requests.RequestException) as error:
+        except (PlexApiException, requests.RequestException, ElementTree.ParseError) as error:
             failure = PlexSearchUnavailable(
                 f"Plex would not answer the {attribute!r} filter lookup for "
                 f"this library: {type(error).__name__}"
