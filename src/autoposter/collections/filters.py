@@ -118,6 +118,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+import langcodes
+
 __all__ = [
     "BY_NAME",
     "DEFAULT_OPERATOR",
@@ -139,6 +141,7 @@ __all__ = [
     "FilterPredicate",
     "ItemView",
     "RelativeWindow",
+    "base_language_code",
     "batched_attributes",
     "evaluate",
     "parse_filters",
@@ -678,9 +681,14 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "and subtitle ones), so `filters:` may name it; the engine pays one "
         "batched fetch for the definition's resolved set. The VALUES are ISO "
         "639-1 CODES -- the stream's `languageTag` (`en`), not the `language` "
-        "display title (`English`) -- because that is what the tree's only "
-        "language normaliser (`plex_search._base_language_code`) emits, so "
-        "write `audio_language: en`.",
+        "display title (`English`). LOCATION-NAMES PHASE: the comparison "
+        "folds BOTH sides through `base_language_code` (row 204's offline "
+        "fold), so `audio_language: en`, `eng`, and a written base code "
+        "against a regional stream tag all answer -- and a regional WRITTEN "
+        "value matches at its base here, where `plex_search` targets an exact "
+        "library value only, disclosed on purpose. `English` still matches "
+        "nothing: the display-title seam is row 204's open half, and "
+        "`iso_names.LANGUAGE_NAMES` is the table it awaits.",
         search_field="audioLanguage", show_search_field="episode.audioLanguage",
         search_kinds=_BOTH, filterable=True,
     ),
@@ -692,7 +700,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "PHASE B: moved to `tier2-batched` with `audio_language`, on the same "
         "9a probe F evidence (the batched metadata read carries the `<Stream>` "
         "elements the listing omits) and with the same ISO 639-1 CODE values "
-        "-- write `subtitle_language: fi`, not `Finnish`.",
+        "-- folded at the base code exactly like `audio_language` above (row "
+        "204), so `fi` and `fin` both answer; `Finnish` still matches nothing "
+        "until row 204's display-title half.",
         search_field="subtitleLanguage",
         show_search_field="episode.subtitleLanguage",
         search_kinds=_BOTH, filterable=True,
@@ -1843,6 +1853,42 @@ def _is_missing(value: object, value_type: str) -> bool:
     return False
 
 
+# The two stream-language attributes compare at the BASE ISO 639-1 code --
+# roadmap row 204's offline fold. Both sides go through
+# ``base_language_code``, so `audio_language: eng` meets a stream tagged
+# `en`, and a written base code (`pt`) meets a regional stream tag
+# (`pt-BR`) -- the row's two spellings -- with zero Plex reads. One
+# judgement, disclosed on both rows' notes and pinned by test: a REGIONAL
+# written value (`es-419`) also matches at its base here, where
+# `plex_search` targets an exact library value only. A display TITLE
+# (`English`) still matches nothing: langcodes cannot reduce it, the
+# fallback returns it unchanged, and the name->code seam is row 204's
+# still-open half (`iso_names.LANGUAGE_NAMES` is the table it awaits).
+_LANGUAGE_FOLD_ATTRIBUTES = frozenset({"audio_language", "subtitle_language"})
+
+
+def base_language_code(value: str) -> str:
+    """A language value in any common form, reduced to its base ISO 639-1 code.
+
+    Transcribed from Kometa's ``base_language_code`` (modules/plex.py:141-151),
+    including its fallback: a value that cannot be parsed comes back unchanged,
+    so an unrecognised code targets itself rather than nothing. ``langcodes``
+    is the same library Kometa uses -- see the phase-9b Task 4 Step 0 decision
+    record for why it was added rather than transcribed. It lived in
+    ``builders/plex_search.py`` until the location-names phase and moved HERE
+    because ``_matches_one``'s language fold (row 204) needs it and the model
+    layer must not import a builder; ``plex_search`` imports it back. Its
+    ``LanguageTagError`` is a ``ValueError`` subclass, which is what makes the
+    fallback below catch it.
+    """
+    if not value:
+        return value
+    try:
+        return langcodes.Language.get(str(value)).language or value
+    except ValueError:
+        return value
+
+
 def _matches_one(
     attribute: FilterAttribute, operator: str, have: object, want: object, now: dt.datetime
 ) -> bool:
@@ -1858,6 +1904,11 @@ def _matches_one(
         tags = _as_tags(have, attribute.name)
         if operator == "regex":
             return any(want.search(tag) for tag in tags)
+        if attribute.name in _LANGUAGE_FOLD_ATTRIBUTES:
+            wanted = base_language_code(want.casefold())
+            return any(
+                base_language_code(tag.casefold()) == wanted for tag in tags
+            )
         return any(tag.casefold() == want.casefold() for tag in tags)
 
     if kind == "str":

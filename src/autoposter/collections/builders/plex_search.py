@@ -49,7 +49,6 @@ is a build-time check (``builders/base.py:246-269``).
 import logging
 from typing import Any
 
-import langcodes
 import requests
 from plexapi.exceptions import BadRequest, NotFound, PlexApiException
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
@@ -60,7 +59,7 @@ from autoposter.collections.builders.base import (
     SmartContext,
     require_library_type,
 )
-from autoposter.collections.filters import BY_NAME, parse_filters
+from autoposter.collections.filters import BY_NAME, base_language_code, parse_filters
 from autoposter.collections.search_sorts import KNOWN_SORT_NAMES
 from autoposter.collections.search_url import build_search_url
 
@@ -289,24 +288,6 @@ class PlexSearchParams(BaseModel):
         return self._group
 
 
-def _base_language_code(value: str) -> str:
-    """A language value in any common form, reduced to its base ISO 639-1 code.
-
-    Transcribed from Kometa's ``base_language_code`` (modules/plex.py:141-151),
-    including its fallback: a value that cannot be parsed comes back unchanged,
-    so an unrecognised code targets itself rather than nothing. ``langcodes`` is
-    the same library Kometa uses -- see the Task 4 Step 0 decision record for
-    why it was added rather than transcribed. Its ``LanguageTagError`` is a
-    ``ValueError`` subclass, which is what makes the fallback below catch it.
-    """
-    if not value:
-        return value
-    try:
-        return langcodes.Language.get(str(value)).language or value
-    except ValueError:
-        return value
-
-
 class PlexSearchBuilder:
     """The library, asked a question."""
 
@@ -531,8 +512,8 @@ class LibraryTagResolver:
         for choice in self._raw_choices(attribute, scope, name):
             key = str(choice.key)
             exact[key.lower()] = key
-            by_base.setdefault(_base_language_code(key.lower()), []).append(key)
+            by_base.setdefault(base_language_code(key.lower()), []).append(key)
         code = str(value).lower()
-        if code != _base_language_code(code) and code in exact:
+        if code != base_language_code(code) and code in exact:
             return (exact[code],)
         return tuple(by_base.get(code, ()))

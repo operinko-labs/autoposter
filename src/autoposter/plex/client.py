@@ -143,7 +143,7 @@ def _stream_languages(item: object, stream_type: int) -> tuple[str, ...]:
     ``language``, ``languageCode`` and ``languageTag`` populated on both audio
     and subtitle streams of the production server, so the choice is free; the
     code is the right one because the tree's only language normaliser,
-    ``collections/builders/plex_search._base_language_code``, consumes codes
+    ``collections/filters.base_language_code``, consumes codes
     and passes an unparseable value through UNCHANGED by design -- a display
     title would never reduce to ``en`` and the mismatch would be silent.
     ``languageTag`` over ``languageCode`` (ISO 639-2, ``eng``) because it is

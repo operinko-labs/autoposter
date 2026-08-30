@@ -1274,6 +1274,62 @@ def test_a_run_date_is_accepted_and_read_as_that_days_midnight():
     assert evaluate(group, _view("added", dt.datetime(2026, 8, 25, 0, 1)), now=TODAY) is False
 
 
+# --- the language base-code fold (roadmap row 204) ---------------------------
+
+
+class _FoldView:
+    """The minimal ItemView the base-code fold tests need."""
+
+    def __init__(self, **values):
+        self._values = values
+
+    def get(self, name):
+        return self._values.get(name)
+
+
+def test_a_language_filter_folds_written_spellings_to_the_base_code():
+    """Row 204's offline fold: `eng` (ISO 639-2) meets a stream tagged `en`,
+    and a written base code meets a regional stream tag (`pt` against
+    `pt-BR`) -- the two spellings the row names -- with zero Plex reads,
+    which is this layer's whole law."""
+    group = parse_filters({"audio_language": "eng"})
+    assert evaluate(group, _FoldView(audio_language=("en",)))
+    group = parse_filters({"audio_language": "pt"})
+    assert evaluate(group, _FoldView(audio_language=("pt-BR",)))
+    group = parse_filters({"subtitle_language": "fin"})
+    assert evaluate(group, _FoldView(subtitle_language=("fi",)))
+
+
+def test_a_language_display_title_still_matches_nothing():
+    """`English` is row 204's OPEN half: langcodes cannot reduce a display
+    title, the fallback returns it unchanged, and no stream tag equals it.
+    The table that half awaits is `iso_names.LANGUAGE_NAMES`."""
+    group = parse_filters({"audio_language": "English"})
+    assert not evaluate(group, _FoldView(audio_language=("en",)))
+
+
+def test_a_regional_written_value_widens_to_its_base_deliberately():
+    """The fold's one judgement, pinned so it cannot drift silently: a
+    regional written value matches at its base here, where `plex_search`
+    targets an exact library value only. Disclosed on both language rows'
+    notes."""
+    group = parse_filters({"audio_language": "es-419"})
+    assert evaluate(group, _FoldView(audio_language=("es",)))
+
+
+def test_the_fold_is_scoped_to_the_two_language_attributes():
+    """Every other tag row keeps exact (casefolded) matching."""
+    group = parse_filters({"genre": "Horror"})
+    assert evaluate(group, _FoldView(genre=("Horror",)))
+    assert not evaluate(group, _FoldView(genre=("Hor",)))
+
+
+def test_a_negative_language_filter_negates_the_folded_match():
+    group = parse_filters({"audio_language.not": "eng"})
+    assert not evaluate(group, _FoldView(audio_language=("en",)))
+    assert evaluate(group, _FoldView(audio_language=("fi",)))
+
+
 # --- nesting -----------------------------------------------------------------
 
 
