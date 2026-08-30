@@ -27,14 +27,18 @@ def chart_section():
     return section
 
 
-def test_canonical_order_is_the_nine_catalog_categories_plus_operator():
+def test_canonical_order_is_the_ten_catalog_categories_plus_operator():
     from autoposter.collections.catalog import CATEGORIES
 
     assert groups.CANONICAL_ORDER[-1] == groups.OPERATOR_GROUP
     assert set(groups.CANONICAL_ORDER[:-1]) == set(CATEGORIES)
+    # franchises after content -- C2's placement, the natural reading order.
+    # This renumbers every group behind it; the disclosure lives in
+    # deploy/README.md's group_order entry and the golden needed no amendment
+    # for it (no golden scenario reaches section 050).
     assert groups.CANONICAL_ORDER == (
-        "charts", "awards", "content_ratings", "content", "location",
-        "media", "people", "production", "time", "operator",
+        "charts", "awards", "content_ratings", "content", "franchises",
+        "location", "media", "people", "production", "time", "operator",
     )
 
 
@@ -52,7 +56,7 @@ def test_section_numbers_are_position_times_ten():
     order = groups.CANONICAL_ORDER
     assert groups.section_number("charts", order) == "010"
     assert groups.section_number("content_ratings", order) == "030"
-    assert groups.section_number("operator", order) == "100"
+    assert groups.section_number("operator", order) == "110"
 
 
 def test_sort_prefix_and_member_sort_title():
@@ -188,7 +192,7 @@ def test_a_preset_title_outranks_the_builder_table():
 
 def test_sort_prefix_for_joins_the_group_lookup_to_the_number():
     definition = CollectionDefinition(title="Hand Picked", builder="plex_all")
-    assert groups.sort_prefix_for(definition, {}, groups.CANONICAL_ORDER) == "!100_"
+    assert groups.sort_prefix_for(definition, {}, groups.CANONICAL_ORDER) == "!110_"
 
 
 def test_separator_specs_cover_the_groups_present_in_order():
@@ -198,9 +202,9 @@ def test_separator_specs_cover_the_groups_present_in_order():
                              params={"chart": "top_movies"}),
     ]
     specs = groups.separator_specs(definitions, "Movie", config())
-    assert [spec.group for spec in specs] == ["charts", "content_ratings"]
+    assert [spec.group for spec in specs] == ["charts", "content_ratings", "other"]
     assert [spec.title for spec in specs] == [
-        "Chart Collections", "Ratings Collections",
+        "Chart Collections", "Ratings Collections", "Other Collections",
     ]
     assert specs[1].sort_title == "!030_!Ratings Collections"
 
@@ -235,7 +239,7 @@ def test_separator_titles_are_the_specs_titles():
         CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket"),
     ]
     assert groups.separator_titles(definitions, "Movie", config()) == {
-        "Ratings Collections"
+        "Ratings Collections", "Other Collections",
     }
 
 
@@ -255,7 +259,9 @@ def test_group_order_moves_the_separators_number_too():
     specs = groups.separator_specs(
         definitions, "Movie", config(group_order=["content_ratings"])
     )
-    assert [spec.sort_title for spec in specs] == ["!010_!Ratings Collections"]
+    assert [spec.sort_title for spec in specs] == [
+        "!010_!Ratings Collections", "!999_!Other Collections",
+    ]
 
 
 def test_definition_titles_counts_the_separator_titles():
@@ -270,9 +276,11 @@ def test_definition_titles_counts_the_separator_titles():
     titles = definition_titles(definitions, [], "Movie", config())
     assert "IMDb Top 250" in titles
     assert "Chart Collections" in titles
+    assert "Other Collections" in titles
 
     off = config(separators=False)
     assert "Chart Collections" not in definition_titles(definitions, [], "Movie", off)
+    assert "Other Collections" not in definition_titles(definitions, [], "Movie", off)
 
 
 # --- the per-member ordering key (LAW Addendum 1/2) --------------------------
@@ -746,7 +754,7 @@ def test_group_listing_serves_every_group_in_effective_order():
     }
     assert listing[-1] == {
         "key": "operator", "title": "Collections",
-        "section": "100", "position": 9,
+        "section": "110", "position": 10,
     }
 
 
@@ -764,7 +772,7 @@ def test_group_listing_reorders_and_renumbers_under_group_order():
         "charts", "awards", "content_ratings",
     ]
     assert listing[1]["section"] == "020"
-    assert [entry["position"] for entry in listing] == list(range(10))
+    assert [entry["position"] for entry in listing] == list(range(11))
 
 
 # --- row 210: an expanded unit inherits its placeholder's group -------------
@@ -870,3 +878,84 @@ def test_separator_style_is_validated_against_the_styles():
     message = str(caught.value)
     assert "taupe" in message
     assert "sand" in message  # the refusal lists the valid set
+
+
+# --- the franchises group (C2) -----------------------------------------------
+
+
+def test_the_franchises_divider_follows_the_transcribed_formula():
+    assert groups.separator_title("franchises") == "Franchise Collections"
+    assert (
+        groups.separator_summary("franchises")
+        == "Section separator for Franchise Collections."
+    )
+    assert groups.section_number("franchises", groups.CANONICAL_ORDER) == "050"
+
+
+def test_a_franchise_family_unit_now_files_under_franchises():
+    """T1's fix and C2's group, composed: the placeholder's category moved to
+    'franchises', so the parent fall-through lands the members there."""
+    index = groups.preset_groups(config(presets=["content_franchises"]), "Movie")
+    assert index["Franchises"] == "franchises"
+    unit = CollectionDefinition(
+        title="Ant-Man", builder="tmdb_collection", params={"id": 9741}
+    )
+    assert groups.group_for(unit, index, parent=index["Franchises"]) == "franchises"
+
+
+# --- the fence (C5) ----------------------------------------------------------
+
+
+def test_the_fence_closes_every_active_tab():
+    """'Other Collections' (title OURS), pinned at 999 -- outside the
+    canonical renumber, so no future group insertion moves it -- whenever ANY
+    managed group is active. It fences the managed blocks off from Plex's own
+    unprefixed tail (the recon measured 278 rows of it)."""
+    definitions = [
+        CollectionDefinition(title="IMDb Top 250", builder="imdb_chart",
+                             params={"chart": "top_movies"}),
+    ]
+    specs = groups.separator_specs(definitions, "Movie", config())
+    assert [spec.group for spec in specs] == ["charts", groups.TAIL_GROUP]
+    fence = specs[-1]
+    assert fence.title == "Other Collections"
+    assert fence.summary == "Section separator for Other Collections."
+    assert fence.sort_title == "!999_!Other Collections"
+    assert fence.poster_key == "orig:@other"
+
+
+def test_no_active_groups_means_no_fence():
+    assert groups.separator_specs([], "Movie", config()) == []
+    off = config(separators=False)
+    definitions = [
+        CollectionDefinition(title="IMDb Top 250", builder="imdb_chart",
+                             params={"chart": "top_movies"}),
+    ]
+    assert groups.separator_specs(definitions, "Movie", off) == []
+
+
+def test_the_fence_outsorts_every_canonical_section():
+    """The 999 pin's actual property: numerically past any section the
+    position-times-ten arithmetic can produce for the shipped table, so the
+    fence stays the LAST managed block however the groups are reordered."""
+    last = groups.section_number(
+        groups.CANONICAL_ORDER[-1], groups.CANONICAL_ORDER
+    )
+    assert groups.TAIL_SECTION == "999"
+    assert groups.TAIL_SECTION > last
+
+
+def test_the_fence_title_joins_the_managed_set():
+    definitions = [
+        CollectionDefinition(title="IMDb Top 250", builder="imdb_chart",
+                             params={"chart": "top_movies"}),
+    ]
+    titles = groups.separator_titles(definitions, "Movie", config())
+    assert titles == {"Chart Collections", "Other Collections"}
+
+
+def test_group_order_cannot_name_the_fence():
+    # 'other' is a pseudo-group: pinned, not reorderable, not listed.
+    with pytest.raises(ValidationError):
+        CollectionsConfig(group_order=["other"])
+    assert all(entry["key"] != "other" for entry in groups.group_listing(config()))

@@ -67,14 +67,22 @@ from autoposter.collections.facts_family import FACTS_FAMILY_TYPES
 from autoposter.config.schema import CollectionDefinition
 from autoposter.providers.tmdb_lists import CHART_ENDPOINTS
 
-# The nine categories, in the order the picker shows them: Kometa's own
-# defaults taxonomy, which is what an operator arriving from Kometa is looking
-# for. Key -> the label the UI puts on the tab.
+# The ten categories, in the order the picker shows them: Kometa's own defaults
+# taxonomy, which is what an operator arriving from Kometa is looking for. Key
+# -> the label the UI puts on the tab. The picker's tab strip is derived from
+# this dict (``catalog_listing`` below), so a category added here gains its tab
+# with no frontend edit.
+#
+# ``franchises`` is the tenth and it is OURS, not upstream's: Kometa files
+# ``franchise.yml`` under content, but 65 live franchise collections are a
+# block of their own rather than four rows inside Content -- C2,
+# ``.superpowers/sdd/p-dividers-facts.md``. Universes stay in content.
 CATEGORIES: dict[str, str] = {
     "awards": "Awards",
     "charts": "Charts",
     "content": "Content",
     "content_ratings": "Content Ratings",
+    "franchises": "Franchises",
     "location": "Location",
     "media": "Media",
     "people": "People",
@@ -1107,7 +1115,7 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
     ),
     Preset(
         key="content_franchises",
-        category="content",
+        category="franchises",
         name="Franchises",
         description=(
             "One collection per TMDb franchise collection the library holds, "
@@ -2340,17 +2348,20 @@ TIME_PRESETS: tuple[Preset, ...] = (
 
 
 # The whole table, in picker order: the awards, the three setting-backed rows,
-# then the eight other categories in the order ``CATEGORIES`` declares them.
+# then the other categories in the order ``CATEGORIES`` declares them.
+# ``content_franchises`` is the one row whose tuple no longer matches its
+# category -- it sits in ``CONTENT_PRESETS`` and files under ``franchises``,
+# which the listing below reads from the row itself, not from the tuple.
 #
 # Count checksum, per category rather than as one total (the same shape
 # ``tests/test_collection_catalog.py``'s CATALOG_CHECKSUM pins, READY / GATED /
 # setting-backed):
 #
 #   awards           15 / 0 / 1     charts           10 / 0 / 1
-#   content           4 / 1 / 0     content_ratings   7 / 0 / 1
-#   location          3 / 0 / 0     media             3 / 1 / 0
-#   people            5 / 0 / 0     production        3 / 0 / 0
-#   time              1 / 2 / 0
+#   content           3 / 1 / 0     content_ratings   7 / 0 / 1
+#   franchises        1 / 0 / 0     location          3 / 0 / 0
+#   media             3 / 1 / 0     people            5 / 0 / 0
+#   production        3 / 0 / 0     time              1 / 2 / 0
 #
 # -- 58 rows: 51 presets an operator can switch on today, 4 that name what
 # they would build and the roadmap row that would let them, and 3 rendered

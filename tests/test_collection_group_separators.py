@@ -441,8 +441,14 @@ async def test_the_engine_hands_a_separator_its_poster(session, config_factory, 
             config, label=LABEL, dry_run=False, listing=dict, http=http,
         )
 
-    assert [result.title for result in results] == ["Ratings Collections"]
-    assert seen == [hosted_poster_url("separator", "orig:content_rating")]
+    # The fence (C5) reconciles alongside the group's divider and has no
+    # upstream art, so it asks for the generated layer rather than a hosted
+    # separator -- the hosted URL is pinned by position, not by being the only
+    # request the pass makes.
+    assert [result.title for result in results] == [
+        "Ratings Collections", "Other Collections",
+    ]
+    assert seen[0] == hosted_poster_url("separator", "orig:content_rating")
     assert section._collections["Ratings Collections"].uploaded == [data]
 
 
@@ -458,7 +464,10 @@ def test_a_group_that_goes_quiet_leaves_an_ordinary_sweep_candidate():
     config = SimpleNamespace(collections=CollectionsConfig())
     charts = [CollectionDefinition(title="IMDb Top 250", builder="imdb_chart",
                                    params={"chart": "top_movies"})]
-    assert groups.separator_titles(charts, "Movie", config) == {"Chart Collections"}
+    # The fence rides along with whatever is active -- and goes quiet with it.
+    assert groups.separator_titles(charts, "Movie", config) == {
+        "Chart Collections", "Other Collections",
+    }
     assert groups.separator_titles([], "Movie", config) == set()
 
     off = SimpleNamespace(collections=CollectionsConfig(separators=False))

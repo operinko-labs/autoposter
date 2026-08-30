@@ -265,8 +265,12 @@ def test_the_awards_category_is_every_ceremony_but_the_oscars():
 CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "awards": (15, 0, 1),
     "charts": (10, 0, 1),
-    "content": (4, 1, 0),
+    # 4/1/0 until the divider-polish phase: `content_franchises` moved to the
+    # tenth category, `franchises`, when C2 gave the franchises block its own
+    # group and divider. The row itself did not change -- only its tab.
+    "content": (3, 1, 0),
     "content_ratings": (7, 0, 1),
+    "franchises": (1, 0, 0),
     # 1/2/0 until the location-names phase: `location_region` and
     # `location_continent` flipped GATED -> READY when row 196's code->name
     # join shipped (`collections/iso_names.py`).
@@ -2620,13 +2624,13 @@ async def test_the_catalog_endpoint_serves_the_groups_in_effective_order(
     client, auth_headers
 ):
     """The Groups panel's enumeration source (group-order UI phase, C2): the
-    server serves the groups so the frontend never transcribes the ten keys.
+    server serves the groups so the frontend never transcribes the eleven keys.
     The example config leaves `group_order` unset, so this is canonical."""
     body = (await client.get("/api/collections/catalog", headers=auth_headers)).json()
 
     assert [entry["key"] for entry in body["groups"]] == [
-        "charts", "awards", "content_ratings", "content", "location",
-        "media", "people", "production", "time", "operator",
+        "charts", "awards", "content_ratings", "content", "franchises",
+        "location", "media", "people", "production", "time", "operator",
     ]
     assert body["groups"][0] == {
         "key": "charts", "title": "Chart Collections",
@@ -2634,8 +2638,11 @@ async def test_the_catalog_endpoint_serves_the_groups_in_effective_order(
     }
     assert body["groups"][-1] == {
         "key": "operator", "title": "Collections",
-        "section": "100", "position": 9,
+        "section": "110", "position": 10,
     }
+    # The fence is not a group: it takes no position, and `group_order` cannot
+    # name it, so the panel never offers it as a row to move.
+    assert all(entry["key"] != "other" for entry in body["groups"])
 
 
 async def test_the_catalog_endpoint_reports_the_live_group_order(
@@ -2658,7 +2665,7 @@ async def test_the_catalog_endpoint_reports_the_live_group_order(
     assert body["groups"][0]["key"] == "operator"
     assert body["groups"][0]["section"] == "010"
     assert body["groups"][1]["key"] == "charts"
-    assert [entry["position"] for entry in body["groups"]] == list(range(10))
+    assert [entry["position"] for entry in body["groups"]] == list(range(11))
 
 
 def test_the_listing_is_the_endpoints_only_source_of_truth():
@@ -2707,3 +2714,11 @@ def test_the_presets_9b_readjudicated_carry_their_evidence_into_the_pack():
     assert "row %d" % catalog.STRANDED_FILTER_ROW in catalog.BY_KEY[
         "media_audio_language"
     ].description
+
+
+def test_the_catalog_has_a_franchises_category_and_the_preset_moved():
+    from autoposter.collections.catalog import BY_KEY, CATEGORIES
+
+    assert CATEGORIES["franchises"] == "Franchises"
+    assert list(CATEGORIES) == sorted(CATEGORIES)  # the declaration stays alphabetical
+    assert BY_KEY["content_franchises"].category == "franchises"

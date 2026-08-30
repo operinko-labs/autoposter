@@ -282,7 +282,7 @@ async def test_a_dead_source_leaves_its_collection_alone_and_the_pass_goes_on(
         # collections land in the operator group -- last in the canonical
         # order, section 100. Every collection this service manages derives one
         # now, which is why this line appears throughout this file.
-        "set the sort title of 'Healthy' to '!100_Healthy'",
+        "set the sort title of 'Healthy' to '!110_Healthy'",
     ]
     assert [i.ratingKey for i in live._live] == ["m1"], (
         "a failed source must not empty the collection it was going to fill"
@@ -324,7 +324,7 @@ async def test_the_limit_caps_members_after_resolution(session, registry_entry):
 
     assert actions == [
         "created 'Top Two' with 2 item(s)",
-        "set the sort title of 'Top Two' to '!100_Top Two'",
+        "set the sort title of 'Top Two' to '!110_Top Two'",
     ]
     assert [i.ratingKey for i in section._existing["Top Two"]._live] == ["m1", "m2"]
 
@@ -344,7 +344,7 @@ async def test_a_definition_gated_to_every_other_pass_runs_on_alternate_passes(
 
     assert first == [
         "created 'Every Other' with 1 item(s)",
-        "set the sort title of 'Every Other' to '!100_Every Other'",
+        "set the sort title of 'Every Other' to '!110_Every Other'",
     ]
     assert second == [], "a gated-off pass must contribute no actions"
     assert third == [], "and must not have been rebuilt -- the hash is unchanged"
@@ -372,7 +372,7 @@ async def test_a_months_window_skips_the_definition_outside_it(session, registry
     assert in_july == []
     assert in_december == [
         "created 'Christmas' with 1 item(s)",
-        "set the sort title of 'Christmas' to '!100_Christmas'",
+        "set the sort title of 'Christmas' to '!110_Christmas'",
     ]
 
 
@@ -889,7 +889,7 @@ async def test_the_filter_runs_before_the_limit(session, registry_entry):
 
     assert actions == [
         "created 'Two Modern' with 2 item(s)",
-        "set the sort title of 'Two Modern' to '!100_Two Modern'",
+        "set the sort title of 'Two Modern' to '!110_Two Modern'",
     ]
     assert [i.ratingKey for i in section._existing["Two Modern"]._live] == ["m2", "m3"]
 

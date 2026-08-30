@@ -57,12 +57,17 @@ The two FORMULAS, by contrast, are transcribed and cited:
 """
 from dataclasses import dataclass
 
-# The ten groups, in the order the tab shows them. The first nine are exactly
+# The eleven groups, in the order the tab shows them. The first ten are exactly
 # ``catalog.CATEGORIES``' keys -- Kometa's own defaults taxonomy, which is what
 # an operator arriving from Kometa is looking for, and which the collections
-# picker already sorts its tabs by. The tenth is ours: an operator's own
+# picker already sorts its tabs by. The eleventh is ours: an operator's own
 # ``definitions:`` entry belongs to no Kometa category, and putting it last is
 # the honest place for "everything this table did not name".
+#
+# The tenth ("franchises") is OURS too: upstream files franchise.yml under
+# content, but 65 live franchise collections are a block, not a member list --
+# C2, p-dividers-facts.md. Universes STAY in content (upstream's own separate
+# franchise/universe art agrees).
 #
 # Written out rather than derived from ``CATEGORIES``, and that is the point:
 # ``CATEGORIES`` declares its keys ALPHABETICALLY (``catalog.py:69-79``), so
@@ -73,6 +78,7 @@ CANONICAL_ORDER: tuple[str, ...] = (
     "awards",
     "content_ratings",
     "content",
+    "franchises",
     "location",
     "media",
     "people",
@@ -94,6 +100,7 @@ _KEY_NAMES: dict[str, str] = {
     "awards": "Award",
     "content_ratings": "Ratings",
     "content": "Content",
+    "franchises": "Franchise",
     "location": "Location",
     "media": "Media",
     "people": "People",
@@ -108,6 +115,17 @@ _KEY_NAMES: dict[str, str] = {
 # ``separator_title``, not the formula directly), so it reads "Section
 # separator for Collections." rather than doubling either.
 _OPERATOR_TITLE = "Collections"
+
+# The closing fence (C5): one more divider, after every managed block, so the
+# managed tab reads as a bounded region above Plex's own unprefixed tail (278
+# rows of it on the live Movies library, each franchise shown twice -- the
+# operator's double-vision note). The title is OURS; the section is PINNED at
+# 999, deliberately outside the position-times-ten arithmetic, so inserting a
+# twelfth group renumbers everything EXCEPT this. Not in CANONICAL_ORDER: it
+# has no members, takes no position, and group_order cannot name it.
+TAIL_GROUP = "other"
+_TAIL_TITLE = "Other Collections"
+TAIL_SECTION = "999"
 
 # Which group a built-in family belongs to, keyed by builder. Only the shipped
 # families are here -- the three the catalog's own ``SETTING_PRESETS`` rows
@@ -259,6 +277,8 @@ def sort_prefix(group: str, order: tuple[str, ...]) -> str:
 def separator_title(group: str) -> str:
     if group == OPERATOR_GROUP:
         return _OPERATOR_TITLE
+    if group == TAIL_GROUP:
+        return _TAIL_TITLE
     return "%s Collections" % _KEY_NAMES[group]
 
 
@@ -528,7 +548,8 @@ def separator_groups(definitions, library_type: str, config) -> list[str]:
 
 def separator_specs(definitions, library_type: str, config) -> list[SeparatorSpec]:
     order = effective_order(config)
-    return [
+    active = separator_groups(definitions, library_type, config)
+    specs = [
         SeparatorSpec(
             group=group,
             title=separator_title(group),
@@ -536,20 +557,32 @@ def separator_specs(definitions, library_type: str, config) -> list[SeparatorSpe
             sort_title=separator_sort_title(group, order),
             poster_key=separator_poster_key(group, config),
         )
-        for group in separator_groups(definitions, library_type, config)
+        for group in active
     ]
+    if active:
+        # The fence: present whenever anything managed is, gone -- and an
+        # ordinary sweep candidate, like every divider -- when nothing is.
+        specs.append(SeparatorSpec(
+            group=TAIL_GROUP,
+            title=_TAIL_TITLE,
+            summary=separator_summary(TAIL_GROUP),
+            sort_title="!%s_!%s" % (TAIL_SECTION, _TAIL_TITLE),
+            poster_key=separator_poster_key(TAIL_GROUP, config),
+        ))
+    return specs
 
 
 def separator_titles(definitions, library_type: str, config) -> set[str]:
-    """Every separator title these definitions imply.
+    """Every separator title these definitions imply -- the groups' dividers
+    AND the fence, derived from ``separator_specs`` itself so the sweep's
+    managed set and the reconciler's worklist cannot disagree.
 
     ``engine.definition_titles`` folds this in the way it already folds
     ``cs_bucket.titles()``: a title nothing enumerates is a title the delete
     sweep reads as an orphan, and the leftovers report reads as a prior tool's.
     """
     return {
-        separator_title(group)
-        for group in separator_groups(definitions, library_type, config)
+        spec.title for spec in separator_specs(definitions, library_type, config)
     }
 
 
