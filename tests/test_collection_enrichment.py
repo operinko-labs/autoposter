@@ -4,6 +4,8 @@ Scoped to the asked-for keys, never the whole library; the failure is
 memoised too (BuilderContext.run_cache's own law), and so is a fetched-but-
 absent key, so a gone item costs one fetch per pass, not one per definition.
 """
+import ast
+from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
@@ -78,6 +80,42 @@ async def test_failure_is_memoised_for_the_pass(failure):
     with pytest.raises(EnrichmentUnavailable):
         await ensure_tags(section, run_cache, ["1"])
     assert len(section.calls) == 1, "a dead server is one fetch per pass, not one per definition"
+
+
+def test_the_two_stream_read_catch_tuples_cannot_drift_apart():
+    """``enrichment.py``'s catch and ``builders/plex_search.py``'s second one
+    wrap the SAME mechanism -- a batched read off plexapi's bare ``requests``
+    call -- and both comments say so, but nothing made the class lists move
+    together: row 205 had to add ``ParseError`` to each by hand, and the next
+    such class can as easily land in one and not the other.
+
+    Compared, not shared. A module-level constant tuple would couple two
+    builders through a new import edge to spare one duplicated line; this
+    proves the equality the comments claim without either module learning
+    about the other. Each module's stream-read handler is the one that names
+    ``PlexApiException`` itself -- ``plex_search``'s FIRST handler catches the
+    ``NotFound``/``BadRequest`` subclasses, a different claim ("Plex has no
+    such filter") that is deliberately NOT this set. Both modules spell the
+    classes identically (bare ``PlexApiException``, ``requests.``- and
+    ``ElementTree.``-qualified), which is what makes the unparsed names
+    directly comparable; a future module that imports one of them under
+    another name would fail here and should be spelled to match."""
+    root = Path(__file__).parent.parent / "src" / "autoposter" / "collections"
+
+    def stream_read_catch(path):
+        assert path.is_file(), f"source not found at {path}"
+        handlers = [
+            {ast.unparse(element) for element in node.type.elts}
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+            if isinstance(node, ast.ExceptHandler) and isinstance(node.type, ast.Tuple)
+            and "PlexApiException" in {ast.unparse(e) for e in node.type.elts}
+        ]
+        assert len(handlers) == 1, f"{path.name}: expected one stream-read catch, saw {handlers}"
+        return handlers[0]
+
+    assert stream_read_catch(root / "enrichment.py") == stream_read_catch(
+        root / "builders" / "plex_search.py"
+    ), "the two stream-read catch tuples have drifted apart (roadmap row 205)"
 
 
 async def test_a_fully_cached_ask_survives_an_earlier_failure_in_the_pass():
