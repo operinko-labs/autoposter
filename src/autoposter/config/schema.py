@@ -569,8 +569,10 @@ class CollectionDefinition(BaseModel):
         tiers mean different things. ``tier2-deferred`` -- ``network`` alone
         now -- cites a probe verdict, and specifically the one the batched read
         cannot overturn: Plex emits the attrib nowhere. ``unprobed`` says there
-        is no verdict at all, which is the honest answer for ``plays`` and
-        ``last_played`` and points at the ``plex_search`` builder instead. A
+        is no verdict at all, which is the honest answer for ``country`` and
+        the four people rows, and points at the ``plex_search`` builder
+        instead (``plays``/``last_played`` were the exemplars here until phase
+        B's probe (d) measured them onto ``listing``). A
         ``search-only`` row never reaches this loop at all -- ``parse_filters``
         refuses it one layer up, with the message that names ``plex_search``.
 
