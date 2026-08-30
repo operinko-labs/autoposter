@@ -29,6 +29,7 @@ from autoposter.collections.builders.arr import (
     SonarrAllBuilder,
     SonarrTagListBuilder,
 )
+from autoposter.collections.builders.collectionless import PlexCollectionlessBuilder
 from autoposter.collections.builders.credits_family import CreditsFamilyBuilder
 from autoposter.collections.builders.cs_bucket import CsBucketBuilder
 from autoposter.collections.builders.dynamic import DynamicBuilder
@@ -85,6 +86,10 @@ register(PlexIdBuilder())
 register(PlexRatingKeyBuilder())
 register(ImdbIdBuilder())
 register(PlexAllBuilder())
+# The other builder whose source is the library itself: the same owned index,
+# plus one batched tier-2 read for the collection tags Kometa pays a forced
+# reload per item to get (``builders/collectionless.py``).
+register(PlexCollectionlessBuilder())
 # The one builder whose membership Plex decides. Registered here like every
 # other -- it produces ids, not actions, so it is a plain Builder and not the
 # SmartBuilder escape hatch, which is 9c's question and not this one's.
