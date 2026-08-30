@@ -445,10 +445,18 @@ conditions gate it, and both matter:
 **The consequence to know about:** editing a summary by hand in the Plex UI
 locks the field too, and the lock is the only signal available. So on a
 collection this service manages whose definition has no `summary:`, a summary
-you typed into Plex is cleared by the next pass that sees the definition
-change. That is the same sync-mode stance the rest of this block takes — the
-definition is the source of truth, and hand edits to managed fields do not
-survive it. Keep the text in the definition, not in Plex.
+you typed into Plex is cleared by the next pass that writes the collection —
+and what makes a pass write it differs by family. For the Common Sense
+buckets and `smart_filter`, that is the next pass whose definition, settings
+or summary actually changed, because membership itself is evaluated live by
+Plex and plays no part in the hash. For the list collections below (IMDb
+charts, the Oscars collections, and the hand-written `imdb_list`), it is any
+pass where the source's **membership** changed too, not only a definition
+edit — those collections hash their resolved members as part of the desired
+state, so a chart or list that simply gained or lost an entry reaches the
+same clear. That is the same sync-mode stance the rest of this block takes —
+the definition is the source of truth, and hand edits to managed fields do
+not survive it. Keep the text in the definition, not in Plex.
 
 See `config/autoposter.example.yaml` for the full block.
 
@@ -471,6 +479,10 @@ Unlike the Common Sense collections, these are regular collections with
 explicit, ordered membership — items are added, removed and reordered on
 every pass to match the source's own rank order. `apply_to_plex` still gates
 every write, the same dry-run-by-default posture as the rest of this block.
+That membership tracking also changes when a hand-typed summary gets cleared:
+see "The consequence to know about" under Common Sense collections config
+above — for this family the trigger is any pass where the source's
+membership changed, not only a definition edit.
 
 **A source that fails to fetch leaves its collection untouched, never
 empty.** These collections use sync semantics — anything not re-selected is
