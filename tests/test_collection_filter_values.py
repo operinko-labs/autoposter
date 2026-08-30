@@ -380,13 +380,17 @@ def test_a_never_played_item_is_excluded_the_way_kometa_excludes_it():
 def test_the_missing_rule_from_the_table_falls_out_of_a_None_answer():
     """Task 1 owns the rule; this pins that the view feeds it correctly. A tag
     attribute with no value is dropped by a positive filter and kept by a
-    negative one; a numeric one is dropped by both."""
+    negative one; a numeric one is dropped by both -- except ``year``'s
+    bare/``.not`` forms, which take the tag half because Kometa routes them
+    through its tag branch (roadmap row 159, ``filters._matches``)."""
     view = PlexItemView(a_movie(BARE_MOVIE_XML))
 
     assert evaluate(parse_filters({"content_rating": "PG-13"}), view) is False
     assert evaluate(parse_filters({"content_rating.not": "PG-13"}), view) is True
+    assert evaluate(parse_filters({"audience_rating.gte": 8}), view) is False
+    assert evaluate(parse_filters({"audience_rating.not": 8}), view) is False
     assert evaluate(parse_filters({"year.gte": 2000}), view) is False
-    assert evaluate(parse_filters({"year.not": 2000}), view) is False
+    assert evaluate(parse_filters({"year.not": 2000}), view) is True
 
 
 # --- the deferred families refuse ---------------------------------------------
