@@ -34,6 +34,30 @@
   white-space: nowrap;
 }
 
+/* The style select, its Reset, the note and the preview on one wrapping row.
+ * The note and the image are full-width children of that row (flex-basis
+ * 100%), so they break onto their own lines under the controls. */
+.groups-style {
+  margin: 0.75rem 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.groups-style .groups-note {
+  flex: 0 0 100%;
+  margin: 0;
+}
+
+/* Upstream's contact sheet is a wide grid; cap it so it reads as a preview
+ * rather than taking the panel over, and let it shrink on a narrow screen. */
+.groups-style-preview {
+  width: 100%;
+  max-width: 640px;
+  border-radius: 4px;
+}
+
 .groups-rows {
   list-style: none;
   margin: 0;

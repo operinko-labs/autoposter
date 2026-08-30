@@ -6,8 +6,9 @@
  * server-side, but an explicit full list is what an operator should find
  * persisted), and Reset is the key going AWAY — `withoutPath`, the overrides
  * contract's revert — never a write of any list. And the enumeration source:
- * the fixture serves FOUR groups, not ten, and every assertion still holds —
- * which is the proof that no group key lives in the component.
+ * the fixture serves FOUR groups, not ten, and THREE separator styles, not 22,
+ * and every assertion still holds — which is the proof that no group key and no
+ * style name lives in the component.
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,9 +26,19 @@ const GROUPS = [
   { key: "operator", title: "Collections", section: "040", position: 3 },
 ];
 
+/** Three styles, deliberately not 22: the component renders whatever the
+ * server enumerates, the GROUPS fixture's rule. */
+const STYLES = ["gold", "orig", "sand"];
+
 function catalog(groups: unknown[] = GROUPS) {
-  // The panel reads only `groups`; the categories belong to the picker.
-  return { categories: [], groups };
+  // The panel reads `groups` and the style pair; the categories belong to the
+  // picker.
+  return {
+    categories: [],
+    groups,
+    separator_styles: STYLES,
+    separator_style: "orig",
+  };
 }
 
 /** The config GET, whose only job here is seeding the document the panel
@@ -291,5 +302,110 @@ describe("the groups panel", () => {
     const saved = await screen.findByRole("status");
     expect(saved).toHaveTextContent("cfg-1");
     expect(saved).toHaveTextContent("cfg-2");
+  });
+});
+
+describe("the style select", () => {
+  it("renders the served styles with the running value selected", async () => {
+    await renderPanel();
+
+    const select = screen.getByLabelText("Divider style") as HTMLSelectElement;
+    expect(
+      within(select)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(STYLES);
+    expect(select.value).toBe("orig");
+    // The preview grid follows the selection.
+    const image = screen.getByAltText("orig separator style preview");
+    expect(image.getAttribute("src")).toContain("/separators/orig/!_orig_grid.webp");
+  });
+
+  it("saves the changed style at its path without touching other overrides", async () => {
+    const { puts } = await renderPanel();
+
+    fireEvent.change(screen.getByLabelText("Divider style"), {
+      target: { value: "sand" },
+    });
+
+    expect(
+      screen.getByAltText("sand separator style preview").getAttribute("src"),
+    ).toContain("/separators/sand/!_sand_grid.webp");
+
+    await save();
+    await waitFor(() => expect(puts).toHaveLength(1));
+    const document = sentDocument(puts);
+    expect(document.collections.separator_style).toBe("sand");
+    expect(document.plex).toEqual({ url: "http://plex:32400" });
+    // The order was not dirty; it must not be written along for the ride.
+    expect(document.collections.group_order).toBeUndefined();
+  });
+
+  it("saves a dirty order and a dirty style as one document", async () => {
+    const { puts } = await renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Move Award Collections up" }));
+    fireEvent.change(screen.getByLabelText("Divider style"), {
+      target: { value: "gold" },
+    });
+
+    await save();
+    await waitFor(() => expect(puts).toHaveLength(1));
+    // One PUT, both keys: two saves would make the second overwrite a
+    // document the first had already changed under it.
+    const document = sentDocument(puts);
+    expect(document.collections.group_order).toEqual([
+      "awards", "charts", "content_ratings", "operator",
+    ]);
+    expect(document.collections.separator_style).toBe("gold");
+  });
+
+  it("enables Save on a style change alone, and disables it again when undone", async () => {
+    await renderPanel();
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Divider style"), {
+      target: { value: "sand" },
+    });
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+
+    fireEvent.change(screen.getByLabelText("Divider style"), {
+      target: { value: "orig" },
+    });
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("reset removes the style key -- the overrides revert, never a write", async () => {
+    const { puts } = await renderPanel({
+      // The catalog agrees with the config: the endpoint serves the RUNNING
+      // value, so an operator with a stored "sand" sees "sand" selected.
+      catalog: { ...catalog(), separator_style: "sand" },
+      config: config({
+        collections: { enabled: true, separator_style: "sand" },
+        overridden_paths: ["plex.url", "collections.separator_style"],
+      }),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset style" }));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    const document = sentDocument(puts);
+    expect(document.collections?.separator_style).toBeUndefined();
+    expect(document.plex.url).toBe("http://plex:32400");
+  });
+
+  it("disables Reset style when no style override is stored", async () => {
+    await renderPanel();
+
+    expect(screen.getByRole("button", { name: "Reset style" })).toBeDisabled();
+  });
+
+  it("states the style's own churn disclosure, naming both art kinds", async () => {
+    await renderPanel();
+
+    expect(screen.getByText(/re-writes and re-posters every divider once/i))
+      .toBeInTheDocument();
+    expect(screen.getByText(/textless base layer/i)).toBeInTheDocument();
   });
 });

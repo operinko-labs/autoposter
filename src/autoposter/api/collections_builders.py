@@ -48,7 +48,7 @@ from sqlalchemy import select
 from autoposter.api.auth import require_session
 from autoposter.collections.catalog import catalog_listing
 from autoposter.collections.engine import run_library
-from autoposter.collections.groups import group_listing
+from autoposter.collections.groups import SEPARATOR_STYLES, group_listing
 from autoposter.collections.reconcile import (
     LIBTYPES,
     COLLECTION_MODES,
@@ -143,7 +143,8 @@ async def collections_catalog(
     Also carries ``groups``: every collection group as ``{key, title, section,
     position}`` in the running config's effective order, which is the Groups
     panel's enumeration source — served so the frontend never holds a copy of
-    the group keys.
+    the group keys. ``separator_styles``/``separator_style`` are the same panel's
+    style select, on the same terms: the 22 names and the running value.
 
     The one endpoint in this module that touches neither Plex nor the database.
     It is a dump of a pure table (``collections/catalog.py``) plus which keys
@@ -167,6 +168,10 @@ async def collections_catalog(
         # one language. Effective order, not canonical -- the panel shows
         # the tab as the running config orders it.
         "groups": group_listing(config),
+        # The style select's enumeration and its current value -- served, so
+        # the frontend holds no style name of its own (the group rows' rule).
+        "separator_styles": list(SEPARATOR_STYLES),
+        "separator_style": config.collections.separator_style,
     }
 
 

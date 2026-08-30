@@ -2668,6 +2668,43 @@ async def test_the_catalog_endpoint_reports_the_live_group_order(
     assert [entry["position"] for entry in body["groups"]] == list(range(11))
 
 
+async def test_the_catalog_endpoint_serves_the_separator_styles(
+    client, auth_headers
+):
+    """The style select's enumeration source, same rule as the groups array:
+    served, so the frontend never transcribes the 22 names. The example
+    config leaves `separator_style` unset, so the running value is the
+    default."""
+    body = (await client.get("/api/collections/catalog", headers=auth_headers)).json()
+
+    from autoposter.collections.groups import SEPARATOR_STYLES
+
+    assert body["separator_styles"] == list(SEPARATOR_STYLES)
+    assert len(body["separator_styles"]) == 22
+    assert body["separator_style"] == "orig"
+
+
+async def test_the_catalog_endpoint_reports_the_live_separator_style(
+    client, app, auth_headers
+):
+    """The running value, not the default -- the same live-config read the
+    group order's test above proves. Without it the select would open on
+    "orig" for an operator who had already chosen something else, and reading
+    that as unsaved dirt is exactly the wrong answer."""
+    config = app.state.config_holder.current
+    app.state.config_holder.swap(config.model_copy(
+        update={
+            "collections": config.collections.model_copy(
+                update={"separator_style": "sand"}
+            )
+        }
+    ))
+
+    body = (await client.get("/api/collections/catalog", headers=auth_headers)).json()
+
+    assert body["separator_style"] == "sand"
+
+
 def test_the_listing_is_the_endpoints_only_source_of_truth():
     """The handler is a lookup and a dump; everything it says comes from
     ``catalog_listing``, so the shape can be tested without a request.

@@ -512,6 +512,10 @@ export interface CatalogGroup {
 export interface CollectionsCatalogResponse {
   categories: CatalogCategory[];
   groups: CatalogGroup[];
+  /** The 22 separator colour styles, served so no name lives client-side. */
+  separator_styles: string[];
+  /** The RUNNING config's collections.separator_style. */
+  separator_style: string;
 }
 
 /** The JSON outcome of POST /api/testing/sample when the title does not fit at

@@ -118,6 +118,8 @@ const CATALOG = {
     { key: "awards", title: "Award Collections", section: "010", position: 0 },
     { key: "charts", title: "Chart Collections", section: "020", position: 1 },
   ],
+  separator_styles: ["orig", "sand"],
+  separator_style: "orig",
 };
 
 const CONFIG = {

@@ -20,12 +20,30 @@ import type {
 } from "../api/types";
 import "./groups.css";
 
-/** Where the panel's one setting is written. A save is always the COMPLETE
+/** Where the panel's order setting is written. A save is always the COMPLETE
  * permutation of every key the server enumerated: partial-list semantics
  * exist server-side, but an explicit full list is what an operator should
  * find persisted in their overrides. Reset is the key going away entirely --
  * the overrides contract's revert -- never a write of any list. */
 const GROUP_ORDER_PATH = "collections.group_order";
+
+/** The style select's path. Like the order, what is stored is exactly what
+ * the operator sees selected. */
+const STYLE_PATH = "collections.separator_style";
+
+/** The style's churn disclosure -- the key is part of every divider's
+ * definition hash, so a change re-writes and re-posters each divider once. */
+const STYLE_NOTE =
+  "Changing the style re-writes and re-posters every divider once on the " +
+  "next pass, then settles. It drives both art kinds: fetched art comes " +
+  "from the style's folder, generated art from its textless base layer.";
+
+/** Upstream's own contact sheet per style, under `Default-Images/separators`.
+ * The preview surface is that image, not a client-side rendering of one: this
+ * component knows the URL shape and nothing else about what a style looks
+ * like. */
+const GRID_BASE =
+  "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/separators";
 
 /** When a saved order is seen. The collections section is live (config live
  * swap; only `collections.enabled` is frozen), so the save lands in the
@@ -67,6 +85,12 @@ export function GroupsPanel() {
   // effective order) and re-seeded after every save: what is stored is the
   // server's answer, not this component's memory of what was clicked.
   const [order, setOrder] = useState<string[]>([]);
+  // The style names the server enumerates, and the two halves of the
+  // selection: what the running config says, and what is pending here. Both
+  // re-seed from the response after a save, exactly as the order does.
+  const [styles, setStyles] = useState<string[]>([]);
+  const [savedStyle, setSavedStyle] = useState("orig");
+  const [style, setStyle] = useState("orig");
   // The overrides the server already holds. Kept whole rather than reduced
   // to the one path: a save here must not drop an override another page
   // stored.
@@ -112,6 +136,9 @@ export function GroupsPanel() {
     (catalog: CollectionsCatalogResponse, config: ConfigResponse) => {
       setGroups(catalog.groups);
       setOrder(catalog.groups.map((group) => group.key));
+      setStyles(catalog.separator_styles);
+      setSavedStyle(catalog.separator_style);
+      setStyle(catalog.separator_style);
       setStored(documentFromConfig(config));
     },
     [],
@@ -151,16 +178,25 @@ export function GroupsPanel() {
 
   const byKey = new Map(groups.map((group) => [group.key, group]));
   const dirty = order.some((key, index) => key !== groups[index]?.key);
+  const styleDirty = style !== savedStyle;
   const overridden = hasPath(stored, GROUP_ORDER_PATH);
+  const styleOverridden = hasPath(stored, STYLE_PATH);
+
+  /** The same staleness rule `move` applies, for the select: a save panel or a
+   * 422 left standing beside a changed selection would read as though it had
+   * accounted for the change. */
+  function clearSaveState() {
+    setResult(null);
+    setReloadError(null);
+    setErrors({});
+    setSaveError(null);
+  }
 
   function move(key: string, delta: -1 | 1) {
     // A stale save panel beside a changed order would read as though that
     // save had accounted for the change; a 422 pinned to an order nobody is
     // proposing any more is worse.
-    setResult(null);
-    setReloadError(null);
-    setErrors({});
-    setSaveError(null);
+    clearSaveState();
     const index = order.indexOf(key);
     const target = index + delta;
     if (index === -1 || target < 0 || target >= order.length) return;
@@ -237,8 +273,16 @@ export function GroupsPanel() {
           </button>
           <button
             type="button"
-            disabled={!dirty || saving}
-            onClick={() => void put(withPath(stored, GROUP_ORDER_PATH, order))}
+            disabled={!(dirty || styleDirty) || saving}
+            // One PUT for whichever of the two is dirty: two saves would make
+            // the second overwrite a document the first had already changed
+            // under it.
+            onClick={() => {
+              let document = stored;
+              if (dirty) document = withPath(document, GROUP_ORDER_PATH, order);
+              if (styleDirty) document = withPath(document, STYLE_PATH, style);
+              void put(document);
+            }}
           >
             {saving ? "Saving…" : "Save"}
           </button>
@@ -254,7 +298,49 @@ export function GroupsPanel() {
       <p className="muted groups-note">{CHURN_NOTE}</p>
       <p className="muted groups-note">{RESET_NOTE}</p>
 
-      {dirty && <span className="groups-unsaved">unsaved — Save to store</span>}
+      <div className="groups-style">
+        <label htmlFor="separator-style">Divider style</label>
+        <select
+          id="separator-style"
+          value={style}
+          disabled={saving}
+          onChange={(event) => {
+            clearSaveState();
+            setStyle(event.target.value);
+          }}
+        >
+          {styles.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          disabled={!styleOverridden || saving}
+          title={
+            styleOverridden
+              ? undefined
+              : "No style override is stored; the mounted config file's value is already in effect."
+          }
+          onClick={() => void put(withoutPath(stored, STYLE_PATH))}
+        >
+          Reset style
+        </button>
+        <p className="muted groups-note">{STYLE_NOTE}</p>
+        {/* Upstream's own contact sheet for the selected style -- the whole
+            preview surface, no client-side rendering. */}
+        <img
+          className="groups-style-preview"
+          src={`${GRID_BASE}/${style}/!_${style}_grid.webp`}
+          alt={`${style} separator style preview`}
+          loading="lazy"
+        />
+      </div>
+
+      {(dirty || styleDirty) && (
+        <span className="groups-unsaved">unsaved — Save to store</span>
+      )}
 
       <ol className="groups-rows" aria-label="Collection group order">
         {order.map((key, index) => {
