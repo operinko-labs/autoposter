@@ -297,7 +297,7 @@ async def test_reclaim_stale_resets_run_after_so_the_job_is_immediately_claimabl
     # semantics: a backwards clock step in this window breaks the application's
     # job scheduling, not merely this assertion. Computing the comparison
     # server-side is tidiness, not immunity. The residual is the commit plus a
-    # round trip, ~2 ms against this machine's ~30 s step cycle -- ~0.007 %,
+    # round trip, 5.6 ms against this machine's ~30 s step cycle -- ≈0.019 %,
     # irreducible (docs/research/dev-clock-step/).
     run_after, db_now, is_due = (
         await session.execute(

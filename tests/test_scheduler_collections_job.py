@@ -273,6 +273,11 @@ async def test_a_library_failure_is_recorded_class_name_only(session, caplog):
     # ``caplog.text`` is the formatted line plus any traceback the record
     # carries, so it is where a downgrade from ``exception`` to ``error``
     # shows up.
+    # Filtered by level + exc_info, not by logger name: the ``at_level`` above
+    # already scopes capture to "autoposter.collections.service", so a second
+    # ERROR record with a traceback from ANY logger inside that scope is the
+    # thing this assertion means to catch -- re-filtering by name here would
+    # only narrow what a regression could look like.
     assert [
         record.getMessage() for record in caplog.records
         if record.levelno == logging.ERROR and record.exc_info is not None

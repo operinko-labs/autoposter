@@ -47,7 +47,10 @@ HEARTBEAT_SECONDS = 15.0
 # full traceback under the repo's host-only rule, and a future exc_info site
 # is covered without knowing about this module. Matches any query-param name
 # ending in api_key/apikey/token (X-Plex-Token, plex_token, ...); the name
-# survives, the value never does.
+# survives, the value never does. The over-match is deliberate: a param whose
+# name merely ENDS that way (e.g. a hypothetical next_token) is redacted too,
+# trading a few false positives for never missing a credential (row 117's
+# close records the same tradeoff).
 _CREDENTIAL_PARAM = re.compile(r"(?i)([-\w]*(?:api_?key|token))=[^&\s'\"]+")
 
 
