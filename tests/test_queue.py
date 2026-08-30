@@ -103,10 +103,20 @@ async def test_created_at_uses_the_database_clock(session):
     # Regression guard for finding 1: created_at must be a server-side default
     # (func.now()), not one computed in this process, because the app clock and
     # the database clock can drift by several seconds on this machine.
+    #
+    # Anchored to run_after rather than to a wall-clock reading taken afterwards:
+    # enqueue() computes run_after as func.now() + a zero interval in the INSERT
+    # itself, so with no delay both columns are the same transaction_timestamp()
+    # and are EXACTLY equal, while a client-side created_at would differ by the
+    # app/DB offset. The previous shape compared created_at against a func.now()
+    # read in a later transaction with a `< 1` second tolerance; this dev VM's
+    # wall clock steps backwards ~2.7 s every ~30 s
+    # (docs/research/dev-clock-step/), so that tolerance was smaller than the
+    # step -- and no tolerance wide enough to survive the step would still be
+    # narrow enough to catch the drift this test exists to guard.
     job_id = await enqueue(session, "process_item", {})
-    db_now = (await session.execute(select(func.now()))).scalar_one()
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
-    assert abs((job.created_at - db_now).total_seconds()) < 1
+    assert job.created_at == job.run_after
 
 
 async def test_fail_clears_claim_metadata(session):

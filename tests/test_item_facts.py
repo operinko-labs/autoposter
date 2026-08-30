@@ -54,10 +54,19 @@ async def test_fetched_at_comes_from_the_database_clock(session):
 
     item = await _item(session, "clock")
     session.add(ItemFacts(item_id=item.id))
-    await session.commit()
+    await session.flush()
     row = (await session.execute(select(ItemFacts))).scalar_one()
+    # Asserted as EXACT equality inside one transaction, not as proximity.
+    # func.now() is transaction_timestamp(), constant for the whole transaction,
+    # and the server_default that stamped fetched_at ran inside this same one --
+    # so a database-clock value matches to the microsecond, while anything
+    # computed in this process cannot. The previous shape compared two readings
+    # taken at different instants with a `< 1` second tolerance; on this dev VM
+    # the wall clock steps backwards ~2.7 s every ~30 s
+    # (docs/research/dev-clock-step/), which is larger than that tolerance, so a
+    # step landing between the write and the read failed the test spuriously.
     db_now = (await session.execute(select(func.now()))).scalar_one()
-    assert abs((db_now - row.fetched_at).total_seconds()) < 1
+    assert row.fetched_at == db_now
 
 
 def test_gathered_facts_is_frozen_and_defaults_empty():
