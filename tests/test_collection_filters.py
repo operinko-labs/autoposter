@@ -1140,7 +1140,10 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
 REPRESENTATIVE = {
     "tag": "genre",
     "str": "studio",
-    "int": "year",
+    # ``plays``, not ``year``: ``year`` is the one int whose bare/``.not``
+    # missing-value routing diverges (row 159's table below pins it), and the
+    # generic case-sets exist to pin the TYPE's uniform rule.
+    "int": "plays",
     "float": "audience_rating",
     "date": "added",
     "duration": "duration",
@@ -1163,6 +1166,34 @@ def test_operator_semantics(value_type, operator, have, written, expected):
     group = parse_filters({key: written})
 
     assert evaluate(group, _view(attribute, have), now=NOW) is expected
+
+
+# Roadmap row 159, SETTLED against the fetched transcription rather than a
+# recollection: Kometa 2.4.8 routes a BARE or ``.not`` ``year`` through its
+# tag/set-intersection branch, not its number branch -- ``check_filter``'s
+# condition opens ``filter_attr != "year"``
+# (.superpowers/oracle/9a/kometa_oracle.py:190, transcribing
+# modules/plex.py:2895) -- so an item with no year is KEPT by ``year.not:``
+# (empty intersection, negated) and dropped by the bare form, while the four
+# range modifiers stay on the number branch and drop it unconditionally.
+YEAR_MISSING_CASES = [
+    ("year", 2000, False),
+    ("year.not", 2000, True),
+    ("year.gt", 1999, False),
+    ("year.gte", 2000, False),
+    ("year.lt", 2001, False),
+    ("year.lte", 2000, False),
+]
+
+
+@pytest.mark.parametrize(
+    "key,written,expected",
+    YEAR_MISSING_CASES,
+    ids=[key for key, _, _ in YEAR_MISSING_CASES],
+)
+def test_a_missing_year_follows_kometas_tag_branch_routing(key, written, expected):
+    group = parse_filters({key: written})
+    assert evaluate(group, _view("year", None), now=NOW) is expected
 
 
 def test_every_operator_has_a_case_set_including_a_missing_value():

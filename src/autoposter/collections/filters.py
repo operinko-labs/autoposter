@@ -56,7 +56,15 @@ the item's tags with the filter's and the empty intersection falls out
 correctly for both modifiers. For ``int``/``float``/``date``/``duration``
 attributes the missing item is EXCLUDED under EVERY operator, including
 ``.not`` -- so ``audience_rating.not: 8`` on an unrated item still drops it,
-same as ``audience_rating: 8`` would. This was originally shipped uniform
+same as ``audience_rating: 8`` would.
+
+ONE exception, copied from Kometa in sweep 2 (row 159): ``year``'s bare and
+``.not`` forms route through Kometa's tag branch (``check_filter`` opens
+``filter_attr != "year"``), so a missing year takes the tag half of the rule
+-- ``year.not: 2000`` KEEPS an item with no year where ``year.gte: 2000``
+drops it. Emergent upstream, matched here for parity, applied in ``_matches``.
+
+This was originally shipped uniform
 (a single rule, no type exception) and marked ``UNVERIFIED-TRANSCRIPTION``
 because a per-type exception is a rule nobody remembers; a fix round then
 settled it on a recollection, and the ORACLE confirmed the recollection against
@@ -606,7 +614,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "year", "int", _BOTH, "listing",
         "The listing attrib `year`. Kometa's special year words (`current_year` "
         "and its offsets) are NOT tier 1, so `year: current_year` refuses at "
-        "load naming the field rather than parsing as something else.",
+        "load naming the field rather than parsing as something else. "
+        "Bare/`.not` missing-value routing follows Kometa's tag branch -- see "
+        "_matches and roadmap row 159.",
         search_field="year", show_search_field="show.year",
         search_kinds=_BOTH, filterable=True,
     ),
@@ -1979,6 +1989,19 @@ def _matches(predicate: FilterPredicate, view: ItemView, now: dt.datetime) -> bo
     negative = predicate.operator in _NEGATES
     have = view.get(attribute.name)
     if _is_missing(have, attribute.type):
+        # ``year``'s bare/``.not`` forms take the TAG half of the rule
+        # (SETTLED against the fetched transcription, roadmap row 159):
+        # Kometa's ``check_filter`` routes them through its set-intersection
+        # branch -- the condition opens ``filter_attr != "year"``
+        # (.superpowers/oracle/9a/kometa_oracle.py:190, transcribing
+        # modules/plex.py:2895) -- so a missing year is dropped by ``year:``
+        # and KEPT by ``year.not:``, while the four range modifiers stay on
+        # the number branch and its unconditional exclusion. The split is
+        # emergent (it exists so ``year: [1990, 1991]`` works as membership),
+        # which is why 9a did not copy it; it is copied now because parity on
+        # what ships beats a tidier rule nobody upstream applies.
+        if attribute.name == "year" and predicate.operator in ("eq", "not"):
+            return negative
         if attribute.type in _MISSING_ALWAYS_EXCLUDES:
             return False
         return negative
