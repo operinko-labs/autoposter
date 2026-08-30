@@ -22,6 +22,7 @@ async def fetch_json(
     request: Callable[[], Awaitable[httpx.Response]],
     cache: ProviderCache | None,
     ttl_seconds: int,
+    cacheable: Callable[[object], bool] | None = None,
 ) -> dict | None:
     """Run one JSON request, optionally through the cache.
 
@@ -31,6 +32,13 @@ async def fetch_json(
     ``params``, never from ``request``'s headers, which is where every client's
     credentials actually live; a negative (404) result is cached with the same
     TTL as a positive one, distinct from "not cached" (see ProviderCache.get).
+
+    ``cacheable`` lets a caller veto the cache WRITE for a decoded 2xx payload
+    it recognises as a refusal in disguise (roadmap row 147: MDBList answers a
+    spent daily budget with 200 and an error body, and caching that served the
+    refusal as an answer for the whole TTL). None means every 2xx is cached,
+    exactly as before; the 404 write is not consulted — a confirmed "nothing
+    there" is an answer, not a refusal.
     """
     key = None
     if cache is not None:
@@ -46,6 +54,6 @@ async def fetch_json(
         return None
     response.raise_for_status()
     payload = response.json()
-    if key is not None:
+    if key is not None and (cacheable is None or cacheable(payload)):
         await cache.set(key, {"found": True, "payload": payload}, ttl_seconds)
     return payload

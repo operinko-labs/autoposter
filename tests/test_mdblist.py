@@ -3,9 +3,11 @@ from pathlib import Path
 
 import httpx
 import pytest
+from sqlalchemy import select
 
 from conftest import session_factory_for
 
+from autoposter.db.models import ProviderCache as ProviderCacheRow
 from autoposter.facts.mdblist import (
     MDBListClient,
     MDBListRefused,
@@ -174,6 +176,76 @@ async def test_a_cached_404_still_returns_none(session):
     assert first is None
     assert second is None
     assert len(calls) == 1
+
+
+async def test_a_limit_body_is_never_cached_for_a_list(session):
+    """Roadmap row 147, tmdb_budget's law mirrored: MDBList answers a spent
+    daily budget with 200 and {"error": "API Limit Reached!"}, which fetch_json
+    stored like any other success -- so a later pass, including one after
+    midnight when the allowance had already rolled over, was served the cached
+    refusal until the entry aged out, up to a full TTL late. A refusal must
+    never become a cached answer (tests/test_tmdb_budget.py::
+    test_a_refusal_body_is_never_cached is the shipped precedent)."""
+    from autoposter.facts.mdblist import MDBListLimitReached
+
+    cache = ProviderCache(session_factory_for(session))
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"error": "API Limit Reached!"})
+        )
+    ) as http:
+        client = MDBListClient("KEY", http, cache=cache, cache_ttl_seconds=3600)
+        with pytest.raises(MDBListLimitReached):
+            await client.list_items("user/some-list")
+
+    rows = (await session.execute(select(ProviderCacheRow))).scalars().all()
+    assert rows == [], "a refusal must never become a cached answer"
+
+
+async def test_a_limit_body_is_never_cached_for_a_content_rating(session):
+    """The same law on the other endpoint the client owns."""
+    from autoposter.facts.mdblist import MDBListLimitReached
+
+    cache = ProviderCache(session_factory_for(session))
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"error": "API Limit Reached!"})
+        )
+    ) as http:
+        client = MDBListClient("KEY", http, cache=cache, cache_ttl_seconds=3600)
+        with pytest.raises(MDBListLimitReached):
+            await client.content_rating(tmdb_id=1, is_movie=True)
+
+    rows = (await session.execute(select(ProviderCacheRow))).scalars().all()
+    assert rows == [], "a refusal must never become a cached answer"
+
+
+async def test_the_first_ask_after_rollover_reaches_the_transport_again(session):
+    """Row 147's consequence, refused end to end: the allowance rolls over at
+    midnight, and the very next ask must reach MDBList -- not a cached
+    refusal. This is the recovery-latency half of the row: with no cached
+    limit body, recovery is the first request after rollover, not TTL-late."""
+    from autoposter.facts.mdblist import MDBListLimitReached
+
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if len(calls) == 1:
+            return httpx.Response(200, json={"error": "API Limit Reached!"})
+        return httpx.Response(200, json=[
+            {"mediatype": "movie", "id": 1, "title": "Dune"},
+        ])
+
+    cache = ProviderCache(session_factory_for(session))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = MDBListClient("KEY", http, cache=cache, cache_ttl_seconds=3600)
+        with pytest.raises(MDBListLimitReached):
+            await client.list_items("user/some-list")
+        items = await client.list_items("user/some-list")
+
+    assert len(calls) == 2, "the post-rollover ask must reach the transport"
+    assert [(kind, entry["title"]) for kind, entry in items] == [("movie", "Dune")]
 
 
 def test_a_mediatype_value_mdblist_has_never_served_raises():

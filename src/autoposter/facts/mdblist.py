@@ -152,6 +152,18 @@ def _raise_for_error(payload: object, subject: str) -> None:
     raise MDBListRefused(f"{subject}: MDBList answered {error!r}")
 
 
+def _not_a_limit_body(payload: object) -> bool:
+    """The cache-write veto (roadmap row 147): the daily-budget refusal must
+    never become a cached answer -- tmdb_budget's never-cache-a-refusal law,
+    applied to a provider whose refusal arrives as a 200. A NON-limit error
+    body (a deleted or private list) stays cacheable on purpose: it is a
+    stable answer whose caching saves budget, the analogue of the 404
+    fetch_json already caches."""
+    return not (
+        isinstance(payload, dict) and payload.get("error") in _LIMIT_ERRORS
+    )
+
+
 class NullMDBListClient:
     """Stand-in used when no MDBList API key is configured.
 
@@ -218,6 +230,7 @@ class MDBListClient:
             ),
             cache=self._cache,
             ttl_seconds=self._cache_ttl_seconds,
+            cacheable=_not_a_limit_body,
         )
         if payload is None:
             return None
@@ -250,14 +263,11 @@ class MDBListClient:
         "remove every member" one layer down, so a list that was deleted or
         made private would empty a live collection on the next sync.
 
-        One consequence of going through ``fetch_json`` worth knowing: the
-        200-with-an-error-body that means "budget spent" is a successful
-        response as far as the cache is concerned, so it is stored like any
-        other and re-raised from the cache until it expires. Within a pass that
-        is redundant with the builder's memo; across passes it means MDBList is
-        not asked again on this list until the entry ages out -- no further
-        budget is spent, at the cost of recovering late once the allowance
-        rolls over.
+        The 200-with-an-error-body that means "budget spent" is never written
+        to the provider cache (``_not_a_limit_body``, roadmap row 147): within
+        a pass the builder's memo already stops the spending, and across
+        passes the first ask after midnight's rollover reaches MDBList afresh
+        instead of being served a cached refusal until the entry aged out.
         """
         url = f"{BASE_URL}/lists/{reference}/items"
         params: dict[str, object] = {"apikey": self._apikey}
@@ -275,6 +285,7 @@ class MDBListClient:
             ),
             cache=self._cache,
             ttl_seconds=self._cache_ttl_seconds,
+            cacheable=_not_a_limit_body,
         )
         if payload is None:
             raise MDBListRefused(
