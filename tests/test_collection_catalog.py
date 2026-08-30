@@ -267,7 +267,10 @@ CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "charts": (10, 0, 1),
     "content": (4, 1, 0),
     "content_ratings": (7, 0, 1),
-    "location": (1, 2, 0),
+    # 1/2/0 until the location-names phase: `location_region` and
+    # `location_continent` flipped GATED -> READY when row 196's code->name
+    # join shipped (`collections/iso_names.py`).
+    "location": (3, 0, 0),
     "media": (3, 1, 0),
     "people": (5, 0, 0),
     "production": (3, 0, 0),
@@ -1073,14 +1076,16 @@ def test_there_are_facts_family_packs_to_hold_to_the_contract():
 
     UPDATE THIS SET when a pack re-files instead of shipping -- and if all of
     them re-file, delete these tests with the packs rather than leaving a green
-    suite asserting over nothing. ``location_region`` and ``location_continent``
-    are deliberately absent: they RE-FILED rather than shipping, because their
-    grouping tables key on country display NAMES and ``origin_country`` carries
-    ISO codes, with no code->name table in Kometa's files or in this tree
-    (``catalog.TMDB_COUNTRY_NAME_ROW``).
+    suite asserting over nothing. location_region and location_continent
+    shipped in the location-names phase: the code->name join row 196 was filed
+    for exists now (collections/iso_names.py), the join was measured per-name
+    first (docs/research/tmdb-iso-names/README.md), and their grouping tables
+    transcribe region.yml/continent.yml verbatim.
     """
     assert {preset.key for preset, _, _ in _facts_family_rows()} == {
         "content_franchises",
+        "location_region",
+        "location_continent",
     }
 
 
@@ -1212,6 +1217,69 @@ def test_the_new_pack_tables_have_not_drifted_by_one_entry():
     for members in packs._FRANCHISE_ADDONS.values():
         assert all(member.isdigit() for member in members), members
 
+    assert len(packs._REGION_INCLUDE) == 23
+    assert _table_checksum(packs._REGION_INCLUDE) == (
+        "64f372ef8c1166220614283c90c55b9cdc812ec95661794543e051a6fac72d3c"
+    )
+    assert len(packs._REGION_ADDONS) == 22
+    assert sum(len(v) for v in packs._REGION_ADDONS.values()) == 323
+    assert _table_checksum(packs._REGION_ADDONS) == (
+        "ef1bad98b54d13103eff37511866638e01173484d7b7975295eec70b46103052"
+    )
+    assert len(packs._CONTINENT_INCLUDE) == 6
+    assert _table_checksum(packs._CONTINENT_INCLUDE) == (
+        "1847d7b0d1300b324450d3dbc9e22bac1685c33ccbd63e9015ac54337035c6ab"
+    )
+    assert len(packs._CONTINENT_ADDONS) == 5
+    assert sum(len(v) for v in packs._CONTINENT_ADDONS.values()) == 324
+    assert _table_checksum(packs._CONTINENT_ADDONS) == (
+        "348c6e9c2e2828d0c32e5298470262bb7bb506fcca8d86729eab9dc4daad79b0"
+    )
+
+
+def test_the_ten_tmdb_spellings_upstream_misses_land_in_their_own_group():
+    """The alias overlay is CONSUMED, not merely shipped beside the tables.
+
+    Ten of TMDb's 251 country names are spelled differently by Kometa's
+    grouping tables (``iso_names.COUNTRY_NAME_ALIASES``, derived from the same
+    fetched bytes -- docs/research/tmdb-iso-names/README.md §3). The family's
+    keys are TMDb's spellings, so without the overlay those ten would match no
+    member and fall into 'Other Regions'/'Other Continents' -- ten countries
+    upstream does carry, silently mis-grouped.
+
+    Both halves are asserted: the shipped params carry every TMDb spelling in
+    the SAME group its upstream spelling sits in, and the verbatim tables the
+    digest test pins carry none of them, so the transcription stays a
+    transcription.
+    """
+    from autoposter.collections import iso_names
+
+    assert iso_names.COUNTRY_NAME_ALIASES, "no aliases, so this proves nothing"
+
+    for params, verbatim in (
+        (dict(packs.REGION_PARAMS), packs._REGION_ADDONS),
+        (dict(packs.CONTINENT_PARAMS), packs._CONTINENT_ADDONS),
+    ):
+        shipped = params["addons"]
+        for tmdb_name, upstream_name in iso_names.COUNTRY_NAME_ALIASES.items():
+            groups = [
+                key for key, members in verbatim.items()
+                if key == upstream_name or upstream_name in members
+            ]
+            assert len(groups) == 1, (tmdb_name, upstream_name, groups)
+            assert tmdb_name in shipped[groups[0]], (tmdb_name, groups[0])
+            assert tmdb_name not in verbatim[groups[0]], tmdb_name
+
+    # The two the phase's own record singles out: `FO` is the pair whose
+    # derivation §3 had to spell out by hand, and `PS` is the one the alias
+    # table reaches by its weakest layer.
+    region = dict(packs.REGION_PARAMS)["addons"]
+    continent = dict(packs.CONTINENT_PARAMS)["addons"]
+    assert "Faeroe Islands" in region["Northern Europe"]
+    assert "Palestinian Territory" in region["Western Asia"]
+    assert "Faeroe Islands" in continent["Europe"]
+    assert "Palestinian Territory" in continent["Asia"]
+
 
 # --- the gated rows ----------------------------------------------------------
 
@@ -1249,13 +1317,10 @@ def test_no_preset_still_waits_on_the_row_the_dynamic_engine_closed():
 
     assert still_waiting == []
     assert catalog.BY_KEY["content_franchises"].gated_row is None
-    assert {
-        catalog.BY_KEY[key].gated_row
-        for key in ("location_region", "location_continent", "time_year")
-    } == {
-        catalog.TMDB_COUNTRY_NAME_ROW,
-        catalog.RELATIVE_YEAR_ROW,
-    }
+    assert catalog.BY_KEY["time_year"].gated_row == catalog.RELATIVE_YEAR_ROW
+    for key in ("location_region", "location_continent"):
+        assert catalog.BY_KEY[key].gated_row is None, key
+        assert catalog.BY_KEY[key].readiness == catalog.READY, key
 
 
 def test_no_preset_still_waits_on_the_rows_the_facts_enumeration_closed():
@@ -1267,7 +1332,8 @@ def test_no_preset_still_waits_on_the_rows_the_facts_enumeration_closed():
     Both constants stay in the module, in the shape ``TMDB_LANGUAGE_NAME_ROW``
     already had: cited rather than waited on. ``content_franchises`` names 192
     as the enumeration it ships on, and the two location packs name 189 as the
-    values that arrived and did not turn out to be enough.
+    values they build from and 196 as the join that let them ship -- both
+    cited in running prose now, neither waited on.
     """
     assert [
         preset.key for preset in CATALOG
@@ -1281,7 +1347,7 @@ def test_no_preset_still_waits_on_the_rows_the_facts_enumeration_closed():
     for key in ("location_region", "location_continent"):
         description = catalog.BY_KEY[key].description
         assert "row %d" % catalog.TMDB_ORIGIN_COUNTRY_ROW in description, key
-        assert "Row %d" % catalog.TMDB_COUNTRY_NAME_ROW in description, key
+        assert "row %d" % catalog.TMDB_COUNTRY_NAME_ROW in description, key
 
 
 def test_no_preset_still_waits_on_the_person_rows():
@@ -2036,13 +2102,25 @@ def test_the_catalog_module_imports_nothing_that_could_reach_the_world():
         "sqlalchemy", "asyncpg",
     }), sorted(imported_roots)
 
-    # ``packs.py`` is the tables ``catalog.py`` draws its dynamic rows from --
-    # its own docstring's claim that it imports nothing is pinned the same way,
-    # not left incidental to the fact that nothing in it has needed one yet.
+    # ``packs.py`` is the tables ``catalog.py`` draws its dynamic rows from,
+    # and was import-free until the location-names phase gave the two location
+    # packs one thing to consume: ``iso_names``' alias table, which is what
+    # keeps ten TMDb country spellings out of the leftovers bucket. An
+    # ALLOW-LIST rather than the count of zero this used to be -- naming the
+    # one permitted import is a tighter pin than "none", because it says which
+    # one and refuses the next by default. ``iso_names`` is a plain module of
+    # vendored data and imports nothing itself.
     packs_tree = ast.parse(pathlib.Path(packs.__file__).read_text(encoding="utf-8"))
-    assert not any(
-        isinstance(node, (ast.Import, ast.ImportFrom)) for node in ast.walk(packs_tree)
-    ), "packs.py is documented as importing nothing"
+    packs_imports = set()
+    for node in ast.walk(packs_tree):
+        if isinstance(node, ast.Import):
+            packs_imports.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            packs_imports.update(
+                "%s.%s" % (node.module, alias.name) for alias in node.names
+            )
+
+    assert packs_imports == {"autoposter.collections.iso_names"}, sorted(packs_imports)
 
 
 def test_expanding_every_preset_reaches_no_network(monkeypatch):

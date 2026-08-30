@@ -767,18 +767,22 @@ KEYWORD_RESOLUTION_ROW = 161  # TMDb keyword name -> id, which no earlier row ow
 RELATIVE_YEAR_ROW = 171    # the `current_year`/`current_year-N` value grammar,
                            # the half of that row phase 10a did NOT ship
 TMDB_COUNTRY_NAME_ROW = 196  # the region/continent packs group country display
-                             # NAMES and `origin_country` carries ISO codes,
-                             # with no code->name table in Kometa's files or in
-                             # this tree -- filed by the prefetch phase when row
-                             # 189 closed without being able to help them, and
-                             # the reason those two packs are still GATED
+                             # NAMES and `origin_country` carries ISO codes --
+                             # filed by the prefetch phase, CLOSED by the
+                             # location-names phase: the code->name table is
+                             # vendored (`collections/iso_names.py`, fetched
+                             # from TMDb's /configuration/countries) and the
+                             # family maps codes UP into upstream's names. A
+                             # CITED row now, not a blocker: both packs ship
+                             # on it and name it as what closed
 TMDB_ORIGIN_COUNTRY_ROW = 189  # the two dynamic types that were a TMDb walk and
                                # not an enumeration -- filed by phase 10a-1's
                                # wrap and CLOSED by the prefetch phase, which
                                # made the walk this service's own facts pipeline.
                                # A CITED row now, not a blocker: the two location
-                               # packs name it as the thing that shipped, and
-                               # wait on row 196 instead
+                               # packs build on the values it delivered, and
+                               # name it beside row 196, the join that let them
+                               # ship
 TMDB_COLLECTION_TYPE_ROW = 192  # the franchise pack's enumeration: a TMDb walk
                                 # over every item's belongs_to_collection, not a
                                 # listFilterChoices enumeration -- filed by phase
@@ -1595,29 +1599,15 @@ CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
 
 # --- the LOCATION category ----------------------------------------------------
 #
-# Two packs, one blocker, plus one that shipped -- and the blocker is no longer
-# the one it was. The include/exclude, addon-merge and title-format machinery
-# each of these three files configures IS the dynamic engine, which shipped in
-# phase 10a; the origin-country VALUES the two gated packs were waiting for
-# shipped with the prefetch phase's facts enumeration (row 189). What stops them
-# now was found by fetching the two files whole rather than recalling them: they
-# group country display NAMES and ``origin_country`` carries ISO codes, and the
-# code->name table that would join the two exists neither upstream nor here. So
-# they re-filed at row 196 rather than shipping upstream's grouping tables over
-# a mapping this phase would have had to invent -- the pack discipline phase 10b
-# set, in its own words: a pack that cannot ship honestly re-files with its
-# reason.
-_LOCATION_PACKS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
-    ("location_region", "Regions", "defaults/movie/region.yml",
-     "One collection per world region (Northern Europe, Southern Europe, "
-     "South-Eastern Asia and the rest of Kometa's grouping).", _MOVIE),
-    ("location_continent", "Continents", "defaults/movie/continent.yml",
-     "One collection per continent -- the coarsest of the three location "
-     "packs.", _MOVIE),
-)
-
-# The pack that ships, out of the comprehension because it is no longer one of
-# a kind with its neighbours: it has a producer and they do not.
+# Three packs, all shipping. ``location_country`` groups Plex's own ``country``
+# tag through the dynamic engine. The other two group TMDb's ``origin_country``
+# through the ``facts_family`` engine -- gated at row 196 until the
+# location-names phase vendored the code->name table
+# (``collections/iso_names.py``, fetched from /configuration/countries) and
+# MEASURED the join between every reachable TMDb name and the grouping tables'
+# 647 member strings (docs/research/tmdb-iso-names/README.md) before either
+# pack flipped. The two value sets disagree on exactly the co-productions an
+# operator would notice, and all three descriptions say so.
 _COUNTRY_PRESET = Preset(
     key="location_country",
     category="location",
@@ -1653,39 +1643,102 @@ _COUNTRY_PRESET = Preset(
     ),
 )
 
-LOCATION_PRESETS: tuple[Preset, ...] = (_COUNTRY_PRESET,) + tuple(
-    Preset(
-        key=key,
-        category="location",
-        name=name,
-        description=(
-            "%s Neither the machinery nor the data is what this row waits on "
-            "any more: the per-value engine shipped in phase 10a, and TMDb's "
-            "origin-country values -- the ones Kometa groups -- are stored and "
-            "enumerable here since the prefetch phase closed row %d. What is "
-            "missing is the JOIN between them, and it is a table nobody has. "
-            "Kometa's grouping vocabulary ('Northern Europe', 'Southern "
-            "Europe', 'South-Eastern Asia') is a set of country display "
-            "NAMES -- 647 of them across the two files, with not one ISO "
-            "code among them, and deliberate alias spellings ('Türkiye' "
-            "beside 'Turkey') because upstream is "
-            "matching free text a Plex agent emitted. TMDb's `origin_country` "
-            "is ISO-3166-1 alpha-2 codes. Building this pack would therefore "
-            "not be a transcription of `%s`: it would be that file's grouping "
-            "table plus a code-to-name mapping this service invented, which is "
-            "the one thing this catalog refuses to ship under Kometa's name. "
-            "Row %d carries the evidence and what closing it takes. The "
-            "`Countries` pack beside this one is unaffected and ships today, "
-            "because it enumerates Plex's own `country` tag and its keys ARE "
-            "those display names."
-            % (description, TMDB_ORIGIN_COUNTRY_ROW, source, TMDB_COUNTRY_NAME_ROW)
+_REGION_PRESET = Preset(
+    key="location_region",
+    category="location",
+    name="Regions",
+    description=(
+        "One collection per world region (Northern Europe, South-Eastern "
+        "Asia, the Caribbean and the rest of Kometa's 23-entry include "
+        "list), grouping TMDb's origin-country field with the name-keyed "
+        "addon tables transcribed verbatim -- alias spellings and all -- "
+        "from `defaults/movie/region.yml`. Movie libraries only, as "
+        "upstream has it. Built by `builder: facts_family`, `type: "
+        "origin_country`: the enumeration is the ISO-3166-1 codes the facts "
+        "pipeline stores off the `/movie/{id}` read it already makes "
+        "(shipped when row %d closed), and each code maps UP to TMDb's own "
+        "English name through the vendored `/configuration/countries` table "
+        "(`collections/iso_names.py`) -- the code->name join row %d was "
+        "filed for, measured per-name before this pack shipped "
+        "(docs/research/tmdb-iso-names/README.md) and closed with it. Ten of "
+        "TMDb's 251 country names are spelled differently by upstream's "
+        "tables ('Faeroe Islands' for 'Faroe Islands'); each of those "
+        "spellings is added to the group its upstream twin already sits in, "
+        "which is this catalog's own addition and the only thing here that "
+        "is not upstream's file. This "
+        "is a DIFFERENT value set from the `Countries` pack beside this "
+        "one, which groups Plex's own `country` tag: enable both and they "
+        "will disagree on exactly the co-productions you would notice. A "
+        "country the tables do not place falls into 'Other Regions' "
+        "honestly, upstream's own leftovers rule. Titled with Kometa's own "
+        "title shape (the region's name, nothing else). What the family "
+        "builds tracks what the facts pipeline has VISITED: a fresh library "
+        "starts small, correct and growing as the drift sweep works through "
+        "the rest (`scheduler.drift_days`, `scheduler.drift_batch_size` -- "
+        "500 items a week by default, so a library of a couple of thousand "
+        "movies and shows fills in over about five weekly passes), and each "
+        "pass reports its coverage. "
+        "`max_collections` is pinned at %d -- the include list plus the "
+        "leftovers bucket, the most this family can ever build -- so no "
+        "library is refused by a number nobody set. To build something "
+        "else, copy this pack into a `definitions:` entry of your own."
+        % (TMDB_ORIGIN_COUNTRY_ROW, TMDB_COUNTRY_NAME_ROW,
+           len(packs._REGION_INCLUDE) + 1)
+    ),
+    kometa_source="defaults/movie/region.yml",
+    library_types=_MOVIE,
+    collections=(
+        PresetCollection(
+            title="Regions", builder="facts_family", params=packs.REGION_PARAMS,
         ),
-        kometa_source=source,
-        library_types=library_types,
-        readiness=GATED,
-        gated_row=TMDB_COUNTRY_NAME_ROW,
-    )
-    for key, name, source, description, library_types in _LOCATION_PACKS
+    ),
+)
+
+_CONTINENT_PRESET = Preset(
+    key="location_continent",
+    category="location",
+    name="Continents",
+    description=(
+        "One collection per continent -- the coarsest of the three location "
+        "packs, its 6-entry include list and addon tables transcribed "
+        "verbatim from `defaults/movie/continent.yml`. Movie libraries "
+        "only, as upstream has it. Built by `builder: facts_family`, "
+        "`type: origin_country`, exactly as the Regions pack beside it: "
+        "stored ISO codes (row %d) mapped UP to TMDb's English names "
+        "through the vendored table (`collections/iso_names.py`, the join "
+        "row %d was filed for, measured per-name first -- "
+        "docs/research/tmdb-iso-names/README.md), with the same ten TMDb "
+        "spellings upstream's tables miss added to their own groups, this "
+        "catalog's own addition beside the transcription. A DIFFERENT value "
+        "set "
+        "from the `Countries` pack, which groups Plex's own `country` tag "
+        "-- the two disagree on exactly the co-productions you would "
+        "notice. A country the tables do not place falls into 'Other "
+        "Continents' honestly. Titled with Kometa's own title shape (the "
+        "continent's name, nothing else). Coverage tracks what the facts "
+        "pipeline has VISITED and converges via the drift sweep "
+        "(`scheduler.drift_days`, `scheduler.drift_batch_size` -- 500 "
+        "items a week by default, so a library of a couple of thousand "
+        "movies and shows fills in over about five weekly passes). "
+        "`max_collections` is pinned at %d -- "
+        "the include list plus the leftovers bucket, the most this family "
+        "can ever build. To build something else, copy this pack into a "
+        "`definitions:` entry of your own."
+        % (TMDB_ORIGIN_COUNTRY_ROW, TMDB_COUNTRY_NAME_ROW,
+           len(packs._CONTINENT_INCLUDE) + 1)
+    ),
+    kometa_source="defaults/movie/continent.yml",
+    library_types=_MOVIE,
+    collections=(
+        PresetCollection(
+            title="Continents", builder="facts_family",
+            params=packs.CONTINENT_PARAMS,
+        ),
+    ),
+)
+
+LOCATION_PRESETS: tuple[Preset, ...] = (
+    _COUNTRY_PRESET, _REGION_PRESET, _CONTINENT_PRESET,
 )
 
 
@@ -2269,11 +2322,11 @@ TIME_PRESETS: tuple[Preset, ...] = (
 #
 #   awards           15 / 0 / 1     charts           10 / 0 / 1
 #   content           4 / 1 / 0     content_ratings   7 / 0 / 1
-#   location          1 / 2 / 0     media             3 / 1 / 0
+#   location          3 / 0 / 0     media             3 / 1 / 0
 #   people            5 / 0 / 0     production        3 / 0 / 0
 #   time              1 / 2 / 0
 #
-# -- 58 rows: 49 presets an operator can switch on today, 6 that name what
+# -- 58 rows: 51 presets an operator can switch on today, 4 that name what
 # they would build and the roadmap row that would let them, and 3 rendered
 # switches for families that already ship behind a boolean.
 CATALOG: tuple[Preset, ...] = (

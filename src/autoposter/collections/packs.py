@@ -24,6 +24,18 @@ prose-heavy rows. Nothing here is logic. Every constant below is either a
 transcription of a file named in its own comment or is marked ``NOT KOMETA:``
 with the decision and the reason.
 
+**The one import, and the one derivation.** This module was import-free until
+the location-names phase, and stays free of everything that could reach the
+world -- ``collections/iso_names.py`` is a plain module of vendored data with
+no imports of its own, and the purity test in
+``tests/test_collection_catalog.py`` now pins it as the ONLY thing importable
+here rather than pinning a count of zero, which says which one and refuses the
+next by default. It is imported for one job, done once, in
+``_with_tmdb_spellings`` below: the two location packs group country display
+NAMES, their family keys are TMDb's spellings, and ten of TMDb's 251 names are
+spelled differently by Kometa's tables. The overlay is NOT KOMETA and marked so
+where it is applied; the transcribed tables themselves are untouched by it.
+
 **Provenance.** Every file cited here was fetched from
 github.com/Kometa-Team/Kometa at tag ``v2.4.8`` and read while these tables
 were written; the fetch record, with byte counts and the full extracted tables,
@@ -61,13 +73,17 @@ collection`` rather than ``smart_filter`` and carries no ``sort_by`` or
 has neither field to put one in.
 """
 
+from autoposter.collections import iso_names
+
 __all__ = [
     "AUDIO_LANGUAGE_PARAMS",
+    "CONTINENT_PARAMS",
     "COUNTRY_PARAMS",
     "DECADE_PARAMS",
     "FRANCHISE_PARAMS",
     "GENRE_PARAMS",
     "NETWORK_PARAMS",
+    "REGION_PARAMS",
     "STUDIO_PARAMS",
     "SUBTITLE_LANGUAGE_PARAMS",
 ]
@@ -474,6 +490,366 @@ COUNTRY_PARAMS: tuple[tuple[str, object], ...] = (
     # NOT KOMETA: the same structural ceiling the audio pack pins, for the same
     # reason -- `len(include)` plus the leftovers bucket. Record §2, §5 row 5.
     ("max_collections", len(_COUNTRY_INCLUDE) + 1),
+)
+
+
+# --- the location join's alias overlay ----------------------------------------
+#
+# NOT KOMETA, and the only derivation in this module. Both packs below group
+# country display NAMES, and their family keys are TMDb's own English names
+# (`collections/iso_names.py`, mapped up from the stored ISO codes). Ten of
+# TMDb's 251 names are spelled differently by upstream's tables -- `Faeroe
+# Islands` for `Faroe Islands`, `Palestinian Territory` for `Palestine` and
+# eight more, every pair DERIVED from the two fetched artifacts rather than
+# recalled (`iso_names.COUNTRY_NAME_ALIASES`; the rule that derived them is
+# docs/research/tmdb-iso-names/README.md section 3). Unapplied, those ten keys
+# match no member and land in `Other Regions`/`Other Continents` -- ten
+# countries upstream DOES carry, quietly mis-grouped.
+#
+# The overlay is purely ADDITIVE: TMDb's spelling joins the group its upstream
+# spelling already sits in, and nothing is renamed, reordered or removed. So
+# the transcribed tables stay verbatim (their digests are pinned in
+# `tests/test_collection_catalog.py`), and an operator who copies one of these
+# packs into a `definitions:` entry of their own and writes upstream's
+# spelling gets exactly what upstream's file says.
+
+
+def _with_tmdb_spellings(addons: dict[str, list[str]]) -> dict[str, list[str]]:
+    """``addons``, plus TMDb's spelling beside each aliased member it carries.
+
+    A copy: the transcription this is handed is never mutated.
+    """
+    merged = {key: list(members) for key, members in addons.items()}
+    for tmdb_name, upstream_name in iso_names.COUNTRY_NAME_ALIASES.items():
+        for key, members in merged.items():
+            if key == upstream_name or upstream_name in members:
+                members.append(tmdb_name)
+                break
+    return merged
+
+
+# --- region: defaults/movie/region.yml ----------------------------------------
+#
+# The first pack built on the `origin_country` FACTS family rather than a Plex
+# enumeration, and the reason it can exist at all is the location-names
+# phase's join: the family's keys are TMDb display names (mapped up from the
+# stored ISO codes through `collections/iso_names.py`, row 196's decision), so
+# upstream's name-keyed grouping tables below apply VERBATIM -- alias
+# spellings included. An alias the library's names never take (upstream
+# carries `Türkiye` beside `Turkey` because it matches free text a Plex agent
+# emitted; TMDb emits exactly one name per code) is inert here, and kept
+# anyway: the transcription law is byte-for-byte, and dropping "unreachable"
+# members would be an edit wearing a transcription's name.
+#
+# The join was MEASURED before this shipped -- every TMDb name reachable from
+# the library's stored codes checked against these member lists, per name
+# (docs/research/tmdb-iso-names/README.md). A name the tables do not place
+# falls into `Other Regions`, upstream's own leftovers rule.
+
+# Transcribed from `defaults/movie/region.yml`, `include:`, in file order --
+# fetched bytes at `.superpowers/kometa-v2.4.8/region.yml`, sha256
+# 9409fee72b78ddfe… (provenance: p-prefetch-upstream.md §4).
+_REGION_INCLUDE: tuple[str, ...] = (
+    "Northern Africa", "Eastern Africa", "Central Africa", "Southern Africa",
+    "Western Africa", "Caribbean", "Central America", "South America",
+    "North America", "Antarctica", "Central Asia", "Eastern Asia",
+    "South-Eastern Asia", "Southern Asia", "Western Asia", "Eastern Europe",
+    "Northern Europe", "Southern Europe", "Western Europe",
+    "Australia and New Zealand", "Melanesia", "Micronesia", "Polynesia",
+)
+
+# Transcribed from `defaults/movie/region.yml`, `addons:`, in file order,
+# alias members verbatim (upstream's own trailing comments name which
+# canonical spelling each alias folds into; comments are not data and are
+# dropped, exactly as `_COUNTRY_INCLUDE` records for its headings).
+_REGION_ADDONS: dict[str, list[str]] = {
+    "Northern Africa": [
+        "Algeria", "Egypt", "Libya", "Morocco", "Sudan", "Tunisia",
+        "Western Sahara",
+    ],
+    "Eastern Africa": [
+        "British Indian Ocean Territory", "Burundi", "Comoros", "Djibouti",
+        "Eritrea", "Ethiopia", "French Southern Territories", "Kenya",
+        "Madagascar", "Malawi", "Mauritius", "Mayotte", "Mozambique",
+        "Réunion", "Rwanda", "Seychelles", "Somalia", "South Sudan", "Uganda",
+        "Tanzania", "United Republic of Tanzania", "Zambia", "Zimbabwe",
+    ],
+    "Central Africa": [
+        "Angola", "Cameroon", "Central African Republic", "Chad",
+        "Republic of the Congo", "Congo", "Democratic Republic of the Congo",
+        "Zaire", "Equatorial Guinea", "Gabon", "São Tomé and Príncipe",
+        "Sao Tome and Principe",
+    ],
+    "Southern Africa": [
+        "Botswana", "Eswatini", "Swaziland", "Lesotho", "Namibia",
+        "South Africa",
+    ],
+    "Western Africa": [
+        "Benin", "Burkina Faso", "Cape Verde", "Cabo Verde", "Côte d'Ivoire",
+        "Côte d’Ivoire", "Ivory Coast", "Gambia", "Ghana", "Guinea",
+        "Guinea-Bissau", "Liberia", "Mali", "Mauritania", "Niger", "Nigeria",
+        "Saint Helena, Ascension and Tristan da Cunha", "Saint Helena",
+        "St. Helena", "Ascension", "Tristan da Cunha", "Senegal",
+        "Sierra Leone", "Togo",
+    ],
+    "Caribbean": [
+        "Anguilla", "Antigua and Barbuda", "Antigua", "Barbuda", "Aruba",
+        "Bahamas", "Barbados", "Bonaire, Sint Eustatius and Saba", "Bonaire",
+        "Sint Eustatius", "Saba", "Netherlands Antilles",
+        "British Virgin Islands", "Cayman Islands", "Cuba", "Curaçao",
+        "Dominica", "Dominican Republic", "Grenada", "Guadeloupe", "Haiti",
+        "Jamaica", "Martinique", "Montserrat", "Puerto Rico",
+        "Saint Barthélemy", "Saint Kitts and Nevis", "St. Kitts and Nevis",
+        "Saint Lucia", "St. Lucia", "Saint Martin",
+        "Saint Vincent and the Grenadines", "Saint Vincent and Grenadines",
+        "St. Vincent and the Grenadines", "St. Vincent and Grenadines",
+        "Sint Maarten", "Trinidad and Tobago", "Turks and Caicos Islands",
+        "US Virgin Islands", "U.S. Virgin Islands",
+        "United States Virgin Islands",
+    ],
+    "Central America": [
+        "Belize", "Costa Rica", "El Salvador", "Guatemala", "Honduras",
+        "Mexico", "Nicaragua", "Panama",
+    ],
+    "South America": [
+        "Argentina", "Bolivia", "Plurinational State of Bolivia",
+        "Bouvet Island", "Brazil", "Chile", "Colombia", "Ecuador",
+        "Falkland Islands", "Malvinas", "French Guiana", "Guyana", "Paraguay",
+        "Peru", "South Georgia and the South Sandwich Islands",
+        "South Georgia and South Sandwich Islands", "South Georgia",
+        "South Sandwich Islands", "Suriname", "Uruguay", "Venezuela",
+        "Bolivarian Republic of Venezuela",
+    ],
+    "North America": [
+        "Bermuda", "Canada", "Greenland", "Saint Pierre and Miquelon",
+        "St. Pierre and Miquelon", "United States",
+        "United States of America",
+    ],
+    "Central Asia": [
+        "Kazakhstan", "Kyrgyzstan", "Tajikistan", "Turkmenistan",
+        "Uzbekistan",
+    ],
+    "Eastern Asia": [
+        "China", "Hong Kong", "Hong Kong SAR China", "Macao", "Macau",
+        "Macau SAR China", "North Korea",
+        "Democratic People's Republic of Korea", "Japan", "Mongolia",
+        "South Korea", "Republic of Korea", "Korea", "Taiwan",
+        "Taiwan, Province of China",
+    ],
+    "South-Eastern Asia": [
+        "Brunei", "Brunei Darussalam", "Cambodia", "Indonesia", "Laos",
+        "Lao People's Democratic Republic", "Lao", "Malaysia", "Myanmar",
+        "Burma", "Philippines", "Singapore", "Thailand", "East Timor",
+        "Timor-Leste", "Vietnam", "Viet Nam",
+    ],
+    "Southern Asia": [
+        "Afghanistan", "Bangladesh", "Bhutan", "India", "Iran",
+        "Islamic Republic of Iran", "Maldives", "Nepal", "Pakistan",
+        "Sri Lanka",
+    ],
+    "Western Asia": [
+        "Armenia", "Azerbaijan", "Bahrain", "Cyprus", "Georgia", "Iraq",
+        "Israel", "Jordan", "Kuwait", "Lebanon", "Oman", "Qatar",
+        "Saudi Arabia", "Palestine", "State of Palestine", "Syria",
+        "Syrian Arab Republic", "Turkey", "Türkiye", "United Arab Emirates",
+        "Yemen",
+    ],
+    "Eastern Europe": [
+        "Belarus", "Bulgaria", "Czech Republic", "Czechia", "Czechoslovakia",
+        "Hungary", "Poland", "Moldova", "Republic of Moldova", "Romania",
+        "Russia", "Russian Federation", "Soviet Union", "Slovakia", "Ukraine",
+    ],
+    "Northern Europe": [
+        "Åland Islands", "Guernsey", "Jersey", "Sark", "Denmark", "Estonia",
+        "Faroe Islands", "Finland", "Iceland", "Ireland", "Northern Ireland",
+        "Isle of Man", "Latvia", "Lithuania", "Norway",
+        "Svalbard and Jan Mayen Islands", "Svalbard and Jan Mayen", "Sweden",
+        "United Kingdom",
+    ],
+    "Southern Europe": [
+        "Albania", "Andorra", "Bosnia and Herzegovina", "Croatia",
+        "Gibraltar", "Greece", "Kosovo", "Vatican City", "Holy See", "Italy",
+        "Malta", "Montenegro", "North Macedonia", "Macedonia",
+        "Republic of North Macedonia", "Portugal", "San Marino", "Serbia",
+        "Serbia and Montenegro", "Slovenia", "Spain", "Yugoslavia",
+    ],
+    "Western Europe": [
+        "Austria", "Belgium", "France", "French Republic", "Germany",
+        "East Germany", "Liechtenstein", "Luxembourg", "Monaco",
+        "Netherlands", "Switzerland",
+    ],
+    "Australia and New Zealand": [
+        "Australia", "Christmas Island", "Cocos (Keeling) Islands",
+        "Heard Island and McDonald Islands", "Heard and McDonald Islands",
+        "New Zealand", "Norfolk Island",
+    ],
+    "Melanesia": [
+        "Fiji", "New Caledonia", "Papua New Guinea", "New Guinea",
+        "Solomon Islands", "Vanuatu",
+    ],
+    "Micronesia": [
+        "Guam", "Kiribati", "Marshall Islands",
+        "Federated States of Micronesia", "Nauru", "Northern Mariana Islands",
+        "Palau", "US Minor Outlying Islands",
+        "United States Minor Outlying Islands",
+        "United States Outlying Islands", "U.S. Minor Outlying Islands",
+        "U.S. Outlying Islands", "US Outlying Islands",
+    ],
+    "Polynesia": [
+        "American Samoa", "Cook Islands", "French Polynesia", "Niue",
+        "Pitcairn", "Pitcairn Islands", "Samoa", "Tokelau", "Tonga", "Tuvalu",
+        "Wallis and Futuna Islands", "Wallis and Futuna",
+    ],
+}
+
+REGION_PARAMS: tuple[tuple[str, object], ...] = (
+    ("type", "origin_country"),
+    # Upstream's own (`region.yml`'s dynamic block): the region's name and
+    # nothing else.
+    ("title_format", "<<key_name>>"),
+    ("include", _REGION_INCLUDE),
+    # NOT KOMETA in its overlay half only -- `_with_tmdb_spellings` above, and
+    # the reason it exists is stated there.
+    ("addons", _with_tmdb_spellings(_REGION_ADDONS)),
+    # Upstream's own `other_name`. `facts_family` gates the leftovers bucket
+    # on `include`, exactly as upstream and `builders/dynamic.py` do.
+    ("other_name", "Other Regions"),
+    # NOT KOMETA: the same structural ceiling every include-list pack pins --
+    # `len(include)` plus the leftovers bucket is the most this family can
+    # ever build, so no library is refused by a number nobody set. No
+    # `sort_by`/`limit`: `FactsFamilyParams` deliberately has neither (a list
+    # definition's own `sort:`/`limit:` do that job), the same shape
+    # `FRANCHISE_PARAMS` ships.
+    ("max_collections", len(_REGION_INCLUDE) + 1),
+)
+
+
+# --- continent: defaults/movie/continent.yml ----------------------------------
+#
+# The coarsest location pack: the same 324 member strings as region.yml
+# regrouped under five keys plus a bare `Antarctica` include entry, and one
+# member region.yml does not carry (`Micronesia` as a country member under
+# Oceania, beside the `Federated States of Micronesia` alias). Same family,
+# same join, same measured-first discipline as `_REGION_ADDONS` above.
+
+# Transcribed from `defaults/movie/continent.yml`, `include:`, in file order --
+# fetched bytes at `.superpowers/kometa-v2.4.8/continent.yml`, sha256
+# fbc20666618fdd67… (provenance: p-prefetch-upstream.md §4).
+_CONTINENT_INCLUDE: tuple[str, ...] = (
+    "Africa", "Americas", "Antarctica", "Asia", "Europe", "Oceania",
+)
+
+# Transcribed from `defaults/movie/continent.yml`, `addons:`, in file order.
+# Upstream groups each continent's members under commented region headings;
+# the headings are comments and not data, so the order is kept and the
+# groupings are not (`_COUNTRY_INCLUDE`'s own rule).
+_CONTINENT_ADDONS: dict[str, list[str]] = {
+    "Africa": [
+        "Algeria", "Egypt", "Libya", "Morocco", "Sudan", "Tunisia",
+        "Western Sahara", "British Indian Ocean Territory", "Burundi",
+        "Comoros", "Djibouti", "Eritrea", "Ethiopia",
+        "French Southern Territories", "Kenya", "Madagascar", "Malawi",
+        "Mauritius", "Mayotte", "Mozambique", "Réunion", "Rwanda",
+        "Seychelles", "Somalia", "South Sudan", "Uganda", "Tanzania",
+        "United Republic of Tanzania", "Zambia", "Zimbabwe", "Angola",
+        "Cameroon", "Central African Republic", "Chad",
+        "Republic of the Congo", "Congo", "Democratic Republic of the Congo",
+        "Zaire", "Equatorial Guinea", "Gabon", "São Tomé and Príncipe",
+        "Sao Tome and Principe", "Botswana", "Eswatini", "Swaziland",
+        "Lesotho", "Namibia", "South Africa", "Benin", "Burkina Faso",
+        "Cape Verde", "Cabo Verde", "Côte d'Ivoire", "Côte d’Ivoire",
+        "Ivory Coast", "Gambia", "Ghana", "Guinea", "Guinea-Bissau",
+        "Liberia", "Mali", "Mauritania", "Niger", "Nigeria",
+        "Saint Helena, Ascension and Tristan da Cunha", "Saint Helena",
+        "St. Helena", "Ascension", "Tristan da Cunha", "Senegal",
+        "Sierra Leone", "Togo",
+    ],
+    "Americas": [
+        "Anguilla", "Antigua and Barbuda", "Antigua", "Barbuda", "Aruba",
+        "Bahamas", "Barbados", "Bonaire, Sint Eustatius and Saba", "Bonaire",
+        "Sint Eustatius", "Saba", "Netherlands Antilles",
+        "British Virgin Islands", "Cayman Islands", "Cuba", "Curaçao",
+        "Dominica", "Dominican Republic", "Grenada", "Guadeloupe", "Haiti",
+        "Jamaica", "Martinique", "Montserrat", "Puerto Rico",
+        "Saint Barthélemy", "Saint Kitts and Nevis", "St. Kitts and Nevis",
+        "Saint Lucia", "St. Lucia", "Saint Martin",
+        "Saint Vincent and the Grenadines", "Saint Vincent and Grenadines",
+        "St. Vincent and the Grenadines", "St. Vincent and Grenadines",
+        "Sint Maarten", "Trinidad and Tobago", "Turks and Caicos Islands",
+        "US Virgin Islands", "U.S. Virgin Islands",
+        "United States Virgin Islands", "Belize", "Costa Rica", "El Salvador",
+        "Guatemala", "Honduras", "Mexico", "Nicaragua", "Panama", "Argentina",
+        "Bolivia", "Plurinational State of Bolivia", "Bouvet Island",
+        "Brazil", "Chile", "Colombia", "Ecuador", "Falkland Islands",
+        "Malvinas", "French Guiana", "Guyana", "Paraguay", "Peru",
+        "South Georgia and the South Sandwich Islands",
+        "South Georgia and South Sandwich Islands", "South Georgia",
+        "South Sandwich Islands", "Suriname", "Uruguay", "Venezuela",
+        "Bolivarian Republic of Venezuela", "Bermuda", "Canada", "Greenland",
+        "Saint Pierre and Miquelon", "St. Pierre and Miquelon",
+        "United States", "United States of America",
+    ],
+    "Asia": [
+        "Kazakhstan", "Kyrgyzstan", "Tajikistan", "Turkmenistan",
+        "Uzbekistan", "China", "Hong Kong", "Hong Kong SAR China", "Macao",
+        "Macau", "Macau SAR China", "North Korea",
+        "Democratic People's Republic of Korea", "Japan", "Mongolia",
+        "South Korea", "Republic of Korea", "Korea", "Taiwan",
+        "Taiwan, Province of China", "Brunei", "Brunei Darussalam",
+        "Cambodia", "Indonesia", "Laos", "Lao People's Democratic Republic",
+        "Lao", "Malaysia", "Myanmar", "Burma", "Philippines", "Singapore",
+        "Thailand", "East Timor", "Timor-Leste", "Vietnam", "Viet Nam",
+        "Afghanistan", "Bangladesh", "Bhutan", "India", "Iran",
+        "Islamic Republic of Iran", "Maldives", "Nepal", "Pakistan",
+        "Sri Lanka", "Armenia", "Azerbaijan", "Bahrain", "Cyprus", "Georgia",
+        "Iraq", "Israel", "Jordan", "Kuwait", "Lebanon", "Oman", "Qatar",
+        "Saudi Arabia", "Palestine", "State of Palestine", "Syria",
+        "Syrian Arab Republic", "Turkey", "Türkiye", "United Arab Emirates",
+        "Yemen",
+    ],
+    "Europe": [
+        "Belarus", "Bulgaria", "Czech Republic", "Czechia", "Czechoslovakia",
+        "Hungary", "Poland", "Moldova", "Republic of Moldova", "Romania",
+        "Russia", "Russian Federation", "Soviet Union", "Slovakia", "Ukraine",
+        "Åland Islands", "Guernsey", "Jersey", "Sark", "Denmark", "Estonia",
+        "Faroe Islands", "Finland", "Iceland", "Ireland", "Northern Ireland",
+        "Isle of Man", "Latvia", "Lithuania", "Norway",
+        "Svalbard and Jan Mayen Islands", "Svalbard and Jan Mayen", "Sweden",
+        "United Kingdom", "Albania", "Andorra", "Bosnia and Herzegovina",
+        "Croatia", "Gibraltar", "Greece", "Kosovo", "Vatican City",
+        "Holy See", "Italy", "Malta", "Montenegro", "North Macedonia",
+        "Macedonia", "Republic of North Macedonia", "Portugal", "San Marino",
+        "Serbia", "Serbia and Montenegro", "Slovenia", "Spain", "Yugoslavia",
+        "Austria", "Belgium", "France", "French Republic", "Germany",
+        "East Germany", "Liechtenstein", "Luxembourg", "Monaco",
+        "Netherlands", "Switzerland",
+    ],
+    "Oceania": [
+        "Australia", "Christmas Island", "Cocos (Keeling) Islands",
+        "Heard Island and McDonald Islands", "Heard and McDonald Islands",
+        "New Zealand", "Norfolk Island", "Fiji", "New Caledonia",
+        "Papua New Guinea", "New Guinea", "Solomon Islands", "Vanuatu",
+        "Guam", "Kiribati", "Marshall Islands", "Micronesia",
+        "Federated States of Micronesia", "Nauru", "Northern Mariana Islands",
+        "Palau", "US Minor Outlying Islands",
+        "United States Minor Outlying Islands",
+        "United States Outlying Islands", "U.S. Minor Outlying Islands",
+        "U.S. Outlying Islands", "US Outlying Islands", "American Samoa",
+        "Cook Islands", "French Polynesia", "Niue", "Pitcairn",
+        "Pitcairn Islands", "Samoa", "Tokelau", "Tonga", "Tuvalu",
+        "Wallis and Futuna Islands", "Wallis and Futuna",
+    ],
+}
+
+CONTINENT_PARAMS: tuple[tuple[str, object], ...] = (
+    ("type", "origin_country"),
+    ("title_format", "<<key_name>>"),
+    ("include", _CONTINENT_INCLUDE),
+    # NOT KOMETA in its overlay half only, as `REGION_PARAMS` above.
+    ("addons", _with_tmdb_spellings(_CONTINENT_ADDONS)),
+    ("other_name", "Other Continents"),
+    # NOT KOMETA: the structural ceiling, as REGION_PARAMS above.
+    ("max_collections", len(_CONTINENT_INCLUDE) + 1),
 )
 
 
