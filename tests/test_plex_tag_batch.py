@@ -17,8 +17,12 @@ class FakeTag:
 
 
 class FakeStream:
-    def __init__(self, stream_type, language):
+    """Carries both attribs D6 measured populated, so reading the display
+    title instead of the ISO code is a red test, not a silent mismatch."""
+
+    def __init__(self, stream_type, language_tag, language="Display Title"):
         self.streamType = stream_type
+        self.languageTag = language_tag
         self.language = language
 
 
@@ -73,7 +77,7 @@ def test_call_count_is_ceil_n_over_chunk_exactly():
 def test_result_is_plain_data_keyed_by_string_rating_key():
     item = FakeItem("7", genres=("Horror",), labels=("Overlay",),
                     collections=("Alien Collection",),
-                    streams=(FakeStream(2, "English"), FakeStream(3, "Finnish"),
+                    streams=(FakeStream(2, "en"), FakeStream(3, "fi"),
                              FakeStream(1, None)))
     result = fetch_tag_index(FakeSection([item]), ["7"], chunk_size=50)
     tags = result["7"]
@@ -81,8 +85,9 @@ def test_result_is_plain_data_keyed_by_string_rating_key():
     assert tags.genres == ("Horror",)
     assert tags.labels == ("Overlay",)
     assert tags.collections == ("Alien Collection",)
-    assert tags.audio_languages == ("English",)
-    assert tags.subtitle_languages == ("Finnish",)
+    # the ISO code, never the display title (review round 1, probe decision D6)
+    assert tags.audio_languages == ("en",)
+    assert tags.subtitle_languages == ("fi",)
 
 
 def test_item_with_no_tags_is_present_with_empty_tuples_not_absent():
@@ -97,10 +102,19 @@ def test_key_plex_no_longer_answers_is_absent_from_the_result():
 
 
 def test_duplicate_tags_deduplicate_preserving_order():
-    item = FakeItem("3", streams=(FakeStream(2, "English"), FakeStream(2, "English"),
-                                  FakeStream(2, "Finnish")))
+    item = FakeItem("3", streams=(FakeStream(2, "en"), FakeStream(2, "en"),
+                                  FakeStream(2, "fi")))
     result = fetch_tag_index(FakeSection([item]), ["3"])
-    assert result["3"].audio_languages == ("English", "Finnish")
+    assert result["3"].audio_languages == ("en", "fi")
+
+
+def test_duplicate_rating_keys_are_asked_for_once():
+    # duplicates cost chunks, never characters in a chunk -- but the ceil pin
+    # is only honest over DISTINCT keys (review round 1).
+    section = FakeSection(_items(3))
+    result = fetch_tag_index(section, ["1", "1", "2", "1", "3"], chunk_size=200)
+    assert section.calls == [[1, 2, 3]]
+    assert len(result) == 3
 
 
 def test_non_numeric_rating_key_raises_rather_than_guessing():

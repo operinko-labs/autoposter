@@ -14,6 +14,9 @@ law that a failure must be memoised too:
 """
 import asyncio
 
+import requests
+from plexapi.exceptions import PlexApiException
+
 from autoposter.plex.client import TAG_BATCH_CHUNK, ItemTags, fetch_tag_index
 
 __all__ = ["EnrichmentUnavailable", "ensure_tags"]
@@ -47,7 +50,20 @@ async def ensure_tags(
         return tags
     try:
         fetched = await asyncio.to_thread(fetch_tag_index, section, to_fetch, chunk_size)
-    except Exception as error:
+    # Narrower than ``except Exception`` on purpose, and for the reason
+    # ``plex_search.py:459-497`` already litigated: a blanket catch here does
+    # not just log a failure, it MEMOISES one, for the rest of the pass, as a
+    # fact about the LIBRARY. A ``ValueError`` out of
+    # ``_iter_metadata_batches`` (a non-numeric key -- a CALLER bug by that
+    # function's own docstring) is not that fact, and rewriting it as "check
+    # the chunk cap the phase-B probe measured" would send the operator
+    # looking in the wrong place for the rest of the run. ``BadRequest`` --
+    # D2's measured refusal shape, and D2's own instruction is to catch the
+    # exception class rather than a status -- is a ``PlexApiException``
+    # subclass, so the refusal this message is written for is still caught;
+    # a dropped connection or a timeout comes off plexapi's bare ``requests``
+    # call unwrapped, hence the second class.
+    except (PlexApiException, requests.RequestException) as error:
         failure = EnrichmentUnavailable(
             "the batched Plex metadata read failed (%s); every definition "
             "needing tier-2 attributes is refused this pass. If Plex is up, "

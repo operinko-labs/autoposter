@@ -5,6 +5,7 @@ memoised too (BuilderContext.run_cache's own law), and so is a fetched-but-
 absent key, so a gone item costs one fetch per pass, not one per definition.
 """
 import pytest
+from plexapi.exceptions import BadRequest
 
 from autoposter.collections.enrichment import EnrichmentUnavailable, ensure_tags
 
@@ -18,7 +19,8 @@ class FakeSection:
     def fetchItems(self, ekey):
         self.calls.append(list(ekey))
         if self.fail:
-            raise RuntimeError("boom")
+            # D2's measured refusal shape: a PlexApiException subclass.
+            raise BadRequest("boom")
         return [self._items[k] for k in ekey if k in self._items]
 
 
@@ -58,10 +60,22 @@ async def test_failure_is_memoised_for_the_pass():
     run_cache = {}
     with pytest.raises(EnrichmentUnavailable) as first:
         await ensure_tags(section, run_cache, ["1"])
-    assert "RuntimeError" in str(first.value) and "boom" not in str(first.value)
+    assert "BadRequest" in str(first.value) and "boom" not in str(first.value)
     with pytest.raises(EnrichmentUnavailable):
         await ensure_tags(section, run_cache, ["1"])
     assert len(section.calls) == 1, "a dead server is one fetch per pass, not one per definition"
+
+
+async def test_caller_bug_propagates_rather_than_being_memoised():
+    # A non-numeric key is a CALLER bug, not a fact about the library: it must
+    # reach the caller intact, and must not refuse every later definition this
+    # pass (review round 1; plex_search.py:459-497 is the standing precedent).
+    section = _section("1")
+    run_cache = {}
+    with pytest.raises(ValueError):
+        await ensure_tags(section, run_cache, ["not-a-key"])
+    assert "1" in await ensure_tags(section, run_cache, ["1"])
+    assert len(section.calls) == 1
 
 
 async def test_gone_key_is_memoised_as_missing_not_refetched():

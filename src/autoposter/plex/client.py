@@ -138,17 +138,25 @@ def _tag_names(item: object, attr: str) -> tuple[str, ...]:
 
 def _stream_languages(item: object, stream_type: int) -> tuple[str, ...]:
     """streamType 2 is audio, 3 is subtitles. The value read is the stream's
-    ``language`` display title (probe decision D6 -- the production server
-    carries ``language``, ``languageCode`` and ``languageTag`` on both audio
-    and subtitle streams, so no adjustment is called for). ``Media``,
-    ``MediaPart`` and streams are plain PlexObjects with no reload guard of
-    their own (``filter_values._resolutions`` documents the same)."""
+    ``languageTag`` -- the ISO 639-1 CODE (``en``), not the ``language``
+    display title (``English``). Probe decision D6 measured all three of
+    ``language``, ``languageCode`` and ``languageTag`` populated on both audio
+    and subtitle streams of the production server, so the choice is free; the
+    code is the right one because the tree's only language normaliser,
+    ``collections/builders/plex_search._base_language_code``, consumes codes
+    and passes an unparseable value through UNCHANGED by design -- a display
+    title would never reduce to ``en`` and the mismatch would be silent.
+    ``languageTag`` over ``languageCode`` (ISO 639-2, ``eng``) because it is
+    what that normaliser already emits, so a comparison is an identity for the
+    common case. ``Media``, ``MediaPart`` and streams are plain PlexObjects
+    with no reload guard of their own (``filter_values._resolutions``
+    documents the same)."""
     found = []
     for media in _safe_attr(item, "media") or []:
         for part in getattr(media, "parts", None) or []:
             for stream in getattr(part, "streams", None) or []:
                 if getattr(stream, "streamType", None) == stream_type:
-                    found.append(getattr(stream, "language", None))
+                    found.append(getattr(stream, "languageTag", None))
     return _uniq(found)
 
 
@@ -157,12 +165,15 @@ def _iter_metadata_batches(section, rating_keys, chunk_size):
 
     The seam is plexapi's own list-of-ints translation: ``fetchItems`` turns a
     list of ints into ``/library/metadata/{k1,k2,...}`` (base.py:334-335). A
-    non-numeric key raises ValueError: rating keys handed here come off
-    plexapi items and are always numeric, so a failure to parse is a caller
-    bug, not a library state. BLOCKING -- callers on the event loop go
-    through ``asyncio.to_thread`` (``collections/enrichment.py`` does).
+    non-numeric key raises ValueError ON FIRST ITERATION, not at call time --
+    this is a generator: rating keys handed here come off plexapi items and
+    are always numeric, so a failure to parse is a caller bug, not a library
+    state. Duplicate keys are collapsed (order-preserving) so the fetch count
+    stays ``ceil(N/chunk)`` over DISTINCT keys. BLOCKING -- callers on the
+    event loop go through ``asyncio.to_thread``
+    (``collections/enrichment.py`` does).
     """
-    keys = [int(key) for key in rating_keys]
+    keys = list(dict.fromkeys(int(key) for key in rating_keys))
     for start in range(0, len(keys), chunk_size):
         yield from section.fetchItems(keys[start:start + chunk_size])
 
