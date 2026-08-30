@@ -68,9 +68,9 @@ here for any interval below 2.7 s).
 | site | interval | exposure per execution |
 |---|---|---|
 | `tests/test_pipeline.py` row-195 assertion (fixed in `9503df0`) | 1.12 s | ~3.7 % |
-| `tests/test_facts_gather.py:294`, `:328` (fixed) | ~0.1 s | ~0.3 % each |
+| `tests/test_facts_gather.py:301`, `:340` (fixed) | ~0.1 s | ~0.3 % each |
 | `tests/test_item_facts.py:69`, `tests/test_queue.py:119` 1 s tolerances (fixed) | sub-ms, tolerance 1 s < the 2.7 s step | in principle, whenever a step lands in the gap |
-| `tests/test_queue.py:295` (**residual**) — `reclaim_stale()` commits, so the later `func.now()` read is a new transaction | ~2 ms (commit + round trip) | ~0.007 % |
+| `tests/test_queue.py:309` (**residual**) — `reclaim_stale()` commits, so the later `func.now()` read is a new transaction | ~2 ms (commit + round trip) | ~0.007 % |
 
 Six assertions across four files. **Five are immune**; the sixth is not, and
 cannot be. `reclaim_stale()` commits, so its `run_after` stamp and any
