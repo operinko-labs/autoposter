@@ -44,18 +44,33 @@ HEARTBEAT_SECONDS = 15.0
 # could reach this buffer inside a traceback's last line and be served by
 # /api/logs and the stream. Scrubbed HERE, where the served surface's text is
 # assembled, rather than at the logging sites: stdout (the pod log) keeps the
-# full traceback under the repo's host-only rule, and a future exc_info site
-# is covered without knowing about this module. Matches any query-param name
-# ending in api_key/apikey/token (X-Plex-Token, plex_token, ...); the name
-# survives, the value never does. The over-match is deliberate: a param whose
-# name merely ENDS that way (e.g. a hypothetical next_token) is redacted too,
-# trading a few false positives for never missing a credential (row 117's
-# close records the same tradeoff).
-_CREDENTIAL_PARAM = re.compile(r"(?i)([-\w]*(?:api_?key|token))=[^&\s'\"]+")
+# full traceback under the repo's trusted-sink rule (row 207's decision), and
+# a future exc_info site is covered without knowing about this module. Matches
+# any query-param name ending in api_key/api-key/apikey/token (X-Plex-Token,
+# plex_token, ...); the name survives, the value never does. The over-match is
+# deliberate: a param whose name merely ENDS that way (e.g. a hypothetical
+# next_token) is redacted too, trading a few false positives for never missing
+# a credential (row 117's close records the same tradeoff). Row 207 added the
+# api-key spelling and the %3D alternation -- a URL nested inside another
+# URL's query value carries its '=' percent-encoded, and the encoded form
+# must redact exactly like the literal one.
+_CREDENTIAL_PARAM = re.compile(r"(?i)([-\w]*(?:api[-_]?key|token))(=|%3D)[^&\s'\"]+")
+
+# Roadmap row 207's other half: the credential pattern redacts the PARAM and
+# leaves the host, so /api/logs still served the operator's base URL
+# (http://plex.internal:32400/...) -- main.py's connect failure, the health
+# probe's unreachable/reachable lines and any traceback carrying a request URL
+# all land in this buffer. The authority is redacted, the path deliberately
+# kept: the path is what makes the line debuggable, and the operator-URL
+# clause is about hosts. Public API hosts are redacted too -- row 117's
+# over-match tradeoff taken the same way on purpose: never miss an operator
+# host, and the pod log keeps the full line under the trusted-sink decision.
+_URL_HOST = re.compile(r"(?i)\b(https?://)[^\s/?#'\"<>]+")
 
 
 def _scrub(text: str) -> str:
-    return _CREDENTIAL_PARAM.sub(r"\1=REDACTED", text)
+    text = _CREDENTIAL_PARAM.sub(r"\1\2REDACTED", text)
+    return _URL_HOST.sub(r"\1REDACTED", text)
 
 
 class LogBuffer(logging.Handler):

@@ -144,6 +144,60 @@ def test_a_token_param_in_a_plain_message_is_scrubbed_too():
     assert "X-Plex-Token=REDACTED" in entry["message"]
 
 
+def test_the_operator_host_is_scrubbed_from_the_served_message():
+    """Roadmap row 207's served half: row 117's pattern redacts the credential
+    PARAM and leaves the host, so /api/logs still served the operator's base
+    URL -- main.py's connect failure ("failed to connect to Plex at %s"), the
+    health probe's unreachable line and any traceback carrying a request URL.
+    URL-shaped hosts now redact like credentials, at this same seam; the pod
+    log keeps the full line (the trusted sink -- the decision this row closed
+    on)."""
+    buffer = LogBuffer()
+    buffer.emit(record(
+        "Plex server at http://plex.internal:32400 is unreachable: timeout"
+    ))
+    (entry,) = buffer.lines()
+    assert "plex.internal" not in entry["message"]
+    assert "32400" not in entry["message"]
+    assert "Plex server at http://REDACTED is unreachable: timeout" == entry["message"]
+
+
+def test_the_path_survives_the_host_scrub():
+    """The authority goes, the path stays: the path is what makes a served
+    line debuggable, and the operator-URL clause is about hosts."""
+    buffer = LogBuffer()
+    buffer.emit(record(
+        "GET http://plex.internal:32400/library/sections/9/all failed"
+    ))
+    (entry,) = buffer.lines()
+    assert entry["message"] == "GET http://REDACTED/library/sections/9/all failed"
+
+
+def test_a_percent_encoded_credential_is_scrubbed():
+    """Row 207's third note: a URL nested inside another URL's query value
+    carries its params percent-encoded, so the literal '=' the pattern
+    requires is itself %3D and the credential sailed through unredacted."""
+    buffer = LogBuffer()
+    buffer.emit(record(
+        "Client error for url "
+        "'https://img.example/fetch?src=https%3A%2F%2Fapi.example%2Fv3%3Fapi_key%3DSECRETKEY'"
+    ))
+    (entry,) = buffer.lines()
+    assert "SECRETKEY" not in entry["message"]
+    assert "api_key%3DREDACTED" in entry["message"]
+
+
+def test_the_api_dash_key_spelling_is_scrubbed_too():
+    """Row 207's second note: the pattern matched api_key/apikey but not
+    api-key. No shipped provider spells it that way, so this is closing the
+    documented gap, not a live leak."""
+    buffer = LogBuffer()
+    buffer.emit(record("GET https://api.example/v1?api-key=SECRETKEY failed"))
+    (entry,) = buffer.lines()
+    assert "SECRETKEY" not in entry["message"]
+    assert "api-key=REDACTED" in entry["message"]
+
+
 async def test_a_full_subscriber_queue_drops_lines_rather_than_blocking():
     """One slow stream reader must not cost the process memory without bound
     or stall the emitting thread."""
