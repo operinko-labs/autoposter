@@ -62,6 +62,7 @@ from autoposter.collections.service import (
     build_source_clients,
     library_definitions,
 )
+from autoposter.collections.source_urls import SourceUrlRefused, parse_source
 from autoposter.config.overrides import load_overrides_document
 from autoposter.db.models import EventLog, ManagedCollection
 from autoposter.db.models import Session as SessionModel
@@ -220,6 +221,42 @@ async def collections_definitions(
             }
             for definition in config.collections.definitions
         ],
+    }
+
+
+class ParseSourceRequest(BaseModel):
+    """One pasted source URL (or bare id) to resolve to a builder."""
+
+    url: str
+
+
+@router.post("/collections/parse-source")
+async def parse_collection_source(
+    body: ParseSourceRequest,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Resolve a pasted list URL to ``(builder, params)`` -- shape-only.
+
+    A thin shell over ``collections/source_urls.py``, which is where the
+    shapes live (beside the params models they feed; see that module's
+    docstring for why the parsing is server-side at all). Touches nothing:
+    no Plex, no database, no outbound request -- a list's existence is the
+    first pass's business, not this endpoint's. Not behind ``_enabled``, for
+    the catalog's reason: parsing changes nothing, and the form must work on
+    a replica with no Plex connection.
+
+    The refusal is a 422 whose ``detail`` is one operator-facing sentence:
+    the params model's own error string, or the supported-shapes list -- and
+    for trakt, the row-202 fence by name.
+    """
+    try:
+        parsed = parse_source(body.url)
+    except SourceUrlRefused as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+    return {
+        "builder": parsed.builder,
+        "params": parsed.params,
+        "display_note": parsed.display_note,
     }
 
 

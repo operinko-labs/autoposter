@@ -1,0 +1,113 @@
+"""``collections/source_urls.py``: every accepted shape and every refusal.
+
+Pure -- no app, no network. The parse is shape-only by design (facts C2):
+nothing here mocks a provider because nothing is fetched; a list that does
+not exist is the first pass's discovery, and sync semantics leave the
+collection untouched when it fails.
+
+The refusal table's fragments are the load-bearing half: a recognised shape
+with a bad value must surface the params model's OWN error string (not a
+paraphrase), and a trakt paste must be refused BY NAME -- row 202's fence.
+"""
+import re
+
+import pytest
+
+from autoposter.collections.source_urls import SourceUrlRefused, parse_source
+
+ACCEPTED = [
+    # imdb.com: one host, two builders -- the path decides (the dispatch the
+    # recon flagged).
+    ("https://www.imdb.com/list/ls055350410/", "imdb_list", {"list": "ls055350410"}),
+    ("imdb.com/list/ls055350410?ref_=hm", "imdb_list", {"list": "ls055350410"}),
+    (
+        "https://m.imdb.com/user/ur00000001/watchlist",
+        "imdb_watchlist", {"user": "ur00000001"},
+    ),
+    (
+        "https://mdblist.com/lists/linaspurinis/top-watched-movies-of-the-week",
+        "mdblist_list", {"list": "linaspurinis/top-watched-movies-of-the-week"},
+    ),
+    # The TMDb entity family rides free on one params model (facts C2). A
+    # slugged segment's id is its leading digits.
+    ("https://www.themoviedb.org/list/8136243", "tmdb_list", {"id": 8136243}),
+    (
+        "https://www.themoviedb.org/collection/10-star-wars-collection",
+        "tmdb_collection", {"id": 10},
+    ),
+    ("https://www.themoviedb.org/company/2", "tmdb_company", {"id": 2}),
+    ("https://www.themoviedb.org/network/213-netflix", "tmdb_network", {"id": 213}),
+    (
+        "https://www.themoviedb.org/keyword/9715-superhero/movie",
+        "tmdb_keyword", {"id": 9715},
+    ),
+    (
+        "https://www.thetvdb.com/lists/marvel-cinematic-universe",
+        "tvdb_list", {"slug": "marvel-cinematic-universe"},
+    ),
+    # Bare shapes (facts C2): accepted where unambiguous.
+    ("ls055350410", "imdb_list", {"list": "ls055350410"}),
+    ("ur00000001", "imdb_watchlist", {"user": "ur00000001"}),
+    (
+        "linaspurinis/top-watched-movies-of-the-week",
+        "mdblist_list", {"list": "linaspurinis/top-watched-movies-of-the-week"},
+    ),
+    ("8136243", "tmdb_list", {"id": 8136243}),
+]
+
+
+@pytest.mark.parametrize("text,builder,params", ACCEPTED)
+def test_accepted_shapes_resolve_to_the_shipped_builder(text, builder, params):
+    parsed = parse_source(text)
+
+    assert (parsed.builder, parsed.params) == (builder, params)
+
+
+def test_a_bare_number_discloses_the_tmdb_reading():
+    """int is the one bare shape more than one builder could claim (TMDb,
+    TVDb and MDBList all take a numeric list id); the note says which reading
+    was taken and how to get the others."""
+    parsed = parse_source("8136243")
+
+    assert "read as a TMDb list id" in parsed.display_note
+
+
+def test_a_slashed_bare_value_is_an_mdblist_reference_whatever_it_starts_with():
+    """The bare shapes are told apart by shape, not by dispatch order: an
+    MDBList reference is the only one carrying a ``/``, so an ``ls…``-looking
+    user name is still a user name and not a mangled IMDb list id."""
+    parsed = parse_source("lsfan/best-of-2024")
+
+    assert (parsed.builder, parsed.params) == (
+        "mdblist_list", {"list": "lsfan/best-of-2024"}
+    )
+
+
+REFUSED = [
+    # trakt: refused BY NAME -- row 202's fence, verbatim in the message.
+    ("https://trakt.tv/users/someone/lists/best-of", "no trakt builder is shipped"),
+    # An unknown host with a scheme is a refusal naming what IS supported...
+    ("https://letterboxd.com/someone/list/slasher-flicks/", "is not a supported source"),
+    # ...and schemeless it falls through the bare shapes to the same teaching.
+    ("letterboxd.com/someone/list/slasher-flicks", "not a URL or a bare id"),
+    # A known host off its list path.
+    ("https://www.imdb.com/title/tt0111161/", "not a list or a user page"),
+    # A recognised shape with a bad value reuses the params model's OWN error
+    # string -- including the ls/ur cross-hint the imdb models teach with.
+    ("https://www.imdb.com/list/ur00000001", "use the `imdb_watchlist` builder"),
+    ("ls12x4", "is not an IMDb list id"),
+    # TmdbEntityParams' gt=0: pydantic's own message, not a paraphrase.
+    ("0", "greater than 0"),
+    ("", "paste a list URL"),
+    ("just words", "not a URL or a bare id"),
+    # A paste ``urlsplit`` itself refuses to split (it reads '[' as the start
+    # of an IPv6 literal) is still a refusal, not a traceback -- and its own
+    # refusal, not MDBList's error string about a value never offered to it.
+    ("https://exam[ple.com/list", "is not a URL this form can read"),
+]
+
+
+@pytest.mark.parametrize("text,fragment", REFUSED)
+def test_refused_shapes_name_what_is_wrong(text, fragment):
+    with pytest.raises(SourceUrlRefused, match=re.escape(fragment)):
+        parse_source(text)

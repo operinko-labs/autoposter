@@ -163,3 +163,39 @@ async def test_the_listing_reports_override_provenance_when_the_document_carries
     ).json()
 
     assert [entry["provenance"] for entry in body["definitions"]] == ["override"]
+
+
+# --- the parse endpoint (T2) ------------------------------------------------
+
+
+async def test_parse_source_requires_a_session(client):
+    response = await client.post(
+        "/api/collections/parse-source", json={"url": "ls055350410"}
+    )
+    assert response.status_code == 401
+
+
+async def test_parse_source_resolves_and_refuses_through_the_pure_parser(
+    client, auth_headers
+):
+    """The endpoint is a thin shell: one accepted parse proving the shape of
+    the 200, one trakt paste proving the 422 carries the refusal verbatim.
+    The full accept/refuse tables are ``tests/test_source_urls.py``'s."""
+    good = await client.post(
+        "/api/collections/parse-source",
+        json={"url": "https://www.imdb.com/list/ls055350410/"},
+        headers=auth_headers,
+    )
+    assert good.status_code == 200
+    body = good.json()
+    assert body["builder"] == "imdb_list"
+    assert body["params"] == {"list": "ls055350410"}
+    assert body["display_note"]
+
+    refused = await client.post(
+        "/api/collections/parse-source",
+        json={"url": "https://trakt.tv/users/someone/lists/best-of"},
+        headers=auth_headers,
+    )
+    assert refused.status_code == 422
+    assert "no trakt builder is shipped" in refused.json()["detail"]
