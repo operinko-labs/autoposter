@@ -136,6 +136,7 @@ __all__ = [
     "FilterPredicate",
     "ItemView",
     "RelativeWindow",
+    "batched_attributes",
     "evaluate",
     "parse_filters",
     "predicates",
@@ -167,7 +168,19 @@ ITEM_KINDS = ("movie", "show")
 #   two: Kometa filters on both (builder.py:280-293) and searches on both.
 # - ``search-only``: the attribute is not in Kometa's filter vocabulary at all,
 #   so there is nothing to probe. ``unplayed`` and ``progress``.
-SOURCE_TIERS = ("listing", "probe", "tier2-deferred", "unprobed", "search-only")
+#
+# Phase B added the third:
+#
+# - ``tier2-batched`` (phase B): the listing strands it but the batched
+#   ``/library/metadata/{k1,k2,...}`` read carries it fully (9a probe F,
+#   re-verified for the show library by the phase-B probe). Readable through
+#   the engine's enrichment pass ONLY -- a definition whose filters name such
+#   a row triggers one batched fetch for its resolved set, and an item the
+#   batch did not answer for REFUSES the definition rather than evaluating
+#   with a silently-missing value.
+SOURCE_TIERS = (
+    "listing", "probe", "tier2-batched", "tier2-deferred", "unprobed", "search-only",
+)
 
 # The operator vocabulary, per value type. These are internal names; the YAML
 # spelling of each is ``.<name>`` except for the type's default, which is
@@ -522,13 +535,20 @@ _BOTH = ("movie", "show")
 # interleaved so the first fifteen still read against the roadmap line they came
 # from. Column totals are asserted in tests/test_collection_filters.py as the
 # transcription's checksum: 9 tag / 1 str / 3 int / 2 float / 3 date /
-# 1 duration / 2 bool; 9 listing / 6 tier2-deferred (Task 2's probe moved the
-# seven ``probe`` rows: resolution in, the other six out) / 3 unprobed /
-# 3 search-only; 13 both-kinds / 7 movie-only / 1 show-only for ``kinds``, and
+# 1 duration / 2 bool; 9 listing / 5 tier2-batched / 1 tier2-deferred /
+# 3 unprobed / 3 search-only; 13 both-kinds / 7 movie-only / 1 show-only for
+# ``kinds``, and
 # 16 / 4 / 1 for ``search_kinds``, which is a different split and that is the
 # point of the second column.
 #
-# THE PROBE, in one paragraph, because six of these rows are now a refusal and
+# The source split is phase B's arithmetic, not 9a's: Task 2's probe left
+# 9 listing / 6 tier2-deferred, and phase B moved five of that six onto
+# ``tier2-batched`` when the batched ``/library/metadata/{k1,k2,...}`` read was
+# measured returning the families the listing had truncated or stripped. Only
+# ``network`` stayed, and it stayed for a reason no read can change -- see its
+# row.
+#
+# THE PROBE, in one paragraph, because six of these rows were a refusal and
 # a reader deserves the reason without leaving the file. Read-only, against the
 # production server (ShadowPlex, Plex 1.43.4.10903-e5521bd8c, 1955 movies /
 # 284 shows), 2026-08-25; the full log is in
@@ -542,7 +562,7 @@ _BOTH = ("movie", "show")
 # parameters were tried against the tag counts; none changed anything.
 FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
-        "genre", "tag", _BOTH, "tier2-deferred",
+        "genre", "tag", _BOTH, "tier2-batched",
         "Plex's `<Genre>` child element, which plexapi exposes as the `genres` "
         "cached property (video.py:433). Exact tag match, case-insensitive: "
         "`genre: Hor` does NOT match `Horror`. PROBE VERDICT: DEFERRED, and the "
@@ -554,7 +574,11 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "metadata, agreeing exactly on 3 of 20. `2 Fast 2 Furious` lists as "
         "Action/Crime and is also a Thriller. A listing-backed accessor would "
         "therefore not fail, it would answer WRONG, so genre leaves tier 1 "
-        "rather than ship a filter that silently drops a third of its matches.",
+        "rather than ship a filter that silently drops a third of its matches. "
+        "PHASE B: moved to `tier2-batched` -- the batched metadata read returns "
+        "the family full and untruncated (9a probe F: 3 sampled items matched "
+        "the single-key endpoint exactly), so `filters:` may name it; the "
+        "engine pays one batched fetch for the definition's resolved set.",
         search_field="genre", show_search_field="show.genre",
         search_kinds=_BOTH, filterable=True,
     ),
@@ -621,7 +645,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
-        "audio_language", "tag", ("movie",), "tier2-deferred",
+        "audio_language", "tag", ("movie",), "tier2-batched",
         "Stream-level: the languages of the item's audio streams, under "
         "`<Media><Part><Stream>`. PROBE VERDICT: DEFERRED, exactly as this note "
         "predicted -- streams are a level below the Media children the listing "
@@ -630,28 +654,46 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "that plexapi's `Movie`/`Show` also expose an `audioLanguage` ATTRIB, "
         "which is the item's preferred-audio SETTING and not the languages its "
         "files contain -- reading that would be a same-name-different-filter "
-        "bug of the kind the item_facts adjudication already ruled out.",
+        "bug of the kind the item_facts adjudication already ruled out. "
+        "PHASE B: moved to `tier2-batched` -- the batched metadata read carries "
+        "`<Stream>` in full (9a probe F: the streams the listing omits entirely "
+        "are present, 4 of 7 stream elements per sampled item being the audio "
+        "and subtitle ones), so `filters:` may name it; the engine pays one "
+        "batched fetch for the definition's resolved set. The VALUES are ISO "
+        "639-1 CODES -- the stream's `languageTag` (`en`), not the `language` "
+        "display title (`English`) -- because that is what the tree's only "
+        "language normaliser (`plex_search._base_language_code`) emits, so "
+        "write `audio_language: en`.",
         search_field="audioLanguage", show_search_field="episode.audioLanguage",
         search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
-        "subtitle_language", "tag", ("movie",), "tier2-deferred",
+        "subtitle_language", "tag", ("movie",), "tier2-batched",
         "Stream-level, like `audio_language`, and DEFERRED with it on the same "
         "probe data (no `<Stream>` element reaches the listing at all). The "
-        "`subtitleLanguage` attrib is the same trap as `audioLanguage`.",
+        "`subtitleLanguage` attrib is the same trap as `audioLanguage`. "
+        "PHASE B: moved to `tier2-batched` with `audio_language`, on the same "
+        "9a probe F evidence (the batched metadata read carries the `<Stream>` "
+        "elements the listing omits) and with the same ISO 639-1 CODE values "
+        "-- write `subtitle_language: fi`, not `Finnish`.",
         search_field="subtitleLanguage",
         show_search_field="episode.subtitleLanguage",
         search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
-        "label", "tag", _BOTH, "tier2-deferred",
+        "label", "tag", _BOTH, "tier2-batched",
         "Plex's `<Label>` child element -> the `labels` cached property "
         "(video.py:441). PROBE VERDICT: DEFERRED -- the listing strips the "
         "family outright. Zero `<Label>` children across all 1955 movies and all "
         "284 shows, while the metadata endpoint carried a label for all 30 "
         "sampled movies and for 19 of 20 sampled shows (`Overlay`, this "
         "server's Kometa-era marker). This settles what reconcile.py:70-83's "
-        "deliberate per-collection reload was already evidence for.",
+        "deliberate per-collection reload was already evidence for. "
+        "PHASE B: moved to `tier2-batched` -- the batched metadata read carries "
+        "the labels the listing strips outright (9a probe F: present on the "
+        "sampled items, matching the single-key endpoint), so `filters:` may "
+        "name it; the engine pays one batched fetch for the definition's "
+        "resolved set.",
         search_field="label", show_search_field="show.label",
         search_kinds=_BOTH, filterable=True,
     ),
@@ -740,7 +782,14 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "carry is a `studio` naming the network (E4, Hulu, Paramount+), which is "
         "a DIFFERENT attribute with its own row and its own string semantics; "
         "conflating them is not a substitution this table will make silently. "
-        "Filed for tier 2 -- see the Task 2 report's recommendation.",
+        "Filed for tier 2 -- see the Task 2 report's recommendation. "
+        "PHASE B VERDICT, recorded rather than shipped false: the batch read "
+        "cannot conjure an attrib Plex 1.43.4 emits nowhere (0/284 in the "
+        "listing AND absent from /library/metadata), so `network` stays "
+        "refused, alone on `tier2-deferred` now that the other five moved. "
+        "Sourcing it from TVDb/TMDb under a DISTINCT name is a separate "
+        "roadmap row if anyone wants it; conflating it with `studio` stays "
+        "refused by name.",
         # Already show-scoped by search_translation (plex.py:63), so
         # show_translation never sees it and the two columns are equal rather
         # than the second being None. 9a proved the ITEM attribute absent on
@@ -750,7 +799,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         search_kinds=("show",), filterable=True,
     ),
     FilterAttribute(
-        "collection", "tag", _BOTH, "tier2-deferred",
+        "collection", "tag", _BOTH, "tier2-batched",
         "Plex's `<Collection>` child element -> the `collections` cached "
         "property (video.py:417): the collections the ITEM is already a member "
         "of on the server. Not this service's definitions, and not the "
@@ -765,7 +814,14 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "library kind and wrong for the other is not a tier-1 filter. Note also "
         "that `includeCollections=1`, the parameter whose name suggests it fixes "
         "this, does something else entirely: it MIXES Collection objects into "
-        "the result set, changing what the listing returns.",
+        "the result set, changing what the listing returns. PHASE B: moved to "
+        "`tier2-batched` -- the batched metadata read carries the memberships "
+        "the listing disagreed about (9a probe F: present on the sampled items "
+        "and matching the single-key endpoint), so `filters:` may name it; the "
+        "engine pays one batched fetch for the definition's resolved set. Note "
+        "what that makes writable which was not: `collection.not: X` -- "
+        "\"anything not already in X\" -- is now answered from the truth "
+        "rather than from the listing's 257-of-1955.",
         search_field="collection", show_search_field="show.collection",
         search_kinds=_BOTH, filterable=True,
     ),
@@ -1552,6 +1608,24 @@ def predicates(node: "FilterGroup | FilterPredicate") -> Iterator[FilterPredicat
         return
     for child in node.children:
         yield from predicates(child)
+
+
+def batched_attributes(group: FilterGroup) -> tuple[str, ...]:
+    """The distinct ``tier2-batched`` attribute names this parsed filter reads,
+    in first-appearance order.
+
+    What the engine uses to decide whether a definition needs the enrichment
+    pass at all -- computed from the table row, never from config (there is no
+    knob to declare it, and a knob would be a second place for the answer to
+    be wrong). Distinct because two predicates on one attribute are still one
+    fetch, and ordered because a refusal's action string names these back to
+    the operator, who wrote them in this order.
+    """
+    seen: dict[str, None] = {}
+    for predicate in predicates(group):
+        if predicate.attribute.source == "tier2-batched":
+            seen.setdefault(predicate.attribute.name, None)
+    return tuple(seen)
 
 
 # --- evaluation --------------------------------------------------------------

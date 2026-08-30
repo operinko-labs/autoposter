@@ -484,12 +484,16 @@ def test_definitions_are_editable_without_a_restart():
 # - the SHAPE (an attribute that does not exist, a modifier its type does not
 #   take, a value that is not of that type) -- `filters.parse_filters`'s job;
 # - the SOURCE TIER. The parser gates on the attribute TABLE, and the table
-#   carries rows the item view deliberately cannot read: `genre` is a real
-#   tier-1 attribute name that parses cleanly and is deferred to tier 2,
-#   because Plex's section listing truncates it. Without the tier check
-#   `genre: Horror` would load, run, and raise `AttributeNotInListing` per
-#   item mid-pass -- silent until it runs, which is exactly what load-time
-#   validation exists to prevent.
+#   carries rows the item view deliberately cannot read. Phase B split that
+#   half three ways rather than two: a `listing` row ships free, a
+#   `tier2-batched` row ships through the engine's enrichment pass (one
+#   batched `/library/metadata/{k1,k2,...}` read per definition), and a
+#   `tier2-deferred` or `unprobed` row still refuses. `network` is the only
+#   row left on the first of those refusals, and it is there because Plex
+#   1.43.4 emits the attrib nowhere at all -- a fact no read at any tier can
+#   change. Without the check, such a filter would load, run, and raise
+#   `AttributeNotInListing` per item mid-pass -- silent until it runs, which
+#   is exactly what load-time validation exists to prevent.
 
 
 def test_a_filter_on_a_shipped_attribute_loads():
@@ -510,42 +514,81 @@ def test_a_definition_without_filters_has_none():
                                 params={"ids": ["1"]}).filters is None
 
 
-def test_a_filter_naming_a_deferred_attribute_refuses_at_config_load():
-    """THE hole this check exists to close. `genre` is in the table -- it
-    parses, it types, it is one of the fifteen the roadmap names -- and Phase
-    9a's probe found the Plex listing carries at most two genres per item
-    against the three and four the metadata endpoint returns. So there is no
-    accessor for it, and a `genre:` filter that loaded would raise inside the
-    run, per item, on a collection nobody was watching."""
+def test_a_genre_filter_now_loads_because_the_batched_read_feeds_it():
+    """The refusal this test used to assert, flipped by phase B. `genre` was
+    refused because Plex's section listing truncates it to two per item, so
+    there was no way to read it that would not answer WRONG. There is one now:
+    the batched `/library/metadata/{k1,k2,...}` read returns the family full,
+    and the engine pays exactly one such fetch for the definition's resolved
+    set. So `genre:` loads -- and the thing that makes that safe is not this
+    validator, it is the engine's refusal law (an item the batch did not answer
+    for refuses the definition rather than evaluating without it)."""
     document = _document_with_definitions([
         {"title": "Scary", "builder": "plex_id", "params": {"ids": ["1"]},
          "filters": {"genre": "Horror"}}
     ])
 
+    definition = build_config(document).collections.definitions[0]
+
+    assert definition.filters == {"genre": "Horror"}
+
+
+@pytest.mark.parametrize(
+    "attribute", ["genre", "label", "collection",
+                  "audio_language", "subtitle_language"],
+)
+def test_every_batched_filter_attribute_loads(attribute):
+    """All five that moved, by name. A row left on the deferred tier while its
+    accessor shipped -- or moved to the batched tier with no accessor -- fails
+    here or in `tests/test_collection_filter_values.py`, which pin the two
+    halves against the same table column."""
+    definition = CollectionDefinition(
+        title="X", builder="plex_id", params={"ids": ["1"]},
+        filters={attribute: "whatever"},
+    )
+
+    assert definition.filters == {attribute: "whatever"}
+
+
+def test_network_still_refuses_and_names_the_stranding():
+    """The one row phase B could not move, and the copy has to say WHY it is
+    different from the five that did: not "the listing is incomplete" (the
+    batched read answers that now) but "Plex emits it nowhere at all", which no
+    read at any tier can fix. The TVDb/TMDb route is named as a separate
+    attribute under a distinct name rather than offered as a substitution --
+    conflating it with `studio` is exactly the same-name-different-filter bug
+    the table refuses elsewhere."""
     with pytest.raises(ValidationError) as raised:
-        build_config(document)
+        CollectionDefinition(
+            title="E4 shows", builder="plex_all", params={},
+            filters={"network": "E4"},
+        )
 
     message = str(raised.value)
-    assert "genre" in message, "the attribute that is wrong"
+    assert "network" in message, "the attribute that is wrong"
     assert "tier2-deferred" in message, "and that it is deferred, not unknown"
-    assert "row 96" in message, "and the row that tracks getting it back"
-    assert "Scary" in message and "filters.genre" in message, (
+    assert "emits it nowhere" in message, "and WHY, in phase B's terms"
+    assert "distinct name" in message, "the TVDb/TMDb route, named not offered"
+    assert "E4 shows" in message and "filters.network" in message, (
         "the definition and the key, the params discipline"
     )
 
 
-@pytest.mark.parametrize(
-    "attribute", ["genre", "label", "collection", "network",
-                  "audio_language", "subtitle_language"],
-)
-def test_every_deferred_filter_attribute_refuses_at_config_load(attribute):
-    """All six of them, by name. A row moved back to `listing` without an
-    accessor -- or an accessor added without the row moving -- fails here."""
-    with pytest.raises(ValidationError, match="tier2-deferred"):
+def test_the_refusal_lists_the_batched_names_among_the_filterable_ones():
+    """The "filterable today" tail is an operator's next move, so it has to
+    grow with the tier: refusing `network` while listing only the nine listing
+    rows would send someone to `plex_search` for a `genre:` filter that now
+    works here."""
+    with pytest.raises(ValidationError) as raised:
         CollectionDefinition(
-            title="X", builder="plex_id", params={"ids": ["1"]},
-            filters={attribute: "whatever"},
+            title="Stranded", builder="plex_all", params={},
+            filters={"network": "E4"},
         )
+
+    message = str(raised.value)
+    for name in ("year", "studio", "genre", "label", "collection",
+                 "audio_language", "subtitle_language"):
+        assert name in message, name
 
 
 def test_a_definition_filtering_on_plays_says_the_listing_was_never_probed():

@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from plexapi.exceptions import BadRequest
 from pydantic import ValidationError
 
 from autoposter.collections.builders import (
@@ -131,8 +132,34 @@ class FakeCollection:
         self._labels = self._real_labels
 
 
+class FakeTag:
+    """A ``<Genre>``/``<Label>``/``<Collection>`` child, as plexapi presents it."""
+
+    def __init__(self, tag):
+        self.tag = tag
+
+
+class FakeMetadataItem:
+    """What ``section.fetchItems`` hands back for the batched tier-2 read.
+
+    A DIFFERENT object from the listing ``FakeItem`` above, deliberately: the
+    whole point of the batched read is that the listing item does not carry
+    these families, so an implementation that got its tags off the resolved
+    item rather than out of the enrichment would find nothing here.
+    """
+
+    def __init__(self, key, genres=(), labels=(), collections=()):
+        self.ratingKey = key
+        self.genres = [FakeTag(t) for t in genres]
+        self.labels = [FakeTag(t) for t in labels]
+        self.collections = [FakeTag(t) for t in collections]
+        # Languages come off ``<Media><Part><Stream>``; no test here needs one,
+        # and an empty media list is what a show carries anyway.
+        self.media = []
+
+
 class FakeSection:
-    def __init__(self, items=(), existing=()):
+    def __init__(self, items=(), existing=(), metadata=None):
         # ``(key, guids)``, or ``(key, guids, attributes)`` for a test that
         # filters on a listing attribute.
         self._items = [
@@ -140,9 +167,23 @@ class FakeSection:
             for entry in items
         ]
         self._existing = {c.title: c for c in existing}
+        # ``{rating_key: FakeMetadataItem}`` for the tier-2 enrichment. A key
+        # the test leaves out is one Plex does not answer for, which is the
+        # refusal law's own case.
+        self._metadata = dict(metadata or {})
+        self.fetches: list[list[str]] = []
 
     def all(self):
         return list(self._items)
+
+    def fetchItems(self, ekey):
+        """plexapi's list-of-ints form -- ``/library/metadata/{k1,k2,...}``.
+
+        Every call is recorded, because "how many fetches, for which keys" is
+        what the enrichment tests are actually asserting.
+        """
+        self.fetches.append([str(key) for key in ekey])
+        return [self._metadata[str(key)] for key in ekey if str(key) in self._metadata]
 
     def collections(self, **kw):
         return list(self._existing.values())
@@ -931,6 +972,264 @@ async def test_a_filter_that_cannot_evaluate_says_so_not_the_source(
         "'Broken Filter Msg': the filter could not be evaluated; "
         "leaving the collection untouched"
     ]
+
+
+# --- roadmap row 197: the tier-2 enrichment pass -------------------------------
+#
+# ``genre``/``label``/``collection``/``audio_language``/``subtitle_language``
+# are not in the section listing -- the listing truncates or strips them -- so
+# a definition filtering on one costs ONE batched
+# ``/library/metadata/{k1,k2,...}`` read for its resolved set, taken before
+# evaluation. Four properties, and the third is the law the whole tier rests
+# on:
+#
+# - the fetch is SCOPED to the resolved set, and happens once for it;
+# - the memo is the PASS's, so a second definition pays only for keys the
+#   first did not fetch (``ctx.run_cache``, engine.py:306 -- a fresh dict per
+#   definition would leave every T2 test below green and refetch the overlap);
+# - an item the batch did not answer for REFUSES the definition. Never
+#   "this item has no genres": that is a full, plausible, wrong membership,
+#   and the containment is a filter failure's -- empty items, "make no
+#   changes", the definition reported failed and the pass going on;
+# - a tier-1-only filter pays nothing at all.
+
+
+async def test_a_tier2_filter_enriches_only_the_resolved_set(session, registry_entry):
+    """One fetch, for exactly the keys this definition resolved -- not the
+    library. ``m104`` is in the library and in the metadata index and must not
+    be asked for: the enrichment is scoped to what the builder returned, which
+    is what keeps a 40-item definition at one request instead of 1955."""
+    registry_entry(_Listing(
+        "test_t2_scope", [("imdb", "tt1"), ("imdb", "tt2"), ("imdb", "tt3")]
+    ))
+    section = FakeSection(
+        [("101", ["imdb://tt1"]), ("102", ["imdb://tt2"]),
+         ("103", ["imdb://tt3"]), ("104", ["imdb://tt4"])],
+        metadata={
+            "101": FakeMetadataItem("101", genres=("Horror", "Thriller")),
+            "102": FakeMetadataItem("102", genres=("Comedy",)),
+            "103": FakeMetadataItem("103", genres=("Horror",)),
+            "104": FakeMetadataItem("104", genres=("Horror",)),
+        },
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(
+            title="Scary", builder="test_t2_scope", filters={"genre": "Horror"}
+        )],
+        _config(),
+    )
+
+    assert section.fetches == [["101", "102", "103"]], (
+        "one batched read, for the resolved set and nothing else"
+    )
+    assert [i.ratingKey for i in section._existing["Scary"]._live] == ["101", "103"]
+    [result] = run.definitions
+    assert result.filtered == 1 and result.failed is False
+
+
+async def test_a_tier2_filter_reads_the_enrichment_not_the_listing_item(
+    session, registry_entry
+):
+    """The mutation this catches is the tempting one: reading ``item.genres``
+    off the resolved item instead of the enrichment. The listing items here
+    carry a DIFFERENT, truncated genre set -- ``m101`` lists as Comedy and is
+    really a Horror film, which is the probe's own `2 Fast 2 Furious` shape --
+    so an accessor that read the item would build the exact inverse of this
+    collection."""
+    registry_entry(_Listing("test_t2_source", [("imdb", "tt1"), ("imdb", "tt2")]))
+    section = FakeSection(
+        [("101", ["imdb://tt1"], {"genres": [FakeTag("Comedy")]}),
+         ("102", ["imdb://tt2"], {"genres": [FakeTag("Horror")]})],
+        metadata={
+            "101": FakeMetadataItem("101", genres=("Comedy", "Horror")),
+            "102": FakeMetadataItem("102", genres=("Comedy",)),
+        },
+    )
+
+    await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Really Scary", builder="test_t2_source", filters={"genre": "Horror"}
+        )],
+        _config(),
+    )
+
+    assert [i.ratingKey for i in section._existing["Really Scary"]._live] == ["101"]
+
+
+async def test_two_tier2_definitions_share_the_run_cache(session, registry_entry):
+    """THE WIRING CHECK. The enrichment's memo is the PASS's ``run_cache``
+    (engine.py:306), the same dict every builder's scratch lives on -- not a
+    fresh one per definition. Handing each definition its own would leave every
+    other test in this block passing and quietly refetch every overlapping key,
+    which on a library of forty definitions over one section is the N+1 this
+    tier was built to avoid, one batch at a time.
+
+    So the second definition's fetch asks for ``103`` alone: ``102`` was
+    answered by the first definition's read and is already in the pass's
+    cache."""
+    registry_entry(_Listing("test_t2_first", [("imdb", "tt1"), ("imdb", "tt2")]))
+    registry_entry(_Listing("test_t2_second", [("imdb", "tt2"), ("imdb", "tt3")]))
+    section = FakeSection(
+        [("101", ["imdb://tt1"]), ("102", ["imdb://tt2"]), ("103", ["imdb://tt3"])],
+        metadata={
+            "101": FakeMetadataItem("101", genres=("Horror",)),
+            "102": FakeMetadataItem("102", genres=("Horror",)),
+            "103": FakeMetadataItem("103", genres=("Horror",)),
+        },
+    )
+
+    await _run(
+        session, section,
+        [
+            CollectionDefinition(
+                title="Scary One", builder="test_t2_first", filters={"genre": "Horror"}
+            ),
+            CollectionDefinition(
+                title="Scary Two", builder="test_t2_second", filters={"genre": "Horror"}
+            ),
+        ],
+        _config(),
+    )
+
+    assert section.fetches == [["101", "102"], ["103"]], (
+        "the second definition pays only for the key the first did not fetch"
+    )
+    assert [i.ratingKey for i in section._existing["Scary Two"]._live] == ["102", "103"]
+
+
+async def test_an_item_missing_from_the_enrichment_refuses_the_definition(
+    session, registry_entry
+):
+    """THE REFUSAL LAW (facts C3). Plex answers the batch without ``103``. The
+    plausible-and-wrong reading is "then it has no genres", which would build
+    this collection in full, minus one member, with nothing anywhere saying so.
+    Instead the definition refuses: contained exactly as a filter that could not
+    run -- failed, no items, the live collection untouched -- and the action
+    string names the enrichment so an operator is not sent looking at the
+    source.
+
+    The second definition proves the containment is per DEFINITION: its own
+    keys were all answered, so it builds normally in the same pass."""
+    registry_entry(_Listing(
+        "test_t2_gone", [("imdb", "tt1"), ("imdb", "tt2"), ("imdb", "tt3")]
+    ))
+    registry_entry(_Listing("test_t2_fine", [("imdb", "tt1"), ("imdb", "tt2")]))
+    kept = FakeItem("m9", ["imdb://tt9"])
+    live = FakeCollection("Refused", [kept], labels=[LABEL])
+    section = FakeSection(
+        [("101", ["imdb://tt1"]), ("102", ["imdb://tt2"]), ("103", ["imdb://tt3"])],
+        existing=[live],
+        # ``103`` is deliberately absent: Plex no longer holds it, or held it
+        # back. Absence from the answer is not an answer.
+        metadata={
+            "101": FakeMetadataItem("101", genres=("Horror",)),
+            "102": FakeMetadataItem("102", genres=("Horror",)),
+        },
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [
+            CollectionDefinition(
+                title="Refused", builder="test_t2_gone", filters={"genre": "Horror"}
+            ),
+            CollectionDefinition(
+                title="Unaffected", builder="test_t2_fine", filters={"genre": "Horror"}
+            ),
+        ],
+        _config(),
+    )
+
+    refused, unaffected = run.definitions
+    assert refused.failed is True and refused.skipped is True
+    assert [i.ratingKey for i in live._live] == ["m9"], (
+        "a refused definition leaves its collection exactly as it was"
+    )
+    assert refused.actions == [
+        "'Refused': could not read genre for every resolved item (the batched "
+        "Plex metadata read failed or skipped items), so the filter was not "
+        "evaluated and nothing was changed this pass",
+        "'Refused': the filter could not be evaluated; leaving the collection "
+        "untouched",
+    ]
+
+    assert unaffected.failed is False
+    assert [i.ratingKey for i in section._existing["Unaffected"]._live] == ["101", "102"]
+    assert section.fetches == [["101", "102", "103"]], (
+        "the key Plex did not answer is memoised, not asked again this pass"
+    )
+
+
+async def test_a_refusal_reports_nothing_derived_from_the_plex_failure(
+    session, registry_entry
+):
+    """The containment invariant's other half, kept for the new read too: a
+    plexapi failure's message can quote the tokenised URL it failed on, so
+    nothing derived from it reaches an action string."""
+    registry_entry(_Listing("test_t2_dead_read", [("imdb", "tt1")]))
+
+    class DeadSection(FakeSection):
+        def fetchItems(self, ekey):
+            self.fetches.append([str(key) for key in ekey])
+            raise BadRequest("https://plex.example/library/metadata/101?X-Plex-Token=SECRET")
+
+    section = DeadSection([("101", ["imdb://tt1"])])
+
+    actions = await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Dead Read", builder="test_t2_dead_read", filters={"genre": "Horror"}
+        )],
+        _config(),
+    )
+
+    assert not any("SECRET" in action or "X-Plex-Token" in action for action in actions)
+    assert any("could not read genre" in action for action in actions)
+
+
+async def test_a_tier1_only_filter_makes_no_batch_call(session, registry_entry):
+    """The enrichment activates off the TABLE ROW, so a filter naming no
+    batched attribute must not buy a Plex round trip. This is the regression
+    that would otherwise cost one extra request per definition across every
+    existing ``filters:`` block in the catalog."""
+    registry_entry(_Listing("test_t2_none", [("imdb", "tt1"), ("imdb", "tt2")]))
+    section = FakeSection(
+        [("101", ["imdb://tt1"], {"year": 1985}), ("102", ["imdb://tt2"], {"year": 2005})],
+        metadata={"101": FakeMetadataItem("101"), "102": FakeMetadataItem("102")},
+    )
+
+    await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Modern", builder="test_t2_none", filters={"year.gte": 1990}
+        )],
+        _config(),
+    )
+
+    assert section.fetches == []
+    assert [i.ratingKey for i in section._existing["Modern"]._live] == ["102"]
+
+
+async def test_a_definition_resolving_nothing_makes_no_batch_call(
+    session, registry_entry
+):
+    """An empty resolved set has nothing to enrich, and asking Plex for zero
+    keys is a request that can only fail or return nothing."""
+    registry_entry(_Listing("test_t2_empty", [("imdb", "tt404")]))
+    section = FakeSection([("101", ["imdb://tt1"])])
+
+    await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Nothing", builder="test_t2_empty", filters={"genre": "Horror"}
+        )],
+        _config(),
+    )
+
+    assert section.fetches == []
 
 
 # --- ids returned, none of them owned -------------------------------------------

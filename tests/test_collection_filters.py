@@ -41,6 +41,7 @@ from autoposter.collections.filters import (
     FilterGroup,
     FilterPredicate,
     RelativeWindow,
+    batched_attributes,
     evaluate,
     parse_filters,
 )
@@ -124,7 +125,16 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     (resolution, alone) or ``tier2-deferred`` (the other six). Each moved row
     carries its probe data in its note, and
     ``tests/test_collection_filter_values.py`` fails if the accessors and these
-    tiers ever disagree."""
+    tiers ever disagree.
+
+    Phase B moved five of those six again, and this is the second-largest
+    tier migration the table has seen: the batched
+    ``/library/metadata/{k1,k2,...}`` read returns the families the listing
+    truncated or stripped, so ``genre``, ``audio_language``,
+    ``subtitle_language``, ``label`` and ``collection`` are ``tier2-batched``
+    -- filterable, through the engine's enrichment pass. ``network`` is alone
+    on ``tier2-deferred`` now, and stays there because no read at any tier can
+    answer an attrib Plex 1.43.4 emits nowhere."""
     by_type = {kind: [r.name for r in FILTER_ATTRIBUTES if r.type == kind] for kind in VALUE_TYPES}
     by_source = {t: [r.name for r in FILTER_ATTRIBUTES if r.source == t] for t in SOURCE_TIERS}
 
@@ -148,14 +158,14 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "duration",
         "studio",
     ]
-    assert by_source["tier2-deferred"] == [
+    assert by_source["tier2-batched"] == [
         "genre",
         "audio_language",
         "subtitle_language",
         "label",
-        "network",
         "collection",
     ]
+    assert by_source["tier2-deferred"] == ["network"]
     assert by_source["probe"] == []
     # 9b's two tiers rather than one because the REASONS differ: ``unprobed``
     # means Kometa filters on it and 9a never asked whether the listing carries
@@ -169,6 +179,45 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     # ``decade`` joins the search-only tier: row 96's own 29-name list names it
     # first, and Kometa has no ``decade`` FILTER at all.
     assert by_source["search-only"] == ["unplayed", "progress", "decade"]
+
+
+def test_batched_attributes_reports_only_tier2_batched_predicates():
+    """What the engine decides the enrichment pass from, and the whole point is
+    that it is computed from the TABLE ROW: there is no config knob declaring
+    "this definition needs tier 2", so a row moved between tiers changes the
+    engine's behaviour with no config edit anywhere.
+
+    Tier-1 names are absent because they cost nothing to read, and a filter
+    naming none of the batched rows must produce an empty tuple -- that is the
+    "make no batched call at all" signal, and answering ``("genre",)`` for a
+    ``year``-only filter would buy one Plex round trip per definition for
+    nothing."""
+    parsed = parse_filters({"genre": "Horror", "year.gte": 1990, "label.not": "Overlay"})
+
+    assert batched_attributes(parsed) == ("genre", "label")
+    assert batched_attributes(parse_filters({"year": 1990})) == ()
+
+
+def test_batched_attributes_are_distinct_and_in_first_appearance_order():
+    """Two predicates on one attribute are one fetch, not two, and the order is
+    the filter's own so the action string a refusal writes reads the way the
+    operator wrote the block."""
+    parsed = parse_filters(
+        {"label": "Overlay", "genre": "Horror", "label.not": "Hidden",
+         "collection.not": "Marvel"}
+    )
+
+    assert batched_attributes(parsed) == ("label", "genre", "collection")
+
+
+def test_batched_attributes_sees_through_a_nested_group():
+    """``predicates`` walks the tree depth-first and this helper rides it, so an
+    ``any:`` block naming a batched row still triggers the enrichment. A
+    traversal that only looked at the top level would leave the engine
+    evaluating ``genre`` with no tags loaded at all."""
+    parsed = parse_filters({"any": [{"genre": "Horror"}, {"year.gte": 2000}]})
+
+    assert batched_attributes(parsed) == ("genre",)
 
 
 def test_item_kinds_are_movie_show_or_both():

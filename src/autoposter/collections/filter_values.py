@@ -60,13 +60,31 @@ than answering ``None``. That distinction is the whole point: ``None`` means
 returning it for an attribute we simply cannot read would be indistinguishable
 from a real answer -- exactly the wrong-but-plausible outcome deferring exists
 to prevent.
+
+**Phase B moved five of those six**, and the history above is kept rather than
+rewritten because it is still why they are not read from the listing. What
+changed is that a second read exists: the batched
+``/library/metadata/{k1,k2,...}`` endpoint returns ``<Genre>``, ``<Label>``,
+``<Collection>`` and ``<Stream>`` in full, and one such request answers up to
+200 items (``plex.client.fetch_tag_index``). So ``genre``, ``label``,
+``collection``, ``audio_language`` and ``subtitle_language`` are
+``tier2-batched``: read HERE, from the ``ItemTags`` the engine's enrichment
+pass fetched once for the definition's resolved set, and never from the item.
+The zero-requests rule above is untouched by that -- this module still makes
+no request; the engine made one, before evaluation, for the whole set.
+
+``network`` alone stays deferred, and its reason was never truncation: Plex
+1.43.4 emits the attrib in neither the listing nor ``/library/metadata``, so
+there is no read at any tier for the batch to be a better version of.
 """
 from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
 __all__ = [
+    "BATCHED_ATTRIBUTES",
     "DEFERRED_ATTRIBUTES",
     "SHIPPED_ATTRIBUTES",
     "AttributeNotInListing",
+    "EnrichmentNotLoaded",
     "PlexItemView",
 ]
 
@@ -176,26 +194,85 @@ SHIPPED_ATTRIBUTES: tuple[str, ...] = tuple(
 DEFERRED_ATTRIBUTES: tuple[str, ...] = tuple(
     row.name for row in FILTER_ATTRIBUTES if row.source == "tier2-deferred"
 )
+BATCHED_ATTRIBUTES: tuple[str, ...] = tuple(
+    row.name for row in FILTER_ATTRIBUTES if row.source == "tier2-batched"
+)
+
+# Table attribute name -> the ItemTags field the enrichment carries it as.
+_BATCHED_FIELDS: dict[str, str] = {
+    "genre": "genres",
+    "label": "labels",
+    "collection": "collections",
+    "audio_language": "audio_languages",
+    "subtitle_language": "subtitle_languages",
+}
+
+
+class EnrichmentNotLoaded(LookupError):
+    """A tier-2 attribute was read on a view built without its enrichment.
+
+    Unreachable when the engine is doing its job -- ``_run_one`` refuses the
+    definition before evaluation if any resolved item lacks enrichment -- so
+    reaching this means a caller built the view by hand. Raised, never
+    answered with None: None means "this item has no value", which the table
+    turns into a defined match result, and that is exactly the wrong-but-
+    plausible answer the tier system exists to prevent.
+    """
 
 
 class PlexItemView:
-    """``ItemView`` over one resolved plexapi item."""
+    """``ItemView`` over one resolved plexapi item, plus (optionally) the
+    item's batched enrichment for the tier-2 rows.
 
-    def __init__(self, item: object) -> None:
+    ``tags`` is a ``plex.client.ItemTags`` or None. None is the tier-1-only
+    view every caller before phase B built, and it stays legal: a definition
+    filtering on listing rows alone needs no enrichment and must not pay for
+    one.
+    """
+
+    def __init__(self, item: object, tags=None) -> None:
         self._item = item
+        self._tags = tags  # plex.client.ItemTags | None
 
     def get(self, attribute: str, /) -> object | None:
+        field = _BATCHED_FIELDS.get(attribute)
+        if field is not None:
+            if self._tags is None:
+                raise EnrichmentNotLoaded(
+                    f"{attribute!r} is a tier-2 attribute and this view was "
+                    "built without its enrichment -- the engine fetches one "
+                    "batched read per resolved set; a direct caller passes "
+                    "`tags=` (see collections/enrichment.ensure_tags)"
+                )
+            # An EMPTY family is this item having no value of that kind, which
+            # is a different thing from the enrichment being absent -- the
+            # branch above is that one. Both are answers here; neither reaches
+            # the item.
+            #
+            # ``or None`` is the VIEW's contract rather than a change of
+            # membership: ``filters._is_missing`` already reads an empty
+            # sequence as missing for a ``tag`` attribute, so ``()`` and
+            # ``None`` evaluate identically. What it buys is one shape for "no
+            # value" across both tiers -- every tier-1 accessor answers None --
+            # so a direct reader of ``get`` has one thing to test for.
+            values = getattr(self._tags, field)
+            return tuple(values) or None
         accessor = _ACCESSORS.get(attribute)
         if accessor is None:
             row = BY_NAME.get(attribute)
             if row is None:
                 why = "it is not one of the table's attributes at all"
             elif row.source == "tier2-deferred":
+                # Phase B narrowed this from "the listing is incomplete" -- the
+                # batched read answers that now, for the five rows it moved --
+                # to the one thing the batch cannot fix. ``network`` is the
+                # only row on this tier and the copy describes it exactly.
                 why = (
-                    "the Plex section listing does not carry it completely enough "
-                    "to filter on (source tier 'tier2-deferred' -- see the row's "
-                    "note for the probe data), and reading it per item would cost "
-                    "one Plex request per item"
+                    "Plex emits it nowhere on this server (0/284 shows in the "
+                    "listing AND absent from /library/metadata -- 9a's probe), "
+                    "so no read at any tier can answer it; a TVDb/TMDb-sourced "
+                    "equivalent would be a different attribute under a distinct "
+                    "name"
                 )
             else:
                 # The request-per-item cost belongs to the tier-2 branch and is
@@ -204,7 +281,7 @@ class PlexItemView:
                 # has never been measured. Each names its own tier and stops.
                 why = f"its source tier is {row.source!r}"
             raise AttributeNotInListing(
-                f"{attribute!r} has no tier-1 accessor: {why}. Filterable "
-                "now: " + ", ".join(SHIPPED_ATTRIBUTES)
+                f"{attribute!r} has no accessor at any tier: {why}. Filterable "
+                "now: " + ", ".join(SHIPPED_ATTRIBUTES + BATCHED_ATTRIBUTES)
             )
         return accessor(self._item)

@@ -545,35 +545,51 @@ class CollectionDefinition(BaseModel):
         - the SOURCE TIER. This half cannot be left to the parser and is the
           reason this validator is not three lines long. The parser's
           vocabulary is the attribute TABLE, and the table deliberately carries
-          rows the item view will not read: ``genre`` is one of the fifteen
-          tier-1 names, it parses cleanly, and Phase 9a's probe found Plex's
-          section listing truncates it to two per item -- so it has no accessor
+          rows the item view will not read: ``network`` is one of the fifteen
+          tier-1 names, it parses cleanly, and Phase 9a's probe found Plex
+          1.43.4 does not emit the attrib at all -- so it has no accessor
           (``filter_values.SHIPPED_ATTRIBUTES``) and evaluating it raises
-          ``AttributeNotInListing``. Without this check ``genre: Horror`` would
+          ``AttributeNotInListing``. Without this check ``network: E4`` would
           load green and fail per item, mid-pass, inside a run nobody is
           watching -- the silent-until-it-runs failure that config validation
           exists to prevent, and the engine would contain it into a collection
           that quietly stopped updating.
 
-        The refusal copy branches on the source tier, because the two tiers
-        9b added mean different things. ``tier2-deferred`` cites a probe
-        verdict; ``unprobed`` says there is none, which is the honest answer
-        for ``plays`` and ``last_played`` and points at the ``plex_search``
-        builder instead. A ``search-only`` row never reaches this loop at all
-        -- ``parse_filters`` refuses it one layer up, with the message that
-        names ``plex_search``.
+        The source-tier half has THREE outcomes since phase B, not two: a
+        ``listing`` row ships free, a ``tier2-batched`` row ships through the
+        engine's enrichment pass (one batched
+        ``/library/metadata/{k1,k2,...}`` read per definition, taken before
+        evaluation), and a ``tier2-deferred`` or ``unprobed`` row still
+        refuses. The batched rows load HERE without any further check because
+        what makes them safe is not this validator but the engine's refusal
+        law -- an item the batch did not answer for refuses the definition
+        rather than evaluating with a silently-missing value.
 
-        Checked against ``SHIPPED_ATTRIBUTES`` -- the tier-derived set (rows in
-        ``FILTER_ATTRIBUTES`` whose ``source`` is ``"listing"``), not against
-        the runtime accessor map itself. The two are pinned equal by a separate
-        test, ``filter_values``'s own
-        ``test_the_runtime_accessor_map_matches_the_listing_rows``, not by this
-        check introspecting ``_ACCESSORS`` directly -- so a row moved between
-        tiers without the matching accessor work fails there, not here.
+        The refusal copy branches on the source tier, because the remaining
+        tiers mean different things. ``tier2-deferred`` -- ``network`` alone
+        now -- cites a probe verdict, and specifically the one the batched read
+        cannot overturn: Plex emits the attrib nowhere. ``unprobed`` says there
+        is no verdict at all, which is the honest answer for ``plays`` and
+        ``last_played`` and points at the ``plex_search`` builder instead. A
+        ``search-only`` row never reaches this loop at all -- ``parse_filters``
+        refuses it one layer up, with the message that names ``plex_search``.
+
+        Checked against ``SHIPPED_ATTRIBUTES`` and ``BATCHED_ATTRIBUTES`` --
+        the tier-derived sets (rows in ``FILTER_ATTRIBUTES`` whose ``source``
+        is ``"listing"`` / ``"tier2-batched"``), not against the runtime
+        accessor maps themselves. Those are pinned equal by separate tests,
+        ``filter_values``'s own
+        ``test_the_runtime_accessor_map_matches_the_listing_rows`` and
+        ``test_the_runtime_batched_field_map_matches_the_batched_rows``, not by
+        this check introspecting them directly -- so a row moved between tiers
+        without the matching accessor work fails there, not here.
         """
         if self.filters is None:
             return self
-        from autoposter.collections.filter_values import SHIPPED_ATTRIBUTES
+        from autoposter.collections.filter_values import (
+            BATCHED_ATTRIBUTES,
+            SHIPPED_ATTRIBUTES,
+        )
         from autoposter.collections.filters import parse_filters, predicates
 
         try:
@@ -585,15 +601,22 @@ class CollectionDefinition(BaseModel):
 
         for predicate in predicates(parsed):
             row = predicate.attribute
-            if row.name in SHIPPED_ATTRIBUTES:
+            if row.name in SHIPPED_ATTRIBUTES or row.source == "tier2-batched":
                 continue
             if row.source == "tier2-deferred":
+                # NOT the pre-phase-B sentence, which cited the listing's
+                # incompleteness: the batched read answers that for the five
+                # rows it moved, so repeating it here would send an operator
+                # looking for a fix that already shipped. What is true of the
+                # one row left is stronger and simpler.
                 why = (
-                    "Phase 9a's probe found the Plex section listing does not carry "
-                    "it completely enough to filter on (the row's note in "
-                    "collections/filters.py has the numbers), and reading it per "
-                    "item would cost one Plex request per item -- so it is filed "
-                    "for tier 2 under roadmap row 96 rather than answered wrongly"
+                    "Plex 1.43.4 emits it nowhere -- 9a's probe found 0/284 shows "
+                    "carry it in the listing AND it is absent from "
+                    "/library/metadata, so no batched read can answer it either "
+                    "(the batched tier that phase B opened feeds genre/label/"
+                    "collection/audio_language/subtitle_language, not this). A "
+                    "TVDb/TMDb-sourced equivalent would be a different attribute "
+                    "under a distinct name"
                 )
             else:
                 # ``unprobed``. Deliberately NOT the sentence above: that one
@@ -610,7 +633,8 @@ class CollectionDefinition(BaseModel):
             raise ValueError(
                 f"{self.title!r} cannot filter on {row.name!r} at {predicate.field}: "
                 f"that attribute's source tier is {row.source!r}. {why}. "
-                "Filterable today: " + ", ".join(SHIPPED_ATTRIBUTES)
+                "Filterable today: "
+                + ", ".join(SHIPPED_ATTRIBUTES + BATCHED_ATTRIBUTES)
             )
         return self
 

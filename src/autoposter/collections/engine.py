@@ -47,8 +47,9 @@ from autoposter.collections.builders.base import (
     SmartContext,
     SourceClients,
 )
+from autoposter.collections.enrichment import ensure_tags
 from autoposter.collections.filter_values import PlexItemView
-from autoposter.collections.filters import evaluate, parse_filters
+from autoposter.collections.filters import batched_attributes, evaluate, parse_filters
 from autoposter.collections.lists import member_diff, reconcile_list_collection
 from autoposter.collections.reconcile import (
     LIBTYPES,
@@ -538,14 +539,65 @@ async def _run_one(
     filter_emptied_a_non_empty_set = False
     if definition.filters is not None:
         had_items = bool(items)
-        kept = _passing(definition, items, library)
-        if kept is None:
-            outcome.failed = True
-            filter_failed = True
-            items = []
-        else:
-            outcome.filtered = len(items) - len(kept)
-            items = kept
+        # The tier-2 pre-step (roadmap row 197). Whether this definition needs
+        # it is computed from the TABLE ROW -- ``batched_attributes`` -- and
+        # never from config: there is no knob declaring "this one reads tier
+        # 2", so a row moved between tiers changes this behaviour with no
+        # config edit anywhere, and a filter naming only listing rows pays
+        # nothing.
+        tags = None
+        needed: tuple[str, ...] = ()
+        try:
+            needed = batched_attributes(parse_filters(definition.filters))
+        except Exception:
+            # A filter that does not parse is _passing's own report; the
+            # enrichment pre-step stays out of its way.
+            needed = ()
+        if needed:
+            # ``ratingKey`` off a resolved item is reload-safe: it is never
+            # None/[] on a real item, and ``resolve.build_owned_index`` already
+            # reads it in this same pass.
+            keys = [str(getattr(item, "ratingKey", "")) for item in items]
+            try:
+                # ``ctx.run_cache`` -- the PASS's dict (run_library's, built
+                # once at the top of the library loop), not a fresh one per
+                # definition. That is what makes two definitions over
+                # overlapping sets cost one fetch for the union rather than
+                # two for the parts.
+                fetched = await ensure_tags(section, ctx.run_cache, keys)
+            except Exception:
+                logger.exception(
+                    "%s: could not enrich %r for its tier-2 filter "
+                    "attributes (%s); nothing was applied to it this pass",
+                    library, definition.title, ", ".join(needed),
+                )
+                fetched = None
+            if fetched is None or any(key not in fetched for key in keys):
+                # The refusal law (facts C3): an item the batch did not
+                # answer for must never evaluate as "has no tags" -- that
+                # is a full, plausible, wrong membership. Same containment
+                # as a filter that could not run.
+                outcome.failed = True
+                filter_failed = True
+                items = []
+                outcome.actions.append(
+                    "%r: could not read %s for every resolved item (the "
+                    "batched Plex metadata read failed or skipped items), "
+                    "so the filter was not evaluated and nothing was "
+                    "changed this pass"
+                    % (definition.title, ", ".join(needed))
+                )
+            else:
+                tags = fetched
+        if not filter_failed:
+            kept = _passing(definition, items, library, tags=tags)
+            if kept is None:
+                outcome.failed = True
+                filter_failed = True
+                items = []
+            else:
+                outcome.filtered = len(items) - len(kept)
+                items = kept
         # The source did return items here -- the filter is what emptied the
         # set (or could not run at all) -- so the action string below must
         # say that, not repeat the "source returned no items" wording, which
@@ -620,15 +672,25 @@ async def _run_one(
     return outcome
 
 
-def _passing(definition: CollectionDefinition, items: list, library: str) -> list | None:
+def _passing(
+    definition: CollectionDefinition, items: list, library: str, tags: dict | None = None
+) -> list | None:
     """The items this definition's ``filters:`` keeps, or None if it could not
     be evaluated at all.
 
     The stage sits between resolution and the cap and is deliberately dumb:
     order is preserved (the builder's order is the collection's), and nothing
-    here reaches Plex -- ``PlexItemView`` reads only values the section listing
-    already carried, which is what keeps a filter from costing one request per
-    item (``filter_values``).
+    here reaches Plex. For the listing rows that is because ``PlexItemView``
+    reads only values the section listing already carried; for the tier-2 rows
+    it is because ``_run_one`` fetched the enrichment BEFORE this stage, once
+    for the whole resolved set, and ``tags`` is that dict -- so reading a genre
+    here is a dictionary lookup. Either way a filter never costs one request
+    per item (``filter_values``).
+
+    ``tags`` is ``{rating_key: ItemTags}`` or None for a tier-1-only filter.
+    None is not "no tags found": ``_run_one`` refuses the definition outright
+    before reaching here if any resolved item was missing from a batch it did
+    need, so a None here means no batched attribute was named at all.
 
     **The containment is defence in depth, and it is on purpose.** Evaluation
     is total by construction: the accessors are total over the item, the
@@ -673,7 +735,15 @@ def _passing(definition: CollectionDefinition, items: list, library: str) -> lis
         now = datetime.now()
         return [
             item for item in items
-            if evaluate(parsed, PlexItemView(item), now=now)
+            if evaluate(
+                parsed,
+                PlexItemView(
+                    item,
+                    tags=None if tags is None
+                    else tags.get(str(getattr(item, "ratingKey", ""))),
+                ),
+                now=now,
+            )
         ]
     except Exception:
         # The class name and traceback go to the log; nothing derived from the

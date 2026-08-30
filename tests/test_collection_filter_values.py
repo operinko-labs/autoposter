@@ -19,6 +19,13 @@ a test that cannot fail:
   control asserting plexapi's side: ordinary attribute access on a missing
   value DOES still fire a request. Without it, a future plexapi that stopped
   reloading would turn both tests above green-and-vacuous.
+
+Phase B added a second tier to the same module and the same rule covers it:
+the five ``tier2-batched`` families are read from the ``ItemTags`` the
+engine's enrichment pass fetched once for the definition's resolved set, so a
+batched accessor must not touch the plexapi item at all -- see
+``test_batched_accessor_reads_the_enrichment_never_the_item``, whose fixture
+raises on every attribute read rather than counting requests.
 """
 import datetime as dt
 from xml.etree import ElementTree as ET
@@ -27,13 +34,17 @@ import pytest
 from plexapi.video import Movie, Show
 
 from autoposter.collections.filter_values import (
+    BATCHED_ATTRIBUTES,
     DEFERRED_ATTRIBUTES,
     SHIPPED_ATTRIBUTES,
     AttributeNotInListing,
+    EnrichmentNotLoaded,
     PlexItemView,
     _ACCESSORS,
+    _BATCHED_FIELDS,
 )
 from autoposter.collections.filters import FILTER_ATTRIBUTES, evaluate, parse_filters
+from autoposter.plex.client import ItemTags
 
 # --- the fixtures ------------------------------------------------------------
 #
@@ -109,14 +120,21 @@ def a_show(xml=SHOW_XML, server=None):
 
 def test_an_accessor_exists_for_exactly_the_listing_rows():
     """The probe's verdict lives in the table, and this module is generated
-    from it: a row that ships has an accessor, a row that deferred has none.
+    from it: a row that ships has an accessor, a row that deferred has none,
+    and a row phase B moved to the batched tier reads its enrichment instead.
     Moving a row between tiers without doing the matching work fails here."""
     listing = tuple(row.name for row in FILTER_ATTRIBUTES if row.source == "listing")
+    batched = tuple(row.name for row in FILTER_ATTRIBUTES if row.source == "tier2-batched")
     deferred = tuple(row.name for row in FILTER_ATTRIBUTES if row.source == "tier2-deferred")
 
     assert SHIPPED_ATTRIBUTES == listing
+    assert BATCHED_ATTRIBUTES == batched
     assert DEFERRED_ATTRIBUTES == deferred
+    # Three disjoint tiers, and disjointness is what makes ``get``'s dispatch
+    # unambiguous: an attribute in two of them would have two answers.
     assert set(SHIPPED_ATTRIBUTES) & set(DEFERRED_ATTRIBUTES) == set()
+    assert set(SHIPPED_ATTRIBUTES) & set(BATCHED_ATTRIBUTES) == set()
+    assert set(BATCHED_ATTRIBUTES) & set(DEFERRED_ATTRIBUTES) == set()
     # The probe answered every row: no cell is still waiting on it.
     assert [row.name for row in FILTER_ATTRIBUTES if row.source == "probe"] == []
 
@@ -131,6 +149,20 @@ def test_the_runtime_accessor_map_matches_the_listing_rows():
     listing = {row.name for row in FILTER_ATTRIBUTES if row.source == "listing"}
 
     assert set(_ACCESSORS) == listing
+
+
+def test_the_runtime_batched_field_map_matches_the_batched_rows():
+    """The same discipline one tier along. ``_BATCHED_FIELDS`` is the dict
+    ``get`` dispatches a tier-2 read through, and it maps the table's attribute
+    name to the ``ItemTags`` field the enrichment carries it as -- so a row
+    moved onto ``tier2-batched`` without an entry here would fall through to
+    the ``_ACCESSORS`` branch and refuse as if it had no accessor at all, and a
+    field renamed on ``ItemTags`` would raise ``AttributeError`` mid-pass."""
+    batched = {row.name for row in FILTER_ATTRIBUTES if row.source == "tier2-batched"}
+
+    assert set(_BATCHED_FIELDS) == batched
+    for field in _BATCHED_FIELDS.values():
+        assert hasattr(ItemTags((), (), (), (), ()), field), field
 
 
 def test_the_nine_shipped_families_are_named():
@@ -148,14 +180,17 @@ def test_the_nine_shipped_families_are_named():
         "duration",
         "studio",
     )
-    assert DEFERRED_ATTRIBUTES == (
+    assert BATCHED_ATTRIBUTES == (
         "genre",
         "audio_language",
         "subtitle_language",
         "label",
-        "network",
         "collection",
     )
+    # One row left, and it is the stranded one: phase B's batched read moved
+    # the other five, and cannot move this one because Plex 1.43.4 emits
+    # ``network`` in neither the listing nor /library/metadata.
+    assert DEFERRED_ATTRIBUTES == ("network",)
 
 
 # --- the values ---------------------------------------------------------------
@@ -276,30 +311,170 @@ def test_the_missing_rule_from_the_table_falls_out_of_a_None_answer():
 @pytest.mark.parametrize("attribute", DEFERRED_ATTRIBUTES)
 def test_a_deferred_family_refuses_instead_of_answering_missing(attribute):
     """The dangerous failure is not an exception, it is a wrong answer. If the
-    view returned None for ``genre``, a ``genre: Horror`` filter would quietly
-    match nothing and a ``genre.not: Horror`` filter would quietly match
+    view returned None for ``network``, a ``network: E4`` filter would quietly
+    match nothing and a ``network.not: E4`` filter would quietly match
     everything -- a full, plausible, wrong collection. It refuses, loudly, and
-    Task 3 turns that into a load-time refusal so no run ever reaches here."""
+    the config layer turns that into a load-time refusal so no run ever
+    reaches here.
+
+    The copy is phase B's, and it says something narrower than the tier's
+    original wording did: this is no longer "the listing does not carry it
+    completely enough", which the batched read would now answer, but "Plex
+    emits it NOWHERE", which no read at any tier can."""
     with pytest.raises(AttributeNotInListing) as raised:
         PlexItemView(a_movie()).get(attribute)
 
     assert attribute in str(raised.value)
-    assert "tier2-deferred" in str(raised.value)
+    assert "emits it nowhere" in str(raised.value)
+    assert "different attribute under a distinct name" in str(raised.value), (
+        "the TVDb/TMDb route is a separate row, not a silent substitution"
+    )
 
 
 def test_the_refusal_for_genre_is_not_that_the_item_lacks_genres():
-    """The fixture's XML carries two <Genre> children and the refusal happens
-    anyway: the reason is the probe's truncation verdict, not this item."""
+    """The fixture's XML carries two <Genre> children and the view refuses
+    anyway: the accessor reads the ENRICHMENT, and this view was built without
+    one. That the listing happens to carry a truncated pair here is exactly why
+    it must not be the answer -- the probe measured the cap at two against a
+    metadata endpoint returning three and four."""
     item = a_movie()
     assert len(ET.fromstring(MOVIE_XML).findall("Genre")) == 2
 
-    with pytest.raises(AttributeNotInListing):
+    with pytest.raises(EnrichmentNotLoaded):
         PlexItemView(item).get("genre")
 
 
 def test_an_attribute_outside_the_table_refuses_too():
     with pytest.raises(AttributeNotInListing):
         PlexItemView(a_movie()).get("director")
+
+
+# --- the batched tier (phase B) -----------------------------------------------
+#
+# Five families the listing could not answer, read from the enrichment the
+# engine fetched once for the definition's resolved set. Two properties are
+# load-bearing, and the second is the refusal law: the accessor must never
+# touch the ITEM (that is the N+1 the whole module exists to avoid), and it
+# must never answer "missing" for an item whose enrichment was not loaded.
+
+
+def test_batched_attributes_match_the_tier2_batched_rows():
+    assert BATCHED_ATTRIBUTES == tuple(
+        row.name for row in FILTER_ATTRIBUTES if row.source == "tier2-batched"
+    )
+
+
+def test_batched_accessor_reads_the_enrichment_never_the_item():
+    """THE TRIPWIRE for the batched tier. The item raises on ANY attribute
+    read, so a single reach for ``item.genres`` -- the obvious implementation,
+    and one that would silently reload every item plexapi handed back partial
+    -- fails here rather than as a run that got slow.
+
+    Language values are ISO 639-1 CODES (``en``), not display titles: the
+    enrichment reads the stream's ``languageTag`` (probe decision D6), because
+    that is what the tree's only language normaliser already emits."""
+
+    class Explodes:
+        def __getattr__(self, name):  # any read of the ITEM here is the N+1 trap
+            raise AssertionError("a batched accessor must not touch the item")
+
+    tags = ItemTags(("Horror", "Thriller"), ("Overlay",), (), ("en",), ())
+    view = PlexItemView(Explodes(), tags=tags)
+
+    assert view.get("genre") == ("Horror", "Thriller")
+    assert view.get("label") == ("Overlay",)
+    assert view.get("collection") is None, "an empty family is a missing value"
+    assert view.get("audio_language") == ("en",)
+    assert view.get("subtitle_language") is None
+
+
+def test_an_empty_batched_family_feeds_the_tables_missing_value_rule():
+    """The half of the line above that matters to an operator. An empty family
+    is a real answer -- "Plex holds no labels for this item" -- and the table's
+    missing-value rule is what turns it into a membership: a positive tag
+    filter drops the item and a negated one keeps it. That is the same
+    membership an unlabelled film gets from the tier-1 accessors, which is the
+    point.
+
+    Note what the view's ``or None`` does NOT do: ``filters._is_missing``
+    already reads an empty sequence as missing for a ``tag`` attribute, so
+    ``()`` would evaluate identically here. It buys one SHAPE for "no value"
+    across both tiers -- every tier-1 accessor answers None -- so a direct
+    reader of ``get`` has one thing to test for rather than two."""
+    view = PlexItemView(object(), tags=ItemTags((), (), (), (), ()))
+
+    assert view.get("label") is None
+    assert evaluate(parse_filters({"label": "Overlay"}), view) is False
+    assert evaluate(parse_filters({"label.not": "Overlay"}), view) is True
+
+
+def test_batched_attribute_without_tags_raises_enrichment_not_loaded():
+    """Raised, never answered ``None``. ``None`` means "this item has no
+    value", which the table turns into a defined match result -- so answering
+    it for an item the enrichment never covered is the wrong-but-plausible
+    collection the tier system exists to prevent."""
+    with pytest.raises(EnrichmentNotLoaded) as raised:
+        PlexItemView(object()).get("genre")
+
+    assert "genre" in str(raised.value)
+    assert "ensure_tags" in str(raised.value), "the message names the way in"
+
+
+def test_enrichment_not_loaded_is_a_lookup_error_like_the_tier_one_refusal():
+    """Both refusals are ``LookupError``s, so the engine's containment catches
+    either without knowing which tier failed -- and neither is an
+    ``AttributeError``, which plexapi's own reload path raises and which a
+    caller might reasonably swallow."""
+    assert issubclass(EnrichmentNotLoaded, LookupError)
+    assert issubclass(AttributeNotInListing, LookupError)
+
+
+def test_tier_one_reads_still_work_with_tags_present():
+    """The tags argument is additive: a view carrying an enrichment answers the
+    listing rows exactly as it did without one."""
+    view = PlexItemView(a_movie(), tags=ItemTags((), (), (), (), ()))
+
+    assert view.get("year") == 2003
+    assert view.get("studio") == "Universal Pictures"
+    assert view.get("resolution") == ("1080",)
+
+
+def test_a_deferred_row_still_refuses_even_with_an_enrichment_loaded():
+    """``network`` is not in ``_BATCHED_FIELDS``, so a loaded enrichment does
+    not smuggle it in: the batch cannot conjure an attrib Plex emits nowhere,
+    and the refusal must say so rather than answering from an empty family."""
+    view = PlexItemView(a_show(), tags=ItemTags((), (), (), (), ()))
+
+    with pytest.raises(AttributeNotInListing):
+        view.get("network")
+
+
+def test_a_filter_over_the_batched_tier_evaluates_from_the_enrichment():
+    """End to end through the predicate model, because that is what the engine
+    actually does: parse, then evaluate over a view carrying the item's tags.
+    The genre kept here (``Thriller``) is precisely the one the listing
+    truncated away -- the probe's own example."""
+    tags = ItemTags(("Action", "Crime", "Thriller"), (), (), (), ())
+    view = PlexItemView(a_movie(), tags=tags)
+
+    assert evaluate(parse_filters({"genre": "Thriller"}), view) is True
+    assert evaluate(parse_filters({"genre": "Romance"}), view) is False
+
+
+def test_reading_the_batched_tier_costs_no_plex_request():
+    """The module's one hard rule, extended to the new tier. The enrichment was
+    already fetched -- once, for the whole resolved set -- so reading it back
+    here is a dict lookup, and the reload-guarded item is never touched."""
+    server = NoRequestsServer()
+    view = PlexItemView(
+        a_movie(BARE_MOVIE_XML, server),
+        tags=ItemTags(("Horror",), ("Overlay",), ("Franchise",), ("en",), ("fi",)),
+    )
+
+    for attribute in BATCHED_ATTRIBUTES:
+        assert view.get(attribute) is not None
+
+    assert server.calls == []
 
 
 # --- the reload budget, from both sides ---------------------------------------
