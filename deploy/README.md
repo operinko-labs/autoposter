@@ -414,11 +414,12 @@ python -m autoposter.collections
     group_order: [awards, charts]
   ```
 
-  The valid names are the eleven above, written as the keys themselves — they
-  are `content_ratings` and `operator`, not "content ratings" and "your own
-  `definitions:` entries". An unknown name is refused at config load with the
-  full list; a repeated one is refused as a name that means less than it looks
-  like. Neither is accepted as a reordering that silently did nothing.
+  The valid names are the eleven above, written as the keys themselves — the
+  two that are not spelled as they appear above are `content_ratings` and
+  `operator`, not "content ratings" and "your own `definitions:` entries". An
+  unknown name is refused at config load with the full list; a repeated one is
+  refused as a name that means less than it looks like. Neither is accepted as
+  a reordering that silently did nothing.
 
   **`franchises` is new, and it is why there are eleven names now rather than
   ten.** It sits fifth, after `content`, and it is not cosmetic: franchise

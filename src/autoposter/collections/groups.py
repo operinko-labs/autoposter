@@ -263,7 +263,7 @@ def effective_order(config) -> tuple[str, ...]:
 
 
 def section_number(group: str, order: tuple[str, ...]) -> str:
-    """``"010"`` … ``"100"`` -- the group's 1-based position times ten.
+    """``"010"`` … ``"110"`` -- the group's 1-based position times ten.
 
     Spaced tens rather than 1..10 so a group inserted later can take a number
     between two shipped ones without renumbering the collections either side.
@@ -299,7 +299,7 @@ def separator_sort_title(group: str, order: tuple[str, ...]) -> str:
 
 
 def member_sort_title(prefix: str, title: str, order: str | None = None) -> str:
-    """``"!030_13_Age 13+ Movies"``, or ``"!100_Hand Picked"`` unordered.
+    """``"!030_13_Age 13+ Movies"``, or ``"!110_Hand Picked"`` unordered.
 
     The ordering key occupies the slot Kometa's own template leaves empty (see
     the module docstring's second citation), separated by the same ``_``.

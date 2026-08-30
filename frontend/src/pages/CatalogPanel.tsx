@@ -223,7 +223,7 @@ function CatalogRow({
  *
  * The strip is a single tab stop (roving tabindex): Tab reaches the selected
  * tab and then leaves the strip for the panel, rather than walking through
- * nine buttons. The arrow keys move within it, and they wrap.
+ * ten buttons. The arrow keys move within it, and they wrap.
  *
  * The panel itself is NOT a tab stop. WAI-ARIA only asks for one when the
  * panel holds nothing focusable (so a keyboard user could otherwise never
@@ -447,8 +447,8 @@ export function CatalogPanel() {
             className="catalog-tab"
             aria-selected={category.key === selected}
             // Only the selected tab claims a panel, because only the selected
-            // panel is rendered. An `aria-controls` on all nine would point
-            // eight of them at ids that are not in the document, which is an
+            // panel is rendered. An `aria-controls` on all ten would point
+            // nine of them at ids that are not in the document, which is an
             // invalid IDREF rather than a harmless extra attribute.
             aria-controls={
               category.key === selected ? `catalog-tabpanel-${category.key}` : undefined
