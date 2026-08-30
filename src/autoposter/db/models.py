@@ -524,3 +524,24 @@ class TmdbRateState(Base):
     refused_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class FactsBackfillState(Base):
+    """The one-shot facts backfill's cursor (roadmap row 206).
+
+    A single row, pinned to ``id=1``, ``TmdbRateState``'s shape for
+    ``TmdbRateState``'s reason: pods behind one database must share one walk.
+    ``cursor_item_id`` is the highest ``media_items.id`` a trigger has
+    stamped-and-enqueued; NULL means the backfill has never run. There is no
+    "completed" flag on purpose -- completion is derived (no movie/show past
+    the cursor), so a library that grows after the walk simply exposes a new
+    tail rather than needing a reset nobody built.
+    """
+
+    __tablename__ = "facts_backfill_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cursor_item_id: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

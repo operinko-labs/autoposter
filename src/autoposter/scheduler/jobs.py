@@ -18,6 +18,7 @@ from pathlib import Path
 
 import httpx
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.arr.client import RADARR, SONARR, ArrClient, ArrKind
@@ -35,7 +36,7 @@ from autoposter.collections.service import (
 )
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.schema import RadarrConfig, Secrets, SonarrConfig
-from autoposter.db.models import ItemFacts, MediaItem, Render
+from autoposter.db.models import FactsBackfillState, ItemFacts, MediaItem, Render
 from autoposter.intake.arr import RenderIntent
 from autoposter.queue.jobs import enqueue
 from autoposter.scheduler.core import Job
@@ -165,6 +166,16 @@ async def sweep_stale_facts(session: AsyncSession, max_age_days: float, batch_si
     )
     items = (await session.execute(stmt)).scalars().all()
 
+    return await _stamp_and_enqueue(session, items)
+
+
+async def _stamp_and_enqueue(session: AsyncSession, items) -> int:
+    """The sweep's tail, shared with ``backfill_facts``: stamp every selected
+    item's ``facts_attempted_at`` (see ``sweep_stale_facts``'s docstring for
+    why the stamp is unconditional), then enqueue the same ``process_item``
+    job the webhook intake path uses. Returns how many were actually
+    enqueued -- ``dedupe_key`` folds an item whose identical job is already
+    pending."""
     if items:
         await session.execute(
             update(MediaItem)
@@ -194,6 +205,71 @@ async def sweep_stale_facts(session: AsyncSession, max_age_days: float, batch_si
             enqueued += 1
 
     return enqueued
+
+
+_BACKFILL_ROW_ID = 1
+
+
+@dataclass(frozen=True)
+class BackfillBatch:
+    """One trigger's outcome. ``selected == 0`` is the idempotent "complete":
+    nothing past the cursor, nothing stamped, cursor unmoved."""
+
+    selected: int
+    enqueued: int
+
+
+async def backfill_facts(session: AsyncSession, batch_size: int) -> BackfillBatch:
+    """One batch of the one-shot facts catch-up (roadmap row 206).
+
+    ``sweep_stale_facts`` with the age predicate dropped and a cursor in its
+    place -- NOT a new pipeline. The sweep's population rule (movies and
+    shows; children ride on the parent's pass), its ``batch_size`` valve, its
+    selection-time ``facts_attempted_at`` stamp and its enqueue are all kept;
+    what is dropped is the staleness test and the staleness *ordering*: this
+    walk exists because freshness says nothing about the never-written
+    columns, and it orders by ``MediaItem.id`` so the persisted cursor makes
+    a re-trigger resume exactly where the last one stopped.
+
+    The cursor lives in ``facts_backfill_state`` (one row, ``id=1``) so pods
+    behind one database share one walk. It advances only when items were
+    selected; the TMDb-window park is the CALLER's (``api/facts_backfill.py``)
+    -- by the time this runs, the trigger has decided to spend.
+
+    Not scheduled, deliberately: the row's own rejection of a migration hook
+    applies to any unattended trigger -- this fires because an operator asked.
+    """
+    state = (
+        await session.execute(
+            select(FactsBackfillState).where(FactsBackfillState.id == _BACKFILL_ROW_ID)
+        )
+    ).scalar_one_or_none()
+    cursor = state.cursor_item_id if state is not None else None
+
+    stmt = (
+        select(MediaItem)
+        .where(MediaItem.kind.in_(("movie", "show")))
+        .order_by(MediaItem.id.asc())
+        .limit(batch_size)
+    )
+    if cursor is not None:
+        stmt = stmt.where(MediaItem.id > cursor)
+    items = (await session.execute(stmt)).scalars().all()
+    if not items:
+        return BackfillBatch(selected=0, enqueued=0)
+
+    enqueued = await _stamp_and_enqueue(session, items)
+
+    upsert = insert(FactsBackfillState).values(
+        id=_BACKFILL_ROW_ID, cursor_item_id=items[-1].id, updated_at=func.now()
+    )
+    await session.execute(
+        upsert.on_conflict_do_update(
+            index_elements=["id"],
+            set_={"cursor_item_id": items[-1].id, "updated_at": func.now()},
+        )
+    )
+    return BackfillBatch(selected=len(items), enqueued=enqueued)
 
 
 def make_drift_job(holder: ConfigHolder) -> Job:

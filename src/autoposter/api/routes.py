@@ -22,6 +22,7 @@ from autoposter.artwork_modes.revert import RevertMode
 from autoposter.api.candidates import router as candidates_router
 from autoposter.api.collections_builders import router as collections_builders_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
+from autoposter.api.facts_backfill import router as facts_backfill_router
 from autoposter.api.jobs import router as jobs_router
 from autoposter.api.logs import router as logs_router
 from autoposter.api.manual import router as manual_router
@@ -172,6 +173,12 @@ router.include_router(collections_builders_router)
 # endpoints below stay here -- they belong to the Failures page, which is a
 # different question about a different set of states.
 router.include_router(jobs_router)
+
+# The one-shot facts backfill (roadmap row 206): the catch-up trigger for the
+# never-written facts columns. Its own module because it is the one write
+# surface that belongs to facts rather than to collections or the queue, and
+# the park-while-TMDb-is-blocked rule is the substance of it.
+router.include_router(facts_backfill_router)
 
 # The id-mismatch view: where Plex and Radarr/Sonarr disagree about what a
 # folder holds. Its own module because it is the only handler that pairs the
