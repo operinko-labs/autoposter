@@ -182,9 +182,20 @@ def test_every_family_prefix_counts_not_just_the_dynamic_one():
 
 
 def test_a_family_label_does_not_swallow_a_look_alike():
-    """Prefix-based, so the boundary matters: a label that merely starts with
-    the word is not one of ours."""
-    section = FakeSection([FakeCollection("Autoposter Fan Picks", labels=["Kometa"])])
+    """Prefix-based, so the boundary matters: a LABEL that merely starts with
+    the word is not one of ours.
+
+    Both look-alikes are labels, not the title -- ``_family_labelled`` reads
+    labels, so a look-alike in the title alone would pass against a prefix set
+    of ``autoposter``, of ``autoposter-``, or of nothing at all, and this is the
+    only boundary test the widened match has. ``Autoposter-dynamics`` pins the
+    separator specifically: the prefixes carry ``": "`` precisely so a family
+    name cannot run into a neighbouring label.
+    """
+    section = FakeSection([FakeCollection(
+        "Autoposter Fan Picks",
+        labels=["Kometa", "Autoposter Fan Picks", "Autoposter-dynamics"],
+    )])
     assert unmanaged_prior_collections(section, "Movie", _config()) == [
         "Autoposter Fan Picks"
     ]
