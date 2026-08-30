@@ -67,7 +67,19 @@ here for any interval below 2.7 s).
 |---|---|---|
 | `tests/test_pipeline.py` row-195 assertion (fixed in `9503df0`) | 1.12 s | ~3.7 % |
 | `tests/test_facts_gather.py:294`, `:328` (fixed) | ~0.1 s | ~0.3 % each |
-| `tests/test_item_facts.py`, `tests/test_queue.py` 1 s tolerances (fixed) | sub-ms, tolerance 1 s < the 2.7 s step | in principle, whenever a step lands in the gap |
+| `tests/test_item_facts.py:69`, `tests/test_queue.py:119` 1 s tolerances (fixed) | sub-ms, tolerance 1 s < the 2.7 s step | in principle, whenever a step lands in the gap |
+| `tests/test_queue.py:295` (fixed) — `reclaim_stale()` commits, so the later `func.now()` read is a new transaction | ~2 ms (commit + round trip) | ~0.007 % |
+
+Six assertions across four files, all now restructured to be immune rather than
+merely improbable to fail.
+
+Two sites were checked and deliberately **not** touched, because the step is
+backwards-only and the direction runs the other way: `tests/test_queue.py:92`
+(`job.run_after > db_now + timedelta(seconds=5)`) and `tests/test_routes.py:131`
+(`job.run_after > db_now + timedelta(seconds=20)`) both compare `run_after`
+against a *later* `db_now` reading with several seconds of slack — a backwards
+step only makes `db_now` smaller, which makes both assertions easier to satisfy,
+never harder. Recorded here so a future sweep does not re-derive it.
 
 Two independent corroborations of the same 2.705 s step, from data this probe
 did not produce:
@@ -90,8 +102,10 @@ coincide.
 
 ## The reproducer
 
-Verbatim, as run. It was invoked inside the test container, which supplies
-`AUTOPOSTER_MAINTENANCE_DATABASE_URL`:
+Save the script below to `<repo>/clockprobe.py`, then run it inside the test
+container, which supplies `AUTOPOSTER_MAINTENANCE_DATABASE_URL` (the script was
+actually run from `.superpowers/p-hard1-195-clockprobe.py`, a gitignored path;
+the command below is the equivalent invocation for the version checked in here):
 
 ```bash
 docker compose -p <project> -f docker-compose.yml -f <isolated-db overlay> \
