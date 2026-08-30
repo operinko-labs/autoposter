@@ -70,7 +70,7 @@ here for any interval below 2.7 s).
 | `tests/test_pipeline.py` row-195 assertion (fixed in `9503df0`) | 1.12 s | ~3.7 % |
 | `tests/test_facts_gather.py:301`, `:340` (fixed) | ~0.1 s | ~0.3 % each |
 | `tests/test_item_facts.py:69`, `tests/test_queue.py:119` 1 s tolerances (fixed) | sub-ms, tolerance 1 s < the 2.7 s step | in principle, whenever a step lands in the gap |
-| `tests/test_queue.py:309` (**residual**) — `reclaim_stale()` commits, so the later `func.now()` read is a new transaction | ~2 ms (commit + round trip) | ~0.007 % |
+| `tests/test_queue.py:309` (**residual**) — `reclaim_stale()` commits, so the later `func.now()` read is a new transaction | ~2-6 ms (order-of-magnitude estimate; measured once at 5.6 ms) | ≲0.02 % (5.6 ms / 30 s ≈ 0.019 %) |
 
 Six assertions across four files. **Five are immune**; the sixth is not, and
 cannot be. `reclaim_stale()` commits, so its `run_after` stamp and any
@@ -85,10 +85,13 @@ application's own exposure, not the suite's. `_CLAIM_SQL` matches on
 `claimed_at < now() - make_interval(...)`, both against rows stamped in earlier,
 committed transactions. A backwards step landing in one of those windows makes
 the queue briefly mis-schedule real work — a job not yet due, a claim not yet
-stale. At ~2 ms against a ~30 s cycle that is ~0.007 % and has never been
-sighted, but it is a property of the scheduler, and no test-level restructuring
-can remove it short of freezing the clock, which would stop testing the real
-thing.
+stale. At an order-of-magnitude estimate of ~2 ms — the one measurement on hand is
+5.6 ms (`run_after 11:59:33.478596` vs `db_now 11:59:33.484209`,
+`run-p-hard1-t4-pre-mut.log:50`) — against a ~30 s cycle that is ≲0.02 %
+(5.6 ms / 30 s ≈ 0.019 %, not the ~0.007 % the 2 ms estimate implied) and has
+never been sighted, but it is a property of the scheduler, and no test-level
+restructuring can remove it short of freezing the clock, which would stop
+testing the real thing.
 
 So the rule at the top of this file bans *avoidable* cross-transaction
 wall-clock assertions. It cannot ban the ones that are the behaviour under test.
