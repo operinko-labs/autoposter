@@ -21,9 +21,11 @@ Probes ran in the `autoposter` pod in namespace `media` via
 
 **What it exists to decide.** Phase B's tasks 2–7 are written against seven
 measurements they cannot make for themselves. The gate that mattered most is
-D1: the 9a probe's tag counts showed no credit tags, which — if it held for the
-batched `/library/metadata/{k1,k2,…}` read — would have left tasks 4 and 5
-without a credits source at all. It does not hold. §7 records all seven
+D1: do Role/Director/Writer/Producer tags ride the batched
+`/library/metadata/{k1,k2,…}` read at all — if they don't, tasks 4 and 5 have
+no credits source. 9a's tag counter never enumerated the credit families (it
+counted only Genre/Collection/Country/Label/Stream); this probe is the first
+measurement of them, not a reversal of an earlier one. §7 records all seven
 verdicts.
 
 ---
@@ -32,8 +34,9 @@ verdicts.
 
 Never measured before (9b and 10a both worked the movie section). Chunk sizes
 50/100/200 against the 286-show library, counting every tag family the phase
-cares about in the returned XML, then five movies sampled for stream language
-attribute spellings (D6).
+cares about in the returned XML, then one movie's streams sampled for stream
+language attribute spellings (D6) — the script fetches five movie keys but the
+loop breaks after the first item's streams are read (§6.1).
 
 ```
 show rating keys: 286
@@ -139,13 +142,22 @@ measured. The shape is consistent with the classic 8192-byte request-line
 limit: the 7671-character path plus scheme, host and the token query parameter
 sits just under it, and the 10232-character path is far over.
 
-**The cap is not the binding constraint — cost is.** Per-item time climbs
-steeply with chunk size: 15.5 ms/item at 400, 25.2 at 800, 36.7 at 1200,
-against 8–12 ms/item at 50–200 in §1. A 1200-key chunk takes 44 s for one
-request; six 200-key chunks covering the same 1200 items would cost roughly
-14 s. **Chunking large is slower, not faster.** The plan's `TAG_BATCH_CHUNK` of
-200 needs no reduction (the trigger was "< 200") and is also near the cost
-optimum.
+**The cap is not the binding constraint — cost is.** Per-item time climbs with
+chunk size: 15.5 ms/item at 400, 25.2 at 800, 36.7 at 1200, against 8–12
+ms/item at 50–200 in §1. The 400-key point sits against a governing prior: 9a
+measured the same movie section at chunk=400 in 3.25 s (8.1 ms/item; archive
+`p9a-task-2-report.md:319-322`) — a 1.9× divergence from this run's 6.20 s
+(15.5 ms/item) at the one directly comparable point, same server, same
+section, overlapping key range. The variance is unexplained (different day,
+load, or item set) and is named here rather than left standing as an
+unreconciled contradiction. The 800/1200 points are far beyond anything 9a
+measured, so the climb from 400→800→1200 is this run's own and unaffected by
+the discrepancy at 400: a 1200-key chunk takes 44 s for one request; six
+200-key chunks covering the same 1200 items would cost roughly 14 s.
+**Chunking large is slower, not faster, above 400 keys.** The plan's
+`TAG_BATCH_CHUNK` of 200 needs no reduction (the trigger was "< 200") either
+way — it is also near the cost optimum under both this run's and 9a's
+numbers.
 
 ## 4. Probe d — do viewCount/lastViewedAt/userRating reach the section listing?
 
@@ -382,10 +394,10 @@ say("VERDICT:", "CONFIRMED" if str(actual) == data.attrib.get("totalSize") else 
 
 | # | Question | Verdict | Gates |
 | --- | --- | --- | --- |
-| D1 | Do Role/Director/Writer/Producer tags ride the batch response (probe b)? | **YES** — movie batch of 200 carried Role 8815, Director 228, Writer 482, Producer 590; batch vs single-key credit lists identical on 6/6 sampled items (MATCH=True). Shows carry **Role only** (0 director/writer/producer in batch, in single-key, and in `listFilterChoices`) — a property of series-level Plex metadata, not of batching. | T4, T5 **proceed**. No adjudication. |
+| D1 | Do Role/Director/Writer/Producer tags ride the batch response (probe b)? | **YES** — movie batch of 200 carried Role 8815, Director 228, Writer 482, Producer 590; batch vs single-key credit lists identical on 6/6 sampled items (MATCH=True). Shows carry **Role only** (0 director/writer/producer in batch, in single-key, and in `listFilterChoices`) — a property of series-level Plex metadata, not of batching. **`Role` children are capped at 200/item server-side** (54/200 shows and 2/200 movies hit it exactly, unescapable by single-key reads) — counts from a truncated cast must not claim completeness. | T4, T5 **proceed**. No adjudication. |
 | D2 | Largest working chunk / refusal shape (probe c) | Largest tested OK: **1200 keys / 7671-char path (44.05 s)**. **1600 keys / 10232 chars REFUSED, `BadRequest`, `status=None`** (plexapi attaches no response, so catch the class, not a code). Exact cap unmeasured: 1200 < cap < 1600. Cost, not the cap, binds: 15.5 → 25.2 → 36.7 ms/item at 400/800/1200 vs 8–12 ms/item at 50–200. | `TAG_BATCH_CHUNK` **unchanged at 200** (trigger was "< 200"); 200 is also near the cost optimum. T6. |
 | D3 | Show-library batch economics (probe a) | 286 shows: **2 calls at chunk=200**; measured 2.41 s for the 200-chunk and 0.82 s for a 100-chunk, so ≈**3.2 s** for the whole show library, ≈**11 ms/item**. Per-chunk measured: 50 → 0.47 s (9.4 ms/item), 100 → 0.82 s (8.2), 200 → 2.41 s (12.05). | recorded; informs nothing structural |
-| D4 | `viewCount`/`lastViewedAt`/`userRating` in the listing (probe d) | **SPARSE, present-when-set** — `viewCount` movie 79/1962, show 55/286, **never `0`** (absent ⇒ unwatched); `lastViewedAt` movie 98/1962, show 64/286 (exceeds `viewCount` — in-progress items, do not infer one from the other); `userRating` movie 2/1962, show 0/286 — **effectively ABSENT** on this library. | T7's rows 180/175 branch: read from the listing, no per-item fetch; treat missing `viewCount` as 0; expect no `userRating` data. |
+| D4 | `viewCount`/`lastViewedAt`/`userRating` in the listing (probe d) | **SPARSE, present-when-set** — `viewCount` movie 79/1962, show 55/286, **never `0`** (absent ⇒ unwatched); `lastViewedAt` movie 98/1962, show 64/286 (exceeds `viewCount` — in-progress items, do not infer one from the other); `userRating` movie 2/1962, show 0/286 — **effectively ABSENT** on this library. | **This verdict supersedes the plan's binary ALL-PRESENT/SPARSE branch** (Step 2, `docs/superpowers/plans/2026-08-30-phase-b-plex-read.md:2448-2450`) — the three attributes split rather than moving together, so T7 adjudicates per-attribute instead of picking one branch by keyword match. `plays` **SHIPS listing-tier**: plexapi already defaults `viewCount` to 0 (`video.py:64`, `utils.cast(int, data.attrib.get('viewCount', 0))`), so absent-is-zero is safe regardless of accessor mechanism — add to `_LISTING_ATTRIBS`. `last_played` is **DECIDED AT T7** against Kometa's own None handling: plexapi leaves `lastViewedAt` None when absent (`video.py:50`), so a never-played item reads as MISSING and a recency filter's missing-excludes rule would exclude it unconditionally — T7 ships it listing-tier only if missing-excludes is the wanted semantics for `last_played`, else re-files that half of row 180 honestly (not closed). `user_rating` **ships** per the plan's sparse-ships resolution (`:2471`) — missing-excludes is the correct semantics for an unrated item. |
 | D5 | `totalSize` at container-size 0 (probe e) | **CONFIRMED** — `totalSize='17'`, `size='0'`, 0 children; full fetch of the same URL returned 17. | T7's row-198 commit |
 | D6 | Stream `language` attrib spelling (probe a) | **All three carry values** on audio (`streamType=2`) and subtitle (`streamType=3`) streams: `language='English'`, `languageCode='eng'`, `languageTag='en'`. Sample is one movie's streams, all English. | T3's `_stream_languages` field — `languageCode` (ISO 639-2) is the safe key; `languageTag` (ISO 639-1) matches 9b's `_base_language_code` shape. |
 | D7 | `listFilterChoices` enumerates actor/director/writer/producer (probe b) | **movie: all four answer** — actor 3268, director 1394, writer 2813, producer 3071. **show: actor 789 only** — director/writer/producer answer **0 values** (no refusal, an empty enumeration). | T5's resolver: sufficient for movies and for show *actors*; a show director/writer/producer resolver has nothing to enumerate (C5's hubSearch fallback is the only route if that is ever needed). |
