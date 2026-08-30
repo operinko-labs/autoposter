@@ -1109,6 +1109,18 @@ def test_the_collision_test_can_actually_fail():
     with pytest.raises(AssertionError, match="pack_e"):
         _assert_no_bucket_collisions(bucket_collision)
 
+    # The stale-entry equality itself (line 1040) has never been seen red:
+    # prove it fails when a COPY of the allowlist carries a phantom pair that
+    # no fabricated row exercises.
+    shared_format = [
+        (_FakePreset("pack_f", ("Movie",)), None,
+         {"type": "genre", "title_format": "Shared <<key_name>> Movies"}),
+        (_FakePreset("pack_g", ("Movie",)), None,
+         {"type": "genre", "title_format": "Shared <<key_name>> Movies"}),
+    ]
+    phantom_allowlist = {frozenset({"pack_f", "pack_g"}), frozenset({"pack_h", "pack_i"})}
+    assert _assert_no_two_formats_collide(shared_format, phantom_allowlist) != phantom_allowlist
+
 
 # Every pack's `title_format`, as the literal `packs.py` pins. The second site
 # of a deliberate two-site edit: the test above proves the seven formats do not
