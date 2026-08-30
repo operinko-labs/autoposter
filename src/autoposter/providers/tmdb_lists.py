@@ -36,7 +36,8 @@ endpoint here that answers with movies and shows at once, and TMDb's movie
 and show ids are different id spaces sharing one *namespace* -- so a show's
 id handed to a Movie library can resolve to an unrelated film rather than to
 nothing. ``_of_media_type`` drops the other kind before ids are taken; see
-its docstring, and note what that costs the ``item_count`` stop condition.
+its docstring. The ``item_count`` stop condition counts entries *seen* rather
+than ids kept precisely so that filtering does not disarm it (roadmap row 144).
 
 **Companies, networks and keywords go through ``/discover``**, not through
 ``/company/{id}/movies`` or ``/keyword/{id}/movies``: TMDb marks those
@@ -231,6 +232,7 @@ class TmdbListClient:
         one media type.
         """
         ids: list[str] = []
+        seen = 0
         for page in range(1, self._max_pages + 1):
             payload = await self._get(path, {**params, "page": page}, subject)
             entries = payload.get(items_key)
@@ -242,22 +244,22 @@ class TmdbListClient:
                 # The page past the end. A source that really is empty is data,
                 # not a failure -- unlike a 404, which is the id being wrong.
                 break
+            seen += len(entries)
             ids += _ids(_of_media_type(entries, media_type, subject), subject)
             total_pages = payload.get("total_pages")
             if isinstance(total_pages, int) and page >= total_pages:
                 break
             item_count = payload.get("item_count")
             # ``item_count`` counts a list's *members*, both media types
-            # together, so once ``media_type`` filters any of them out this
-            # comparison can no longer be satisfied and the break becomes
-            # unreachable -- it only ever fires for an unfiltered read. That
-            # is deliberate rather than repaired here: the loop still
-            # terminates on the empty page TMDb serves past the end, and on
-            # ``max_pages`` in the pathological "TMDb ignored ``page``" case
-            # this condition was the cheap guard for. Hardening it (count
-            # entries seen, or stop on an identical page) is a filed roadmap
-            # row, not a silent change to what a filtered list returns.
-            if isinstance(item_count, int) and len(ids) >= item_count:
+            # together, so it is compared against entries SEEN rather than ids
+            # kept: kept-vs-listed could never be satisfied once ``media_type``
+            # filtered anything out (roadmap row 144), which killed this break
+            # for every filtered read -- and ``tmdb_list`` always filters --
+            # degrading the pathological "TMDb ignored ``page``" case it
+            # guards into repeated identical requests with the survivors
+            # duplicated per page. A short upstream (deleted members) still
+            # ends on the empty page; this break only ever fires early.
+            if isinstance(item_count, int) and seen >= item_count:
                 break
         else:
             # Every page spent and no stop condition met, which is the one exit

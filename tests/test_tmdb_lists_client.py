@@ -225,6 +225,56 @@ async def test_a_list_that_repeats_its_only_page_is_still_read_once():
     assert len(seen) == 1
 
 
+async def test_a_filtered_list_stops_at_item_count_counting_entries_seen():
+    """Roadmap row 144. ``item_count`` counts the list's MEMBERS, both media
+    types together, so comparing it against ids KEPT could never be satisfied
+    once the media-type filter dropped anything -- and ``tmdb_list`` now
+    always filters. One page holds the whole 2-member list; the old
+    comparison (1 kept < 2 listed) sent the client to fetch a second page it
+    had no reason to ask for."""
+    seen: list = []
+    page = {
+        "items": [
+            {"id": 1, "media_type": "movie"},
+            {"id": 2, "media_type": "tv"},
+        ],
+        "item_count": 2,
+    }
+    transport = _routed({"/list/1": _pages(page)}, seen)
+    async with httpx.AsyncClient(transport=transport) as http:
+        ids = await _client(http).list_items(1, media_type="movie")
+
+    assert ids == ["1"]
+    assert len(seen) == 1
+
+
+async def test_a_list_endpoint_ignoring_page_does_not_duplicate_ids():
+    """The pathological case the ``item_count`` break exists for: TMDb
+    answering the same page whatever ``page`` says. With the break comparing
+    ids KEPT (see above), the survivor was re-collected page after page until
+    the duplicates themselves added up to ``item_count`` -- twice over here,
+    and up to ``max_pages`` times for a list whose kept share is smaller.
+    Bounded either way, but wasteful and wrong: the same member listed more
+    than once."""
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {"id": 1, "media_type": "movie"},
+                    {"id": 2, "media_type": "tv"},
+                ],
+                "item_count": 2,
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        ids = await _client(http).list_items(1, media_type="movie")
+
+    assert ids == ["1"]
+
+
 async def test_a_list_keeps_only_the_media_type_the_caller_asked_for():
     """A v3 list is the one endpoint here that answers with both kinds at
     once -- ``tmdb_list_p2.json`` carries the show 95396 beside a film -- and
