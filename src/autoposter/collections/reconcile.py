@@ -116,8 +116,9 @@ def load_labels(collection) -> None:
 def _folded_labels(collection) -> dict[str, str]:
     """``{casefolded tag: the tag as the server spells it}``.
 
-    The one place the three readers below agree on what a label match IS, and
-    they all fold because **Plex canonicalises label case**. Measured against
+    The one place the three readers below -- and ``_apply_labels``, the module's
+    only label writer -- agree on what a label match IS, and they all fold
+    because **Plex canonicalises label case**. Measured against
     the live server on 2026-08-30 (recorded on roadmap row 135): the Movies
     library held exactly ONE ownership tag, ``'Autoposter'`` -- tagID 214239 --
     and ``section.collections(label=...)`` returned the same 99 collections
@@ -366,23 +367,41 @@ def _apply_labels(collection, definition, label: str, config) -> list[str]:
     deliberately and once. A sync that quietly undid the label
     ``claim_ownership`` had just been told to keep would be the same bug in
     the opposite direction.
+
+    The only WRITER of labels in this module, and it matches them the way the
+    three readers above do -- ``_folded_labels``, for the reason recorded
+    there. An exact compare here was the same bug on the write path, and worse:
+    against the live pair (config ``autoposter``, server tag ``Autoposter``) the
+    keep-set held the config's spelling and the stored set the server's, so
+    every ``label_sync`` pass computed ``removeLabel('Autoposter')`` and stripped
+    this service's OWN ownership label -- un-owning the collection, reproducing
+    the conflict the folding above fixes, and putting it beyond the sweep. The
+    same subtraction stripped a ``protect_labels`` or ``adopt_from`` entry whose
+    case differed from the stored tag, and an operator's ``labels: [mylabel]``
+    against a stored ``MyLabel`` added then removed to a net strip every pass.
+    Removals name the tag as the SERVER spells it, because that is what
+    ``removeLabel`` needs -- the dict value, again for ``_folded_labels``'
+    reason. ``load_labels`` was already being called here, so folding costs no
+    extra GET.
     """
     wanted = list(dict.fromkeys(definition.labels))
     if not wanted and not definition.label_sync:
         return []
 
     load_labels(collection)
-    current = {tag.tag for tag in (getattr(collection, "labels", None) or [])}
-    adding = [tag for tag in wanted if tag not in current]
+    stored = _folded_labels(collection)
+    adding = [tag for tag in wanted if tag.casefold() not in stored]
     removing: list[str] = []
     if definition.label_sync:
         collections = getattr(config, "collections", None)
         keep = {
-            label, *wanted,
-            *(getattr(collections, "adopt_from", None) or []),
-            *(getattr(collections, "protect_labels", None) or []),
+            one.casefold() for one in (
+                label, *wanted,
+                *(getattr(collections, "adopt_from", None) or []),
+                *(getattr(collections, "protect_labels", None) or []),
+            )
         }
-        removing = sorted(current - keep)
+        removing = sorted(tag for folded, tag in stored.items() if folded not in keep)
 
     for tag in adding:
         collection.addLabel(tag)

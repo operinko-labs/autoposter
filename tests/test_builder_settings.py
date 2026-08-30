@@ -29,6 +29,7 @@ import pytest
 from autoposter.collections.builders import REGISTRY, BuilderContext, BuilderResult, register
 from autoposter.collections.engine import run_definitions
 from autoposter.collections.lists import _members_hash
+from autoposter.collections.reconcile import _apply_labels
 from autoposter.config.schema import CollectionDefinition
 
 LABEL = "autoposter"
@@ -344,6 +345,60 @@ async def test_label_sync_never_strips_the_ownership_label(session, registry_ent
 
     assert live.removed_labels == []
     assert live.label_names() == [LABEL]
+
+
+async def test_label_sync_never_strips_the_ownership_label_plex_recased(
+    session, registry_entry
+):
+    """The live production pair, on the write path: the config says
+    ``autoposter`` and the server stores ``Autoposter`` (Plex canonicalises
+    label case -- measured 2026-08-30, one tag, tagID 214239). Compared
+    exactly, the keep-set held the config's spelling and the stored set the
+    server's, so this pass called ``removeLabel('Autoposter')`` and took off the
+    label that says the collection is ours: the next pass reads it as a
+    stranger's, refuses it, writes no sort title, and the sweep never sees it
+    either.
+
+    The definition's own ``Favourites`` is stored as ``favourites`` for the same
+    reason, and must not be added a second time -- Plex holds one tag per
+    case-folded name, so the add would be a no-op request every pass.
+    """
+    registry_entry(_Listing("settings_sync_recased", [("imdb", "tt1")]))
+    live = FakeCollection("Labelled", labels=["Autoposter", "favourites"])
+    section = _one_item_section(existing=[live])
+
+    actions = await _run(session, section, [CollectionDefinition(
+        title="Labelled", builder="settings_sync_recased",
+        labels=["Favourites"], label_sync=True,
+    )])
+
+    assert live.removed_labels == []
+    assert live.label_names() == ["Autoposter", "favourites"]
+    assert not any("labelled" in action for action in actions)
+
+
+def test_label_sync_keeps_a_protect_labels_entry_whose_case_differs():
+    """The Maintainerr direction, on the write path.
+
+    Called directly, because end-to-end a protected collection never reaches
+    the settings at all (``resolve_collision`` refuses it first, pinned above).
+    The keep-set entry is the second lock, and an exact compare left it open:
+    a ``protect_labels`` of ``collection managed by maintainerr`` against the
+    stored ``Collection managed by Maintainerr`` subtracted to a removal of
+    another tool's claim.
+    """
+    live = FakeCollection("Labelled", labels=[LABEL, PROTECTED])
+
+    actions = _apply_labels(
+        live,
+        CollectionDefinition(title="Labelled", builder="plex_all", label_sync=True),
+        LABEL,
+        _config(protect_labels=[PROTECTED.casefold()]),
+    )
+
+    assert live.removed_labels == []
+    assert live.label_names() == [LABEL, PROTECTED]
+    assert actions == []
 
 
 async def test_label_sync_never_strips_a_prior_tools_label(session, registry_entry):
