@@ -2251,10 +2251,10 @@ TIME_PRESETS: tuple[Preset, ...] = (
 #   awards           15 / 0 / 1     charts           10 / 0 / 1
 #   content           4 / 1 / 0     content_ratings   7 / 0 / 1
 #   location          1 / 2 / 0     media             3 / 1 / 0
-#   people            1 / 4 / 0     production        3 / 0 / 0
+#   people            5 / 0 / 0     production        3 / 0 / 0
 #   time              1 / 2 / 0
 #
-# -- 58 rows: 45 presets an operator can switch on today, 10 that name what
+# -- 58 rows: 49 presets an operator can switch on today, 6 that name what
 # they would build and the roadmap row that would let them, and 3 rendered
 # switches for families that already ship behind a boolean.
 CATALOG: tuple[Preset, ...] = (
