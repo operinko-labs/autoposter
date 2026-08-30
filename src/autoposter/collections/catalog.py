@@ -791,10 +791,15 @@ TMDB_COLLECTION_TYPE_ROW = 192  # the franchise pack's enumeration: a TMDb walk
                                 # A CITED row now, not a blocker:
                                 # `content_franchises` ships on it
 TMDB_LANGUAGE_NAME_ROW = 190  # upstream names a language bucket from TMDb's
-                              # ISO-639-1 table and we name it from Plex's own
-                              # choice.title -- names only, never membership,
-                              # and the two agree on the common codes. A CITED
-                              # row, not a blocker: no preset waits on it.
+                              # ISO-639-1 table; the two Plex-enumerated
+                              # families keep Plex's own titles by decision
+                              # (Plex titles locale variants better -- es-419
+                              # is "Spanish (Latin America)"), and the
+                              # `original_language` facts family titles
+                              # through the vendored table
+                              # (`collections/iso_names.py`). Names only,
+                              # never membership. CLOSED by the location-names
+                              # phase; CITED, never a blocker.
 
 _BOTH = ("Movie", "Show")
 _MOVIE = ("Movie",)
