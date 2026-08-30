@@ -173,11 +173,11 @@ function CollectionRow({ collection }: { collection: CollectionSummary }) {
   );
 }
 
-/** No endpoint lists the config-defined collection definitions on their own --
- * only `POST /api/collections/preview` (a real dry run against Plex) reports
- * what they are. Adding one was out of scope for this touch (frontend-only),
- * so "Preview all" -- a full, unfiltered preview -- doubles as the listing:
- * it is also the only preview that reports the delete sweep, since the
+/** `GET /api/collections/definitions` (row 137) now lists the config-defined
+ * definitions -- the Custom collections panel below renders it. What this key
+ * still marks is the PREVIEW: a real, Plex-touching dry run, which is why it
+ * stays a deliberate click rather than a mount-time fetch -- and "Preview
+ * all" is still the only view that reports the delete sweep, since the
  * server runs the sweep only when nothing was filtered out. */
 const PREVIEW_ALL_KEY = "__all__";
 
@@ -264,11 +264,11 @@ function DefinitionRow({
 
 /** The config-defined collections and what the last preview said about each.
  *
- * There is no "list definitions" endpoint (see the module-level note on
- * `PREVIEW_ALL_KEY`), so the panel starts empty and "Preview all" is both the
- * listing and the first preview -- a real, Plex-touching dry run, so it is a
- * deliberate click rather than something this page fires on mount, the same
- * posture the Modes page takes towards every one of its dry runs. */
+ * The plain listing lives in the Custom collections panel below (row 137's
+ * endpoint); this panel is the DRY RUN over those same definitions. It still
+ * starts empty: a preview is a real, Plex-touching run, so it is a deliberate
+ * click rather than something this page fires on mount, the same posture the
+ * Modes page takes towards every one of its dry runs. */
 function DefinitionsPanel() {
   const [definitions, setDefinitions] = useState<DefinitionPreviewResult[] | null>(null);
   const [definitionsError, setDefinitionsError] = useState<string | null>(null);

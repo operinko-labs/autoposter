@@ -519,6 +519,44 @@ redistributes the fetched data.
 
 See `config/autoposter.example.yaml` for the full block.
 
+## Creating custom collections from the web UI
+
+The Collections page's **Custom collections** panel (roadmap rows 137 + 202)
+creates `definitions:` entries without editing the file above. Paste a list
+URL, name the collection, pick which of `collections.libraries` it applies to
+(all boxes checked = every library), Check, Create:
+
+- **Supported pastes:** `imdb.com/list/ls…`, `imdb.com/user/ur…` (a
+  watchlist), `mdblist.com/lists/<user>/<slug>`, themoviedb.org's
+  list/collection/company/network/keyword pages, `thetvdb.com/lists/<slug>` —
+  plus bare `ls…`/`ur…` ids, an MDBList `<user>/<slug>`, and a bare number
+  (read as a TMDb list id; the form discloses that reading). The server
+  resolves the paste to the builder and shows which one.
+- **Shape-checked only.** Nothing asks the provider whether the list exists;
+  the first pass discovers that, and a failing source leaves its collection
+  untouched (the sync-semantics guarantee documented above).
+- **trakt is refused by name** — no trakt builder is shipped (its own roadmap
+  gap), so a trakt URL has nothing to parse to.
+- **Stored as config overrides**, like the Settings page's edits: the panel
+  writes `collections.definitions` through `PUT /api/config/overrides`, and
+  the definitions it creates are removable from the same panel. Definitions
+  written in the mounted file render with a *config file* badge and no remove
+  control.
+- **Creating is refused outright while any definition comes from the mounted
+  file.** The two layers do not merge: an overrides list REPLACES the file's
+  `definitions:` for as long as it exists, so the first create here would
+  quietly stop every file-written definition from being built. Rather than
+  warn beside a working button, the panel disables Create (and Check with it)
+  and names the two modes that do work: keep managing definitions in the file
+  — Read URL stays live, so the panel still resolves a paste to the builder
+  and params for you to write there — or move those rows into this form once
+  and empty the file's `definitions:` list.
+- **Removing** a definition only stops the pass building it; the collection
+  in Plex follows `delete_unconfigured` (reported as an orphan by default).
+  There is no edit control: edit = remove + create. Removing the last
+  UI-created definition drops the override key entirely, handing the
+  decision back to whatever the file lists.
+
 ## Collection posters
 
 The same `collections:` block also controls whether the collections this
