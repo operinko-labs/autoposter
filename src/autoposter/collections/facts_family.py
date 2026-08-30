@@ -62,6 +62,18 @@ class FactsFamilyType:
     key_from: str
     title_format: str
     note: str
+    # How the enumeration's ISO codes meet the vendored ``iso_names`` tables,
+    # if at all. ``None``: keys and titles are the enumerated values
+    # themselves. ``"titles"``: only the TITLE half renders through the table
+    # and the KEY stays the code (row 190 -- upstream's own grouping
+    # vocabulary for languages is codes, so include/exclude/addons keep
+    # speaking ISO, row 156's law untouched). ``"keys"``: BOTH halves become
+    # the TMDb display name (row 196 -- upstream's country grouping
+    # vocabulary is display names, 647 member strings and zero codes), and
+    # the builder folds each name back to its code(s) before the membership
+    # query. Either way a code the table cannot serve passes through as
+    # itself: never invented.
+    names: str | None = None
 
 
 # The key's own name and nothing else -- the format Kometa gives `country`,
@@ -81,24 +93,35 @@ FACTS_FAMILY_TYPES: dict[str, FactsFamilyType] = {
             "Roadmap row 189's first half. Upstream builds this as a PLAIN "
             "collection from a full-library TMDb walk (meta.py:36-37, "
             "builder.py:360-374) and so does this, off the walk the facts "
-            "pipeline already makes. The keys are ISO-3166-1 codes and the "
-            "titles are those codes: no code->name table exists here or in "
-            "Kometa's own pack files, which is the same absence roadmap row 190 "
-            "records for the language families. A pack that wants readable "
-            "names supplies `key_name_override`, and `region.yml`'s grouping "
-            "table makes the question moot for the packs that ship -- their "
-            "titles are the region names.",
+            "pipeline already makes. The keys are ISO-3166-1 codes in the "
+            "DATABASE and TMDb's own English names in the FAMILY -- row "
+            "196's normalisation decision: each code maps UP through the "
+            "vendored `/configuration/countries` table "
+            "(`collections/iso_names.py`) so Kometa's name-keyed grouping "
+            "tables (region.yml/continent.yml) apply verbatim, and the "
+            "builder folds each name back DOWN to its code(s) for the "
+            "`facts_value` query (row 156's law: the stored enumeration "
+            "stays ISO). include/exclude/addons therefore speak the same "
+            "display-name vocabulary as the `country` dynamic type beside "
+            "this one. A code the table cannot name keys and titles as "
+            "itself -- never invented, and visible.",
+            names="keys",
         ),
         FactsFamilyType(
             "original_language", FACTS_FIELDS["original_language"], "facts_value",
             "value", _BARE_KEY_TITLE,
-            "Roadmap row 189's second half, and the same shape as its sibling "
-            "above in every respect: ISO-639-1 keys, titled from the code, and "
-            "no name table to do better with. NOT the same thing as the shipped "
-            "`audio_language` dynamic type, which enumerates the audio STREAMS "
-            "a Plex item carries -- a dubbed film has several and one original "
-            "language, and conflating them is the class of same-name-different-"
-            "meaning bug row 156 exists to refuse.",
+            "Roadmap row 189's second half. ISO-639-1 KEYS -- "
+            "include/exclude/addons and both override tables match the CODE, "
+            "row 156's law -- titled with TMDb's English language names "
+            "through the vendored `/configuration/languages` table "
+            "(`collections/iso_names.py`, row 190), with the code itself as "
+            "the title for any code the table misses: upstream's own "
+            "fallback branch, never an invention. NOT the same thing as the "
+            "shipped `audio_language` dynamic type, which enumerates the "
+            "audio STREAMS a Plex item carries -- a dubbed film has several "
+            "and one original language, and conflating them is the class of "
+            "same-name-different-meaning bug row 156 exists to refuse.",
+            names="titles",
         ),
         FactsFamilyType(
             "tmdb_collection", FACTS_FIELDS["tmdb_collection"], "tmdb_collection",

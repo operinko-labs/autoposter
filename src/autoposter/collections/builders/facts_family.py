@@ -50,6 +50,7 @@ from autoposter.collections.builders.base import (
     BuilderResult,
     require_library_type,
 )
+from autoposter.collections import iso_names
 from autoposter.collections.dynamic_keys import derive_keys
 from autoposter.collections.dynamic_titles import (
     DuplicateFamilyTitle,
@@ -307,6 +308,27 @@ class FactsFamilyBuilder:
                     )
                     continue
                 enumerated.append((value, name))
+        elif row.names == "keys":
+            # Row 196's normalisation decision (facts C2): our codes map UP
+            # into TMDb's display names, so upstream's name-keyed grouping
+            # tables (region.yml/continent.yml -- 647 member strings, zero
+            # codes) apply verbatim. The DATABASE enumeration stays ISO --
+            # row 156's law -- and the fold back down happens where the
+            # membership query is built, below. A code the vendored table
+            # cannot name keys and titles as itself: never invented, and a
+            # miss is visible in the collection list rather than hidden.
+            for value, _count in counted:
+                name = iso_names.country_name(value) or value
+                enumerated.append((name, name))
+        elif row.names == "titles":
+            # Row 190: only the TITLE renders through the table; the KEY
+            # stays the code, so include/exclude/addons and both override
+            # tables keep speaking ISO -- and a code with no entry titles as
+            # the code, upstream's own fallback branch.
+            enumerated = [
+                (value, iso_names.language_name(value) or value)
+                for value, _count in counted
+            ]
         else:
             enumerated = [(value, value) for value, _count in counted]
 
@@ -391,7 +413,19 @@ class FactsFamilyBuilder:
                     )
                 unit_params = {"id": int(unit.values[0])}
             else:
-                unit_params = {"field": row.field.name, "values": list(unit.values)}
+                values = list(unit.values)
+                if row.names == "keys":
+                    # The names fold back DOWN to the codes the database
+                    # stores -- `items_with_values` queries `item_facts`,
+                    # whose enumeration is ISO by law (row 156). A name that
+                    # is several codes' expands to all of them; a passthrough
+                    # key (a code the table could not name) folds to itself.
+                    values = [
+                        code
+                        for name in values
+                        for code in (iso_names.country_codes(name) or (name,))
+                    ]
+                unit_params = {"field": row.field.name, "values": values}
             units.append(CollectionDefinition(
                 title=unit.title,
                 builder=row.member_builder,

@@ -16,6 +16,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select, text
 
+from autoposter.collections import iso_names
 from autoposter.collections.builders import facts_family as facts_family_module
 from autoposter.collections.builders.base import BuilderContext
 from autoposter.collections.builders.facts_family import (
@@ -67,14 +68,20 @@ def _tmdb(handler):
 
 async def test_one_unit_per_enumerated_value(session):
     """Most-populated first, which is ``enumerate_values``' order and therefore
-    the order the family's collections are created in."""
+    the order the family's collections are created in. Titles and keys are
+    TMDb's English names since row 196 closed; membership still queries ISO
+    codes."""
     await _item(session, "1", tmdb_origin_country=["US"])
     await _item(session, "2", tmdb_origin_country=["FI"])
     await _item(session, "3", tmdb_origin_country=["US"])
     definition = _definition()
     units = await FactsFamilyBuilder().expand(_ctx(session, definition))
-    assert [unit.title for unit in units] == ["US", "FI"]
+    assert [unit.title for unit in units] == [
+        iso_names.COUNTRY_NAMES["US"], iso_names.COUNTRY_NAMES["FI"],
+    ]
     assert {unit.builder for unit in units} == {"facts_value"}
+    # The KEYS are display names now (row 196's normalisation decision), and
+    # the membership folds back DOWN to the codes the database stores.
     assert units[0].params == {"field": "origin_country", "values": ["US"]}
 
 
@@ -87,13 +94,54 @@ async def test_addons_merge_exactly_as_they_do_for_a_smart_family(session):
     definition = _definition(params={
         "type": "origin_country",
         "include": ["Nordic"],
-        "addons": {"Nordic": ["FI", "SE", "NO"]},
+        "addons": {"Nordic": [
+            iso_names.COUNTRY_NAMES["FI"], iso_names.COUNTRY_NAMES["SE"],
+            iso_names.COUNTRY_NAMES["NO"],
+        ]},
     })
     units = await FactsFamilyBuilder().expand(_ctx(session, definition))
     assert [unit.title for unit in units] == ["Nordic"]
-    # NO is not in the library, so it is not asked for -- ``derive_keys``
-    # drops an absent addon member at :144 and again at :163.
+    # NO's name is not in the library, so it is not asked for; the two that
+    # are fold back to their codes for the facts_value query.
     assert units[0].params["values"] == ["FI", "SE"]
+
+
+async def test_a_code_the_table_cannot_name_keys_as_itself(session):
+    """Never invents: a code with no vendored entry keys, titles and queries
+    as the bare code -- visible in the collection list rather than hidden."""
+    assert "XX" not in iso_names.COUNTRY_NAMES  # a precondition, not a recall
+    await _item(session, "1", tmdb_origin_country=["XX"])
+    units = await FactsFamilyBuilder().expand(_ctx(session, _definition()))
+    assert [unit.title for unit in units] == ["XX"]
+    assert units[0].params["values"] == ["XX"]
+
+
+async def test_a_language_family_titles_from_the_vendored_table(session):
+    """Row 190: only the TITLE renders through the table -- the key stays the
+    code (row 156's law), so the membership query and every narrowing knob
+    keep speaking ISO."""
+    await _item(session, "1", tmdb_original_language="en")
+    await _item(session, "2", tmdb_original_language="fi")
+    await _item(session, "3", tmdb_original_language="en")
+    definition = _definition(
+        title="Original languages", params={"type": "original_language"},
+    )
+    units = await FactsFamilyBuilder().expand(_ctx(session, definition))
+    assert [unit.title for unit in units] == [
+        iso_names.LANGUAGE_NAMES["en"], iso_names.LANGUAGE_NAMES["fi"],
+    ]
+    assert units[0].params == {"field": "original_language", "values": ["en"]}
+
+
+async def test_a_language_familys_narrowing_still_speaks_the_code(session):
+    await _item(session, "1", tmdb_original_language="en")
+    await _item(session, "2", tmdb_original_language="fi")
+    definition = _definition(
+        title="Original languages",
+        params={"type": "original_language", "exclude": ["en"]},
+    )
+    units = await FactsFamilyBuilder().expand(_ctx(session, definition))
+    assert [unit.title for unit in units] == [iso_names.LANGUAGE_NAMES["fi"]]
 
 
 async def test_a_franchise_family_delegates_membership_to_the_shipped_builder(session):
@@ -243,7 +291,9 @@ async def test_a_family_that_did_enumerate_records_every_title_it_derived(sessio
     definition = _definition()
     ctx = _ctx(session, definition)
     await FactsFamilyBuilder().expand(ctx)
-    assert generated_titles(ctx.run_cache, definition) == {"US"}
+    assert generated_titles(ctx.run_cache, definition) == {
+        iso_names.COUNTRY_NAMES["US"],
+    }
 
 
 async def test_every_unit_carries_the_family_label_and_the_operators_own(session):
