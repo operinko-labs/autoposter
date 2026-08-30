@@ -255,8 +255,11 @@ async def test_the_separator_gets_the_separator_poster(session, config_factory, 
     collection = section._existing[SEPARATOR_TITLE]
     assert collection.uploaded_bytes == [data]
     # The style-bearing key since C4: "<style>:<stem>", so the URL names the
-    # style folder the config selected rather than a hardcoded ``orig``.
-    assert seen == [hosted_poster_url("separator", "orig:content_rating")]
+    # style folder the config selected rather than a hardcoded ``orig``. Pinned
+    # by POSITION since C5: the "Other Collections" fence reconciles after this
+    # divider and, having no upstream stem, asks for the generated ``@base``
+    # layer -- so this pass makes more than one request.
+    assert seen[0] == hosted_poster_url("separator", "orig:content_rating")
 
 
 async def test_a_protected_collision_never_gets_a_poster_applied(

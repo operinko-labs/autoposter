@@ -242,8 +242,9 @@ async def test_append_adds_new_members_and_removes_none(session, registry_entry)
     assert actions == [
         "updated 'Appended': +1 -0, 0 move(s)",
         # Row 49: a test builder belongs to no catalog category, so its
-        # collections land in the operator group -- section 100.
-        "set the sort title of 'Appended' to '!100_Appended'",
+        # collections land in the operator group -- section 110 since
+        # the franchises group was inserted ahead of it.
+        "set the sort title of 'Appended' to '!110_Appended'",
     ]
 
 
@@ -292,7 +293,7 @@ async def test_append_creates_the_collection_when_there_is_none(
 
     assert actions == [
         "created 'Fresh' with 2 item(s)",
-        "set the sort title of 'Fresh' to '!100_Fresh'",
+        "set the sort title of 'Fresh' to '!110_Fresh'",
     ]
     assert [i.ratingKey for i in section._existing["Fresh"]._live] == ["m1", "m2"]
 
