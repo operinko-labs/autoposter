@@ -116,6 +116,34 @@ async def test_the_listing_reports_file_provenance_when_no_override_is_stored(
     }]
 
 
+async def test_a_collections_override_without_the_definitions_key_is_still_file(
+    client, app, auth_headers, session_factory
+):
+    """The discriminating branch: a stored ``collections`` section that does
+    NOT carry ``definitions``.
+
+    An operator who has ever saved any ``collections.*`` setting through the
+    settings editor has one of these. Reading provenance as ``"collections" in
+    stored`` would call every such deployment's file-defined rows "override" --
+    which is not a cosmetic wrong label, it is the panel being told those rows
+    are removable and rewritable, straight into the freezing hazard the field
+    exists to prevent.
+    """
+    async with session_factory() as session:
+        session.add(ConfigOverride(
+            id=OVERRIDES_ROW_ID,
+            document={"collections": {"apply_to_plex": True}},
+        ))
+        await session.commit()
+    _swap_definitions(app, [A_DEFINITION])
+
+    body = (
+        await client.get("/api/collections/definitions", headers=auth_headers)
+    ).json()
+
+    assert [entry["provenance"] for entry in body["definitions"]] == ["file"]
+
+
 async def test_the_listing_reports_override_provenance_when_the_document_carries_the_list(
     client, app, auth_headers, session_factory
 ):
