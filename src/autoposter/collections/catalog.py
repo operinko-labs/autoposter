@@ -732,12 +732,31 @@ _KOMETA_DEFAULTS: frozenset[str] = frozenset(
 # and a test reads the row numbers out of it rather than trusting these -- a
 # citation nobody can look up is worse than no citation at all.
 DYNAMIC_ENGINE_ROW = 102   # phase 10a: one collection per distinct value
-PERSON_SCAN_ROW = 194      # the library-wide credit scan the four people packs
-                           # need to NAME anyone, plus row 169's people search
-                           # attributes, which the per-person query needs to
-                           # exist at all. Row 83 (the person BUILDERS) closed
-                           # in 10c-lite: the filmographies, their TMDb
-                           # biographies and their profile photos all ship.
+PERSON_SCAN_ROW = 194      # the library-wide credit scan the four Top-* people
+                           # packs needed to NAME anyone, plus row 169's people
+                           # search attributes, which the per-person query
+                           # needed to exist at all. BOTH SHIPPED IN PHASE B --
+                           # the scan and its `item_credits` cache
+                           # (`collections/credits.py`, with a weekly job), the
+                           # counted enumeration behind `builder:
+                           # credits_family`, and the four search rows in
+                           # `filters.FILTER_ATTRIBUTES` -- so the four packs
+                           # are READY and nothing waits on this row any more.
+                           # A CITED row now, not a blocker, the shape
+                           # `TMDB_ORIGIN_COUNTRY_ROW` already has: the
+                           # Director starter set names it as the scan its
+                           # enumerated sibling is built on. Row 83 (the person
+                           # BUILDERS) closed in 10c-lite: the filmographies,
+                           # their TMDb biographies and their profile photos
+                           # all ship.
+                           #
+                           # What the packs may NOT claim, and the row says so:
+                           # the counts are a FLOOR. Plex caps `<Role>` at 200
+                           # children per item server-side (phase-B probe b --
+                           # 54 of 200 sampled shows land on exactly 200, and a
+                           # single-key fetch does not escape it), so a person
+                           # whose every appearance is in a >200-role cast can
+                           # be missing from the ranking entirely.
 STRANDED_FILTER_ROW = 155  # the six tier-1 filter attributes the listing strands
 FILTER_TIER_TWO_ROW = 96   # the filters subsystem; tier 1 shipped, tier 2 did not
 DATE_WINDOW_ROW = 70       # per-collection cadence and date windows: DELIVERED

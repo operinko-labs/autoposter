@@ -39,16 +39,21 @@ for its own reason:
 - show ``decade`` -- Plex's decade filter is movie-only (plex.py:437), so
   upstream falls back to a whole-library scan and REFUSES ``addons`` while doing
   it (meta.py:881-898). Out until that scan has a budget.
-- the people types (``actor``/``director``/``writer``/``producer``) -- gated
-  twice, and neither gate is an enumeration problem this module could solve.
-  Upstream's pack is one collection per person with at least N appearances
-  (``data: {depth: N}``), and ``listFilterChoices`` answers with VALUES, never
-  COUNTS, so even an enumerable cast would not answer the question the pack
-  asks; the counting is a library-wide credit scan, the rows 155/180 budget
-  family. And the query each collection would carry cannot be written at all
-  today: ``actor``/``director``/``writer``/``producer`` are not
-  ``FILTER_ATTRIBUTES`` rows, so ``filters.BY_NAME`` has no entry for them
-  (roadmap row 169). Roadmap row 194.
+- the people types (``actor``/``director``/``writer``/``producer``) -- still
+  deliberately absent from THIS table, but no longer because they are blocked.
+  The reason is the one the facts families above give: upstream's pack is one
+  collection per person with at least N appearances (``data: {depth: N}``), and
+  ``listFilterChoices`` answers with VALUES, never COUNTS, so no enumeration
+  this module could perform answers the question the pack asks. **They ship, as
+  of phase B, as a different family shape:** ``builder: credits_family``,
+  enumerated with real counts from this service's own ``item_credits`` cache
+  (``collections/credits.py``, fed by a batched library-wide credit scan on a
+  weekly job) and built as SMART collections, one per person, over the four
+  people search attributes phase B added to ``FILTER_ATTRIBUTES`` (roadmap rows
+  194 and 169, both closed there). See ``collections/builders/credits_family.py``.
+  One caveat travels with the counts and the packs disclose it: Plex caps
+  ``<Role>`` at 200 children per item, so the enumeration is a FLOOR rather than
+  a census.
 - ``tmdb_collection`` -- a full-library TMDb walk over every item's
   ``belongs_to_collection``, not an enumeration (roadmap row 192). It ships, as
   of the prefetch phase, as ``builder: facts_family`` too -- enumerated from the

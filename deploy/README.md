@@ -414,7 +414,8 @@ half of that set — the Common Sense buckets and every `smart_filter` or
 `dynamic` definition — also takes one re-PUT of its own unchanged filter (and a
 match-count probe) on that pass: the update branch re-asserts the whole desired
 state rather than working out which part of the hash moved, so a changed sort
-title re-sends the filter with it. Membership is still unchanged; Plex
+title re-sends the filter with it. The match-count probe is cheap — a single
+request that asks Plex for the count and no items, whatever the filter matches. Membership is still unchanged; Plex
 re-evaluates the same filter. Collections this service does not manage are
 never touched. The tab reorders once and then settles. Changing `group_order`
 later does the same thing again, once.

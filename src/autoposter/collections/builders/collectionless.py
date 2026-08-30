@@ -15,6 +15,19 @@ collection titles are canonical strings, and a looser match would silently
 widen what gets ignored. (Our reading of upstream's semantics; the
 startswith half is upstream's own idiom, the case-sensitivity is stated
 here rather than checked against a fetch -- NOT KOMETA-VERIFIED.)
+
+**One config typo is maximally wrong and completely silent, and it is
+written down here because nothing refuses it.** `exclude_prefix: [""]`
+matches every title -- `"anything".startswith("")` is true -- so every
+membership stops counting, every item reads as collectionless, and this
+builder returns the WHOLE LIBRARY. That membership is non-empty, so it is
+applied: no refusal, no empty result, no log line to read. Every other
+failure path here refuses and leaves the collection byte-identical; this
+one does not. Closing it is a `min_length=1` on the prefix items, turning
+it into a config-load error naming the definition -- the treatment
+`extra="forbid"` above already gives an unknown key -- and it is left
+undone rather than slipped in unrequested. Noted in roadmap row 91's
+closing text too, so it survives that row closing.
 """
 import logging
 
