@@ -111,6 +111,7 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "director",
         "writer",
         "producer",
+        "user_rating",
     ]
 
 
@@ -144,7 +145,13 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     ``subtitle_language``, ``label`` and ``collection`` are ``tier2-batched``
     -- filterable, through the engine's enrichment pass. ``network`` is alone
     on ``tier2-deferred`` now, and stays there because no read at any tier can
-    answer an attrib Plex 1.43.4 emits nowhere."""
+    answer an attrib Plex 1.43.4 emits nowhere.
+
+    Phase B also moved ``plays`` and ``last_played`` off ``unprobed`` and
+    appended ``user_rating`` on ``listing``: the phase-B probe walked both
+    section listings and measured all three present-when-set (probe d), which
+    is a verdict where there was none. Three rows, three different reasons for
+    why present-when-set is enough -- each on its own row."""
     by_type = {kind: [r.name for r in FILTER_ATTRIBUTES if r.type == kind] for kind in VALUE_TYPES}
     by_source = {t: [r.name for r in FILTER_ATTRIBUTES if r.source == t] for t in SOURCE_TIERS}
 
@@ -152,7 +159,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "tag": 13,
         "str": 1,
         "int": 3,
-        "float": 2,
+        "float": 3,
         "date": 3,
         "duration": 1,
         "bool": 2,
@@ -167,6 +174,9 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "release",
         "duration",
         "studio",
+        "plays",
+        "last_played",
+        "user_rating",
     ]
     assert by_source["tier2-batched"] == [
         "genre",
@@ -190,9 +200,12 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     # reason: 9a never asked whether ``<Role>``/``<Director>``/``<Writer>``/
     # ``<Producer>`` reach the section listing, and the phase-B credits CACHE
     # is not a listing accessor -- so there is still no verdict to cite.
+    #
+    # ``plays`` and ``last_played`` LEFT this tier in phase B: probe (d) asked
+    # the question 9a never did and answered it, which is the only thing
+    # ``unprobed`` was ever waiting for.
     assert by_source["unprobed"] == [
-        "plays", "last_played", "country",
-        "actor", "director", "writer", "producer",
+        "country", "actor", "director", "writer", "producer",
     ]
     # ``decade`` joins the search-only tier: row 96's own 29-name list names it
     # first, and Kometa has no ``decade`` FILTER at all.
@@ -247,7 +260,7 @@ def test_item_kinds_are_movie_show_or_both():
         "progress", "resolution", "subtitle_language", "unplayed", "writer",
     ]
     assert show_only == ["network"]
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 14
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 15
 
 
 def test_every_operator_maps_onto_plexapis_own_operator_table():
@@ -324,7 +337,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 17, ("movie",): 7, ("show",): 1,
+        ("movie", "show"): 18, ("movie",): 7, ("show",): 1,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -336,13 +349,15 @@ def test_every_row_is_searchable_and_twentytwo_are_filterable():
     """The set arithmetic, pinned so it cannot rot silently.
 
     Kometa's search vocabulary is 55 non-music attributes and its filter
-    vocabulary is 70 names; this table covers 25 of the first and 22 of the
+    vocabulary is 70 names; this table covers 26 of the first and 23 of the
     second. The module docstring carries the full derivation. Phase 10a added
     ``decade`` (search-only, so searchable and not filterable) and ``country``
-    (in Kometa's 26-name overlap, so both). Phase B added the four people rows,
-    all of which are in both vocabularies -- ``actor``, ``director``,
-    ``writer`` and ``producer`` are Kometa FILTERS as well as searches
-    (builder.py:278-350), so the searchable-minus-filterable set is unchanged.
+    (in Kometa's 26-name overlap, so both). Phase B added the four people rows
+    and ``user_rating``, all of which are in both vocabularies -- ``actor``,
+    ``director``, ``writer`` and ``producer`` are Kometa FILTERS as well as
+    searches (builder.py:278-350) and ``user_rating`` is one of its
+    ``number_filters`` -- so the searchable-minus-filterable set is unchanged
+    and both counts moved by five.
     """
     from autoposter.collections.filters import (
         FILTERABLE_ATTRIBUTES,
@@ -351,8 +366,8 @@ def test_every_row_is_searchable_and_twentytwo_are_filterable():
     )
 
     assert all(row.searchable for row in FILTER_ATTRIBUTES)
-    assert len(SEARCHABLE_ATTRIBUTES) == 25
-    assert len(FILTERABLE_ATTRIBUTES) == 22
+    assert len(SEARCHABLE_ATTRIBUTES) == 26
+    assert len(FILTERABLE_ATTRIBUTES) == 23
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
         "unplayed", "progress", "decade",
     }

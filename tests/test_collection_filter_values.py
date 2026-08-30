@@ -69,6 +69,16 @@ MOVIE_XML = (
     "</Video>"
 )
 
+# The same movie after two plays and a rating -- phase B's three rows, which
+# ``MOVIE_XML`` lacks for the same reason most real listing rows lack them
+# (probe d: ``viewCount`` on 79 of 1962 movies, ``lastViewedAt`` on 98,
+# ``userRating`` on 2). All three are ATTRIBS on the row, not children.
+PLAYED_MOVIE_XML = MOVIE_XML.replace(
+    ' studio="Universal Pictures">',
+    ' studio="Universal Pictures" viewCount="2" lastViewedAt="1740000000"'
+    ' userRating="9.0">',
+)
+
 # The item with nothing on it: no year, no ratings, no studio, no Media. Every
 # one of those reads as None/[] , which is precisely what plexapi's reload guard
 # cannot tell apart from "not loaded yet" -- so this fixture is the one that
@@ -165,10 +175,14 @@ def test_the_runtime_batched_field_map_matches_the_batched_rows():
         assert hasattr(ItemTags((), (), (), (), ()), field), field
 
 
-def test_the_nine_shipped_families_are_named():
+def test_the_twelve_shipped_families_are_named():
     """Spelled out rather than derived, so that the set of attributes an
     operator can actually filter on is reviewable in one line -- and so that
-    Task 2's probe verdicts cannot drift silently into or out of tier 1."""
+    Task 2's probe verdicts cannot drift silently into or out of tier 1.
+
+    The last three are phase B's: probe (d) walked both section listings and
+    found ``viewCount``/``lastViewedAt``/``userRating`` present-when-set, which
+    is the verdict ``unprobed`` was waiting for."""
     assert SHIPPED_ATTRIBUTES == (
         "year",
         "resolution",
@@ -179,6 +193,9 @@ def test_the_nine_shipped_families_are_named():
         "release",
         "duration",
         "studio",
+        "plays",
+        "last_played",
+        "user_rating",
     )
     assert BATCHED_ATTRIBUTES == (
         "genre",
@@ -284,13 +301,80 @@ def test_a_show_reads_its_own_listing_values_and_has_no_resolution():
 # --- the missing-value rule ---------------------------------------------------
 
 
-@pytest.mark.parametrize("attribute", SHIPPED_ATTRIBUTES)
+@pytest.mark.parametrize(
+    "attribute", [name for name in SHIPPED_ATTRIBUTES if name != "plays"]
+)
 def test_every_accessor_is_total_over_an_item_that_has_nothing(attribute):
     """The listing attrib coverage is not 100% on the real server (5 movies
     have no studio, 14 no contentRating, 274 shows no critic rating), so
     "absent" is a real case, not a hypothetical. Every accessor answers None
-    for it -- and answering is the point: the alternative is plexapi's reload."""
+    for it -- and answering is the point: the alternative is plexapi's reload.
+
+    ``plays`` is excluded by name rather than quietly: it is the ONE shipped
+    row whose absent value is not None, and the test below is its own."""
     assert PlexItemView(a_movie(BARE_MOVIE_XML)).get(attribute) is None
+
+
+def test_the_per_account_families_read_their_listing_values():
+    """Phase B's three rows, from a listing row that has all three. They are
+    absent from ``MOVIE_XML`` for the same reason they are absent from most
+    real rows -- probe (d) found ``viewCount`` on 79 of 1962 movies,
+    ``lastViewedAt`` on 98 and ``userRating`` on 2."""
+    view = PlexItemView(a_movie(PLAYED_MOVIE_XML))
+
+    assert view.get("plays") == 2
+    assert view.get("last_played") == dt.datetime.fromtimestamp(1740000000)
+    assert view.get("user_rating") == 9.0
+
+
+def test_an_unplayed_item_reads_zero_plays_where_the_other_two_read_missing():
+    """The three split on what "absent" means, and the split is plexapi's
+    rather than this module's: ``viewCount`` is cast with a DEFAULT of 0
+    (``Video._loadData``, ``utils.cast(int, data.attrib.get('viewCount', 0))``)
+    so an unwatched item reads zero plays and never missing, while
+    ``lastViewedAt`` and ``userRating`` are cast with no default and read None.
+
+    That is why the probe's "never `0` in the listing" finding is safe rather
+    than alarming: Plex omits the attrib for an unwatched item and plexapi
+    writes the zero back. Kometa reads the same three attributes through the
+    same plexapi, so an operator gets upstream's own answer here."""
+    view = PlexItemView(a_movie(BARE_MOVIE_XML))
+
+    assert view.get("plays") == 0
+    assert view.get("last_played") is None
+    assert view.get("user_rating") is None
+
+
+def test_a_never_played_item_is_excluded_the_way_kometa_excludes_it():
+    """The verdict phase B's task 7 had to take, pinned as behaviour.
+
+    ``last_played`` is one of Kometa's three ``date_filters``
+    (``builder.py:377-447``), and its ``check_filter`` branch is
+    ``if is_date_filter(getattr(item, 'lastViewedAt'), ...): return False`` --
+    where ``is_date_filter`` opens ``if value is None: return True``
+    (``util.py:598-600``), BEFORE it reads the modifier. So a never-played item
+    fails a ``last_played`` filter upstream under every modifier, ``.not``
+    included, and this table's ``date`` missing rule
+    (``_MISSING_ALWAYS_EXCLUDES``) is that same behaviour. The two are pinned
+    against Kometa's own transcribed code in
+    ``.superpowers/oracle/9a/kometa_oracle.py``.
+
+    ``user_rating`` is the same story one type along: it is in Kometa's
+    ``number_filters``, whose branch reads ``if test_number is None or
+    is_number_filter(...): return False``. An unrated item is excluded, which
+    is what makes 2-of-1962 presence ship honestly rather than wrongly.
+
+    ``plays`` is the one that does NOT go missing, and the contrast is the
+    point of putting all three in one test."""
+    view = PlexItemView(a_movie(BARE_MOVIE_XML))
+
+    assert evaluate(parse_filters({"last_played.after": dt.date(2020, 1, 1)}), view) is False
+    assert evaluate(parse_filters({"last_played.not": 30}), view) is False
+    assert evaluate(parse_filters({"user_rating.gte": 8}), view) is False
+    assert evaluate(parse_filters({"user_rating.not": 8}), view) is False
+
+    assert evaluate(parse_filters({"plays.lt": 1}), view) is True
+    assert evaluate(parse_filters({"plays.gte": 1}), view) is False
 
 
 def test_the_missing_rule_from_the_table_falls_out_of_a_None_answer():
@@ -498,12 +582,16 @@ def test_the_reload_trap_these_accessors_dodge_is_still_real():
 def test_no_shipped_accessor_can_reach_a_reload():
     """THE TRIPWIRE. Read every shipped family off the item that has none of
     them -- the worst case, where every value is the falsy one plexapi cannot
-    tell from "not loaded". Zero requests."""
+    tell from "not loaded". Zero requests.
+
+    ``plays`` reads 0 there rather than None (see the split above), and 0 is
+    falsy, so it is exactly as much of a reload risk as the rest -- the request
+    count is what this test is about, not the value."""
     server = NoRequestsServer()
     view = PlexItemView(a_movie(BARE_MOVIE_XML, server))
 
     for attribute in SHIPPED_ATTRIBUTES:
-        assert view.get(attribute) is None
+        assert view.get(attribute) in (None, 0)
 
     assert server.calls == []
 

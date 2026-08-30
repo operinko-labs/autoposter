@@ -100,14 +100,17 @@ Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
   search names have no filter (``unplayed``, ``progress``, ``hdr``,
   ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
 
-This table covers **25** of the 55 search names and **22** of the 70 filter
+This table covers **26** of the 55 search names and **23** of the 70 filter
 names. Both halves of the residue are real work, and they are different work:
-the 48 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
+the 47 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
 ``plays``, ``last_played``, 10a's ``country`` and phase B's four people rows
 came in here as ``unprobed``, which is a source tier and not an accessor, so
-the row-96 arithmetic moves by seven and no further), while the 30 unsearched
-names are 9b's own tail, filed per family for T6. The two must not be reported
-as one number, which is what row 96's original "~45" did.
+the row-96 arithmetic moved by seven and no further -- and then phase B's own
+probe gave ``plays`` and ``last_played`` real listing accessors and appended
+``user_rating`` with one, so those three are the first names counted here that
+an operator can actually filter on rather than merely find in the table), while
+the 29 unsearched names are 9b's own tail, filed per family for T6. The two
+must not be reported as one number, which is what row 96's original "~45" did.
 """
 import datetime as dt
 import re
@@ -530,28 +533,37 @@ _BOTH = ("movie", "show")
 
 # --- THE TABLE ---------------------------------------------------------------
 #
-# Twenty-five rows: 9a's fifteen in the order the roadmap names them
-# (roadmap.md:538-551), then 9b's four, 10a's two and phase B's four appended
+# Twenty-six rows: 9a's fifteen in the order the roadmap names them
+# (roadmap.md:538-551), then 9b's four, 10a's two and phase B's five appended
 # rather than interleaved so the first fifteen still read against the roadmap
 # line they came from. Column totals are asserted in
 # tests/test_collection_filters.py as the transcription's checksum:
-# 13 tag / 1 str / 3 int / 2 float / 3 date / 1 duration / 2 bool;
-# 9 listing / 5 tier2-batched / 1 tier2-deferred / 7 unprobed / 3 search-only;
-# 14 both-kinds / 10 movie-only / 1 show-only for ``kinds``, and
-# 17 / 7 / 1 for ``search_kinds``, which is a different split and that is the
+# 13 tag / 1 str / 3 int / 3 float / 3 date / 1 duration / 2 bool;
+# 12 listing / 5 tier2-batched / 1 tier2-deferred / 5 unprobed / 3 search-only;
+# 15 both-kinds / 10 movie-only / 1 show-only for ``kinds``, and
+# 18 / 7 / 1 for ``search_kinds``, which is a different split and that is the
 # point of the second column.
 #
-# Phase B's four are the PEOPLE rows, and they move the ``tag`` and
+# Phase B appended FIVE: the four PEOPLE rows, which move the ``tag`` and
 # ``unprobed`` totals by four together -- ``actor`` on both kinds, and
 # ``director``/``writer``/``producer`` movie-only in BOTH kind columns, which
-# is why the two splits moved by different amounts.
+# is why the two splits moved by different amounts -- and ``user_rating``
+# (roadmap row 175), the third ``float`` and both-kinds in both columns.
 #
-# The source split is phase B's arithmetic, not 9a's: Task 2's probe left
-# 9 listing / 6 tier2-deferred, and phase B moved five of that six onto
-# ``tier2-batched`` when the batched ``/library/metadata/{k1,k2,...}`` read was
-# measured returning the families the listing had truncated or stripped. Only
-# ``network`` stayed, and it stayed for a reason no read can change -- see its
-# row.
+# The source split is phase B's arithmetic, not 9a's, and phase B moved rows
+# in two directions:
+#
+# - Task 2's probe left 9 listing / 6 tier2-deferred, and phase B moved five
+#   of that six onto ``tier2-batched`` when the batched
+#   ``/library/metadata/{k1,k2,...}`` read was measured returning the families
+#   the listing had truncated or stripped. Only ``network`` stayed, and it
+#   stayed for a reason no read can change -- see its row.
+# - ``plays`` and ``last_played`` left ``unprobed`` for ``listing``, and
+#   ``user_rating`` arrived there, when the phase-B probe (d) walked both
+#   section listings and measured all three present-when-set. 9 + 3 = 12
+#   listing; 7 - 2 = 5 unprobed. Three rows on one tier for three different
+#   reasons -- absent-is-zero for ``plays``, absent-excludes for the other
+#   two -- each argued on its own row rather than by the tier they share.
 #
 # THE PROBE, in one paragraph, because six of these rows were a refusal and
 # a reader deserves the reason without leaving the file. Read-only, against the
@@ -835,34 +847,63 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     # None of the four is a client-side filter today, and the two REASONS are
     # different, which is why ``SOURCE_TIERS`` grew two values rather than one.
     FilterAttribute(
-        "plays", "int", _BOTH, "unprobed",
+        "plays", "int", _BOTH, "listing",
         "Plex's `viewCount` -- how many times the item has been played by the "
         "account the token belongs to. In BOTH of Kometa's vocabularies: a "
-        "search (plex.py:80, :547) and a filter (builder.py:280-293). Its "
-        "source tier is `unprobed`, not `tier2-deferred`, and the distinction "
-        "is deliberate: 9a's probe never asked whether `viewCount` reaches the "
-        "section listing, so there is no verdict to cite and the "
-        "tier2-deferred refusal copy -- which cites one -- would be a claim "
-        "nobody checked. A `filters:` block naming it refuses saying exactly "
-        "that. Note also that `viewCount` is PER-ACCOUNT: the answer depends "
+        "search (plex.py:80, :547) and a filter (builder.py:280-293). Note "
+        "that `viewCount` is PER-ACCOUNT: the answer depends "
         "on whose token the pass runs with, which is a property no other row "
         "in this table has. As a SEARCH it takes the four range modifiers and "
         "nothing else -- it is a number_attribute and not a year_attribute "
         "(plex.py:547, :599) -- so SEARCH_OPERATORS_EXCLUDED subtracts the "
-        "bare form and `.not` that its `int` type otherwise offers.",
+        "bare form and `.not` that its `int` type otherwise offers. "
+        "PHASE B: `unprobed` until the phase-B probe asked the question 9a "
+        "never did, and now `listing`. Probe (d) walked both section listings "
+        "(docs/research/plex-batch-probe/README.md): the attrib is present on "
+        "79 of 1962 movies and 55 of 286 shows, and NEVER as `0` -- Plex omits "
+        "it for an unwatched item rather than writing a zero. Sparse presence "
+        "is safe here for a reason specific to this row: plexapi casts the "
+        "attrib WITH A DEFAULT (`utils.cast(int, data.attrib.get('viewCount', "
+        "0))`, video.py:64), so an absent attrib reads as 0 plays and never as "
+        "missing -- which is the same value Kometa's own read produces, since "
+        "Kometa reads it through the same plexapi. Absent-is-zero, not "
+        "absent-is-missing; `plays.lt: 1` therefore MATCHES an unwatched item, "
+        "here and upstream. Still per-account.",
         search_field="viewCount", show_search_field="show.viewCount",
         search_kinds=_BOTH, filterable=True,
     ),
     FilterAttribute(
-        "last_played", "date", _BOTH, "unprobed",
-        "Plex's `lastViewedAt`. In both vocabularies, like `plays`, and "
-        "`unprobed` for the same reason. Per-account, like `plays`. As a "
+        "last_played", "date", _BOTH, "listing",
+        "Plex's `lastViewedAt`. In both vocabularies, like `plays`. "
+        "Per-account, like `plays`. As a "
         "search its bare and `.not` forms are RELATIVE WINDOWS -- "
         "`last_played.not: 6o` is \"not played in the last six months\", the "
         "shape a stale-media collection wants -- and roadmap row 154's "
         "timezone divergence applies to it in the opposite direction from "
         "`added`: a server-side date predicate evaluates in the PLEX SERVER's "
-        "clock, not the runner's.",
+        "clock, not the runner's. "
+        "PHASE B: `unprobed` until probe (d) measured it -- present on 98 of "
+        "1962 movies and 64 of 286 shows "
+        "(docs/research/plex-batch-probe/README.md), present-when-set, and "
+        "present MORE often than `viewCount` because an in-progress item "
+        "carries a last-viewed stamp before it ever completes a play (so "
+        "neither attrib may be inferred from the other). Unlike `plays`, "
+        "plexapi casts this one with NO default (`utils.toDatetime("
+        "data.attrib.get('lastViewedAt'))`, video.py:50), so a never-played "
+        "item reads MISSING -- and the `date` missing rule excludes a missing "
+        "value under every operator, `.not` included. THAT IS UPSTREAM'S OWN "
+        "BEHAVIOUR, which is why this ships rather than being re-filed: "
+        "`last_played` is one of Kometa's three `date_filters` "
+        "(builder.py:377-447), its `check_filter` branch is "
+        "`if is_date_filter(getattr(item, 'lastViewedAt'), ...): return "
+        "False`, and `is_date_filter` opens `if value is None: return True` "
+        "(util.py:598-600) BEFORE it looks at the modifier. Kometa drops the "
+        "never-played item from `last_played.not: 30` too. The verbatim "
+        "transcription is in `.superpowers/oracle/9a/kometa_oracle.py`, and "
+        "`tests/test_collection_filter_values.py` pins the behaviour. "
+        "What an operator should take from it: this attribute means \"played, "
+        "and when\", never \"never played\" -- for that, write `plays.lt: 1`, "
+        "which the row above answers with a real zero.",
         search_field="lastViewedAt", show_search_field="show.lastViewedAt",
         search_kinds=_BOTH, filterable=True,
     ),
@@ -1009,6 +1050,35 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "like ``director``; otherwise the ``actor`` row's note.",
         search_field="producer", show_search_field=None,
         search_kinds=("movie",), filterable=True,
+    ),
+    # Roadmap row 175, filed long before this phase and cheap enough to ride
+    # along with it. Appended last, after the people rows, for the reason
+    # every phase has appended rather than interleaved.
+    FilterAttribute(
+        "user_rating", "float", _BOTH, "listing",
+        "Plex's `userRating` -- the star rating belonging to WHOSE TOKEN THE "
+        "PASS AUTHENTICATED AS, not the library's aggregate (roadmap row 175: "
+        "the row's note has to say whose rating it is, or an operator reads "
+        "'user rating' as the library's and gets their own). It is the third "
+        "per-account row in this table, beside `plays` and `last_played`, and "
+        "the only one of the three whose NAME invites the confusion -- "
+        "`audience_rating` is the library's aggregate and lives one row up. "
+        "Mechanically the `audience_rating` row again: a float with the five "
+        "float modifiers, and in Kometa's `number_filters` "
+        "(builder.py:377-447). "
+        "PHASE B probe (d) verdict: present on 2 of 1962 movies and 0 of 286 "
+        "shows (docs/research/plex-batch-probe/README.md) -- effectively "
+        "ABSENT as a signal on that library, though present-when-set like the "
+        "other two, so the accessor is sound and a filter naming it will "
+        "simply find almost nothing there. Sparse presence ships honestly "
+        "here because missing-excludes IS the right answer for an unrated "
+        "item, and it is upstream's: Kometa's number branch reads `if "
+        "test_number is None or is_number_filter(...): return False`, so an "
+        "item the account has not rated fails the filter under every "
+        "modifier, `.not` included -- exactly what the `float` missing rule "
+        "does here.",
+        search_field="userRating", show_search_field="show.userRating",
+        search_kinds=_BOTH, filterable=True,
     ),
 )
 

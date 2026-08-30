@@ -591,24 +591,45 @@ def test_the_refusal_lists_the_batched_names_among_the_filterable_ones():
         assert name in message, name
 
 
-def test_a_definition_filtering_on_plays_says_the_listing_was_never_probed():
+def test_a_definition_filtering_on_country_says_the_listing_was_never_probed():
     """The ``unprobed`` tier's own copy, and the reason it is a separate tier.
 
-    ``plays`` IS one of Kometa's filter attributes, so the parser lets it
+    ``country`` IS one of Kometa's filter attributes, so the parser lets it
     through -- but 9a probed the seven attributes its own tier named and
-    ``viewCount`` was not among them. Answering with the tier2-deferred
+    ``<Country>`` was not among them. Answering with the tier2-deferred
     sentence would cite a probe verdict that does not exist, which is the
     confident-and-wrong failure the probe exists to prevent.
+
+    This test asked about ``plays`` until phase B, whose probe (d) walked the
+    listing and answered the question -- which is what ``unprobed`` was for.
+    Five rows still carry the tier, and this one is 10a's.
     """
     from autoposter.config.schema import CollectionDefinition
 
     with pytest.raises(ValueError) as error:
         CollectionDefinition(
-            title="Rewatched", builder="plex_all", filters={"plays.gt": 3}
+            title="Nordic", builder="plex_all", filters={"country": "Denmark"}
         )
     message = str(error.value)
     assert "never probed" in message
     assert "plex_search" in message
+
+
+def test_a_definition_filtering_on_the_per_account_rows_now_loads():
+    """The other side of the row above: phase B's probe (d) moved ``plays``,
+    ``last_played`` and ``user_rating`` onto the listing tier, so a definition
+    naming them loads instead of refusing. All three are per-account -- the
+    value is whichever account the pass token authenticated as -- which is a
+    property of the ANSWER and not a reason to refuse the question."""
+    from autoposter.config.schema import CollectionDefinition
+
+    definition = CollectionDefinition(
+        title="Rewatched", builder="plex_all",
+        filters={"plays.gt": 3, "last_played.after": "2026-01-01",
+                 "user_rating.gte": 8},
+    )
+
+    assert definition.filters is not None
 
 
 def test_a_definition_filtering_on_unplayed_is_refused_by_the_parser():

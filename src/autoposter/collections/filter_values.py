@@ -73,9 +73,26 @@ pass fetched once for the definition's resolved set, and never from the item.
 The zero-requests rule above is untouched by that -- this module still makes
 no request; the engine made one, before evaluation, for the whole set.
 
-``network`` alone stays deferred, and its reason was never truncation: Plex
-1.43.4 emits the attrib in neither the listing nor ``/library/metadata``, so
-there is no read at any tier for the batch to be a better version of.
+``network`` alone stays deferred -- five batched, one stranded -- and its reason
+was never truncation: Plex 1.43.4 emits the attrib in neither the listing nor
+``/library/metadata``, so there is no read at any tier for the batch to be a
+better version of.
+
+**Phase B also added three tier-1 rows, from a second probe.** The 9a probe
+above never asked whether ``viewCount``/``lastViewedAt``/``userRating`` reach
+the section listing, which is why ``plays`` and ``last_played`` sat on
+``unprobed`` -- a tier that means "nobody measured", not "we tried". Phase B's
+probe (d) walked both listings raw (``docs/research/plex-batch-probe/
+README.md``) and measured all three PRESENT-WHEN-SET: ``viewCount`` on 79 of
+1962 movies and 55 of 286 shows, ``lastViewedAt`` on 98 and 64, ``userRating``
+on 2 and 0. So ``plays``, ``last_played`` and ``user_rating`` are ``listing``,
+read here with the same ``object.__getattribute__`` no-reload discipline as the
+nine before them, and each row in ``filters.py`` argues its own case for why
+sparse presence is safe for it -- they do not share one.
+
+All three are PER-ACCOUNT: the value belongs to whichever account the pass
+token authenticated as. That is a property no other row in this table has, and
+it is on each row rather than only here.
 """
 from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
@@ -102,6 +119,19 @@ class AttributeNotInListing(LookupError):
 # already cast them (``year`` to int, the ratings to float, ``addedAt`` and
 # ``originallyAvailableAt`` to datetime), so there is nothing to parse here and
 # nothing that could disagree with what the rest of the application sees.
+#
+# The last three are phase B's, and the CAST is the whole of why they are safe
+# on a sparse attrib (``Video._loadData``, plexapi 4.18.2):
+#
+#     self.viewCount    = utils.cast(int, data.attrib.get('viewCount', 0))
+#     self.lastViewedAt = utils.toDatetime(data.attrib.get('lastViewedAt'))
+#     self.userRating   = utils.cast(float, data.attrib.get('userRating'))
+#
+# ``viewCount`` carries a DEFAULT, so an unwatched item reads 0 plays and never
+# missing; the other two carry none, so an item with no value reads None and
+# the table's int/float/date missing rule excludes it under every operator.
+# Both behaviours are Kometa's own, because Kometa reads the same three
+# attributes through the same plexapi -- see the rows in ``filters.py``.
 _LISTING_ATTRIBS: dict[str, str] = {
     "year": "year",
     "audience_rating": "audienceRating",
@@ -110,6 +140,9 @@ _LISTING_ATTRIBS: dict[str, str] = {
     "added": "addedAt",
     "release": "originallyAvailableAt",
     "studio": "studio",
+    "plays": "viewCount",
+    "last_played": "lastViewedAt",
+    "user_rating": "userRating",
 }
 
 
