@@ -38,16 +38,23 @@ async def ensure_tags(
     ``rating_keys``. A key still absent from the result after this returns is
     one Plex did not answer -- the caller's refusal to make, not this
     module's to hide.
+
+    The pass-level failure memo is consulted AFTER the already-cached
+    short-circuit, and the order is load-bearing (T2 review): the memo records
+    that FETCHING failed, so it may only refuse an ask that would have to
+    fetch. Checking it first refused a definition whose every key was already
+    in the cache -- an answer the cache could have served in full, withheld
+    because some other definition's fetch had failed earlier in the same pass.
     """
-    failed = run_cache.get(_FAILED_KEY)
-    if failed is not None:
-        raise failed
     tags: dict[str, ItemTags] = run_cache.setdefault(_TAGS_KEY, {})
     missing: set[str] = run_cache.setdefault(_MISSING_KEY, set())
     wanted = [str(key) for key in rating_keys]
     to_fetch = [key for key in wanted if key not in tags and key not in missing]
     if not to_fetch:
         return tags
+    failed = run_cache.get(_FAILED_KEY)
+    if failed is not None:
+        raise failed
     try:
         fetched = await asyncio.to_thread(fetch_tag_index, section, to_fetch, chunk_size)
     # Narrower than ``except Exception`` on purpose, and for the reason

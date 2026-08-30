@@ -66,6 +66,25 @@ async def test_failure_is_memoised_for_the_pass():
     assert len(section.calls) == 1, "a dead server is one fetch per pass, not one per definition"
 
 
+async def test_a_fully_cached_ask_survives_an_earlier_failure_in_the_pass():
+    """The memo's ORDER, and it is load-bearing. The pass-level failure is a
+    fact about FETCHING, so it may only refuse an ask that would have to
+    fetch. A definition whose every key is already in the cache is answerable
+    without touching Plex, and consulting the memo above the already-cached
+    short-circuit refused it anyway -- one earlier failure in the pass turning
+    into a refusal for definitions the cache could have served in full."""
+    section = _section("1")
+    run_cache = {}
+    await ensure_tags(section, run_cache, ["1"])
+
+    section.fail = True
+    with pytest.raises(EnrichmentUnavailable):
+        await ensure_tags(section, run_cache, ["2"])
+
+    assert "1" in await ensure_tags(section, run_cache, ["1"])
+    assert len(section.calls) == 2, "the cached ask costs no third fetch either"
+
+
 async def test_caller_bug_propagates_rather_than_being_memoised():
     # A non-numeric key is a CALLER bug, not a fact about the library: it must
     # reach the caller intact, and must not refuse every later definition this
