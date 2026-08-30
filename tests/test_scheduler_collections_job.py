@@ -145,6 +145,22 @@ class BreaksOnSecondLibrary:
         self.library = self._Library(sections)
 
 
+class BreaksWithATokenisedUrl:
+    """The failure shape rows 136/188 exist for: a plexapi transport error
+    whose message carries the request URL -- the operator's base URL and, in
+    some shapes, a token. Every configured library fails this way."""
+
+    class _Library:
+        def section(self, name):
+            raise RuntimeError(
+                "GET http://plex.internal:32400/library/sections/9/all"
+                "?X-Plex-Token=SECRETTOKEN returned 500"
+            )
+
+    def __init__(self):
+        self.library = self._Library()
+
+
 def _config(libraries=("Movies", "TV Shows"), enabled=True, apply_to_plex=True):
     return SimpleNamespace(
         collections=SimpleNamespace(
@@ -222,6 +238,48 @@ async def test_a_failure_reconciling_one_library_does_not_prevent_the_other(sess
     detail = str(failure.value)
     assert "Movies: 4 action(s)" in detail
     assert "TV Shows" in detail and "failed" in detail.lower()
+
+
+async def test_a_library_failure_is_recorded_class_name_only(session):
+    """Rows 136/188: service.py stored a bare str(error) on
+    LibraryOutcome.error, and that string flows through ReconcileResult.detail
+    -> CollectionsPassFailed -> scheduled_runs.last_detail (served by
+    /api/snapshots) and into notifications. Class-name-only at the rollback
+    boundary, the same rule the engine and the preview's _library_failure
+    already apply; the full message and traceback stay in the log."""
+    from autoposter.collections.service import reconcile_libraries
+
+    config = _config(["Movies"])
+    async with httpx.AsyncClient() as http:
+        result = await reconcile_libraries(session, BreaksWithATokenisedUrl(), config, http)
+
+    (outcome,) = result.libraries
+    assert outcome.ok is False
+    assert outcome.error == "RuntimeError"
+    for surface in (outcome.summary, result.summary, result.detail):
+        assert "SECRETTOKEN" not in surface
+        assert "X-Plex-Token" not in surface
+
+
+async def test_the_pass_failure_detail_never_carries_a_url(session):
+    """Row 188's operator-facing surface: str(CollectionsPassFailed) is what
+    scheduler/core.py:169/181 writes to scheduled_runs.last_detail (served by
+    /api/snapshots, snapshots.py:123) and what the notification carries
+    (core.py:195). One test at this boundary covers all three consumers --
+    they all read this one string."""
+    config = _config(["Movies"])
+    async with httpx.AsyncClient() as http:
+        job = make_collections_job(
+            ConfigHolder(config), lambda: BreaksWithATokenisedUrl(), http
+        )
+        with pytest.raises(CollectionsPassFailed) as failure:
+            await job.run(session)
+
+    detail = str(failure.value)
+    assert "RuntimeError" in detail
+    assert "failed" in detail.lower()
+    assert "SECRETTOKEN" not in detail
+    assert "X-Plex-Token" not in detail
 
 
 async def test_a_real_secrets_bundle_reaches_the_reconcile(session, monkeypatch):

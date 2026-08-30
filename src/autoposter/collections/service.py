@@ -467,6 +467,18 @@ async def reconcile_libraries(
         except Exception as error:
             await session.rollback()
             logger.exception("failed reconciling %r", name)
-            result.libraries.append(LibraryOutcome(library=name, error=str(error)))
+            # Class-name-only (rows 136/188): a plexapi or provider failure's
+            # message commonly carries the URL it failed on -- the operator's
+            # base URL, in some shapes a token -- and this string flows through
+            # ReconcileResult.detail -> CollectionsPassFailed ->
+            # scheduled_runs.last_detail (served by /api/snapshots) and into
+            # notifications. The full message and traceback are in the
+            # logger.exception line above, where the host-only rule applies --
+            # the same treatment the preview endpoint's _library_failure and
+            # the engine's builder-exception rule already give this exact
+            # failure shape.
+            result.libraries.append(
+                LibraryOutcome(library=name, error=type(error).__name__)
+            )
 
     return result
