@@ -261,7 +261,7 @@ async def test_mdblist_http_error_does_not_abort_the_other_facts(session):
 
 
 async def test_updated_at_advances_on_second_persist_facts(session_factory):
-    """Verify updated_at advances on upsert via on_conflict_do_update.
+    """Verify updated_at is re-stamped on upsert via on_conflict_do_update.
 
     This test proves the fix works: without updated_at in the set_ mapping,
     this test would fail because updated_at would remain frozen at insert time.
@@ -302,10 +302,10 @@ async def test_updated_at_advances_on_second_persist_facts(session_factory):
 
 
 async def test_fetched_at_advances_on_second_persist_facts(session_factory):
-    """Verify fetched_at also advances on upsert.
+    """Verify fetched_at is also re-stamped on upsert.
 
     Both fetched_at and updated_at use the same mechanism (func.now() in set_ mapping),
-    so both should advance on every conflict-update.
+    so both must be re-stamped on every conflict-update.
     """
     # Create a media item in the database
     async with session_factory() as s:

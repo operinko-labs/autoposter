@@ -289,10 +289,17 @@ async def test_reclaim_stale_resets_run_after_so_the_job_is_immediately_claimabl
     count = await reclaim_stale(session, older_than_seconds=900)
     assert count == 1
 
-    db_now = (await session.execute(select(func.now()))).scalar_one()
-    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
-    await session.refresh(job)
-    assert job.run_after <= db_now
+    # reclaim_stale() commits, so a wall-clock reading taken here would be a
+    # later transaction than the row's run_after -- two readings, zero slack,
+    # exposed to the dev VM's backwards clock step (docs/research/dev-clock-step/).
+    # Pushing the comparison into the query itself keeps it server-side and
+    # immune, the same fix as test_item_facts.py's same-transaction identity.
+    row = (
+        await session.execute(
+            select(Job).where(Job.id == job_id, Job.run_after <= func.now())
+        )
+    ).scalar_one_or_none()
+    assert row is not None
     assert await claim(session, "worker-b") is not None
 
 
