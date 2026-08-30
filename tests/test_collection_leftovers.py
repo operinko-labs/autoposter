@@ -96,9 +96,10 @@ def test_the_match_is_made_by_the_server_side_label_filter():
         "the whole library must not be listed and rescanned -- one "
         "server-side-filtered request per adopt_from entry"
     )
-    assert leftover.reloaded is False, (
-        "with no protect_labels configured there is nothing left to read off "
-        "the collection, so it must not be reloaded either"
+    assert leftover.reloaded is True, (
+        "one reload, and only for a candidate about to be REPORTED: the family "
+        "check below has to read the labels, and a family label cannot be asked "
+        "for server-side because it is matched by prefix"
     )
 
 
@@ -149,3 +150,54 @@ def test_an_empty_adopt_from_reports_nothing_and_asks_the_server_nothing():
     section = FakeSection([FakeCollection("Ratings Collections", labels=["Kometa"])])
     assert unmanaged_prior_collections(section, "Movie", _config(adopt_from=[])) == []
     assert section.label_filters == []
+
+
+# --- A dynamic family's members are ours, and are not "left behind" ---
+#
+# Measured 2026-08-30: a pass that had just created, labelled and prefixed 19
+# genre collections logged "55 prior-tool collection(s) left behind" naming
+# them. ``definition_titles``' smart branch cannot enumerate a family offline
+# (roadmap row 135), so the report has to recognise the family LABEL instead --
+# which is on the collection, and is ours whatever the report can enumerate.
+# Plex canonicalises its case too: the source prefix is "autoposter-dynamic: "
+# and the server stores "Autoposter-dynamic: ".
+
+
+def test_a_family_labelled_collection_is_not_reported_as_left_behind():
+    """The false positive, exactly: 19 collections the same pass built."""
+    ours = FakeCollection(
+        "Action Movies", labels=["Kometa", "Autoposter-dynamic: Genres"],
+    )
+    section = FakeSection([ours])
+    assert unmanaged_prior_collections(section, "Movie", _config()) == []
+    assert section.label_filters == ["Kometa"]
+
+
+def test_every_family_prefix_counts_not_just_the_dynamic_one():
+    section = FakeSection([
+        FakeCollection("Set In Japan", labels=["Kometa", "autoposter-facts: Countries"]),
+        FakeCollection("Tom Hanks", labels=["Kometa", "Autoposter-credits: Actors"]),
+    ])
+    assert unmanaged_prior_collections(section, "Movie", _config()) == []
+
+
+def test_a_family_label_does_not_swallow_a_look_alike():
+    """Prefix-based, so the boundary matters: a label that merely starts with
+    the word is not one of ours."""
+    section = FakeSection([FakeCollection("Autoposter Fan Picks", labels=["Kometa"])])
+    assert unmanaged_prior_collections(section, "Movie", _config()) == [
+        "Autoposter Fan Picks"
+    ]
+
+
+def test_an_adopt_from_entry_that_is_our_own_label_asks_the_server_nothing():
+    """``collections(label=...)`` is case-insensitive server-side, so an
+    ``adopt_from`` of ``autoposter`` against ``ownership_label='autoposter'``
+    returned every collection this service owns as a prior tool's candidate --
+    the other half of the 55-title report."""
+    ours = FakeCollection("Action Movies", labels=["autoposter"])
+    section = FakeSection([ours])
+    assert unmanaged_prior_collections(
+        section, "Movie", _config(adopt_from=["Kometa", "autoposter"])
+    ) == []
+    assert section.label_filters == ["Kometa"]

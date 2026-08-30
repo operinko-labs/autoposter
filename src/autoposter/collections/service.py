@@ -22,8 +22,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.arr.client import RADARR, SONARR, ArrClient
 from autoposter.collections.builders import SourceClients
+from autoposter.collections.builders.credits_family import (
+    FAMILY_LABEL_PREFIX as _CREDITS_FAMILY_PREFIX,
+)
+from autoposter.collections.builders.dynamic import (
+    FAMILY_LABEL_PREFIX as _DYNAMIC_FAMILY_PREFIX,
+)
+from autoposter.collections.builders.facts_family import (
+    FAMILY_LABEL_PREFIX as _FACTS_FAMILY_PREFIX,
+)
 from autoposter.collections.engine import definition_titles, run_library
-from autoposter.collections.reconcile import load_labels, protected_label
+from autoposter.collections.reconcile import (
+    adoptable_labels,
+    load_labels,
+    protected_label,
+)
 from autoposter.collections.sources import default_definitions
 from autoposter.config.schema import Config, Secrets
 from autoposter.facts.mdblist import MDBListClient
@@ -38,6 +51,18 @@ LIBRARY_TYPES = {"movie": "Movie", "show": "Show"}
 
 # How a failed library is written into the summary.
 FAILURE_MARKER = ": failed ("
+
+# Every family-label prefix this service writes, case-folded. A collection
+# carrying one of these was labelled by a family of OURS, whatever the offline
+# enumeration below can and cannot name -- see ``_family_labelled``. Folded
+# because Plex canonicalises label case (``reconcile._folded_labels``): the
+# source prefix is ``autoposter-dynamic: `` and the server stores
+# ``Autoposter-dynamic: ``.
+FAMILY_LABEL_PREFIXES = tuple(sorted(
+    prefix.casefold() for prefix in (
+        _DYNAMIC_FAMILY_PREFIX, _FACTS_FAMILY_PREFIX, _CREDITS_FAMILY_PREFIX,
+    )
+))
 
 
 class CollectionsPassFailed(RuntimeError):
@@ -154,6 +179,40 @@ def _managed_titles(collections, library_type: str, config: Config) -> set[str]:
     )
 
 
+def _family_labelled(collection) -> bool:
+    """Does ``collection`` carry one of OUR families' labels?
+
+    Pure reader -- ``load_labels`` must have been called first, the rule every
+    reader in ``reconcile.py`` follows.
+
+    This exists because ``engine.definition_titles`` cannot answer for a
+    family. Its smart branch (``engine.py:1183-1184``) asks the builder for a
+    ``titles()`` and falls through to the definition's own title when there is
+    none, and ``DynamicBuilder`` has none: a family's titles are the LIBRARY's,
+    knowable only at run time, which is roadmap row 135's documented boundary
+    and stays one -- ``generated_titles`` needs the pass's ``run_cache`` and
+    this report is a pure, offline call with no pass around it.
+
+    Measured 2026-08-30: the pass that had just created, labelled and prefixed
+    19 genre collections then reported all 19 among "55 prior-tool
+    collection(s) left behind". The delete SWEEP was never wrong -- it reads
+    ``generated_titles`` through ``engine._family_state`` -- so only the report
+    lied, and this is the report-side answer: the family label is on the
+    collection, so the report can read what it cannot enumerate.
+
+    Prefix, not the exact labels the configured definitions would produce, and
+    deliberately the wider set. This report says "a prior tool left this
+    behind". A collection carrying one of our family labels was never a prior
+    tool's, whether or not the family that made it is still configured -- an
+    orphan from a family since removed from the config is a different report to
+    write, and inviting the operator to treat it as Kometa's is simply false.
+    """
+    return any(
+        tag.tag.casefold().startswith(FAMILY_LABEL_PREFIXES)
+        for tag in (getattr(collection, "labels", None) or [])
+    )
+
+
 def unmanaged_prior_collections(section, library_type: str, config: Config) -> list[str]:
     """Titles carrying a prior tool's label that this service does not manage.
 
@@ -174,9 +233,22 @@ def unmanaged_prior_collections(section, library_type: str, config: Config) -> l
     An unlabelled collection carries no prior-tool label, so the operator's
     hand-made collections and Plex's own franchise collections are never
     returned by that filter in the first place.
+
+    That server-side filter being case-insensitive is exactly why
+    ``adoptable_labels`` is applied to ``adopt_from`` here: an entry that is a
+    case-variant of our own ownership label asks the server for every
+    collection this service owns and gets all of them.
+
+    The labels ARE read, once, for each candidate that would otherwise be
+    reported -- the family check needs them and a family label cannot be asked
+    for server-side, because it is matched by prefix. That is one ``reload()``
+    per REPORTED title, not per collection in the library, which is the cost
+    the paragraph above refuses.
     """
     candidates: dict[str, object] = {}
-    for label in config.collections.adopt_from:
+    for label in adoptable_labels(
+        config.collections.adopt_from, config.collections.ownership_label
+    ):
         for collection in section.collections(label=label):
             candidates.setdefault(collection.title, collection)
 
@@ -187,13 +259,16 @@ def unmanaged_prior_collections(section, library_type: str, config: Config) -> l
     for title, collection in candidates.items():
         if title in managed:
             continue
-        if protect_labels:
+        load_labels(collection)
+        if _family_labelled(collection):
+            # One of ours, built by a family whose titles no offline
+            # enumeration can name. Not a prior tool's leftover.
+            continue
+        if protected_label(collection, protect_labels) is not None:
             # Maintainerr's collections also carry the prior tool's label.
             # Reporting one as "left behind" invites the operator to act on
             # the collection this service works hardest never to touch.
-            load_labels(collection)
-            if protected_label(collection, protect_labels) is not None:
-                continue
+            continue
         leftovers.append(title)
     return sorted(leftovers)
 
