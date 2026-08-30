@@ -145,6 +145,11 @@ function stubFetch(options: StubOptions = {}) {
     // Before the /api/collections/ prefix below, which would otherwise swallow
     // the catalog and hand the picker a list of managed collections.
     if (path === "/api/collections/catalog") return json(CATALOG);
+    // The custom-collections panel mounted on this page fetches its own
+    // listing; its behaviour is covered in CustomCollectionsPanel.test.tsx.
+    if (path === "/api/collections/definitions") {
+      return json({ libraries: ["Movies"], definitions: [] });
+    }
     // The facts-backfill panel mounted on this page fetches its own standing
     // progress; its behaviour is covered in FactsBackfillPanel.test.tsx.
     if (path === "/api/facts/backfill") {
@@ -848,5 +853,13 @@ describe("Collections", () => {
     expect(
       await screen.findByRole("list", { name: "Collection group order" }),
     ).toBeInTheDocument();
+  });
+
+  it("mounts the custom collections panel", async () => {
+    stubFetch();
+
+    render(<Collections />);
+
+    expect(await screen.findByText("Create from a list URL")).toBeInTheDocument();
   });
 });

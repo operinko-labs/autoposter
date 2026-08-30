@@ -14,6 +14,7 @@ import type {
 import { formatTime } from "../format";
 import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
 import { CatalogPanel } from "./CatalogPanel";
+import { CustomCollectionsPanel } from "./CustomCollectionsPanel";
 import { FactsBackfillPanel } from "./FactsBackfillPanel";
 import { GroupsPanel } from "./GroupsPanel";
 import { ScheduledRunStatusPill } from "./ScheduledRunStatus";
@@ -585,6 +586,12 @@ export function Collections() {
       </div>
 
       <DefinitionsPanel />
+
+      {/* The config surface for those same definitions: the row-137 listing,
+          create-from-URL, and override-only remove. Config reads and config
+          writes only, so it renders on a replica where the Plex-touching
+          panels report 503. */}
+      <CustomCollectionsPanel />
 
       {/* The catalog sits below the definitions it adds to: an operator reads
           what is built today, then picks what else to build. It is the only

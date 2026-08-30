@@ -404,6 +404,45 @@ export interface CollectionPreviewResponse {
   actions: string[];
 }
 
+/** One operator-configured definition as GET /api/collections/definitions
+ * serves it: the config-side facts only — no counts, no Plex state (that is
+ * the preview's job). `libraries: null` means "every configured library".
+ * `provenance` says which layer supplies the entry: "file" rows belong to
+ * the mounted YAML and are never written into the overrides document (the
+ * freezing hazard `api/overrides.ts` opens with); "override" rows are the
+ * stored overrides list's own and are the only removable ones.
+ *
+ * A LOSSY projection of `CollectionDefinition` (config/schema.py), which also
+ * carries `summary`, `limit`, `schedule`, `labels` and more. These seven
+ * fields are what a listing DISPLAYS; nothing that writes the overrides
+ * document may be built from them, or a stored definition's unprojected
+ * fields would be dropped by the next save. */
+export interface DefinitionSummary {
+  title: string;
+  builder: string;
+  params: Record<string, unknown>;
+  libraries: string[] | null;
+  sort: string;
+  sync_mode: string;
+  provenance: "file" | "override";
+}
+
+/** GET /api/collections/definitions — row 137's listing. `libraries` is
+ * `collections.libraries`, the names the create form offers as scope. */
+export interface DefinitionsListingResponse {
+  libraries: string[];
+  definitions: DefinitionSummary[];
+}
+
+/** POST /api/collections/parse-source — a pasted URL resolved to the builder
+ * and params the definition will carry. Shape-checked only: existence is the
+ * first pass's business. A refusal is a 422 whose detail is one sentence. */
+export interface ParsedSourceResponse {
+  builder: string;
+  params: Record<string, unknown>;
+  display_note: string;
+}
+
 /** One row of the preset catalog, as `catalog_listing`
  * (src/autoposter/collections/catalog.py) serves it.
  *

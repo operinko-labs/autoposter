@@ -1,0 +1,137 @@
+/* The Custom collections panel: the definitions listing with provenance, and
+ * the create-from-URL form. Its own stylesheet, catalog.css's precedent: the
+ * rules a later form panel would copy should be findable by name. */
+
+.custom-note {
+  margin: 0 0 8px;
+  font-size: 13px;
+  white-space: normal;
+}
+
+.custom-file-note {
+  color: var(--warn);
+}
+
+.custom-params {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.custom-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.custom-file {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.custom-form-title {
+  margin: 16px 0 4px;
+}
+
+.custom-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.custom-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.custom-field input {
+  min-width: 16rem;
+}
+
+.custom-url {
+  flex: 1 1 24rem;
+}
+
+.custom-url input {
+  width: 100%;
+}
+
+.custom-parse-error {
+  margin: 4px 0;
+  font-size: 13px;
+  white-space: normal;
+  color: var(--error);
+}
+
+.custom-parsed {
+  margin: 4px 0;
+  font-size: 13px;
+  white-space: normal;
+}
+
+.custom-libraries {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 8px 0;
+  padding: 8px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.custom-library {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.custom-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.custom-errors {
+  margin: 8px 0 0;
+  padding-left: 1.1rem;
+  font-size: 13px;
+}
+
+.custom-error-message {
+  color: var(--error);
+}
+
+.custom-checked {
+  font-size: 13px;
+  white-space: normal;
+}
+
+.custom-saved {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.custom-saved p {
+  margin: 0 0 4px;
+  white-space: normal;
+}
+
+.custom-saved p:last-child {
+  margin-bottom: 0;
+}
+
+/* "Saved, but the re-read failed" -- a warning inside the success panel, not
+ * a page error beside it, because the save itself did succeed. */
+.custom-stale {
+  color: var(--warn);
+  font-size: 13px;
+}
