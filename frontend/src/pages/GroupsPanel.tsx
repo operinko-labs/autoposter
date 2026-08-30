@@ -91,6 +91,12 @@ export function GroupsPanel() {
   const [styles, setStyles] = useState<string[]>([]);
   const [savedStyle, setSavedStyle] = useState("orig");
   const [style, setStyle] = useState("orig");
+  // Whether the preview grid for the current style failed to load. GitHub is
+  // the only third-party fetch this frontend makes, so a firewalled or
+  // air-gapped deployment is the ordinary case, not an edge case -- cleared
+  // whenever the operator picks a different style to give the new src a
+  // fresh attempt.
+  const [previewFailed, setPreviewFailed] = useState(false);
   // The overrides the server already holds. Kept whole rather than reduced
   // to the one path: a save here must not drop an override another page
   // stored.
@@ -307,6 +313,7 @@ export function GroupsPanel() {
           onChange={(event) => {
             clearSaveState();
             setStyle(event.target.value);
+            setPreviewFailed(false);
           }}
         >
           {styles.map((name) => (
@@ -327,15 +334,32 @@ export function GroupsPanel() {
         >
           Reset style
         </button>
-        <p className="muted groups-note">{STYLE_NOTE}</p>
+        <p className="muted groups-note">
+          {STYLE_NOTE} What you select here persists as{" "}
+          <span className="mono">{STYLE_PATH}</span>.
+        </p>
         {/* Upstream's own contact sheet for the selected style -- the whole
-            preview surface, no client-side rendering. */}
-        <img
-          className="groups-style-preview"
-          src={`${GRID_BASE}/${style}/!_${style}_grid.webp`}
-          alt={`${style} separator style preview`}
-          loading="lazy"
-        />
+            preview surface, no client-side rendering. onError swaps it for a
+            captioned blank state on load failure: the same rule the artwork
+            panes follow (ItemDetail.tsx) for any <img> whose src may not
+            load, applied here to this frontend's first third-party fetch --
+            the ordinary case on an air-gapped or firewalled deployment, not
+            an exotic one. */}
+        {previewFailed ? (
+          <p className="muted groups-note">
+            Preview unavailable — it loads from{" "}
+            <span className="mono">raw.githubusercontent.com</span>, which
+            this browser could not reach. The style still applies.
+          </p>
+        ) : (
+          <img
+            className="groups-style-preview"
+            src={`${GRID_BASE}/${style}/!_${style}_grid.webp`}
+            alt={`${style} separator style preview`}
+            loading="lazy"
+            onError={() => setPreviewFailed(true)}
+          />
+        )}
       </div>
 
       {(dirty || styleDirty) && (

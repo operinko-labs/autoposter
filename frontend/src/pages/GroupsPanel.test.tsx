@@ -408,4 +408,18 @@ describe("the style select", () => {
       .toBeInTheDocument();
     expect(screen.getByText(/textless base layer/i)).toBeInTheDocument();
   });
+
+  it("shows a captioned note instead of a broken image when the preview fails to load", async () => {
+    await renderPanel();
+
+    const image = screen.getByAltText("orig separator style preview");
+    fireEvent.error(image);
+
+    // No <img> at all: same rule the artwork panes follow for a src that may
+    // not load.
+    expect(screen.queryByAltText("orig separator style preview")).toBeNull();
+    // The load-bearing half: an operator on an air-gapped box must be able
+    // to tell "the preview cannot load" from "the style is broken."
+    expect(screen.getByText(/the style still applies/i)).toBeInTheDocument();
+  });
 });
