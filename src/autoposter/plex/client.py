@@ -205,6 +205,53 @@ def fetch_tag_index(
 
 
 @dataclass(frozen=True)
+class CreditTags:
+    """One item's credit families from the metadata endpoint, as plain data.
+
+    Same discipline as ``ItemTags``; separate class because its consumers are
+    different (the credits SCAN, not the filter enrichment) and the two must
+    stay independently cheap. Empty tuples are "credited nobody", an answer.
+
+    ``actors`` is TRUNCATED, not complete: probe D1 measured a server-side cap
+    of 200 ``Role`` children per item, which a single-key fetch does not
+    escape (docs/research/plex-batch-probe/README.md). ``directors`` /
+    ``writers`` / ``producers`` are empty on every SHOW -- series-level Plex
+    metadata carries none, in the batch, in a single-key fetch and in
+    ``listFilterChoices`` alike -- so nothing downstream may synthesise them.
+    """
+
+    actors: tuple[str, ...]
+    directors: tuple[str, ...]
+    writers: tuple[str, ...]
+    producers: tuple[str, ...]
+
+
+def fetch_credit_index(
+    section, rating_keys, chunk_size: int = TAG_BATCH_CHUNK
+) -> dict[str, CreditTags]:
+    """``{rating_key: CreditTags}`` for every key Plex still answers.
+
+    Rides the same batched read as ``fetch_tag_index`` (``ceil(N/chunk)``
+    calls); the phase-B probe (docs/research/plex-batch-probe/README.md, D1)
+    is what established the batch response carries Role/Director/Writer/
+    Producer at all, and that the batched credit lists are identical
+    tag-for-tag to a single-key fetch's. BLOCKING, like its sibling.
+    """
+    index: dict[str, CreditTags] = {}
+    for item in _iter_metadata_batches(section, rating_keys, chunk_size):
+        rating_key = _safe_attr(item, "ratingKey")
+        if rating_key is None:
+            continue
+        index[str(rating_key)] = CreditTags(
+            actors=_tag_names(item, "roles"),
+            directors=_tag_names(item, "directors"),
+            writers=_tag_names(item, "writers"),
+            producers=_tag_names(item, "producers"),
+        )
+    return index
+
+
+@dataclass(frozen=True)
 class _RawMatch:
     """Plain data extracted from a matched ``plexapi`` item, inside the search thread.
 

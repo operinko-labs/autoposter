@@ -541,6 +541,15 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   oldest `drift_batch_size` candidates and leaves the rest for the next
   run — a sweep works through a backlog gradually over successive runs
   rather than all at once.
+- `credits_scan_days` (default `7`) — cadence for the library-credits scan,
+  which caches each item's Plex actor/director/writer/producer tags in
+  `item_credits`. Whole-library per run and deliberately unpaced: Plex is
+  local and unmetered and the read is batched, so a ~2,000-item library costs
+  about ten requests — there is nothing a `drift_batch_size`-style valve
+  would be protecting. An item the server does not answer for is left
+  unstamped and rescanned next run. Note that Plex caps a single item's cast
+  at 200 actors, so the cached credits are what the server returned, not
+  necessarily a complete cast.
 - `cleanup_days` (default `7`) — cadence for the orphaned-asset cleanup: a
   walk of `assets_root` moving any directory no `renders` row references to
   `backup_root`. **Whether it writes is not a `scheduler` setting** — see

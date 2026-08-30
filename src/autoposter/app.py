@@ -49,6 +49,7 @@ from autoposter.scheduler.jobs import (
     make_arr_sync_job,
     make_cleanup_job,
     make_collections_job,
+    make_credits_job,
     make_drift_job,
 )
 from autoposter.scheduler.prune import make_prune_job
@@ -292,6 +293,7 @@ def create_app(
                     secrets=secrets, cache=cache,
                 ))
             scheduler_jobs.append(make_drift_job(holder))
+            scheduler_jobs.append(make_credits_job(holder, server_factory))
             scheduler_jobs.append(make_cleanup_job(holder))
             # The prune sweep needs a PlexClient rather than a raw PlexServer:
             # "gone" here means "the pipeline cannot resolve it", which is

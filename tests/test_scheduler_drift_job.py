@@ -7,13 +7,15 @@ itself. These tests use the real database session and the real ``enqueue``
 (see ``tests/test_queue.py``) rather than a fake queue, so the debounce
 behaviour they lean on is the one actually shipped.
 """
+import threading
 from types import SimpleNamespace
 
 from sqlalchemy import select, text
 
 from autoposter.config.holder import ConfigHolder
 from autoposter.db.models import ItemFacts, Job, MediaItem
-from autoposter.scheduler.jobs import make_drift_job, sweep_stale_facts
+from autoposter.scheduler import jobs as scheduler_jobs
+from autoposter.scheduler.jobs import make_credits_job, make_drift_job, sweep_stale_facts
 
 _next_rating_key = iter(str(n) for n in range(1, 1_000_000))
 
@@ -193,3 +195,54 @@ async def test_make_drift_job_wraps_sweep_stale_facts(session):
     assert job.name == "ratings_drift_sweep"
     assert "enqueued 1 item(s)" in summary
     assert await _titles(session) == ["Stale Movie"]
+
+
+async def test_make_credits_job_scans_with_a_server_from_the_factory(session, monkeypatch):
+    """The library-credits scan (roadmap rows 197/194). Connecting to Plex
+    blocks, so ``server_factory`` runs through ``asyncio.to_thread`` -- the
+    same contract ``make_collections_job`` takes, asserted here by the thread
+    the factory actually ran on."""
+    main_thread = threading.current_thread()
+    ran_on = []
+
+    def server_factory():
+        ran_on.append(threading.current_thread())
+        return "the-server"
+
+    seen = {}
+
+    async def fake_scan(scan_session, server, config):
+        seen["session"] = scan_session
+        seen["server"] = server
+        seen["config"] = config
+        return "Movies: 3 item(s) scanned, 7 credit(s)"
+
+    monkeypatch.setattr(scheduler_jobs, "scan_credits", fake_scan)
+
+    config = SimpleNamespace(scheduler=SimpleNamespace(credits_scan_days=7))
+    holder = ConfigHolder(config)
+    job = make_credits_job(holder, server_factory)
+
+    summary = await job.run(session)
+
+    assert job.name == "credits_scan"
+    assert summary == "Movies: 3 item(s) scanned, 7 credit(s)"
+    assert seen["session"] is session
+    assert seen["server"] == "the-server"
+    assert seen["config"] is config
+    assert ran_on and ran_on[0] is not main_thread
+
+
+def test_make_credits_job_reads_its_cadence_live():
+    """The cadence is a deref of the holder, not a value captured at build
+    time: an edited ``credits_scan_days`` takes effect on the next poll rather
+    than at the next restart."""
+    config = SimpleNamespace(scheduler=SimpleNamespace(credits_scan_days=7))
+    holder = ConfigHolder(config)
+    job = make_credits_job(holder, lambda: None)
+
+    assert job.current_interval() == 7 * 24 * 3600
+
+    holder.swap(SimpleNamespace(scheduler=SimpleNamespace(credits_scan_days=1)))
+
+    assert job.current_interval() == 24 * 3600

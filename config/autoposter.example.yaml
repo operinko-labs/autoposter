@@ -200,6 +200,7 @@ scheduler:
   drift_days: 7 # ratings drift sweep cadence
   drift_max_age_days: 7 # re-check an item whose facts are older than this
   drift_batch_size: 500 # items enqueued per sweep; the safety valve against enqueuing everything at once
+  credits_scan_days: 7 # library credits scan cadence; whole-library per run, no batch valve
   cleanup_days: 7 # orphaned asset cleanup cadence
   prune_days: 7 # media_items prune cadence
   # cleanup_apply is not a setting here -- see cleanup.apply above, which

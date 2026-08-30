@@ -48,6 +48,10 @@ class MediaItem(Base):
     # item that can never be resolved would otherwise stay permanently at the
     # front of every sweep and starve everything behind it.
     facts_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The credits scan's "we looked" stamp (roadmap rows 197/194) -- the same
+    # law facts_attempted_at carries: stamped on every VISITED item, found-
+    # no-credits included; NULL means unvisited, and only unvisited.
+    credits_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The ``upload://`` rating key Plex filed THIS service's clearlogo upload
     # under (artwork_modes/logo.py). NULL means "we never set a logo here", and
     # that is the whole safety promise of the logo revert: it clears only an
@@ -243,6 +247,50 @@ class ItemFacts(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ItemCredit(Base):
+    """One (item, credit kind, person) fact from Plex's own credit tags.
+
+    The dedicated many-to-many table roadmap row 197 exists to decide
+    (adjudication C4): credits cannot live on ``item_facts``, whose
+    UNIQUE(item_id) scalar shape is wrong for one-item-many-people. Composite
+    PK in the ``ImdbEpisode`` mold; rows exist only for items the library
+    contains (FK CASCADE -- the ``ImdbRating`` size discipline). ``person``
+    is the PLEX TAG NAME -- the library's own credit data, upstream's
+    semantic for its person packs -- not a TMDb id; a TMDb-fed person
+    collection is a DIFFERENT membership under the same name and says so
+    where it ships.
+
+    The missing-value rule, verbatim from ``collections/facts_enumeration``:
+    no row means ABSENT from every query -- never a bucket, never a zero.
+    "We looked and found none" is ``media_items.credits_attempted_at`` set
+    with zero rows here; "unvisited" is the stamp being NULL.
+
+    **These rows are not a complete cast and must never be read as one.** The
+    phase-B probe measured a server-side cap of **200 ``Role`` children per
+    item** (docs/research/plex-batch-probe/README.md, D1): 54 of 200 sampled
+    shows and 2 of 200 movies return exactly 200 and none more, and a
+    single-key fetch returns the same 200, so the truncation is Plex's and
+    cannot be read around. An actor missing from a large cast is therefore
+    indistinguishable here from an actor Plex never credited. Shows carry
+    ACTOR credits only for a separate reason (series-level Plex metadata has
+    no director/writer/producer at all), so a show's three other kinds are
+    legitimately empty rather than truncated.
+    """
+
+    __tablename__ = "item_credits"
+    __table_args__ = (
+        Index("ix_item_credits_kind_person", "kind", "person"),
+    )
+
+    item_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    # actor | director | writer | producer -- collections/credits.CREDIT_KINDS
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    person: Mapped[str] = mapped_column(String(255), primary_key=True)
 
 
 class ImdbRating(Base):

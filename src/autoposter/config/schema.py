@@ -1079,6 +1079,12 @@ class SchedulerConfig(BaseModel):
     # once.
     drift_batch_size: int = 500
     drift_max_age_days: float = 7
+    # The credits scan's cadence (roadmap rows 197/194). Whole-library per
+    # run, deliberately unpaced: the batched read is ceil(N/chunk) requests
+    # (~10 for the measured movie library), so there is nothing a 500-item
+    # batch valve would be protecting. Weekly, like drift: credits change on
+    # library edits, not on a clock.
+    credits_scan_days: int = 7
     cleanup_days: int = 7
     prune_days: int = 7
 

@@ -27,6 +27,7 @@ from autoposter.arr.sync import (
     enqueue_unknown_items,
     sync_section,
 )
+from autoposter.collections.credits import scan_credits
 from autoposter.collections.service import (
     CollectionsPassFailed,
     build_source_clients,
@@ -213,6 +214,25 @@ def make_drift_job(holder: ConfigHolder) -> Job:
     return Job(
         name="ratings_drift_sweep",
         interval_seconds=lambda: holder.current.scheduler.drift_days * 24 * 3600,
+        run=run,
+    )
+
+
+def make_credits_job(holder: ConfigHolder, server_factory: Callable[[], object]) -> Job:
+    """Build the scheduled library-credits scan (roadmap rows 197/194).
+
+    ``server_factory`` is the same zero-argument connected-``PlexServer``
+    contract ``make_collections_job`` takes, run in a thread for the same
+    reason. Settings come off the holder per run, so an edit is live.
+    """
+
+    async def run(session: AsyncSession) -> str:
+        server = await asyncio.to_thread(server_factory)
+        return await scan_credits(session, server, holder.current)
+
+    return Job(
+        name="credits_scan",
+        interval_seconds=lambda: holder.current.scheduler.credits_scan_days * 24 * 3600,
         run=run,
     )
 
