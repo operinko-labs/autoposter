@@ -917,18 +917,32 @@ turning them on added zero calls to any pass.
 What they are FOR is collections Plex cannot express. Plex has no
 `origin_country` field and no concept of a TMDb franchise, so a collection
 family over those values cannot be a Plex smart filter — it is built from
-this service's own stored facts instead. The `content_franchises` preset is
-the first one shipped on them.
+this service's own stored facts instead. Three presets ship on them today —
+`content_franchises` on the collection id, and `location_region` /
+`location_continent` on the country codes — plus the `original_language`
+dynamic type, which a hand-written definition can build a family from.
 
 **The consequence an operator should expect, stated up front: such a family
 is only as complete as the facts pipeline's coverage of the library.** It
 enumerates what has been VISITED, not what exists. A library the pipeline
 has half worked through builds a half-sized family — correct, incomplete,
-and converging as the sweep works the rest. At the defaults above
-(`scheduler.drift_batch_size` 500 every `scheduler.drift_days` 7) a
-~16,000-item library is worked through in about 32 weeks; raising the batch
-size or shortening the cadence converges it faster, at the usual cost of
-more provider traffic per run.
+and converging as the sweep works the rest.
+
+**How long that takes, with the denominator that actually applies.** The
+sweep's population is not the whole library: `sweep_stale_facts` selects only
+`kind IN ('movie', 'show')`, and seasons and episodes ride their parent's
+pass. On this library that is **2,252 items**, not ~16,000. At the defaults
+above (`scheduler.drift_batch_size` 500 every `scheduler.drift_days` 7) a full
+revisit is `ceil(2252 / 500)` = **5 ticks, about 5 weeks** — not the eight
+months a whole-library denominator suggests. Raising the batch size or
+shortening the cadence converges it faster, at the usual cost of more provider
+traffic per run; lowering `drift_max_age_days` makes rows eligible sooner.
+
+One timing point worth knowing on a freshly-upgraded deployment: a row becomes
+a candidate only once its facts are older than `drift_max_age_days`, so
+immediately after a backfill *nothing* is eligible and the columns stay empty
+until the oldest rows age past the threshold. That is the sweep waiting, not
+the pipeline failing.
 
 Two things make this visible rather than something to infer:
 
