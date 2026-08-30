@@ -105,11 +105,13 @@ FACTS_FIELDS: dict[str, FactsField] = {
         ),
         FactsField(
             "original_language", "tmdb_original_language", False, ("Movie", "Show"),
-            "TMDb's `original_language`, an ISO-639-1 code. Titled from the "
-            "CODE: neither this service nor Kometa's pack files carry a "
-            "code->name table (roadmap row 190 records the same absence for the "
-            "audio/subtitle language families, where Plex at least supplies a "
-            "display title and here nothing does).",
+            "TMDb's `original_language`, an ISO-639-1 code, and the code is "
+            "what the family KEYS on (row 156's law). Kometa's pack files "
+            "still carry no code->name table -- upstream resolves names at run "
+            "time -- but this tree now vendors one from TMDb's own "
+            "`/configuration/languages` (`collections/iso_names.py`, roadmap "
+            "row 190), so the family TITLES through it, falling back to the "
+            "code for anything the table misses.",
         ),
         FactsField(
             "tmdb_collection", "tmdb_collection_id", False, ("Movie",),
