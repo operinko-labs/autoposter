@@ -111,11 +111,15 @@ class FakeCollection:
 
     def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
         """Stands in for ``server.query`` -- the item-level summary PUT, which
-        also locks the field (``summary.locked=1`` rides on every write)."""
+        also locks the field (``summary.locked=1`` rides on every write), or,
+        since row 187, the summary CLEAR, whose ``summary.value`` is empty and
+        whose ``summary.locked`` is 0; ``keep_blank_values`` is what keeps the
+        empty value visible."""
         self.summary_queries.append({"key": key, "method": method})
-        self.summary_set = parse_qs(urlsplit(key).query)["summary.value"][0]
+        query = parse_qs(urlsplit(key).query, keep_blank_values=True)
+        self.summary_set = query["summary.value"][0]
         self.summary = self.summary_set
-        self._real_fields[0].locked = True
+        self._real_fields[0].locked = query.get("summary.locked") == ["1"]
 
     def addLabel(self, labels, locked=True):
         self._labels.append(type("L", (), {"tag": labels})())
@@ -348,6 +352,46 @@ async def test_a_matching_but_unlocked_summary_is_still_locked(session):
     )
     assert existing.summary_set == "Already right."
     assert not any("summary" in a for a in actions)
+
+
+async def test_a_removed_summary_is_cleared_on_the_update_path(session):
+    """Row 187's list half: ``lists.py`` took the same set-only stance
+    (``if summary:``). The hash gate means the clear runs when the
+    definition changed -- here, a member was added and the summary is gone."""
+    existing = FakeCollection(
+        "IMDb Top 250", items=[FakeItem("a")],
+        summary="The old text.", summary_locked=True,
+    )
+    section = FakeSection([existing])
+
+    actions = await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=False,
+    )
+
+    assert len(existing.summary_queries) == 1
+    query = parse_qs(
+        urlsplit(existing.summary_queries[0]["key"]).query, keep_blank_values=True
+    )
+    assert query["summary.value"] == [""]
+    assert query["summary.locked"] == ["0"]
+    assert any("cleared the summary" in action for action in actions)
+
+
+async def test_an_unlocked_summary_is_not_cleared_on_the_update_path(session):
+    existing = FakeCollection(
+        "IMDb Top 250", items=[FakeItem("a")],
+        summary="An operator's own text.", summary_locked=False,
+    )
+    section = FakeSection([existing])
+
+    await reconcile_list_collection(
+        session, section, "Movies", "IMDb Top 250",
+        [FakeItem("a"), FakeItem("b")], LABEL, dry_run=False,
+    )
+
+    assert existing.summary_queries == []
+    assert existing.summary == "An operator's own text."
 
 
 async def test_the_sort_mode_is_configurable(session):

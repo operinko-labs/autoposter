@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autoposter.collections import groups
 from autoposter.collections.posters import apply_poster, posters_enabled
 from autoposter.collections.reconcile import (
+    _clear_collection_summary,
     _edit_collection_summary,
     apply_collection_settings,
     resolve_collision,
@@ -320,6 +321,11 @@ async def reconcile_list_collection(
                 if getattr(collection, "summary", None) != summary:
                     actions.append("updated the summary of %r" % title)
                 _edit_collection_summary(collection, summary)
+            elif _clear_collection_summary(collection):
+                # Row 187: the summary is part of the members hash, so a
+                # deleted ``summary:`` reaches this branch; a definition that
+                # never set one finds the field unlocked and writes nothing.
+                actions.append("cleared the summary of %r" % title)
 
             adding, removing = member_diff(collection, items, sync_mode)
             if adding:

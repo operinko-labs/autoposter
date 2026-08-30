@@ -603,6 +603,39 @@ def _edit_collection_summary(collection, summary: str) -> None:
     )
 
 
+def _clear_collection_summary(collection) -> bool:
+    """Clear a summary this service wrote: empty value, lock released.
+
+    Roadmap row 187's decision. A definition with no ``summary:`` asserts no
+    summary, and this service un-asserts only what the managed route
+    asserted -- the marker is the LOCK, because ``_edit_collection_summary``
+    locks on every write. An unlocked summary was never ours and is left
+    alone. The disclosed consequence: Plex's own UI locks fields it edits,
+    so a hand-edit on a MANAGED collection whose definition carries no
+    summary is cleared by the next pass that reaches the write path -- the
+    stance sync-mode membership already takes, a managed collection's
+    desired state being its definition.
+
+    ``summary.locked=0`` rides with the empty value -- the full revert,
+    handing the field back to Plex -- through the same item-level route as
+    the set (the section-level route 404s; see the sibling above). Returns
+    whether a write was issued, so the caller can report it.
+    """
+    locked = any(
+        field.name == "summary" and field.locked
+        for field in (getattr(collection, "fields", None) or [])
+    )
+    if not locked:
+        return False
+    server = collection._server
+    args = {"summary.value": "", "summary.locked": 0}
+    server.query(
+        "/library/metadata/%s%s" % (collection.ratingKey, joinArgs(args)),
+        method=server._session.put,
+    )
+    return True
+
+
 async def reconcile_separator(
     session: AsyncSession,
     section,

@@ -54,6 +54,7 @@ from autoposter.collections import groups
 from autoposter.collections.posters import apply_poster, posters_enabled
 from autoposter.collections.reconcile import (
     LIBTYPES,
+    _clear_collection_summary,
     _edit_collection_summary,
     apply_collection_settings,
     resolve_collision,
@@ -372,13 +373,24 @@ async def reconcile_smart_collection(
                 )
             else:
                 update_smart_collection(section, collection, url)
+                # Not "updated the smart filter": a summary-only or
+                # settings-only edit reaches here too and re-PUTs a
+                # byte-identical uri (the C8 probe's re-run), and the pass
+                # cannot tell which part of the definition changed -- so the
+                # string claims the whole and nothing more (row 187, M-A).
                 actions.append(
-                    "updated the smart filter of %r (%d item(s) match now)"
+                    "updated %r from its definition (%d item(s) match now)"
                     % (title, matched)
                 )
 
             if summary is not None:
                 _edit_collection_summary(collection, summary)
+            elif _clear_collection_summary(collection):
+                # Row 187 (M-B): the summary is in the definition hash, so
+                # deleting ``summary:`` triggers exactly this pass -- which
+                # used to perform no summary edit at all and store the new
+                # hash as done.
+                actions.append("cleared the summary of %r" % title)
             actions += apply_collection_settings(
                 section, collection, settings, label, config
             )

@@ -148,10 +148,13 @@ class FakeCollection:
         raise AssertionError("items() must not be called")
 
     def query(self, key, method=None, **kwargs):
-        """The item-level summary PUT, through this collection's own server."""
+        """The item-level summary PUT -- or, since row 187, the summary
+        CLEAR, whose ``summary.value`` is empty and whose ``summary.locked``
+        is 0; ``keep_blank_values`` is what keeps the empty value visible."""
         self.queries.append((key, method))
-        self.summary = parse_qs(urlsplit(key).query)["summary.value"][0]
-        self._real_fields[0].locked = True
+        query = parse_qs(urlsplit(key).query, keep_blank_values=True)
+        self.summary = query["summary.value"][0]
+        self._real_fields[0].locked = query.get("summary.locked") == ["1"]
 
 
 class FakeSection:
@@ -559,6 +562,79 @@ async def test_a_changed_summary_alone_re_applies(session):
         summary="new", dry_run=False,
     )
     assert existing.summary == "new"
+
+
+async def test_a_removed_summary_is_cleared_and_unlocked(session):
+    """Roadmap row 187 (9c Minor M-B). The summary is IN the definition hash,
+    so deleting ``summary:`` triggers a pass -- which then performed no
+    summary edit at all and stored the new hash as current: the operator's
+    edit recognised, acted on by nothing, recorded as done. Now it clears:
+    empty value, lock released -- the full revert of what this service
+    writes. The gate is the LOCK, the marker every managed write leaves."""
+    existing = FakeCollection(
+        TITLE, labels=[LABEL], rating_key="12345", smart=True, summary="Old."
+    )
+    existing._real_fields[0].locked = True
+    section = FakeSection(matches=7, existing=[existing])
+    session.add(ManagedCollection(
+        library="Movies", title=TITLE, kind="smart", plex_rating_key="12345",
+        definition_hash="stale",
+    ))
+    await session.flush()
+
+    actions = await reconcile_smart_collection(
+        session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=False,
+    )
+
+    keys = [key for key, _ in existing.queries]
+    assert len(keys) == 1
+    query = parse_qs(urlsplit(keys[0]).query, keep_blank_values=True)
+    assert query["summary.value"] == [""]
+    assert query["summary.locked"] == ["0"]
+    assert any("cleared the summary" in action for action in actions)
+
+
+async def test_a_summary_this_service_never_wrote_is_left_alone(session):
+    """The other half of the clear-vs-skip decision: an UNLOCKED summary was
+    never written through the managed route (every write here locks), so it
+    is not this service's to clear."""
+    existing = FakeCollection(
+        TITLE, labels=[LABEL], rating_key="12345", smart=True, summary="Theirs."
+    )
+    section = FakeSection(matches=7, existing=[existing])
+    session.add(ManagedCollection(
+        library="Movies", title=TITLE, kind="smart", plex_rating_key="12345",
+        definition_hash="stale",
+    ))
+    await session.flush()
+
+    await reconcile_smart_collection(
+        session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=False,
+    )
+
+    assert existing.queries == []
+    assert existing.summary == "Theirs."
+
+
+async def test_the_update_action_does_not_claim_the_filter_changed(session):
+    """9c Minor M-A, folded into row 187: a settings-only or summary-only
+    edit re-PUTs a byte-identical uri while the old string said 'updated the
+    smart filter'. The pass cannot know which part changed, so the string
+    stops claiming one."""
+    existing = FakeCollection(TITLE, labels=[LABEL], rating_key="12345", smart=True)
+    section = FakeSection(matches=7, existing=[existing])
+    session.add(ManagedCollection(
+        library="Movies", title=TITLE, kind="smart", plex_rating_key="12345",
+        definition_hash="stale",
+    ))
+    await session.flush()
+
+    actions = await reconcile_smart_collection(
+        session, section, "Movies", "Movie", TITLE, URL, LABEL, dry_run=False,
+    )
+
+    assert "updated %r from its definition (7 item(s) match now)" % TITLE in actions
+    assert not any("updated the smart filter" in action for action in actions)
 
 
 async def test_the_ride_along_settings_are_applied_on_create(session):
