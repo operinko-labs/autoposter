@@ -17,7 +17,11 @@ from PIL import Image
 from sqlalchemy import select
 
 from autoposter.collections import groups
-from autoposter.collections.posters import apply_poster, hosted_poster_url
+from autoposter.collections.posters import (
+    DEFAULT_IMAGES_BASE,
+    apply_poster,
+    hosted_poster_url,
+)
 from autoposter.collections.reconcile import reconcile_separator, separator_hash
 from autoposter.db.models import ManagedCollection
 
@@ -443,12 +447,16 @@ async def test_the_engine_hands_a_separator_its_poster(session, config_factory, 
 
     # The fence (C5) reconciles alongside the group's divider and has no
     # upstream art, so it asks for the generated layer rather than a hosted
-    # separator -- the hosted URL is pinned by position, not by being the only
-    # request the pass makes.
+    # separator. Both requests are pinned, in order and exhaustively: pinning
+    # the LIST rather than element zero pins the request count too, so a
+    # spurious extra fetch cannot pass unseen.
     assert [result.title for result in results] == [
         "Ratings Collections", "Other Collections",
     ]
-    assert seen[0] == hosted_poster_url("separator", "orig:content_rating")
+    assert seen == [
+        hosted_poster_url("separator", "orig:content_rating"),
+        f"{DEFAULT_IMAGES_BASE}/separators/@base/orig.png",
+    ]
     assert section._collections["Ratings Collections"].uploaded == [data]
 
 

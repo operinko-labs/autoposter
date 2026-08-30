@@ -425,6 +425,29 @@ def test_a_definition_may_not_claim_the_operator_groups_own_divider_title():
     assert len(build_config(document).collections.definitions) == 1
 
 
+def test_a_definition_claiming_the_fence_title_names_the_group_and_the_toggle():
+    """"Other Collections" is the closing fence's title (``groups.TAIL_GROUP``),
+    reserved through ``separator_titles`` like every other divider -- but the
+    title-to-group map was built from ``separator_groups``, which enumerates the
+    POSITIONED groups only and so has never held the fence. That gap made this
+    one divider refuse through the generic "a built-in collection this service
+    already builds" message: the same hunt for a nonexistent built-in the
+    content-ratings case above was fixed to avoid. Built from
+    ``separator_specs`` instead -- the same source the reserved set itself comes
+    from -- so the two cannot disagree about which titles are separators.
+    """
+    document = _document_with_definitions(
+        [{"title": "Other Collections", "builder": "plex_id", "params": {"ids": ["1"]}}]
+    )
+
+    with pytest.raises(ValidationError, match="other.*separator"):
+        build_config(document)
+
+    # And the same second half: the toggle frees it.
+    document["collections"]["separators"] = False
+    assert len(build_config(document).collections.definitions) == 1
+
+
 def test_two_operator_definitions_may_not_share_a_title_in_one_library():
     document = _document_with_definitions([
         {"title": "Hand Picked", "builder": "plex_id", "params": {"ids": ["1"]}},

@@ -693,11 +693,11 @@ class CollectionsConfig(BaseModel):
     separators: bool = True
     # Reorder the collection groups in the tab. None is the canonical order
     # (collections/groups.py: charts, awards, content ratings, content,
-    # location, media, people, production, time, and the operator's own
-    # definitions last). A PARTIAL list is the expected use: the groups it
-    # names lead, in that order, and the rest follow canonically. Section
-    # numbers derive from position, so changing this re-writes the sort title
-    # of every collection this service manages, once, on the next pass.
+    # franchises, location, media, people, production, time, and the operator's
+    # own definitions last -- eleven). A PARTIAL list is the expected use: the
+    # groups it names lead, in that order, and the rest follow canonically.
+    # Section numbers derive from position, so changing this re-writes the sort
+    # title of every collection this service manages, once, on the next pass.
     group_order: list[str] | None = None
     # Which of upstream's 22 separator colour styles the dividers wear --
     # "orig" is upstream's own default and the shipped value, so an untouched
@@ -902,13 +902,18 @@ class CollectionsConfig(BaseModel):
         # Which of the built-in titles is a group separator's, so the refusal
         # below can name the group and the toggle that frees it instead of
         # sending the operator hunting for a built-in collection that does not
-        # exist under that name.
+        # exist under that name. Read off ``separator_specs`` -- the same source
+        # ``separator_titles`` folds into the set above -- so the reserving
+        # enumeration and this explaining one cannot disagree about which titles
+        # are separators. Built from the POSITIONED groups alone, the closing
+        # fence ("Other Collections", which takes no position) fell through to
+        # the generic message.
         separator_group_by_title: dict[str, str] = {}
         for library_type in LIBRARY_TYPES.values():
             defs = default_definitions(shim, library_type)
             built_in |= definition_titles(defs, [], library_type, shim)
-            for group in groups.separator_groups(defs, library_type, shim):
-                separator_group_by_title[groups.separator_title(group)] = group
+            for spec in groups.separator_specs(defs, library_type, shim):
+                separator_group_by_title[spec.title] = spec.group
 
         # The operator group's own divider, which that enumeration cannot see:
         # ``default_definitions`` is built "before operator config"
