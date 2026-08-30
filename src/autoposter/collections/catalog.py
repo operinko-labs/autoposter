@@ -57,6 +57,9 @@ its own in a YAML file that also names charts and people.
 from dataclasses import dataclass
 
 from autoposter.collections import packs
+from autoposter.collections.builders.credits_family import (
+    TITLE_FORMATS as CREDIT_TITLE_FORMATS,
+)
 from autoposter.collections.builders.imdb_award import EVENTS
 from autoposter.collections.dynamic_titles import render_title
 from autoposter.collections.dynamic_types import DYNAMIC_TYPES
@@ -188,6 +191,38 @@ def facts_family_shape(params: dict, placeholder_title: str) -> str:
     """
     row = FACTS_FAMILY_TYPES[params["type"]]
     return _family_shape(row, params, placeholder_title, "this service has gathered facts for")
+
+
+@dataclass(frozen=True)
+class _CreditKindRow:
+    """What ``_family_shape`` reads, for the one family whose types are not a
+    table of rows: a credit kind is a bare string and its title format lives in
+    ``builders/credits_family.TITLE_FORMATS``. Four lines here rather than a
+    fifth signature for the shared helper."""
+
+    name: str
+    title_format: str
+
+
+def credits_family_shape(params: dict, placeholder_title: str) -> str:
+    """The family-shape line for one counted-credits pack.
+
+    ``dynamic_shape``'s third twin, and the same contract: derived rather than
+    restated, rendered through the ``render_title`` the family names
+    collections with, with the key and the library type as placeholders.
+
+    The clause that differs is the honest one. A dynamic family's values are
+    the LIBRARY's and a facts family's are the ones this service's facts
+    pipeline has visited; this family's are the people its CREDITS CACHE has
+    counted -- a floor rather than a census, because Plex caps its credit list
+    at 200 roles per item. "the library's most-credited" would be a claim
+    neither this table nor the builder can make.
+    """
+    kind = params["type"]
+    row = _CreditKindRow(name=kind, title_format=CREDIT_TITLE_FORMATS[kind])
+    return _family_shape(
+        row, params, placeholder_title, "the credits cache has counted"
+    )
 
 
 def collection_title(template: str, library_type: str) -> str:
@@ -401,14 +436,15 @@ class Preset:
     def years_title(self) -> str | None:
         """The shape of this preset's dynamic titles, or None if it has none.
 
-        THREE families build collections this table cannot name. An award
+        FOUR families build collections this table cannot name. An award
         ceremony's year collections are named by the years the dataset carries;
         a dynamic pack's family is named by the values the library holds; a
-        facts pack's is named by the values this service has gathered facts for.
-        None is knowable here, and all three answer with the same one-line SHAPE
-        through the same payload key the picker already renders -- one field,
-        one UI branch, no second shape for a second family to drift from
-        (10b decision C3).
+        facts pack's is named by the values this service has gathered facts
+        for; a credits pack's is named by the people its credits cache has
+        counted. None is knowable here, and all four answer with the same
+        one-line SHAPE through the same payload key the picker already renders
+        -- one field, one UI branch, no second shape for a second family to
+        drift from (10b decision C3).
         """
         if self.award_event is not None:
             return _shape_line(
@@ -419,6 +455,10 @@ class Preset:
                 return dynamic_shape(dict(collection.params), collection.title)
             if collection.builder == "facts_family":
                 return facts_family_shape(dict(collection.params), collection.title)
+            if collection.builder == "credits_family":
+                return credits_family_shape(
+                    dict(collection.params), collection.title
+                )
         return None
 
 
@@ -1835,15 +1875,29 @@ _STARTER_DIRECTORS: tuple[tuple[str, int], ...] = (
     ("Hayao Miyazaki", 608),
 )
 
-_PERSON_PACKS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
-    ("people_top_actors", "Top actors", "defaults/both/actor.yml",
-     "the twenty-five actors with the most appearances in the library", _BOTH),
+# key, name, upstream file, the ``credits_family`` type, the phrase the
+# description opens with, library types.
+#
+# Every phrase says "Plex credits" rather than "are in": the counts behind them
+# come from this service's credits cache, which is a FLOOR -- Plex caps its
+# credit list at 200 roles per item, so "the twenty-five actors with the most
+# appearances" would be a completeness claim the data cannot support. The rest
+# of the disclosure is in the shared description below.
+_PERSON_PACKS: tuple[tuple[str, str, str, str, str, tuple[str, ...]], ...] = (
+    ("people_top_actors", "Top actors", "defaults/both/actor.yml", "actor",
+     "the twenty-five actors Plex credits on the most items in the library",
+     _BOTH),
     ("people_top_directors", "Top directors", "defaults/movie/director.yml",
-     "the twenty-five directors with the most films in the library", _MOVIE),
-    ("people_top_writers", "Top writers", "defaults/movie/writer.yml",
-     "the twenty-five writers with the most films in the library", _MOVIE),
+     "director",
+     "the twenty-five directors Plex credits on the most films in the library",
+     _MOVIE),
+    ("people_top_writers", "Top writers", "defaults/movie/writer.yml", "writer",
+     "the twenty-five writers Plex credits on the most films in the library",
+     _MOVIE),
     ("people_top_producers", "Top producers", "defaults/movie/producer.yml",
-     "the twenty-five producers with the most films in the library", _MOVIE),
+     "producer",
+     "the twenty-five producers Plex credits on the most films in the library",
+     _MOVIE),
 )
 
 PEOPLE_PRESETS: tuple[Preset, ...] = (
@@ -1858,11 +1912,13 @@ PEOPLE_PRESETS: tuple[Preset, ...] = (
             "photo; a `summary:` of your own, or a poster file in the assets "
             "folder, still wins. The six are OUR choice, not Kometa's: "
             "defaults/movie/director.yml names no directors at all, it "
-            "enumerates them from the library, which needs the library-wide "
-            "credit scan of roadmap row %d -- the same scan the four Top "
-            "actors/directors/writers/producers rows below wait on. The "
-            "only thing borrowed from that file is the '<name> (Director)' "
-            "title shape."
+            "enumerates them from the library, which needed the library-wide "
+            "credit scan of roadmap row %d. That scan ships now, and the 'Top "
+            "directors' row below is the enumerated family -- a DIFFERENT "
+            "membership from this one, deliberately: this pack's collections "
+            "are TMDb FILMOGRAPHIES, and that pack's are Plex TAG searches "
+            "over the files you actually have. The only thing borrowed from "
+            "Kometa's file here is the '<name> (Director)' title shape."
             % (", ".join(name for name, _id in _STARTER_DIRECTORS), PERSON_SCAN_ROW)
         ),
         kometa_source=NOT_KOMETA + "the six people are ours",
@@ -1882,22 +1938,35 @@ PEOPLE_PRESETS: tuple[Preset, ...] = (
         category="people",
         name=name,
         description=(
-            "One collection per person: %s. The poster and biography half is "
-            "built -- a person collection takes its summary from their TMDb "
-            "biography and its poster from their TMDb profile photo, which is "
-            "what the Director starter set above does today. What is missing "
-            "is NAMING the people: that means counting every credit of every "
-            "item in the library, and then writing a per-person query out of "
-            "search attributes this service does not have yet -- the scan "
-            "and its threshold are roadmap row %d, and the search attributes "
-            "are row 169, which %d depends on." % (what, PERSON_SCAN_ROW, PERSON_SCAN_ROW)
+            "One smart collection per person: %s. `depth: 5, limit: 25` is "
+            "upstream's own data block, and the membership is upstream's own "
+            "semantic -- each collection is a Plex search on the person's TAG, "
+            "the library's credit data, NOT a TMDb filmography (which credits "
+            "people the library's files do not name; the two are different "
+            "memberships under the same name, and this pack chooses the tag "
+            "on purpose). The people are counted from this service's credits "
+            "cache, which the weekly scan fills "
+            "(`scheduler.credits_scan_days`): on a library the scan has not "
+            "finished, the family is smaller than it will be -- correct, "
+            "incomplete, and converging, and the pass's own report says so in "
+            "numbers. The counts are a FLOOR and the ranking inherits it: "
+            "Plex caps its credit list at 200 people per item, so somebody "
+            "whose every appearance is in a large cast can be missing from "
+            "this family altogether. \"Most-credited\" here means "
+            "most-credited of what Plex answered, which is not the same claim "
+            "as most-credited in the library." % what
         ),
         kometa_source=source,
         library_types=library_types,
-        readiness=GATED,
-        gated_row=PERSON_SCAN_ROW,
+        collections=(
+            PresetCollection(
+                title=name,
+                builder="credits_family",
+                params=(("type", kind), ("depth", 5), ("limit", 25)),
+            ),
+        ),
     )
-    for key, name, source, what, library_types in _PERSON_PACKS
+    for key, name, source, kind, what, library_types in _PERSON_PACKS
 )
 
 

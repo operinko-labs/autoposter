@@ -78,6 +78,12 @@ def test_the_table_holds_exactly_the_tier_one_rows():
     for the client-side one, and ``unplayed`` and ``progress`` are search-only.
     Phase 10a appended two more the same way: ``decade`` (search-only) and
     ``country`` (unprobed, in both vocabularies).
+
+    Phase B appended the four PEOPLE rows the same way again -- ``actor``,
+    ``director``, ``writer``, ``producer``. Their existence is what makes a
+    per-person query writable at all (roadmap row 194's "blocker one"), and
+    three of the four are movie-only as a search because Kometa's
+    ``movie_only_searches`` says so.
     """
     assert [row.name for row in FILTER_ATTRIBUTES] == [
         "genre",
@@ -101,6 +107,10 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "progress",
         "decade",
         "country",
+        "actor",
+        "director",
+        "writer",
+        "producer",
     ]
 
 
@@ -139,7 +149,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     by_source = {t: [r.name for r in FILTER_ATTRIBUTES if r.source == t] for t in SOURCE_TIERS}
 
     assert {k: len(v) for k, v in by_type.items()} == {
-        "tag": 9,
+        "tag": 13,
         "str": 1,
         "int": 3,
         "float": 2,
@@ -175,7 +185,15 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     # 10a appended ``country`` for the reason 9b appended ``plays``: Kometa
     # filters on it and 9a's probe never asked whether the section listing
     # carries ``<Country>``, so there is no verdict to cite.
-    assert by_source["unprobed"] == ["plays", "last_played", "country"]
+    #
+    # Phase B appended the four people rows on the same tier and for the same
+    # reason: 9a never asked whether ``<Role>``/``<Director>``/``<Writer>``/
+    # ``<Producer>`` reach the section listing, and the phase-B credits CACHE
+    # is not a listing accessor -- so there is still no verdict to cite.
+    assert by_source["unprobed"] == [
+        "plays", "last_played", "country",
+        "actor", "director", "writer", "producer",
+    ]
     # ``decade`` joins the search-only tier: row 96's own 29-name list names it
     # first, and Kometa has no ``decade`` FILTER at all.
     assert by_source["search-only"] == ["unplayed", "progress", "decade"]
@@ -225,11 +243,11 @@ def test_item_kinds_are_movie_show_or_both():
     show_only = sorted(r.name for r in FILTER_ATTRIBUTES if r.kinds == ("show",))
 
     assert movie_only == [
-        "audio_language", "country", "decade", "progress", "resolution",
-        "subtitle_language", "unplayed",
+        "audio_language", "country", "decade", "director", "producer",
+        "progress", "resolution", "subtitle_language", "unplayed", "writer",
     ]
     assert show_only == ["network"]
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 13
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 14
 
 
 def test_every_operator_maps_onto_plexapis_own_operator_table():
@@ -306,7 +324,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 16, ("movie",): 4, ("show",): 1,
+        ("movie", "show"): 17, ("movie",): 7, ("show",): 1,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -314,14 +332,17 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     assert BY_NAME["duration"].search_kinds == ("movie",)
 
 
-def test_every_row_is_searchable_and_eighteen_are_filterable():
+def test_every_row_is_searchable_and_twentytwo_are_filterable():
     """The set arithmetic, pinned so it cannot rot silently.
 
     Kometa's search vocabulary is 55 non-music attributes and its filter
-    vocabulary is 70 names; this table covers 21 of the first and 18 of the
+    vocabulary is 70 names; this table covers 25 of the first and 22 of the
     second. The module docstring carries the full derivation. Phase 10a added
     ``decade`` (search-only, so searchable and not filterable) and ``country``
-    (in Kometa's 26-name overlap, so both).
+    (in Kometa's 26-name overlap, so both). Phase B added the four people rows,
+    all of which are in both vocabularies -- ``actor``, ``director``,
+    ``writer`` and ``producer`` are Kometa FILTERS as well as searches
+    (builder.py:278-350), so the searchable-minus-filterable set is unchanged.
     """
     from autoposter.collections.filters import (
         FILTERABLE_ATTRIBUTES,
@@ -330,8 +351,8 @@ def test_every_row_is_searchable_and_eighteen_are_filterable():
     )
 
     assert all(row.searchable for row in FILTER_ATTRIBUTES)
-    assert len(SEARCHABLE_ATTRIBUTES) == 21
-    assert len(FILTERABLE_ATTRIBUTES) == 18
+    assert len(SEARCHABLE_ATTRIBUTES) == 25
+    assert len(FILTERABLE_ATTRIBUTES) == 22
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
         "unplayed", "progress", "decade",
     }
@@ -382,10 +403,70 @@ def test_every_row_searchable_on_show_carries_a_show_search_field():
     row: a row with ``"show" in search_kinds`` and ``show_search_field=None``
     would silently return the MOVIE field for a show library, since
     ``field_for`` only rescopes when ``show_search_field`` is set. It holds for
-    all twenty-one rows today; nothing but this test pins it."""
+    all twenty-five rows today; nothing but this test pins it, and it is what
+    caught phase B's ``actor`` row: ``show_translation`` DOES rename that one
+    (``"actor": "show.actor"``, plex.py:168-193), so a ``None`` there would
+    have sent a show library the bare ``actor`` field."""
     for row in FILTER_ATTRIBUTES:
         if "show" in row.search_kinds:
             assert row.show_search_field is not None, row.name
+
+
+def test_the_people_rows_are_searchable_and_libtype_gated():
+    """Roadmap row 194's "blocker one", closed: the four people rows exist, so
+    a per-person query is WRITABLE at all.
+
+    Three of the four are movie-only as a SEARCH -- ``director``, ``producer``
+    and ``writer`` are the first six entries of Kometa's
+    ``movie_only_searches`` (plex.py:430-436) -- so a show library asking for
+    one refuses BY NAME rather than being sent a query Plex answers with the
+    wrong set. ``actor`` answers for both, re-scoped to ``show.actor`` by
+    ``show_translation`` (plex.py:168-193): the brief for this task said that
+    entry did not exist, and the repo's own verbatim transcription of that
+    table (``tests/oracle/9b/kometa_build_filter.py``) says it does.
+
+    All four are ``unprobed``, which is a SOURCE tier and not an accessor: a
+    ``filters:`` block naming one refuses saying exactly that, and this task
+    ships no client-side read for them -- the counts come from the credits
+    CACHE, which is a different question (roadmap row 156 owns it).
+    """
+    for name in ("actor", "director", "writer", "producer"):
+        row = BY_NAME[name]
+        assert row.type == "tag", name
+        assert row.source == "unprobed", name
+        assert row.filterable, name
+        assert row.searchable, name
+
+    assert BY_NAME["actor"].search_kinds == ("movie", "show")
+    assert BY_NAME["actor"].kinds == ("movie", "show")
+    assert BY_NAME["actor"].field_for("movie") == "actor"
+    assert BY_NAME["actor"].field_for("show") == "show.actor"
+
+    for name in ("director", "writer", "producer"):
+        assert BY_NAME[name].search_kinds == ("movie",), name
+        assert BY_NAME[name].kinds == ("movie",), name
+        assert BY_NAME[name].field_for("movie") == name
+        with pytest.raises(ValueError, match="not searchable on a show library"):
+            BY_NAME[name].field_for("show")
+
+
+def test_a_people_filter_block_refuses_by_naming_its_tier():
+    """The other half of ``unprobed``: the rows are in Kometa's FILTER
+    vocabulary too (``builder.filters_by_type``), so ``filters: {actor: ...}``
+    PARSES -- and then has no accessor at any tier, which is the refusal
+    ``country`` already established. What must never happen is the third thing:
+    parsing, finding nothing, and reporting a confident empty membership."""
+    from autoposter.collections.filter_values import (
+        AttributeNotInListing,
+        PlexItemView,
+    )
+    from autoposter.collections.filters import predicates
+
+    parsed = parse_filters({"actor": "Toshiro Mifune"})
+    assert [one.attribute.name for one in predicates(parsed)] == ["actor"]
+
+    with pytest.raises(AttributeNotInListing, match="unprobed"):
+        PlexItemView(object()).get("actor")
 
 
 def test_decades_search_operator_set_is_the_bare_form_alone():

@@ -269,7 +269,7 @@ CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "content_ratings": (7, 0, 1),
     "location": (1, 2, 0),
     "media": (3, 1, 0),
-    "people": (1, 4, 0),
+    "people": (5, 0, 0),
     "production": (3, 0, 0),
     "time": (1, 2, 0),
 }
@@ -1284,19 +1284,124 @@ def test_no_preset_still_waits_on_the_rows_the_facts_enumeration_closed():
         assert "Row %d" % catalog.TMDB_COUNTRY_NAME_ROW in description, key
 
 
-def test_no_preset_still_waits_on_the_person_builders_row():
+def test_no_preset_still_waits_on_the_person_rows():
     """Row 83 closed in phase 10c-lite -- the filmographies, their TMDb
-    biographies and their profile photos all ship. A preset still citing it
-    would be citing work that is DONE, which is the same as citing nothing, so
-    the four people packs now name the credit scan that actually blocks them."""
+    biographies and their profile photos all ship. Row 194 closed in phase B:
+    the credit scan, the counted enumeration and the four people SEARCH rows
+    all ship, so the four Top-* packs build.
+
+    ``PERSON_SCAN_ROW`` stays in the module, in the shape
+    ``TMDB_LANGUAGE_NAME_ROW`` already had: CITED rather than waited on. The
+    Director starter set names it as the scan its enumerated sibling needed,
+    which is a different kind of citation from a blocker.
+    """
     assert [
-        preset.key for preset in CATALOG if preset.gated_row == 83
+        preset.key for preset in CATALOG
+        if preset.gated_row in (83, catalog.PERSON_SCAN_ROW)
     ] == []
-    assert {
-        catalog.BY_KEY[key].gated_row
-        for key in ("people_top_actors", "people_top_directors",
-                    "people_top_writers", "people_top_producers")
-    } == {catalog.PERSON_SCAN_ROW}
+    for key in ("people_top_actors", "people_top_directors",
+                "people_top_writers", "people_top_producers"):
+        assert catalog.BY_KEY[key].readiness == READY, key
+        assert catalog.BY_KEY[key].gated_row is None, key
+    assert "row %d" % catalog.PERSON_SCAN_ROW in catalog.BY_KEY[
+        "people_directors"
+    ].description
+
+
+def _credits_family_rows() -> list[tuple[Preset, catalog.PresetCollection, dict]]:
+    """Every READY row that ships a counted-credits family, with its params."""
+    return [
+        (preset, collection, dict(collection.params))
+        for preset in READY_PRESETS
+        for collection in preset.collections
+        if collection.builder == "credits_family"
+    ]
+
+
+def test_the_four_people_packs_are_one_counted_credits_definition_each():
+    """A pack is ONE definition that expands at run time, and its type is one
+    of the four credit kinds the scan actually stores.
+
+    The library types are the TYPE's: ``actor`` is both (Plex answers a show
+    library's ``<Role>`` tags), and the three crew kinds are movie-only in
+    every table that touches them -- Kometa's ``movie_only_searches``, its
+    ``filters_by_type``, and the probe's own D7 measurement that a show
+    section enumerates them empty rather than refusing.
+    """
+    from autoposter.collections.builders.credits_family import TITLE_FORMATS
+
+    assert {preset.key for preset, _, _ in _credits_family_rows()} == {
+        "people_top_actors", "people_top_directors",
+        "people_top_writers", "people_top_producers",
+    }
+    for preset, collection, params in _credits_family_rows():
+        assert params["type"] in TITLE_FORMATS, preset.key
+        expected = ("Movie", "Show") if params["type"] == "actor" else ("Movie",)
+        assert preset.library_types == expected, preset.key
+        for library_type in preset.library_types:
+            definitions = preset.definitions(library_type)
+            assert len(definitions) == 1, (preset.key, library_type)
+            assert definitions[0].builder == "credits_family"
+            assert definitions[0].title == collection.title
+
+
+def test_a_credits_packs_placeholder_title_is_listed_and_reserved():
+    """The same pair C3 asks to read honestly for the other two families:
+    ``titles()`` reports the placeholder, which IS a title this service manages
+    (the engine reserves ``{definition.title}`` for a smart builder that lists
+    none), and ``years_title()`` reports the SHAPE of what the family really
+    builds. Neither claims a person's name the cache has not counted."""
+    for preset, collection, _params in _credits_family_rows():
+        assert collection.title in preset.titles(), preset.key
+        shape = preset.years_title()
+        assert shape is not None, preset.key
+        assert shape.startswith("one per "), (preset.key, shape)
+        assert "named " in shape, (preset.key, shape)
+
+
+def test_a_credits_packs_shape_line_comes_from_the_renderer_the_builder_uses():
+    """Derived, not restated -- the property both sibling families are held to.
+    The format is ``credits_family.TITLE_FORMATS``', which is the table the
+    builder titles collections from, so the picker cannot describe a shape the
+    builder will not produce."""
+    from autoposter.collections.builders.credits_family import TITLE_FORMATS
+    from autoposter.collections.dynamic_titles import render_title
+
+    for preset, _collection, params in _credits_family_rows():
+        noun = params["type"]
+        key_name = catalog.DYNAMIC_KEY_PLACEHOLDER % noun
+        expected = render_title(
+            params.get("title_format") or TITLE_FORMATS[noun],
+            key_name,
+            catalog.DYNAMIC_LIBRARY_TYPE,
+            key=key_name,
+            values=(),
+            auto_type=noun,
+        )
+        assert expected in preset.years_title(), preset.key
+
+
+def test_every_people_pack_discloses_the_two_things_it_cannot_promise():
+    """The row an operator READS carries both honesty clauses, because neither
+    is visible from the collections themselves.
+
+    One: the membership is the Plex TAG, not a TMDb filmography -- the two are
+    different memberships under the same name, and roadmap row 194 left the
+    choice open for this task to make and disclose. Two: the counts are a
+    FLOOR, because Plex caps its credit list at 200 people per item, so
+    "the most-credited" cannot be read as "the most-credited in the library".
+    """
+    for preset, _collection, params in _credits_family_rows():
+        description = preset.description
+        assert "TAG" in description, preset.key
+        assert "filmography" in description.lower(), preset.key
+        assert "200" in description, preset.key
+        assert "FLOOR" in description, preset.key
+        # The pinned opinions, stated in the row the way both sibling families
+        # are held to state theirs.
+        assert "depth: %d" % params["depth"] in description, preset.key
+        assert "limit: %d" % params["limit"] in description, preset.key
+        assert "credits_scan_days" in description, preset.key
 
 
 def test_every_gated_key_is_refused_at_load_naming_its_row():

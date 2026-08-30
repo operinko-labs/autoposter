@@ -100,14 +100,14 @@ Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
   search names have no filter (``unplayed``, ``progress``, ``hdr``,
   ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
 
-This table covers **21** of the 55 search names and **18** of the 70 filter
+This table covers **25** of the 55 search names and **22** of the 70 filter
 names. Both halves of the residue are real work, and they are different work:
-the 52 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
-``plays``, ``last_played`` and 10a's ``country`` came in here as ``unprobed``,
-which is a source tier and not an accessor, so the row-96 arithmetic moves by
-three and no further), while the 34 unsearched names are 9b's own tail, filed
-per family for T6. The two must not be reported as one number, which is what row 96's
-original "~45" did.
+the 48 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
+``plays``, ``last_played``, 10a's ``country`` and phase B's four people rows
+came in here as ``unprobed``, which is a source tier and not an accessor, so
+the row-96 arithmetic moves by seven and no further), while the 30 unsearched
+names are 9b's own tail, filed per family for T6. The two must not be reported
+as one number, which is what row 96's original "~45" did.
 """
 import datetime as dt
 import re
@@ -530,16 +530,21 @@ _BOTH = ("movie", "show")
 
 # --- THE TABLE ---------------------------------------------------------------
 #
-# Twenty-one rows: 9a's fifteen in the order the roadmap names them
-# (roadmap.md:538-551), then 9b's four and 10a's two appended rather than
-# interleaved so the first fifteen still read against the roadmap line they came
-# from. Column totals are asserted in tests/test_collection_filters.py as the
-# transcription's checksum: 9 tag / 1 str / 3 int / 2 float / 3 date /
-# 1 duration / 2 bool; 9 listing / 5 tier2-batched / 1 tier2-deferred /
-# 3 unprobed / 3 search-only; 13 both-kinds / 7 movie-only / 1 show-only for
-# ``kinds``, and
-# 16 / 4 / 1 for ``search_kinds``, which is a different split and that is the
+# Twenty-five rows: 9a's fifteen in the order the roadmap names them
+# (roadmap.md:538-551), then 9b's four, 10a's two and phase B's four appended
+# rather than interleaved so the first fifteen still read against the roadmap
+# line they came from. Column totals are asserted in
+# tests/test_collection_filters.py as the transcription's checksum:
+# 13 tag / 1 str / 3 int / 2 float / 3 date / 1 duration / 2 bool;
+# 9 listing / 5 tier2-batched / 1 tier2-deferred / 7 unprobed / 3 search-only;
+# 14 both-kinds / 10 movie-only / 1 show-only for ``kinds``, and
+# 17 / 7 / 1 for ``search_kinds``, which is a different split and that is the
 # point of the second column.
+#
+# Phase B's four are the PEOPLE rows, and they move the ``tag`` and
+# ``unprobed`` totals by four together -- ``actor`` on both kinds, and
+# ``director``/``writer``/``producer`` movie-only in BOTH kind columns, which
+# is why the two splits moved by different amounts.
 #
 # The source split is phase B's arithmetic, not 9a's: Task 2's probe left
 # 9 listing / 6 tier2-deferred, and phase B moved five of that six onto
@@ -940,6 +945,70 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "types via ``show_translation``.",
         search_field="country", show_search_field="show.country",
         search_kinds=_BOTH, filterable=True,
+    ),
+    # --- rows phase B added --------------------------------------------------
+    #
+    # The four PEOPLE rows. Their existence is the whole of roadmap row 194's
+    # "blocker one": until the table carried them, a per-person query was not
+    # WRITABLE at all -- ``parse_filters(..., searching=True)`` refuses an
+    # attribute the table does not hold, which is exactly right and is what
+    # made the four Top-* packs gated rather than merely unbuilt.
+    #
+    # All four are ``unprobed``, which is a SOURCE tier and not an accessor:
+    # phase B ships their SEARCH half and no client-side read. Where a
+    # client-side read would come from is a different question with a
+    # different answer -- the credits CACHE (``collections/credits.py``), not
+    # a listing accessor -- and it is a facts-tier decision roadmap row 156
+    # owns rather than something this table may assume.
+    FilterAttribute(
+        "actor", "tag", _BOTH, "unprobed",
+        "Plex's ``<Role>`` child element -- the library's own credit data, the "
+        "same tags the phase-B credits cache scans. Row 169's first entry: the "
+        "row's existence is what makes a per-person query WRITABLE at all "
+        "(roadmap row 194 blocker one). ``unprobed`` client-side for the "
+        "reason ``plays`` carries that tier: 9a never asked whether "
+        "``<Role>`` reaches the section listing completely, so there is no "
+        "verdict to cite. Re-scoped to ``show.actor`` on a show library by "
+        "``show_translation`` (plex.py:168-193) -- an entry this task's brief "
+        "said did not exist and the repo's own verbatim transcription of that "
+        "table (``tests/oracle/9b/kometa_build_filter.py``) shows it does; "
+        "``None`` here would have sent a show library the bare ``actor`` "
+        "field, which is the silent-wrong-set failure ``field_for`` exists to "
+        "prevent. Values resolve through ``listFilterChoices`` (the phase-B "
+        "probe measured the field answering on both sections); Kometa's "
+        "hubSearch fallback (plex.py:1273-1280) is deliberately NOT built "
+        "until a real miss shows the choices listing insufficient.",
+        search_field="actor", show_search_field="show.actor",
+        search_kinds=_BOTH, filterable=True,
+    ),
+    FilterAttribute(
+        "director", "tag", ("movie",), "unprobed",
+        "Plex's ``<Director>`` child element. MOVIE-ONLY as a search -- it is "
+        "in Kometa's ``movie_only_searches`` (plex.py:430-436) -- so the show "
+        "libtype refuses by name rather than sending a query Plex answers "
+        "with the wrong set. Movie-only as a FILTER too, and independently: "
+        "``builder.filters_by_type`` carries it under the movie/episode key "
+        "and no show key. The phase-B probe measured the same thing from the "
+        "other end (D7): a show section enumerates this field EMPTY rather "
+        "than refusing it, which is the quietest possible wrong answer and is "
+        "why the gate is by name here. Everything else is the ``actor`` "
+        "row's note.",
+        search_field="director", show_search_field=None,
+        search_kinds=("movie",), filterable=True,
+    ),
+    FilterAttribute(
+        "writer", "tag", ("movie",), "unprobed",
+        "Plex's ``<Writer>`` child element. Movie-only per plex.py:430-436, "
+        "like ``director``; otherwise the ``actor`` row's note.",
+        search_field="writer", show_search_field=None,
+        search_kinds=("movie",), filterable=True,
+    ),
+    FilterAttribute(
+        "producer", "tag", ("movie",), "unprobed",
+        "Plex's ``<Producer>`` child element. Movie-only per plex.py:430-436, "
+        "like ``director``; otherwise the ``actor`` row's note.",
+        search_field="producer", show_search_field=None,
+        search_kinds=("movie",), filterable=True,
     ),
 )
 

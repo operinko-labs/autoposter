@@ -29,6 +29,7 @@ from autoposter.collections.builders.arr import (
     SonarrAllBuilder,
     SonarrTagListBuilder,
 )
+from autoposter.collections.builders.credits_family import CreditsFamilyBuilder
 from autoposter.collections.builders.cs_bucket import CsBucketBuilder
 from autoposter.collections.builders.dynamic import DynamicBuilder
 from autoposter.collections.builders.facts_family import FactsFamilyBuilder
@@ -159,6 +160,11 @@ register(FactsValueBuilder())
 # the family protocol ``builders/dynamic.py`` names
 # (``builders/facts_family.py``).
 register(FactsFamilyBuilder())
+# The fourth family shape: smart collections from a DATABASE enumeration. It
+# needs its own because the question these packs ask needs COUNTS, which
+# ``listFilterChoices`` cannot answer and this service's credits cache can
+# (``builders/credits_family.py``).
+register(CreditsFamilyBuilder())
 
 __all__ = [
     "NAMESPACES",

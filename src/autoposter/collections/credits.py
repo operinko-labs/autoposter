@@ -157,6 +157,12 @@ async def enumerate_credits(
     not a cast census: an item truncated at the 200-Role cap (probe D1)
     undercounts everyone Plex left out, and an item with no row at all is
     ABSENT here rather than a zero.
+
+    That bias is DIRECTIONAL, and the consequence matters wherever these pairs
+    become a ranking: a person whose every appearance is in a >200-role cast is
+    ABSENT from this list entirely -- not merely ranked low -- so a caller
+    taking the most-credited N is taking the most-credited N OF WHAT PLEX
+    ANSWERED, which is not the same claim and must not be published as one.
     """
     stmt = (
         select(ItemCredit.person, func.count())
