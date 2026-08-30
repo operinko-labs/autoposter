@@ -22,7 +22,9 @@ a sub-3-second tolerance, between two wall-clock readings taken at different
 instants — database clock or host clock. Both fail spuriously when a step lands
 in the interval. `time.perf_counter()` is monotonic and is unaffected; so is any
 assertion made *within a single transaction*, because `transaction_timestamp()`
-is fixed at transaction start and cannot move underneath the reader.
+is fixed at transaction start and cannot move underneath the reader. The one
+exception is an assertion whose cross-transaction comparison *is* the production
+behaviour under test — see the residual named below.
 
 This is a developer-environment fact, not a known CI fact. A Linux CI runner may
 well have a monotonic clock. The suite is written to survive both.
@@ -68,10 +70,28 @@ here for any interval below 2.7 s).
 | `tests/test_pipeline.py` row-195 assertion (fixed in `9503df0`) | 1.12 s | ~3.7 % |
 | `tests/test_facts_gather.py:294`, `:328` (fixed) | ~0.1 s | ~0.3 % each |
 | `tests/test_item_facts.py:69`, `tests/test_queue.py:119` 1 s tolerances (fixed) | sub-ms, tolerance 1 s < the 2.7 s step | in principle, whenever a step lands in the gap |
-| `tests/test_queue.py:295` (fixed) — `reclaim_stale()` commits, so the later `func.now()` read is a new transaction | ~2 ms (commit + round trip) | ~0.007 % |
+| `tests/test_queue.py:295` (**residual**) — `reclaim_stale()` commits, so the later `func.now()` read is a new transaction | ~2 ms (commit + round trip) | ~0.007 % |
 
-Six assertions across four files, all now restructured to be immune rather than
-merely improbable to fail.
+Six assertions across four files. **Five are immune**; the sixth is not, and
+cannot be. `reclaim_stale()` commits, so its `run_after` stamp and any
+subsequent `now()` are readings from two different transactions — the
+same-transaction trick that immunises `tests/test_item_facts.py:69` is
+unavailable. Computing the predicate server-side (as that site now does) moves
+*where* the comparison happens, not *which two readings* it compares.
+
+That residual is worth knowing for a reason beyond the test: it is the
+application's own exposure, not the suite's. `_CLAIM_SQL` matches on
+`run_after <= now()` and `_RECLAIM_SQL` on
+`claimed_at < now() - make_interval(...)`, both against rows stamped in earlier,
+committed transactions. A backwards step landing in one of those windows makes
+the queue briefly mis-schedule real work — a job not yet due, a claim not yet
+stale. At ~2 ms against a ~30 s cycle that is ~0.007 % and has never been
+sighted, but it is a property of the scheduler, and no test-level restructuring
+can remove it short of freezing the clock, which would stop testing the real
+thing.
+
+So the rule at the top of this file bans *avoidable* cross-transaction
+wall-clock assertions. It cannot ban the ones that are the behaviour under test.
 
 Two sites were checked and deliberately **not** touched, because the step is
 backwards-only and the direction runs the other way: `tests/test_queue.py:92`

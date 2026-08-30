@@ -296,7 +296,8 @@ async def test_updated_at_advances_on_second_persist_facts(session_factory):
     # persist_facts and the two readings are byte-identical. Strict `>`
     # additionally assumed the DB wall clock is monotonic across the sleep, and
     # the hardening-sweep loop reproduced a backwards step (row 195's close has
-    # the numbers) -- an environment fact, not an upsert defect.
+    # the numbers; docs/research/dev-clock-step/ has the measurement and the
+    # rule) -- an environment fact, not an upsert defect.
     assert updated_at_2 != updated_at_1
     assert row2.critic_rating == pytest.approx(5.1)
 
@@ -335,7 +336,7 @@ async def test_fetched_at_advances_on_second_persist_facts(session_factory):
     # persist_facts and the two readings are byte-identical. Strict `>` also
     # assumed a monotonic DB wall clock across the sleep, which this environment
     # violates (~2.7 s backwards step every ~30 s; row 195's close has the
-    # numbers).
+    # numbers, docs/research/dev-clock-step/ has the measurement and the rule).
     assert fetched_at_2 != fetched_at_1
     assert row2.audience_rating == pytest.approx(7.5)
 

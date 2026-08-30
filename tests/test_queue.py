@@ -289,17 +289,28 @@ async def test_reclaim_stale_resets_run_after_so_the_job_is_immediately_claimabl
     count = await reclaim_stale(session, older_than_seconds=900)
     assert count == 1
 
-    # reclaim_stale() commits, so a wall-clock reading taken here would be a
-    # later transaction than the row's run_after -- two readings, zero slack,
-    # exposed to the dev VM's backwards clock step (docs/research/dev-clock-step/).
-    # Pushing the comparison into the query itself keeps it server-side and
-    # immune, the same fix as test_item_facts.py's same-transaction identity.
-    row = (
+    # reclaim_stale() commits, so run_after was stamped in one transaction and
+    # any now() read here belongs to a later one. This comparison is inherently
+    # cross-transaction and CANNOT be made immune the way test_item_facts.py's
+    # same-transaction identity is -- and neither can claim() itself
+    # (_CLAIM_SQL matches on `run_after <= now()`), which is production
+    # semantics: a backwards clock step in this window breaks the application's
+    # job scheduling, not merely this assertion. Computing the comparison
+    # server-side is tidiness, not immunity. The residual is the commit plus a
+    # round trip, ~2 ms against this machine's ~30 s step cycle -- ~0.007 %,
+    # irreducible (docs/research/dev-clock-step/).
+    run_after, db_now, is_due = (
         await session.execute(
-            select(Job).where(Job.id == job_id, Job.run_after <= func.now())
+            select(Job.run_after, func.now(), Job.run_after <= func.now()).where(
+                Job.id == job_id
+            )
         )
-    ).scalar_one_or_none()
-    assert row is not None
+    ).one()
+    assert is_due, (
+        f"run_after {run_after} is not due against the database clock {db_now}: "
+        "either reclaim_stale did not reset it, or the wall clock stepped "
+        "backwards between the two transactions (docs/research/dev-clock-step/)"
+    )
     assert await claim(session, "worker-b") is not None
 
 
