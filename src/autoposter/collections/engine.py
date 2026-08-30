@@ -449,6 +449,14 @@ async def run_library(
         if reporter is not None:
             actions += reporter(run_cache)[reported:]
 
+        # The placeholder's group, resolved once per definition: the
+        # fall-through an expanded unit defers to when its own title and
+        # builder place it nowhere (``groups.group_for``'s ``parent``). This
+        # is what moves a facts_family member into the block whose divider
+        # ``_separators`` -- which resolves from this same placeholder --
+        # actually creates, closing the disagreement the !100_ misroute was.
+        placeholder_group = groups.group_for(definition, group_index)
+
         for unit in units:
             result = await _run_one(
                 session, section, library, unit, REGISTRY[unit.builder], context(unit),
@@ -460,8 +468,11 @@ async def run_library(
                 # (``imdb_award_years``), its own title ("Oscars Winners 2026")
                 # and its own year, so it resolves its own group and its own
                 # ordering key; resolving from the placeholder would hand all
-                # five ceremony years one string.
-                sort_prefix=groups.sort_prefix_for(unit, group_index, group_order),
+                # five ceremony years one string. The placeholder decides only
+                # the FALL-THROUGH, above.
+                sort_prefix=groups.sort_prefix_for(
+                    unit, group_index, group_order, parent=placeholder_group
+                ),
                 sort_order=groups.definition_order(unit, library_type),
             )
             actions += result.actions

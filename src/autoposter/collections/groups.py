@@ -372,7 +372,7 @@ def preset_groups(config, library_type: str) -> dict[str, str]:
     return index
 
 
-def group_for(definition, index: dict[str, str]) -> str:
+def group_for(definition, index: dict[str, str], parent: str | None = None) -> str:
     """Which block this definition's collections belong to.
 
     Three sources, most specific first. A preset's own category wins, because
@@ -380,15 +380,32 @@ def group_for(definition, index: dict[str, str]) -> str:
     shipped families are recognised by -- they come from ``sources.py`` and
     carry no preset key at all. Everything else is the operator's, and the
     operator group is last in the canonical order for that reason.
+
+    ``parent`` is the PLACEHOLDER's group, threaded in by the engine for
+    expanded units and by nothing else. A ``facts_family`` unit carries the
+    member's title AND builder (``builders/facts_family.py:434-443``), so both
+    lookups miss and -- before this parameter existed -- 65 live franchises
+    fell through to ``!100_``, unheaded, while ``engine._separators`` (which
+    resolves from placeholders) never activated the operator divider above
+    them. The parent only replaces the FALL-THROUGH: a unit whose own title or
+    builder resolves keeps its own answer, which is the C3 expansion trap's
+    rule unchanged (a ceremony year is an award because it says so, not
+    because its placeholder does).
     """
     group = index.get(definition.title)
     if group is not None:
         return group
-    return builtin_group(definition.builder) or OPERATOR_GROUP
+    builtin = builtin_group(definition.builder)
+    if builtin is not None:
+        return builtin
+    return parent or OPERATOR_GROUP
 
 
-def sort_prefix_for(definition, index: dict[str, str], order: tuple[str, ...]) -> str:
-    return sort_prefix(group_for(definition, index), order)
+def sort_prefix_for(
+    definition, index: dict[str, str], order: tuple[str, ...],
+    parent: str | None = None,
+) -> str:
+    return sort_prefix(group_for(definition, index, parent), order)
 
 
 class _DerivedSortTitle:

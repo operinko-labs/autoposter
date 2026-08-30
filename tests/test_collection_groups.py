@@ -765,3 +765,70 @@ def test_group_listing_reorders_and_renumbers_under_group_order():
     ]
     assert listing[1]["section"] == "020"
     assert [entry["position"] for entry in listing] == list(range(10))
+
+
+# --- row 210: an expanded unit inherits its placeholder's group -------------
+
+
+def test_an_expanded_unit_falls_back_to_its_placeholders_group():
+    """The C1 misroute, at its mechanism. A facts_family unit carries the
+    MEMBER's title and builder (facts_family.py:434-443), so both lookups miss
+    and the unit filed under the operator group -- 65 live franchises under
+    !100_, unheaded. The placeholder's group is the fall-through now; the
+    operator group remains the answer only when there is no parent to defer to.
+    """
+    unit = CollectionDefinition(
+        title="Ant-Man", builder="tmdb_collection", params={"id": 9741}
+    )
+    index = {"Franchises": "content"}
+    # No parent: today's (wrong for expansions, right for operator definitions)
+    # answer, unchanged.
+    assert groups.group_for(unit, index) == groups.OPERATOR_GROUP
+    # The fix: the placeholder's group threads through as the fall-through.
+    assert groups.group_for(unit, index, parent="content") == "content"
+
+
+def test_the_parent_never_outranks_the_index_or_the_builder_table():
+    """Precedence is untouched: a preset's own category and the builder table
+    (including the award-years suffix rule) still win over the parent. Only
+    the operator fall-through defers."""
+    named = CollectionDefinition(title="Ours", builder="plex_all")
+    assert groups.group_for(named, {"Ours": "people"}, parent="content") == "people"
+    chart = CollectionDefinition(
+        title="IMDb Top 250", builder="imdb_chart", params={"chart": "top_movies"}
+    )
+    assert groups.group_for(chart, {}, parent="content") == "charts"
+    year = CollectionDefinition(
+        title="Oscars Winners 2026", builder="imdb_award_years",
+        params={"year": "2026"},
+    )
+    assert groups.group_for(year, {}, parent="content") == "awards"
+
+
+def test_a_location_family_unit_inherits_location_not_operator():
+    """The recon's 'same fall-through waits for location_region/continent'
+    pinned before either is switched on live. facts_value serves location AND
+    media, which is exactly why the fix must NOT be a _BUILTIN_GROUPS row for
+    the member builder -- this test plus the media packs' existing behaviour
+    hold that shape out.
+
+    ``location_region`` carries no ``readiness=`` line (catalog.py:1659), so it
+    is READY and the validator takes it; the plain ``config()`` helper is
+    enough.
+    """
+    index = groups.preset_groups(config(presets=["location_region"]), "Movie")
+    assert index.get("Regions") == "location"
+    unit = CollectionDefinition(
+        title="Western Europe", builder="facts_value",
+        params={"field": "origin_country", "values": ["FR", "DE"]},
+    )
+    assert groups.group_for(unit, index, parent=index["Regions"]) == "location"
+
+
+def test_sort_prefix_for_threads_the_parent_through():
+    unit = CollectionDefinition(
+        title="Ant-Man", builder="tmdb_collection", params={"id": 9741}
+    )
+    assert groups.sort_prefix_for(
+        unit, {}, groups.CANONICAL_ORDER, parent="content"
+    ) == groups.sort_prefix("content", groups.CANONICAL_ORDER)

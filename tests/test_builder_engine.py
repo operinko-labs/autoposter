@@ -25,6 +25,7 @@ import pytest
 from plexapi.exceptions import BadRequest
 from pydantic import ValidationError
 
+from autoposter.collections import groups
 from autoposter.collections.builders import (
     REGISTRY,
     BuilderContext,
@@ -1451,3 +1452,45 @@ def test_no_shipped_definition_carries_a_filter():
     for library_type in ("Movie", "Show"):
         for definition in default_definitions(config, library_type):
             assert definition.filters is None, definition.title
+
+
+async def test_an_expanded_family_member_files_under_its_placeholders_group(
+    session, registry_entry
+):
+    """Row 210 / the !100_ misroute, reproduced at the engine's own seam.
+
+    The expanding builder here does what facts_family does at
+    facts_family.py:434-443: it returns a unit carrying the MEMBER's title and
+    a DIFFERENT builder, so neither the preset index (keyed on the
+    placeholder's title) nor the builder table can place it. Before the fix
+    the unit fell through to the operator group and this asserted
+    '!100_Ant-Man'; the expected prefix below is DERIVED from the
+    placeholder's own index entry, so this test survives the franchises
+    group's later renumbering without an edit.
+    """
+
+    class _Family:
+        type_name = "test_family"
+
+        async def build(self, ctx):
+            raise AssertionError("an expanding builder is never dispatched to build")
+
+        async def expand(self, ctx):
+            return [CollectionDefinition(title="Ant-Man", builder="test_member")]
+
+    registry_entry(_Family())
+    registry_entry(_Listing("test_member", [("imdb", "tt1")]))
+    section = FakeSection([("m1", ["imdb://tt1"])])
+    config = _config(presets=["content_franchises"])
+
+    index = groups.preset_groups(config, "Movie")
+    prefix = groups.sort_prefix(index["Franchises"], groups.effective_order(config))
+
+    actions = await _run(
+        session, section,
+        [CollectionDefinition(title="Franchises", builder="test_family")],
+        config,
+    )
+
+    assert f"set the sort title of 'Ant-Man' to '{prefix}Ant-Man'" in actions
+    assert not any("!100_Ant-Man" in action for action in actions)
