@@ -108,6 +108,7 @@ DIAGCOL	updated_at
 DIAGCOL	tmdb_origin_country
 DIAGCOL	tmdb_original_language
 DIAGCOL	tmdb_collection_id
+SENTINEL-SCRIPT-REACHED-END
 ```
 
 What that says, precisely:
@@ -128,6 +129,102 @@ production. **There are zero stored origin-country codes and zero stored
 original-language codes to join.** The library-side measurement D3/D4 was
 written for has an empty denominator, and this is the honest reading of the
 production database as of 2026-08-30, not an inference.
+
+### Why the columns are empty: sweep timing, measured
+
+"The enrichment has not run" reads equally well as a pipeline bug, and the
+difference decides whether the packs ever converge. So it was measured rather
+than argued. One further read-only aggregate against the same production
+database (`.superpowers/sdd/p-locnames-db2.txt`, script in section 5), run
+2026-08-30 06:59:45Z:
+
+```
+AGG	now()	2026-08-30 06:59:45.947565+00:00
+AGG	item_facts rows	13590
+AGG	rows with ANY tmdb-sourced field	12458
+AGG	rows with sources key tmdb_origin_country	0
+AGG	rows with sources key tmdb_original_language	0
+AGG	rows with sources key tmdb_collection_id	0
+AGG	rows with non-empty sources	13590
+AGG	max(fetched_at) overall	2026-08-28 14:00:53.302242+00:00
+AGG	max(fetched_at) tmdb-sourced rows	2026-08-28 14:00:53.302242+00:00
+AGG	max(updated_at) overall	2026-08-28 14:00:53.302242+00:00
+AGG	min(fetched_at) overall	2026-08-23 21:50:16.919919+00:00
+AGG	max(facts_attempted_at) media_items	None
+AGG	media_items with facts_attempted_at NOT NULL	0
+AGG	movie-kind facts rows	1961
+AGG	max(fetched_at) movie-kind facts rows	2026-08-28 14:00:53.302242+00:00
+AGG	item_facts rows fetched in last 7 days	13590
+AGG	item_facts rows fetched since 2026-08-29	0
+SRC	audience_rating	tmdb	12452
+SRC	critic_rating	imdb	11728
+SRC	genres	tmdb	2252
+SRC	originally_available	tmdb	2252
+SRC	studio	tmdb	2236
+SRC	content_rating	mdb_commonsense	1801
+SENTINEL-SCRIPT-REACHED-END
+```
+
+A note on the query shape, because the obvious form is wrong here:
+`item_facts.sources` is a JSONB **object** mapping *field name → provider*
+(`db/models.py:243`, built at `facts/gather.py:80` and
+`facts/tmdb_facts.py:119-129`), not a list of providers. So `sources ? 'tmdb'`
+tests keys and would return zero on a perfectly healthy row; the provider is the
+**value**, which is what the `jsonb_each_text` aggregate above reads.
+
+**The verdict is sweep timing, and the writer is provably healthy.** Three
+independent facts, all above:
+
+- **No gather has written anything since Phase A deployed.** The newest write of
+  any kind to `item_facts` is `2026-08-28 14:00:53Z` — `max(fetched_at)` and
+  `max(updated_at)` agree to the microsecond, and **0** rows were fetched on or
+  after 2026-08-29. Phase A — the commit that first reads `origin_country`,
+  `original_language` and the collection id off the TMDb payload and persists
+  them (`253519e`, `2026-08-29T19:21:58+03:00` = `16:21Z`, on `main`) — landed
+  **more than 27 hours after** the last write. Deploys here are Flux-automated,
+  so production has been running Phase A code since roughly `2026-08-29 16:30Z`;
+  the deployed schema confirms the rollout independently (all three `tmdb_*`
+  columns present in the `DIAGCOL` list above, and `media_items.facts_attempted_at`
+  queryable). **No pass of the enrichment has yet run under code that knows about
+  these fields.**
+- **The corroborating null.** `facts_attempted_at` is stamped on every *visited*
+  item, found-something or not, and that stamp is itself Phase A's
+  (`facts/gather.py:181-185`, added by the same `253519e`). It is NULL on all
+  15821 media items — **0** non-NULL. If any sweep had visited any item under the
+  deployed code, this would be non-zero. It is not.
+- **The TMDb writer is not broken.** **12458 of 13590** fact rows (91.7%) carry
+  at least one field whose recorded provider is `tmdb` — `audience_rating` on
+  12452 rows, `genres` and `originally_available` on 2252, `studio` on 2236. The
+  TMDb credential resolves, `tmdb_id`s resolve, and the gather does not
+  short-circuit. What is missing is precisely and only the three fields that did
+  not exist in the code when those rows were last written; the zero counts for
+  the `tmdb_origin_country` / `tmdb_original_language` / `tmdb_collection_id`
+  source keys are the *never-written* signature, not a *written-empty* one. This
+  is consistent with `facts/gather.py:207-210`, which writes each of those
+  columns only when the gather populated it, and with `db/models.py:233`, which
+  makes `tmdb_origin_country` NOT NULL defaulting to `[]` — hence 13590 non-NULL
+  rows holding 13590 empty arrays.
+
+So hypothesis (b) — "the sweep runs but the writer never populates these fields"
+— is **excluded by measurement**, not set aside by argument.
+
+**How long the fill takes.** The refill is the ratings-drift sweep
+(`scheduler/jobs.py:211,216`), and its pace is the reason the columns will stay
+empty for a while yet. It ticks every `drift_days = 7` (`config/schema.py:1078`)
+and enqueues at most `drift_batch_size = 500` items per tick
+(`config/schema.py:1082`) whose facts are older than `drift_max_age_days = 7`
+(`config/schema.py:1083`). Every one of the 13590 fact rows was written in the
+2026-08-23 21:50Z – 2026-08-28 14:00Z backfill window, so rows only begin
+ageing past the 7-day threshold from ~2026-08-30 onward; at 500 per weekly tick,
+a full revisit of 13590 rows is ≈28 ticks, on the order of **six months** at the
+default knobs. The 1961 movie rows the two location packs serve fill on the same
+schedule, interleaved with everything else.
+
+**What this means for the packs.** The Addendum's binding disclosure — that
+membership *converges as the drift sweep fills `origin_country`* — is honest: the
+mechanism exists, is deployed, and has simply not ticked yet. The convergence is
+slow, not absent. Anyone wanting it sooner turns the two knobs above rather than
+waiting.
 
 ---
 
@@ -191,6 +288,45 @@ accent/punctuation fold recovers both (third column), taking the forward join
 from 241/251 to **243/251** (96.8%). The other eight differ by more than
 accents and no fold reaches them.
 
+#### The one row the table above leaves undecided: `FO`
+
+Nine of the ten rows carry their own evidence in the capture — a folded hit, a
+prefix-3 candidate, or both. `FO 'Faeroe Islands'` shows `NONE NONE`, because the
+prefix-3 heuristic cannot bridge `fae` → `far` and the accent fold has no accent
+to strip. The pairing below is therefore derived from the on-disk bytes
+explicitly, so that Task 2's alias table has a derivation to cite and nobody has
+to supply `Faroe Islands` from memory — which would be right, and would still be
+the forbidden move.
+
+**Both spellings are fetched bytes on disk**, in two independent artifacts:
+
+| spelling | artifact | where |
+| --- | --- | --- |
+| `Faeroe Islands` | `.superpowers/sdd/p-locnames-countries.json` (TMDb `/configuration/countries`, sha256 `fb4609a1…`) | the `FO` record's `english_name`, byte offset 5412 |
+| `Faroe Islands` | *the same TMDb record*, `native_name` | byte offset 5412, same object |
+| `Faroe Islands` | `.superpowers/kometa-v2.4.8/region.yml` (sha256 `9409fee7…`) | line 328, an addon member of group `Northern Europe` (key at line 321) |
+| `Faroe Islands` | `.superpowers/kometa-v2.4.8/continent.yml` (sha256 `fbc20666…`) | line 315, an addon member of group `Europe` (key at line 291) |
+
+The whole `FO` record, from the fetched bytes:
+
+```json
+{"iso_3166_1": "FO", "english_name": "Faeroe Islands", "native_name": "Faroe Islands"}
+```
+
+So the pair `Faeroe Islands` → `Faroe Islands` is derivable **without leaving the
+fetched artifacts**: TMDb's own record carries the upstream spelling in its
+`native_name` field, and upstream's two files carry that exact string as a
+groupable member. Counter-checks over the same bytes, both directions:
+`Faeroe` occurs **0** times in `region.yml` and **0** times in `continent.yml`;
+`Faroe` occurs exactly **1** time in the fetched countries table — the
+`native_name` above. There is no third spelling to choose between.
+
+`native_name` is a general second lever, not an `FO` special case: 217 of the 251
+fetched country rows have `native_name == english_name`, leaving 34 rows where it
+supplies a genuinely different string. It is offered here as evidence for one
+pairing, not proposed as a normalisation rule — see the note that closes this
+section.
+
 Every one of the ten is a **spelling divergence for a country upstream does
 carry**: `Faeroe Islands`/`Faroe Islands`, `Kyrgyz Republic`/`Kyrgyzstan`,
 `Libyan Arab Jamahiriya`/`Libya`, `Palestinian Territory`/`Palestine`,
@@ -244,6 +380,53 @@ Re-scoping the gate to the forward join, deferring the flips until the
 enrichment has run, or flipping with the leftover-bucket disclosure the plan
 describes are all defensible readings — and all three are the controller's to
 choose, not this document's.
+
+### The operative gate (superseding the plan's original wording)
+
+That choice has since been made, and it is recorded here so a reader of this
+document alone meets the gate that is actually in force rather than the one it
+replaced.
+
+**Superseded.** The plan as committed
+(`docs/superpowers/plans/2026-08-31-location-names.md:1037`, and Global
+Constraint 11) words the Task 3 gate as *D3, D4 = PROCEED (≥90% of movie-kind
+origin-coded item-values land in a named group)*, admitting only PROCEED or
+RE-FILE. That threshold is **unmeasurable, permanently as of this measurement
+and not merely unmet**: its denominator is the count of origin-coded movie-kind
+item-values in production, which is **0 of 0** (§2). Neither branch of a
+two-branch gate can be taken when the quantity it tests does not exist.
+
+**Operative.** The controller re-scoped the gate to the **forward join** —
+`p-locnames-facts.md`, Addendum of 2026-08-31, item 1, binding — on the reasoning
+that the forward join answers the gate's actual semantic question (*do TMDb's
+country names land in upstream's groups?*) using the half of the evidence that is
+measurable today. The re-scoped gate and the numbers that satisfy it:
+
+| | |
+| --- | --- |
+| **gate** | ≥90% of the **fetched TMDb country names** land in the pack file's member universe |
+| **region.yml** | **241/251 = 96.0%** exact; 243/251 = 96.8% accent-folded |
+| **continent.yml** | **241/251 = 96.0%** exact; 243/251 = 96.8% accent-folded — the same ten misses, name for name |
+| **misses** | all ten are spelling divergences for countries upstream does carry (§3); **not one of the 251 is absent as a place** |
+| **verdict** | **D3 = PROCEED, D4 = PROCEED.** Task 3 flips both packs. |
+
+Two conditions ride with that PROCEED (Addendum item 2), and neither is
+optional:
+
+1. The flip ships the **convergence disclosure**: membership grows from near-zero
+   as the drift sweep fills `tmdb_origin_country`, with
+   `scheduler.drift_batch_size` / `scheduler.drift_days` named as the knobs that
+   accelerate it. §2 above establishes by measurement that this sentence is true
+   — the sweep is deployed and has not yet ticked, rather than running and
+   failing to write — which is the condition on which the disclosure may honestly
+   ship.
+2. The **eight post-fold spelling divergences** get an OURS-marked alias table in
+   Task 2's module, every pair derived by comparing the two fetched artifacts on
+   disk rather than recalled, each carrying its own digest guard. §3's `FO`
+   subsection supplies the one derivation the capture did not already carry.
+
+Anything still unmatched after the alias table falls to the packs' leftover
+handling (`Other Regions` / `Other Continents`), disclosed.
 
 ---
 
@@ -397,6 +580,123 @@ async def diagnose():
     finally:
         await conn.close()
 ```
+
+### `.superpowers/sdd/p-locnames-db2.py` — the sweep-timing aggregate
+
+Added after review, to settle by measurement whether §2's empty columns are a
+sweep that has not ticked or a writer that does not write. Read-only, like the
+probe above; deleted after the run. Run as:
+
+```bash
+kubectl exec -n media -i deploy/autoposter -- python - < .superpowers/sdd/p-locnames-db2.py \
+  2>&1 | tee .superpowers/sdd/p-locnames-db2.txt
+```
+
+```python
+"""Read-only aggregate: has the TMDb facts writer run against production since
+Phase A, or has the drift sweep simply not revisited these rows yet?
+
+Run as:
+  kubectl exec -n media -i deploy/autoposter -- python - < p-locnames-db2.py
+The connection URL comes from the pod's own environment and is never printed.
+
+NOTE on the query shape: item_facts.sources is a JSONB OBJECT mapping FIELD
+NAME -> PROVIDER (db/models.py:243, facts/gather.py:80, tmdb_facts.py:119-129),
+so `sources ? 'tmdb'` would test KEYS and always return zero. The provider is
+the VALUE, hence jsonb_each_text below.
+"""
+import asyncio
+import os
+
+import asyncpg
+
+TMDB_ROW = (
+    "EXISTS (SELECT 1 FROM jsonb_each_text(f.sources) s WHERE s.value = 'tmdb')"
+)
+
+
+async def main():
+    url = os.environ["AUTOPOSTER_DATABASE_URL"].replace(
+        "postgresql+asyncpg://", "postgresql://", 1)
+    conn = await asyncpg.connect(url)
+    try:
+        for label, sql in (
+            ("now()", "SELECT now()"),
+            ("item_facts rows", "SELECT count(*) FROM item_facts f"),
+            ("rows with ANY tmdb-sourced field",
+             "SELECT count(*) FROM item_facts f WHERE " + TMDB_ROW),
+            ("rows with sources key tmdb_origin_country",
+             "SELECT count(*) FROM item_facts f "
+             "WHERE f.sources ? 'tmdb_origin_country'"),
+            ("rows with sources key tmdb_original_language",
+             "SELECT count(*) FROM item_facts f "
+             "WHERE f.sources ? 'tmdb_original_language'"),
+            ("rows with sources key tmdb_collection_id",
+             "SELECT count(*) FROM item_facts f "
+             "WHERE f.sources ? 'tmdb_collection_id'"),
+            ("rows with non-empty sources",
+             "SELECT count(*) FROM item_facts f "
+             "WHERE f.sources IS NOT NULL AND f.sources <> '{}'::jsonb"),
+            ("max(fetched_at) overall", "SELECT max(f.fetched_at) FROM item_facts f"),
+            ("max(fetched_at) tmdb-sourced rows",
+             "SELECT max(f.fetched_at) FROM item_facts f WHERE " + TMDB_ROW),
+            ("max(updated_at) overall", "SELECT max(f.updated_at) FROM item_facts f"),
+            ("min(fetched_at) overall", "SELECT min(f.fetched_at) FROM item_facts f"),
+            ("max(facts_attempted_at) media_items",
+             "SELECT max(facts_attempted_at) FROM media_items"),
+            ("media_items with facts_attempted_at NOT NULL",
+             "SELECT count(*) FROM media_items WHERE facts_attempted_at IS NOT NULL"),
+            ("movie-kind facts rows",
+             "SELECT count(*) FROM item_facts f JOIN media_items mi "
+             "ON mi.id = f.item_id WHERE mi.kind = 'movie'"),
+            ("max(fetched_at) movie-kind facts rows",
+             "SELECT max(f.fetched_at) FROM item_facts f JOIN media_items mi "
+             "ON mi.id = f.item_id WHERE mi.kind = 'movie'"),
+            ("item_facts rows fetched in last 7 days",
+             "SELECT count(*) FROM item_facts f "
+             "WHERE f.fetched_at > now() - interval '7 days'"),
+            ("item_facts rows fetched since 2026-08-29",
+             "SELECT count(*) FROM item_facts f "
+             "WHERE f.fetched_at >= timestamptz '2026-08-29 00:00+00'"),
+        ):
+            print("AGG\t%s\t%s" % (label, await conn.fetchval(sql)))
+        for row in await conn.fetch(
+            "SELECT s.key AS k, s.value AS v, count(*) AS n "
+            "FROM item_facts f, jsonb_each_text(f.sources) s "
+            "GROUP BY s.key, s.value ORDER BY n DESC, s.key"
+        ):
+            print("SRC\t%s\t%s\t%d" % (row["k"], row["v"], row["n"]))
+    finally:
+        await conn.close()
+    print("SENTINEL-SCRIPT-REACHED-END")
+
+
+asyncio.run(main())
+```
+
+### The `FO` byte-evidence commands
+
+The §3 `FO` subsection's four locations, reproduced so the pairing is
+re-derivable. Offline, over the already-fetched bytes:
+
+```bash
+grep -Fn 'Faroe' .superpowers/kometa-v2.4.8/region.yml .superpowers/kometa-v2.4.8/continent.yml
+grep -Fc 'Faeroe' .superpowers/kometa-v2.4.8/region.yml .superpowers/kometa-v2.4.8/continent.yml
+grep -Fc 'Faroe' .superpowers/sdd/p-locnames-countries.json
+```
+
+```
+.superpowers/kometa-v2.4.8/region.yml:328:        - Faroe Islands
+.superpowers/kometa-v2.4.8/continent.yml:315:        - Faroe Islands
+.superpowers/kometa-v2.4.8/region.yml:0
+.superpowers/kometa-v2.4.8/continent.yml:0
+.superpowers/sdd/p-locnames-countries.json:1
+```
+
+The enclosing addon groups were resolved by the same `universe()` fold section 3
+uses (`region.yml` → `Northern Europe`, `continent.yml` → `Europe`; an addon
+member in both, in neither `include:` list), and the `FO` record was read
+straight out of the fetched JSON.
 
 ### `.superpowers/sdd/p-locnames-join.py` — the join measurement
 
