@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dataclasses import asdict
 
 import pytest
@@ -62,6 +63,53 @@ async def test_item_not_found_defers_rather_than_failing(session):
     # thing being waited for, in place of the message-prefix guess it used to
     # make about a job that had already parked.
     assert "scanned" in job.last_error
+
+
+async def test_the_deferral_reason_is_class_prefixed_and_payload_only(session, caplog):
+    """Roadmap row 209 site (2a): the deferral wrote bare str(exc) to
+    job.last_error, served as waiting_reason at api/jobs.py:147. The message
+    stays -- both ItemNotFound raise sites (plex/client.py:635, :645)
+    interpolate only the job's own payload fields, which the same endpoint
+    already serves verbatim in the same row -- but it takes the class prefix,
+    the PlexPathMismatch branch's shape, so every served failure string
+    leads with the class."""
+    async def handler(session_, intent):
+        raise ItemNotFound("no Plex item for movie 'Dune' (tmdb=1, tvdb=None)")
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=31)
+    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    with caplog.at_level(logging.INFO, logger="autoposter.queue.worker"):
+        await run_once(session, "worker-1", _only_process_item(handler))
+
+    job = (await session.execute(select(Job))).scalar_one()
+    assert job.state == "deferred"
+    assert job.last_error == "ItemNotFound: no Plex item for movie 'Dune' (tmdb=1, tvdb=None)"
+    # The pod log's copy of the wait, pinned: the INFO line carries the full
+    # reason whatever the served column does.
+    assert "deferred, waiting for Plex: no Plex item for movie 'Dune'" in caplog.text
+
+
+async def test_a_plex_outage_reason_never_carries_the_server_address(session, caplog):
+    """Roadmap row 209 site (2b): requests' ConnectionError/Timeout str()
+    embeds the Plex host and port, and the branch wrote it bare to
+    job.last_error, served at api/jobs.py:146. Class name only; the full
+    message stays on the INFO line -- the pod log, the trusted sink."""
+    async def handler(session_, intent):
+        raise requests.exceptions.ConnectionError(
+            "HTTPConnectionPool(host='plex.internal', port=32400): Max retries exceeded"
+        )
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=32)
+    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    with caplog.at_level(logging.INFO, logger="autoposter.queue.worker"):
+        await run_once(session, "worker-1", _only_process_item(handler))
+
+    job = (await session.execute(select(Job))).scalar_one()
+    assert job.last_error == "ConnectionError"
+    assert "plex.internal" not in job.last_error
+    # The compensating control, pinned: the operator's full copy on the pod log.
+    assert "waiting for Plex" in caplog.text
+    assert "plex.internal" in caplog.text
 
 
 async def test_path_mismatch_parks_instead_of_deferring_forever(session):

@@ -206,7 +206,16 @@ async def _compare(
         # unreachable" from "this endpoint is broken", and the raw exception
         # would reach the client as a bare 500.
         logger.warning("id-mismatches: %s did not answer", service, exc_info=True)
-        raise HTTPException(status_code=502, detail=f"{service} did not answer: {exc}") from exc
+        # The class name, never the exception's text (roadmap row 209): an
+        # httpx error's str() embeds the request URL, so the old detail
+        # carried the operator's Arr base URL to the browser. Which URL
+        # failed is answered by the warning line's traceback in the pod log
+        # (the trusted sink) -- the same treatment api/pick's 502 gives its
+        # providers (test_the_502_names_the_provider_and_never_the_url).
+        raise HTTPException(
+            status_code=502,
+            detail=f"{service} did not answer ({type(exc).__name__})",
+        ) from exc
 
     arr_root = norm_path(service_cfg.arr_path)
     if not any(shares_tree(arr_root, folder) for folder in root_folders):

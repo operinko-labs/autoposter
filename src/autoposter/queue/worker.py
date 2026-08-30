@@ -113,7 +113,21 @@ async def run_once(
             # surfaced first); fail() issues a SELECT, which would raise
             # PendingRollbackError on a failed transaction instead of rescheduling.
             await session.rollback()
-            await fail(session, job_id, str(exc), defer_seconds=DEFER_INTERVAL_SECONDS)
+            # Class-prefixed, message KEPT (roadmap row 209): this string is
+            # served at api/jobs.py:147 as waiting_reason, and both
+            # ItemNotFound raise sites (plex/client.py:635, :645) interpolate
+            # only the job's own payload fields -- title, ids, rating key --
+            # which that endpoint already serves verbatim in the same row. So
+            # the reason stays a reason (the PlexPathMismatch branch's shape)
+            # rather than a bare class name. PlexPathMismatch itself, whose
+            # message DOES carry file paths, is caught by its own clause
+            # above and never reaches this one.
+            await fail(
+                session,
+                job_id,
+                f"{type(exc).__name__}: {exc}",
+                defer_seconds=DEFER_INTERVAL_SECONDS,
+            )
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
             # Plex itself is unreachable (a connection/timeout error surfacing
             # from _LazyPlexServer's connect attempt, see main.py). Unlike the
@@ -125,7 +139,11 @@ async def run_once(
             # config.plex.resolve_max_attempts, threaded through via the exception
             # rather than a run_once parameter — see _handle_intent in app.py.
             max_attempts = getattr(exc, "max_attempts", MAX_ATTEMPTS)
-            await fail(session, job_id, str(exc), max_attempts)
+            # Class name only (roadmap row 209): requests' ConnectionError and
+            # Timeout str() embed the Plex host and port, and this string is
+            # served at api/jobs.py:146 as last_error. The full message is on
+            # the INFO line above -- the pod log, the trusted sink.
+            await fail(session, job_id, type(exc).__name__, max_attempts)
         except Exception as exc:  # noqa: BLE001 - the queue is the error boundary
             logger.warning("job %s failed: %s", job_id, exc, exc_info=True)
             await session.rollback()

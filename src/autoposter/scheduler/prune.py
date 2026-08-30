@@ -70,6 +70,13 @@ class PruneRefused(Exception):
     describes a pass that never started, not one that broke.
     """
 
+    # Read by scheduler/core.py's failure branch (roadmap row 209): every
+    # message this class is raised with is hand-built served-safe -- the
+    # probe-failure site names the exception class only, never str(exc) and
+    # never a URL (see the comment at that raise) -- so the scheduler serves
+    # it verbatim instead of narrowing it to "PruneRefused".
+    served_detail = True
+
 
 @dataclass(frozen=True)
 class PruneCandidate:

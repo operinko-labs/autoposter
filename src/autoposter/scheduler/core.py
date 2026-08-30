@@ -166,7 +166,23 @@ class Scheduler:
                 detail = await job.run(session) or ""
                 await session.commit()
         except Exception as error:
-            status, detail = "failed", str(error)
+            status = "failed"
+            # Class name only on the served copy (roadmap row 209): this
+            # string is written to scheduled_runs.last_detail (served by
+            # /api/snapshots, rendered by the dashboard) and carried in the
+            # notification payload, and an arbitrary failure's str() commonly
+            # embeds the URL it failed on -- the operator's base URL, in some
+            # shapes a token. The full message and traceback stay on the
+            # warning below: the pod log, the trusted sink. The exception is
+            # an exception that BUILT its message for the served surfaces --
+            # CollectionsPassFailed, PruneRefused -- and says so with
+            # ``served_detail = True``; those messages are redaction-reviewed
+            # at their construction sites and pinned by their own tests.
+            detail = (
+                str(error)
+                if getattr(error, "served_detail", False)
+                else type(error).__name__
+            )
             logger.warning("scheduler: %s failed", job.name, exc_info=True)
 
         try:

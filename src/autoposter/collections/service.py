@@ -76,6 +76,13 @@ class CollectionsPassFailed(RuntimeError):
     where every source was dead was recorded as ``ok`` (roadmap row 115).
     """
 
+    # Read by scheduler/core.py's failure branch (roadmap row 209): this
+    # message is BUILT for the served surfaces -- the per-library summary
+    # whose error halves are already class-name-only (rows 136/188, pinned by
+    # test_the_pass_failure_detail_never_carries_a_url) -- so the scheduler
+    # serves it verbatim instead of narrowing it to this class's name.
+    served_detail = True
+
 
 @dataclass
 class LibraryOutcome:

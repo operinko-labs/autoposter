@@ -7,6 +7,7 @@ and the disagreement -- Radarr holding the right folder under the wrong TMDB
 id -- would be invisible.
 """
 import json
+import logging
 from pathlib import Path
 
 import httpx
@@ -524,6 +525,39 @@ async def test_a_service_that_does_not_answer_is_a_502_naming_it(
 
     assert response.status_code == 502
     assert "radarr" in response.json()["detail"]
+
+
+async def test_the_502_detail_never_carries_the_arr_base_url(
+    client, auth_headers, app, caplog
+):
+    """Roadmap row 209 site (3): an httpx error's str() embeds the request
+    URL, so the 502's detail carried the operator's Arr base URL to the
+    browser. The class name replaces the exception text -- the api/pick 502
+    precedent (test_the_502_names_the_provider_and_never_the_url) -- and the
+    which-URL question is answered by the warning line's traceback in the
+    pod log, pinned below."""
+    def handler(request):
+        return httpx.Response(500, text="boom")
+
+    async with AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        app.state.http = http
+        app.state.plex = FakePlexClient({})
+        with caplog.at_level(logging.WARNING, logger="autoposter.api.mismatches"):
+            response = await client.get("/api/id-mismatches", headers=auth_headers)
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail == "radarr did not answer (HTTPStatusError)"
+    assert "radarr.example" not in detail
+    assert "://" not in detail
+    # The compensating control, pinned: the exc_info warning's traceback is
+    # where the URL still lives, host-only.
+    pinned = [
+        record for record in caplog.records
+        if record.levelno == logging.WARNING and record.exc_info is not None
+    ]
+    assert [r.getMessage() for r in pinned] == ["id-mismatches: radarr did not answer"]
+    assert "radarr.example" in caplog.text
 
 
 # --- an arr instance that is not this library's ------------------------------

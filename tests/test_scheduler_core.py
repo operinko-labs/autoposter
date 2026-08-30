@@ -196,7 +196,91 @@ async def test_a_failing_job_is_recorded_and_the_scheduler_survives(session_fact
     async with session_factory() as session:
         row = (await session.execute(select(ScheduledRun))).scalar_one()
     assert row.last_status == "failed"
-    assert "job exploded" in row.last_detail
+    # Row 209: the served copy is the class name; "job exploded" now lives
+    # only in the pod log.
+    assert row.last_detail == "RuntimeError"
+
+
+async def test_a_failing_job_records_the_class_name_only(session_factory, caplog):
+    """Roadmap row 209 site (1): the failure branch wrote str(error) to
+    last_detail, served by /api/snapshots and carried by the notification --
+    and a plexapi or provider failure's message commonly carries the URL it
+    failed on, in some shapes a token. Class name only on the served copy;
+    the full message and traceback stay on the exc_info warning below -- the
+    pod log, the trusted sink."""
+    async def body(session):
+        raise RuntimeError(
+            "GET http://plex.internal:32400/library/all?X-Plex-Token=SECRETTOKEN failed"
+        )
+
+    stop = asyncio.Event()
+    scheduler = Scheduler(session_factory, [_job(run=body)], poll_seconds=0.01)
+    with caplog.at_level(logging.WARNING, logger="autoposter.scheduler.core"):
+        task = asyncio.create_task(scheduler.run(stop))
+        try:
+            async with asyncio.timeout(5):
+                while True:
+                    async with session_factory() as check:
+                        row = (
+                            await check.execute(select(ScheduledRun))
+                        ).scalar_one_or_none()
+                    if row is not None and row.last_status == "failed":
+                        break
+                    await asyncio.sleep(0.01)
+        finally:
+            stop.set()
+            await task
+
+    assert row.last_detail == "RuntimeError"
+    assert "SECRETTOKEN" not in row.last_detail
+    assert "plex.internal" not in row.last_detail
+    # The compensating control, pinned rather than assumed (the Sweep-1
+    # pattern, test_scheduler_collections_job.py:267-286): narrowing the
+    # served copy is only safe while the warning at core.py's failure branch
+    # still writes the FULL message and traceback to the pod log. A downgrade
+    # -- dropping exc_info, or deleting the line -- goes red here instead of
+    # silently blinding the operator.
+    pinned = [
+        record for record in caplog.records
+        if record.levelno == logging.WARNING and record.exc_info is not None
+    ]
+    assert [r.getMessage() for r in pinned] == ["scheduler: demo failed"]
+    assert "SECRETTOKEN" in caplog.text
+    assert "plex.internal" in caplog.text
+
+
+class _ServedFailure(RuntimeError):
+    served_detail = True
+
+
+async def test_a_served_safe_failure_keeps_its_message(session_factory):
+    """The marker half of row 209 site (1): CollectionsPassFailed and
+    PruneRefused BUILD their messages for the served surfaces (per-library
+    summaries whose error halves are already class-name-only, rows 136/188;
+    prune's hand-built refusals). Narrowing those too would blank the
+    dashboard -- test_builder_knobs.py pins the real one end to end. The
+    marker is what lets the scheduler core stay ignorant of both modules."""
+    async def body(session):
+        raise _ServedFailure("Movies: failed (RuntimeError); TV Shows: 3 action(s)")
+
+    stop = asyncio.Event()
+    scheduler = Scheduler(session_factory, [_job(run=body)], poll_seconds=0.01)
+    task = asyncio.create_task(scheduler.run(stop))
+    try:
+        async with asyncio.timeout(5):
+            while True:
+                async with session_factory() as check:
+                    row = (
+                        await check.execute(select(ScheduledRun))
+                    ).scalar_one_or_none()
+                if row is not None and row.last_status == "failed":
+                    break
+                await asyncio.sleep(0.01)
+    finally:
+        stop.set()
+        await task
+
+    assert row.last_detail == "Movies: failed (RuntimeError); TV Shows: 3 action(s)"
 
 
 async def test_the_scheduler_stops_promptly_on_the_stop_event(session_factory):
@@ -287,7 +371,9 @@ async def test_a_failed_job_notifies_with_failed_status(session_factory):
     assert event == "scheduled_run_completed"
     assert detail["job"] == "demo"
     assert detail["status"] == "failed"
-    assert "job exploded" in detail["detail"]
+    # Row 209: the notification payload is a served surface and carries the
+    # same narrowed detail the scheduled_runs row records.
+    assert detail["detail"] == "RuntimeError"
 
 
 async def test_notification_failure_does_not_mark_the_run_failed(session_factory):
