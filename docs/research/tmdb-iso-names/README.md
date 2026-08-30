@@ -235,6 +235,73 @@ mechanism exists, is deployed, and has simply not ticked yet. The convergence is
 slow, not absent. Anyone wanting it sooner turns the two knobs above rather than
 waiting.
 
+### The re-check, 2026-08-30 08:56Z: verdict unchanged, and now for a stated reason
+
+The verdict above is production state at one instant, and the review that
+accepted it said so: all 13590 rows were written 08-23…08-28 against a 7-day
+threshold, so the first *eligible* tick fell about then, and "a tick that ran
+while the columns stayed empty" would revive the writer-bug hypothesis and
+withdraw the disclosure. The wrap therefore re-ran the same aggregate — same
+query shape, same read-only `kubectl exec` — 1h57m later
+(`.superpowers/sdd/p-locnames-db3.txt`):
+
+```
+AGG	now()	2026-08-30 08:56:36.118188+00:00
+AGG	max(fetched_at) overall	2026-08-28 14:00:53.302242+00:00
+AGG	max(updated_at) overall	2026-08-28 14:00:53.302242+00:00
+AGG	max(facts_attempted_at) media_items	None
+AGG	media_items with facts_attempted_at NOT NULL	0
+AGG	item_facts rows fetched since 2026-08-29	0
+AGG	item_facts rows fetched since 2026-08-30	0
+COL	origin_country NOT NULL	13590
+COL	origin_country non-empty array	0
+COL	original_language NOT NULL	0
+COL	collection_id NOT NULL	0
+COL	movie-kind origin_country non-empty	0
+SRC	audience_rating	tmdb	12452
+SRC	genres	tmdb	2252
+```
+
+Every number is byte-identical to the 06:59Z capture. **No tick has run**, so
+the third case — a tick that ran and left the columns empty — did not arise and
+the writer-bug hypothesis stays excluded. The `SRC` breakdown is unchanged too:
+the TMDb writer is still demonstrably working on the six fields it knows.
+
+The re-check also replaced "about now" with a computed moment. The sweep's
+predicate is `fetched_at < now() - drift_max_age_days` over
+`kind IN ('movie','show')` (`scheduler/jobs.py:154,161-162`), so eligibility
+begins at `min(fetched_at) + 7 days`. Asked directly
+(`.superpowers/sdd/p-locnames-db3.txt`, second block):
+
+```
+ELIG	now()	2026-08-30 08:57:13.757911+00:00
+ELIG	sweep candidate pool (movie+show)	2252
+ELIG	ELIGIBLE right now	0
+ELIG	movie/show with NO facts row	0
+ELIG	first eligibility moment (min fetched_at + 7d)	2026-08-30 21:50:16.919919+00:00
+```
+
+Three things that capture settles which the first one only implied:
+
+- **Zero of the 2252 candidates are eligible yet.** The columns are not empty
+  because a sweep looked and skipped them; they are empty because the sweep has
+  nothing it is *allowed* to pick up. The first item ages past the threshold at
+  **2026-08-30 21:50:16Z**, about 13 hours after this re-check — so the earliest
+  a tick can enqueue anything is that evening, and the 5-tick fill starts from
+  there.
+- **The 2252 candidate pool is now counted, not inferred.** The estimate above
+  derives it from the `SRC genres tmdb 2252` coincidence; this query counts
+  `media_items` by kind directly and returns the same 2252, which is the number
+  the ≈5-tick figure divides.
+- **No movie or show is missing a facts row** (0), so the pool and the fact-row
+  population are the same set — an item with no facts row would have been
+  eligible immediately (`fetched_at IS NULL`), and none exists.
+
+None of this changes a shipped number or a disclosure. It removes the
+time-bound: the convergence story is the same story it was at 06:59Z, and the
+reason the columns are empty is now a scheduled moment rather than an absence of
+evidence to the contrary.
+
 ---
 
 ## 3. The join, per name
@@ -516,7 +583,10 @@ optional:
    accelerate it. §2 above establishes by measurement that this sentence is true
    — the sweep is deployed and has not yet ticked, rather than running and
    failing to write — which is the condition on which the disclosure may honestly
-   ship.
+   ship. §2's re-check at the wrap (08:56Z) re-tested that condition rather than
+   inheriting it, and tightened it: **0 of 2252** candidates are eligible until
+   `2026-08-30 21:50:16Z`, so the sweep has not merely not ticked, it has had
+   nothing it may pick up.
 2. The **eight post-fold spelling divergences** get an OURS-marked alias table in
    Task 2's module, every pair derived by comparing the two fetched artifacts on
    disk rather than recalled, each carrying its own digest guard. §3's `FO`
@@ -769,6 +839,73 @@ async def main():
 
 
 asyncio.run(main())
+```
+
+### `.superpowers/sdd/p-locnames-db3.py` — the T4 re-check
+
+The wrap's re-run of the aggregate above, settling the review's time-bound.
+Read-only; deleted after the run; capture at
+`.superpowers/sdd/p-locnames-db3.txt`. Run the same way:
+
+```bash
+kubectl exec -n media -i deploy/autoposter -- python - < .superpowers/sdd/p-locnames-db3.py \
+  2>&1 | tee .superpowers/sdd/p-locnames-db3.txt
+```
+
+Its body is `p-locnames-db2.py` verbatim, plus one extra `AGG` row
+(`item_facts rows fetched since 2026-08-30`, the same shape as the 08-29 one)
+and a `COL` block carrying the first diagnostic's column-population counts, so
+that "has a tick run?" and "are the columns filling?" are answered in one
+capture rather than two:
+
+```python
+        for label, sql in (
+            ("origin_country NOT NULL",
+             "SELECT count(*) FROM item_facts WHERE tmdb_origin_country IS NOT NULL"),
+            ("origin_country non-empty array",
+             "SELECT count(*) FROM item_facts WHERE jsonb_array_length("
+             "coalesce(tmdb_origin_country, '[]'::jsonb)) > 0"),
+            ("original_language NOT NULL",
+             "SELECT count(*) FROM item_facts WHERE tmdb_original_language IS NOT NULL"),
+            ("collection_id NOT NULL",
+             "SELECT count(*) FROM item_facts WHERE tmdb_collection_id IS NOT NULL"),
+            ("movie-kind origin_country non-empty",
+             "SELECT count(*) FROM item_facts f JOIN media_items mi "
+             "ON mi.id = f.item_id WHERE mi.kind = 'movie' AND "
+             "jsonb_array_length(coalesce(f.tmdb_origin_country, '[]'::jsonb)) > 0"),
+        ):
+            print("COL\t%s\t%s" % (label, await conn.fetchval(sql)))
+```
+
+### `.superpowers/sdd/p-locnames-db4.py` — the eligibility count
+
+Mirrors `sweep_stale_facts`' own predicate (`scheduler/jobs.py:154,158-165`) so
+"how many items can the next tick actually pick up?" is measured against the
+sweep's real `WHERE`, not a paraphrase of it. Same connection handling; the
+capture is appended to `p-locnames-db3.txt`.
+
+```python
+ELIGIBLE = (
+    "FROM media_items mi LEFT JOIN item_facts f ON f.item_id = mi.id "
+    "WHERE mi.kind IN ('movie','show') AND "
+    "(f.fetched_at IS NULL OR f.fetched_at < now() - interval '7 days')"
+)
+
+        for label, sql in (
+            ("now()", "SELECT now()"),
+            ("sweep candidate pool (movie+show)",
+             "SELECT count(*) FROM media_items WHERE kind IN ('movie','show')"),
+            ("ELIGIBLE right now", "SELECT count(*) " + ELIGIBLE),
+            ("movie/show with NO facts row",
+             "SELECT count(*) FROM media_items mi LEFT JOIN item_facts f "
+             "ON f.item_id = mi.id WHERE mi.kind IN ('movie','show') "
+             "AND f.item_id IS NULL"),
+            ("first eligibility moment (min fetched_at + 7d)",
+             "SELECT min(f.fetched_at) + interval '7 days' FROM item_facts f "
+             "JOIN media_items mi ON mi.id = f.item_id "
+             "WHERE mi.kind IN ('movie','show')"),
+        ):
+            print("ELIG\t%s\t%s" % (label, await conn.fetchval(sql)))
 ```
 
 ### The `FO` byte-evidence commands
