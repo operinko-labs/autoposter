@@ -82,13 +82,17 @@ better version of.
 above never asked whether ``viewCount``/``lastViewedAt``/``userRating`` reach
 the section listing, which is why ``plays`` and ``last_played`` sat on
 ``unprobed`` -- a tier that means "nobody measured", not "we tried". Phase B's
-probe (d) walked both listings raw (``docs/research/plex-batch-probe/
-README.md``) and measured all three PRESENT-WHEN-SET: ``viewCount`` on 79 of
-1962 movies and 55 of 286 shows, ``lastViewedAt`` on 98 and 64, ``userRating``
-on 2 and 0. So ``plays``, ``last_played`` and ``user_rating`` are ``listing``,
-read here with the same ``object.__getattribute__`` no-reload discipline as the
-nine before them, and each row in ``filters.py`` argues its own case for why
-sparse presence is safe for it -- they do not share one.
+probe (d) walked both listings raw
+(``docs/research/plex-batch-probe/README.md``) and measured all three
+PRESENT-WHEN-SET: ``viewCount`` on 79 of 1962 movies and 55 of 286 shows,
+``lastViewedAt`` on 98 and 64, ``userRating`` on 2 and 0. That is presence
+only, not agreement with ``/library/metadata``: the ``listing`` call for these
+three per-account scalars is an inference from 9a's finding that disagreements
+were child elements, never scalar row attribs, not a fresh measurement. So
+``plays``, ``last_played`` and ``user_rating`` are ``listing``, read here with
+the same ``object.__getattribute__`` no-reload discipline as the nine before
+them, and each row in ``filters.py`` argues its own case for why sparse
+presence is safe for it -- they do not share one.
 
 All three are PER-ACCOUNT: the value belongs to whichever account the pass
 token authenticated as. That is a property no other row in this table has, and
