@@ -6,6 +6,7 @@ The fakes mirror the ones in ``tests/test_collection_main.py`` and
 the same function those tests exercise directly, so the same plexapi
 surface is all that is needed here too.
 """
+import logging
 import threading
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
@@ -240,7 +241,7 @@ async def test_a_failure_reconciling_one_library_does_not_prevent_the_other(sess
     assert "TV Shows" in detail and "failed" in detail.lower()
 
 
-async def test_a_library_failure_is_recorded_class_name_only(session):
+async def test_a_library_failure_is_recorded_class_name_only(session, caplog):
     """Rows 136/188: service.py stored a bare str(error) on
     LibraryOutcome.error, and that string flows through ReconcileResult.detail
     -> CollectionsPassFailed -> scheduled_runs.last_detail (served by
@@ -251,7 +252,10 @@ async def test_a_library_failure_is_recorded_class_name_only(session):
 
     config = _config(["Movies"])
     async with httpx.AsyncClient() as http:
-        result = await reconcile_libraries(session, BreaksWithATokenisedUrl(), config, http)
+        with caplog.at_level(logging.ERROR, logger="autoposter.collections.service"):
+            result = await reconcile_libraries(
+                session, BreaksWithATokenisedUrl(), config, http
+            )
 
     (outcome,) = result.libraries
     assert outcome.ok is False
@@ -259,6 +263,22 @@ async def test_a_library_failure_is_recorded_class_name_only(session):
     for surface in (outcome.summary, result.summary, result.detail):
         assert "SECRETTOKEN" not in surface
         assert "X-Plex-Token" not in surface
+
+    # The compensating control, pinned rather than assumed (T1 review carry):
+    # narrowing the served surfaces to a class name is only safe because the
+    # rollback handler's ``logger.exception`` still writes the FULL message and
+    # traceback to the pod log -- the operator's one complete copy, under the
+    # host-only rule. Narrowing that call too would delete it silently; this
+    # assertion goes red instead.
+    # ``caplog.text`` is the formatted line plus any traceback the record
+    # carries, so it is where a downgrade from ``exception`` to ``error``
+    # shows up.
+    assert [
+        record.getMessage() for record in caplog.records
+        if record.levelno == logging.ERROR and record.exc_info is not None
+    ] == ["failed reconciling 'Movies'"]
+    assert "SECRETTOKEN" in caplog.text
+    assert "RuntimeError: GET http://plex.internal:32400/" in caplog.text
 
 
 async def test_the_pass_failure_detail_never_carries_a_url(session):
