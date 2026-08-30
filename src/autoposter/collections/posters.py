@@ -355,12 +355,15 @@ async def apply_poster(
     kind: str,
     key: str,
     dry_run: bool = True,
+    generated: Path | None = None,
 ) -> str | None:
     """Give ``collection`` its poster, uploading only when something changed.
 
     Resolution order: a local override first (read directly off disk, no
-    request made), the source ``kind`` names second -- a hosted default, or a
-    person's TMDb profile photo -- nothing third. The bytes are
+    request made), generated separator art second when the caller resolved
+    some (``collections/separator_art.py`` -- also a cache file, read
+    directly, no request), the source ``kind`` names third -- a hosted
+    default, or a person's TMDb profile photo -- nothing fourth. The bytes are
     hashed and compared against ``record.poster_sha256`` -- a match means an
     unchanged pass uploads nothing, the same guarantee ``definition_hash``
     already gives the collection's filter.
@@ -407,6 +410,22 @@ async def apply_poster(
             logger.info(
                 "local poster %s did not decode as an image; using whatever source kind names",
                 local,
+            )
+    if data is None and generated is not None:
+        # A file the caller already produced, below the operator's own override
+        # and above anything fetched: generated art is a poster SOURCE, not an
+        # override, so ``prioritize_assets``' guarantee is unchanged.
+        try:
+            candidate = generated.read_bytes()
+        except OSError:
+            candidate = b""
+        if _is_image(candidate):
+            data = candidate
+            source = "generated separator art"
+        else:
+            logger.info(
+                "generated separator art %s did not decode as an image; using "
+                "whatever source kind names", generated,
             )
     if data is None:
         # Two poster SOURCES now, dispatched on ``kind`` here rather than inside

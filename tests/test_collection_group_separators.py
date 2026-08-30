@@ -364,6 +364,7 @@ async def test_generation_unavailable_reports_no_poster_source(session, config_f
     assert target.poster_key == "orig:@operator"
 
     async def handler(request):
+        assert "separators/@base/" in str(request.url)
         return httpx.Response(404, text="not found")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
@@ -627,3 +628,67 @@ async def test_a_style_change_rewrites_once_and_settles(session, config_factory,
     assert any("set the poster" in action for action in second)
     assert made.uploaded[-1] == bodies["sand"]
     assert third == []
+
+
+async def test_a_generated_groups_divider_uploads_the_cached_art(session, config_factory,
+                                                                 tmp_path):
+    """The hybrid's generated half, wired end to end with no magick: the
+    cache file IS the render (separator_art returns it untouched), apply_poster
+    hashes and uploads it, and nothing fetches -- not the @base layer (cache
+    hit) and not any hosted URL (an '@' stem has none)."""
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    cached = tmp_path / ".generated" / "separators" / "orig" / "operator.jpg"
+    cached.parent.mkdir(parents=True)
+    buffer = io.BytesIO()
+    Image.new("RGB", (20, 30), "olive").save(buffer, format="JPEG")
+    cached.write_bytes(buffer.getvalue())
+
+    async def handler(request):
+        raise AssertionError("nothing may fetch: the render is cached and an "
+                             "'@' stem has no hosted URL")
+
+    target = spec(groups.OPERATOR_GROUP)
+    assert target.poster_key == "orig:@operator"
+    section = FakeSection()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        actions = await run(session, section, target, http=http, config=config)
+
+    assert actions[0] == "created 'Collections'"
+    assert any(action.startswith("set the poster for 'Collections'")
+               for action in actions)
+    assert section._collections["Collections"].uploaded == [cached.read_bytes()]
+    made_row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert made_row.poster_sha256 is not None
+
+
+async def test_an_operator_override_still_outranks_generated_art(session,
+                                                                 config_factory,
+                                                                 tmp_path):
+    """Generated art is a SOURCE, not an override. ``prioritize_assets``'
+    guarantee is unchanged: a file the operator placed under assets_root wins
+    over it, the same way it wins over a hosted default."""
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+
+    def jpeg(color):
+        buffer = io.BytesIO()
+        Image.new("RGB", (20, 30), color).save(buffer, format="JPEG")
+        return buffer.getvalue()
+
+    cached = tmp_path / ".generated" / "separators" / "orig" / "operator.jpg"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(jpeg("olive"))
+    override = tmp_path / "Movies" / "Collections" / "poster.jpg"
+    override.parent.mkdir(parents=True)
+    override.write_bytes(jpeg("red"))
+
+    async def handler(request):
+        raise AssertionError("a local override needs no request")
+
+    section = FakeSection()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await run(session, section, spec(groups.OPERATOR_GROUP), http=http,
+                  config=config)
+
+    assert section._collections["Collections"].uploaded == [override.read_bytes()]

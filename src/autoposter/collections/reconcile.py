@@ -28,6 +28,7 @@ from autoposter.collections.search_url import (
     TagValueNotFound,
     build_search_url,
 )
+from autoposter.collections.separator_art import ensure_separator_art
 from autoposter.db.models import ManagedCollection
 
 logger = logging.getLogger(__name__)
@@ -757,11 +758,10 @@ async def reconcile_separator(
     if definition_current and not (
         posters_on and spec.poster_key is not None and record.poster_sha256 is None
     ):
-        # ``poster_key`` is in the condition because a group with no measured
-        # stem can never fill ``poster_sha256`` (the block below is gated on the
-        # same key), so without it the seven poster-less dividers would fall
-        # through this short-circuit every pass forever -- no I/O either way,
-        # but a fast path that never fires for most of the groups.
+        # ``poster_key`` stays in the condition for shape (every spec carries
+        # one since the hybrid); what keeps this fast path honest now is
+        # ``poster_sha256``: a divider whose art landed short-circuits here,
+        # and one whose art source keeps failing falls through to retry.
         return actions
 
     if not definition_current:
@@ -795,13 +795,21 @@ async def reconcile_separator(
         posters_on and collection is not None and record is not None
         and spec.poster_key is not None
     ):
-        # A group with no measured artwork stem gets no poster rather than a
-        # guessed path: a wrong URL 404s and the collection quietly keeps none,
-        # which is harder to spot than an absence
-        # (``posters.hosted_poster_url``'s own rule, applied one level up).
+        # Which art kind the key names: an '@' stem is OURS to render (the
+        # group has no upstream art whose word matches its title), anything
+        # else is a hosted stem ``hosted_poster_url`` resolves. Generation
+        # runs under dry_run too, for apply_poster's own stated reason: the
+        # report should say whether the source is obtainable -- it writes
+        # only into the assets cache, never to Plex.
+        generated = None
+        style, _, stem = spec.poster_key.partition(":")
+        if stem.startswith("@"):
+            generated = await ensure_separator_art(
+                config, http, style, stem[1:], spec.title
+            )
         message = await apply_poster(
             session, http, config, collection, record, library_name,
-            "separator", spec.poster_key, dry_run=dry_run,
+            "separator", spec.poster_key, dry_run=dry_run, generated=generated,
         )
         if message:
             actions.append(message)
