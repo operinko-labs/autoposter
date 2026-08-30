@@ -13,9 +13,18 @@ mistake this file exists to prevent.
     https://raw.githubusercontent.com/Kometa-Team/Defaults-Image-Creation/a9e02e9d001f9516a48f2706646b66170c80c32e/create_defaults/fonts/Comfortaa-Medium.ttf
 
     OFL.txt
-    sha256 bc85bae0b512b799bbfb2b916e4d0a34cfd963d09778cd783e248b479e67760a
     fetched 2026-08-30 from
     https://raw.githubusercontent.com/google/fonts/main/ofl/comfortaa/OFL.txt
+    sha256 bc85bae0b512b799bbfb2b916e4d0a34cfd963d09778cd783e248b479e67760a
+           as fetched — upstream's own CRLF line endings
+    sha256 c1276722229ed1866c84a0ec9eb9db174f091c77ea3a605724ada55c476c0296
+           as stored here — `.gitattributes`' `* text=auto eol=lf` normalises
+           text files to LF on commit, so this is what a clone gets. The
+           licence text itself is unchanged; only the line endings are.
+
+The `.ttf` is *not* normalised — `.gitattributes` marks `*.ttf binary`
+precisely so a newline "fix" cannot corrupt a font — which is why the sha256
+above is the one a clone reproduces and the one the test asserts.
 
 Copyright line, verbatim from that `OFL.txt`:
 
