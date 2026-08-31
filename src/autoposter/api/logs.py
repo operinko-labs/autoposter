@@ -65,15 +65,21 @@ _CREDENTIAL_PARAM = re.compile(r"(?i)([-\w]*(?:api[-_]?key|token))(=|%3D)[^&\s'\
 # clause is about hosts. Public API hosts are redacted too -- row 117's
 # over-match tradeoff taken the same way on purpose: never miss an operator
 # host, and the pod log keeps the full line under the trusted-sink decision.
-# Row 212 added the encoded-scheme alternation -- a URL nested inside another
+# Row 212 added the encoded-scheme branch -- a URL nested inside another
 # URL's query value carries its :// as %3A%2F%2F, and after row 207 the
 # nested credential was redacted while the nested host beside it was not.
-# The tempered class stops the encoded match at %2F so the nested URL's
-# encoded path survives exactly as the plain path does. This buys exactly one
-# level: %253A (double-encoded) still passes, the same accepted residual the
-# row records -- no shipped provider or client produces it, and the pod log
-# keeps the full line either way.
-_URL_HOST = re.compile(r"(?i)\b(https?(?:://|%3A%2F%2F))(?:(?!%2F)[^\s/?#'\"<>])+")
+# That branch stops at %2F so the nested URL's encoded path survives exactly
+# as the plain path does. This buys exactly one level: %253A (double-encoded)
+# still passes, the same accepted residual the row records -- no shipped
+# provider or client produces it, and the pod log keeps the full line either
+# way. The %2F tempering is scoped to the ENCODED branch only, as a separate
+# pattern: sharing one character class between both branches (as first
+# shipped) also stopped the PLAIN branch at any literal %2F in the authority
+# -- e.g. percent-encoded userinfo -- serving a host that c79d7f4 redacted
+# whole, a regression caught in review. Two patterns applied in sequence keep
+# the plain form exactly as untempered as it was at c79d7f4.
+_URL_HOST = re.compile(r"(?i)\b(https?://)[^\s/?#'\"<>]+")
+_URL_HOST_ENCODED = re.compile(r"(?i)\b(https?%3A%2F%2F)(?:(?!%2F)[^\s/?#'\"<>])+")
 
 # Roadmap row 214: requests formats its own connection target scheme-less and
 # keyword-form -- HTTPConnectionPool(host='plex.internal', port=32400) -- so
@@ -82,10 +88,14 @@ _URL_HOST = re.compile(r"(?i)\b(https?(?:://|%3A%2F%2F))(?:(?!%2F)[^\s/?#'\"<>])
 # requests-flavored exc_info traceback carry it into this buffer. The literal
 # host=/port= tokens are the anchors, so there is no false-positive surface
 # to speak of; the keyword names and the quotes survive, the values never do
-# (row 117's rule). The bare scheme-less host:port shape is deliberately NOT
-# matched -- it is not the live carrier, and a naive rule eats timestamps,
-# ratios and this repo's own file.py:N citations; row 214's close files it
-# forward.
+# (row 117's rule) -- except a quoted value containing a comma or space, or
+# an unterminated quote, which the tempered class cannot match at all: the
+# whole host= match fails and the value is served INTACT, a fail-open rather
+# than a truncation. Adjudicated acceptable: requests never writes a
+# hostname shaped that way, so no live carrier is affected. The bare
+# scheme-less host:port shape is deliberately NOT matched -- it is not the
+# live carrier, and a naive rule eats timestamps, ratios and this repo's own
+# file.py:N citations; row 214's close files it forward.
 _HOST_KEYWORD = re.compile(r"(?i)\b(host=)(['\"]?)[^\s,'\")]+\2")
 _PORT_KEYWORD = re.compile(r"(?i)\b(port=)\d+")
 
@@ -95,6 +105,7 @@ def _scrub(text: str) -> str:
     then the scheme-less keyword host/port shapes requests itself writes."""
     text = _CREDENTIAL_PARAM.sub(r"\1\2REDACTED", text)
     text = _URL_HOST.sub(r"\1REDACTED", text)
+    text = _URL_HOST_ENCODED.sub(r"\1REDACTED", text)
     text = _HOST_KEYWORD.sub(r"\1\2REDACTED\2", text)
     return _PORT_KEYWORD.sub(r"\1REDACTED", text)
 

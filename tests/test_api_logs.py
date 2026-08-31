@@ -224,6 +224,24 @@ def test_a_nested_encoded_url_loses_its_host_and_keeps_its_encoded_path():
     )
 
 
+def test_a_plain_url_with_a_literal_percent_2f_in_the_authority_is_fully_redacted():
+    """Regression pin (sweep 5 task 1 review, Important 1): the row-212
+    tempering that stops the ENCODED match at %2F was written on the class
+    both branches of _URL_HOST shared, so a plain https:// URL whose
+    authority itself carries a literal %2F (percent-encoded userinfo) also
+    terminated early -- serving the host that c79d7f4 redacted whole. The
+    plain branch must stay untempered; only the encoded branch stops at
+    %2F."""
+    buffer = LogBuffer()
+    buffer.emit(record(
+        "GET https://user%2Fname@plex.internal:32400/library failed"
+    ))
+    (entry,) = buffer.lines()
+    assert "plex.internal" not in entry["message"]
+    assert "32400" not in entry["message"]
+    assert entry["message"] == "GET https://REDACTED/library failed"
+
+
 def test_the_requests_keyword_host_is_scrubbed_from_the_served_message():
     """Roadmap row 214, the LIVE shape: requests formats its own connection
     target scheme-less and keyword-form -- HTTPConnectionPool(host='...',
@@ -231,8 +249,9 @@ def test_the_requests_keyword_host_is_scrubbed_from_the_served_message():
     Plex outage the host and port sweep 3 scrubbed out of jobs.last_error were
     served whole on /api/logs (carriers: worker.py's own row-209 INFO line,
     and every requests-flavored exc_info traceback). The string here is the
-    identical fixture tests/test_worker.py's outage test pins into the pod
-    log -- the two halves of the same decision. The bare scheme-less
+    same shape as the fixture tests/test_worker.py's outage test pins into
+    the pod log (plus a " with url: /identity" tail) -- the two halves of
+    the same decision. The bare scheme-less
     `host:port` shape is deliberately NOT chased (filed forward on row 214's
     close): it is not the live carrier, and a naive rule eats timestamps,
     ratios and this repo's own file.py:N citation style."""
@@ -255,15 +274,20 @@ def test_the_requests_keyword_host_is_scrubbed_from_the_served_message():
 def test_ordinary_colons_and_citations_survive_the_host_patterns():
     """The over-match hazard row 214 warns about, pinned from the safe side:
     versions, ratios, clock times and this repo's own file.py:N citation
-    style must pass the scrub untouched. This is the guard that a future
-    'just add a host:port heuristic' edit lands against."""
+    style must pass the scrub untouched -- and a keyword-shaped near-miss
+    (a name merely ending in "host"/"port") must not trip _HOST_KEYWORD or
+    _PORT_KEYWORD either, pinning their `\\b` anchoring, not just their
+    absence from the fixture. This is the guard that a future 'just add a
+    host:port heuristic' edit lands against."""
     buffer = LogBuffer()
     buffer.emit(record(
-        "version 1.2:3 and ratio 16:9 at 10:30:00 -- see filters.py:1220"
+        "version 1.2:3 and ratio 16:9 at 10:30:00 -- see filters.py:1220, "
+        "the ghost=machine on support=8080"
     ))
     (entry,) = buffer.lines()
     assert entry["message"] == (
-        "version 1.2:3 and ratio 16:9 at 10:30:00 -- see filters.py:1220"
+        "version 1.2:3 and ratio 16:9 at 10:30:00 -- see filters.py:1220, "
+        "the ghost=machine on support=8080"
     )
 
 
