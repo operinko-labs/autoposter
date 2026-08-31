@@ -13,7 +13,10 @@ Three rules, three tests:
 1. every path in the map addresses a real field, and every leaf the endpoint
    serves has an entry in the map (the endpoint half lives in
    ``test_api_config_editor.py``, where the client fixture is);
-2. every field's description is non-empty;
+2. every field's description is non-empty -- every model, no exemptions (the
+   list of classes awaiting their batch is gone, and a new one must never be
+   added: a permanent exemption list is how a field stays undescribed
+   forever);
 3. no description says WHEN a setting takes effect -- ``frozen_paths`` owns
    that fact and the editor already renders it on the restart pill, so a
    second copy here would be a copy that drifts.
@@ -25,25 +28,6 @@ from autoposter.config.descriptions import (
     build_field_descriptions,
 )
 from autoposter.config.schema import Config, Secrets
-
-# Classes whose descriptions the second batch of this phase writes. Rule 2
-# skips them and nothing else does -- rule 1 already holds every field in
-# them to being addressable. DELETED by that batch, along with the skip: a
-# permanent exemption list is how a field stays undescribed forever.
-PENDING_MODELS: frozenset[str] = frozenset({
-    "Secrets",
-    "TextStyle",
-    "OperationsConfig",
-    "BadgesConfig",
-    "CleanupConfig",
-    "PruneConfig",
-    "ArtworkModesConfig",
-    "SchedulerConfig",
-    "RadarrConfig",
-    "SonarrConfig",
-    "TracearrConfig",
-    "ArrSyncConfig",
-})
 
 
 def _described_models() -> list[tuple[str, type[BaseModel], str]]:
@@ -103,8 +87,6 @@ def test_every_config_field_carries_a_description():
     """The completeness guard: a field with no description is a silent row."""
     missing = []
     for class_name, model, prefix in _described_models():
-        if class_name in PENDING_MODELS:
-            continue
         for name, field in model.model_fields.items():
             if not (field.description or "").strip():
                 missing.append(f"{class_name}.{name} (serves {prefix}{name})")

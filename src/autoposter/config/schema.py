@@ -21,29 +21,84 @@ _SECRET_ENV = {
 class Secrets(BaseModel):
     """Runtime secrets. Never read from the YAML config file."""
 
-    database_url: str
-    plex_token: str
-    tmdb_token: str
-    tvdb_apikey: str
-    fanart_apikey: str
-    webhook_secret: str
+    database_url: str = Field(
+        description=(
+            "The connection string this service's database engine authenticates "
+            "with. Set from AUTOPOSTER_DATABASE_URL; never read from the config file."
+        ),
+    )
+    plex_token: str = Field(
+        description=(
+            "The Plex server token every request to Plex authenticates with. Set "
+            "from AUTOPOSTER_PLEX_TOKEN; never read from the config file."
+        ),
+    )
+    tmdb_token: str = Field(
+        description=(
+            "The TMDb API token metadata requests to TMDb authenticate with. Set "
+            "from AUTOPOSTER_TMDB_TOKEN; never read from the config file."
+        ),
+    )
+    tvdb_apikey: str = Field(
+        description=(
+            "The TVDB API key metadata requests to TVDB authenticate with. Set "
+            "from AUTOPOSTER_TVDB_APIKEY; never read from the config file."
+        ),
+    )
+    fanart_apikey: str = Field(
+        description=(
+            "The Fanart.tv API key art requests to Fanart.tv authenticate with. "
+            "Set from AUTOPOSTER_FANART_APIKEY; never read from the config file."
+        ),
+    )
+    webhook_secret: str = Field(
+        description=(
+            "The shared secret inbound webhook requests must present to be "
+            "accepted. Set from AUTOPOSTER_WEBHOOK_SECRET; never read from the "
+            "config file."
+        ),
+    )
     # Soft secret, unlike the rest of this class: MDBList content ratings are
     # one field among several metadata operations gathers, so a deployment
     # without a key yet still runs, just without that one field. Defaults to
     # "" rather than being in _SECRET_ENV, which would hard-fail every boot.
-    mdblist_apikey: str = ""
+    mdblist_apikey: str = Field(
+        default="",
+        description=(
+            "The MDBList API key content-rating lookups authenticate with. A "
+            "deployment without one still runs, with content ratings unavailable."
+        ),
+    )
     # Soft secrets, same reasoning as mdblist_apikey: both radarr.enabled and
     # sonarr.enabled default to false, so a deployment that never configures
     # either service must still boot. Left empty, ArrClient's requests to
     # that service simply fail (and are caught and logged by the scheduled
     # job), rather than the whole process refusing to start.
-    radarr_apikey: str = ""
-    sonarr_apikey: str = ""
+    radarr_apikey: str = Field(
+        default="",
+        description=(
+            "The Radarr API key Radarr requests authenticate with. A deployment "
+            "without one still runs, with Radarr registration unavailable."
+        ),
+    )
+    sonarr_apikey: str = Field(
+        default="",
+        description=(
+            "The Sonarr API key Sonarr requests authenticate with. A deployment "
+            "without one still runs, with Sonarr registration unavailable."
+        ),
+    )
     # Soft secret, same reasoning as mdblist_apikey: a deployment without it
     # must still boot, just with every Web UI login attempt 401ing -- see
     # api/auth.py and api/routes.py. Never a plaintext password, always a
     # bcrypt hash produced by hash_password().
-    admin_password_hash: str = ""
+    admin_password_hash: str = Field(
+        default="",
+        description=(
+            "The bcrypt hash the Web UI's login checks against. A deployment "
+            "without one still runs, with every login attempt rejected."
+        ),
+    )
     # Soft secret, same reasoning as mdblist_apikey, but for a different
     # reason than most of this class's other ones: the autoposter Harbor
     # project is public and internet-accessible (operator decision,
@@ -53,7 +108,14 @@ class Secrets(BaseModel):
     # Harbor's artifact listing needs a robot account's credential. Already
     # base64 of `robot$name:secret`, ready to be the value of an
     # `Authorization: Basic` header when set; see api/version.py.
-    harbor_token: str = ""
+    harbor_token: str = Field(
+        default="",
+        description=(
+            "The Harbor robot account credential the update check authenticates "
+            "with. A deployment without one still runs the check anonymously; "
+            "only needed when the registry project is private."
+        ),
+    )
     # Soft secret, same reasoning as mdblist_apikey: only the collection
     # builders that ask plex.tv about the *account* (the watchlist) need it,
     # and a deployment that builds no such collection must still boot.
@@ -64,13 +126,27 @@ class Secrets(BaseModel):
     # is exactly why plex/health.py's refresh is written never to let a
     # plex.tv failure touch anything. Minted by the PIN CLI
     # (``python -m autoposter.plex.auth``).
-    plex_account_token: str = ""
+    plex_account_token: str = Field(
+        default="",
+        description=(
+            "The plex.tv account token watchlist-based collection builders "
+            "authenticate with. A deployment without one still runs, with those "
+            "collections unavailable."
+        ),
+    )
     # Soft secret, same reasoning as mdblist_apikey: ``tracearr.enabled``
     # defaults to false, so a deployment that never configures Tracearr must
     # still boot. Left empty, ``build_source_clients`` builds no client at all
     # and every tracearr_most_watched definition reports itself failed while
     # the rest of the pass proceeds.
-    tracearr_apikey: str = ""
+    tracearr_apikey: str = Field(
+        default="",
+        description=(
+            "The Tracearr API key watch-history requests authenticate with. A "
+            "deployment without one still runs, with Tracearr-sourced "
+            "collections unavailable."
+        ),
+    )
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -93,20 +169,58 @@ class Secrets(BaseModel):
 class TextStyle(BaseModel):
     """One text block. Mirrors a Posterizarr *OverlayPart section."""
 
-    font: str = "Comfortaa-Medium.ttf"
-    all_caps: bool = True
-    font_color: str = "white"
-    min_point_size: int
-    max_point_size: int
-    max_width: int
-    max_height: int
-    text_offset: str
-    gravity: str = "south"
-    line_spacing: int = 0
-    add_text: bool = True
-    add_stroke: bool = False
-    stroke_color: str = "black"
-    stroke_width: int = 6
+    font: str = Field(
+        default="Comfortaa-Medium.ttf",
+        description="The font file this text block is drawn with, found under fonts_root.",
+    )
+    all_caps: bool = Field(default=True, description="Upper-case the text before drawing it.")
+    font_color: str = Field(
+        default="white",
+        description="The text fill color, an ImageMagick color name or hex value.",
+    )
+    min_point_size: int = Field(
+        description=(
+            "The smallest point size the text is allowed to shrink to while "
+            "auto-fitting. Text that would need to go smaller is drawn at this "
+            "size and the render is abandoned instead of shipping illegible text."
+        ),
+    )
+    max_point_size: int = Field(
+        description="The largest point size the text is allowed to auto-fit to.",
+    )
+    max_width: int = Field(
+        description="The text block's maximum width in pixels, the box auto-fitting sizes text within.",
+    )
+    max_height: int = Field(
+        description="The text block's maximum height in pixels, the box auto-fitting sizes text within.",
+    )
+    text_offset: str = Field(
+        description=(
+            "The text block's vertical offset from gravity, an ImageMagick "
+            "geometry value carrying an explicit sign, e.g. '+300' or '-50'."
+        ),
+    )
+    gravity: str = Field(
+        default="south",
+        description="The ImageMagick gravity the text block is anchored and offset from.",
+    )
+    line_spacing: int = Field(
+        default=0,
+        description="Extra spacing between lines of wrapped text, in pixels.",
+    )
+    add_text: bool = Field(default=True, description="Whether this text block is drawn at all.")
+    add_stroke: bool = Field(
+        default=False,
+        description="Draw an outline behind the text fill, using stroke_color and stroke_width.",
+    )
+    stroke_color: str = Field(
+        default="black",
+        description="The text outline's color, an ImageMagick color name or hex value. Only used when add_stroke is on.",
+    )
+    stroke_width: int = Field(
+        default=6,
+        description="The text outline's width in pixels. Only used when add_stroke is on.",
+    )
 
     @field_validator("text_offset")
     @classmethod
@@ -326,56 +440,96 @@ class PlexConfig(BaseModel):
 class OperationsConfig(BaseModel):
     """Per-item metadata operations, replacing Kometa's mass_*_update."""
 
-    enabled: bool = True
-    # Off means gather and store facts but leave Plex untouched — the safe
-    # setting while the tool being replaced still owns these fields.
-    write_to_plex: bool = True
-    # How often the IMDb ratings dataset is polled in the background (see
-    # facts/imdb.py's ImdbAutoRefresh). Also runs once at startup when
-    # imdb_ratings is empty or older than this. IMDb rebuilds its datasets
-    # once a day; polling every 6h picks up each day's build within 6h of
-    # publication. Conditional requests (If-Modified-Since) mean most polls
-    # transfer nothing when the file hasn't changed.
-    imdb_refresh_hours: int = 6
-    # Off disables the automatic refresh entirely; the manual
-    # `python -m autoposter.facts.imdb` entry point still works.
-    imdb_refresh_enabled: bool = True
-    # When a rating lookup finds nothing during fact gathering, attempt one
-    # extra refresh rather than waiting up to imdb_refresh_hours. Rate-limited
-    # to one attempt per this many minutes (see facts/imdb.py's
-    # ImdbMissRefresh) so a season-pack import cannot trigger one download
-    # per episode. 0 disables miss-triggered refreshes entirely.
-    imdb_miss_refresh_minutes: int = 60
-    # How long TMDb is left alone after it answers 429, when its own
-    # ``Retry-After`` says nothing. The window lives in the database
-    # (``tmdb_rate_state``) so every pod shares it -- see
-    # ``facts/tmdb_budget.py``. 0 disables the shared window entirely, exactly
-    # as ``imdb_miss_refresh_minutes`` above does for its cooldown, and means
-    # each 429 is simply that one request's failure.
-    #
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether per-item metadata operations run at all. Off skips gathering "
+            "and storing facts entirely, and leaves Plex untouched."
+        ),
+    )
+    write_to_plex: bool = Field(
+        default=True,
+        description=(
+            "Write the gathered metadata to Plex. Off gathers and stores the facts "
+            "but leaves Plex untouched -- the safe setting while another tool still "
+            "owns these fields."
+        ),
+    )
+    imdb_refresh_hours: int = Field(
+        default=6,
+        description=(
+            "How often the IMDb ratings dataset is polled in the background, also "
+            "run once at startup when the stored data is empty or older than this. "
+            "IMDb rebuilds its datasets once a day, so this picks up each day's "
+            "build within that many hours of publication."
+        ),
+    )
+    imdb_refresh_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the background IMDb ratings refresh runs at all. Off disables "
+            "it; the manual refresh entry point still works."
+        ),
+    )
+    imdb_miss_refresh_minutes: int = Field(
+        default=60,
+        description=(
+            "When a rating lookup finds nothing during fact gathering, attempt one "
+            "extra refresh rather than waiting for the regular cadence, rate-limited "
+            "to one attempt per this many minutes. 0 disables miss-triggered "
+            "refreshes entirely."
+        ),
+    )
     # This section owns WHEN, not WHETHER, in the split ``SchedulerConfig``'s
     # docstring states: there is no ``tmdb_budget_enabled`` beside this,
     # because 0 already means that and two spellings of one setting is one
     # spelling too many.
-    tmdb_backoff_seconds: int = 60
+    tmdb_backoff_seconds: int = Field(
+        default=60,
+        description=(
+            "How long TMDb is left alone after it answers 429, when it gives no "
+            "Retry-After of its own. Shared across every pod. 0 disables the "
+            "shared cooldown entirely, so each 429 is simply that one request's "
+            "failure."
+        ),
+    )
 
 
 class BadgesConfig(BaseModel):
     """Kometa-parity badge overlays, composited onto the base artwork."""
 
-    enabled: bool = True
+    enabled: bool = Field(
+        default=True,
+        description="Whether badge overlays are rendered at all. Off skips all badge compositing.",
+    )
     # Dry run by default: compose and fingerprint, upload nothing. This is
     # the first thing in this project that writes images to the live Plex
     # server across ~16,000 items -- the operator should compose, inspect and
     # only then enable it, the same posture operations.write_to_plex takes.
-    upload_to_plex: bool = False
-    # Lock the Plex field after upload so the agent cannot reclaim it.
-    lock_artwork: bool = True
+    upload_to_plex: bool = Field(
+        default=False,
+        description=(
+            "Upload the composed, badged artwork to Plex. Off composes and "
+            "fingerprints but uploads nothing -- the safe setting until the "
+            "operator has inspected the output."
+        ),
+    )
+    lock_artwork: bool = Field(
+        default=True,
+        description="Lock the Plex artwork field after upload, so another agent cannot reclaim it.",
+    )
     # Add the literal Plex label "Overlay", as the previous tool did. Off by
     # default: we track overlay state in Postgres so we do not need it, but
     # it is visible and filterable in Plex, so it is offered rather than
     # silently dropped.
-    apply_overlay_label: bool = False
+    apply_overlay_label: bool = Field(
+        default=False,
+        description=(
+            "Add the literal Plex label 'Overlay' to badged items. Off by default "
+            "since overlay state is already tracked in Postgres; offered because "
+            "the label is visible and filterable directly in Plex."
+        ),
+    )
     # Before uploading a render this service has no badge_fingerprint for --
     # after adoption, after a database restore, or for anything never badged
     # here -- read the provenance out of the artwork Plex is already serving
@@ -386,7 +540,15 @@ class BadgesConfig(BaseModel):
     # is the difference between ~16,000 needless uploads and none. Entirely
     # best-effort -- any failure reading provenance falls through to the
     # normal upload path.
-    adopt_from_plex: bool = True
+    adopt_from_plex: bool = Field(
+        default=True,
+        description=(
+            "Before uploading a render this service has no fingerprint for, read the "
+            "provenance out of the artwork Plex is already serving and skip the "
+            "upload when it is already that exact image. Best-effort: any failure "
+            "falls through to a normal upload."
+        ),
+    )
 
 
 class ScheduleGate(BaseModel):
@@ -1264,7 +1426,10 @@ class CleanupConfig(BaseModel):
     # Dry run by default, the same posture as badges.upload_to_plex and
     # collections.apply_to_plex: report what would move, change nothing until
     # the operator opts in.
-    apply: bool = False
+    apply: bool = Field(
+        default=False,
+        description="Actually move orphaned asset directories to backup_root; off only reports what a sweep would move.",
+    )
     # Sanity caps on the result of a sweep. If assets_root is repointed, a
     # volume is remounted, library_folders is toggled (which changes the whole
     # naming scheme) or renders is only partly restored, then *every*
@@ -1274,8 +1439,17 @@ class CleanupConfig(BaseModel):
     # ~16,000-item library (dozens of directories) yet far below any plausible
     # "the tree moved" figure; the share cap catches the same failure on a
     # small tree, where no useful absolute cap would ever fire.
-    max_orphans: int = 500
-    max_orphan_share: float = 0.25
+    max_orphans: int = Field(
+        default=500,
+        description="Refuse a sweep whose orphan count exceeds this, and report the numbers instead of moving anything.",
+    )
+    max_orphan_share: float = Field(
+        default=0.25,
+        description=(
+            "Refuse a sweep whose orphan count exceeds this share of the "
+            "library, and report the numbers instead of moving anything."
+        ),
+    )
 
 
 class PruneConfig(BaseModel):
@@ -1297,7 +1471,10 @@ class PruneConfig(BaseModel):
     touched, and re-including the library re-creates the rows on the next pass.
     """
 
-    apply: bool = False
+    apply: bool = Field(
+        default=False,
+        description="Actually delete rows Plex can no longer resolve; off only reports which rows would go.",
+    )
     # Sanity caps on the result of a sweep, mirroring cleanup.max_orphans /
     # max_orphan_share. A Plex rebuild, a renamed library, a newly excluded one
     # or a server answering from a partly-loaded state all make large numbers
@@ -1308,8 +1485,17 @@ class PruneConfig(BaseModel):
     # far below any plausible "the server changed" figure; the share cap
     # catches the same failure on a small library, where no useful absolute cap
     # would ever fire.
-    max_prunes: int = 500
-    max_prune_share: float = 0.25
+    max_prunes: int = Field(
+        default=500,
+        description="Refuse a sweep whose unresolvable-row count exceeds this, and report the numbers instead of deleting anything.",
+    )
+    max_prune_share: float = Field(
+        default=0.25,
+        description=(
+            "Refuse a sweep whose unresolvable-row count exceeds this share of "
+            "the library, and report the numbers instead of deleting anything."
+        ),
+    )
 
 
 class AdoptConfig(BaseModel):
@@ -1352,21 +1538,48 @@ class ArtworkModesConfig(BaseModel):
     # NEW root and mount, deliberately not the overloaded ``backup_root`` (which
     # holds asset directories the cleanup sweep relocates): the two must never
     # collide.
-    plex_backup_root: Path = Path("/plexbackup")
+    plex_backup_root: Path = Field(
+        default=Path("/plexbackup"),
+        description="Where the backup mode writes and the restore mode reads the Kometa-structured art tree.",
+    )
     # Dry run by default, per Plex-writing mode -- see the class docstring.
     # Backup is Plex-read-only (it writes to disk) and so carries no apply flag.
-    restore_apply: bool = False
-    reset_apply: bool = False
-    revert_apply: bool = False
-    logo_apply: bool = False
-    logo_revert_apply: bool = False
+    restore_apply: bool = Field(
+        default=False,
+        description="Actually upload the backed-up artwork tree to Plex; off only reports what restore would do.",
+    )
+    reset_apply: bool = Field(
+        default=False,
+        description="Actually reset artwork to Plex's default posters; off only reports what reset would do.",
+    )
+    revert_apply: bool = Field(
+        default=False,
+        description="Actually revert overlays previously applied by this service; off only reports what the revert would do.",
+    )
+    logo_apply: bool = Field(
+        default=False,
+        description="Actually run the logo updater against Plex; off only reports what it would change.",
+    )
+    logo_revert_apply: bool = Field(
+        default=False,
+        description="Actually revert the logo updater's previous changes; off only reports what the revert would do.",
+    )
     # Shared plausibility caps. 500 sits far above any real operator run on a
     # ~16,000-item library yet far below any "the filter or the mount moved"
     # figure; the share cap catches the same failure on a small library, where
     # no useful absolute cap would ever fire. Mirrors ``cleanup.max_orphans`` /
     # ``max_orphan_share``.
-    max_changes: int = 500
-    max_change_share: float = 0.25
+    max_changes: int = Field(
+        default=500,
+        description="Refuse a mode whose candidate count exceeds this, and report the numbers instead of changing anything.",
+    )
+    max_change_share: float = Field(
+        default=0.25,
+        description=(
+            "Refuse a mode whose candidate count exceeds this share of the "
+            "library, and report the numbers instead of changing anything."
+        ),
+    )
 
 
 class SchedulerConfig(BaseModel):
@@ -1385,23 +1598,61 @@ class SchedulerConfig(BaseModel):
     the same behaviour two names.
     """
 
-    enabled: bool = True
-    poll_seconds: int = 60
-    collections_hours: int = 24
-    drift_days: int = 7
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "The master switch for all five scheduled passes -- collections "
+            "reconcile, ratings-drift sweep, asset cleanup, media_items prune "
+            "and the Radarr/Sonarr sync safety net. Off stops all of them."
+        ),
+    )
+    poll_seconds: int = Field(
+        default=60,
+        description="How often the scheduler checks whether any due job should run.",
+    )
+    collections_hours: int = Field(
+        default=24,
+        description="How often the collections reconcile pass runs.",
+    )
+    drift_days: int = Field(
+        default=7,
+        description="How often the ratings-drift sweep runs.",
+    )
     # The safety valve: a sweep enqueues at most this many stale items, so a
     # library of ~16,000 items is worked through gradually rather than all at
     # once.
-    drift_batch_size: int = 500
-    drift_max_age_days: float = 7
+    drift_batch_size: int = Field(
+        default=500,
+        description=(
+            "The most stale items one ratings-drift sweep enqueues, so a large "
+            "library is worked through gradually rather than all at once."
+        ),
+    )
+    drift_max_age_days: float = Field(
+        default=7,
+        description="How old a ratings-drift record must be before the sweep considers it stale.",
+    )
     # The credits scan's cadence (roadmap rows 197/194). Whole-library per
     # run, deliberately unpaced: the batched read is ceil(N/chunk) requests
     # (~10 for the measured movie library), so there is nothing a 500-item
     # batch valve would be protecting. Weekly, like drift: credits change on
     # library edits, not on a clock.
-    credits_scan_days: int = 7
-    cleanup_days: int = 7
-    prune_days: int = 7
+    credits_scan_days: int = Field(
+        default=7,
+        description=(
+            "How often the credits scan runs. Whole-library per run, "
+            "deliberately unpaced -- credits change on library edits, not on a "
+            "clock."
+        ),
+    )
+    cleanup_days: int = Field(
+        default=7,
+        description="How often the asset cleanup sweep runs.",
+    )
+    prune_days: int = Field(
+        default=7,
+        description="How often the media_items prune sweep runs.",
+    )
 
 
 class RadarrConfig(BaseModel):
@@ -1414,19 +1665,37 @@ class RadarrConfig(BaseModel):
     ``addOptions.searchForMovie`` to ``False``.
     """
 
-    enabled: bool = False
-    base_url: str = ""
+    enabled: bool = Field(default=False, description="Whether the Radarr registration sync runs at all.")
+    base_url: str = Field(default="", description="Radarr's base URL, e.g. 'http://radarr:7878'.")
     # Dry run by default, the same posture as every other outward-facing
     # write in this project: register nothing until the operator opts in.
-    add_existing: bool = False
+    add_existing: bool = Field(
+        default=False,
+        description="Actually register unknown Plex movies with Radarr; off leaves Radarr untouched.",
+    )
     # Verified live: Plex mounts the library at /mnt/Media (capital M),
     # Radarr sees the same files at /mnt/media (lowercase). Case-sensitive
     # on purpose -- see arr/paths.py.
-    plex_path: str = "/mnt/Media"
-    arr_path: str = "/mnt/media"
-    quality_profile: str = ""
-    monitor: bool = True
-    minimum_availability: str = "announced"
+    plex_path: str = Field(
+        default="/mnt/Media",
+        description="The library path prefix as Plex sees it, remapped to arr_path when registering with Radarr.",
+    )
+    arr_path: str = Field(
+        default="/mnt/media",
+        description="The library path prefix as Radarr sees it, the target of the plex_path remap.",
+    )
+    quality_profile: str = Field(
+        default="",
+        description="The Radarr quality profile name assigned to newly registered movies.",
+    )
+    monitor: bool = Field(
+        default=True,
+        description="Whether newly registered movies are marked monitored in Radarr.",
+    )
+    minimum_availability: str = Field(
+        default="announced",
+        description="The Radarr availability level assigned to newly registered movies, e.g. 'announced'.",
+    )
 
 
 class SonarrConfig(BaseModel):
@@ -1437,15 +1706,36 @@ class SonarrConfig(BaseModel):
     ``Secrets.sonarr_apikey``/``AUTOPOSTER_SONARR_APIKEY``.
     """
 
-    enabled: bool = False
-    base_url: str = ""
-    add_existing: bool = False
-    plex_path: str = "/mnt/Media"
-    arr_path: str = "/mnt/media"
-    quality_profile: str = ""
-    monitor: bool = True
-    season_folder: bool = True
-    series_type: str = "standard"
+    enabled: bool = Field(default=False, description="Whether the Sonarr registration sync runs at all.")
+    base_url: str = Field(default="", description="Sonarr's base URL, e.g. 'http://sonarr:8989'.")
+    add_existing: bool = Field(
+        default=False,
+        description="Actually register unknown Plex shows with Sonarr; off leaves Sonarr untouched.",
+    )
+    plex_path: str = Field(
+        default="/mnt/Media",
+        description="The library path prefix as Plex sees it, remapped to arr_path when registering with Sonarr.",
+    )
+    arr_path: str = Field(
+        default="/mnt/media",
+        description="The library path prefix as Sonarr sees it, the target of the plex_path remap.",
+    )
+    quality_profile: str = Field(
+        default="",
+        description="The Sonarr quality profile name assigned to newly registered shows.",
+    )
+    monitor: bool = Field(
+        default=True,
+        description="Whether newly registered shows are marked monitored in Sonarr.",
+    )
+    season_folder: bool = Field(
+        default=True,
+        description="Whether newly registered shows are set to use season folders in Sonarr.",
+    )
+    series_type: str = Field(
+        default="standard",
+        description="The Sonarr series type assigned to newly registered shows, e.g. 'standard'.",
+    )
 
 
 class TracearrConfig(BaseModel):
@@ -1464,8 +1754,14 @@ class TracearrConfig(BaseModel):
     restart.
     """
 
-    enabled: bool = False
-    base_url: str = ""
+    enabled: bool = Field(default=False, description="Whether Tracearr is used as a watch-history source at all.")
+    base_url: str = Field(
+        default="",
+        description=(
+            "Tracearr's base URL. May be a cluster-internal hostname, so it is "
+            "kept out of every log line and exception message."
+        ),
+    )
 
 
 class ArrSyncConfig(BaseModel):
@@ -1478,11 +1774,24 @@ class ArrSyncConfig(BaseModel):
     registers nothing with either service.
     """
 
-    enabled: bool = True
-    hours: int = 24
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the Radarr/Sonarr sync safety net runs at all, catching any "
+            "Plex item this service has never processed."
+        ),
+    )
+    hours: int = Field(default=24, description="How often the safety-net pass runs.")
     # The safety valve, same reasoning as scheduler.drift_batch_size: a first
     # run against a fresh database can find every item unknown.
-    batch_size: int = 500
+    batch_size: int = Field(
+        default=500,
+        description=(
+            "The most unknown items one safety-net pass enqueues, so a first "
+            "run against a fresh database is worked through gradually rather "
+            "than all at once."
+        ),
+    )
 
 
 class NotificationsConfig(BaseModel):
