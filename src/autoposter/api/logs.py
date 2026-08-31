@@ -69,8 +69,7 @@ _URL_HOST = re.compile(r"(?i)\b(https?://)[^\s/?#'\"<>]+")
 
 
 def _scrub(text: str) -> str:
-    """Both patterns in sequence, credential-first: the secret must be gone
-    before the host rewrite reshapes the text it was matched against."""
+    """Both patterns in sequence: credential params first, then URL authorities."""
     text = _CREDENTIAL_PARAM.sub(r"\1\2REDACTED", text)
     return _URL_HOST.sub(r"\1REDACTED", text)
 

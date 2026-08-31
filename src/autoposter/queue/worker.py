@@ -116,7 +116,7 @@ async def run_once(
             # Class-prefixed, message KEPT (roadmap row 209): this string is
             # served at api/jobs.py:147 as waiting_reason, and both
             # ItemNotFound raise sites (plex/client.py:635, :645) interpolate
-            # only the job's own payload fields -- title, ids, rating key --
+            # only the job's own item fields -- title, ids, rating key --
             # which that endpoint already serves verbatim in the same row. So
             # the reason stays a reason (the PlexPathMismatch branch's shape)
             # rather than a bare class name. PlexPathMismatch itself, whose

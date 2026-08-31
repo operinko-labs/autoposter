@@ -16,15 +16,17 @@ The three things worth knowing before changing anything here:
 * the delete is keyed on ``(id, updated_at)`` so a row a worker re-upserted
   under the pass survives it.
 """
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, update
 
 from autoposter.config.holder import ConfigHolder
-from autoposter.db.models import EventLog, ItemFacts, Job, MediaItem, Render
+from autoposter.db.models import EventLog, ItemFacts, Job, MediaItem, Render, ScheduledRun
 from autoposter.plex.client import ResolvedItem
 from autoposter.render.pipeline import _upsert_media_item
+from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.prune import (
     PRUNE_EVENT,
     PRUNE_SOURCE,
@@ -627,6 +629,49 @@ async def test_a_probe_failure_takes_the_pass_down_rather_than_reading_as_gone(s
     assert "plex.example" not in message and "connection reset" not in message
     session.expire_all()
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 1
+
+
+async def test_the_refusal_reaches_the_dashboard_whole(session, session_factory):
+    """``PruneRefused.served_detail``'s end-to-end guard (roadmap row 209).
+
+    ``scheduler/core.py``'s failure branch narrows a failure to its class name
+    on the served copy, unless the exception marks itself ``served_detail =
+    True``. Delete that marker from ``PruneRefused`` and every refusal above
+    reaches the dashboard as the bare word "PruneRefused" -- the operator
+    loses the whole reason, which is the only thing a refusal exists to say.
+    Asserted through a real ``Scheduler`` writing the real ``scheduled_runs``
+    row, because the marker is read nowhere else; the test above stops at
+    ``str(caught.value)`` and so cannot see the narrowing at all.
+
+    ``CollectionsPassFailed``'s marker has the same guard at
+    ``test_builder_knobs.py``'s ``last_detail`` assertion.
+    """
+    await _add_item(session, "11")
+    plex = FakePlex(error=ConnectionError("https://plex.example:32400 connection reset"))
+
+    stop = asyncio.Event()
+    scheduler = Scheduler(session_factory, [_job(_config(apply=True), plex)], poll_seconds=0.01)
+    task = asyncio.create_task(scheduler.run(stop))
+    try:
+        async with asyncio.timeout(5):
+            while True:
+                async with session_factory() as check:
+                    row = (
+                        await check.execute(select(ScheduledRun))
+                    ).scalar_one_or_none()
+                if row is not None and row.last_status == "failed":
+                    break
+                await asyncio.sleep(0.01)
+    finally:
+        stop.set()
+        await task
+
+    assert row.last_detail.startswith("refused: scanning for prunable rows failed")
+    assert "ConnectionError" in row.last_detail
+    # The narrowing this guard exists to catch, named rather than implied.
+    assert row.last_detail != "PruneRefused"
+    # And the refusal is still served-safe on the way through.
+    assert "plex.example" not in row.last_detail
 
 
 async def test_a_connect_failure_refuses_without_leaking_the_server_address(session):
