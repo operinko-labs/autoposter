@@ -219,7 +219,7 @@ class PlexSearchParams(BaseModel):
             )
         # The two empty-base messages Kometa's own ``build_filter`` raises
         # (``{base} attribute is blank`` / ``{base} must be a dictionary``,
-        # kometa_build_filter.py:951/:953) -- reproduced here because a bare
+        # kometa_build_filter.py:962/:964) -- reproduced here because a bare
         # `all:` with nothing under it (YAML's ``{"all": None}``) is the most
         # common way to hit this, and naming ``any`` -- the base the operator
         # never wrote -- sends them looking for a block that does not exist.

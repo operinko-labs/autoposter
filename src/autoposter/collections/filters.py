@@ -1196,7 +1196,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "it is the IDENTITY (kometa_build_filter.py:110: `dovi` -> `dovi`) -- "
         "transcribed as such rather than skipped; re-scoped to "
         "`episode.dovi` on a show library (kometa_build_filter.py:185). In "
-        "boolean_attributes at :356. `search-only`: Kometa's client-side "
+        "boolean_attributes at :358. `search-only`: Kometa's client-side "
         "vocabulary has `has_dolby_vision` -- a DIFFERENT name, one of the "
         "44 filter-only ones -- and no `dovi` filter, so `filters:` refuses "
         "this spelling by pointing at the search block.",
@@ -1221,7 +1221,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "-- so a show library refuses it BY NAME rather than being sent a "
         "query Plex answers with the wrong set; the show-side spelling is "
         "`episode_duplicate`, one of family E's twenty (roadmap row 173), "
-        "deliberately not aliased. In boolean_attributes at :359. "
+        "deliberately not aliased. In boolean_attributes at :361. "
         "`search-only`: Kometa has no filter of this name (its `versions` "
         "filter counts media items and is one of the 44 filter-only "
         "names).",
