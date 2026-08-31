@@ -636,15 +636,24 @@ async def test_the_scheduler_holds_the_notification_task_until_it_finishes(
     # parked on the same ``release`` -- there can be one or both in flight
     # by the time this observes the set, depending on scheduling.
     assert len(scheduler._notify_tasks) >= 1
+    # stop before release: with poll_seconds=0.01, releasing first can let
+    # the scheduler start ANOTHER run before ``run()`` notices ``stop`` --
+    # that run's sends complete immediately (release is already set) and can
+    # still be sitting in _notify_tasks, done-callback not yet ticked, when
+    # this function's final check runs. Setting stop first closes off any
+    # further run; the in-flight run keeps going (run()'s shutdown path
+    # never touches _notify_tasks, so it is not cancelled), and awaiting
+    # ``task`` below only waits for the poll loop to exit, not for the
+    # notification tasks it started.
+    stop.set()
     release.set()
+    await task
 
     async def drained():
         while scheduler._notify_tasks:
             await asyncio.sleep(0.01)
 
     await asyncio.wait_for(drained(), timeout=5)
-    stop.set()
-    await task
     assert not scheduler._notify_tasks, "the done-callback must drop the reference"
 
 
