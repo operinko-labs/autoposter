@@ -574,15 +574,22 @@ async def _event(ctx: BuilderContext, event: AwardEvent) -> dict:
     file for every ceremony, so a pass building two of them still asks for it
     once, and an event the dataset dropped is refused in words rather than
     surfacing as a 404 on the event file.
+
+    ``ctx.cache`` (roadmap row 151) sits BENEATH the ``_memoised``/``run_cache``
+    layer above, not instead of it: ``run_cache`` is per-pass in-process scratch
+    and stops a second collection in the SAME pass from re-fetching; ``cache``
+    is the persistent, TTL'd store and stops the NEXT pass (or the next library
+    in an N-library deployment) from re-fetching. Both are needed, because they
+    answer different questions.
     """
     validation = await _memoised(
-        ctx, _VALIDATION, lambda: fetch_event_validation(ctx.http)
+        ctx, _VALIDATION, lambda: fetch_event_validation(ctx.http, cache=ctx.cache)
     )
     require_known_event(validation, event.event_id)
     return await _memoised(
         ctx,
         "imdb_award.event:%s" % event.event_id,
-        lambda: fetch_event(ctx.http, event.event_id),
+        lambda: fetch_event(ctx.http, event.event_id, cache=ctx.cache),
     )
 
 

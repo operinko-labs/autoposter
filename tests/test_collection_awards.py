@@ -182,6 +182,26 @@ async def test_fetch_event_validation_without_a_cache_hits_the_transport_every_t
     assert len(calls) == 2
 
 
+async def test_the_oscars_builder_reuses_a_provider_cache_across_separate_passes(session_factory):
+    """Row 151's actual complaint: an N-library deployment refetches the same
+    398 KB file once per library, every pass. Two separate ``run_cache``
+    dicts stand in for two libraries/passes sharing one process-lifetime
+    ``ProviderCache`` -- the transport must still be hit once per URL."""
+    requests = []
+    async with _events_client(requests) as http:
+        cache = ProviderCache(session_factory)
+        first_pass = _ctx(http, {"award": "best_picture"}, run_cache={})
+        second_pass = _ctx(http, {"award": "best_picture"}, run_cache={})
+        first_pass = replace(first_pass, cache=cache)
+        second_pass = replace(second_pass, cache=cache)
+
+        await ImdbAwardBuilder().build(first_pass)
+        await ImdbAwardBuilder().build(second_pass)
+
+    assert requests.count(VALIDATION_URL) == 1
+    assert requests.count(OSCARS_URL) == 1
+
+
 async def test_recent_years_skips_empty_placeholder_years():
     """The live dataset carries '2027': {} for a ceremony that has not
     happened. Including it would create an empty Oscars Winners 2027."""
