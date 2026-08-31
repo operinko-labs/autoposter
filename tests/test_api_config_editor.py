@@ -246,6 +246,8 @@ PROVENANCE_KEYS = {
     "redacted_paths",
     "keep_sentinel",
     "field_descriptions",
+    "computed_paths",
+    "live_paths",
 }
 
 
@@ -271,6 +273,25 @@ async def test_get_config_describes_a_sample_of_settings_in_words(client, auth_h
     for path in ("workers", "plex.url", "collections.max_deletes"):
         assert descriptions[path].strip(), f"{path} is described by nothing"
         assert len(descriptions[path]) > 20, f"{path}'s description is a stub"
+
+
+async def test_get_config_names_the_paths_it_computes(client, auth_headers):
+    """``version`` is derived from the settings, not set by the operator, so an
+    override on it is inert. Served as data (roadmap row 112) rather than left
+    for the editor to hard-code, which is how the two sides drift."""
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    assert body["computed_paths"] == ["version"]
+
+
+async def test_get_config_names_the_live_exceptions(client, auth_headers):
+    """A path inside a frozen section that is nonetheless read per use. Without
+    it the editor marks ``plex.resolve_max_attempts`` "restart to apply" while
+    the save response correctly omits it -- the two halves of one endpoint
+    disagreeing about the same path (roadmap row 112)."""
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    assert body["live_paths"] == ["plex.resolve_max_attempts"]
+    # It is inside a frozen prefix: that is the whole reason it has to be said.
+    assert "plex" in body["frozen_paths"]
 
 
 async def test_get_config_reports_a_corrupt_overrides_row_as_500_with_detail(

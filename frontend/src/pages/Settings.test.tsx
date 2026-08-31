@@ -205,16 +205,27 @@ describe("Settings configuration", () => {
 const EDITOR_CONFIG = {
   version: "abc123",
   workers: 5,
-  plex: { url: "http://plex:32400", excluded_libraries: ["Muskarit", "Photos"] },
+  plex: {
+    url: "http://plex:32400",
+    excluded_libraries: ["Muskarit", "Photos"],
+    resolve_max_attempts: 10,
+  },
   badges: { enabled: true },
   artwork: { poster: { text: { min_point_size: 20 } } },
   secrets: { plex_token: REDACTED },
   overridden_paths: [] as string[],
-  frozen_paths: { workers: "the worker pool is sized once, at startup" },
+  frozen_paths: {
+    workers: "the worker pool is sized once, at startup",
+    plex: "the Plex client is built once at startup",
+  },
   field_descriptions: {
     workers: "How many render workers run in parallel.",
+    version: "The hash of every setting that changes what a render produces.",
     "plex.url": "The base URL of the Plex server this service manages.",
+    "plex.resolve_max_attempts": "How many times a failed Plex lookup is retried.",
   },
+  computed_paths: ["version"],
+  live_paths: ["plex.resolve_max_attempts"],
 };
 
 function json(body: unknown, status = 200): Response {
@@ -408,6 +419,56 @@ describe("Settings editor", () => {
     ).toBeNull();
   });
 
+  it("hangs each setting's description off its label as hover text", async () => {
+    stubApi();
+    await renderSettings();
+
+    const label = within(rowOf(screen.getByLabelText("workers"))).getByText(
+      "Workers",
+    );
+    expect(label).toHaveAttribute(
+      "title",
+      "How many render workers run in parallel.",
+    );
+    // A path the server described nothing for gets no empty tooltip: an empty
+    // `title` is a hover that opens onto nothing.
+    expect(
+      within(rowOf(screen.getByLabelText("badges.enabled"))).getByText("Enabled"),
+    ).not.toHaveAttribute("title");
+  });
+
+  it("renders a computed path read-only rather than offering an inert edit", async () => {
+    stubApi();
+    await renderSettings();
+
+    // `version` is derived from the other settings; an override on it is
+    // recomputed away, so the editor must not present it as a field.
+    expect(screen.queryByLabelText("version")).toBeNull();
+    expect(screen.getByText("abc123")).toBeInTheDocument();
+  });
+
+  it("does not demand a restart for a live path inside a frozen section", async () => {
+    stubApi();
+    await renderSettings();
+
+    // `plex` is frozen as a whole, but this one path is read per use -- the
+    // server says so in `live_paths`, and the save response already omits it.
+    fireEvent.change(screen.getByLabelText("plex.resolve_max_attempts"), {
+      target: { value: "12" },
+    });
+    expect(
+      within(rowOf(screen.getByLabelText("plex.resolve_max_attempts")))
+        .queryByText("restart to apply"),
+    ).toBeNull();
+    // A sibling under the same frozen prefix still says it.
+    fireEvent.change(screen.getByLabelText("plex.url"), {
+      target: { value: "http://plex:32401" },
+    });
+    expect(
+      within(rowOf(screen.getByLabelText("plex.url"))).getByText("restart to apply"),
+    ).toBeInTheDocument();
+  });
+
   it("badges an overridden field and clears it by omission, never by null", async () => {
     const overridden = { ...EDITOR_CONFIG, workers: 9, overridden_paths: ["workers"] };
     const fetchMock = stubApi({ config: [overridden, EDITOR_CONFIG] });
@@ -456,8 +517,9 @@ describe("Settings editor", () => {
     expect(document.body.textContent).not.toContain(
       "the worker pool is sized once, at startup",
     );
-    // `version` is a plain config field and keeps rendering.
-    expect(screen.getByLabelText("version")).toHaveValue("abc123");
+    // `version` is a computed path (see the read-only test below) and still
+    // renders its value, just not as an editable field.
+    expect(screen.getByText("abc123")).toBeInTheDocument();
   });
 
   it("picks the widget from the value's type", async () => {

@@ -92,15 +92,23 @@ const PROVENANCE_KEYS = [
   "redacted_paths",
   "keep_sentinel",
   "field_descriptions",
+  "computed_paths",
+  "live_paths",
 ];
 
 /** The reason a restart is needed for `path`, or undefined if it is live.
  * `frozen_paths` keys are prefixes: `notifications` freezes everything under
- * it. */
+ * it. `live` wins over all of them -- a path the server reads per use is live
+ * however broad the prefix above it is, which is the same precedence
+ * `config/live.py`'s `frozen_reason` applies server-side. */
 function frozenReason(
   frozen: Record<string, string>,
+  live: string[],
   path: string,
 ): string | undefined {
+  if (live.some((prefix) => path === prefix || path.startsWith(`${prefix}.`))) {
+    return undefined;
+  }
   for (const [prefix, reason] of Object.entries(frozen)) {
     if (path === prefix || path.startsWith(`${prefix}.`)) return reason;
   }
@@ -113,6 +121,11 @@ interface Editor {
   document: OverridesDocument;
   overridden: string[];
   frozen: Record<string, string>;
+  /** Paths this service derives rather than the operator setting, and paths a
+   * frozen prefix covers but which are read per use. Both come from the
+   * server: the editor must not carry a second copy of either judgement. */
+  computed: string[];
+  live: string[];
   /** Paths whose served value is the server's redacted rendering rather than
    * the stored setting, and the marker that means "keep what is stored". */
   redacted: string[];
@@ -293,43 +306,62 @@ function ConfigRow({
   path,
   value,
   editor,
+  description,
 }: {
   name: string;
   path: string;
   value: unknown;
   editor: Editor | null;
+  description?: string;
 }) {
-  const edited = editor !== null && hasPath(editor.document, path);
-  const pending = edited && editor !== null ? readPath(editor.document, path) : value;
-  const isRedacted = editor !== null && editor.redacted.includes(path);
+  // A computed path is the server's to set: an override on it is recomputed
+  // away, so offering an input would be offering an edit that does nothing.
+  // Handled by dropping the editor for this row alone, which is the same
+  // mechanism the secrets panel already uses.
+  const rowEditor =
+    editor !== null && editor.computed.includes(path) ? null : editor;
+  const edited = rowEditor !== null && hasPath(rowEditor.document, path);
+  const pending =
+    edited && rowEditor !== null ? readPath(rowEditor.document, path) : value;
+  const isRedacted = rowEditor !== null && rowEditor.redacted.includes(path);
   // The sentinel is a state, not a value: it says "the stored setting stays as
   // it is", so the field shows the server's redacted rendering of that setting
   // rather than the marker. Typing replaces the marker with what was typed,
   // and from then on the typed value is what shows.
-  const current = isRedacted && pending === editor.sentinel ? value : pending;
+  const current = isRedacted && pending === rowEditor.sentinel ? value : pending;
   const restart =
-    edited && editor !== null ? frozenReason(editor.frozen, path) : undefined;
-  const error = editor?.errors[path];
+    edited && rowEditor !== null
+      ? frozenReason(rowEditor.frozen, rowEditor.live, path)
+      : undefined;
+  const error = rowEditor?.errors[path];
 
   return (
     <div className="config-row">
-      <span className="config-key">{labelFor(name)}</span>
+      {/* The description is the row's whole documentation, and it hangs off
+          the label as a native hover -- the page's existing idiom for
+          secondary text (the redaction note, the restart reason, the impact
+          caveat) rather than a new component. An absent or empty description
+          passes `undefined`, because an empty `title` is a hover that opens
+          onto nothing. */}
+      <span className="config-key" title={description || undefined}>
+        {labelFor(name)}
+      </span>
       <span className="config-value">
         <Field
           path={path}
           base={value}
           current={current}
-          editor={editor}
+          editor={rowEditor}
           title={isRedacted ? REDACTED_EDIT_NOTE : undefined}
         />
-        {editor !== null && editor.overridden.includes(path) && (
+        {rowEditor !== null && rowEditor.overridden.includes(path) && (
           <>
             <span className="config-pill overridden">overridden</span>
             <button
               type="button"
               className="link-button"
               aria-label={`Clear override for ${path}`}
-              onClick={() => editor.clear(path)}
+              onClick={() => rowEditor.clear(path)}
             >
               Clear
             </button>
@@ -353,15 +385,18 @@ function ConfigRow({
 /** Recursive renderer driven entirely by the response's shape: scalars and
  * lists become label/value rows, nested objects become indented subsections.
  * Nothing here names a config field, so a new key appears without a frontend
- * change. `path` accumulates the dotted path the API speaks in. */
+ * change. `path` accumulates the dotted path the API speaks in, and
+ * `descriptions` is keyed on exactly that path. */
 function ConfigNode({
   value,
   path = "",
   editor = null,
+  descriptions = {},
 }: {
   value: Record<string, unknown>;
   path?: string;
   editor?: Editor | null;
+  descriptions?: Record<string, string>;
 }) {
   return (
     <div className="config-node">
@@ -370,7 +405,12 @@ function ConfigNode({
         return isPlainObject(entry) ? (
           <div className="config-subsection" key={key}>
             <h3>{labelFor(key)}</h3>
-            <ConfigNode value={entry} path={childPath} editor={editor} />
+            <ConfigNode
+              value={entry}
+              path={childPath}
+              editor={editor}
+              descriptions={descriptions}
+            />
           </div>
         ) : (
           <ConfigRow
@@ -379,6 +419,7 @@ function ConfigNode({
             path={childPath}
             value={entry}
             editor={editor}
+            description={descriptions[childPath]}
           />
         );
       })}
@@ -401,6 +442,19 @@ function ConfigSections({
   config: ConfigResponse;
   editor: Editor;
 }) {
+  // Descriptions reach every row, including the secrets panel's -- those
+  // render `***REDACTED***` and nothing else, so the description is the only
+  // thing on the row that says anything. That is why this is a prop of its own
+  // rather than a field of `Editor`, which the secrets panel deliberately does
+  // not get.
+  const descriptions = isPlainObject(config.field_descriptions)
+    ? Object.fromEntries(
+        Object.entries(config.field_descriptions).map(([key, text]) => [
+          key,
+          String(text),
+        ]),
+      )
+    : {};
   const entries = Object.entries(config).filter(
     ([key]) => !PROVENANCE_KEYS.includes(key),
   );
@@ -418,7 +472,11 @@ function ConfigSections({
       {general.length > 0 && (
         <section className="panel config-section">
           <h2>General</h2>
-          <ConfigNode value={Object.fromEntries(general)} editor={editor} />
+          <ConfigNode
+            value={Object.fromEntries(general)}
+            editor={editor}
+            descriptions={descriptions}
+          />
         </section>
       )}
       {sections.map(([key, value]) => (
@@ -431,6 +489,7 @@ function ConfigSections({
             value={value}
             path={key}
             editor={key === "secrets" ? null : editor}
+            descriptions={descriptions}
           />
         </section>
       ))}
@@ -545,6 +604,16 @@ export function Settings() {
           ]),
         )
       : {},
+    computed: Array.isArray(config?.computed_paths)
+      ? config.computed_paths.filter(
+          (path): path is string => typeof path === "string",
+        )
+      : [],
+    live: Array.isArray(config?.live_paths)
+      ? config.live_paths.filter(
+          (path): path is string => typeof path === "string",
+        )
+      : [],
     errors,
     // A preview answers a question about one exact document, so any further
     // edit retires it. Showing a stale count next to a changed document is

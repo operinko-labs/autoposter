@@ -41,7 +41,13 @@ from autoposter.api.auth import (
 )
 from autoposter.config.descriptions import FIELD_DESCRIPTIONS
 from autoposter.config.impact import affected_items, count_affected
-from autoposter.config.live import FROZEN_SECTIONS, frozen_reason, is_inert, swap_config
+from autoposter.config.live import (
+    FROZEN_SECTIONS,
+    LIVE_EXCEPTIONS,
+    frozen_reason,
+    is_inert,
+    swap_config,
+)
 from autoposter.config.loader import build_config, read_config_document
 from autoposter.config.overrides import (
     OVERRIDES_ROW_ID,
@@ -1146,6 +1152,15 @@ def _host_only(url: str) -> str:
 _REDACTORS: dict[str, Callable[[str], str]] = {"notifications.url": _host_only}
 REDACTED_PATHS: tuple[str, ...] = tuple(_REDACTORS)
 
+# Paths the service computes rather than the operator setting. ``version`` is
+# the render-settings hash (config/loader.py's render_version), stored on each
+# Render row so a settings change is detectable as staleness -- writing one by
+# hand overrides it with a value the next load recomputes away. Served so the
+# editor can render it read-only instead of offering an edit that does nothing
+# (roadmap row 112). Not a refusal: an override on it is still accepted and
+# still inert, exactly as before.
+COMPUTED_PATHS: tuple[str, ...] = ("version",)
+
 # What an editor sends at a ``REDACTED_PATHS`` path to mean "leave the stored
 # override exactly as it is".
 #
@@ -1268,7 +1283,7 @@ async def get_config(
     ``_REDACTORS``; the full URL stays in the config file the operator
     already owns.
 
-    Carries five things the editor needs beyond the values themselves.
+    Carries seven things the editor needs beyond the values themselves.
     ``overridden_paths`` is the provenance: which of these values come from
     the database overrides rather than the mounted YAML, so the UI can mark
     them and offer "revert to base". ``frozen_paths`` maps each restart-only
@@ -1288,6 +1303,15 @@ async def get_config(
     of the objects inside a list, which this editor cannot edit yet (roadmap
     row 138). ``[]`` is a marker in that map only -- no endpoint here accepts
     a path containing it.
+    ``computed_paths`` and ``live_paths`` are the last two, and both exist so
+    the editor never contradicts this service about a path it already knows
+    the answer for. The first names the values this process derives rather
+    than reads (``version``), which the editor renders read-only instead of
+    offering an inert edit. The second names the paths a broader frozen
+    prefix would otherwise swallow but which are genuinely read per use
+    (``config/live.LIVE_EXCEPTIONS``) -- without it the editor flags
+    ``plex.resolve_max_attempts`` as needing a restart while ``frozen_reason``
+    here correctly says it does not.
     """
     config = request.app.state.config
     secrets = request.app.state.secrets
@@ -1313,6 +1337,8 @@ async def get_config(
     body["redacted_paths"] = list(REDACTED_PATHS)
     body["keep_sentinel"] = KEEP_SENTINEL
     body["field_descriptions"] = dict(FIELD_DESCRIPTIONS)
+    body["computed_paths"] = list(COMPUTED_PATHS)
+    body["live_paths"] = sorted(LIVE_EXCEPTIONS)
     return body
 
 

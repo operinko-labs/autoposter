@@ -25,6 +25,13 @@
   color: var(--text-muted);
 }
 
+/* A described row is hoverable, and nothing else on the page says so. The
+   platform's own affordance for "there is text behind this", at the cost of
+   one line and no markup. */
+.config-key[title] {
+  cursor: help;
+}
+
 .config-value {
   min-width: 0;
   overflow-wrap: anywhere;
