@@ -138,15 +138,20 @@ export function documentFromConfig(config: ConfigResponse): OverridesDocument {
 export function fieldErrors(detail: unknown): Record<string, string> {
   if (!Array.isArray(detail)) return {};
   const errors: Record<string, string> = {};
+  // Joined, not last-writer-wins: two entries on one path both survive
+  // (ccui review M6 -- the collapse hid every earlier message for a field).
+  const add = (path: string, message: string) => {
+    errors[path] = path in errors ? `${errors[path]}; ${message}` : message;
+  };
   for (const entry of detail) {
     if (!isPlainObject(entry)) continue;
     if (typeof entry.path === "string") {
-      errors[entry.path] = String(entry.message ?? "invalid value");
+      add(entry.path, String(entry.message ?? "invalid value"));
     } else if (Array.isArray(entry.loc)) {
       const segments = entry.loc.map(String);
       const start = segments.indexOf("document");
       const path = (start === -1 ? segments : segments.slice(start + 1)).join(".");
-      errors[path] = String(entry.msg ?? "invalid value");
+      add(path, String(entry.msg ?? "invalid value"));
     }
   }
   return errors;
