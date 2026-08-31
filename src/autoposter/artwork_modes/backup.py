@@ -37,6 +37,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,12 +64,18 @@ class BackupResult:
     (``skipped``), and a Plex item that could not be fetched at all
     (``failed``). ``skipped`` also absorbs a kind whose file name cannot be
     built -- an episode Plex reports no number for (``naming.missing_number``).
+
+    ``missing`` is a third whole-item bucket, counted separately from
+    ``failed``: a rating key Plex 404s on because the item was deleted from
+    Plex since its DB row was written. Expected, not a fetch failure -- see
+    the per-item log line at INFO, not WARNING.
     """
 
     items: int
     written: int
     skipped: int
     failed: int
+    missing: int = 0
     refused: str | None = None
 
     def as_response(self) -> dict:
@@ -81,6 +88,7 @@ class BackupResult:
                 "written": self.written,
                 "skipped": self.skipped,
                 "failed": self.failed,
+                "missing": self.missing,
             }
         # written == 0 with failed > 0 means nothing was actually saved --
         # an all-fail run must not read as a clean "backed up".
@@ -92,6 +100,7 @@ class BackupResult:
             "written": self.written,
             "skipped": self.skipped,
             "failed": self.failed,
+            "missing": self.missing,
         }
 
 
@@ -171,7 +180,7 @@ class BackupMode:
         # survive the commit.
         await session.commit()
 
-        items = written = skipped = failed = 0
+        items = written = skipped = failed = missing_items = 0
         for row in rows:
             items += 1
             if row.root_folder is None:
@@ -181,6 +190,13 @@ class BackupMode:
                 continue
             try:
                 plex_item = await self._plex.fetch_item(row.rating_key)
+            except PlexNotFound:
+                # Expected, not a crash: the item was deleted from Plex after
+                # its DB row was written. One concise line, no traceback --
+                # counted separately from real failures below.
+                logger.info("backup: %s no longer in Plex, skipped", row.rating_key)
+                missing_items += 1
+                continue
             except Exception:  # noqa: BLE001 - one bad item must not abort the walk
                 logger.warning(
                     "backup: could not fetch Plex item %s", row.rating_key, exc_info=True
@@ -237,4 +253,7 @@ class BackupMode:
                     continue
                 written += 1
 
-        return BackupResult(items, written, skipped, failed)
+        if missing_items:
+            logger.info("backup: skipped %d item(s) no longer in Plex", missing_items)
+
+        return BackupResult(items, written, skipped, failed, missing=missing_items)

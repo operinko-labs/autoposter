@@ -11,6 +11,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from plexapi.exceptions import NotFound as PlexNotFound
 
 from autoposter.artwork_modes.backup import BackupMode
 from autoposter.config.loader import load_config
@@ -39,13 +40,16 @@ class FakeItem:
 
 
 class FakePlexClient:
-    def __init__(self, items=None, error=None):
+    def __init__(self, items=None, error=None, errors=None):
         self._items = items or {}
         self._error = error
+        self._errors = errors or {}
         self.fetched = []
 
     async def fetch_item(self, rating_key):
         self.fetched.append(rating_key)
+        if rating_key in self._errors:
+            raise self._errors[rating_key]
         if self._error is not None:
             raise self._error
         return self._items[rating_key]
@@ -181,7 +185,7 @@ async def test_backup_refuses_an_empty_table(session, config, http_serving):
     # whether the numeric fields are present.
     assert result.as_response() == {
         "mode": "backup", "status": "refused", "reason": result.refused,
-        "items": 0, "written": 0, "skipped": 0, "failed": 0,
+        "items": 0, "written": 0, "skipped": 0, "failed": 0, "missing": 0,
     }
 
 
@@ -281,3 +285,40 @@ async def test_backup_backs_up_a_title_card_at_the_episode_path(
 
     assert result.written == 1
     assert (backup_root / "TV Shows" / "The Show" / "S01E02.jpg").read_bytes() == POSTER_BYTES
+
+
+async def test_backup_logs_a_missing_item_at_info_not_warning(
+    session, config, http_serving, caplog
+):
+    """An item deleted from Plex after its DB row was written 404s on fetch --
+    expected, not a crash. It must not spam a WARNING+traceback per item;
+    instead one concise INFO line per item, tallied separately from real
+    failures, plus a single end-of-run summary line."""
+    await _add_item(session, rating_key="rk-gone")
+    await _add_item(session, rating_key="rk-ok")
+    plex = FakePlexClient(
+        items={"rk-ok": FakeItem(thumb="/thumb", art="/art")},
+        errors={"rk-gone": PlexNotFound("rk-gone not found")},
+    )
+
+    with caplog.at_level("INFO"):
+        result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+
+    assert (result.items, result.written, result.failed, result.missing) == (2, 2, 0, 1)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == []
+    assert not any(r.exc_info for r in caplog.records)
+
+    backup_records = [
+        r for r in caplog.records if r.name == "autoposter.artwork_modes.backup"
+    ]
+    per_item = [r.message for r in backup_records if "rk-gone" in r.message]
+    assert len(per_item) == 1
+    assert per_item[0].startswith("backup: ") and "no longer in Plex" in per_item[0]
+
+    # One end-of-run summary line, distinct from the per-item line, carrying
+    # the count.
+    summary = [r.message for r in backup_records if r.message not in per_item]
+    assert len(summary) == 1
+    assert summary[0].startswith("backup: ") and "1" in summary[0]
