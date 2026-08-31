@@ -133,20 +133,33 @@ the ``current_year``/``current_year-N`` value grammar. Search-tails-2 Task 2
 shipped the grammar in the ``filters:`` engine (``evaluate`` /
 ``_matches_one`` in ``filters.py``), citing this driver's own transcription
 of Kometa's algorithm (``validate_attribute``'s year-attribute branch,
-:768-788) as its source rather than an external line reference. It did NOT
-wire ``current_year`` into THIS file's ``plex_search`` rendering: ``year`` is
-searchable, but no config above writes ``current_year``, and
-``search_url._arguments`` has no branch that would resolve the sentinel
-(``_CurrentYear``) if one did -- it would render the object's ``repr()``
-into the query string. Wiring that is a separate, unbriefed change, not this
-proof's job.
+:768-788) as its source rather than an external line reference. At the time
+this section was first written it did NOT wire ``current_year`` into a
+``plex_search``'s rendering: ``year`` is searchable, but no config above
+wrote ``current_year``, and ``search_url._arguments`` had no branch that
+would resolve the sentinel (``_CurrentYear``) if one did -- it would render
+the object's ``repr()`` into the query string.
 
-So the proof below is not a CONFIGS/KOMETA pair -- production code cannot
-yet answer a ``plex_search`` config that writes it. Instead it runs the
-driver's OWN ``validate_attribute`` current-year branch, at the real run
-moment, and checks it against our ``filters:``-engine's resolution of the
-same value at the same moment -- Kometa's transcribed algorithm as the
-oracle, rather than a second reading of the same source.
+That gap closed two commits later in the same branch (``e869a1a``):
+``PlexSearchBuilder.build`` and ``SmartFilterBuilder.search_url`` now call
+``filters.resolve_search_values`` against one captured moment BEFORE
+handing the tree to ``build_search_url``, so a ``plex_search:`` or
+``smart_filter:`` block writing ``year: current_year`` resolves to a real
+year rather than a sentinel's ``repr()``. ``search_url.py`` itself still
+never reads a clock -- the resolution happens one call earlier, in
+``filters.py``, which is exactly what keeps this file's own byte-comparison
+clock-free.
+
+So the proof below is still not a CONFIGS/KOMETA pair, but the honest reason
+is now different and weaker than "production code cannot answer it": a
+``plex_search`` config naming ``year: current_year`` COULD now be pinned
+against the driver at a captured moment, and a real CONFIGS/KOMETA pair is
+buildable if desired -- this file simply has not grown one yet. Instead the
+proof below runs the driver's OWN ``validate_attribute`` current-year
+branch, at the real run moment, and checks it against our ``filters:``-
+engine's resolution of the same value at the same moment -- Kometa's
+transcribed algorithm as the oracle, rather than a second reading of the
+same source.
 """
 from pathlib import Path
 
