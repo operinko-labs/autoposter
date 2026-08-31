@@ -27,6 +27,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,6 +64,7 @@ class RestoreResult:
     pushed: int
     failed: int
     dry_run: bool
+    missing: int = 0
     refused: str | None = None
 
     def as_response(self) -> dict:
@@ -73,6 +75,7 @@ class RestoreResult:
             "items_with_backup": self.items_with_backup,
             "files": self.files,
             "skipped": self.skipped,
+            "missing": self.missing,
         }
         if self.refused is not None:
             body["status"] = "refused"
@@ -198,10 +201,18 @@ class RestoreMode:
                 total, items_with_backup, files, skipped, 0, 0, dry_run=True
             )
 
-        pushed = failed = 0
+        pushed = failed = missing = 0
         for rating_key, entries in planned.items():
             try:
                 plex_item = await self._plex.fetch_item(rating_key)
+            except PlexNotFound:
+                # Expected, not a crash: the item was deleted from Plex since
+                # its DB row was written. One concise line, no traceback --
+                # counted separately from real failures below (backup.py's
+                # PR #112 hotfix shape).
+                logger.info("restore: %s no longer in Plex, skipped", rating_key)
+                missing += 1
+                continue
             except Exception:  # noqa: BLE001 - one bad item must not abort the run
                 logger.warning(
                     "restore: could not fetch Plex item %s", rating_key, exc_info=True
@@ -220,6 +231,10 @@ class RestoreMode:
                     )
                     failed += 1
 
+        if missing:
+            logger.info("restore: skipped %d item(s) no longer in Plex", missing)
+
         return RestoreResult(
-            total, items_with_backup, files, skipped, pushed, failed, dry_run=False
+            total, items_with_backup, files, skipped, pushed, failed, dry_run=False,
+            missing=missing,
         )

@@ -7,6 +7,7 @@ disk and pushes to Plex; nothing here touches the network.
 """
 from pathlib import Path
 
+from plexapi.exceptions import NotFound as PlexNotFound
 import pytest
 
 from autoposter.artwork_modes.restore import RestoreMode
@@ -107,7 +108,7 @@ async def test_dry_run_pushes_nothing(session, config, backup_root):
     assert item.uploaded == []
     assert result.as_response() == {
         "mode": "restore", "status": "dry run", "dry_run": True, "items": 1,
-        "items_with_backup": 1, "files": 1, "skipped": 0,
+        "items_with_backup": 1, "files": 1, "skipped": 0, "missing": 0,
     }
 
 
@@ -255,5 +256,49 @@ async def test_restore_refuses_an_empty_table(session, config):
     assert result.as_response() == {
         "mode": "restore", "status": "refused", "reason": result.refused,
         "dry_run": False, "items": 0, "items_with_backup": 0, "files": 0,
-        "skipped": 0,
+        "skipped": 0, "missing": 0,
     }
+
+
+async def test_restore_logs_a_missing_item_at_info_not_warning(
+    session, config, backup_root, caplog
+):
+    """An item deleted from Plex after its DB row was written 404s on the
+    apply-loop fetch -- expected, not a crash. Row 218: this must not spam a
+    WARNING+traceback per item; instead one concise INFO line, tallied
+    separately from a real failure, plus a single end-of-run summary line --
+    the exact shape backup.py's PR #112 hotfix already carries."""
+    await _add_item(session, rating_key="rk-gone")
+    await _add_item(session, rating_key="rk-ok")
+    _seed_backup(backup_root, "Movies", "A (1999)", "poster.jpg", b"gone-poster")
+    _seed_backup(backup_root, "Movies", "A (1999)", "poster.jpg", b"ok-poster")
+    ok = FakeItem()
+
+    class GoneClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if rating_key == "rk-gone":
+                raise PlexNotFound(f"(404) not_found ({rating_key})")
+            return self._items[rating_key]
+
+    plex = GoneClient({"rk-ok": ok})
+
+    with caplog.at_level("INFO"):
+        result = await RestoreMode(config, plex, None, _headers(), apply=True).run(session)
+
+    assert (result.items, result.failed, result.missing) == (2, 0, 1)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == []
+    assert not any(r.exc_info for r in caplog.records)
+
+    restore_records = [
+        r for r in caplog.records if r.name == "autoposter.artwork_modes.restore"
+    ]
+    per_item = [r.message for r in restore_records if "rk-gone" in r.message]
+    assert len(per_item) == 1
+    assert per_item[0].startswith("restore: ") and "no longer in Plex" in per_item[0]
+
+    summary = [r.message for r in restore_records if r.message not in per_item]
+    assert len(summary) == 1
+    assert summary[0].startswith("restore: ") and "1" in summary[0]
