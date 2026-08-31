@@ -65,13 +65,38 @@ _CREDENTIAL_PARAM = re.compile(r"(?i)([-\w]*(?:api[-_]?key|token))(=|%3D)[^&\s'\
 # clause is about hosts. Public API hosts are redacted too -- row 117's
 # over-match tradeoff taken the same way on purpose: never miss an operator
 # host, and the pod log keeps the full line under the trusted-sink decision.
-_URL_HOST = re.compile(r"(?i)\b(https?://)[^\s/?#'\"<>]+")
+# Row 212 added the encoded-scheme alternation -- a URL nested inside another
+# URL's query value carries its :// as %3A%2F%2F, and after row 207 the
+# nested credential was redacted while the nested host beside it was not.
+# The tempered class stops the encoded match at %2F so the nested URL's
+# encoded path survives exactly as the plain path does. This buys exactly one
+# level: %253A (double-encoded) still passes, the same accepted residual the
+# row records -- no shipped provider or client produces it, and the pod log
+# keeps the full line either way.
+_URL_HOST = re.compile(r"(?i)\b(https?(?:://|%3A%2F%2F))(?:(?!%2F)[^\s/?#'\"<>])+")
+
+# Roadmap row 214: requests formats its own connection target scheme-less and
+# keyword-form -- HTTPConnectionPool(host='plex.internal', port=32400) -- so
+# nothing ://-anchored can ever match it, and it is LIVE: worker.py's
+# "waiting for Plex" INFO line (row 209's own compensating control) and every
+# requests-flavored exc_info traceback carry it into this buffer. The literal
+# host=/port= tokens are the anchors, so there is no false-positive surface
+# to speak of; the keyword names and the quotes survive, the values never do
+# (row 117's rule). The bare scheme-less host:port shape is deliberately NOT
+# matched -- it is not the live carrier, and a naive rule eats timestamps,
+# ratios and this repo's own file.py:N citations; row 214's close files it
+# forward.
+_HOST_KEYWORD = re.compile(r"(?i)\b(host=)(['\"]?)[^\s,'\")]+\2")
+_PORT_KEYWORD = re.compile(r"(?i)\b(port=)\d+")
 
 
 def _scrub(text: str) -> str:
-    """Both patterns in sequence: credential params first, then URL authorities."""
+    """All patterns in sequence: credential params, then URL authorities,
+    then the scheme-less keyword host/port shapes requests itself writes."""
     text = _CREDENTIAL_PARAM.sub(r"\1\2REDACTED", text)
-    return _URL_HOST.sub(r"\1REDACTED", text)
+    text = _URL_HOST.sub(r"\1REDACTED", text)
+    text = _HOST_KEYWORD.sub(r"\1\2REDACTED\2", text)
+    return _PORT_KEYWORD.sub(r"\1REDACTED", text)
 
 
 class LogBuffer(logging.Handler):

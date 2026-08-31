@@ -198,6 +198,75 @@ def test_the_api_dash_key_spelling_is_scrubbed_too():
     assert "api-key=REDACTED" in entry["message"]
 
 
+def test_a_nested_encoded_url_loses_its_host_and_keeps_its_encoded_path():
+    """Roadmap row 212: both patterns were anchored on literal characters an
+    encoded URL does not contain, so after row 207's fix the nested CREDENTIAL
+    was redacted while the nested HOST beside it was served whole -- the exact
+    asymmetry the row filed. The encoded-scheme alternation closes it the same
+    way row 207 closed the credential half (%3D), one level up; the match
+    terminates at %2F so the nested URL's encoded path survives, the same
+    "path survives" property the plain form pins above. Double-encoding
+    (%253A) remains the next level -- the row says so, and it stays an
+    accepted residual on the pod log's trusted-sink terms."""
+    buffer = LogBuffer()
+    buffer.emit(record(
+        "Client error for url "
+        "'https://img.example/fetch?src=http%3A%2F%2Fplex.internal%3A32400%2Flibrary%2Fall'"
+    ))
+    (entry,) = buffer.lines()
+    assert "plex.internal" not in entry["message"]
+    assert "32400" not in entry["message"]
+    # The outer authority goes the way it always did; the nested authority
+    # now goes too, and the nested PATH stays, encoded exactly as written.
+    assert entry["message"] == (
+        "Client error for url "
+        "'https://REDACTED/fetch?src=http%3A%2F%2FREDACTED%2Flibrary%2Fall'"
+    )
+
+
+def test_the_requests_keyword_host_is_scrubbed_from_the_served_message():
+    """Roadmap row 214, the LIVE shape: requests formats its own connection
+    target scheme-less and keyword-form -- HTTPConnectionPool(host='...',
+    port=N) -- so the ://-anchored pattern could never match it, and on a real
+    Plex outage the host and port sweep 3 scrubbed out of jobs.last_error were
+    served whole on /api/logs (carriers: worker.py's own row-209 INFO line,
+    and every requests-flavored exc_info traceback). The string here is the
+    identical fixture tests/test_worker.py's outage test pins into the pod
+    log -- the two halves of the same decision. The bare scheme-less
+    `host:port` shape is deliberately NOT chased (filed forward on row 214's
+    close): it is not the live carrier, and a naive rule eats timestamps,
+    ratios and this repo's own file.py:N citation style."""
+    buffer = LogBuffer()
+    buffer.emit(record(
+        "HTTPConnectionPool(host='plex.internal', port=32400): "
+        "Max retries exceeded with url: /identity"
+    ))
+    (entry,) = buffer.lines()
+    assert "plex.internal" not in entry["message"]
+    assert "32400" not in entry["message"]
+    # The keyword names and the quotes survive -- the same "the name
+    # survives, the value never does" rule the credential pattern set.
+    assert entry["message"] == (
+        "HTTPConnectionPool(host='REDACTED', port=REDACTED): "
+        "Max retries exceeded with url: /identity"
+    )
+
+
+def test_ordinary_colons_and_citations_survive_the_host_patterns():
+    """The over-match hazard row 214 warns about, pinned from the safe side:
+    versions, ratios, clock times and this repo's own file.py:N citation
+    style must pass the scrub untouched. This is the guard that a future
+    'just add a host:port heuristic' edit lands against."""
+    buffer = LogBuffer()
+    buffer.emit(record(
+        "version 1.2:3 and ratio 16:9 at 10:30:00 -- see filters.py:1220"
+    ))
+    (entry,) = buffer.lines()
+    assert entry["message"] == (
+        "version 1.2:3 and ratio 16:9 at 10:30:00 -- see filters.py:1220"
+    )
+
+
 async def test_a_full_subscriber_queue_drops_lines_rather_than_blocking():
     """One slow stream reader must not cost the process memory without bound
     or stall the emitting thread."""
