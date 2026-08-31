@@ -1053,6 +1053,34 @@ CONFIGS = [
     # ``show.country`` (plex.py:170) and a row that forgot the rescoping would
     # build a query Plex answers with the wrong set rather than with an error.
     ("show", {"all": {"country": "France"}}),
+    # 18: the search-tails-1 rows on a movie library -- the text pair through
+    # the STRING branch (``title`` on its bare field; ``edition.begins``
+    # through search_translation's ``editionTitle``, plex.py:64 here at :86)
+    # and all five media booleans on their bare movie fields, ``duplicate``
+    # legal here alone (movie_only_searches, :280).
+    ("movie", {"all": {
+        "title": "Dune",
+        "edition.begins": "Director",
+        "hdr": True,
+        "dovi": False,
+        "trash": False,
+        "duplicate": True,
+        "unmatched": False,
+    }}),
+    # 19: the same rows on a SHOW library, which is what a movie config cannot
+    # reach: ``title`` -> ``show.title`` (:164), ``edition`` -> ``editionTitle``
+    # -> ``show.editionTitle`` (:86 then :180 -- both translation tables
+    # composed), ``hdr``/``dovi``/``trash`` to the EPISODE libtype (:182-186)
+    # and ``unmatched`` to ``show.unmatched`` (:173). ``duplicate`` is
+    # movie-only and absent by law.
+    ("show", {"all": {
+        "title.isnot": "Dune",
+        "edition.ends": "Cut",
+        "hdr": True,
+        "dovi": False,
+        "trash": True,
+        "unmatched": False,
+    }}),
 ]
 
 

@@ -7,7 +7,7 @@ runs, and produces a full, plausible, wrong collection. Every other test in
 this phase asserts the transcription against itself -- against a string
 hand-derived from the same source, by the same reading, in the same sitting.
 
-This file asserts it against Kometa. Seventeen configs, and seventeen URI
+This file asserts it against Kometa. Nineteen configs, and nineteen URI
 strings produced by **Kometa's own build_filter** -- fetched, transcribed
 standalone, run, and pinned below as data. Ours must reproduce them byte for
 byte.
@@ -93,6 +93,21 @@ would have been reached by any golden: config 16 pins ``decade``'s plain-number
 render beside a tag on the same movie query, and config 17 pins ``country``'s
 show-library rescoping, which is the one thing about either row that a movie
 config cannot reach. Both goldens came from the same driver in the same way.
+
+## The eighteenth and nineteenth configs
+
+Search-tails-1 (roadmap rows 170 + 172) added seven rows -- ``title``,
+``edition`` and the five media booleans -- and, as with 16/17, no existing
+golden would have reached any of them: ``test_the_configs_cover_every_shipped_
+value_type`` covers TYPES, and ``str``/``bool`` were already exercised. The
+two configs split by LIBTYPE so that all thirteen field-by-libtype cells are
+pinned: config 18 is the movie column (the bare ``title`` field,
+``editionTitle`` through search_translation, the five booleans' bare fields
+with ``duplicate`` legal only here), config 19 the show column (``show.title``,
+the doubly-translated ``show.editionTitle``, the episode-libtype
+``hdr``/``dovi``/``trash``, and ``show.unmatched``). Both goldens came from
+the same driver in the same way -- predicted from the transcription first,
+then confirmed by running it.
 """
 from pathlib import Path
 
@@ -182,6 +197,23 @@ CONFIGS = [
     }}),
     ("16-decade-and-country", "movie", {"all": {"decade": 1980, "country": "France"}}),
     ("17-country-on-a-show", "show", {"all": {"country": "France"}}),
+    ("18-the-tails-on-a-movie", "movie", {"all": {
+        "title": "Dune",
+        "edition.begins": "Director",
+        "hdr": True,
+        "dovi": False,
+        "trash": False,
+        "duplicate": True,
+        "unmatched": False,
+    }}),
+    ("19-the-tails-on-a-show", "show", {"all": {
+        "title.isnot": "Dune",
+        "edition.ends": "Cut",
+        "hdr": True,
+        "dovi": False,
+        "trash": True,
+        "unmatched": False,
+    }}),
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
@@ -191,8 +223,10 @@ CONFIGS = [
 # report (the fourteenth), the Task 7 report (the fifteenth) and the Task 1
 # report of phase 10a-1 (sixteen and seventeen, `decade` and `country` --
 # predicted at Step 6 before the driver ran, then confirmed by it, same as the
-# fifteen before them). Do not edit a string here to make a test pass: if ours
-# differs, ours is wrong.
+# fifteen before them), and search-tails-1's plan (eighteen and nineteen,
+# predicted from the transcription, then confirmed by the driver -- Task 2 adds
+# twenty and twenty-one the same way). Do not edit a string here to make a test
+# pass: if ours differs, ours is wrong.
 KOMETA = {
     "1-multi-value-tag": "?type=1&sort=titleSort&contentRating=5&and=1&contentRating=7",
     "2-any-base": "?type=1&limit=25&sort=rating%3Adesc&push=1&studio=A24&or=1&year%3E=2020&pop=1",
@@ -211,6 +245,8 @@ KOMETA = {
     "15-unreached-renders-and-rows": "?type=1&sort=titleSort&genre!=1138&and=1&studio!%3D=A24&and=1&studio%3E=Pictures%20%26%20Co&and=1&label=3&and=1&collection=77&and=1&viewCount%3E%3E=3&and=1&viewCount%3C=10",
     "16-decade-and-country": "?type=1&sort=titleSort&decade=1980&and=1&country=36",
     "17-country-on-a-show": "?type=2&sort=titleSort&show.country=36",
+    "18-the-tails-on-a-movie": "?type=1&sort=titleSort&title=Dune&and=1&editionTitle%3C=Director&and=1&hdr=1&and=1&dovi!=1&and=1&trash!=1&and=1&duplicate=1&and=1&unmatched!=1",
+    "19-the-tails-on-a-show": "?type=2&sort=titleSort&show.title!%3D=Dune&and=1&show.editionTitle%3E=Cut&and=1&episode.hdr=1&and=1&episode.dovi!=1&and=1&episode.trash=1&and=1&show.unmatched!=1",
 }
 
 

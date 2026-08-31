@@ -108,17 +108,21 @@ Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
   search names have no filter (``unplayed``, ``progress``, ``hdr``,
   ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
 
-This table covers **26** of the 55 search names and **23** of the 70 filter
+This table covers **33** of the 55 search names and **25** of the 70 filter
 names. Both halves of the residue are real work, and they are different work:
-the 47 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
-``plays``, ``last_played``, 10a's ``country`` and phase B's four people rows
-came in here as ``unprobed``, which is a source tier and not an accessor, so
-the row-96 arithmetic moved by seven and no further -- and then phase B's own
-probe gave ``plays`` and ``last_played`` real listing accessors and appended
-``user_rating`` with one, so those three are the first names counted here that
-an operator can actually filter on rather than merely find in the table), while
-the 29 unsearched names are 9b's own tail, filed per family for T6. The two
-must not be reported as one number, which is what row 96's original "~45" did.
+the 45 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
+``plays``, ``last_played``, 10a's ``country``, phase B's four people rows and
+search-tails-1's ``title``/``edition`` came in here as ``unprobed``, which is
+a source tier and not an accessor, so the row-96 arithmetic has moved by nine
+in total -- and then phase B's own probe gave ``plays`` and ``last_played``
+real listing accessors and appended ``user_rating`` with one, so those three
+are the first names counted here that an operator can actually filter on
+rather than merely find in the table), while the 22 unsearched names are 9b's
+own tail, filed per family for T6 -- search-tails-1 took seven of them (rows
+170 + 172: the text pair, which also moved the filter-covered count by two,
+and the five media booleans, which are search-only and move no filter number).
+The two must not be reported as one number, which is what row 96's original
+"~45" did.
 """
 import datetime as dt
 import re
@@ -544,15 +548,16 @@ _BOTH = ("movie", "show")
 
 # --- THE TABLE ---------------------------------------------------------------
 #
-# Twenty-six rows: 9a's fifteen in the order the roadmap names them
-# (roadmap.md:538-551), then 9b's four, 10a's two and phase B's five appended
-# rather than interleaved so the first fifteen still read against the roadmap
-# line they came from. Column totals are asserted in
-# tests/test_collection_filters.py as the transcription's checksum:
-# 13 tag / 1 str / 3 int / 3 float / 3 date / 1 duration / 2 bool;
-# 12 listing / 5 tier2-batched / 1 tier2-deferred / 5 unprobed / 3 search-only;
-# 15 both-kinds / 10 movie-only / 1 show-only for ``kinds``, and
-# 18 / 7 / 1 for ``search_kinds``, which is a different split and that is the
+# Thirty-three rows: 9a's fifteen in the order the roadmap names them
+# (roadmap.md:538-551), then 9b's four, 10a's two, phase B's five and
+# search-tails-1's seven appended rather than interleaved so the first
+# fifteen still read against the roadmap line they came from. Column totals
+# are asserted in tests/test_collection_filters.py as the transcription's
+# checksum:
+# 13 tag / 3 str / 3 int / 3 float / 3 date / 1 duration / 7 bool;
+# 12 listing / 5 tier2-batched / 1 tier2-deferred / 7 unprobed / 8 search-only;
+# 20 both-kinds / 12 movie-only / 1 show-only for ``kinds``, and
+# 24 / 8 / 1 for ``search_kinds``, which is a different split and that is the
 # point of the second column.
 #
 # Phase B appended FIVE: the four PEOPLE rows, which move the ``tag`` and
@@ -575,6 +580,16 @@ _BOTH = ("movie", "show")
 #   listing; 7 - 2 = 5 unprobed. Three rows on one tier for three different
 #   reasons -- absent-is-zero for ``plays``, absent-excludes for the other
 #   two -- each argued on its own row rather than by the tier they share.
+#
+# Search-tails-1 appended SEVEN: rows 170 and 172. ``title`` and ``edition``
+# are the second and third ``str`` rows, dual-vocabulary on ``unprobed`` (the
+# ``country`` shape), moving ``str`` by two, ``unprobed`` by two and the
+# filter-covered count by two. The five media booleans -- ``hdr``, ``dovi``,
+# ``trash``, ``duplicate``, ``unmatched`` -- are ``search-only`` like
+# ``decade`` (Kometa has no filter of any of these names), moving ``bool`` by
+# five, ``search-only`` by five and no filter number at all. Every search
+# cell is cited to tests/oracle/9b/kometa_build_filter.py by line in its own
+# row's note, and oracle configs 18/19 pin every field-by-libtype render.
 #
 # THE PROBE, in one paragraph, because six of these rows were a refusal and
 # a reader deserves the reason without leaving the file. Read-only, against the
@@ -1107,6 +1122,125 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         search_field="userRating", show_search_field="show.userRating",
         search_kinds=_BOTH, filterable=True,
     ),
+    # --- rows search-tails-1 added -------------------------------------------
+    #
+    # Rows 170 (``title``, ``edition``) and 172 (the five media booleans),
+    # appended rather than interleaved like every batch before them. Every
+    # SEARCH cell is cited to the repo's own verbatim transcription of
+    # Kometa's tables -- tests/oracle/9b/kometa_build_filter.py, the fetched
+    # artifact -- by LINE, and oracle configs 18/19 pin every field-by-libtype
+    # render against the driver itself.
+    FilterAttribute(
+        "title", "str", _BOTH, "unprobed",
+        "The item's own title -- a string_attribute upstream "
+        "(kometa_build_filter.py:353, transcribing plex.py:507), so it takes "
+        "the six string modifiers exactly as `studio` does: a bare "
+        "`title: Dune` is a case-insensitive SUBSTRING match, not an exact "
+        "one. No search_translation entry, so the movie field is the bare "
+        "`title`; re-scoped to `show.title` on a show library by "
+        "show_translation (kometa_build_filter.py:164). Dual-vocabulary like "
+        "`country`: Kometa FILTERS on `title` too (`string_filters` -- the 9a "
+        "oracle's verbatim transcription of builder.py:377-447 opens with "
+        "it), so `filterable` is True -- and `unprobed` for the reason "
+        "`country` carries that tier: 9a's probe never asked about a listing "
+        "accessor for it, so a `filters:` block parses the key and refuses "
+        "at the accessor by naming this tier. Kometa's separate `show_title` "
+        "FILTER (season/episode level, one of the 44 filter-only names) is a "
+        "different attribute and is NOT this row.",
+        search_field="title", show_search_field="show.title",
+        search_kinds=_BOTH, filterable=True,
+    ),
+    FilterAttribute(
+        "edition", "str", ("movie",), "unprobed",
+        "Plex's edition title. The search field is `editionTitle` via "
+        "search_translation (kometa_build_filter.py:86), then "
+        "`show.editionTitle` on a show library via show_translation's entry "
+        "for the TRANSLATED name (kometa_build_filter.py:180) -- the one row "
+        "in the table that composes both tables, which is why oracle config "
+        "19 pins the show render. Dual-LISTED in `searches` exactly like "
+        "`studio` -- a string_attribute (:353) AND a tag_attribute (:419) -- "
+        "and for `studio`'s own reason every operator this table ships takes "
+        "the STRING branch: the value goes to Plex quoted and unresolved. "
+        "Dual-VOCABULARY like `country` (`edition` is in Kometa's "
+        "`string_filters`, the 9a oracle's transcription of "
+        "builder.py:377-447), so `filterable` is True on `unprobed`. `kinds` "
+        "is movie-only: an edition is a movie concept and upstream scopes "
+        "the FILTER to movie libraries -- stated as INFERRED, not "
+        "transcribed, because `builder.filters_by_type` still has no in-repo "
+        "transcription (phase B review D11, unchanged here); the consequence "
+        "either way is a refusal, since no accessor ships at this tier. The "
+        "SEARCH column is the transcribed one and answers both library "
+        "types.",
+        search_field="editionTitle", show_search_field="show.editionTitle",
+        search_kinds=_BOTH, filterable=True,
+    ),
+    FilterAttribute(
+        "hdr", "bool", _BOTH, "search-only",
+        "High dynamic range, a server-side boolean: `hdr: true` emits "
+        "`hdr=1`, `false` emits `hdr!=1` -- the `unplayed` row documents the "
+        "bool rendering once for the whole type. In boolean_attributes "
+        "(kometa_build_filter.py:357); no search_translation entry, so the "
+        "movie field is the bare `hdr`; re-scoped to the EPISODE libtype on "
+        "a show library (`episode.hdr`, kometa_build_filter.py:182) -- the "
+        "same re-scoping `resolution` already does, because HDR is a "
+        "property of the FILE and a show's files are its episodes'. "
+        "`search-only`: Kometa has no `hdr` FILTER (row 96's 29-name "
+        "search-only list), so a `filters:` block refuses it by naming the "
+        "block it does belong to.",
+        search_field="hdr", show_search_field="episode.hdr",
+        search_kinds=_BOTH, filterable=False,
+    ),
+    FilterAttribute(
+        "dovi", "bool", _BOTH, "search-only",
+        "Dolby Vision. The one boolean with a search_translation entry, and "
+        "it is the IDENTITY (kometa_build_filter.py:108: `dovi` -> `dovi`) -- "
+        "transcribed as such rather than skipped; re-scoped to "
+        "`episode.dovi` on a show library (kometa_build_filter.py:183). In "
+        "boolean_attributes at :356. `search-only`: Kometa's client-side "
+        "vocabulary has `has_dolby_vision` -- a DIFFERENT name, one of the "
+        "44 filter-only ones -- and no `dovi` filter, so `filters:` refuses "
+        "this spelling by pointing at the search block.",
+        search_field="dovi", show_search_field="episode.dovi",
+        search_kinds=_BOTH, filterable=False,
+    ),
+    FilterAttribute(
+        "trash", "bool", _BOTH, "search-only",
+        "Plex's trash flag: an item whose file has gone missing but has not "
+        "yet been emptied from the library. In boolean_attributes "
+        "(kometa_build_filter.py:362); no search_translation entry, so the "
+        "movie field is the bare `trash`; re-scoped to `episode.trash` on a "
+        "show library (kometa_build_filter.py:186) -- file-level, like "
+        "`hdr`/`dovi`. `search-only`: Kometa has no filter of this name.",
+        search_field="trash", show_search_field="episode.trash",
+        search_kinds=_BOTH, filterable=False,
+    ),
+    FilterAttribute(
+        "duplicate", "bool", ("movie",), "search-only",
+        "Items carrying more than one media version. MOVIE-ONLY -- it is in "
+        "movie_only_searches (kometa_build_filter.py:280), like `unplayed` "
+        "-- so a show library refuses it BY NAME rather than being sent a "
+        "query Plex answers with the wrong set; the show-side spelling is "
+        "`episode_duplicate`, one of family E's twenty (roadmap row 173), "
+        "deliberately not aliased. In boolean_attributes at :359. "
+        "`search-only`: Kometa has no filter of this name (its `versions` "
+        "filter counts media items and is one of the 44 filter-only "
+        "names).",
+        search_field="duplicate", show_search_field=None,
+        search_kinds=("movie",), filterable=False,
+    ),
+    FilterAttribute(
+        "unmatched", "bool", _BOTH, "search-only",
+        "Items with no agent match. In boolean_attributes "
+        "(kometa_build_filter.py:358); no search_translation entry, so the "
+        "movie field is the bare `unmatched`; re-scoped to `show.unmatched` "
+        "on a show library (kometa_build_filter.py:173) -- the SHOW level, "
+        "not the episode's, unlike `hdr`/`dovi`/`trash`: a match belongs to "
+        "the ITEM, not the file. `show_unmatched` and `episode_unmatched` "
+        "remain family E's separate names (roadmap row 173), not aliases of "
+        "this row. `search-only`: Kometa has no filter of this name.",
+        search_field="unmatched", show_search_field="show.unmatched",
+        search_kinds=_BOTH, filterable=False,
+    ),
 )
 
 BY_NAME: dict[str, FilterAttribute] = {row.name: row for row in FILTER_ATTRIBUTES}
@@ -1517,7 +1651,7 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
     # 44 of its filter names have no Plex search field, and 29 of its search
     # names have no filter.
     #
-    # The FIRST of the two branches is unreachable with today's twenty-one rows:
+    # The FIRST of the two branches is unreachable with today's thirty-three rows:
     # every one of them is searchable, because the fifteen 9a shipped all have
     # Plex search fields. It is written now, and tested with a synthetic row,
     # because the first filter-only attribute (``aspect``, ``height``,

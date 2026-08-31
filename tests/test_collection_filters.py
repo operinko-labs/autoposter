@@ -84,6 +84,11 @@ def test_the_table_holds_exactly_the_tier_one_rows():
     per-person query writable at all (roadmap row 194's "blocker one"), and
     three of the four are movie-only as a search because Kometa's
     ``movie_only_searches`` says so.
+
+    Search-tails-1 appended seven the same way: ``title`` and ``edition``
+    (row 170, dual-vocabulary on unprobed) and the five media booleans
+    (row 172, search-only; ``duplicate`` movie-only per
+    ``movie_only_searches``).
     """
     assert [row.name for row in FILTER_ATTRIBUTES] == [
         "genre",
@@ -112,6 +117,13 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "writer",
         "producer",
         "user_rating",
+        "title",
+        "edition",
+        "hdr",
+        "dovi",
+        "trash",
+        "duplicate",
+        "unmatched",
     ]
 
 
@@ -157,12 +169,12 @@ def test_the_column_totals_are_the_transcriptions_checksum():
 
     assert {k: len(v) for k, v in by_type.items()} == {
         "tag": 13,
-        "str": 1,
+        "str": 3,
         "int": 3,
         "float": 3,
         "date": 3,
         "duration": 1,
-        "bool": 2,
+        "bool": 7,
     }
     assert by_source["listing"] == [
         "year",
@@ -204,12 +216,19 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     # ``plays`` and ``last_played`` LEFT this tier in phase B: probe (d) asked
     # the question 9a never did and answered it, which is the only thing
     # ``unprobed`` was ever waiting for.
+    #
+    # Search-tails-1 appended ``title`` and ``edition`` here for the same
+    # reason again: Kometa filters on both (string_filters) and no probe has
+    # ever asked about a listing accessor for either.
     assert by_source["unprobed"] == [
-        "country", "actor", "director", "writer", "producer",
+        "country", "actor", "director", "writer", "producer", "title", "edition",
     ]
     # ``decade`` joins the search-only tier: row 96's own 29-name list names it
     # first, and Kometa has no ``decade`` FILTER at all.
-    assert by_source["search-only"] == ["unplayed", "progress", "decade"]
+    assert by_source["search-only"] == [
+        "unplayed", "progress", "decade",
+        "hdr", "dovi", "trash", "duplicate", "unmatched",
+    ]
 
 
 def test_batched_attributes_reports_only_tier2_batched_predicates():
@@ -256,11 +275,12 @@ def test_item_kinds_are_movie_show_or_both():
     show_only = sorted(r.name for r in FILTER_ATTRIBUTES if r.kinds == ("show",))
 
     assert movie_only == [
-        "audio_language", "country", "decade", "director", "producer",
-        "progress", "resolution", "subtitle_language", "unplayed", "writer",
+        "audio_language", "country", "decade", "director", "duplicate",
+        "edition", "producer", "progress", "resolution", "subtitle_language",
+        "unplayed", "writer",
     ]
     assert show_only == ["network"]
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 15
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 20
 
 
 def test_every_operator_maps_onto_plexapis_own_operator_table():
@@ -337,7 +357,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 18, ("movie",): 7, ("show",): 1,
+        ("movie", "show"): 24, ("movie",): 8, ("show",): 1,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -345,7 +365,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     assert BY_NAME["duration"].search_kinds == ("movie",)
 
 
-def test_every_row_is_searchable_and_twentythree_are_filterable():
+def test_every_row_is_searchable_and_twentyfive_are_filterable():
     """The set arithmetic, pinned so it cannot rot silently.
 
     Kometa's search vocabulary is 55 non-music attributes and its filter
@@ -358,6 +378,11 @@ def test_every_row_is_searchable_and_twentythree_are_filterable():
     searches (builder.py:278-350) and ``user_rating`` is one of its
     ``number_filters`` -- so the searchable-minus-filterable set is unchanged
     and both counts moved by five.
+
+    Search-tails-1 added ``title`` and ``edition`` (both vocabularies, so both
+    counts moved by two) and the five media booleans (search-only, so only the
+    searchable count moved by five -- they join unplayed/progress/decade in
+    the difference set).
     """
     from autoposter.collections.filters import (
         FILTERABLE_ATTRIBUTES,
@@ -366,10 +391,11 @@ def test_every_row_is_searchable_and_twentythree_are_filterable():
     )
 
     assert all(row.searchable for row in FILTER_ATTRIBUTES)
-    assert len(SEARCHABLE_ATTRIBUTES) == 26
-    assert len(FILTERABLE_ATTRIBUTES) == 23
+    assert len(SEARCHABLE_ATTRIBUTES) == 33
+    assert len(FILTERABLE_ATTRIBUTES) == 25
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
         "unplayed", "progress", "decade",
+        "hdr", "dovi", "trash", "duplicate", "unmatched",
     }
 
 
@@ -509,6 +535,68 @@ def test_country_is_rescoped_for_a_show_library_and_decade_refuses_one():
     assert BY_NAME["decade"].field_for("movie") == "decade"
     with pytest.raises(ValueError, match="not searchable on a show library"):
         BY_NAME["decade"].field_for("show")
+
+
+def test_the_text_rows_take_the_string_operators_and_rescope():
+    """Row 170's two rows. ``title`` is the bare field re-scoped to
+    ``show.title`` (kometa_build_filter.py:164); ``edition`` is the one row in
+    the table that composes BOTH translation tables -- search_translation's
+    ``editionTitle`` (:86), then show_translation's entry for the TRANSLATED
+    name (:180). Both are dual-vocabulary on ``unprobed`` (the ``country``
+    pattern): a ``filters:`` block parses the key and refuses at the accessor
+    by naming the tier."""
+    from autoposter.collections.filter_values import (
+        AttributeNotInListing,
+        PlexItemView,
+    )
+
+    for name in ("title", "edition"):
+        row = BY_NAME[name]
+        assert row.type == "str", name
+        assert row.source == "unprobed", name
+        assert row.filterable, name
+        assert row.search_operators == (
+            "contains", "not", "is", "isnot", "begins", "ends",
+        ), name
+
+    assert BY_NAME["title"].kinds == ("movie", "show")
+    assert BY_NAME["title"].field_for("movie") == "title"
+    assert BY_NAME["title"].field_for("show") == "show.title"
+    assert BY_NAME["edition"].kinds == ("movie",)
+    assert BY_NAME["edition"].field_for("movie") == "editionTitle"
+    assert BY_NAME["edition"].field_for("show") == "show.editionTitle"
+
+    parse_filters({"title": "Dune"})
+    with pytest.raises(AttributeNotInListing, match="unprobed"):
+        PlexItemView(object()).get("title")
+
+
+def test_the_media_booleans_are_search_only_and_libtype_gated():
+    """Row 172's five rows. ``duplicate`` is movie-only (movie_only_searches,
+    kometa_build_filter.py:280), so a show library refuses it BY NAME;
+    ``hdr``/``dovi``/``trash`` re-scope to the EPISODE libtype on a show
+    library (:182-186) exactly as ``resolution`` does, and ``unmatched`` to
+    ``show.unmatched`` (:173) -- the SHOW level, because a match belongs to
+    the item and not the file. All five are ``search-only``: Kometa has no
+    filter of any of these names (row 96's 29-name search-only list), so a
+    ``filters:`` block refuses by pointing at the search block."""
+    for name in ("hdr", "dovi", "trash", "duplicate", "unmatched"):
+        row = BY_NAME[name]
+        assert row.type == "bool", name
+        assert row.source == "search-only", name
+        assert not row.filterable, name
+        assert row.search_operators == ("eq",), name
+
+    assert BY_NAME["hdr"].field_for("show") == "episode.hdr"
+    assert BY_NAME["dovi"].field_for("show") == "episode.dovi"
+    assert BY_NAME["trash"].field_for("show") == "episode.trash"
+    assert BY_NAME["unmatched"].field_for("show") == "show.unmatched"
+    assert BY_NAME["duplicate"].field_for("movie") == "duplicate"
+    with pytest.raises(ValueError, match="not searchable on a show library"):
+        BY_NAME["duplicate"].field_for("show")
+
+    with pytest.raises(ValueError, match="plex_search attribute"):
+        parse_filters({"hdr": True})
 
 
 def test_the_modifier_table_is_not_invertible():
