@@ -38,6 +38,7 @@ from autoposter.collections.awards import (
     fetch_event_validation,
     recent_years,
     require_known_event,
+    uncovered_categories,
     winners_for_categories,
     winners_for_year,
 )
@@ -285,6 +286,61 @@ async def test_duplicates_are_removed_keeping_first_occurrence():
                            "best motion picture of the year": {"winner": ["ttX"]}}},
     }
     assert winners_for_categories(event, BEST_PICTURE) == ["ttX"]
+
+
+# --------------------------------------------------------------------------
+# Live drift detection over category vocabularies (roadmap row 153, the
+# open half: a runtime guard riding data already fetched, not a new fetch).
+# --------------------------------------------------------------------------
+
+async def test_uncovered_categories_is_empty_when_every_category_appears():
+    # Not BEST_PICTURE itself: the committed Oscars fixture is the older,
+    # synthetic one (module docstring above) and only ever uses two of its
+    # four historical category names -- the other two ("best picture,
+    # production" / "...unique and artistic production") are 1930s Academy
+    # names this fixture's five years never reach. Testing against the
+    # categories the fixture actually carries is what "every category
+    # appears" means here; BEST_PICTURE itself is exercised for drift by
+    # the next test below.
+    async with _client() as http:
+        event = await fetch_event(http)
+    covered = ("best motion picture of the year", "best picture")
+    assert uncovered_categories(event, covered) == ()
+
+
+async def test_uncovered_categories_names_the_ones_that_never_appear():
+    async with _client() as http:
+        event = await fetch_event(http)
+    drifted = ("best picture", "a renamed category nobody transcribed")
+    assert uncovered_categories(event, drifted) == (
+        "a renamed category nobody transcribed",
+    )
+
+
+async def test_uncovered_categories_ignores_a_category_with_zero_winners_this_year():
+    """Not covered != has a winner. A category present in the data with an
+    empty winner list some year is ordinary; only the NAME never appearing
+    anywhere is drift."""
+    event = {"2026": {"oscar": {"best picture": {"nominee": ["ttX"], "winner": []}}}}
+    assert uncovered_categories(event, ("best picture",)) == ()
+
+
+async def test_uncovered_categories_respects_the_award_group_filter():
+    """A category name that exists, but only under a group the award_filter
+    excludes, still counts as uncovered for THIS award -- the group filter
+    narrows what "appears" means, exactly as it narrows winners_for_categories."""
+    event = {"2026": {"other_group": {"best picture": {"winner": ["ttX"]}}}}
+    assert uncovered_categories(event, ("best picture",), award_filter=("oscar",)) == (
+        "best picture",
+    )
+
+
+async def test_uncovered_categories_is_empty_for_a_ceremony_with_no_category_filter():
+    """The four ceremonies with ``categories=None`` (Berlinale, Cannes,
+    Sundance, the National Film Registry) have nothing named to have
+    drifted."""
+    event = {"2026": {"oscar": {"best picture": {"winner": ["ttX"]}}}}
+    assert uncovered_categories(event, None) == ()
 
 
 # --------------------------------------------------------------------------

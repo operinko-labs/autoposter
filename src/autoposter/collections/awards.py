@@ -348,6 +348,41 @@ def winners_for_categories(
     return _dedupe(ids)
 
 
+def uncovered_categories(
+    event: dict,
+    categories: tuple[str, ...] | None,
+    award_filter: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    """Which of ``categories`` never appears anywhere in ``event``, across
+    every year and (if narrowed) every wanted award group.
+
+    Empty when ``categories`` is ``None`` -- there is nothing named to have
+    drifted (the four ceremonies with no ``category_filter``). A category
+    present with zero WINNERS some year is not "uncovered": winning nothing in
+    a given year is ordinary Oscars history. The category NAME never
+    appearing at all -- upstream renamed it after this codebase's tuple was
+    transcribed -- is the drift roadmap row 153 was filed for, and it is the
+    only thing this function reports.
+
+    Rides data the caller already fetched this pass (``_event``'s live
+    result); it makes no fetch of its own and belongs beside
+    ``winners_for_categories``, not inside it, because the caller decides what
+    to do with drift (roadmap row 153: log it) and this function only detects
+    it.
+    """
+    if not categories:
+        return ()
+    wanted = {c.lower() for c in categories}
+    groups = _wanted_groups(award_filter)
+    seen: set[str] = set()
+    for year_data in _by_year(event).values():
+        for award, group in year_data.items():
+            if groups is not None and award.lower() not in groups:
+                continue
+            seen.update(category.lower() for category in group)
+    return tuple(c for c in categories if c.lower() not in seen)
+
+
 def winners_for_year(event: dict, year: str) -> list[str]:
     """Every award group's every category's winners for one ceremony year.
 
