@@ -269,7 +269,13 @@ jobs:
         run: npm test
 
       - name: Lint
-        run: ruff check src tests
+        # The whole checkout, not just src and tests: row 118's finding was
+        # that `ruff check .` and the gate could disagree (two F401s in a
+        # merge migration once failed the root command while CI stayed
+        # green). Same paths for both commands means the disagreement is
+        # structurally impossible, and alembic/ and scripts/ stop being
+        # lint-free by accident.
+        run: ruff check .
 
       - name: Test
         # Everything except the ImageMagick-gated tests, which this runner
