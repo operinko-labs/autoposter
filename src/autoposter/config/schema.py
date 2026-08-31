@@ -484,6 +484,34 @@ class OperationsConfig(BaseModel):
             "refreshes entirely."
         ),
     )
+    # Roadmap row 35. Metadata WRITES only: an exempt item's facts are still
+    # gathered and stored (badges read the stored row, not the write), and its
+    # artwork is untouched. All three default empty, so an untouched config
+    # exempts nothing.
+    ignore_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Plex rating keys whose metadata this service never writes. Their "
+            "facts are still gathered and stored; only the write to Plex is "
+            "skipped."
+        ),
+    )
+    ignore_imdb_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "IMDb ids whose metadata this service never writes, e.g. 'tt0133093'. "
+            "Their facts are still gathered and stored; only the write to Plex is "
+            "skipped."
+        ),
+    )
+    ignore_labels: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Plex labels marking an item opted out of metadata writes -- the "
+            "per-item escape hatch, e.g. 'skip_autoposter'. Matched "
+            "case-insensitively, because Plex canonicalises label case."
+        ),
+    )
     # This section owns WHEN, not WHETHER, in the split ``SchedulerConfig``'s
     # docstring states: there is no ``tmdb_budget_enabled`` beside this,
     # because 0 already means that and two spellings of one setting is one

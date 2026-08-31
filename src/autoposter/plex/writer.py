@@ -32,6 +32,38 @@ WRITABLE_BY_KIND: dict[str, set[str]] = {
 }
 
 
+def exemption_reason(
+    operations, rating_key: str | None, imdb_id: str | None, labels
+) -> str | None:
+    """Why this item's metadata must not be written, or ``None`` to write it.
+
+    Roadmap row 35, narrow reading: this gates the Plex WRITE only. The
+    caller still gathers and persists the item's facts, because the badge
+    stage reads the persisted row rather than the write, and an exempt item
+    must keep its badges rather than silently lose them.
+
+    A reason string rather than a bool: the operator's next question when an
+    item is not being written is always "which setting did that", and a bare
+    ``True`` cannot answer it.
+
+    ``labels`` is whatever the plexapi object carries -- a list of tag objects
+    on a real item, plain strings in a test -- so each entry is read through
+    ``getattr(.., "tag", entry)``. Comparison is case-folded on both sides:
+    Plex canonicalises label case, so an exact compare would silently miss the
+    opt-out label an operator actually applied.
+    """
+    if rating_key is not None and rating_key in operations.ignore_ids:
+        return f"operations.ignore_ids matched rating key {rating_key!r}"
+    if imdb_id is not None and imdb_id in operations.ignore_imdb_ids:
+        return f"operations.ignore_imdb_ids matched IMDb id {imdb_id!r}"
+    wanted = {name.casefold() for name in operations.ignore_labels}
+    for entry in labels or []:
+        name = getattr(entry, "tag", entry)
+        if isinstance(name, str) and name.casefold() in wanted:
+            return f"operations.ignore_labels matched label {name!r}"
+    return None
+
+
 def _one_decimal(value: float) -> float:
     """Round to one decimal place, matching the tool being replaced.
 

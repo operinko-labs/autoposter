@@ -26,7 +26,7 @@ from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.artwork import upload_artwork
 from autoposter.plex.client import ResolvedItem
-from autoposter.plex.writer import apply_facts
+from autoposter.plex.writer import apply_facts, exemption_reason
 from autoposter.providers import base as art
 from autoposter.providers.ladder import select_artwork
 from autoposter.render import compositor, naming
@@ -737,7 +737,18 @@ async def apply_metadata(
     await persist_facts(session, media_item_id, facts)
 
     if config.operations.write_to_plex and plex_item is not None and not facts.is_empty():
-        await apply_facts(plex_item, facts)
+        # Row 35. Checked here, at the facts/write seam, and not earlier: the
+        # facts above are still gathered and persisted for an exempt item,
+        # because the badge stage reads the persisted row rather than this
+        # write.
+        exempt = exemption_reason(
+            config.operations, item.rating_key, item.imdb_id,
+            getattr(plex_item, "labels", None),
+        )
+        if exempt is not None:
+            logger.info("plex: skipped writing %s: %s", item.rating_key, exempt)
+        else:
+            await apply_facts(plex_item, facts)
     return facts
 
 
