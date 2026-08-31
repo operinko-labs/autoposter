@@ -50,6 +50,7 @@ import re
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from autoposter.collections.builders.base import BuilderContext, BuilderResult
+from autoposter.collections.default_images import UNIVERSE_CODES
 from autoposter.collections.imdb_graphql import fetch_list, fetch_watchlist
 
 logger = logging.getLogger(__name__)
@@ -161,8 +162,19 @@ class ImdbListBuilder:
     async def build(self, ctx: BuilderContext) -> BuilderResult:
         params = ImdbListParams.model_validate(ctx.config)
         entries = await fetch_list(ctx.http, params.list)
+        # Eight of Kometa's universes are public IMDb lists whose ids this
+        # catalog transcribes (``catalog._UNIVERSE_LISTS``), and upstream names
+        # its universe art by a short code rather than a display name
+        # (``.superpowers/sdd/p-defimg-probe.md`` §5/§6) -- so the list id is
+        # both the only thing on this generic builder that names the universe
+        # and the only stable join to that code. Every other IMDb list
+        # definition, of which there are many, is not in the table and keeps no
+        # default artwork.
+        code = UNIVERSE_CODES.get(params.list)
         return BuilderResult(
-            ids=_library_owned(entries, ctx, "IMDb list %r" % params.list)
+            ids=_library_owned(entries, ctx, "IMDb list %r" % params.list),
+            poster_kind="universe" if code else None,
+            poster_key=code,
         )
 
 

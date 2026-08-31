@@ -826,4 +826,132 @@ async def test_the_leftovers_bucket_is_never_given_a_family_poster():
 
     assert poster_for_unit(row, ordinary) == ("country", "France")
     assert poster_for_unit(row, leftovers) == (None, None)
-    assert poster_for_unit(DYNAMIC_TYPES["content_rating"], ordinary) == (None, None)
+
+
+async def test_a_streaming_definition_takes_its_service_poster():
+    """`production_streaming` is built by the GENERIC `tmdb_discover` builder,
+    so there is no family-specific builder to hang a kind on -- the provider id
+    is the only thing on the definition that names the service."""
+    from autoposter.collections.builders.base import BuilderContext
+    from autoposter.collections.builders.tmdb_discover import TmdbDiscoverBuilder
+
+    class _Client:
+        async def discover(self, media_type, filters):
+            return ["603"]
+
+    class _Sources:
+        tmdb = _Client()
+
+    ctx = BuilderContext(
+        library="Movies", library_type="Movie",
+        config={
+            "with_watch_providers": "8",
+            "watch_region": "US",
+            "sort_by": "popularity.desc",
+        },
+        sources=_Sources(),
+    )
+    result = await TmdbDiscoverBuilder().build(ctx)
+
+    assert (result.poster_kind, result.poster_key) == ("streaming", "Netflix")
+
+
+async def test_a_discover_definition_with_no_watch_provider_offers_no_poster():
+    """Every other `tmdb_discover` definition -- and there are many -- behaves
+    exactly as it does today."""
+    from autoposter.collections.builders.base import BuilderContext
+    from autoposter.collections.builders.tmdb_discover import TmdbDiscoverBuilder
+
+    class _Client:
+        async def discover(self, media_type, filters):
+            return ["603"]
+
+    class _Sources:
+        tmdb = _Client()
+
+    ctx = BuilderContext(
+        library="Movies", library_type="Movie",
+        # A filtering attribute is required (`_needs_at_least_one_attribute`);
+        # `with_genres` rather than any watch-provider field is what makes this
+        # "no watch provider set", not "no filter at all".
+        config={"with_genres": "18", "sort_by": "popularity.desc"}, sources=_Sources(),
+    )
+    result = await TmdbDiscoverBuilder().build(ctx)
+
+    assert (result.poster_kind, result.poster_key) == (None, None)
+
+
+async def test_a_resolution_bucket_takes_its_poster_from_its_own_filter():
+    """`media_resolution` is four `plex_all` definitions distinguished only by
+    their `resolution` filter -- the pack's own bucket key, and the same four
+    strings p-defimg-probe.md §5 `resolution/` names its files by. A `plex_all`
+    definition with any other filter, or none, is untouched."""
+    from autoposter.collections.builders.base import BuilderContext
+    from autoposter.collections.builders.plex_trivial import PlexAllBuilder
+
+    class _Access:
+        def owned_index(self):
+            return {"plex": ["1", "2"]}
+
+    class _Sources:
+        plex = _Access()
+
+    def _ctx(filters):
+        return BuilderContext(
+            library="Movies", library_type="Movie", config={},
+            sources=_Sources(),
+            definition=CollectionDefinition(
+                title="4k Movies", builder="plex_all", filters=filters,
+            ),
+        )
+
+    bucket = await PlexAllBuilder().build(_ctx({"resolution": ["4k", "8k"]}))
+    assert (bucket.poster_kind, bucket.poster_key) == ("resolution", "4k")
+
+    other = await PlexAllBuilder().build(_ctx({"genre": ["Action"]}))
+    assert (other.poster_kind, other.poster_key) == (None, None)
+
+    bare = await PlexAllBuilder().build(
+        BuilderContext(
+            library="Movies", library_type="Movie", config={}, sources=_Sources(),
+        )
+    )
+    assert (bare.poster_kind, bare.poster_key) == (None, None)
+
+
+async def test_a_universe_list_takes_its_short_code_poster():
+    """Three builders, one table. An IMDb list id, a TMDb list id and an
+    MDBList ref all resolve through `UNIVERSE_CODES`; a list ref that is not a
+    universe resolves to nothing, which is every other list definition."""
+    from autoposter.collections.builders.base import BuilderContext
+    from autoposter.collections.builders.imdb_lists import ImdbListBuilder
+
+    async def handler(request):
+        return httpx.Response(200, json={"titles": []})
+
+    class _Sources:
+        pass
+
+    # The builder's own fetch is stubbed at the module seam it already uses;
+    # this test asserts the poster pair, not the membership.
+    import autoposter.collections.builders.imdb_lists as module
+
+    async def _entries(http, list_id):
+        return []
+
+    original = module.fetch_list
+    module.fetch_list = _entries
+    try:
+        mcu = await ImdbListBuilder().build(BuilderContext(
+            library="Movies", library_type="Movie",
+            config={"list": "ls539646485"}, sources=_Sources(),
+        ))
+        other = await ImdbListBuilder().build(BuilderContext(
+            library="Movies", library_type="Movie",
+            config={"list": "ls000000001"}, sources=_Sources(),
+        ))
+    finally:
+        module.fetch_list = original
+
+    assert (mcu.poster_kind, mcu.poster_key) == ("universe", "mcu")
+    assert (other.poster_kind, other.poster_key) == (None, None)

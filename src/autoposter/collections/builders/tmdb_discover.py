@@ -69,6 +69,7 @@ from autoposter.collections.builders.base import (
 # The shape validators are ``builders/tmdb.py``'s, reused rather than copied:
 # the same two patterns, refusing the same silently-ignored malformed values.
 from autoposter.collections.builders.tmdb import _LANGUAGE, _REGION, _TmdbBuilder
+from autoposter.collections.default_images import STREAMING_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -534,4 +535,18 @@ class TmdbDiscoverBuilder(_TmdbBuilder):
         filters = discover_filters(params, media_type, ctx.library_type)
         client = self._client(ctx)
         ids = await client.discover(media_type, filters)
-        return BuilderResult(ids=[("tmdb", value) for value in ids])
+        # The streaming pack's fifteen definitions differ from every other
+        # discover definition -- and from each other -- by exactly one field:
+        # the watch-provider id. That id is what names the service, so it is
+        # what resolves the poster; a discover definition that carries no
+        # provider is not a streaming collection and keeps no default artwork.
+        # Upstream keys the files by service NAME
+        # (``.superpowers/sdd/p-defimg-probe.md`` §6), which the table
+        # translates, and a provider the table does not name gets None rather
+        # than a URL built from a number upstream never used.
+        service = STREAMING_NAMES.get(str(ctx.config.get("with_watch_providers", "")))
+        return BuilderResult(
+            ids=[("tmdb", value) for value in ids],
+            poster_kind="streaming" if service else None,
+            poster_key=service,
+        )

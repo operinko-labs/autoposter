@@ -231,3 +231,46 @@ def test_every_family_row_names_a_real_directory_shape():
         assert family.directory.count("/") <= 1, name
         for banned in ("logos", "overlays", "white", "best", "standards"):
             assert banned not in family.directory.split("/"), name
+
+
+def test_the_universe_codes_are_short_codes_not_display_names():
+    """p-defimg-probe.md §5 `universe/` and §6's full listing: this family and
+    `seasonal/` are the two that depart from display-name naming. Our universe
+    collections are built by three DIFFERENT generic list builders, so the LIST
+    REF is the only thing on a definition that names the universe -- which is
+    why the table is keyed by ref."""
+    from autoposter.collections.default_images import UNIVERSE_CODES
+
+    assert UNIVERSE_CODES["ls539646485"] == "mcu"      # Marvel Cinematic Universe
+    assert UNIVERSE_CODES["ls566667558"] == "arrow"    # Arrowverse
+    assert UNIVERSE_CODES["ls543971628"] == "avp"      # Alien / Predator
+    assert UNIVERSE_CODES["8642250"] == "dcu"          # DC Universe (TMDb list)
+    # 'In Association With DC' has no upstream entry and must not borrow one:
+    # §5 names `dca` as DC ANIMATED, a different continuity.
+    assert "fa11en82/in-association-with-dc" not in UNIVERSE_CODES
+    for code in UNIVERSE_CODES.values():
+        assert code == code.lower()
+        assert " " not in code
+
+
+def test_the_streaming_table_maps_provider_ids_to_upstream_service_names():
+    """Our streaming pack is `tmdb_discover` definitions carrying a TMDb
+    watch-provider id (`catalog._STREAMING_SERVICES`); upstream names the files
+    by service (p-defimg-probe.md §6 `streaming/color/`). The two compound ids
+    stay whole -- `531|1770` is ONE collection, 'either of these providers'."""
+    from autoposter.collections.default_images import STREAMING_NAMES
+
+    assert STREAMING_NAMES["8"] == "Netflix"
+    assert STREAMING_NAMES["337"] == "Disney+"
+    assert STREAMING_NAMES["531|1770"] == "Paramount+"
+    assert default_image_url("streaming", STREAMING_NAMES["8"]) == (
+        BASE + "/streaming/color/Netflix.jpg"
+    )
+
+
+def test_the_resolution_keys_are_exactly_the_packs_four_buckets():
+    """p-defimg-probe.md §5 `resolution/` holds nine labels; the four our
+    `media_resolution` pack builds are the four we can ever ask for."""
+    from autoposter.collections.default_images import RESOLUTION_KEYS
+
+    assert RESOLUTION_KEYS == frozenset({"4k", "1080", "720", "480"})

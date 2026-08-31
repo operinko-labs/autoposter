@@ -47,6 +47,7 @@ from autoposter.collections.builders.base import (
     best_external_id,
     require_library_type,
 )
+from autoposter.collections.default_images import UNIVERSE_CODES
 from autoposter.facts.mdblist import MDBListLimitReached
 
 logger = logging.getLogger(__name__)
@@ -188,4 +189,15 @@ class MdblistListBuilder:
                 "%s: MDBList list %r: skipped %d entr%s of the other media type",
                 ctx.library, params.list, other_media, "y" if other_media == 1 else "ies",
             )
-        return BuilderResult(ids=ids)
+        # The DC split's two MDBList universes join the same table by their
+        # list ref -- see ``ImdbListBuilder`` for why the ref rather than the
+        # title. 'In Association With DC' is deliberately absent from that
+        # table: upstream's ``dca`` is DC ANIMATED, a different continuity, and
+        # lending it that art would be a plausible wrong poster rather than an
+        # absent one.
+        code = UNIVERSE_CODES.get(params.list)
+        return BuilderResult(
+            ids=ids,
+            poster_kind="universe" if code else None,
+            poster_key=code,
+        )

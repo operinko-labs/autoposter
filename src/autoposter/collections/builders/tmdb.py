@@ -43,6 +43,7 @@ from autoposter.collections.builders.base import (
     BuilderResult,
     require_library_type,
 )
+from autoposter.collections.default_images import UNIVERSE_CODES
 from autoposter.providers.tmdb_lists import CHART_ENDPOINTS, CHART_ENDPOINTS_ACCEPTING_REGION
 
 __all__ = [
@@ -254,7 +255,17 @@ class TmdbListBuilder(_TmdbBuilder):
         ids = await client.list_items(
             params.id, media_type=self.media_types[ctx.library_type]
         )
-        return BuilderResult(ids=[("tmdb", value) for value in ids])
+        # One TMDb list is a universe -- the DC split's 'DC Universe', list
+        # 8642250 (``catalog._DC_LISTS``) -- and it joins the universe table by
+        # the same list ref the IMDb and MDBList universes do. The id is
+        # stringified because the table's keys are refs as written, and MDBList
+        # refs are not numbers.
+        code = UNIVERSE_CODES.get(str(params.id))
+        return BuilderResult(
+            ids=[("tmdb", value) for value in ids],
+            poster_kind="universe" if code else None,
+            poster_key=code,
+        )
 
 
 class TmdbCollectionBuilder(_TmdbBuilder):

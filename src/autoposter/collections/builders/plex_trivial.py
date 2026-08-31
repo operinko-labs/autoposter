@@ -25,6 +25,7 @@ import logging
 from pydantic import BaseModel, ConfigDict
 
 from autoposter.collections.builders.base import BuilderContext, BuilderResult
+from autoposter.collections.default_images import RESOLUTION_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -73,4 +74,20 @@ class PlexAllBuilder:
         # counts on that.
         rating_keys = list(access.owned_index()["plex"])
         logger.debug("plex_all: %d owned item(s)", len(rating_keys))
-        return BuilderResult(ids=[("plex", key) for key in rating_keys])
+        # ``media_resolution`` is four definitions of THIS builder distinguished
+        # only by their ``resolution`` filter, so the filter is where the
+        # family identity lives and there is nowhere else to read it from. The
+        # first value is the bucket's own key -- ``("4k", "8k")`` is "4k, with
+        # 8k folded in", upstream's own addon merge -- and it is one of the
+        # four labels ``Default-Images/resolution/`` names its files by
+        # (``.superpowers/sdd/p-defimg-probe.md`` §5). Any other filter, and a
+        # bare ``plex_all``, keep no default artwork: this builder is "every
+        # item the library owns", which upstream has no picture of.
+        values = (getattr(ctx.definition, "filters", None) or {}).get("resolution")
+        bucket = values[0] if isinstance(values, list) and values else None
+        matched = bucket if bucket in RESOLUTION_KEYS else None
+        return BuilderResult(
+            ids=[("plex", key) for key in rating_keys],
+            poster_kind="resolution" if matched else None,
+            poster_key=matched,
+        )
