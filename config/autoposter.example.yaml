@@ -105,7 +105,12 @@ collections:
   #       # whatever `notifications` does. Read live -- an edit applies at the
   #       # next pass, not the next restart -- but only ever sent to when
   #       # `notifications.enabled` is true. May embed a token; never logged
-  #       # in full. A family definition's hook covers every collection in it.
+  #       # in full. A family definition's hook covers every collection in
+  #       # it -- one POST per expanded member per pass, so a large family is
+  #       # a burst worth expecting. A smart-built collection never fires
+  #       # this: Plex owns smart membership, so there is no per-item delta
+  #       # to report. The detail dict only reaches the wire under
+  #       # `notifications.mode: autoposter-v1`; `apprise-json` drops it.
   #       changes_webhook: "" # e.g. http://n8n.n8n-prod.svc.cluster.local:5678/webhook/collection
   #       # Post-builder filtering (roadmap row 96): Kometa's
   #       # `attribute[.modifier]: value`, evaluated on the resolved items

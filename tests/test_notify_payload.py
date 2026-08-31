@@ -137,3 +137,100 @@ def test_toggling_notifications_does_not_change_the_render_version(tmp_path):
     )
     assert changed.notifications.enabled is True
     assert changed.version == load_config(EXAMPLE).version
+
+
+# --- row 19's new events, pinned per mode -------------------------------------
+#
+# ``build_payload`` is generic over ``event``/``detail`` -- these two events
+# get no special-casing in payload.py. The point of these tests is not the
+# builder (already covered above); it is nailing down, for the two events row
+# 19 actually introduced, what a consumer configured each way really
+# receives: ``apprise-json`` (the default) drops ``detail`` entirely, so the
+# collection/library/added/removed and rating_key/reason facts never reach an
+# apprise-json consumer -- only ``autoposter-v1`` carries them. Shipped
+# behaviour, not a new requirement; these pin it so it cannot regress or drift
+# unnoticed.
+
+_CHANGED_DETAIL = {
+    "library": "Movies",
+    "collection": "Hand Picked",
+    "added": 3,
+    "removed": 1,
+}
+
+_DELETED_DETAIL = {
+    "library": "Movies",
+    "collection": "Hand Picked",
+    "rating_key": "12345",
+    "reason": "unconfigured",
+}
+
+
+def test_apprise_json_collection_changed_has_no_detail():
+    built = build_payload(
+        "apprise-json",
+        event="collection_changed",
+        summary="Movies: 'Hand Picked' changed: +3 -1",
+        detail=_CHANGED_DETAIL,
+    )
+    assert built == {
+        "version": "1.0",
+        "title": "autoposter: collection_changed",
+        "message": "Movies: 'Hand Picked' changed: +3 -1",
+        "attachments": [],
+        "type": "success",
+    }
+    assert "detail" not in built
+
+
+def test_autoposter_v1_collection_changed_carries_full_detail(monkeypatch):
+    frozen = datetime(2026, 8, 22, 12, 34, 56, tzinfo=timezone.utc)
+    monkeypatch.setattr(payload_module, "_utcnow", lambda: frozen)
+    built = build_payload(
+        "autoposter-v1",
+        event="collection_changed",
+        summary="Movies: 'Hand Picked' changed: +3 -1",
+        detail=_CHANGED_DETAIL,
+    )
+    assert built == {
+        "schema": "autoposter/v1",
+        "event": "collection_changed",
+        "at": "2026-08-22T12:34:56+00:00",
+        "summary": "Movies: 'Hand Picked' changed: +3 -1",
+        "detail": _CHANGED_DETAIL,
+    }
+
+
+def test_apprise_json_collection_deleted_has_no_detail():
+    built = build_payload(
+        "apprise-json",
+        event="collection_deleted",
+        summary="deleted collection 'Hand Picked' in Movies",
+        detail=_DELETED_DETAIL,
+    )
+    assert built == {
+        "version": "1.0",
+        "title": "autoposter: collection_deleted",
+        "message": "deleted collection 'Hand Picked' in Movies",
+        "attachments": [],
+        "type": "success",
+    }
+    assert "detail" not in built
+
+
+def test_autoposter_v1_collection_deleted_carries_full_detail(monkeypatch):
+    frozen = datetime(2026, 8, 22, 12, 34, 56, tzinfo=timezone.utc)
+    monkeypatch.setattr(payload_module, "_utcnow", lambda: frozen)
+    built = build_payload(
+        "autoposter-v1",
+        event="collection_deleted",
+        summary="deleted collection 'Hand Picked' in Movies",
+        detail=_DELETED_DETAIL,
+    )
+    assert built == {
+        "schema": "autoposter/v1",
+        "event": "collection_deleted",
+        "at": "2026-08-22T12:34:56+00:00",
+        "summary": "deleted collection 'Hand Picked' in Movies",
+        "detail": _DELETED_DETAIL,
+    }
