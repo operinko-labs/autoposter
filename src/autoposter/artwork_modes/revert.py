@@ -25,6 +25,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,6 +54,7 @@ class RevertResult:
     pushed: int
     failed: int
     dry_run: bool
+    missing: int = 0
     refused: str | None = None
 
     def as_response(self) -> dict:
@@ -62,6 +64,7 @@ class RevertResult:
             "items": self.items,
             "items_with_base": self.items_with_base,
             "files": self.files,
+            "missing": self.missing,
         }
         if self.refused is not None:
             body["status"] = "refused"
@@ -163,10 +166,18 @@ class RevertMode:
         if not self._apply:
             return RevertResult(total, items_with_base, files, 0, 0, dry_run=True)
 
-        pushed = failed = 0
+        pushed = failed = missing = 0
         for rating_key, entries in planned.items():
             try:
                 plex_item = await self._plex.fetch_item(rating_key)
+            except PlexNotFound:
+                # Expected, not a crash: the item was deleted from Plex since
+                # its render row was written. One concise line, no traceback --
+                # counted separately from real failures below (backup.py's
+                # PR #112 hotfix shape).
+                logger.info("revert: %s no longer in Plex, skipped", rating_key)
+                missing += 1
+                continue
             except Exception:  # noqa: BLE001 - one bad item must not abort the run
                 logger.warning(
                     "revert: could not fetch Plex item %s", rating_key, exc_info=True
@@ -185,7 +196,12 @@ class RevertMode:
                     )
                     failed += 1
 
-        return RevertResult(total, items_with_base, files, pushed, failed, dry_run=False)
+        if missing:
+            logger.info("revert: skipped %d item(s) no longer in Plex", missing)
+
+        return RevertResult(
+            total, items_with_base, files, pushed, failed, dry_run=False, missing=missing
+        )
 
 
 def _base_on_disk(asset_path: str, assets_root: Path) -> Path | None:

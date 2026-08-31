@@ -8,6 +8,7 @@ network.
 """
 from pathlib import Path
 
+from plexapi.exceptions import NotFound as PlexNotFound
 import pytest
 
 from autoposter.artwork_modes.revert import RevertMode
@@ -119,7 +120,7 @@ async def test_dry_run_pushes_nothing(session, config, assets_root):
     assert item.uploaded == []
     assert result.as_response() == {
         "mode": "revert", "status": "dry run", "dry_run": True, "items": 1,
-        "items_with_base": 1, "files": 1,
+        "items_with_base": 1, "files": 1, "missing": 0,
     }
 
 
@@ -293,7 +294,7 @@ async def test_revert_refuses_an_empty_renders_table(session, config):
     # apply=True was requested, so dry_run mirrors the success paths: False.
     assert result.as_response() == {
         "mode": "revert", "status": "refused", "reason": result.refused,
-        "dry_run": False, "items": 0, "items_with_base": 0, "files": 0,
+        "dry_run": False, "items": 0, "items_with_base": 0, "files": 0, "missing": 0,
     }
 
 
@@ -310,3 +311,43 @@ async def test_revert_counts_a_failed_push(session, config, assets_root):
 
     assert (result.pushed, result.failed) == (1, 1)
     assert ("poster", b"a") in item.uploaded
+
+
+async def test_revert_logs_a_missing_item_at_info_not_warning(
+    session, config, assets_root, caplog
+):
+    """An item deleted from Plex since its render row was written 404s on the
+    apply-loop fetch -- expected, not a crash. Row 218, backup.py's PR #112
+    hotfix shape: one concise INFO line, tallied, no WARNING, no traceback."""
+    gone = await _add_item(session, rating_key="rk-gone")
+    ok = await _add_item(session, rating_key="rk-ok", root_folder="B (2000)")
+    await _add_render(session, gone, "poster", _seed_base(assets_root, "a.jpg", b"a"))
+    await _add_render(session, ok, "poster", _seed_base(assets_root, "b.jpg", b"b"))
+    ok_item = FakeItem()
+
+    class GoneClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if rating_key == "rk-gone":
+                raise PlexNotFound(f"(404) not_found ({rating_key})")
+            return self._items[rating_key]
+
+    plex = GoneClient({"rk-ok": ok_item})
+
+    with caplog.at_level("INFO"):
+        result = await RevertMode(config, plex, None, _headers(), apply=True).run(session)
+
+    assert (result.pushed, result.failed, result.missing) == (1, 0, 1)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == []
+    assert not any(r.exc_info for r in caplog.records)
+
+    revert_records = [r for r in caplog.records if r.name == "autoposter.artwork_modes.revert"]
+    per_item = [r.message for r in revert_records if "rk-gone" in r.message]
+    assert len(per_item) == 1
+    assert per_item[0].startswith("revert: ") and "no longer in Plex" in per_item[0]
+
+    summary = [r.message for r in revert_records if r.message not in per_item]
+    assert len(summary) == 1
+    assert summary[0].startswith("revert: ") and "1" in summary[0]
