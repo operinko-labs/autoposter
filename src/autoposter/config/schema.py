@@ -405,7 +405,8 @@ class ScheduleGate(BaseModel):
         default=None,
         description=(
             "Restrict this definition to these calendar months (1-12), for "
-            "seasonal collections. None means every month."
+            "seasonal collections (Kometa's date-window idiom). None means "
+            "every month."
         ),
     )
 
@@ -1545,8 +1546,9 @@ class Config(BaseModel):
     settle_seconds: int = Field(
         default=30,
         description=(
-            "How long a Plex webhook intent waits before it is processed, giving "
-            "Plex time to finish writing metadata for the item."
+            "How long this service waits after a Radarr/Sonarr webhook before "
+            "rendering, so a burst of events -- a season pack import -- "
+            "collapses into one pass instead of one render per episode."
         ),
     )
     magick_binary: str = Field(
