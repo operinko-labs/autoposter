@@ -211,6 +211,10 @@ const EDITOR_CONFIG = {
   secrets: { plex_token: REDACTED },
   overridden_paths: [] as string[],
   frozen_paths: { workers: "the worker pool is sized once, at startup" },
+  field_descriptions: {
+    workers: "How many render workers run in parallel.",
+    "plex.url": "The base URL of the Plex server this service manages.",
+  },
 };
 
 function json(body: unknown, status = 200): Response {
@@ -448,6 +452,7 @@ describe("Settings editor", () => {
     // sections they would offer the operator an edit the API cannot accept.
     expect(screen.queryByRole("heading", { name: "Frozen paths" })).toBeNull();
     expect(screen.queryByText("Overridden paths")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Field descriptions" })).toBeNull();
     expect(document.body.textContent).not.toContain(
       "the worker pool is sized once, at startup",
     );

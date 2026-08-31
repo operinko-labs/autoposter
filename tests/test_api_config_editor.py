@@ -223,6 +223,56 @@ async def test_get_config_still_redacts(client, auth_headers):
     assert set(body["secrets"].values()) == {"***REDACTED***"}
 
 
+def _leaf_paths(body: dict, prefix: str = "") -> list[str]:
+    """Every dotted path the settings page renders as a row.
+
+    A dict recurses; anything else -- scalar, list, null -- is a leaf, which is
+    exactly the rule ``Settings.tsx``'s ``ConfigNode`` applies to decide
+    between a subsection and a row.
+    """
+    leaves: list[str] = []
+    for key, value in body.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict):
+            leaves.extend(_leaf_paths(value, f"{path}."))
+        else:
+            leaves.append(path)
+    return leaves
+
+
+PROVENANCE_KEYS = {
+    "overridden_paths",
+    "frozen_paths",
+    "redacted_paths",
+    "keep_sentinel",
+    "field_descriptions",
+}
+
+
+async def test_get_config_describes_every_path_it_serves(client, auth_headers):
+    """The completeness guard's endpoint half: a row the page renders with no
+    description is a setting whose only documentation is the YAML file the
+    operator does not have open."""
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    descriptions = body["field_descriptions"]
+    served = _leaf_paths({
+        key: value for key, value in body.items() if key not in PROVENANCE_KEYS
+    })
+    assert served, "the config response serves no settings at all"
+    undescribed = [path for path in served if path not in descriptions]
+    assert undescribed == [], f"served with no description: {undescribed}"
+
+
+async def test_get_config_describes_a_sample_of_settings_in_words(client, auth_headers):
+    """Presence is checked wholesale above; this is the spot-check that the
+    entries are sentences rather than placeholders."""
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    descriptions = body["field_descriptions"]
+    for path in ("workers", "plex.url", "collections.max_deletes"):
+        assert descriptions[path].strip(), f"{path} is described by nothing"
+        assert len(descriptions[path]) > 20, f"{path}'s description is a stub"
+
+
 async def test_get_config_reports_a_corrupt_overrides_row_as_500_with_detail(
     client, auth_headers, session_factory
 ):

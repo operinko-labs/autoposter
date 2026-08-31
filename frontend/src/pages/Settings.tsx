@@ -91,6 +91,7 @@ const PROVENANCE_KEYS = [
   "frozen_paths",
   "redacted_paths",
   "keep_sentinel",
+  "field_descriptions",
 ];
 
 /** The reason a restart is needed for `path`, or undefined if it is live.

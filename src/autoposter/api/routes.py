@@ -39,6 +39,7 @@ from autoposter.api.auth import (
     session_for_token,
     verify_password,
 )
+from autoposter.config.descriptions import FIELD_DESCRIPTIONS
 from autoposter.config.impact import affected_items, count_affected
 from autoposter.config.live import FROZEN_SECTIONS, frozen_reason, is_inert, swap_config
 from autoposter.config.loader import build_config, read_config_document
@@ -1267,7 +1268,7 @@ async def get_config(
     ``_REDACTORS``; the full URL stays in the config file the operator
     already owns.
 
-    Carries four things the editor needs beyond the values themselves.
+    Carries five things the editor needs beyond the values themselves.
     ``overridden_paths`` is the provenance: which of these values come from
     the database overrides rather than the mounted YAML, so the UI can mark
     them and offer "revert to base". ``frozen_paths`` maps each restart-only
@@ -1278,6 +1279,15 @@ async def get_config(
     values this response is *not* telling the truth about, and give the
     editor the one token it can send back for them without either destroying
     the stored value or dropping it (see ``KEEP_SENTINEL``).
+    ``field_descriptions`` maps each setting's dotted path to what that
+    setting does, condensed from the schema's own comments (roadmap row 217)
+    -- what the page renders as the row's hover text. It deliberately says
+    nothing about *when* a change applies: that is ``frozen_paths``' fact and
+    the editor renders it separately. A few of its keys carry a ``[]``
+    segment (``collections.definitions[].title``): those describe the fields
+    of the objects inside a list, which this editor cannot edit yet (roadmap
+    row 138). ``[]`` is a marker in that map only -- no endpoint here accepts
+    a path containing it.
     """
     config = request.app.state.config
     secrets = request.app.state.secrets
@@ -1302,6 +1312,7 @@ async def get_config(
     body["frozen_paths"] = dict(FROZEN_SECTIONS)
     body["redacted_paths"] = list(REDACTED_PATHS)
     body["keep_sentinel"] = KEEP_SENTINEL
+    body["field_descriptions"] = dict(FIELD_DESCRIPTIONS)
     return body
 
 
