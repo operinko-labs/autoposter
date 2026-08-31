@@ -36,6 +36,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -96,6 +97,7 @@ class ResetResult:
     reset: int
     failed: int
     dry_run: bool
+    missing: int = 0
     refused: str | None = None
 
     def as_response(self) -> dict:
@@ -105,6 +107,7 @@ class ResetResult:
             "items": self.items,
             "items_with_our_art": self.items_with_our_art,
             "fields": self.fields,
+            "missing": self.missing,
         }
         if self.refused is not None:
             # No note: nothing was replaced, so nothing was orphaned.
@@ -176,9 +179,18 @@ class ResetMode:
         # the applied run one fetch each would be the wrong trade. A dry run, the
         # default, never re-fetches at all.
         ours: dict[str, list[str]] = {}
+        missing = 0
         for row in rows:
             try:
                 plex_item = await self._plex.fetch_item(row.rating_key)
+            except PlexNotFound:
+                # Expected, not a crash: the item was deleted from Plex since
+                # it was last scanned. One concise line, no traceback --
+                # counted separately from a real probe failure below (backup.py's
+                # PR #112 hotfix shape).
+                logger.info("reset: %s no longer in Plex, skipped", row.rating_key)
+                missing += 1
+                continue
             except Exception:  # noqa: BLE001 - one bad item must not abort the probe
                 logger.warning(
                     "reset: could not fetch Plex item %s", row.rating_key, exc_info=True
@@ -209,17 +221,28 @@ class ResetMode:
             self._config.artwork_modes.max_change_share,
         )
         if refusal is not None:
+            if missing:
+                logger.info("reset: skipped %d item(s) no longer in Plex", missing)
             return ResetResult(
-                total, items_with_our_art, fields, 0, 0, not self._apply, refused=refusal
+                total, items_with_our_art, fields, 0, 0, not self._apply,
+                refused=refusal, missing=missing,
             )
 
         if not self._apply:
-            return ResetResult(total, items_with_our_art, fields, 0, 0, dry_run=True)
+            if missing:
+                logger.info("reset: skipped %d item(s) no longer in Plex", missing)
+            return ResetResult(
+                total, items_with_our_art, fields, 0, 0, dry_run=True, missing=missing
+            )
 
         reset = failed = 0
         for rating_key, kinds in ours.items():
             try:
                 plex_item = await self._plex.fetch_item(rating_key)
+            except PlexNotFound:
+                logger.info("reset: %s no longer in Plex, skipped", rating_key)
+                missing += 1
+                continue
             except Exception:  # noqa: BLE001 - see above
                 logger.warning(
                     "reset: could not fetch Plex item %s", rating_key, exc_info=True
@@ -248,6 +271,10 @@ class ResetMode:
                     )
                     failed += 1
 
+        if missing:
+            logger.info("reset: skipped %d item(s) no longer in Plex", missing)
+
         return ResetResult(
-            total, items_with_our_art, fields, reset, failed, dry_run=False
+            total, items_with_our_art, fields, reset, failed, dry_run=False,
+            missing=missing,
         )

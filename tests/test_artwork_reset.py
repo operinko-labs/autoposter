@@ -11,6 +11,7 @@ import io
 from pathlib import Path
 
 import httpx
+from plexapi.exceptions import NotFound as PlexNotFound
 import pytest
 import pytest_asyncio
 from PIL import Image
@@ -444,6 +445,7 @@ async def test_reset_refuses_an_empty_table(session, config, serving):
     assert result.as_response() == {
         "mode": "reset", "status": "refused", "reason": result.refused,
         "dry_run": False, "items": 0, "items_with_our_art": 0, "fields": 0,
+        "missing": 0,
     }
 
 
@@ -469,3 +471,71 @@ async def test_reset_counts_a_failed_reset(session, config, serving):
     assert (result.reset, result.failed) == (1, 1)
     assert good.selected == [AGENT_KEY]
     assert bad.selected == []
+
+
+async def test_reset_logs_a_missing_item_at_probe_at_info_not_warning(
+    session, config, serving, caplog
+):
+    """A stale rating_key 404s on the PROBE fetch -- the item never becomes a
+    candidate, so it costs its own INFO line and a tally, not a WARNING and
+    not the run. Row 218, matching backup.py's PR #112 hotfix shape."""
+    await _add_item(session, rating_key="rk-gone")
+    await _add_item(session, rating_key="rk-ok")
+    ok = FakeItem(thumb="/ours")
+
+    class GoneClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if rating_key == "rk-gone":
+                raise PlexNotFound(f"(404) not_found ({rating_key})")
+            return self._items[rating_key]
+
+    plex = GoneClient({"rk-ok": ok})
+    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+
+    with caplog.at_level("INFO"):
+        result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+
+    assert (result.items, result.items_with_our_art, result.missing) == (2, 1, 1)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == []
+    assert not any(r.exc_info for r in caplog.records)
+
+    reset_records = [r for r in caplog.records if r.name == "autoposter.artwork_modes.reset"]
+    per_item = [r.message for r in reset_records if "rk-gone" in r.message]
+    assert len(per_item) == 1
+    assert per_item[0].startswith("reset: ") and "no longer in Plex" in per_item[0]
+
+    summary = [r.message for r in reset_records if r.message not in per_item]
+    assert len(summary) == 1
+    assert summary[0].startswith("reset: ") and "1" in summary[0]
+
+
+async def test_reset_logs_a_missing_item_at_apply_at_info_not_warning(
+    session, config, serving, caplog
+):
+    """The item is ours at probe time, but is gone from Plex by the time the
+    apply loop re-fetches it to write -- a second, later 404 the probe cannot
+    see. Same shape as the probe-phase 404, tallied into the same field."""
+    await _add_item(session, rating_key="rk1")
+    item = FakeItem(thumb="/ours")
+
+    class SecondFetchGoneClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if self.fetched.count(rating_key) > 1:
+                raise PlexNotFound(f"(404) not_found ({rating_key})")
+            return self._items[rating_key]
+
+    plex = SecondFetchGoneClient({"rk1": item})
+    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+
+    with caplog.at_level("INFO"):
+        result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+
+    assert (result.items_with_our_art, result.reset, result.failed, result.missing) == (1, 0, 0, 1)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == []
+    assert item.unlocked == []
