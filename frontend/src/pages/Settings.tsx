@@ -99,8 +99,11 @@ const PROVENANCE_KEYS = [
 /** The reason a restart is needed for `path`, or undefined if it is live.
  * `frozen_paths` keys are prefixes: `notifications` freezes everything under
  * it. `live` wins over all of them -- a path the server reads per use is live
- * however broad the prefix above it is, which is the same precedence
- * `config/live.py`'s `frozen_reason` applies server-side. */
+ * however broad the prefix above it is, the same live-over-frozen rule
+ * `config/live.py`'s `frozen_reason` applies server-side. Unlike that
+ * function, this loop does not also break ties between overlapping frozen
+ * prefixes by length -- no two entries in `frozen_paths` overlap today, so
+ * the two cannot yet disagree. */
 function frozenReason(
   frozen: Record<string, string>,
   live: string[],
