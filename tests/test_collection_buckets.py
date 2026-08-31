@@ -103,12 +103,18 @@ def test_load_table_reads_from_the_configured_asset_root(monkeypatch, tmp_path):
     )
     monkeypatch.setenv(assets.ENV_VAR, str(tmp_path))
     assets.assets_root.cache_clear()
-    sys.modules.pop("autoposter.collections.buckets", None)
+    # A popped module must be restored, or its memoized caches (e.g. the
+    # lru_cache on load_table) poison the process for every test after it.
+    previous_module = sys.modules.pop("autoposter.collections.buckets", None)
     try:
         buckets = importlib.import_module("autoposter.collections.buckets")
         assert buckets.load_table() == {"include": ["1"], "addons": {"1": []}}
     finally:
         assets.assets_root.cache_clear()
+        if previous_module is not None:
+            sys.modules["autoposter.collections.buckets"] = previous_module
+        else:
+            sys.modules.pop("autoposter.collections.buckets", None)
 
 
 def test_the_module_imports_cleanly_with_a_missing_asset_root(monkeypatch, tmp_path):
@@ -122,8 +128,14 @@ def test_the_module_imports_cleanly_with_a_missing_asset_root(monkeypatch, tmp_p
 
     monkeypatch.setenv(assets.ENV_VAR, str(tmp_path / "does-not-exist"))
     assets.assets_root.cache_clear()
-    sys.modules.pop("autoposter.collections.buckets", None)
+    # A popped module must be restored, or its memoized caches (e.g. the
+    # lru_cache on load_table) poison the process for every test after it.
+    previous_module = sys.modules.pop("autoposter.collections.buckets", None)
     try:
         importlib.import_module("autoposter.collections.buckets")  # must not raise
     finally:
         assets.assets_root.cache_clear()
+        if previous_module is not None:
+            sys.modules["autoposter.collections.buckets"] = previous_module
+        else:
+            sys.modules.pop("autoposter.collections.buckets", None)
