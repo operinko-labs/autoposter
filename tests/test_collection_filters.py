@@ -369,7 +369,7 @@ def test_every_row_is_searchable_and_twentyfive_are_filterable():
     """The set arithmetic, pinned so it cannot rot silently.
 
     Kometa's search vocabulary is 55 non-music attributes and its filter
-    vocabulary is 70 names; this table covers 26 of the first and 23 of the
+    vocabulary is 70 names; this table covers 33 of the first and 25 of the
     second. The module docstring carries the full derivation. Phase 10a added
     ``decade`` (search-only, so searchable and not filterable) and ``country``
     (in Kometa's 26-name overlap, so both). Phase B added the four people rows
