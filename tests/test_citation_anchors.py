@@ -45,11 +45,18 @@ Bare continuations (``(:355)``, ``at :361``, ``/:964``) resolve against the
 last file named in a ``<file>:<line>`` reference -- WHATEVER file that is:
 several constructs cite Kometa's upstream ``plex.py`` and ``builder.py``
 (files not in this repo) and then continue bare, and a tracker that only
-remembered the oracle's name would mis-resolve those nine into the oracle
-and fail spuriously. The antecedent resets at every blank line.
+remembered the oracle's name would mis-resolve ten of them into the oracle
+(``filters.py:269, 276, 301, 486, 487, 895, 900`` and
+``test_collection_filters.py:704, 709, 1662``) and fail spuriously. This set
+differs from the nine in-scope bare continuations tracked correctly.
+The antecedent resets at every blank line.
 
 The census is the drift alarm the human rounds lacked: a new citation, a
-deleted one, or a shape these regexes stop parsing all move the count.
+deleted one, or a shape these regexes stop parsing all move the count. It is
+a bulk-drift alarm catching insertions/deletions that shift many lines, not a
+per-line proof; a single ±1 mis-point can land on an adjacent line in the
+translation tables that still contains the anchor (21 of 26 single-line
+mutations are caught).
 """
 import re
 from pathlib import Path
