@@ -117,7 +117,7 @@ async def run_once(
             # served at api/jobs.py:147 as waiting_reason, and both
             # ItemNotFound raise sites (plex/client.py:635, :645) interpolate
             # only the job's own item fields -- title, ids, rating key --
-            # which that endpoint already serves verbatim in the same row. So
+            # none of which is a host, URL, token or file path. So
             # the reason stays a reason (the PlexPathMismatch branch's shape)
             # rather than a bare class name. PlexPathMismatch itself, whose
             # message DOES carry file paths, is caught by its own clause
