@@ -54,6 +54,7 @@ from autoposter.collections.builders.imdb_award import (
 from autoposter.collections.engine import definition_titles
 from autoposter.collections.posters import hosted_poster_url
 from autoposter.config.schema import CollectionDefinition, CollectionsConfig
+from autoposter.providers.cache import ProviderCache
 
 FIXTURES = Path("tests/fixtures/collections")
 FIXTURE = (FIXTURES / "ev0000003.yml").read_text(encoding="utf-8")
@@ -124,6 +125,61 @@ async def test_fetch_event_raises_on_an_http_error():
     async with _client(status=404) as http:
         with pytest.raises(Exception):
             await fetch_event(http)
+
+
+async def test_fetch_event_validation_is_cached_across_calls(session_factory):
+    """Row 151: a second call within the TTL must not hit the transport
+    again -- that is the whole complaint the row was filed for, sixteen
+    ceremonies' worth of it per pass."""
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, text=VALIDATION_FIXTURE)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    cache = ProviderCache(session_factory)
+
+    first = await fetch_event_validation(http, cache=cache, ttl_seconds=3600)
+    second = await fetch_event_validation(http, cache=cache, ttl_seconds=3600)
+
+    assert first == second
+    assert len(calls) == 1
+
+
+async def test_fetch_event_is_cached_across_calls(session_factory):
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, text=FIXTURE)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    cache = ProviderCache(session_factory)
+
+    first = await fetch_event(http, cache=cache, ttl_seconds=3600)
+    second = await fetch_event(http, cache=cache, ttl_seconds=3600)
+
+    assert first == second
+    assert len(calls) == 1
+
+
+async def test_fetch_event_validation_without_a_cache_hits_the_transport_every_time():
+    """The prior, uncached behaviour stays available -- a direct caller with
+    no ProviderCache, exactly as ``BuilderContext.cache``'s own docstring
+    says None means."""
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, text=VALIDATION_FIXTURE)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    await fetch_event_validation(http)
+    await fetch_event_validation(http)
+
+    assert len(calls) == 2
 
 
 async def test_recent_years_skips_empty_placeholder_years():

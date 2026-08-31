@@ -14,8 +14,22 @@ data about the ceremonies rather than about our collections.
 import httpx
 import yaml
 
+from autoposter.providers.cache import ProviderCache
+from autoposter.providers.fetch import fetch_json
+
 EVENT_ID = "ev0000003"
 BASE_URL = "https://raw.githubusercontent.com/Kometa-Team/IMDb-Awards/master"
+
+# The same class-default every provider client already carries --
+# ``providers/fanart.py:81``, ``providers/tmdb.py:69``, ``providers/tvdb.py:108``,
+# ``facts/mdblist.py:204`` -- all default ``cache_ttl_seconds: int = 24 * 3600``.
+# Award category data changes roughly once a year per ceremony, so this is not
+# a tight bound; it is the existing convention, reused rather than invented
+# (roadmap row 151's TTL decision). ``BuilderContext`` carries no application
+# config for a builder to read a live value from (only ``cache`` itself), so
+# the literal is the correct level for this to live at, not a threaded-through
+# setting.
+_CACHE_TTL_SECONDS = 24 * 3600
 
 # Category naming has changed across roughly 95 ceremonies, so each award
 # needs every historical variant.
@@ -174,17 +188,31 @@ class UnknownAwardEvent(Exception):
     """
 
 
-async def fetch_event_validation(http: httpx.AsyncClient) -> dict:
+async def fetch_event_validation(
+    http: httpx.AsyncClient,
+    *,
+    cache: ProviderCache | None = None,
+    ttl_seconds: int = _CACHE_TTL_SECONDS,
+) -> dict:
     """Every event id the community dataset covers, keyed by id.
 
     The same file Kometa reads first (``imdb.py:1034``) and for the same
     reason: it is the only way to know whether an event has data *before*
     asking for a file that may not exist. Ours is a smaller question than
     Kometa's -- it decides git-versus-scrape, we decide build-versus-refuse.
+
+    Routed through ``providers.fetch.fetch_json`` since roadmap row 151:
+    ``ProviderCache`` needed no extension to hold a YAML-decoded dict, only a
+    decoder at the fetch site (``fetch_json``'s ``decode`` parameter). ``cache``
+    is None for a direct caller -- unchanged behaviour, one request per call.
     """
-    response = await http.get("%s/event_validation.yml" % BASE_URL)
-    response.raise_for_status()
-    validation = yaml.safe_load(response.text)
+    url = "%s/event_validation.yml" % BASE_URL
+    validation = await fetch_json(
+        method="GET", url=url, params=None,
+        request=lambda: http.get(url),
+        cache=cache, ttl_seconds=ttl_seconds,
+        decode=lambda response: yaml.safe_load(response.text),
+    )
     if not isinstance(validation, dict) or not validation:
         raise ValueError("the award event validation list returned an unexpected body")
     return validation
@@ -208,11 +236,32 @@ def require_known_event(validation: dict, event_id: str) -> None:
         )
 
 
-async def fetch_event(http: httpx.AsyncClient, event_id: str = EVENT_ID) -> dict:
-    """The whole event dataset. Raises rather than returning nothing."""
-    response = await http.get("%s/events/%s.yml" % (BASE_URL, event_id))
-    response.raise_for_status()
-    event = yaml.safe_load(response.text)
+async def fetch_event(
+    http: httpx.AsyncClient,
+    event_id: str = EVENT_ID,
+    *,
+    cache: ProviderCache | None = None,
+    ttl_seconds: int = _CACHE_TTL_SECONDS,
+) -> dict:
+    """The whole event dataset. Raises rather than returning nothing.
+
+    A 404 here is now a ``fetch_json`` "confirmed nothing there" (cached as a
+    negative, same as every other provider's 404 convention) rather than an
+    ``httpx.HTTPStatusError`` raised directly -- this function still raises
+    either way, now via the same ``ValueError`` an unexpected-but-200 body
+    already got, so the builder contract (``build`` raises, the engine
+    contains) is unchanged. What is new: a genuine 404 on this URL is now
+    memoised as "not found" for the TTL rather than re-requested every pass --
+    correct for the same reason every other provider client already caches its
+    404s, since this file's URL does not 404 in ordinary operation.
+    """
+    url = "%s/events/%s.yml" % (BASE_URL, event_id)
+    event = await fetch_json(
+        method="GET", url=url, params=None,
+        request=lambda: http.get(url),
+        cache=cache, ttl_seconds=ttl_seconds,
+        decode=lambda response: yaml.safe_load(response.text),
+    )
     if not isinstance(event, dict) or not event:
         raise ValueError("award event %r returned an unexpected body" % event_id)
     return event
