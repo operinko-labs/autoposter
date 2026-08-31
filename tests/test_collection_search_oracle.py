@@ -125,12 +125,34 @@ the same way. Unlike 18/19 these rows already existed, so the gate's red was
 manufactured: ``show_search_field=None`` on the ``actor`` row turns config 20
 red (``actor=6`` where Kometa says ``show.actor=6``), which is exactly the
 silent-wrong-set failure the config exists to catch.
+
+## `current_year`, row 171's other half
+
+Row 171 had two halves: the ``decade`` table row (configs 16/17, above) and
+the ``current_year``/``current_year-N`` value grammar. Search-tails-2 Task 2
+shipped the grammar in the ``filters:`` engine (``evaluate`` /
+``_matches_one`` in ``filters.py``), citing this driver's own transcription
+of Kometa's algorithm (``validate_attribute``'s year-attribute branch,
+:768-788) as its source rather than an external line reference. It did NOT
+wire ``current_year`` into THIS file's ``plex_search`` rendering: ``year`` is
+searchable, but no config above writes ``current_year``, and
+``search_url._arguments`` has no branch that would resolve the sentinel
+(``_CurrentYear``) if one did -- it would render the object's ``repr()``
+into the query string. Wiring that is a separate, unbriefed change, not this
+proof's job.
+
+So the proof below is not a CONFIGS/KOMETA pair -- production code cannot
+yet answer a ``plex_search`` config that writes it. Instead it runs the
+driver's OWN ``validate_attribute`` current-year branch, at the real run
+moment, and checks it against our ``filters:``-engine's resolution of the
+same value at the same moment -- Kometa's transcribed algorithm as the
+oracle, rather than a second reading of the same source.
 """
 from pathlib import Path
 
 import pytest
 
-from autoposter.collections.filters import parse_filters
+from autoposter.collections.filters import evaluate, parse_filters
 from autoposter.collections.search_url import build_search_url
 
 ORACLE_DRIVER = Path(__file__).parent / "oracle" / "9b" / "kometa_build_filter.py"
@@ -370,3 +392,43 @@ def test_the_configs_cover_every_shipped_value_type():
                 name = key.split(".")[0]
                 exercised.add(next(r.type for r in FILTER_ATTRIBUTES if r.name == name))
     assert exercised == {"tag", "str", "int", "float", "date", "duration", "bool"}
+
+
+def test_current_year_matches_kometas_own_transcribed_algorithm():
+    """Row 171's second half (see the module docstring). Runs the driver's
+    OWN ``validate_attribute`` current-year branch -- Kometa's algorithm,
+    transcribed, not re-derived -- at the real run moment, and checks it
+    against a ``filters:`` block using the same value, evaluated at the same
+    moment. This is not byte comparison against a pinned string (there is no
+    plex_search rendering to pin, per the docstring above); it is the same
+    "ours must reproduce Kometa's" claim this whole file exists to make,
+    against the one Kometa source this task has -- the vendored driver.
+
+    Reads the real clock rather than a pinned one, because the driver's own
+    ``validate_attribute`` does (``datetime.now().year``, unconditionally,
+    with no injectable clock) -- so a pinned ``NOW`` on our side would be
+    comparing against a moment the driver never used. Both sides read the
+    same captured ``moment`` within this test, which is the same reasoning
+    ``test_current_year_resolves_against_the_run_moment_not_the_parse_moment``
+    (``tests/test_collection_filters.py``) already relies on for
+    determinism within a single evaluation.
+    """
+    import datetime as dt
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("kometa_oracle_driver_current_year", ORACLE_DRIVER)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+
+    moment = dt.datetime.now()
+    kometa_bare = driver.validate_attribute("year", "", "year", "current_year")
+    kometa_offset = driver.validate_attribute("year", "", "year", "current_year-5")
+    assert kometa_bare == [moment.year]
+    assert kometa_offset == [moment.year - 5]
+
+    bare = parse_filters({"year": "current_year"})
+    offset = parse_filters({"year": "current_year-5"})
+    assert evaluate(bare, {"year": moment.year}, now=moment) is True
+    assert evaluate(bare, {"year": moment.year - 1}, now=moment) is False
+    assert evaluate(offset, {"year": moment.year - 5}, now=moment) is True
+    assert evaluate(offset, {"year": moment.year}, now=moment) is False
