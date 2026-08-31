@@ -1388,6 +1388,79 @@ async def test_the_preview_counts_respect_ownership_resolution(
     )
 
 
+async def test_the_preview_counts_an_adoption_the_pass_will_carry_out(
+    session, registry_entry
+):
+    """Row 193. ``resolve_collision`` answers three ways, not two: ``ok`` is
+    ``False`` both for a write the pass will REFUSE and for an eligible
+    adoption held back only by ``dry_run`` -- a write the real pass WILL
+    perform. Gating the preview on ``ok`` alone reported 0/0 for exactly the
+    collection ``adopt`` exists to take over: a prior tool's, under our title,
+    with adoption on. The counts must be the real ones the adopting pass would
+    write, and the "would adopt" message must still arrive exactly once."""
+    registry_entry(_Listing(
+        "test_preview_adopt", [("imdb", "tt1"), ("imdb", "tt2")]
+    ))
+    # Somebody else's label, and ``adopt_from`` names it: the pass would claim
+    # this collection and then reconcile its members.
+    stale = FakeItem("m9", ["imdb://tt9"])
+    prior = FakeCollection("Migrating", [stale], labels=["Kometa"])
+    section = FakeSection(
+        [("m1", ["imdb://tt1"]), ("m2", ["imdb://tt2"])], existing=[prior],
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(title="Migrating", builder="test_preview_adopt")],
+        _config(adopt=True), dry_run=True, preview=True,
+    )
+
+    [result] = run.definitions
+    assert (result.adding, result.removing) == (2, 1), (
+        "an adoption the pass will perform must preview its real deltas, not "
+        "the zeros of a refusal"
+    )
+    adoptions = [a for a in result.actions if "would adopt" in a]
+    assert len(adoptions) == 1, (
+        "the adoption is reported exactly once -- by the reconcile step, "
+        "not doubled by the preview block: %r" % result.actions
+    )
+
+
+async def test_the_preview_still_refuses_a_protected_collection_under_adopt(
+    session, registry_entry
+):
+    """The other half of row 193: turning ``adopt`` on must not turn the gate
+    off. A protected collection is a refusal ``resolve_collision`` reaches
+    BEFORE adoption, so the preview owes it zeros even though the collection
+    also carries an ``adopt_from`` label."""
+    registry_entry(_Listing(
+        "test_preview_protected", [("imdb", "tt1"), ("imdb", "tt2")]
+    ))
+    stale = FakeItem("m9", ["imdb://tt9"])
+    guarded = FakeCollection("Guarded", [stale], labels=["Kometa", "Maintainerr"])
+    section = FakeSection(
+        [("m1", ["imdb://tt1"]), ("m2", ["imdb://tt2"])], existing=[guarded],
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(title="Guarded", builder="test_preview_protected")],
+        _config(adopt=True, protect_labels=["Maintainerr"]),
+        dry_run=True, preview=True,
+    )
+
+    [result] = run.definitions
+    assert (result.adding, result.removing) == (0, 0), (
+        "a protected collection must not preview a write the pass will refuse, "
+        "adopt on or off"
+    )
+    protections = [a for a in result.actions if "protected" in a]
+    assert len(protections) == 1, (
+        "the protection is reported exactly once: %r" % result.actions
+    )
+
+
 async def test_a_filter_that_cannot_evaluate_leaves_its_collection_alone(
     session, registry_entry
 ):

@@ -257,6 +257,66 @@ def claim_ownership(collection, label: str, prior: str, remove_prior: bool) -> N
         collection.removeLabel(prior)
 
 
+#: The three answers the ownership rule can give, and the reason the rule is
+#: decided apart from the writing. ``resolve_collision`` below folds them into
+#: the ``(ok, message)`` pair its two reconcilers want, and that pair is lossy:
+#: ``ok=False`` covers both a write the pass will REFUSE and an adoption it
+#: will PERFORM as soon as it is not a dry run. Row 193: the preview needs the
+#: distinction the pair throws away, so the rule answers here in three states
+#: and ``would_proceed`` reads the same three -- rather than the preview
+#: re-deriving ownership for itself, which is the drift this module's one
+#: shared rule exists to prevent.
+_OURS = "ours"  # already carries our label; nothing to claim
+_ADOPTABLE = "adoptable"  # a prior tool's, and adoption is on
+_REFUSED = "refused"  # protected, or a true conflict
+
+
+def _collision_verdict(
+    collection,
+    label: str,
+    adopt: bool,
+    adopt_from: list[str],
+    protect_labels: list[str],
+) -> tuple[str, str | None]:
+    """The whole ownership rule, decided without writing anything.
+
+    Returns ``(verdict, detail)``. ``detail`` is the refusal message for
+    ``_REFUSED``, the prior tool's label for ``_ADOPTABLE``, and ``None`` for
+    ``_OURS`` -- the two callers below each want a different one of those, and
+    neither wants both.
+
+    The protected-label check runs first and wins unconditionally -- before
+    ownership, before adoption -- so a collection carrying a protected label
+    is never claimed even if it also carries an ``adopt_from`` label.
+
+    This is the one place the labels are fetched: every reader it calls is
+    pure, so one collision costs one GET rather than one per check.
+    """
+    load_labels(collection)
+
+    protecting = protected_label(collection, protect_labels)
+    if protecting is not None:
+        return _REFUSED, (
+            "protected: %r carries %r; leaving it untouched"
+            % (collection.title, protecting)
+        )
+
+    if has_label(collection, label):
+        return _OURS, None
+
+    prior = (
+        prior_tool_label(collection, adoptable_labels(adopt_from, label))
+        if adopt else None
+    )
+    if prior is None:
+        return _REFUSED, (
+            "conflict: %r exists without the %r label; leaving it untouched"
+            % (collection.title, label)
+        )
+
+    return _ADOPTABLE, prior
+
+
 def resolve_collision(
     collection,
     label: str,
@@ -276,40 +336,48 @@ def resolve_collision(
     back by ``dry_run``. ``message`` is the action to report, or ``None``
     when there is nothing to say (the collection was already ours).
 
-    The protected-label check runs first and wins unconditionally -- before
-    ownership, before adoption -- so a collection carrying a protected label
-    is never claimed even if it also carries an ``adopt_from`` label.
-
-    This is the one place the labels are fetched: every reader it calls is
-    pure, so one collision costs one GET rather than one per check.
+    That third case is why ``ok`` is not the question a read-only caller
+    should ask -- see ``would_proceed`` below.
     """
-    load_labels(collection)
-
-    protecting = protected_label(collection, protect_labels)
-    if protecting is not None:
-        return False, (
-            "protected: %r carries %r; leaving it untouched"
-            % (collection.title, protecting)
-        )
-
-    if has_label(collection, label):
-        return True, None
-
-    prior = (
-        prior_tool_label(collection, adoptable_labels(adopt_from, label))
-        if adopt else None
+    verdict, detail = _collision_verdict(
+        collection, label, adopt, adopt_from, protect_labels
     )
-    if prior is None:
-        return False, (
-            "conflict: %r exists without the %r label; leaving it untouched"
-            % (collection.title, label)
-        )
+    if verdict is not _ADOPTABLE:
+        return verdict is _OURS, detail
 
+    prior = detail
     if dry_run:
         return False, "would adopt %r (currently labelled %r)" % (collection.title, prior)
 
     claim_ownership(collection, label, prior, remove_prior)
     return True, "claimed %r (was labelled %r)" % (collection.title, prior)
+
+
+def would_proceed(
+    collection,
+    label: str,
+    adopt: bool,
+    adopt_from: list[str],
+    protect_labels: list[str] = (),
+) -> bool:
+    """Would a real pass go on to reconcile this collection's members?
+
+    The read-only half of ``resolve_collision``, for callers that must answer
+    "what will the pass do?" without doing any of it -- the preview. ``True``
+    for a collection that is already ours AND for one adoption would claim,
+    ``False`` only for a refusal: a protected collection or a true conflict.
+
+    There is deliberately no ``dry_run`` parameter. This never writes, so
+    there is no behaviour for one to switch, and a preview that passed
+    ``dry_run=False`` to ``resolve_collision`` to get the same answer would
+    claim ownership of the collection it was only supposed to describe.
+
+    Costs the same single GET ``resolve_collision`` does.
+    """
+    verdict, _ = _collision_verdict(
+        collection, label, adopt, adopt_from, protect_labels
+    )
+    return verdict is not _REFUSED
 
 
 def shape_conflict(collection, title: str, want_smart: bool) -> str | None:
