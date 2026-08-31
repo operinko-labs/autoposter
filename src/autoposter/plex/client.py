@@ -13,6 +13,20 @@ _GUID_RE = re.compile(r"^(?:com\.plexapp\.agents\.)?(tmdb|imdb|tvdb)://([^?]+)")
 class ItemNotFound(Exception):
     """Plex has no matching item — usually it has not scanned the file yet."""
 
+    # Reviewed safe for a served surface (roadmap row 213). The scheduler's
+    # marker (scheduler/core.py) originally meant "this message was BUILT for
+    # a served surface" (CollectionsPassFailed, PruneRefused); here the
+    # contract is the wider "reviewed safe to serve", and the divergence is
+    # deliberate: both raise sites below interpolate only the job's own item
+    # fields (title, ids, rating key -- resolve()'s two raises), which the
+    # jobs endpoint already serves verbatim in the same row. The subclass
+    # inherits this, and for it the review is a disclosure DECISION: its
+    # message carries the operator's own filesystem paths, and those paths
+    # ARE the answer to "why did this job park" -- redacting them would buy
+    # nothing and cost the diagnosis (the same trade rows 136/188 and 209
+    # site (2a) decided the same way).
+    served_detail = True
+
 
 class PlexPathMismatch(ItemNotFound):
     """The item resolved in Plex, but its file path maps into none of the

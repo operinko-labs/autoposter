@@ -136,16 +136,51 @@ async def test_path_mismatch_parks_instead_of_deferring_forever(session):
     assert job.state == "parked"
 
 
-async def test_unexpected_errors_also_reschedule(session):
+async def test_a_path_mismatch_reason_keeps_the_diagnosis(session, caplog):
+    """Row 213's disclosure decision, pinned: PlexPathMismatch's message is
+    built from the item's path and the library roots (plex/client.py's third
+    resolve() raise), and those paths ARE what the operator opens Failures to
+    find out. It is served whole -- class-prefixed -- via the class-level
+    served_detail marker (inherited from ItemNotFound), so a future narrowing
+    of the generic rule cannot silently cost the diagnosis."""
+    async def handler(session_, intent):
+        raise PlexPathMismatch(
+            "Plex item 123 ('/data/movies/Dune (2021)') is not inside any of "
+            "the library roots ['/media/movies'] for library 'Movies'"
+        )
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=33)
+    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    with caplog.at_level(logging.WARNING, logger="autoposter.queue.worker"):
+        await run_once(session, "worker-1", _only_process_item(handler))
+    job = (await session.execute(select(Job))).scalar_one()
+    assert job.last_error == (
+        "PlexPathMismatch: Plex item 123 ('/data/movies/Dune (2021)') is not "
+        "inside any of the library roots ['/media/movies'] for library 'Movies'"
+    )
+    # The pod log carries it too, with the traceback (worker.py's warning).
+    assert "/data/movies/Dune (2021)" in caplog.text
+
+
+async def test_unexpected_errors_also_reschedule(session, caplog):
+    """Roadmap row 213: the generic branch is the unbounded case the
+    class-name-only rule exists for -- an arbitrary exception's str() holds
+    whatever some library chose to put in it, which is how a URL or a token
+    reaches a served column in the first place. Class name only on the
+    served column; the full message stays on the WARNING line with its
+    traceback -- the pod log, the trusted sink."""
     async def handler(session_, intent):
         raise RuntimeError("provider exploded")
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=2)
     await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
-    await run_once(session, "worker-1", _only_process_item(handler))
+    with caplog.at_level(logging.WARNING, logger="autoposter.queue.worker"):
+        await run_once(session, "worker-1", _only_process_item(handler))
     job = (await session.execute(select(Job))).scalar_one()
     assert job.state == "pending"
-    assert "exploded" in job.last_error
+    assert job.last_error == "RuntimeError"
+    # The compensating control, pinned: the operator's full copy on the pod log.
+    assert "provider exploded" in caplog.text
 
 
 async def test_unknown_job_kinds_are_parked_not_retried(session):
@@ -290,7 +325,7 @@ async def test_plex_connection_error_survives_more_attempts_than_a_generic_failu
     assert job.state == "pending"
 
 
-async def test_db_error_in_handler_reschedules_instead_of_stranding_at_running(session):
+async def test_db_error_in_handler_reschedules_instead_of_stranding_at_running(session, caplog):
     # Finding 3: a handler that fails with a database error (not a plain Python
     # exception) leaves the session in a failed transaction. fail() issues a
     # SELECT, which raises PendingRollbackError on such a session unless it is
@@ -302,13 +337,20 @@ async def test_db_error_in_handler_reschedules_instead_of_stranding_at_running(s
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=12)
     job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
 
-    await run_once(session, "worker-1", _only_process_item(handler))
+    with caplog.at_level(logging.WARNING, logger="autoposter.queue.worker"):
+        await run_once(session, "worker-1", _only_process_item(handler))
 
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
     assert job.state == "pending"
     assert job.claimed_by is None
-    assert "division by zero" in job.last_error.lower()
+    # Row 213: the served column carries the wrapper's class name only. The
+    # cost is real and disclosed -- a SQLAlchemy wrapper class name is a
+    # worse operator answer than "division by zero" -- and the WARNING line
+    # below is the whole defence: the pod log keeps the diagnosis.
+    assert "division by zero" not in job.last_error.lower()
+    assert job.last_error.isidentifier(), job.last_error
+    assert "division by zero" in caplog.text.lower()
 
 
 async def _wait_until(predicate, timeout: float = 5.0) -> None:

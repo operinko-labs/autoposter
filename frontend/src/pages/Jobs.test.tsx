@@ -17,7 +17,7 @@ const PENDING = {
   season_number: null,
   episode_number: null,
   run_in_seconds: 150,
-  last_error: "RuntimeError: provider exploded",
+  last_error: "RuntimeError",
   waiting_reason: null,
   created_at: "2026-01-02T03:04:05Z",
 };
@@ -239,7 +239,7 @@ describe("Jobs", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(list(PENDING)));
 
     render(<Jobs />);
-    const error = await screen.findByText("RuntimeError: provider exploded");
+    const error = await screen.findByText("RuntimeError");
 
     expect(error).toHaveClass("cell-wrap");
     expect(error.closest("table")?.parentElement).toHaveClass("table-scroll");

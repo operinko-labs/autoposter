@@ -175,7 +175,9 @@ class Scheduler:
             # shapes a token. The full message and traceback stay on the
             # warning below: the pod log, the trusted sink. The exception is
             # an exception that BUILT its message for the served surfaces --
-            # CollectionsPassFailed, PruneRefused -- and says so with
+            # CollectionsPassFailed, PruneRefused, and plex.client's
+            # ItemNotFound family (row 213 widened the contract to "reviewed
+            # safe for a served surface") -- and says so with
             # ``served_detail = True``; those messages are redaction-reviewed
             # at their construction sites and pinned by their own tests.
             detail = (

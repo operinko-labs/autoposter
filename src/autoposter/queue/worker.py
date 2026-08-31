@@ -29,6 +29,23 @@ IDLE_SLEEP_SECONDS = 2.0
 JobHandler = Callable[[AsyncSession, Job], Awaitable[None]]
 
 
+def _served_reason(exc: BaseException) -> str:
+    """What ``job.last_error`` -- a SERVED column (api/jobs.py, the parked
+    listing) -- gets to say about this exception.
+
+    One rule for all four except-branches below (roadmap row 213): an
+    exception marked ``served_detail`` (a redaction-reviewed message --
+    ItemNotFound and its path-mismatch subclass, and the scheduler's two
+    marker carriers should they ever surface through a job handler) serves
+    class-prefixed message, everything else serves the bare class name. The
+    full message and traceback always reach the pod log at the raise sites'
+    own logging lines -- the trusted sink.
+    """
+    if getattr(exc, "served_detail", False):
+        return f"{type(exc).__name__}: {exc}"
+    return type(exc).__name__
+
+
 async def run_once(
     session: AsyncSession,
     worker_id: str,
@@ -101,7 +118,7 @@ async def run_once(
             # the generic failure below, instead of deferring forever.
             logger.warning("job %s failed: %s", job_id, exc, exc_info=True)
             await session.rollback()
-            await fail(session, job_id, f"{type(exc).__name__}: {exc}")
+            await fail(session, job_id, _served_reason(exc))
         except ItemNotFound as exc:
             # Plex has not indexed this item yet. Nothing is wrong with the job
             # and no budget can be the right one: a movie added to Radarr before
@@ -113,19 +130,13 @@ async def run_once(
             # surfaced first); fail() issues a SELECT, which would raise
             # PendingRollbackError on a failed transaction instead of rescheduling.
             await session.rollback()
-            # Class-prefixed, message KEPT (roadmap row 209): this string is
-            # served at api/jobs.py:147 as waiting_reason, and both
-            # ItemNotFound raise sites (plex/client.py:635, :645) interpolate
-            # only the job's own item fields -- title, ids, rating key --
-            # none of which is a host, URL, token or file path. So
-            # the reason stays a reason (the PlexPathMismatch branch's shape)
-            # rather than a bare class name. PlexPathMismatch itself, whose
-            # message DOES carry file paths, is caught by its own clause
-            # above and never reaches this one.
+            # Served shape decided at the class (roadmap row 213):
+            # ItemNotFound carries served_detail, so the reason stays a
+            # class-prefixed reason rather than a bare class name.
             await fail(
                 session,
                 job_id,
-                f"{type(exc).__name__}: {exc}",
+                _served_reason(exc),
                 defer_seconds=DEFER_INTERVAL_SECONDS,
             )
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
@@ -142,12 +153,14 @@ async def run_once(
             # Class name only (roadmap row 209): requests' ConnectionError and
             # Timeout str() embed the Plex host and port, and this string is
             # served at api/jobs.py:146 as last_error. The full message is on
-            # the INFO line above -- the pod log, the trusted sink.
-            await fail(session, job_id, type(exc).__name__, max_attempts)
+            # the INFO line above -- the pod log, the trusted sink -- and the
+            # bare class name comes from _served_reason (requests' classes
+            # carry no served_detail).
+            await fail(session, job_id, _served_reason(exc), max_attempts)
         except Exception as exc:  # noqa: BLE001 - the queue is the error boundary
             logger.warning("job %s failed: %s", job_id, exc, exc_info=True)
             await session.rollback()
-            await fail(session, job_id, f"{type(exc).__name__}: {exc}")
+            await fail(session, job_id, _served_reason(exc))
         else:
             await complete(session, job_id)
     return True
