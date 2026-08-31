@@ -1133,12 +1133,12 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "title", "str", _BOTH, "unprobed",
         "The item's own title -- a string_attribute upstream "
-        "(kometa_build_filter.py:353, transcribing plex.py:507), so it takes "
+        "(kometa_build_filter.py:355, transcribing plex.py:507), so it takes "
         "the six string modifiers exactly as `studio` does: a bare "
         "`title: Dune` is a case-insensitive SUBSTRING match, not an exact "
         "one. No search_translation entry, so the movie field is the bare "
         "`title`; re-scoped to `show.title` on a show library by "
-        "show_translation (kometa_build_filter.py:164). Dual-vocabulary like "
+        "show_translation (kometa_build_filter.py:166). Dual-vocabulary like "
         "`country`: Kometa FILTERS on `title` too (`string_filters` -- the 9a "
         "oracle's verbatim transcription of builder.py:377-447 opens with "
         "it), so `filterable` is True -- and `unprobed` for the reason "
@@ -1153,9 +1153,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "edition", "str", ("movie",), "unprobed",
         "Plex's edition title. The search field is `editionTitle` via "
-        "search_translation (kometa_build_filter.py:86), then "
+        "search_translation (kometa_build_filter.py:88), then "
         "`show.editionTitle` on a show library via show_translation's entry "
-        "for the TRANSLATED name (kometa_build_filter.py:180) -- the one row "
+        "for the TRANSLATED name (kometa_build_filter.py:182) -- the one row "
         "in the table that composes both tables, which is why oracle config "
         "19 pins the show render. Dual-LISTED in `searches` exactly like "
         "`studio` -- a string_attribute (:353) AND a tag_attribute (:419) -- "
@@ -1179,9 +1179,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "High dynamic range, a server-side boolean: `hdr: true` emits "
         "`hdr=1`, `false` emits `hdr!=1` -- the `unplayed` row documents the "
         "bool rendering once for the whole type. In boolean_attributes "
-        "(kometa_build_filter.py:357); no search_translation entry, so the "
+        "(kometa_build_filter.py:359); no search_translation entry, so the "
         "movie field is the bare `hdr`; re-scoped to the EPISODE libtype on "
-        "a show library (`episode.hdr`, kometa_build_filter.py:182) -- the "
+        "a show library (`episode.hdr`, kometa_build_filter.py:184) -- the "
         "same re-scoping `resolution` already does, because HDR is a "
         "property of the FILE and a show's files are its episodes'. "
         "`search-only`: Kometa has no `hdr` FILTER (row 96's 29-name "
@@ -1193,9 +1193,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "dovi", "bool", _BOTH, "search-only",
         "Dolby Vision. The one boolean with a search_translation entry, and "
-        "it is the IDENTITY (kometa_build_filter.py:108: `dovi` -> `dovi`) -- "
+        "it is the IDENTITY (kometa_build_filter.py:110: `dovi` -> `dovi`) -- "
         "transcribed as such rather than skipped; re-scoped to "
-        "`episode.dovi` on a show library (kometa_build_filter.py:183). In "
+        "`episode.dovi` on a show library (kometa_build_filter.py:185). In "
         "boolean_attributes at :356. `search-only`: Kometa's client-side "
         "vocabulary has `has_dolby_vision` -- a DIFFERENT name, one of the "
         "44 filter-only ones -- and no `dovi` filter, so `filters:` refuses "
@@ -1207,9 +1207,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "trash", "bool", _BOTH, "search-only",
         "Plex's trash flag: an item whose file has gone missing but has not "
         "yet been emptied from the library. In boolean_attributes "
-        "(kometa_build_filter.py:362); no search_translation entry, so the "
+        "(kometa_build_filter.py:364); no search_translation entry, so the "
         "movie field is the bare `trash`; re-scoped to `episode.trash` on a "
-        "show library (kometa_build_filter.py:186) -- file-level, like "
+        "show library (kometa_build_filter.py:188) -- file-level, like "
         "`hdr`/`dovi`. `search-only`: Kometa has no filter of this name.",
         search_field="trash", show_search_field="episode.trash",
         search_kinds=_BOTH, filterable=False,
@@ -1217,7 +1217,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "duplicate", "bool", ("movie",), "search-only",
         "Items carrying more than one media version. MOVIE-ONLY -- it is in "
-        "movie_only_searches (kometa_build_filter.py:280), like `unplayed` "
+        "movie_only_searches (kometa_build_filter.py:282), like `unplayed` "
         "-- so a show library refuses it BY NAME rather than being sent a "
         "query Plex answers with the wrong set; the show-side spelling is "
         "`episode_duplicate`, one of family E's twenty (roadmap row 173), "
@@ -1231,9 +1231,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "unmatched", "bool", _BOTH, "search-only",
         "Items with no agent match. In boolean_attributes "
-        "(kometa_build_filter.py:358); no search_translation entry, so the "
+        "(kometa_build_filter.py:360); no search_translation entry, so the "
         "movie field is the bare `unmatched`; re-scoped to `show.unmatched` "
-        "on a show library (kometa_build_filter.py:173) -- the SHOW level, "
+        "on a show library (kometa_build_filter.py:175) -- the SHOW level, "
         "not the episode's, unlike `hdr`/`dovi`/`trash`: a match belongs to "
         "the ITEM, not the file. `show_unmatched` and `episode_unmatched` "
         "remain family E's separate names (roadmap row 173), not aliases of "

@@ -246,10 +246,10 @@ CONFIGS = [
 # report (the fourteenth), the Task 7 report (the fifteenth) and the Task 1
 # report of phase 10a-1 (sixteen and seventeen, `decade` and `country` --
 # predicted at Step 6 before the driver ran, then confirmed by it, same as the
-# fifteen before them), and search-tails-1's plan (eighteen and nineteen,
-# predicted from the transcription, then confirmed by the driver -- Task 2 adds
-# twenty and twenty-one the same way). Do not edit a string here to make a test
-# pass: if ours differs, ours is wrong.
+# fifteen before them), search-tails-1's plan (eighteen and nineteen,
+# predicted from the transcription, then confirmed by the driver) and
+# search-tails-1's Task 2 report (twenty and twenty-one, the same way). Do not
+# edit a string here to make a test pass: if ours differs, ours is wrong.
 KOMETA = {
     "1-multi-value-tag": "?type=1&sort=titleSort&contentRating=5&and=1&contentRating=7",
     "2-any-base": "?type=1&limit=25&sort=rating%3Adesc&push=1&studio=A24&or=1&year%3E=2020&pop=1",
