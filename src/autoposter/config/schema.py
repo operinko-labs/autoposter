@@ -122,16 +122,52 @@ class TextStyle(BaseModel):
 class ArtKindConfig(BaseModel):
     """One artifact type: whether to build it, its art sources and its text block."""
 
-    enabled: bool = True
-    language_order: list[str] = Field(default_factory=lambda: ["xx", "en", "fi"])
-    overlay_file: str
-    add_overlay: bool = True
-    add_border: bool = False
-    border_color: str = "white"
-    border_width: int = 30
+    enabled: bool = Field(default=True, description="Whether this artifact type is built at all.")
+    language_order: list[str] = Field(
+        default_factory=lambda: ["xx", "en", "fi"],
+        description=(
+            "The language preference order used when choosing this artifact's art "
+            "and text, most preferred first. 'xx' means textless; only 'xx' or "
+            "lowercase two-letter ISO-639-1 codes are accepted."
+        ),
+    )
+    overlay_file: str = Field(
+        description=(
+            "The overlay image composited onto this artifact's art, found under "
+            "overlays_root. Only used when add_overlay is on."
+        ),
+    )
+    add_overlay: bool = Field(
+        default=True,
+        description="Whether the overlay image (overlay_file) is composited onto this artifact's base art.",
+    )
+    add_border: bool = Field(
+        default=False,
+        description="Whether a solid border is drawn around the finished image, using border_color and border_width.",
+    )
+    border_color: str = Field(
+        default="white",
+        description=(
+            "The border's color, an ImageMagick color name or hex value. Only "
+            "used when add_border is on."
+        ),
+    )
+    border_width: int = Field(
+        default=30,
+        description=(
+            "The border's width in pixels, shaved off the image before the "
+            "frame is drawn back on. Only used when add_border is on."
+        ),
+    )
     min_width: int = 0
     min_height: int = 0
-    text: TextStyle | None = None
+    text: TextStyle | None = Field(
+        default=None,
+        description=(
+            "The text block drawn onto this artifact -- font, sizing and "
+            "positioning. Unset means no text is drawn."
+        ),
+    )
 
     @field_validator("language_order")
     @classmethod
@@ -148,39 +184,119 @@ class ArtKindConfig(BaseModel):
 class TitleCardConfig(ArtKindConfig):
     """Title cards carry two independent text blocks."""
 
-    episode_text: TextStyle | None = None
-    season_label: str = "Season"
-    episode_label: str = "Episode"
-    skip_words: list[str] = Field(default_factory=lambda: ["TBA"])
+    episode_text: TextStyle | None = Field(
+        default=None,
+        description=(
+            "The title card's second text block, independent of text -- font, "
+            "sizing and positioning. Unset means no text is drawn there."
+        ),
+    )
+    season_label: str = Field(
+        default="Season",
+        description="The word printed before the season number on the title card, e.g. 'Season 1'.",
+    )
+    episode_label: str = Field(
+        default="Episode",
+        description="The word printed before the episode number on the title card, e.g. 'Episode 1'.",
+    )
+    skip_words: list[str] = Field(
+        default_factory=lambda: ["TBA"],
+        description=(
+            "Episode titles that mean 'no title yet'. When skip_tba is on and an "
+            "episode's title matches one of these (case-insensitive), no episode "
+            "title text is drawn."
+        ),
+    )
 
 
 class ArtworkConfig(BaseModel):
-    poster: ArtKindConfig
-    season_poster: ArtKindConfig
-    background: ArtKindConfig
-    title_card: TitleCardConfig
-    use_logo: bool = True
-    logo_language_order: list[str] = Field(default_factory=lambda: ["en", "fi"])
-    logo_text_fallback: bool = False
-    output_quality: str = "92%"
+    poster: ArtKindConfig = Field(
+        description="Movie/show poster art: whether it is built, its sources and its text block.",
+    )
+    season_poster: ArtKindConfig = Field(
+        description="Season poster art: whether it is built, its sources and its text block.",
+    )
+    background: ArtKindConfig = Field(
+        description="Background/fanart art: whether it is built, its sources and its text block.",
+    )
+    title_card: TitleCardConfig = Field(
+        description=(
+            "Episode title card art: whether it is built, its sources and its "
+            "two text blocks (title and episode label)."
+        ),
+    )
+    use_logo: bool = Field(
+        default=True,
+        description=(
+            "Composite a clearlogo onto posters in place of the title text, "
+            "when one is found. Off leaves posters textual."
+        ),
+    )
+    logo_language_order: list[str] = Field(
+        default_factory=lambda: ["en", "fi"],
+        description=(
+            "Language preference order used when selecting a clearlogo, the "
+            "same rules as the artifact language_order fields."
+        ),
+    )
+    logo_text_fallback: bool = Field(
+        default=False,
+        description=(
+            "When no clearlogo is found for a poster, draw the title text "
+            "instead. Off leaves the poster with neither logo nor text."
+        ),
+    )
+    output_quality: str = Field(
+        default="92%",
+        description="The ImageMagick output quality (-quality) applied to every composite, e.g. '92%'.",
+    )
 
 
 class ProvidersConfig(BaseModel):
-    order: list[str] = Field(default_factory=lambda: ["TMDB", "TVDB", "Fanart"])
+    order: list[str] = Field(
+        default_factory=lambda: ["TMDB", "TVDB", "Fanart"],
+        description=(
+            "The providers tried, in order, when selecting artwork; the first "
+            "to return usable art for the requested language wins. A name with "
+            "no implementation is skipped."
+        ),
+    )
     favourite: str = "TMDB"
     tmdb_vote_sorting: str = "vote_average"
-    # How long a provider response (including "nothing found") stays cached in
-    # provider_cache. 0 disables caching entirely.
-    cache_ttl_seconds: int = 24 * 3600
+    cache_ttl_seconds: int = Field(
+        default=24 * 3600,
+        description=(
+            'How long a provider\'s answer -- including "nothing found" -- stays in '
+            "the provider cache. 0 disables provider caching entirely."
+        ),
+    )
 
 
 class PlexConfig(BaseModel):
-    url: str
-    excluded_libraries: list[str] = Field(default_factory=list)
-    resolve_max_attempts: int = 10
-    liveness_interval_seconds: int = 60
-    token_refresh_interval_seconds: int = 12 * 3600
-    token_refresh_enabled: bool = True
+    url: str = Field(description="The Plex server's base URL this service manages.")
+    excluded_libraries: list[str] = Field(
+        default_factory=list,
+        description="Plex libraries this service never touches -- skipped by every walk and sync.",
+    )
+    resolve_max_attempts: int = Field(
+        default=10,
+        description=(
+            "How many times a job retries with backoff when Plex is "
+            "unreachable, before it is parked."
+        ),
+    )
+    liveness_interval_seconds: int = Field(
+        default=60,
+        description="How often the background health check pings the Plex server.",
+    )
+    token_refresh_interval_seconds: int = Field(
+        default=12 * 3600,
+        description="How often the Plex token is proactively refreshed.",
+    )
+    token_refresh_enabled: bool = Field(
+        default=True,
+        description="Whether the Plex token is proactively refreshed at all.",
+    )
 
 
 class OperationsConfig(BaseModel):
@@ -257,11 +373,17 @@ class ScheduleGate(BaseModel):
     match, leaving its collection untouched.
     """
 
-    # Run on every Nth collections pass. 1 = every pass, the default.
-    every_n_runs: int = Field(default=1, ge=1)
-    # ...and only during these calendar months, for seasonal collections
-    # (Kometa's date-window idiom). None = every month.
-    months: list[int] | None = None
+    every_n_runs: int = Field(
+        default=1, ge=1,
+        description="Run this definition on every Nth collections pass; 1 (the default) means every pass.",
+    )
+    months: list[int] | None = Field(
+        default=None,
+        description=(
+            "Restrict this definition to these calendar months (1-12), for "
+            "seasonal collections. None means every month."
+        ),
+    )
 
     @field_validator("months")
     @classmethod
@@ -302,67 +424,125 @@ class CollectionDefinition(BaseModel):
     stopped updating", hours later and in a log nobody is reading.
     """
 
-    title: str
-    builder: str
+    title: str = Field(description="The collection's title in Plex.")
+    builder: str = Field(
+        description="Which registered collection builder produces this collection's members.",
+    )
     # The builder's own params. Untyped here on purpose: each builder validates
     # this through its own pydantic model (see collections/builders/base.py), so
     # the schema does not have to know every builder's shape.
-    params: dict = Field(default_factory=dict)
+    params: dict = Field(
+        default_factory=dict,
+        description="The parameters this collection's builder takes; each builder defines its own shape.",
+    )
     # None = every library in collections.libraries. An explicit list narrows
     # this definition to those; [] would mean "no library at all", which is why
     # the default is None rather than [].
-    libraries: list[str] | None = None
-    # Overrides the summary the builder derives, when set.
-    summary: str | None = None
-    sort: str = "custom"
-    # sync = the collection is exactly the builder's output; append only ever
-    # adds, never removes. sync is the default, matching the shipped sources.
-    sync_mode: Literal["sync", "append"] = "sync"
+    libraries: list[str] | None = Field(
+        default=None,
+        description="Which libraries this definition applies to. None (the default) means every library in collections.libraries.",
+    )
+    summary: str | None = Field(
+        default=None,
+        description="A summary text that overrides what the builder would otherwise derive for this collection.",
+    )
+    sort: str = Field(
+        default="custom",
+        description="The order Plex applies to this collection's members, e.g. 'custom' (the default) or 'release'.",
+    )
+    sync_mode: Literal["sync", "append"] = Field(
+        default="sync",
+        description=(
+            "'sync' (the default) makes the collection exactly the builder's "
+            "output; 'append' only ever adds members, never removes them."
+        ),
+    )
     # Cap on members, applied after resolution. ge=1: a limit that could only
     # ever produce an empty collection is a mistake, and empty means "make no
     # changes" downstream, so it would not even fail visibly.
-    limit: int | None = Field(default=None, ge=1)
-    schedule: ScheduleGate | None = None
-    # Extra Plex labels, beyond collections.ownership_label.
-    labels: list[str] = Field(default_factory=list)
+    limit: int | None = Field(
+        default=None, ge=1,
+        description="A cap on the collection's member count, applied after resolution.",
+    )
+    schedule: ScheduleGate | None = Field(
+        default=None,
+        description=(
+            "Gates which collections passes this definition is allowed to "
+            "run on; unset means every pass."
+        ),
+    )
+    labels: list[str] = Field(
+        default_factory=list,
+        description="Extra Plex labels applied to the collection, beyond collections.ownership_label.",
+    )
     # Make ``labels`` (plus the ownership label) the authoritative set: any
     # other label on the collection is removed. Off by default because it is
     # the destructive reading of the same field, and it never touches a
     # protected or adopt_from label -- stripping a prior tool's marker is what
     # collections.adopt_removes_prior_label decides, deliberately and once.
-    label_sync: bool = False
+    label_sync: bool = Field(
+        default=False,
+        description=(
+            "Make labels (plus the ownership label) the authoritative set: "
+            "any other label on the collection is removed."
+        ),
+    )
     # Labels applied to every RESOLVED MEMBER of the collection (Kometa's
     # item_label). Only ever added: a member the source stops naming is no
     # longer a member, and removing a label from it would be a write against
     # an item this definition no longer describes.
-    item_label: list[str] = Field(default_factory=list)
+    item_label: list[str] = Field(
+        default_factory=list,
+        description="Plex labels applied to every resolved member of the collection. Only ever added, never removed.",
+    )
     # The collection's Plex sort title, applied verbatim on create and kept in
     # sync afterwards. This is the whole string, not a prefix -- Kometa's
     # ``!110_<title>`` scheme is written out in full. A definition that names a
     # family of collections (a smart builder) gives all of them the same sort
     # title, which is exactly what that scheme is for: the family sorts as one
     # block, ordered by title inside it.
-    sort_title: str | None = None
+    sort_title: str | None = Field(
+        default=None,
+        description="The collection's Plex sort title, applied verbatim and kept in sync.",
+    )
     # Plex's collection display mode. Named values only: the plexapi call
     # rejects anything else with a BadRequest mid-pass, which is a worse place
     # to learn about a typo than config load.
-    collection_mode: Literal["default", "hide", "hideItems", "showItems"] | None = None
+    collection_mode: Literal["default", "hide", "hideItems", "showItems"] | None = Field(
+        default=None,
+        description="Plex's collection display mode. Unset leaves Plex's current setting alone.",
+    )
     # Row 68: pin the collection to a hub. None leaves Plex's current setting
     # alone -- these are Plex Pass features, and "off" is a different request
     # from "not managed by this definition".
-    visible_library: bool | None = None
-    visible_home: bool | None = None
-    visible_shared: bool | None = None
+    visible_library: bool | None = Field(
+        default=None,
+        description="Pin the collection to a hub on the library's recommendations. None leaves Plex's current setting alone.",
+    )
+    visible_home: bool | None = Field(
+        default=None,
+        description="Pin the collection to a hub on the home screen. None leaves Plex's current setting alone.",
+    )
+    visible_shared: bool | None = Field(
+        default=None,
+        description="Pin the collection to a hub for shared users. None leaves Plex's current setting alone.",
+    )
     # Position among the library's managed recommendations, 0 = first. Only
     # meaningful once the collection is promoted to a hub by one of the
     # visible_* flags above.
-    hub_priority: int | None = Field(default=None, ge=0)
+    hub_priority: int | None = Field(
+        default=None, ge=0,
+        description="Position among the library's managed recommendations, 0 = first.",
+    )
     # Row 30: take the summary from TMDB instead of writing one by hand -- the
     # id of the TMDB *collection* whose overview this collection borrows.
     # ``summary`` above still wins when both are set: a summary written out in
     # the config is an explicit choice, and a pull that silently overrode it
     # would be a setting that reads as applied and is not.
-    tmdb_summary: int | None = Field(default=None, gt=0)
+    tmdb_summary: int | None = Field(
+        default=None, gt=0,
+        description="The id of the TMDB collection whose overview this collection's summary is pulled from.",
+    )
     # Row 96: post-builder filtering. A Kometa-shaped mapping of
     # ``attribute[.modifier]: value`` keys, plus nested ``any:``/``all:``
     # blocks -- ``{"year.gte": 2000, "content_rating": ["PG", "PG-13"]}``. The
@@ -372,7 +552,14 @@ class CollectionDefinition(BaseModel):
     # ``collections.filters``, which validates it below. None rather than {},
     # because an empty mapping is a block an operator wrote and left empty and
     # the parser refuses that.
-    filters: dict | None = None
+    filters: dict | None = Field(
+        default=None,
+        description=(
+            "Post-builder filtering: an attribute[.modifier]: value mapping, "
+            "plus nested any:/all: blocks, evaluated against the resolved "
+            "members before limit is applied."
+        ),
+    )
     # Row 19 (Kometa's ``changes_webhooks``): a webhook this collection's
     # membership changes are POSTed to, in addition to whatever the global
     # ``notifications`` block does. A field on the definition rather than a
@@ -392,7 +579,15 @@ class CollectionDefinition(BaseModel):
     # rate-limited target. The detail dict this event carries only reaches
     # the wire under ``notifications.mode: autoposter-v1``; ``apprise-json``
     # (the default) drops it.
-    changes_webhook: str = ""
+    changes_webhook: str = Field(
+        default="",
+        description=(
+            "A webhook this collection's membership changes are POSTed to, beside "
+            "whatever the global notifications block does. Sent only while "
+            "notifications.enabled is on and a global notifications.url is "
+            "configured; a Plex-evaluated smart collection never fires it."
+        ),
+    )
 
     @field_validator("builder")
     @classmethod
@@ -671,29 +866,48 @@ class CollectionsConfig(BaseModel):
     adoption, protection, poster and delete-sweep rules configured below.
     """
 
-    enabled: bool = True
+    enabled: bool = Field(
+        default=True,
+        description="Whether this service builds and manages any collections at all.",
+    )
     # Dry run by default, the same posture as operations.write_to_plex and
     # badges.upload_to_plex: reconciliation runs and reports, nothing is
     # written to Plex until the operator opts in.
-    apply_to_plex: bool = False
+    apply_to_plex: bool = Field(
+        default=False,
+        description="Actually write collection changes to Plex; off only reports what reconciliation would do.",
+    )
     # The ownership boundary: only collections carrying this label are ever
     # created or modified. Must not be "Kometa" -- that is the label the tool
     # being replaced uses, and sharing it would make both tools claim the
     # same collections. Changing this after a run orphans every collection
     # created under the old label; they are left untouched, not renamed.
-    ownership_label: str = "autoposter"
-    libraries: list[str] = Field(default_factory=lambda: ["Movies", "TV Shows"])
-    # IMDb Popular / Top 250 / Lowest Rated list collections.
-    charts: bool = True
-    # Oscars winner list collections (movies only).
-    awards: bool = True
+    ownership_label: str = Field(
+        default="autoposter",
+        description="The Plex label marking a collection as owned by this service; only labelled collections are ever created or modified.",
+    )
+    libraries: list[str] = Field(
+        default_factory=lambda: ["Movies", "TV Shows"],
+        description="Which Plex libraries this service builds and manages collections in.",
+    )
+    charts: bool = Field(
+        default=True,
+        description="Build the IMDb Popular, Top 250 and Lowest Rated chart collections.",
+    )
+    awards: bool = Field(
+        default=True,
+        description="Build the Oscars winners collection (movies only).",
+    )
     # Blank "index card" divider collections -- one per group of collections
     # this service manages, each a permanently-empty collection whose sort
     # title floats it above its block in Plex's alphabetised collections tab
     # (roadmap row 49). Before row 49 this switch owned exactly one divider,
     # the Common Sense family's "Ratings Collections"; it now governs them all,
     # and that one is the content-ratings group's.
-    separators: bool = True
+    separators: bool = Field(
+        default=True,
+        description="Build blank divider collections, one per group of collections this service manages.",
+    )
     # Reorder the collection groups in the tab. None is the canonical order
     # (collections/groups.py: charts, awards, content ratings, content,
     # franchises, location, media, people, production, time, and the operator's
@@ -701,7 +915,10 @@ class CollectionsConfig(BaseModel):
     # groups it names lead, in that order, and the rest follow canonically.
     # Section numbers derive from position, so changing this re-writes the sort
     # title of every collection this service manages, once, on the next pass.
-    group_order: list[str] | None = None
+    group_order: list[str] | None = Field(
+        default=None,
+        description="Reorder the collection groups in the collections tab. None is the canonical order; a partial list leads with the named groups, in order, and the rest follow canonically.",
+    )
     # Which of upstream's 22 separator colour styles the dividers wear --
     # "orig" is upstream's own default and the shipped value, so an untouched
     # config changes nothing on upgrade. Governs BOTH art kinds: the three
@@ -709,32 +926,48 @@ class CollectionsConfig(BaseModel):
     # every other divider is generated from this style's textless @base layer.
     # Changing it re-writes and re-posters every divider once on the next
     # pass, then settles (the key is part of the separator's definition hash).
-    separator_style: str = "orig"
+    separator_style: str = Field(
+        default="orig",
+        description="Which of upstream's separator colour styles the divider collections wear.",
+    )
     # Take over collections created by a tool this service replaces. Off by
     # default: it is a Plex write against collections we did not create, and
     # it should happen once, deliberately, as part of cutover.
-    adopt: bool = False
+    adopt: bool = Field(
+        default=False,
+        description="Take over collections created by a tool this service replaces, claiming them by their adopt_from label.",
+    )
     # Labels belonging to tools being replaced. A collection carrying one of
     # these, whose title this service manages, is eligible to be claimed. A
     # collection with no label is never eligible -- those are the operator's.
-    adopt_from: list[str] = Field(default_factory=lambda: ["Kometa"])
+    adopt_from: list[str] = Field(
+        default_factory=lambda: ["Kometa"],
+        description="Labels belonging to tools being replaced; a collection carrying one of these becomes eligible for adoption.",
+    )
     # Strip the prior tool's label once claimed. Keeping it is reversible;
     # removing it is not, so it is opt-in.
-    adopt_removes_prior_label: bool = False
+    adopt_removes_prior_label: bool = Field(
+        default=False,
+        description="Strip the prior tool's label from a collection once this service has claimed it.",
+    )
     # Labels belonging to other tools' collections that must never be
     # touched, no matter what -- this wins over ownership and adoption both,
     # even when the collection also carries an ``adopt_from`` label. Default
     # covers Maintainerr, whose "Deleted Soon" collections this service must
     # never claim.
     protect_labels: list[str] = Field(
-        default_factory=lambda: ["Collection managed by Maintainerr"]
+        default_factory=lambda: ["Collection managed by Maintainerr"],
+        description="Labels marking collections this service must never touch, no matter what -- wins over both ownership and adoption.",
     )
     # Give every collection this service manages a poster: a local override
     # under assets_root if the operator placed one, otherwise Kometa's hosted
     # default for that collection. Applied only after resolve_collision has
     # approved the collection, so a conflicting or protected one is never
     # reached.
-    posters: bool = True
+    posters: bool = Field(
+        default=True,
+        description="Give every collection this service manages a poster: a local override if the operator placed one, otherwise a hosted default.",
+    )
     # Preset collections switched on by key, from the catalog
     # (``collections/catalog.py``). A key rather than a copy of the
     # definitions it stands for: the expansion happens on the server, on every
@@ -742,12 +975,18 @@ class CollectionsConfig(BaseModel):
     # having to be migrated into each operator's file. Empty by default, and an
     # empty list expands to nothing at all -- which is what keeps an untouched
     # config building exactly what it built before the catalog existed.
-    presets: list[str] = Field(default_factory=list)
+    presets: list[str] = Field(
+        default_factory=list,
+        description="Preset collections switched on by key, from the built-in catalog. Empty (the default) builds none of them.",
+    )
     # Operator-configured collections, each built by a registered builder. The
     # three shipped sources above (charts, awards, separators) are unaffected
     # by this list; it is additive. Live like the rest of this section, so a
     # definition added in Settings applies on the next reconcile.
-    definitions: list[CollectionDefinition] = Field(default_factory=list)
+    definitions: list[CollectionDefinition] = Field(
+        default_factory=list,
+        description="Operator-configured collections, each built by a registered builder; additive to the charts, awards and separators above.",
+    )
     # Delete a collection this service owns once no definition builds it any
     # more -- a chart switched off, a definition removed, a title renamed.
     # Off by default and deliberately the only setting in this file that
@@ -755,12 +994,23 @@ class CollectionsConfig(BaseModel):
     # Even switched on it deletes only through every guard (the ownership
     # label AND a managed_collections row AND no protected label), and never
     # more than max_deletes in one pass.
-    delete_unconfigured: bool = False
+    delete_unconfigured: bool = Field(
+        default=False,
+        description="Delete a collection this service owns once no definition builds it any more, instead of only reporting it as orphaned.",
+    )
     # The per-pass cap on that sweep, the cleanup.max_orphans precedent: past
     # it the sweep refuses entirely and reports the numbers, so a config edit
     # that drops every definition cannot cascade into a wiped library. ge=0
     # because 0 is a meaningful setting -- opted in, but nothing this pass.
-    max_deletes: int = Field(default=5, ge=0)
+    max_deletes: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "The most collections one delete sweep may remove. Past this the sweep "
+            "refuses entirely and reports the numbers instead; 0 means the sweep is "
+            "opted in but deletes nothing."
+        ),
+    )
 
     @model_validator(mode="after")
     def _presets_must_be_known_and_ready(self) -> "CollectionsConfig":
@@ -1049,8 +1299,14 @@ class AdoptConfig(BaseModel):
     # collections.apply_to_plex and cleanup.apply: the walk computes and
     # reports what it would adopt, but writes no rows until the operator has
     # read the report and opted in.
-    apply: bool = False
-    libraries: list[str] = Field(default_factory=lambda: ["Movies", "TV Shows"])
+    apply: bool = Field(
+        default=False,
+        description="Actually write adopted rows and hashes; off only reports what adoption would do.",
+    )
+    libraries: list[str] = Field(
+        default_factory=lambda: ["Movies", "TV Shows"],
+        description="Which Plex libraries the one-time adoption walk scans.",
+    )
 
 
 class ArtworkModesConfig(BaseModel):
@@ -1214,58 +1470,168 @@ class NotificationsConfig(BaseModel):
     never logged in full -- host only.
     """
 
-    enabled: bool = False
-    url: str = ""
-    # "apprise-json" (default): the body Apprise's json:// scheme POSTs --
-    # what any Apprise-trained consumer or a `body.type === "success"` gate
-    # expects. "autoposter-v1": this service's own versioned shape, carrying
-    # the full detail dict.
-    mode: Literal["apprise-json", "autoposter-v1"] = "apprise-json"
+    enabled: bool = Field(default=False, description="Whether run-completion webhooks are sent at all.")
+    url: str = Field(
+        default="",
+        description="The webhook URL each run-completion event is POSTed to. May embed a token in its path; only its host is ever logged.",
+    )
+    mode: Literal["apprise-json", "autoposter-v1"] = Field(
+        default="apprise-json",
+        description=(
+            "'apprise-json' (the default) sends the body Apprise's json:// scheme "
+            "POSTs; 'autoposter-v1' sends this service's own versioned shape, "
+            "carrying the full detail dict."
+        ),
+    )
     # Per-attempt HTTP timeout and the number of attempts before giving up.
     # Notification failure never fails the work it reports on. Bounded at
     # load: retry_count of 0 would build a notifier that attempts nothing
     # and reports every send as failed.
-    timeout_seconds: int = Field(10, gt=0)
-    retry_count: int = Field(3, ge=1)
+    timeout_seconds: int = Field(
+        10, gt=0,
+        description="The per-attempt HTTP timeout for a webhook send, in seconds.",
+    )
+    retry_count: int = Field(
+        3, ge=1,
+        description="How many attempts a webhook send makes before giving up.",
+    )
 
 
 class Config(BaseModel):
-    assets_root: Path
-    manual_assets_root: Path
-    backup_root: Path
-    fonts_root: Path
-    overlays_root: Path
-    library_folders: bool = True
-    workers: int = 5
-    settle_seconds: int = 30
-    magick_binary: str = "magick"
-    skip_tba: bool = True
+    assets_root: Path = Field(
+        description="Where this service writes rendered posters, season posters, backgrounds and title cards.",
+    )
+    manual_assets_root: Path = Field(
+        description="The mount an operator's manually-supplied artwork sources are picked from.",
+    )
+    backup_root: Path = Field(
+        description="Where the cleanup sweep relocates orphaned asset directories, preserving their path under assets_root.",
+    )
+    fonts_root: Path = Field(
+        description="Where the fonts referenced by text styles are read from.",
+    )
+    overlays_root: Path = Field(
+        description="Where the overlay images referenced by overlay_file are read from.",
+    )
+    library_folders: bool = Field(
+        default=True,
+        description="Lay out assets_root in per-library, per-title folders; off uses a flat naming scheme instead.",
+    )
+    workers: int = Field(default=5, description="How many render workers run in parallel.")
+    settle_seconds: int = Field(
+        default=30,
+        description=(
+            "How long a Plex webhook intent waits before it is processed, giving "
+            "Plex time to finish writing metadata for the item."
+        ),
+    )
+    magick_binary: str = Field(
+        default="magick",
+        description="The ImageMagick executable this service invokes for every composite.",
+    )
+    skip_tba: bool = Field(
+        default=True,
+        description="Skip drawing episode title text on a title card when the episode's title matches one of title_card.skip_words.",
+    )
     # /docs, /redoc and /openapi.json cannot be put behind the session
     # dependency (FastAPI mounts them itself), and they enumerate every
     # endpoint and its shape to anyone who can reach the port. Off unless a
     # deployment deliberately turns them on.
-    api_docs_enabled: bool = False
-    plex: PlexConfig
-    providers: ProvidersConfig
-    artwork: ArtworkConfig
-    operations: OperationsConfig = Field(default_factory=OperationsConfig)
-    badges: BadgesConfig = Field(default_factory=BadgesConfig)
-    collections: CollectionsConfig = Field(default_factory=CollectionsConfig)
-    cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
-    prune: PruneConfig = Field(default_factory=PruneConfig)
-    artwork_modes: ArtworkModesConfig = Field(default_factory=ArtworkModesConfig)
-    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
-    adopt: AdoptConfig = Field(default_factory=AdoptConfig)
-    radarr: RadarrConfig = Field(default_factory=RadarrConfig)
-    sonarr: SonarrConfig = Field(default_factory=SonarrConfig)
-    tracearr: TracearrConfig = Field(default_factory=TracearrConfig)
-    arr_sync: ArrSyncConfig = Field(default_factory=ArrSyncConfig)
-    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    api_docs_enabled: bool = Field(
+        default=False,
+        description="Serve the /docs, /redoc and /openapi.json endpoints, which enumerate every endpoint to anyone who can reach the port.",
+    )
+    plex: PlexConfig = Field(
+        description=(
+            "How this service reaches the Plex server: its address, which libraries "
+            "are left alone, and how often it re-checks the server and its token."
+        ),
+    )
+    providers: ProvidersConfig = Field(
+        description="Which metadata/art providers this service queries, in what order, and how long their answers are cached.",
+    )
+    artwork: ArtworkConfig = Field(
+        description=(
+            "What artwork this service builds -- poster, season poster, "
+            "background and title card -- their sources, borders and text, "
+            "plus the shared logo and output-quality settings."
+        ),
+    )
+    operations: OperationsConfig = Field(
+        default_factory=OperationsConfig,
+        description="Per-item metadata operations, replacing Kometa's mass_*_update.",
+    )
+    badges: BadgesConfig = Field(
+        default_factory=BadgesConfig,
+        description="Kometa-parity badge overlays, composited onto the base artwork.",
+    )
+    collections: CollectionsConfig = Field(
+        default_factory=CollectionsConfig,
+        description=(
+            "Every collection this service builds and owns in Plex: the built-in "
+            "charts and awards, the divider collections, catalog presets and "
+            "operator-defined definitions, plus the ownership, adoption, "
+            "protection, poster and delete-sweep rules they share."
+        ),
+    )
+    cleanup: CleanupConfig = Field(
+        default_factory=CleanupConfig,
+        description="Periodic sweep for orphaned asset directories; moves them to backup_root, never deletes.",
+    )
+    prune: PruneConfig = Field(
+        default_factory=PruneConfig,
+        description="Retiring media_items rows Plex can no longer resolve.",
+    )
+    artwork_modes: ArtworkModesConfig = Field(
+        default_factory=ArtworkModesConfig,
+        description=(
+            "Operator-triggered bulk artwork operations: backup, restore, "
+            "poster reset, remove-overlays revert and the logo updater/revert."
+        ),
+    )
+    scheduler: SchedulerConfig = Field(
+        default_factory=SchedulerConfig,
+        description=(
+            "Cadences for the periodic passes -- the collections reconcile, the "
+            "ratings-drift sweep, the asset cleanup and the media_items prune -- "
+            "and the master switch for all of them."
+        ),
+    )
+    adopt: AdoptConfig = Field(
+        default_factory=AdoptConfig,
+        description="One-time adoption of an existing library, hashing artwork already on disk instead of resolving providers.",
+    )
+    radarr: RadarrConfig = Field(
+        default_factory=RadarrConfig,
+        description="Registering Plex movies Radarr does not know about.",
+    )
+    sonarr: SonarrConfig = Field(
+        default_factory=SonarrConfig,
+        description="Registering Plex shows Sonarr does not know about.",
+    )
+    tracearr: TracearrConfig = Field(
+        default_factory=TracearrConfig,
+        description="Where the watch-history collections read their plays from.",
+    )
+    arr_sync: ArrSyncConfig = Field(
+        default_factory=ArrSyncConfig,
+        description=(
+            "The safety net that catches any Plex item this service has never "
+            "processed, plus the cadence for the Radarr/Sonarr registration pass."
+        ),
+    )
+    notifications: NotificationsConfig = Field(
+        default_factory=NotificationsConfig,
+        description="Outbound run-completion webhooks: one POST to url per event.",
+    )
     # Not a release number: the hash of every setting that changes what a
     # render produces, computed by config/loader.py's render_version and
     # stored on each Render row so a settings change can be detected as
     # staleness.
-    version: str = ""
+    version: str = Field(
+        default="",
+        description="A hash of every setting that changes what a render produces, used to detect stale renders. Not a release number.",
+    )
 
     @model_validator(mode="before")
     @classmethod
