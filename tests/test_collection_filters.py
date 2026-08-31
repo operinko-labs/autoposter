@@ -517,11 +517,14 @@ def test_decades_search_operator_set_is_the_bare_form_alone():
     ENTIRELY (plex.py:597-599). So ``decade: 1980`` is the only decade search
     Kometa will build -- not ``decade.gte``, which reads like an int operator
     and is not one. ``resolution`` is the sibling row that only loses ``.not``,
-    which is why the two subtractions differ."""
+    which is why the two subtractions differ. ``decade`` is transcribed as
+    ``int`` here, unlike ``resolution`` (``tag``), so roadmap row 178's
+    ``.regex`` addition (tag/str only) does not reach it -- ``resolution``
+    picks up ``.regex`` alongside its surviving bare form."""
     from autoposter.collections.filters import BY_NAME
 
     assert BY_NAME["decade"].search_operators == ("eq",)
-    assert BY_NAME["resolution"].search_operators == ("eq",)
+    assert BY_NAME["resolution"].search_operators == ("eq", "regex")
     assert BY_NAME["year"].search_operators == ("eq", "not", "gt", "gte", "lt", "lte")
 
 
@@ -556,7 +559,7 @@ def test_the_text_rows_take_the_string_operators_and_rescope():
         assert row.source == "unprobed", name
         assert row.filterable, name
         assert row.search_operators == (
-            "contains", "not", "is", "isnot", "begins", "ends",
+            "contains", "not", "is", "isnot", "begins", "ends", "regex",
         ), name
 
     assert BY_NAME["title"].kinds == ("movie", "show")
@@ -1720,12 +1723,26 @@ def test_a_filter_refuses_a_search_only_attribute_and_says_where_it_lives():
     assert "not a client-side filter" in message
 
 
-def test_a_search_refuses_regex_and_says_why():
+def test_a_search_accepts_regex_on_a_tag_attribute():
+    """Roadmap row 178: search-side ``.regex`` on a tag/str attribute is now
+    a real, distinct mechanism (vocabulary expansion, proven in
+    ``test_collection_search_url.py``) -- parsing accepts it rather than
+    refusing it."""
+    group = parse_filters({"genre.regex": "^Hor"}, searching=True)
+    [predicate] = group.children
+    assert predicate.attribute.name == "genre"
+    assert predicate.operator == "regex"
+
+
+def test_a_search_refuses_regex_on_a_type_that_never_had_it():
+    """``.regex`` is a tag/str-only mechanism in Kometa too (validate_attribute
+    checks the tag list, then the string list -- never an int/float/date/
+    duration/bool one). ``year`` (int) still refuses, now through the
+    generic operator-table message rather than the old blanket one."""
     with pytest.raises(ValueError) as error:
-        parse_filters({"genre.regex": "^Hor"}, searching=True)
+        parse_filters({"year.regex": "^20"}, searching=True)
     message = str(error.value)
-    assert ".regex" in message
-    assert "filters:" in message
+    assert ".regex does not apply to 'year'" in message
 
 
 def test_a_search_refuses_a_bare_duration_and_names_the_ranges():
@@ -1820,12 +1837,17 @@ def test_the_base_conjunction_is_the_written_one_and_adds_no_nesting():
 
 
 def test_a_refusal_never_renders_an_empty_list_of_modifiers():
-    """``resolution`` as a SEARCH is the one row whose whole operator set is the
-    bare form (Kometa's ``no_not_mods``), so the list of writable modifiers is
-    EMPTY -- and the message used to read "it takes  (or no modifier at all,
-    which means eq)": a dangling phrase, a double space, and no options, before
-    the good no_not_mods sentence rescued it. The operator reading that has
-    been told nothing about what to write.
+    """A ``bool`` row as a SEARCH is the shape whose whole operator set is the
+    bare form, so the list of writable modifiers is EMPTY -- and the message
+    used to read "it takes  (or no modifier at all, which means eq)": a
+    dangling phrase, a double space, and no options. The operator reading
+    that has been told nothing about what to write.
+
+    ``resolution`` was this test's original row, back when its whole search
+    operator set was the bare form too (Kometa's ``no_not_mods``); roadmap
+    row 178 gave every ``tag``/``str`` row (``resolution`` included)
+    ``.regex``, so ``hdr`` (``bool``, untouched by that change) is what now
+    exercises the empty-list branch.
 
     Pinned rather than eyeballed because an empty collection rendered into a
     sentence is the failure mode that looks fine in every test that only checks
@@ -1835,14 +1857,12 @@ def test_a_refusal_never_renders_an_empty_list_of_modifiers():
 
     with pytest.raises(ValueError) as error:
         parse_filters(
-            {"resolution.not": "1080"}, field="params", searching=True, base="all"
+            {"hdr.not": True}, field="params", searching=True, base="all"
         )
     message = str(error.value)
     assert "it takes no modifier at all, which means eq" in message
     assert "it takes  " not in message
     assert "takes  (or" not in message
-    # the row's own reason still lands, and is what makes the refusal useful
-    assert "no_not_mods" in message
 
 
 def test_the_refusal_gets_the_article_right_for_an_int_attribute():

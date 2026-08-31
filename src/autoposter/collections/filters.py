@@ -257,13 +257,16 @@ DEFAULT_OPERATOR: dict[str, str] = {
 # refused by Kometa outright, not merely undocumented. The differences from the
 # client-side set are each argued below.
 SEARCH_OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
-    # ``.regex`` is deliberately absent (see SEARCH_ONLY_OPERATORS' sibling
-    # note below and ``_split_key``): Kometa's search-regex is not a regex sent
-    # to Plex, it is a client-side expansion over the library's tag vocabulary
-    # (builder.py:4301-4323), so shipping the spelling here would make one
-    # config key mean two mechanisms.
-    "tag": ("eq", "not"),
-    "str": ("contains", "not", "is", "isnot", "begins", "ends"),
+    # ``.regex`` (roadmap row 178): a client-side vocabulary expansion, not a
+    # regex Plex ever sees -- Kometa's own ``validate_attribute`` tests it
+    # against the TAG list first (builder.py:4301), then the STRING list
+    # (builder.py:4326), never against int/float/date/duration/bool. The
+    # render layer (``search_url._arguments``) is what makes this safe to
+    # ship under the SAME spelling ``filters:`` uses for a different
+    # mechanism -- see its docstring for the divergence, documented
+    # prominently there rather than merely in this comment.
+    "tag": ("eq", "not", "regex"),
+    "str": ("contains", "not", "is", "isnot", "begins", "ends", "regex"),
     # The bare form and ``.not`` are here for ``year`` alone, which reaches
     # them by being a ``year_attribute`` and therefore taking ``tag_modifiers``
     # as well as ``number_modifiers`` (plex.py:597, :599). The table's other
@@ -310,10 +313,12 @@ SEARCH_OPERATORS_EXCLUDED: dict[str, tuple[str, ...]] = {
     #
     # One nuance the sentence above glosses: upstream's ``.regex`` survives
     # ``no_not_mods`` (plex.py:597), so this list is not the whole difference
-    # between us and Kometa for ``decade``. It is absent here because this
-    # service refuses ``.regex`` in a SEARCH globally, for every row, and not
-    # because ``decade`` loses it -- a subtraction that is already made
-    # elsewhere does not need a row here.
+    # between us and Kometa for ``decade``. It is absent here (roadmap row
+    # 178, now that ``.regex`` is a real search mechanism and not a global
+    # refusal) because ``decade`` is transcribed as this table's ``int``
+    # row, and ``SEARCH_OPERATORS_BY_TYPE`` only adds ``.regex`` to ``tag``
+    # and ``str`` -- the same reason ``year`` still refuses it. Not a
+    # per-row subtraction, so it needs no entry here either.
     "decade": ("not", "gt", "gte", "lt", "lte"),
 }
 
@@ -353,12 +358,19 @@ SEARCH_ONLY_OPERATORS = ("rated",)
 SEARCH_MODIFIERS: dict[tuple[str, str], str] = {
     ("tag", "eq"): "",
     ("tag", "not"): "!",
+    # ``.regex`` renders as bare, positive key terms -- it expands to zero
+    # modifier prefix regardless of type, because the expansion always
+    # produces exact resolved KEYS (see search_url._arguments), never a
+    # negatable server-side predicate. Kometa's own search regex has no
+    # ``.not`` counterpart either.
+    ("tag", "regex"): "",
     ("str", "contains"): "",
     ("str", "not"): "!",
     ("str", "is"): "%3D",
     ("str", "isnot"): "!%3D",
     ("str", "begins"): "%3C",
     ("str", "ends"): "%3E",
+    ("str", "regex"): "",
     ("int", "eq"): "",
     ("int", "not"): "!",
     ("int", "gt"): "%3E%3E",
@@ -827,9 +839,14 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         # from. Which branch wins depends on the modifier:
         # ``validate_attribute`` tests ``.regex`` against the TAG list first
         # (builder.py:4301) and only then the string list (builder.py:4326).
-        # Since ``.regex`` is refused here (see SEARCH_OPERATORS_BY_TYPE),
-        # every operator this table ships takes the STRING branch, and the
-        # value goes to Plex ``quote()``d and unresolved.
+        # Every non-regex operator this table ships takes the STRING branch,
+        # and the value goes to Plex ``quote()``d and unresolved. ``.regex``
+        # (roadmap row 178) is the exception -- it takes neither branch, but
+        # its own vocabulary-expansion one in ``search_url._arguments``,
+        # ahead of both -- because a pattern needs the library's enumerable
+        # choices (``listFilterChoices``, plex.py:568) rather than either
+        # branch's ordinary rendering. ``studio`` is this mechanism's own
+        # worked example.
         search_field="studio", show_search_field="show.studio",
         search_kinds=_BOTH, filterable=True,
     ),
@@ -1737,15 +1754,6 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
             f"`all:` for every-one-of, `any:` for any-of -- so the config says "
             f"which it is"
         )
-    if searching and modifier == "regex":
-        raise ValueError(
-            f"{field}: .regex is not a plex_search modifier. Kometa's search "
-            "regex does not reach Plex at all -- it expands the pattern against "
-            "the library's own tag vocabulary first and sends the matching tags "
-            "(builder.py:4301-4323) -- so one spelling would mean two "
-            "mechanisms. A `filters:` block on the same definition supports "
-            ".regex client-side"
-        )
     if not searching and modifier in SEARCH_ONLY_OPERATORS:
         # Both halves of the condition are load-bearing, and they are different
         # halves. The TYPE is why the advice can name a numeric comparison at
@@ -1806,10 +1814,14 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
             f"{attribute.type} attribute in a {block} block"
         )
         if not writable:
-            # ``resolution`` as a SEARCH is the row this exists for: its whole
-            # operator set is the bare form (Kometa's no_not_mods), so the list
-            # of writable modifiers is empty and "it takes " would render as a
-            # dangling phrase followed by a parenthesis.
+            # A ``bool`` row as a SEARCH is what reaches this branch since
+            # roadmap row 178 added ``.regex`` to every ``tag``/``str`` row's
+            # operator set: ``resolution`` (tag) used to be the row this
+            # existed for, but it now takes ``.regex`` too and is no longer
+            # bare-only. A ``bool`` row's whole operator set is still just the
+            # bare form, so the list of writable modifiers is empty and
+            # "it takes " would render as a dangling phrase followed by a
+            # parenthesis.
             message = head + f" -- it takes no modifier at all, which means {bare_meaning}"
         else:
             message = head + " -- it takes " + ", ".join(writable)

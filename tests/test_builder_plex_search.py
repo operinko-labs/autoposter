@@ -177,10 +177,14 @@ def test_a_bad_modifier_inside_the_block_refuses_at_load():
     assert "genre" in str(error.value)
 
 
-def test_a_search_regex_refuses_at_load_pointing_at_filters():
-    with pytest.raises(ValidationError) as error:
-        PlexSearchParams.model_validate({"all": {"studio.regex": "pictures$"}})
-    assert "filters:" in str(error.value)
+def test_a_search_accepts_studio_regex_at_load():
+    """Row 178's own exemplar attribute. Parsing alone does not need a
+    library -- the vocabulary expansion happens at BUILD time -- so this only
+    proves load-time acceptance; test_collection_search_url.py proves the
+    render."""
+    params = PlexSearchParams.model_validate({"all": {"studio.regex": "pictures$"}})
+    [predicate] = params.group.children
+    assert predicate.operator == "regex"
 
 
 # --- the BUILD-time half ------------------------------------------------------
