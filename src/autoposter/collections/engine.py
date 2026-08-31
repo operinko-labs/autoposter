@@ -743,9 +743,9 @@ def _passing(
     collection. No items is what ``lists.py`` reads as "make no changes", so
     the collection is left exactly as it was and the definition is reported
     failed. The parse happens here rather than being carried on the definition
-    because the model is dumped to JSON for ``definition_config_hash`` and
-    copied by expansion, and neither would survive a compiled regex; it is
-    microseconds against a pass that has just walked the library.
+    because the model is copied by expansion, and a compiled regex would not
+    survive the copy; it is microseconds against a pass that has just walked
+    the library.
     """
     try:
         parsed = parse_filters(definition.filters)

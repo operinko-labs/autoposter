@@ -147,13 +147,16 @@ def test_the_run_now_allowlist_agrees_with_the_job_factories():
     rather than imported from the factories (importing them would pull plexapi
     and the arr/http machinery into the route module), so the two lists can
     drift -- and a job missing from the allowlist silently cannot be
-    hand-triggered. This reads the ``Job(name="...")`` literals out of both
+    hand-triggered. This reads the ``Job(name=...)`` literals out of both
     scheduler modules' source and demands exact agreement, both directions:
     a job the allowlist misses AND a stale allowlist name with no job both
     fail here.
 
     The leading ``\\b`` is load-bearing: without it the pattern also matches
-    inside ``table_name="media_items"`` in prune.py, which is not a job.
+    inside ``table_name="media_items"`` in prune.py, which is not a job. Both
+    quote styles are matched: a ``Job(name='x')`` written with single quotes
+    is as real a job as the double-quoted ones, and a pattern that saw only
+    double quotes would read that job's absence as agreement.
     """
     import autoposter.scheduler.jobs as jobs_module
     import autoposter.scheduler.prune as prune_module
@@ -163,12 +166,15 @@ def test_the_run_now_allowlist_agrees_with_the_job_factories():
         Path(jobs_module.__file__).read_text(encoding="utf-8")
         + Path(prune_module.__file__).read_text(encoding="utf-8")
     )
-    declared = set(re.findall(r'\bname="([a-z_]+)"', source))
+    declared = set(re.findall(r'\bname=["\']([a-z_]+)["\']', source))
 
     assert declared, "the regex found no Job(name=...) literals at all"
     assert declared == set(SCHEDULED_JOB_NAMES), (
-        "the run-now allowlist and the job factories disagree -- "
-        "missing from the allowlist: %s; stale in the allowlist: %s"
+        "the run-now allowlist and the scheduler sources disagree -- "
+        "in the source but not the allowlist (a job missing from the "
+        "allowlist, or a ``name=`` literal this pattern should not have "
+        "matched): %s; in the allowlist but not the source (a stale "
+        "allowlist name, or a job renamed): %s"
         % (sorted(declared - set(SCHEDULED_JOB_NAMES)),
            sorted(set(SCHEDULED_JOB_NAMES) - declared))
     )

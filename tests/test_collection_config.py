@@ -16,11 +16,7 @@ from autoposter.collections.builders import REGISTRY, BuilderResult, register
 from autoposter.collections.sources import AWARD_YEARS_TITLE
 from autoposter.config.live import frozen_reason
 from autoposter.config.loader import build_config, load_config, read_config_document
-from autoposter.config.schema import (
-    CollectionDefinition,
-    CollectionsConfig,
-    definition_config_hash,
-)
+from autoposter.config.schema import CollectionDefinition, CollectionsConfig
 
 EXAMPLE_CONFIG = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -173,42 +169,6 @@ def test_a_schedule_window_outside_the_calendar_is_rejected(month):
         CollectionDefinition(
             title="X", builder="plex_id", schedule={"months": [month]}
         )
-
-
-def test_the_definition_hash_ignores_key_order(free_form_builder):
-    """The hash detects edits to a definition. YAML key order is not an edit --
-    re-ordering keys in the file must not orphan the live collection.
-
-    Built on a builder with no ``params_model``: two keys are what makes this
-    test mean anything, and a params model that accepted a second, arbitrary
-    key would not be doing its job (see the load-time checks below)."""
-    one = CollectionDefinition(
-        title="X", builder=free_form_builder, params={"ids": ["1", "2"], "extra": 1}
-    )
-    other = CollectionDefinition(
-        builder=free_form_builder, params={"extra": 1, "ids": ["1", "2"]}, title="X"
-    )
-
-    assert definition_config_hash(one) == definition_config_hash(other)
-
-
-def test_the_definition_hash_changes_when_a_setting_changes():
-    base = CollectionDefinition(title="X", builder="plex_id", params={"ids": ["1"]})
-    changed = [
-        CollectionDefinition(title="X", builder="plex_id", params={"ids": ["2"]}),
-        CollectionDefinition(
-            title="X", builder="plex_id", params={"ids": ["1"]}, sync_mode="append"
-        ),
-        CollectionDefinition(
-            title="X", builder="plex_id", params={"ids": ["1"]}, limit=10
-        ),
-        CollectionDefinition(
-            title="X", builder="plex_id", params={"ids": ["1"]}, summary="new"
-        ),
-    ]
-
-    hashes = {definition_config_hash(d) for d in [base, *changed]}
-    assert len(hashes) == len(changed) + 1
 
 
 # --- the builder's own params, checked at config load ----------------------
@@ -713,19 +673,6 @@ def test_a_smart_definition_refuses_filters():
         CollectionDefinition(
             title="Buckets", builder="cs_bucket", filters={"year.gte": 2000}
         )
-
-
-def test_the_filter_is_part_of_the_definitions_hash():
-    """A filter narrows membership, so editing one is an edit to the
-    collection: without this the members hash would not flap and the pass
-    would leave the old membership in place."""
-    base = CollectionDefinition(title="X", builder="plex_id", params={"ids": ["1"]})
-    filtered = CollectionDefinition(
-        title="X", builder="plex_id", params={"ids": ["1"]},
-        filters={"year.gte": 2000},
-    )
-
-    assert definition_config_hash(base) != definition_config_hash(filtered)
 
 
 def test_a_plex_search_definition_validates_its_params_at_load():

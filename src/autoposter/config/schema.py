@@ -1,5 +1,3 @@
-import hashlib
-import json
 import os
 import re
 from pathlib import Path
@@ -639,21 +637,6 @@ class CollectionDefinition(BaseModel):
                 + ", ".join(SHIPPED_ATTRIBUTES + BATCHED_ATTRIBUTES)
             )
         return self
-
-
-def definition_config_hash(definition: CollectionDefinition) -> str:
-    """A content hash of one definition, for detecting edits.
-
-    Distinct from the members hash ``lists.py`` stores: this one changes when
-    the *definition* changes (a new limit, a different param, a switch to
-    append), not when the underlying list does. Taken over the validated
-    model's canonical dump with sorted keys, so re-ordering keys in the YAML --
-    which is not an edit -- does not read as one.
-    """
-    payload = json.dumps(
-        definition.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class CollectionsConfig(BaseModel):
