@@ -14,6 +14,10 @@ import httpx
 from autoposter.providers.cache import ProviderCache, build_cache_key
 
 
+def _decode_json(response: httpx.Response) -> object:
+    return response.json()
+
+
 async def fetch_json(
     *,
     method: str,
@@ -23,8 +27,9 @@ async def fetch_json(
     cache: ProviderCache | None,
     ttl_seconds: int,
     cacheable: Callable[[object], bool] | None = None,
+    decode: Callable[[httpx.Response], object] = _decode_json,
 ) -> dict | None:
-    """Run one JSON request, optionally through the cache.
+    """Run one JSON-shaped request, optionally through the cache.
 
     Returns the decoded payload, or None for a 404 — the caller's confirmed
     "nothing there" case, which every client already turns into an empty
@@ -39,6 +44,15 @@ async def fetch_json(
     refusal as an answer for the whole TTL). None means every 2xx is cached,
     exactly as before; the 404 write is not consulted — a confirmed "nothing
     there" is an answer, not a refusal.
+
+    ``decode`` turns the response into the payload the cache stores and the
+    caller gets back. Defaulted to plain ``response.json()``, which is every
+    caller's behaviour before this parameter existed — TMDB, TVDB and Fanart
+    never pass it and stay byte-for-byte unchanged. ``awards.py`` passes a
+    YAML decoder instead (roadmap row 151): the "JSON-shaped" name this module
+    keeps is now about the response's shape at the wire (a body decodable to a
+    plain dict), not about the wire format, which is exactly the gap the
+    module docstring's own text names.
     """
     key = None
     if cache is not None:
@@ -53,7 +67,7 @@ async def fetch_json(
             await cache.set(key, {"found": False, "payload": None}, ttl_seconds)
         return None
     response.raise_for_status()
-    payload = response.json()
+    payload = decode(response)
     if key is not None and (cacheable is None or cacheable(payload)):
         await cache.set(key, {"found": True, "payload": payload}, ttl_seconds)
     return payload

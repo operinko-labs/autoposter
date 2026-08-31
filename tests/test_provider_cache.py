@@ -177,6 +177,33 @@ async def test_fetch_json_without_a_cache_makes_a_request_every_time():
     assert len(calls) == 2
 
 
+async def test_fetch_json_accepts_a_custom_decoder_for_a_non_json_body(cache):
+    """Row 151: the seam generalizes to a decoder rather than growing a
+    parallel ``fetch_yaml``. A YAML body would raise inside ``response.json()``
+    if the default decoder ran, so this proves the parameter actually swaps it
+    out rather than merely being accepted and ignored."""
+    calls = []
+
+    async def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, text="a: 1\nb: 2\n")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    kwargs = dict(
+        method="GET", url="https://api.example.com/x", params=None,
+        request=lambda: client.get("https://api.example.com/x"),
+        cache=cache, ttl_seconds=3600,
+        decode=lambda response: {"a": 1, "b": 2},
+    )
+
+    first = await fetch_json(**kwargs)
+    second = await fetch_json(**kwargs)
+
+    assert first == {"a": 1, "b": 2}
+    assert second == {"a": 1, "b": 2}
+    assert len(calls) == 1
+
+
 async def test_fetch_json_credential_query_param_is_absent_from_the_stored_key(cache, session):
     # Same endpoint, two different (bogus) credential values: they must resolve to
     # the same cache entry, and the raw secret must never land in the stored row.
