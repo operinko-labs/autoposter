@@ -115,7 +115,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "FAMILY_LABEL_PREFIX", "DynamicBuilder", "DynamicParams", "family_label",
-    "generated_titles",
+    "generated_titles", "poster_for_unit",
 ]
 
 # The label every collection in one family carries, beside the ownership label.
@@ -263,6 +263,24 @@ def generated_titles(run_cache: dict, definition) -> set[str] | None:
     so a key whose Plex write refused is still a key this family builds.
     """
     return run_cache.get(_generated_key(family_label(definition)))
+
+
+def poster_for_unit(row, unit) -> tuple[str | None, str | None]:
+    """This unit's default-poster family and key, or ``(None, None)``.
+
+    The key is the unit's OWN key, never its title: the two differ on every row
+    whose ``key_from`` is ``"key"`` (``1980`` against "the 1980s", ``4k``
+    against "4K"), and it is the key half that upstream named its files by.
+
+    The leftovers bucket is excluded by name. ``other`` is a bucket THIS
+    SERVICE invents for the keys no ``include:`` entry claimed; upstream never
+    drew it, and a family directory that happens to hold an ``other.jpg`` for
+    its own reasons (``aspect/`` does) would answer with artwork belonging to
+    a different question entirely.
+    """
+    if row.poster_kind is None or unit.key == OTHER_KEY:
+        return None, None
+    return row.poster_kind, unit.key
 
 
 class DynamicParams(BaseModel):
@@ -886,6 +904,13 @@ class DynamicBuilder:
                     # ``!<NNN>_<its own title>`` without this engine having to
                     # know the scheme.
                     sort_prefix=ctx.sort_prefix,
+                    # The family's own default artwork
+                    # (``collections/default_images.py``). One call per
+                    # generated key, keyed by that key -- which is the same
+                    # string upstream named the file by, because both come from
+                    # Kometa's own grouping vocabulary.
+                    poster_kind=poster_for_unit(row, unit)[0],
+                    poster_key=poster_for_unit(row, unit)[1],
                 )
             except REFUSALS as refusal:
                 # Contained to ONE key: an unresolvable value or a filter that

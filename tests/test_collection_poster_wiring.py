@@ -10,6 +10,7 @@ import io
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import pytest
 from PIL import Image
 from plexapi.exceptions import NotFound
 from sqlalchemy import select
@@ -156,13 +157,18 @@ class RatingCollection:
 class RatingSection:
     """Also stands in for ``section._server``, for the separator's raw POST."""
 
-    def __init__(self, ratings=(), existing=(), section_type="movie"):
+    def __init__(self, ratings=(), existing=(), section_type="movie", matches=1):
         self._ratings = list(ratings)
         self._existing = {c.title: c for c in existing}
         self.created = []
         self.queries = []
         self.key = "42"
         self.type = section_type
+        # ``smart.count_matches``' own container-size-0 read (no ``title`` in
+        # the query, ``method=None``): how many items a smart filter matches
+        # before anything is written. See ``FakeServer`` in
+        # ``test_collection_smart.py``, whose shape this mirrors.
+        self._matches = matches
         self._server = self
         self._session = type("Sess", (), {
             "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
@@ -172,9 +178,12 @@ class RatingSection:
         return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
 
     def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """Both raw routes: the create POST (which carries a ``title``) and,
-        since phase 10a-2, a bucket's filter-replacing PUT (which carries only
-        a ``uri``)."""
+        """Three routes: the create POST (which carries a ``title``), a
+        bucket's filter-replacing PUT (which carries only a ``uri``), and --
+        since ``method`` is None on a read -- ``count_matches``' container
+        probe, which returns an attrib rather than being recorded as a write."""
+        if method is None:
+            return type("Container", (), {"attrib": {"totalSize": str(self._matches)}})()
         self.queries.append({"key": key, "method": method})
         args = parse_qs(urlsplit(key).query)
         if "title" not in args:
@@ -199,6 +208,17 @@ class RatingSection:
         collection = RatingCollection(title, labels=[LABEL], rating_key=str(len(self.created)))
         self._existing[title] = collection
         return collection
+
+
+@pytest.fixture
+def section_factory():
+    """A fresh ``RatingSection`` per call -- the fake this file's own smart
+    tests already use, not a second one. It carries every surface
+    ``reconcile_smart_collection`` needs: the count-matches probe, the create
+    POST, ``collections()``/``collection()`` for the re-read, and a
+    ``RatingCollection`` with ``uploadPoster``/``lockPoster`` for the poster
+    step that follows."""
+    return RatingSection
 
 
 async def test_a_smart_bucket_gets_its_poster(session, config_factory, tmp_path):
@@ -718,4 +738,92 @@ async def test_a_franchise_built_without_a_definition_offers_no_poster_key():
     result = await TmdbCollectionBuilder().build(ctx)
 
     assert result.poster_kind is None
-    assert result.poster_key is None
+
+
+# --- The dynamic-family hook (smart.py's poster_kind/poster_key pair) -----
+
+
+async def test_a_dynamic_family_unit_gets_its_upstream_poster(
+    session, section_factory, config_factory, tmp_path
+):
+    """The hook the whole dynamic half of this phase hangs on. Before it,
+    `smart.reconcile_smart_collection` passed literal `None, None` to
+    `apply_poster` for EVERY dynamic family -- so genre, studio, country,
+    network, decade and both language families had no poster source at all
+    beyond an operator's own file. The key is the unit's own, which for
+    `audio_language` is the ISO code p-defimg-probe.md §2 shows the files are
+    named by."""
+    from autoposter.collections.smart import reconcile_smart_collection
+
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    data = _jpeg_bytes()
+    seen = []
+
+    async def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, content=data)
+
+    section = section_factory()
+    async with _client(handler) as http:
+        await reconcile_smart_collection(
+            session, section, "Movies", "Movie", "Top Finnish Movies",
+            "?type=1&audioLanguage=fi", LABEL,
+            dry_run=False, http=http, config=config,
+            poster_kind="audio_language", poster_key="fi",
+        )
+
+    assert seen == [
+        DEFAULT_IMAGES_BASE + "/audio_language/fi.jpg"
+    ]
+    row = (await session.execute(
+        select(ManagedCollection).where(ManagedCollection.title == "Top Finnish Movies")
+    )).scalar_one()
+    assert row.poster_sha256 is not None
+
+
+async def test_a_smart_definition_with_no_family_still_has_no_poster_source(
+    session, section_factory, config_factory, tmp_path
+):
+    """The default is unchanged for every caller that does not pass the pair --
+    `smart_filter`, `cs_bucket`'s own path, `credits_family`, and the engine's
+    plain smart dispatch. A definition with no builder to derive artwork from
+    still says so, honestly, on every pass."""
+    from autoposter.collections.smart import reconcile_smart_collection
+
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+
+    async def handler(request):
+        raise AssertionError("a family-less smart collection must fetch nothing")
+
+    section = section_factory()
+    async with _client(handler) as http:
+        actions = await reconcile_smart_collection(
+            session, section, "Movies", "Movie", "Hand-written", "?type=1",
+            LABEL, dry_run=False, http=http, config=config,
+        )
+
+    assert any("no poster source" in action for action in actions)
+
+
+async def test_the_leftovers_bucket_is_never_given_a_family_poster():
+    """`dynamic_titles.OTHER_KEY` is the string 'other', and `aspect/other.jpg`
+    exists upstream -- so an unguarded lookup would ask for
+    `country/color/other.jpg` for 'Other Countries' and, if the families were
+    ever merged, hand it the aspect-ratio catch-all's art. The bucket is a name
+    this service invented; upstream never drew it."""
+    from autoposter.collections.builders.dynamic import poster_for_unit
+    from autoposter.collections.dynamic_titles import OTHER_KEY, TitledKey
+    from autoposter.collections.dynamic_types import DYNAMIC_TYPES
+
+    row = DYNAMIC_TYPES["country"]
+    ordinary = TitledKey(
+        key="France", key_name="France", title="France", values=("France",)
+    )
+    leftovers = TitledKey(
+        key=OTHER_KEY, key_name=OTHER_KEY, title="Other Countries",
+        values=("Sealand",),
+    )
+
+    assert poster_for_unit(row, ordinary) == ("country", "France")
+    assert poster_for_unit(row, leftovers) == (None, None)
+    assert poster_for_unit(DYNAMIC_TYPES["content_rating"], ordinary) == (None, None)

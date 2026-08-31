@@ -80,6 +80,17 @@ advertised to operators by ``DynamicParams``' own error message, so the three
 facts-enumerated families live in ``collections/facts_family.py`` and share what
 is actually shareable: ``dynamic_keys`` and ``dynamic_titles``, both of which
 take the enumeration as data and neither of which changed to accommodate them.
+
+**The poster column.** Every row but ``content_rating`` names a
+``Default-Images`` directory whose per-member art is keyed by the same string
+this table's ``key_from`` column already produces -- ISO codes for the two
+language rows, ``choice.key`` numbers for ``decade`` and ``year``, the label
+for ``resolution``, and Kometa's own include-list names for the four tag rows.
+That coincidence is not luck: our keys ARE upstream's grouping vocabulary,
+transcribed in ``collections/packs.py``, and upstream named the files by it.
+The directory-per-family table and the fetch live in
+``collections/default_images.py``; this column is only which row of it a family
+takes. Where no asset matches, the collection keeps whatever poster it had.
 """
 from dataclasses import dataclass
 
@@ -124,6 +135,13 @@ class DynamicType:
     sort_by: tuple[str, ...]
     limit: int | None
     note: str
+    # Which ``collections/default_images.FAMILIES`` row supplies this family's
+    # default poster, keyed by the unit's own ``key`` -- which is why the
+    # column sits HERE rather than in the builder: the key a bucket is derived
+    # under is the key upstream named the file by, and the two must not be two
+    # decisions. None means "no upstream art we can address", which is a fact
+    # about the repository rather than a switch: see ``content_rating``.
+    poster_kind: str | None = None
 
 
 _BOTH = ("Movie", "Show")
@@ -144,6 +162,7 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "``max_collections`` floor defaults below that. The phase's probe "
             "measured 87 on the production movie library and 39 on the shows, "
             "and found a WORSE case than this one -- see ``studio``.",
+            poster_kind="year",
         ),
         DynamicType(
             "decade", "decade", "decade", ("Movie",), "key",
@@ -160,6 +179,7 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "Kometa refuses to build and no oracle config can cover -- which "
             "makes this sentence, and the table test beside it, the only thing "
             "holding the subtraction for every downstream emitter.",
+            poster_kind="decade",
         ),
         DynamicType(
             "content_rating", "content_rating", "content_rating", _BOTH, "title",
@@ -170,7 +190,15 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "which is exactly what ``dynamic_keys.derive_keys`` reproduces. "
             "Key and title are the same string on this server (``13``/``13``), "
             "which is why ``key_from`` is the title like every other tag row "
-            "rather than a special case.",
+            "rather than a special case. "
+            "No poster kind, deliberately: upstream's content-rating art is "
+            "region-scoped (``content_rating/<region>/<rating>.jpg``) and a "
+            "dynamic definition names no region. The Common Sense family this "
+            "row generalises is already wired to the ``cs`` region by hand "
+            "(``reconcile.py``); choosing a region for an operator here would "
+            "resolve to another country's rating artwork, which is a plausible "
+            "wrong poster rather than an absent one.",
+            poster_kind=None,
         ),
         DynamicType(
             "studio", "studio", "studio.is", _BOTH, "title",
@@ -185,6 +213,7 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "fan-out worst case at **824** values on the production movie "
             "library -- an order of magnitude past the ``year`` example the "
             "roadmap's risk note uses.",
+            poster_kind="studio",
         ),
         DynamicType(
             "genre", "genre", "genre", _BOTH, "title",
@@ -195,6 +224,7 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "a genre SEARCH (9b's probe 3, 5/5). ``key_from`` is the title "
             "because the key is an opaque server-side tag id (``482`` for "
             "Action), which the resolver maps back to on the way out.",
+            poster_kind="genre",
         ),
         DynamicType(
             "country", "country", "country", ("Movie",), "title",
@@ -207,6 +237,7 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "production movie library, "
             "``docs/research/plex-dynamic-probe/README.md``. Its keys are "
             "opaque tag ids like ``genre``'s, so ``key_from`` is the title.",
+            poster_kind="country",
         ),
         DynamicType(
             "resolution", "resolution", "resolution", _BOTH, "key",
@@ -219,6 +250,7 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "(``4k``) and titles from ``choice.title`` (``4K``) -- one letter "
             "apart on the live library, which is exactly why the column is "
             "written down rather than inferred.",
+            poster_kind="resolution",
         ),
         DynamicType(
             "audio_language", "audio_language", "audio_language", _BOTH, "key",
@@ -231,6 +263,7 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "not the ``all:`` AND that made row 182's probe answer 0 instead of "
             "442. Titled from Plex rather than from TMDb's English name; see the "
             "module docstring's divergence note.",
+            poster_kind="audio_language",
         ),
         DynamicType(
             "subtitle_language", "subtitle_language", "subtitle_language",
@@ -240,6 +273,7 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "a wide margin on the production libraries -- 115 values against "
             "audio's 46 -- so it is the fan-out cap's second worst case after "
             "``studio``.",
+            poster_kind="subtitle_language",
         ),
         DynamicType(
             "network", "network", "network", ("Show",), "title",
@@ -256,6 +290,7 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "empty-enumeration refusal is being built against -- the probe "
             "found a section in that state (the ``DVR`` section answers "
             "``country`` with zero values).",
+            poster_kind="network",
         ),
     )
 }

@@ -259,6 +259,8 @@ async def reconcile_smart_collection(
     config=None,
     settings=None,
     sort_prefix: str | None = None,
+    poster_kind: str | None = None,
+    poster_key: str | None = None,
 ) -> list[str]:
     """Bring one smart collection in line with ``url``.
 
@@ -308,6 +310,15 @@ async def reconcile_smart_collection(
     natural order for one, so both take the plain ``!<NNN>_<title>`` form. A
     definition that names its own ``sort_title`` keeps it; None derives nothing,
     which is what a direct caller with no pass around it gets.
+
+    ``poster_kind``/``poster_key`` name this collection's default artwork, the
+    way ``BuilderResult``'s two fields of the same name do on the list path.
+    They default to None and every caller that passes nothing keeps exactly the
+    behaviour this function has always had -- a ``smart_filter`` definition
+    genuinely has no builder to derive artwork from, and says so on every pass.
+    The FAMILY builders are what fill them: a family's key is derived under the
+    same vocabulary upstream named its files by, so the family builder is the
+    one caller that can answer, and it is the only one that does.
 
     Returns a description of every action taken -- or, under ``dry_run``, every
     action that would be taken. ``flush``, never ``commit``: the commit belongs
@@ -452,16 +463,18 @@ async def reconcile_smart_collection(
                 record.last_reconciled_at = None
 
     if posters_on and collection is not None and record is not None:
-        # ``kind``/``key`` are None: a smart_filter definition has no builder to
-        # derive default artwork from, so ``hosted_poster_url`` has nothing to
-        # offer and only the operator's LOCAL override (keyed on library+title)
-        # can supply one. That is the same shape a ``plex_id`` collection
-        # already has -- ``BuilderResult.poster_kind`` is None there too -- and
-        # it means the action string says "no poster source" on every pass until
-        # a local file exists, which is the honest report.
+        # ``kind``/``key`` come from the caller now. A ``smart_filter``
+        # definition still passes neither -- it has no builder to derive
+        # default artwork from, so ``hosted_poster_url`` has nothing to offer
+        # and only the operator's LOCAL override (keyed on library+title) can
+        # supply one, which is the same shape a ``plex_id`` collection has and
+        # means "no poster source" on every pass until a local file exists.
+        # A FAMILY builder passes both, and its key is the one upstream named
+        # the file by (``collections/default_images.py``); where upstream holds
+        # no such file the fetch 404s and the report is that same honest line.
         message = await apply_poster(
-            session, http, config, collection, record, library, None, None,
-            dry_run=dry_run,
+            session, http, config, collection, record, library,
+            poster_kind, poster_key, dry_run=dry_run,
         )
         if message:
             actions.append(message)

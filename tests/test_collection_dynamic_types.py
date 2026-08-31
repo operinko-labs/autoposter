@@ -266,3 +266,37 @@ def test_the_two_probed_rows_ship_because_the_probe_answered():
     the citation from the note, the row it justifies is a row nobody checked."""
     for name in ("network", "country"):
         assert "plex-dynamic-probe" in DYNAMIC_TYPES[name].note, name
+
+
+def test_every_poster_kind_names_a_family_default_images_actually_holds():
+    """The column is a cross-module contract: a kind `default_images` does not
+    know is a poster that silently never resolves, which is exactly the class
+    of quiet failure `hosted_poster_url`'s own refusal rule exists to stop."""
+    from autoposter.collections.default_images import FAMILIES
+
+    for row in DYNAMIC_TYPES.values():
+        if row.poster_kind is not None:
+            assert row.poster_kind in FAMILIES, row.name
+
+
+def test_the_nine_families_with_upstream_art_carry_it_and_content_rating_does_not():
+    """The table's own law, from p-defimg-probe.md's summary table: every
+    dynamic type this service ships has a Default-Images directory EXCEPT
+    content_rating, whose art is region-scoped (`content_rating/<region>/`) and
+    whose region a dynamic definition does not name. The `cs_bucket` family is
+    already wired to the `cs` region by hand; picking a region for an operator
+    here would be a guess that resolves to plausible wrong artwork."""
+    assert {
+        name: row.poster_kind for name, row in DYNAMIC_TYPES.items()
+    } == {
+        "year": "year",
+        "decade": "decade",
+        "content_rating": None,
+        "studio": "studio",
+        "genre": "genre",
+        "country": "country",
+        "resolution": "resolution",
+        "audio_language": "audio_language",
+        "subtitle_language": "subtitle_language",
+        "network": "network",
+    }
