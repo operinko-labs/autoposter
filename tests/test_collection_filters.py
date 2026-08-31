@@ -440,11 +440,11 @@ def test_field_for_picks_the_libtypes_field_and_refuses_a_libtype_it_does_not_se
 
 
 def test_every_row_searchable_on_show_carries_a_show_search_field():
-    """Pins ``field_for``'s show-library safety (line 498-499) against a future
+    """Pins ``field_for``'s show-library safety (line 542-543) against a future
     row: a row with ``"show" in search_kinds`` and ``show_search_field=None``
     would silently return the MOVIE field for a show library, since
     ``field_for`` only rescopes when ``show_search_field`` is set. It holds for
-    all twenty-five rows today; nothing but this test pins it, and it is what
+    all thirty-three rows today; nothing but this test pins it, and it is what
     caught phase B's ``actor`` row: ``show_translation`` DOES rename that one
     (``"actor": "show.actor"``, plex.py:168-193), so a ``None`` there would
     have sent a show library the bare ``actor`` field."""
@@ -566,7 +566,8 @@ def test_the_text_rows_take_the_string_operators_and_rescope():
     assert BY_NAME["edition"].field_for("movie") == "editionTitle"
     assert BY_NAME["edition"].field_for("show") == "show.editionTitle"
 
-    parse_filters({"title": "Dune"})
+    [title_clause] = parse_filters({"title": "Dune"}).children
+    assert title_clause.operator == "contains"
     with pytest.raises(AttributeNotInListing, match="unprobed"):
         PlexItemView(object()).get("title")
 
