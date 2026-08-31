@@ -223,6 +223,7 @@ const EDITOR_CONFIG = {
     version: "The hash of every setting that changes what a render produces.",
     "plex.url": "The base URL of the Plex server this service manages.",
     "plex.resolve_max_attempts": "How many times a failed Plex lookup is retried.",
+    "secrets.plex_token": "The Plex authentication token this service connects with.",
   },
   computed_paths: ["version"],
   live_paths: ["plex.resolve_max_attempts"],
@@ -435,6 +436,23 @@ describe("Settings editor", () => {
     expect(
       within(rowOf(screen.getByLabelText("badges.enabled"))).getByText("Enabled"),
     ).not.toHaveAttribute("title");
+  });
+
+  it("hangs a description off a secrets row too, since redacted text is all it shows", async () => {
+    stubApi();
+    await renderSettings();
+
+    // The secrets panel gets no editor (editor={null}) and renders only the
+    // "redacted" pill -- the description is the one informative thing left
+    // on the row, which is why `descriptions` is a prop of ConfigSections
+    // independent of `editor` (Settings.tsx:445-449's design comment).
+    const label = within(rowOf(screen.getByText("Plex token"))).getByText(
+      "Plex token",
+    );
+    expect(label).toHaveAttribute(
+      "title",
+      "The Plex authentication token this service connects with.",
+    );
   });
 
   it("renders a computed path read-only rather than offering an inert edit", async () => {
