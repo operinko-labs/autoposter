@@ -159,8 +159,20 @@ class ArtKindConfig(BaseModel):
             "frame is drawn back on. Only used when add_border is on."
         ),
     )
-    min_width: int = 0
-    min_height: int = 0
+    min_width: int = Field(
+        default=0,
+        description=(
+            "Accepted for Posterizarr-config compatibility (the minimum-width "
+            "gate); not currently enforced by any code path."
+        ),
+    )
+    min_height: int = Field(
+        default=0,
+        description=(
+            "Accepted for Posterizarr-config compatibility (the minimum-height "
+            "gate); not currently enforced by any code path."
+        ),
+    )
     text: TextStyle | None = Field(
         default=None,
         description=(
@@ -261,8 +273,20 @@ class ProvidersConfig(BaseModel):
             "no implementation is skipped."
         ),
     )
-    favourite: str = "TMDB"
-    tmdb_vote_sorting: str = "vote_average"
+    favourite: str = Field(
+        default="TMDB",
+        description=(
+            "Accepted for Posterizarr-config compatibility (the "
+            "preferred-provider key); not currently read by any code path."
+        ),
+    )
+    tmdb_vote_sorting: str = Field(
+        default="vote_average",
+        description=(
+            "Accepted for Posterizarr-config compatibility (Posterizarr's TMDb "
+            "vote-sorting key); not currently read by any code path."
+        ),
+    )
     cache_ttl_seconds: int = Field(
         default=24 * 3600,
         description=(
