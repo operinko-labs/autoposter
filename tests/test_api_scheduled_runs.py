@@ -1,4 +1,5 @@
 """POST /api/scheduled-runs/{name}/run -- the dashboard's "run now" button."""
+import re
 from pathlib import Path
 
 import pytest_asyncio
@@ -139,3 +140,35 @@ async def test_the_prune_job_can_be_triggered_by_hand(client, auth_headers, sess
     row = (await session.execute(select(ScheduledRun))).scalars().one()
     assert row.name == "plex_prune"
     assert row.last_started_at is None
+
+
+def test_the_run_now_allowlist_agrees_with_the_job_factories():
+    """Roadmap row 107. ``SCHEDULED_JOB_NAMES`` is spelled out in api/routes.py
+    rather than imported from the factories (importing them would pull plexapi
+    and the arr/http machinery into the route module), so the two lists can
+    drift -- and a job missing from the allowlist silently cannot be
+    hand-triggered. This reads the ``Job(name="...")`` literals out of both
+    scheduler modules' source and demands exact agreement, both directions:
+    a job the allowlist misses AND a stale allowlist name with no job both
+    fail here.
+
+    The leading ``\\b`` is load-bearing: without it the pattern also matches
+    inside ``table_name="media_items"`` in prune.py, which is not a job.
+    """
+    import autoposter.scheduler.jobs as jobs_module
+    import autoposter.scheduler.prune as prune_module
+    from autoposter.api.routes import SCHEDULED_JOB_NAMES
+
+    source = (
+        Path(jobs_module.__file__).read_text(encoding="utf-8")
+        + Path(prune_module.__file__).read_text(encoding="utf-8")
+    )
+    declared = set(re.findall(r'\bname="([a-z_]+)"', source))
+
+    assert declared, "the regex found no Job(name=...) literals at all"
+    assert declared == set(SCHEDULED_JOB_NAMES), (
+        "the run-now allowlist and the job factories disagree -- "
+        "missing from the allowlist: %s; stale in the allowlist: %s"
+        % (sorted(declared - set(SCHEDULED_JOB_NAMES)),
+           sorted(set(SCHEDULED_JOB_NAMES) - declared))
+    )
