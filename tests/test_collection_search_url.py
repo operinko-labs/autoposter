@@ -74,6 +74,70 @@ def test_an_unresolvable_tag_names_the_value_and_the_attribute():
     assert "genre" in message
 
 
+# --- .regex vocabulary expansion (roadmap row 178) ---------------------------
+#
+# A separate resolver from ``resolve``/``CHOICES`` above: those existing 30+
+# tests pass a bare function with only ``__call__``, and nothing here changes
+# that -- ``choices`` is only ever invoked for a ``.regex`` predicate, which
+# no pre-existing test writes.
+
+VOCAB = {
+    "genre": (("1138", "Horror"), ("9", "Drama"), ("55", "Sci-Fi Horror")),
+    "studio": (("12", "A24"), ("34", "Studio Ghibli"), ("56", "Warner Bros.")),
+}
+
+
+class _RegexResolver:
+    def __call__(self, attribute, value, /):
+        return CHOICES.get((attribute, value), ())
+
+    def choices(self, attribute, /):
+        return VOCAB.get(attribute, ())
+
+
+def regex_url(raw, *, libtype="movie", base="all", **kwargs):
+    group = parse_filters(raw, field="params", searching=True, base=base)
+    return build_search_url(
+        group, libtype=libtype, resolve_tag=_RegexResolver(), **kwargs
+    )
+
+
+def test_a_regex_search_sends_every_matching_titles_key():
+    assert regex_url({"genre.regex": "Horror"}) == (
+        "?type=1&sort=titleSort&genre=1138&and=1&genre=55"
+    )
+
+
+def test_a_regex_search_is_case_sensitive_like_filters_regex_is():
+    """SETTLED-BY-ORACLE for ``filters:``'s own ``.regex`` (``_as_regex``,
+    filters.py:1349-1373) -- the search-side expansion reuses the same
+    compiled pattern with no flags, so the two stay consistent with each
+    other even though they are different mechanisms. A lower-case pattern
+    against the title-cased vocabulary (``"Horror"``, ``"Studio Ghibli"``)
+    matches nothing, which is the same "no keys resolved" refusal an
+    unmatched pattern gets anywhere else in this file."""
+    with pytest.raises(TagValueNotFound):
+        regex_url({"genre.regex": "^horror$"})
+
+
+def test_a_regex_search_on_studio_matches_against_the_title_not_the_key():
+    assert regex_url({"studio.regex": "^Studio"}) == (
+        "?type=1&sort=titleSort&studio=34"
+    )
+
+
+def test_an_unmatched_regex_search_pattern_names_the_pattern():
+    with pytest.raises(TagValueNotFound) as error:
+        regex_url({"genre.regex": "^Nothing Matches This$"})
+    assert "Nothing Matches This" in str(error.value)
+    assert "genre" in str(error.value)
+
+
+def test_a_regex_search_with_no_vocabulary_for_the_attribute_names_it():
+    with pytest.raises(TagValueNotFound):
+        regex_url({"resolution.regex": "1080"})
+
+
 def test_a_string_value_is_quoted_and_a_tag_value_is_not():
     assert url({"studio.begins": "Warner Bros"}) == (
         "?type=1&sort=titleSort&studio%3C=Warner%20Bros"

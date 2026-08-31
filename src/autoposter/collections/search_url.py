@@ -18,9 +18,10 @@ tests would agree on and Plex would not.
 **Every branch is a transcription with a line reference.** The assembly is
 ``modules/builder.py:4169-4295`` at Kometa v2.4.8; the per-type special cases
 are :4222-4250; the final wrap is :4287-4289. Where this module differs from
-Kometa it is because 9a or 9b refused something (``.regex``, ``validate:``,
-the implicit base, a bare ``duration:``), never because a branch was
-simplified.
+Kometa it is because 9a or 9b refused something (``validate:``, the implicit
+base, a bare ``duration:``), never because a branch was simplified --
+``.regex`` (roadmap row 178) is its own case: not a refusal, a DIFFERENT
+mechanism under the same spelling, transcribed in its own branch below.
 
 **What Kometa does here and this module deliberately does not:**
 
@@ -70,9 +71,18 @@ class TagResolver(Protocol):
     code covering every locale variant the library carries). Injected rather
     than imported so this module stays pure; Task 4's builder passes the
     Plex-backed, run-cached one and the tests pass a dict.
+
+    ``choices`` (roadmap row 178) is the enumeration half, used only for a
+    ``.regex`` search predicate: every ``(key, title)`` the library reports
+    for an attribute, so the pattern can be tested against each TITLE (the
+    spelling an operator would otherwise write) rather than the opaque key.
+    A ``resolve_tag`` whose config never writes ``.regex`` in a search never
+    needs to implement it -- ``_arguments`` calls it only from the branch
+    below.
     """
 
     def __call__(self, attribute: str, value: str, /) -> tuple[str, ...]: ...
+    def choices(self, attribute: str, /) -> tuple[tuple[str, str], ...]: ...
 
 
 class TagValueNotFound(Exception):
@@ -314,6 +324,35 @@ def _arguments(
     # config resolves a tag to a TITLE and that breaks byte parity against
     # Kometa, the failure IS this divergence surfacing -- keep the quote and
     # accept the byte mismatch; do not revert it to make the comparison green.
+    # Roadmap row 178: Kometa's search ``.regex`` is a client-side expansion
+    # over the library's own tag vocabulary, not a regex Plex ever evaluates
+    # (builder.py:4301-4323) -- a DIFFERENT mechanism from ``filters:``'s
+    # ``.regex``, which matches the item's own value client-side after
+    # resolution. Same spelling, two mechanisms, on purpose (the project's
+    # Kometa-parity naming doctrine) -- the divergence is documented here,
+    # at the one place that actually renders it, rather than only in a
+    # refusal message an operator who writes it correctly never reads.
+    #
+    # Renders as plain resolved-key terms regardless of the row's ``str``/
+    # ``tag`` classification for ``filters:`` purposes -- ``studio`` is
+    # ``str`` there (substring match) but its search vocabulary is still
+    # enumerable via ``listFilterChoices``, which is what Kometa's own
+    # ``validate_attribute`` falls back to for exactly this row (plex.py:568).
+    if operator == "regex":
+        out = []
+        for pattern in predicate.values:
+            keys = tuple(
+                key for key, title in resolve_tag.choices(row.name)
+                if pattern.search(title)
+            )
+            if not keys:
+                raise TagValueNotFound(
+                    f"{predicate.field}: {pattern.pattern!r} matched none of "
+                    f"the {row.name} values this library uses"
+                )
+            out.extend((modifier, quote(str(key))) for key in keys)
+        return out
+
     if row.type == "tag":
         out = []
         for value in predicate.values:

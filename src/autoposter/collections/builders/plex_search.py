@@ -244,11 +244,16 @@ class PlexSearchParams(BaseModel):
         """The whole vocabulary check, at LOAD.
 
         Unknown attribute, a modifier the type does not take in a search, an
-        unparseable value, a `.regex`, a `.and`, a bare `duration:` -- every one
-        of them refuses here, naming the key, hours before the pass. What
-        CANNOT be checked here is anything that needs the library: which
-        libtype, and whether a tag value exists. Those are build-time, and the
-        module docstring says why.
+        unparseable value, a `.and`, a bare `duration:` -- every one of them
+        refuses here, naming the key, hours before the pass. A tag/str
+        `.regex` (roadmap row 178) is now accepted here and expanded at BUILD
+        time, against the library's own vocabulary -- see
+        `search_url._arguments`'s regex branch for the divergence from
+        `filters:`'s `.regex`, which is a different mechanism under the same
+        spelling. What CANNOT be checked here is anything that needs the
+        library: which libtype, and whether a tag value exists (or, for
+        `.regex`, whether the pattern matches anything the library has).
+        Those are build-time, and the module docstring says why.
 
         ``field`` is ``params.<base>`` and not the parser's ``filters``
         default, so a refusal names the block an operator would go and edit.
