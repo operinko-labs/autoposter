@@ -408,13 +408,18 @@ class FactsFamilyBuilder:
         #
         # Two sources, because one is blind to the other. ``managed_titles``
         # is every CURATED definition's own title, which is the franchise
-        # case. The pass's own generated records are the second: a family
+        # case, and is what ``test_a_contested_unit_is_skipped_and_reported``
+        # and ``test_the_contested_title_stays_the_curated_definitions_alone``
+        # pin. The pass's own generated records are the second: a family
         # contributes only its PLACEHOLDER title to ``definition_titles``
         # (``engine.py:1348-1355``), so "Regions" and "Continents" both
         # enumerating one country name is invisible until both have run.
-        # Whichever ran first keeps it; ordering is preset order, which is
-        # deterministic and is a strict improvement on the silent every-pass
-        # fight it replaces.
+        # Intent, by construction of that per-definition loop: whichever ran
+        # first this pass keeps it, in ``config.collections.presets`` order --
+        # a strict improvement on the silent every-pass fight it replaces. No
+        # test drives two contending families through the real engine loop to
+        # pin that ordering; the claim rests on reading the loop, not on
+        # coverage.
         own_key = _generated_key(family_label(definition))
         contested = set(ctx.managed_titles)
         for key, claimed in ctx.run_cache.items():
