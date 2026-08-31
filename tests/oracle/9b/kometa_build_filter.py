@@ -54,6 +54,8 @@ CHOICES = {
     ("label", "Overlay"): ("3",),
     ("collection", "The Fast and the Furious Collection"): ("77",),
     ("country", "France"): ("36",),
+    ("actor", "Uma Thurman"): ("6",),
+    ("director", "Sofia Coppola"): ("58",),
 }
 
 
@@ -1081,6 +1083,16 @@ CONFIGS = [
         "trash": True,
         "unmatched": False,
     }}),
+    # 20: ``actor`` on a SHOW library -- the phase-B person row whose
+    # show_translation entry (:176) is the one thing a movie config cannot
+    # reach; a wrong or absent rescope would send the bare ``actor`` field
+    # and Plex would answer with the wrong set, not an error.
+    ("show", {"all": {"actor": "Uma Thurman"}}),
+    # 21: the people rows on a movie library -- ``actor``'s bare field beside
+    # a movie-only crew row (``director``, movie_only_searches :273), both
+    # resolved to keys through CHOICES like every tag. One config cannot hold
+    # both halves: ``director`` on a show library is refused upstream.
+    ("movie", {"all": {"actor": "Uma Thurman", "director": "Sofia Coppola"}}),
 ]
 
 

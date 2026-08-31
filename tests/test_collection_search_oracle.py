@@ -7,7 +7,7 @@ runs, and produces a full, plausible, wrong collection. Every other test in
 this phase asserts the transcription against itself -- against a string
 hand-derived from the same source, by the same reading, in the same sitting.
 
-This file asserts it against Kometa. Nineteen configs, and nineteen URI
+This file asserts it against Kometa. Twenty-one configs, and twenty-one URI
 strings produced by **Kometa's own build_filter** -- fetched, transcribed
 standalone, run, and pinned below as data. Ours must reproduce them byte for
 byte.
@@ -108,6 +108,23 @@ the doubly-translated ``show.editionTitle``, the episode-libtype
 ``hdr``/``dovi``/``trash``, and ``show.unmatched``). Both goldens came from
 the same driver in the same way -- predicted from the transcription first,
 then confirmed by running it.
+
+## The twentieth and twenty-first configs
+
+The phase-B person rows shipped with unit tests and a live-probe verdict but
+never reached a golden: the coverage test covers TYPES and ``tag`` was
+already exercised, so the four rows were held only by strings derived from
+the same reading of the same source -- the self-agreement this file exists to
+escape, flagged by the tails recon. Config 20 pins ``actor``'s show
+rescoping (``show.actor``, the divergence phase B specifically corrected
+mid-task); config 21 pins its bare movie field beside a movie-only crew row
+(``director``). Two configs rather than one because ``director`` on a show
+library is refused by Kometa's own movie_only_searches -- there is no legal
+single config holding both halves. Both goldens came from the same driver in
+the same way. Unlike 18/19 these rows already existed, so the gate's red was
+manufactured: ``show_search_field=None`` on the ``actor`` row turns config 20
+red (``actor=6`` where Kometa says ``show.actor=6``), which is exactly the
+silent-wrong-set failure the config exists to catch.
 """
 from pathlib import Path
 
@@ -134,6 +151,8 @@ CHOICES = {
     ("label", "Overlay"): ("3",),
     ("collection", "The Fast and the Furious Collection"): ("77",),
     ("country", "France"): ("36",),
+    ("actor", "Uma Thurman"): ("6",),
+    ("director", "Sofia Coppola"): ("58",),
 }
 
 
@@ -214,6 +233,10 @@ CONFIGS = [
         "trash": True,
         "unmatched": False,
     }}),
+    ("20-actor-on-a-show", "show", {"all": {"actor": "Uma Thurman"}}),
+    ("21-people-on-a-movie", "movie", {"all": {
+        "actor": "Uma Thurman", "director": "Sofia Coppola",
+    }}),
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
@@ -247,6 +270,8 @@ KOMETA = {
     "17-country-on-a-show": "?type=2&sort=titleSort&show.country=36",
     "18-the-tails-on-a-movie": "?type=1&sort=titleSort&title=Dune&and=1&editionTitle%3C=Director&and=1&hdr=1&and=1&dovi!=1&and=1&trash!=1&and=1&duplicate=1&and=1&unmatched!=1",
     "19-the-tails-on-a-show": "?type=2&sort=titleSort&show.title!%3D=Dune&and=1&show.editionTitle%3E=Cut&and=1&episode.hdr=1&and=1&episode.dovi!=1&and=1&episode.trash=1&and=1&show.unmatched!=1",
+    "20-actor-on-a-show": "?type=2&sort=titleSort&show.actor=6",
+    "21-people-on-a-movie": "?type=1&sort=titleSort&actor=6&and=1&director=58",
 }
 
 
