@@ -99,6 +99,25 @@ def art_config_for(config: Config, art_kind: str):
     return getattr(config.artwork, art_kind)
 
 
+def language_order_for(config: Config, library: str, art_kind: str) -> list[str]:
+    """This artifact's language ladder in this library (roadmap row 38).
+
+    ``artwork.library_language_overrides`` wins when it names both the library
+    and the art kind; otherwise the art kind's own ``language_order`` stands.
+    An art kind the override does not name is deliberately left alone rather
+    than inheriting a sibling's order -- that is what lets a library re-point
+    its posters while its title cards keep leading with ``xx``.
+
+    Deliberately not applied to ``artwork.logo_language_order``: the row is
+    about the art ladder, and a second override surface for logos would be a
+    second thing to keep in sync for no requirement.
+    """
+    override = config.artwork.library_language_overrides.get(library, {}).get(art_kind)
+    if override:
+        return override
+    return art_config_for(config, art_kind).language_order
+
+
 def title_text_for(
     art_kind: str, item: ResolvedItem, config: Config
 ) -> tuple[str | None, str | None]:
@@ -531,7 +550,7 @@ async def render_artifact(
         else:
             selection = await select_artwork(
                 providers,
-                settings.language_order,
+                language_order_for(config, item.library, art_kind),
                 art.ArtRequest(
                     art_kind=art_kind,
                     is_movie=item.kind == "movie",
@@ -557,7 +576,7 @@ async def render_artifact(
                 # show's own poster render issues, down to the language order.
                 selection = await select_artwork(
                     providers,
-                    art_config_for(config, "poster").language_order,
+                    language_order_for(config, item.library, "poster"),
                     art.ArtRequest(
                         art_kind=art.POSTER,
                         is_movie=item.kind == "movie",

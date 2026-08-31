@@ -376,6 +376,44 @@ class ArtworkConfig(BaseModel):
             "instead. Off leaves the poster with neither logo nor text."
         ),
     )
+    # Roadmap row 38. A dict of dicts, not a dict of models: the descriptions
+    # walk cannot reach a model buried in a dict, and a field shaped that way
+    # would be served as nothing (test_config_descriptions.py's container
+    # guard).
+    library_language_overrides: dict[str, dict[str, list[str]]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-library language preference orders, keyed by Plex library name "
+            "and then by art kind ('poster', 'season_poster', 'background', "
+            "'title_card'). An art kind not named keeps its own language_order, "
+            "so a library can change its posters while its title cards keep "
+            "leading with 'xx'."
+        ),
+    )
+
+    @field_validator("library_language_overrides")
+    @classmethod
+    def _valid_override_languages(
+        cls, v: dict[str, dict[str, list[str]]]
+    ) -> dict[str, dict[str, list[str]]]:
+        for library, by_kind in v.items():
+            for art_kind, codes in by_kind.items():
+                if art_kind not in ("poster", "season_poster", "background", "title_card"):
+                    raise ValueError(
+                        f"library_language_overrides[{library!r}] names art kind "
+                        f"{art_kind!r}, which is not one of poster, season_poster, "
+                        "background, title_card"
+                    )
+                for code in codes:
+                    if code != "xx" and not _LANG_RE.match(code):
+                        raise ValueError(
+                            f"language code {code!r} in "
+                            f"library_language_overrides[{library!r}][{art_kind!r}] "
+                            "is invalid: use 'xx' for textless or a lowercase "
+                            "two-letter ISO-639-1 code"
+                        )
+        return v
+
     output_quality: str = Field(
         default="92%",
         description="The ImageMagick output quality (-quality) applied to every composite, e.g. '92%'.",

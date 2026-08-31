@@ -858,3 +858,28 @@ async def test_season_art_appearing_later_re_renders_and_clears_the_fallback(
     assert second.detail != "unchanged"
     assert second.source_url == SEASON_URL
     assert second.source_mode == "generate"
+
+
+def test_library_language_overrides_are_per_library_and_per_art_kind():
+    """Row 38. An art kind the override does not name keeps its own order --
+    which is how 'the title card keeps its xx lead' is expressed: name the
+    other kinds and leave title_card out."""
+    from autoposter.config.loader import load_config
+    from autoposter.render.pipeline import language_order_for
+
+    config = load_config(Path("config/autoposter.example.yaml"))
+    plain = language_order_for(config, "Movies", "poster")
+    assert plain == config.artwork.poster.language_order
+
+    overridden = config.model_copy(update={
+        "artwork": config.artwork.model_copy(update={
+            "library_language_overrides": {"Anime": {"poster": ["ja", "en"]}},
+        }),
+    })
+    assert language_order_for(overridden, "Anime", "poster") == ["ja", "en"]
+    assert language_order_for(overridden, "Anime", "title_card") == (
+        overridden.artwork.title_card.language_order
+    )
+    assert language_order_for(overridden, "Movies", "poster") == (
+        overridden.artwork.poster.language_order
+    )

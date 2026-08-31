@@ -290,6 +290,14 @@ artwork:
   use_logo: true
   logo_language_order: [en, fi]
   logo_text_fallback: false
+  # Roadmap row 38 -- per-library language order, keyed by library then art
+  # kind (poster/season_poster/background/title_card). An art kind not named
+  # keeps its own language_order below.
+  # Example:
+  #   library_language_overrides:
+  #     Anime:
+  #       poster: [ja, en]
+  library_language_overrides: {}
   output_quality: 92%
 
   poster:
