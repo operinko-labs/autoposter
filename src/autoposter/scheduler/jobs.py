@@ -317,6 +317,57 @@ def make_credits_job(holder: ConfigHolder, server_factory: Callable[[], object])
     )
 
 
+def make_maintenance_job(holder: ConfigHolder, server_factory: Callable[[], object]) -> Job:
+    """Build the scheduled Plex maintenance pass (roadmap row 36).
+
+    Registered unconditionally under ``scheduler.enabled``, like the credits
+    and cleanup jobs, and reading its three switches off the holder per run --
+    so flipping one is live and needs no ``FROZEN_SECTIONS`` entry (a per-job
+    ``enabled`` flag would need one; see app.py's job-set comment).
+
+    Each operation is a single blocking plexapi call, offloaded like every
+    other Plex call in this module. A failure is reported in the summary
+    rather than raised, and the remaining operations still run: these three
+    are independent, and losing ``optimize`` because ``emptyTrash`` timed out
+    would be a worse outcome than either.
+    """
+
+    async def run(session: AsyncSession) -> str:
+        config = holder.current
+        wanted = [
+            ("clean_bundles", "cleanBundles"),
+            ("empty_trash", "emptyTrash"),
+            ("optimize", "optimize"),
+        ]
+        enabled = [
+            (setting, method) for setting, method in wanted
+            if getattr(config.maintenance, setting)
+        ]
+        if not enabled:
+            return "skipped: no maintenance operation is enabled"
+
+        server = await asyncio.to_thread(server_factory)
+        ran: list[str] = []
+        failed: list[str] = []
+        for setting, method in enabled:
+            try:
+                await asyncio.to_thread(getattr(server.library, method))
+            except Exception as error:
+                logger.warning("maintenance: %s failed", setting, exc_info=True)
+                failed.append(f"{setting} failed: {error}")
+            else:
+                ran.append(setting)
+
+        summary = f"ran {', '.join(ran)}" if ran else "ran nothing"
+        return f"{summary}; {'; '.join(failed)}" if failed else summary
+
+    return Job(
+        name="plex_maintenance",
+        interval_seconds=lambda: holder.current.scheduler.maintenance_days * 24 * 3600,
+        run=run,
+    )
+
+
 def _radarr_settings(cfg: RadarrConfig) -> ArrSyncSettings:
     return ArrSyncSettings(
         plex_root=cfg.plex_path,

@@ -583,6 +583,40 @@ class BadgesConfig(BaseModel):
     )
 
 
+class MaintenanceConfig(BaseModel):
+    """Plex's own housekeeping operations, run on a schedule (roadmap row 36).
+
+    WHETHER lives here; WHEN lives in ``SchedulerConfig.maintenance_days`` --
+    the same split ``CleanupConfig.apply``/``scheduler.cleanup_days`` already
+    uses, and the one ``SchedulerConfig``'s docstring states.
+
+    All three default off. ``empty_trash`` most of all: Plex's own
+    auto-empty-trash is switched off on this deployment, which is what makes a
+    mass item disappearance mean "somebody did that deliberately". A
+    default-on toggle here would quietly take that signal away.
+    """
+
+    clean_bundles: bool = Field(
+        default=False,
+        description=(
+            "Ask Plex to clean its media bundles on a schedule, reclaiming disk "
+            "space from artwork and metadata no library item refers to any more."
+        ),
+    )
+    empty_trash: bool = Field(
+        default=False,
+        description=(
+            "Ask Plex to empty each library's trash on a schedule, permanently "
+            "removing items whose files are gone. Off leaves deleted items "
+            "recoverable in Plex."
+        ),
+    )
+    optimize: bool = Field(
+        default=False,
+        description="Ask Plex to optimize its database on a schedule.",
+    )
+
+
 class ScheduleGate(BaseModel):
     """When a definition is allowed to run, inside the one collections pass.
 
@@ -1677,6 +1711,10 @@ class SchedulerConfig(BaseModel):
             "clock."
         ),
     )
+    maintenance_days: int = Field(
+        default=7,
+        description="How often the Plex maintenance pass runs.",
+    )
     cleanup_days: int = Field(
         default=7,
         description="How often the asset cleanup sweep runs.",
@@ -1948,6 +1986,10 @@ class Config(BaseModel):
     prune: PruneConfig = Field(
         default_factory=PruneConfig,
         description="Retiring media_items rows Plex can no longer resolve.",
+    )
+    maintenance: MaintenanceConfig = Field(
+        default_factory=MaintenanceConfig,
+        description="Plex's own housekeeping operations -- clean bundles, empty trash, optimize.",
     )
     artwork_modes: ArtworkModesConfig = Field(
         default_factory=ArtworkModesConfig,
