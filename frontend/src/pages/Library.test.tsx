@@ -521,4 +521,54 @@ describe("Library", () => {
     expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   });
+
+  it("composes the search with the active filters in one listing URL", async () => {
+    // Roadmap row 109: the listing effect builds ONE URLSearchParams from
+    // library/kind/status/search together. The code is correct today; this
+    // pins it so a dep-list regression in the effect -- a filter or the
+    // debounced search silently dropped from the request -- goes red instead
+    // of unseen.
+    vi.useFakeTimers();
+    try {
+      const fetchMock = stubFetch();
+      render(
+        <MemoryRouter>
+          <Library />
+        </MemoryRouter>,
+      );
+      await act(async () => {});
+
+      fireEvent.change(screen.getByLabelText("Library"), {
+        target: { value: "Movies" },
+      });
+      await act(async () => {});
+      fireEvent.change(screen.getByLabelText("Kind"), {
+        target: { value: "movie" },
+      });
+      await act(async () => {});
+      fireEvent.change(screen.getByLabelText("Status"), {
+        target: { value: "rendered" },
+      });
+      await act(async () => {});
+      fireEvent.change(screen.getByLabelText("Search"), {
+        target: { value: "ghost" },
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+      });
+      await act(async () => {});
+
+      const listings = pathsMatching(fetchMock, (path) =>
+        path.startsWith("/api/items?"),
+      );
+      // The LAST listing carries everything at once, in the effect's own
+      // build order -- limit/offset first, then the three selects, then the
+      // debounced search.
+      expect(listings.at(-1)).toBe(
+        "/api/items?limit=48&offset=0&library=Movies&kind=movie&status=rendered&search=ghost",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
