@@ -422,4 +422,22 @@ describe("the style select", () => {
     // to tell "the preview cannot load" from "the style is broken."
     expect(screen.getByText(/the style still applies/i)).toBeInTheDocument();
   });
+
+  it("shows the unsaved badge above the style block, not below the preview", async () => {
+    // Divider review T4 M5: the badge used to render under the ~640px style
+    // preview, a screen away from the buttons that made the order dirty.
+    await renderPanel();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Move Chart Collections down" }),
+    );
+
+    const badge = screen.getByText(/unsaved/i);
+    const styleBlock = document.querySelector(".groups-style");
+    expect(styleBlock).not.toBeNull();
+    expect(
+      badge.compareDocumentPosition(styleBlock!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
 });

@@ -89,8 +89,8 @@ export function GroupsPanel() {
   // selection: what the running config says, and what is pending here. Both
   // re-seed from the response after a save, exactly as the order does.
   const [styles, setStyles] = useState<string[]>([]);
-  const [savedStyle, setSavedStyle] = useState("orig");
-  const [style, setStyle] = useState("orig");
+  const [savedStyle, setSavedStyle] = useState("");
+  const [style, setStyle] = useState("");
   // Whether the preview grid for the current style failed to load. GitHub is
   // the only third-party fetch this frontend makes, so a firewalled or
   // air-gapped deployment is the ordinary case, not an edge case -- cleared
@@ -304,6 +304,10 @@ export function GroupsPanel() {
       <p className="muted groups-note">{CHURN_NOTE}</p>
       <p className="muted groups-note">{RESET_NOTE}</p>
 
+      {(dirty || styleDirty) && (
+        <span className="groups-unsaved">unsaved — Save to store</span>
+      )}
+
       <div className="groups-style">
         <label htmlFor="separator-style">Divider style</label>
         <select
@@ -361,10 +365,6 @@ export function GroupsPanel() {
           />
         )}
       </div>
-
-      {(dirty || styleDirty) && (
-        <span className="groups-unsaved">unsaved — Save to store</span>
-      )}
 
       <ol className="groups-rows" aria-label="Collection group order">
         {order.map((key, index) => {
