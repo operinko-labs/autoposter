@@ -60,6 +60,7 @@ from autoposter.collections.reconcile import (
     shape_conflict,
     would_proceed,
 )
+from autoposter.collections.posters import LOCAL_ASSET_KIND, apply_local_posters_to_unmanaged
 from autoposter.collections.resolve import build_owned_index, resolve_external
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import EventLog, ManagedCollection
@@ -71,6 +72,11 @@ logger = logging.getLogger(__name__)
 # refusal past the cap belongs to the library, not to any one collection, and
 # a real collection title here would read as that collection being the problem.
 SWEEP_TITLE = "(delete sweep)"
+
+# Row 37's per-action results are library-wide, one call covering every
+# unmanaged collection with a local poster -- not any one definition's -- so
+# they are reported under this placeholder title the same way the sweep's are.
+LOCAL_ASSETS_RESULT_TITLE = "(unmanaged local posters)"
 
 
 @dataclass
@@ -587,6 +593,37 @@ async def run_library(
             actions += result.actions
             results.append(result)
 
+        # Row 37. Gated by ``sweep``, the same as the delete sweep above and
+        # for the same reason: ``sweep`` is the flag that says "this is the
+        # whole-library pass" (``reconcile_libraries`` always passes it),
+        # while narrower callers exercising one definition at a time do not
+        # set it and must not pay for a pass over every OTHER collection in
+        # the library. Placed after the delete sweep's try/except rather than
+        # inside it: this never deletes anything, so a failure in the delete
+        # sweep above must not skip it.
+        #
+        # ``rows`` (the plan's name for this) is ``_sweep``'s own local,
+        # queried fresh inside that function's call -- not something this
+        # scope already has -- so "not managed" is answered here with the
+        # same query rather than reaching into that function's scope.
+        owned_titles = {
+            row.title
+            for row in (
+                await session.execute(
+                    select(ManagedCollection).where(ManagedCollection.library == library)
+                )
+            ).scalars()
+        }
+        for action in await apply_local_posters_to_unmanaged(
+            session, config, http, library,
+            {t: c for t, c in listing().items() if t not in owned_titles},
+            dry_run=dry_run,
+        ):
+            actions.append(action)
+            results.append(DefinitionResult(
+                title=LOCAL_ASSETS_RESULT_TITLE, library=library, actions=[action],
+            ))
+
     return LibraryRun(
         actions=actions, definitions=results, notifications=notifications
     )
@@ -1099,7 +1136,7 @@ async def _sweep(
     for title, collection in listing().items():
         if title in managed or title not in rows:
             continue
-        if rows[title].kind == "operator":
+        if rows[title].kind in ("operator", LOCAL_ASSET_KIND):
             # An operator created this directly (``ops/blank``) -- no
             # definition enumerates its title, so it always lands here, and
             # it must never be swept just because nothing builds it. Reported
@@ -1107,6 +1144,9 @@ async def _sweep(
             # ``delete_unconfigured``: that setting decides what an
             # unattended pass may delete, and this was never such a
             # candidate in the first place.
+            # ...and a LOCAL_ASSET_KIND row is a poster-hash ledger for a
+            # collection this service never owned (row 37) -- deleting it
+            # would delete somebody else's collection over a bookkeeping row.
             results.append(_swept(title, library, (
                 "%r was created by an operator, not any definition; "
                 "the sweep never deletes it" % title

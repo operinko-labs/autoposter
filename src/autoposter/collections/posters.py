@@ -32,6 +32,8 @@ import httpx
 from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from autoposter.collections.groups import SEPARATOR_STYLES
 from autoposter.config.schema import Config
 from autoposter.db.models import ManagedCollection
@@ -492,3 +494,107 @@ async def apply_poster(
     record.poster_sha256 = digest
     await session.flush()
     return "set the poster for %r from %s" % (record.title, source)
+
+
+LOCAL_ASSET_KIND = "local_asset"
+
+
+def _write_and_upload_unowned(collection, data: bytes) -> None:
+    """Write ``data`` to a temporary file and upload it, without locking.
+
+    Deliberately not ``_write_and_upload``: that helper also calls
+    ``collection.lockPoster()``, which is right for a collection this service
+    OWNS (see its docstring) but wrong here -- an unmanaged collection's
+    poster field is not ours to claim, so it is set once and left for Plex's
+    own agent (or the operator) to manage from there.
+    """
+    handle = tempfile.NamedTemporaryFile(delete=False)
+    try:
+        with handle:
+            handle.write(data)
+        collection.uploadPoster(filepath=handle.name)
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            logger.warning("could not remove temporary poster file %s", handle.name)
+
+
+async def apply_local_posters_to_unmanaged(
+    session: AsyncSession,
+    config: Config,
+    http,
+    library: str,
+    listing: dict,
+    dry_run: bool = True,
+) -> list[str]:
+    """Give collections this service does NOT manage their local poster.
+
+    Roadmap row 37 (Kometa's ``assets_for_all_collections``). ``listing`` is
+    the library's collections keyed by title, already filtered to the ones
+    this service does not own -- the caller holds that listing and the
+    ownership decision, and this function makes neither.
+
+    ``http`` is accepted and unused: this path never downloads anything. A
+    local file is the only source, by definition of the row -- there is no
+    hosted default for a collection nobody here defines. It is in the
+    signature so the call site reads like every other poster call and so a
+    later hosted-fallback change needs no signature churn.
+
+    The hash ledger is a ``ManagedCollection`` row with
+    ``kind=LOCAL_ASSET_KIND``. That is a LEDGER, not an ownership claim: the
+    ownership label is never applied, and ``engine._sweep`` skips this kind
+    the same way it already skips ``"operator"``. Reusing the row means no
+    migration and no second definition of "what poster did we last set".
+
+    Read with ``getattr(..., False)``, the same defensive read
+    ``groups.py``'s ``separators``/``group_order`` use: several existing
+    engine tests build ``config.collections`` as a hand-rolled
+    ``SimpleNamespace`` that predates this row and carries only the fields
+    its own test needs, and this function is reached from ``run_library``'s
+    sweep-gated pass on every one of them.
+    """
+    if not getattr(config.collections, "assets_for_all_collections", False):
+        return []
+
+    results: list[str] = []
+    for title, collection in sorted(listing.items()):
+        try:
+            local = local_poster_path(config, library, title)
+        except PosterPathRefused as exc:
+            results.append(f"refused {title!r}: {exc}")
+            continue
+        if local is None:
+            continue
+
+        data = await asyncio.to_thread(local.read_bytes)
+        if not _is_image(data):
+            results.append(f"skipped {title!r}: the local file is not a readable image")
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+
+        row = (
+            await session.execute(
+                select(ManagedCollection).where(
+                    ManagedCollection.library == library,
+                    ManagedCollection.title == title,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is not None and row.poster_sha256 == digest:
+            continue
+        if dry_run:
+            results.append(f"would apply a local poster to {title!r}")
+            continue
+
+        await asyncio.to_thread(_write_and_upload_unowned, collection, data)
+        if row is None:
+            row = ManagedCollection(
+                library=library, title=title, kind=LOCAL_ASSET_KIND,
+                definition_hash="",
+            )
+            session.add(row)
+        row.poster_sha256 = digest
+        await session.flush()
+        results.append(f"poster applied to {title!r} from a local asset")
+    return results

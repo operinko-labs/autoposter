@@ -1161,6 +1161,18 @@ class CollectionsConfig(BaseModel):
         default=True,
         description="Build blank divider collections, one per group of collections this service manages.",
     )
+    # Roadmap row 37. Off by default: a library's collections tab is full of
+    # collections this service did not create, and reaching into them is an
+    # opt-in, not a default.
+    assets_for_all_collections: bool = Field(
+        default=False,
+        description=(
+            "Apply an operator's local poster to collections this service does "
+            "not manage, when one is filed under assets_root beside the "
+            "collection's title. The ownership label is never applied and such "
+            "a collection is never deleted."
+        ),
+    )
     # Reorder the collection groups in the tab. None is the canonical order
     # (collections/groups.py: charts, awards, content ratings, content,
     # franchises, location, media, people, production, time, and the operator's

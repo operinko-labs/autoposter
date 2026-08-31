@@ -32,6 +32,13 @@ operations:
   imdb_refresh_hours: 6 # how often to poll the IMDb ratings dataset in the background
   imdb_refresh_enabled: true # disable to only refresh via `python -m autoposter.facts.imdb`
   imdb_miss_refresh_minutes: 60 # rate limit for the miss-triggered refresh; 0 disables it
+  # Roadmap row 35 -- items whose metadata is never written to Plex. Facts are
+  # still gathered and stored, so badges keep working.
+  ignore_ids: []
+  ignore_imdb_ids: []
+  # The per-item opt-out label. Empty by default; add "skip_autoposter" (or a
+  # label of your own) to use it.
+  ignore_labels: []
   tmdb_backoff_seconds: 60 # how long TMDb is left alone after a 429 with no Retry-After; 0 disables the shared window
 
 badges:
@@ -51,6 +58,7 @@ collections:
   charts: true # IMDb Popular / Top 250 / Lowest Rated
   awards: true # Oscars winner collections
   separators: true # a blank section-divider collection per collection group
+  assets_for_all_collections: false # apply a local poster (assets_root/<library>/<title>/poster.*) to collections we do not manage; ownership label never applied
   # group_order: [awards, charts] # reorder the blocks; the rest follow
   # separator_style: orig # divider colour; one of upstream's 22 sep_style names. Changing it re-posters every divider once
   posters: true # give managed collections a poster
@@ -188,6 +196,14 @@ prune:
   max_prunes: 500 # refuse the pass if more than this many rows look unresolvable
   max_prune_share: 0.25 # ...or more than this share of the library; "almost everything is gone" means the server changed, not the library
 
+# Roadmap row 36 -- Plex's own housekeeping, run on scheduler.maintenance_days.
+# All three off: empty_trash especially, because Plex's auto-empty-trash is off
+# on this deployment and a disappearance therefore means somebody meant it.
+maintenance:
+  clean_bundles: false
+  empty_trash: false
+  optimize: false
+
 artwork_modes:
   # Operator-triggered bulk operations: backup, restore, poster reset,
   # remove-overlays revert, logo updater/revert. Every Plex-writing mode is dry
@@ -215,6 +231,7 @@ scheduler:
   drift_max_age_days: 7 # re-check an item whose facts are older than this
   drift_batch_size: 500 # items enqueued per sweep; the safety valve against enqueuing everything at once
   credits_scan_days: 7 # library credits scan cadence; whole-library per run, no batch valve
+  maintenance_days: 7 # Plex maintenance pass cadence
   cleanup_days: 7 # orphaned asset cleanup cadence
   prune_days: 7 # media_items prune cadence
   # cleanup_apply is not a setting here -- see cleanup.apply above, which
