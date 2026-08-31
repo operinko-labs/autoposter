@@ -52,7 +52,12 @@ differs from the nine in-scope bare continuations tracked correctly.
 The antecedent resets at every blank line.
 
 The census is the drift alarm the human rounds lacked: a new citation, a
-deleted one, or a shape these regexes stop parsing all move the count. It is
+deleted one, or a shape these regexes stop parsing all move the count --
+provided the shape is one they parse at all. A citation ADDED in a shape they
+never matched (prose, ``kometa_build_filter.py line 9999``; or a bare
+continuation separated from its antecedent by a blank line) leaves the count
+where it was, so the exact-count assertion guards the refs that exist, not the
+writing of unparseable new ones. It is
 a bulk-drift alarm catching insertions/deletions that shift many lines, not a
 per-line proof; a single ±1 mis-point can land on an adjacent line in the
 translation tables that still contains the anchor (21 of 26 single-line
