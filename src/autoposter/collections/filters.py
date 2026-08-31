@@ -628,8 +628,12 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "year", "int", _BOTH, "listing",
         "The listing attrib `year`. Kometa's special year words (`current_year` "
-        "and its offsets) are NOT tier 1, so `year: current_year` refuses at "
-        "load naming the field rather than parsing as something else. "
+        "and `current_year-N`) are supported (roadmap row 171): a "
+        "`_CurrentYear` sentinel, parsed at load and resolved against the "
+        "run's own moment at match time -- the same deferred-resolution "
+        "pattern `_Today` already has for dates. Subtraction, per Kometa's own "
+        "transcription (tests/oracle/9b/kometa_build_filter.py:768-788): "
+        "`current_year-5` means five years ago. "
         "Bare/`.not` missing-value routing follows Kometa's tag branch -- see "
         "_matches and roadmap row 159.",
         search_field="year", show_search_field="show.year",
@@ -1454,6 +1458,51 @@ _TODAY = _Today()
 
 
 @dataclass(frozen=True)
+class _CurrentYear:
+    """Kometa's ``current_year``/``current_year-N``, resolved against the
+    run's MOMENT rather than the parse's -- the same deferred-resolution
+    shape ``_Today`` already has for dates. Kometa's own transcription
+    (``tests/oracle/9b/kometa_build_filter.py:768-788``, vendored for the 9b
+    oracle rather than cited from Kometa's source tree, which is not in this
+    repo) computes ``datetime.now().year - int(offset)`` -- subtraction, so
+    ``current_year-5`` means five years ago, never five years from now.
+    """
+
+    offset: int = 0
+
+
+_CURRENT_YEAR = re.compile(r"^current_year(?:-(\d+))?$")
+
+
+def _as_current_year(value: object, field: str) -> "_CurrentYear | None":
+    """``current_year`` or ``current_year-N``, or None for any value that is
+    not this spelling -- the caller falls through to ``_as_int`` for an
+    ordinary year number.
+
+    Case-insensitive, like ``today`` (``_as_date``, above) -- a deliberate
+    divergence from Kometa's own case-sensitive ``str(value).
+    startswith("current_year")``, in the direction this module already chose
+    for its one other sentinel word.
+
+    No whitespace tolerance around the dash (``current_year - 5`` refuses,
+    where Kometa's own parser would accept it via a ``.strip()`` on the
+    split-off suffix) -- a deliberate narrowing: this module normalises the
+    whole written string once, as every other string-form value here does,
+    and no other grammar in this file tolerates internal whitespace either.
+    A refusal here falls through to ``_as_int``'s "not a whole number"
+    message, which is accurate: what is left is not a plain int and not this
+    sentinel's spelling either.
+    """
+    if not isinstance(value, str):
+        return None
+    match = _CURRENT_YEAR.match(value.strip().lower())
+    if not match:
+        return None
+    suffix = match.group(1)
+    return _CurrentYear(offset=int(suffix) if suffix else 0)
+
+
+@dataclass(frozen=True)
 class RelativeWindow:
     """A bare or ``.not`` date in a **search**: "in the last N <unit>".
 
@@ -1617,6 +1666,10 @@ def _parse_value(
     if attribute.type in ("tag", "str"):
         return _as_text(value, field)
     if attribute.type == "int":
+        if attribute.name == "year":
+            current = _as_current_year(value, field)
+            if current is not None:
+                return current
         return _as_int(value, field)
     if attribute.type == "float":
         return _as_float(value, field)
@@ -2102,15 +2155,16 @@ def _matches_one(
         return when > moment
 
     number = _as_number(have, attribute.name)
+    target = now.year - want.offset if isinstance(want, _CurrentYear) else want
     if operator == "eq":
-        return number == want
+        return number == target
     if operator == "gt":
-        return number > want
+        return number > target
     if operator == "gte":
-        return number >= want
+        return number >= target
     if operator == "lt":
-        return number < want
-    return number <= want
+        return number < target
+    return number <= target
 
 
 def _matches(predicate: FilterPredicate, view: ItemView, now: dt.datetime) -> bool:

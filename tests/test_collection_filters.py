@@ -1394,6 +1394,79 @@ def test_a_run_date_is_accepted_and_read_as_that_days_midnight():
     assert evaluate(group, _view("added", dt.datetime(2026, 8, 25, 0, 1)), now=TODAY) is False
 
 
+# --- the current_year value grammar (roadmap row 171) -----------------------
+
+
+def test_current_year_bare_resolves_to_the_runs_year():
+    group = parse_filters({"year": "current_year"})
+    assert evaluate(group, _view("year", 2026), now=NOW) is True
+    assert evaluate(group, _view("year", 2025), now=NOW) is False
+
+
+def test_current_year_with_an_offset_subtracts():
+    """Kometa's own transcription (tests/oracle/9b/kometa_build_filter.py:
+    768-788): ``datetime.now().year - int(year_values[1])`` -- subtraction,
+    confirmed against the vendored oracle rather than an external citation."""
+    group = parse_filters({"year": "current_year-5"})
+    assert evaluate(group, _view("year", 2021), now=NOW) is True
+    assert evaluate(group, _view("year", 2026), now=NOW) is False
+
+
+def test_current_year_resolves_against_the_run_moment_not_the_parse_moment():
+    """The whole point of the sentinel, mirroring ``_Today``: the same parsed
+    group answers differently against a different run moment."""
+    group = parse_filters({"year": "current_year"})
+    assert evaluate(group, _view("year", 2026), now=NOW) is True
+    later = dt.datetime(2027, 1, 1)
+    assert evaluate(group, _view("year", 2026), now=later) is False
+    assert evaluate(group, _view("year", 2027), now=later) is True
+
+
+def test_current_year_is_case_insensitive_like_today_is():
+    """Consistency with the ONE other sentinel word this module already has
+    (``_as_date``'s ``.casefold() == "today"``, filters.py:1550) -- a
+    deliberate divergence from Kometa's own literal ``str(value).
+    startswith("current_year")`` (case-sensitive), in the direction this
+    module already chose for ``today``."""
+    group = parse_filters({"year": "Current_Year"})
+    assert evaluate(group, _view("year", 2026), now=NOW) is True
+
+
+def test_current_year_gt_and_lt_use_the_resolved_year():
+    group = parse_filters({"year.gt": "current_year-3"})
+    assert evaluate(group, _view("year", 2024), now=NOW) is True  # 2024 > 2023
+    assert evaluate(group, _view("year", 2023), now=NOW) is False
+
+
+def test_current_year_refuses_a_non_digit_suffix():
+    with pytest.raises(ValueError, match="whole number"):
+        parse_filters({"year": "current_year-abc"})
+
+
+def test_current_year_refuses_whitespace_around_the_dash():
+    """A tighter grammar than Kometa's own tolerant one (which strips
+    whitespace inside ``year_values[1]``) -- an explicit narrowing, not an
+    oversight: this module's ``.strip().lower()`` normalises the OUTER
+    string, as every other string-form value in this module does, and does
+    not special-case internal whitespace the way no other grammar here does
+    either."""
+    with pytest.raises(ValueError, match="whole number"):
+        parse_filters({"year": "current_year - 5"})
+
+
+def test_current_year_zero_offset_is_the_same_as_bare():
+    group_bare = parse_filters({"year": "current_year"})
+    group_zero = parse_filters({"year": "current_year-0"})
+    assert evaluate(group_bare, _view("year", 2026), now=NOW) is True
+    assert evaluate(group_zero, _view("year", 2026), now=NOW) is True
+
+
+def test_plain_year_numbers_still_parse_as_before():
+    group = parse_filters({"year": 1990})
+    assert evaluate(group, _view("year", 1990), now=NOW) is True
+    assert evaluate(group, _view("year", 1991), now=NOW) is False
+
+
 # --- the language base-code fold (roadmap row 204) ---------------------------
 
 
