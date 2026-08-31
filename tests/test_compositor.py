@@ -89,9 +89,9 @@ def test_text_offset_is_concatenated_after_plus_zero(config):
 
 
 def test_negative_text_offset_is_preserved(config):
-    style = config.artwork.title_card.text  # text_offset is "-150"
+    style = config.artwork.title_card.text  # text_offset is "-400"
     argv = build_text_argv("magick", "/tmp/x.jpg", style, "/f.ttf", 100, "EP", "92%")
-    assert argv[argv.index("-geometry") + 1] == "+0-150"
+    assert argv[argv.index("-geometry") + 1] == "+0-400"
 
 
 def test_stroke_draws_two_captions_when_enabled(config):

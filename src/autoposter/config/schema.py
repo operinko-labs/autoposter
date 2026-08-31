@@ -198,7 +198,10 @@ class TextStyle(BaseModel):
     text_offset: str = Field(
         description=(
             "The text block's vertical offset from gravity, an ImageMagick "
-            "geometry value carrying an explicit sign, e.g. '+300' or '-50'."
+            "geometry value carrying an explicit sign, e.g. '+300' or '-50'. "
+            "A negative value deliberately pushes the text block off-canvas "
+            "to hide it entirely, which is how the title card's default "
+            "hides its title line."
         ),
     )
     gravity: str = Field(

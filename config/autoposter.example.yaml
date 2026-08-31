@@ -354,7 +354,12 @@ artwork:
       max_point_size: 140
       max_width: 2500
       max_height: 300
-      text_offset: "-150"
+      # Deliberate hide idiom: a negative south-gravity offset pushes this
+      # text block fully off-canvas so title cards show only the
+      # season/episode line below. The captured Posterizarr log used -150,
+      # which left tall glyphs peeking into frame at all three title
+      # lengths tested; -400 clears the 300px caption box entirely.
+      text_offset: "-400"
       gravity: south
       add_text: true
       add_stroke: false

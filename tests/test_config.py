@@ -39,7 +39,7 @@ def test_background_text_is_disabled():
 
 def test_title_card_has_two_text_blocks():
     tc = load_config(EXAMPLE).artwork.title_card
-    assert tc.text.text_offset == "-150"
+    assert tc.text.text_offset == "-400"
     assert tc.episode_text.text_offset == "+100"
     assert tc.season_label == "Season"
     assert tc.episode_label == "Episode"

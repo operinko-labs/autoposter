@@ -13,8 +13,8 @@ with a readable diff rather than an opaque pixel difference.
 
 Two production quirks are deliberately reproduced or deliberately not:
 
-- The offset carries its own sign and is concatenated after ``+0``, so
-  ``text_offset: "-150"`` becomes ``-geometry +0-150``. Both signs appear in
+- The offset carries its own sign and is concatenated after ``+0``, so a
+  negative ``text_offset`` becomes ``-geometry +0-<n>``. Both signs appear in
   the real logs.
 - Posterizarr's *logo* branch emits a malformed doubled sign (``+0++300``)
   caused by a string-concatenation bug, while its *text* branches emit the
@@ -22,6 +22,14 @@ Two production quirks are deliberately reproduced or deliberately not:
   to be safe: compositing the same image with ``+0+50`` and ``+0++50`` under
   ImageMagick 7 produces a pixel difference of ``AE 0``, so ImageMagick ignores
   the extra sign and the output is identical.
+
+One value is a deliberate divergence rather than a reproduction: the captured
+log's title-card ``text_offset`` was ``-150``. That value pursued the same
+hide-off-canvas idiom the example config still uses (see
+``config/autoposter.example.yaml``), but was never pixel-verified and leaves
+tall glyphs visible at some title lengths. The example config now defaults to
+``-400``, so ``test_episode_title_text_matches_production`` below pins that
+value instead of the log's ``-150``.
 """
 
 from pathlib import Path
@@ -101,6 +109,7 @@ def test_point_size_probe_matches_production(config):
 
 
 def test_episode_title_text_matches_production(config):
+    """Pins ``-400``, not the captured log's ``-150`` — see the module docstring."""
     style = config.artwork.title_card.text
     assert compositor.build_text_argv(
         config.magick_binary, TC_IMAGE, style, FONT, 140, "IN PLAIN SIGHT",
@@ -112,7 +121,7 @@ def test_episode_title_text_matches_production(config):
         "-size", "2500x300", "-background", "none",
         "-interline-spacing", "0", "-gravity", "south",
         "caption:IN PLAIN SIGHT", "-trim", "+repage", "-extent", "2500x300", ")",
-        "-gravity", "south", "-geometry", "+0-150",
+        "-gravity", "south", "-geometry", "+0-400",
         "-quality", "92%", "-composite", TC_IMAGE,
     ]
 
