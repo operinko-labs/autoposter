@@ -57,6 +57,7 @@ from autoposter.collections.reconcile import (
     load_labels,
     protected_label,
     reconcile_separator,
+    shape_conflict,
     would_proceed,
 )
 from autoposter.collections.resolve import build_owned_index, resolve_external
@@ -661,7 +662,16 @@ async def _run_one(
             # ``collection.reload()`` GET per previewed title that exists in
             # Plex -- the per-title price the real pass already pays in
             # ``lists.py``.
-            if would_proceed(
+            # Row 215 completed the rule with its SHAPE half: ``shape_conflict``
+            # first, mirroring ``lists.py``'s own ordering (shape before
+            # ownership), because the owned smart-collection-under-a-list-
+            # definition case passes the ownership gate and is refused only at
+            # the shape gate -- so it previewed counts for a write the pass
+            # refuses. No message here either, for the identical reason: the
+            # reconcile step reports the conflict once.
+            if shape_conflict(
+                collection, definition.title, want_smart=False
+            ) is None and would_proceed(
                 collection, label,
                 config.collections.adopt, config.collections.adopt_from,
                 config.collections.protect_labels,

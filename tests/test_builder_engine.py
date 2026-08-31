@@ -1388,6 +1388,51 @@ async def test_the_preview_counts_respect_ownership_resolution(
     )
 
 
+async def test_the_preview_counts_respect_the_shape_rule(
+    session, registry_entry
+):
+    """Roadmap row 215, completing row 142(b)'s principle: the preview must
+    not report counts for a write the pass will refuse. The ownership half
+    already holds (the test above); this is the SHAPE half, and the case that
+    slips through is precisely the OWNED one -- a smart collection carrying
+    our own label under a list definition passes ``would_proceed`` (it is
+    ours), previews real adding/removing counts, and then
+    ``reconcile_list_collection`` refuses it at the shape gate, because
+    ``addItems`` on a smart collection is answered by Plex with nothing
+    useful and a success report. Counts must be zero; the conflict is
+    reported exactly once, by the reconcile step's own message, not doubled
+    by the preview block."""
+    registry_entry(_Listing(
+        "test_preview_shape", [("imdb", "tt1"), ("imdb", "tt2")]
+    ))
+    # OUR label: the ownership gate says yes -- the owned case is the one
+    # nothing covered before this test.
+    ours = FakeCollection(
+        "Reshaped", [FakeItem("m9", ["imdb://tt9"])], labels=[LABEL],
+    )
+    ours.smart = True  # ``shape_conflict`` reads this; a real one carries it.
+    section = FakeSection(
+        [("m1", ["imdb://tt1"]), ("m2", ["imdb://tt2"])], existing=[ours],
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(title="Reshaped", builder="test_preview_shape")],
+        _config(), dry_run=True, preview=True,
+    )
+
+    [result] = run.definitions
+    assert (result.adding, result.removing) == (0, 0), (
+        "a shape-blocked collection must not preview a write the pass "
+        "will refuse"
+    )
+    conflicts = [a for a in result.actions if "shape conflict" in a]
+    assert len(conflicts) == 1, (
+        "the shape conflict is reported exactly once -- by the reconcile "
+        "step, not doubled by the preview block: %r" % result.actions
+    )
+
+
 async def test_the_preview_counts_an_adoption_the_pass_will_carry_out(
     session, registry_entry
 ):
