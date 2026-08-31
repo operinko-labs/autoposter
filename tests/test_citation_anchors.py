@@ -76,12 +76,17 @@ SURFACES = (
     ROOT / "tests" / "test_collection_filters.py",
     ROOT / "tests" / "test_builder_plex_search.py",
 )
-# 19 filename-anchored + 9 bare continuations. The whole inventory is 36
+# 21 filename-anchored + 9 bare continuations. The whole inventory is 38
 # counting the roadmap's 8, which sit outside this guard's scope (see the
 # module docstring). The two added past 17/26/34 are Task 2's (roadmap row
 # 171): the ``year`` row's note and the ``_CurrentYear`` class docstring
-# each cite ``tests/oracle/9b/kometa_build_filter.py:768-788`` by name.
-EXPECTED_REF_COUNT = 28
+# each cite ``tests/oracle/9b/kometa_build_filter.py:768-788`` by name. The
+# two added past 28 are the branch-review fix for C2 (``_Today`` rendering a
+# bare date, not a timestamp): ``test_collection_filters.py`` and
+# ``test_builder_plex_search.py`` each cite
+# ``tests/oracle/9b/kometa_build_filter.py:800`` (the driver's own
+# ``return_as="%Y-%m-%d"`` truncation) by name.
+EXPECTED_REF_COUNT = 30
 
 _FILE_REF = re.compile(r"\b([\w./-]+\.(?:py|md|ts|tsx|yml|yaml)):(\d+)(?:-(\d+))?")
 _BARE_REF = re.compile(r"(?<![\w:]):(\d+)(?:-(\d+))?")

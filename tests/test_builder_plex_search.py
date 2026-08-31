@@ -296,22 +296,24 @@ async def test_current_year_with_an_offset_resolves_too():
 async def test_today_in_a_plex_search_date_predicate_resolves_to_the_real_moment():
     """``_Today`` shares ``_CurrentYear``'s exact gap shape -- an unresolved
     sentinel with no ``search_url.py`` branch of its own -- and the same fix
-    (``filters.resolve_search_values``) closes it too. Bracketed rather than
-    an exact string: the resolved value is ``datetime.now().isoformat()`` at
-    build time, and there is no clock to freeze here without adding a new
-    test dependency this fix does not otherwise need."""
-    before = dt.datetime.now()
+    (``filters.resolve_search_values``) closes it too. The resolved value is
+    a bare ``YYYY-MM-DD`` -- the same shape every other date on this path
+    renders (``_as_date`` returns a ``dt.date``), and the shape Kometa's own
+    driver renders too -- its ``.before``/``.after`` branch is
+    ``return_as="%Y-%m-%d"`` (``tests/oracle/9b/kometa_build_filter.py:800``)
+    -- not a full ISO timestamp. Tolerant of ``today``/``yesterday`` rather
+    than a frozen clock, to survive a midnight boundary during the run."""
+    today = dt.date.today()
     section = FakeSection()
     ctx = context(section, config={"all": {"release.after": "today"}})
     await PlexSearchBuilder().build(ctx)
-    after = dt.datetime.now()
 
     (call,) = section.fetch_calls
     prefix = "/library/sections/1/all?type=1&sort=titleSort&originallyAvailableAt%3E%3E="
     assert call.startswith(prefix)
     assert "_Today" not in call
-    resolved = dt.datetime.fromisoformat(call[len(prefix):])
-    assert before <= resolved <= after
+    resolved = call[len(prefix):]
+    assert resolved in {today.isoformat(), (today - dt.timedelta(days=1)).isoformat()}
 
 
 async def test_a_tag_value_is_looked_up_once_per_pass_and_cached():

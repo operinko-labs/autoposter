@@ -14,6 +14,7 @@ has one base", "the plex_search vocabulary is ..."). That is deliberate -- the
 vocabulary IS that one -- and the module docstring of
 ``src/autoposter/collections/builders/smart_filter.py`` says so.
 """
+import datetime as dt
 from types import SimpleNamespace
 
 import pytest
@@ -215,6 +216,46 @@ def test_the_tag_vocabulary_is_read_once_per_pass(session):
         )
     )
     assert section.choice_calls == [("genre", "movie")]
+
+
+# --- the sentinel resolve (C1, roadmap row 171 amendment) -------------------
+
+
+def test_current_year_in_a_smart_filter_resolves_to_the_real_year(session):
+    """The exact gap ``e869a1a`` closed for ``plex_search`` and left open here:
+    ``smart_filter.search_url`` calls ``build_search_url`` with the raw
+    ``params.group``, no ``resolve_search_values`` in between. Before this fix
+    an unresolved ``_CurrentYear`` reached ``search_url``'s plain ``str(value)``
+    fallback and rendered its own ``repr()`` -- and because this URI is not a
+    transient query but the string Plex STORES as the smart collection's
+    filter, that wrong value would be written into the operator's library and
+    keep mis-selecting until noticed."""
+    url = SmartFilterBuilder().search_url(
+        _ctx(session, FakeSection(), _definition(
+            params={"all": {"genre": "Horror", "year": "current_year"}}
+        ))
+    )
+    year = dt.datetime.now().year
+    assert f"year={year}" in url
+    assert "_CurrentYear" not in url
+
+
+def test_today_in_a_smart_filter_resolves_to_a_bare_date(session):
+    """The same gap's other shape: an unresolved ``_Today`` has no
+    ``search_url.py`` branch of its own and previously raised
+    ``AttributeError`` (``_Today`` has no ``isoformat``) rather than silently
+    persisting a wrong value -- still a bug, since a smart_filter definition
+    that used ``today`` in a date predicate could never build at all."""
+    today = dt.date.today()
+    url = SmartFilterBuilder().search_url(
+        _ctx(session, FakeSection(), _definition(
+            params={"all": {"genre": "Horror", "release.after": "today"}}
+        ))
+    )
+    assert (
+        f"originallyAvailableAt%3E%3E={today.isoformat()}" in url
+        or f"originallyAvailableAt%3E%3E={(today - dt.timedelta(days=1)).isoformat()}" in url
+    )
 
 
 # --- the load-time refusals (C7, and roadmap row 140) -----------------------

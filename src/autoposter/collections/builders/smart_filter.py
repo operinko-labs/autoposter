@@ -36,6 +36,7 @@ configuration meeting this library, not a write failing, and each must cost this
 one definition its pass and nothing else. What is not caught -- a failing label
 write, a failing summary PUT -- still reaches the rollback, unchanged.
 """
+import datetime as dt
 import logging
 
 from autoposter.collections.builders.base import (
@@ -48,6 +49,7 @@ from autoposter.collections.builders.plex_search import (
     PlexSearchParams,
     PlexSearchUnavailable,
 )
+from autoposter.collections.filters import resolve_search_values
 from autoposter.collections.search_sorts import SortNotAvailable
 from autoposter.collections.search_url import (
     SearchAttributeNotAvailable,
@@ -154,8 +156,15 @@ class SmartFilterBuilder:
             "the 'smart_filter' builder", ctx.library_type, ("Movie", "Show")
         )
         libtype = ctx.library_type.lower()
+        # ``resolve_search_values`` first, against ONE moment for this build --
+        # the same fix ``PlexSearchBuilder.build`` applies, and needed here for
+        # a stronger reason than there: this URI is not a transient query, it
+        # is the string Plex STORES as the smart collection's own filter, so
+        # an unresolved ``_CurrentYear``/``_Today`` sentinel would not just
+        # answer one pass wrong -- it would be written into the operator's
+        # library and keep mis-selecting until someone noticed.
         return build_search_url(
-            params.group,
+            resolve_search_values(params.group, now=dt.datetime.now()),
             libtype=libtype,
             sort_by=params.sort_by or (DEFAULT_SORT,),
             limit=params.limit,

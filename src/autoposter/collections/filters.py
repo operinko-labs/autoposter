@@ -1527,7 +1527,7 @@ def _resolve_search_value(value: object, now: dt.datetime) -> object:
     if isinstance(value, _CurrentYear):
         return now.year - value.offset
     if isinstance(value, _Today):
-        return now
+        return now.date()
     return value
 
 

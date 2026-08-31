@@ -1497,10 +1497,18 @@ def test_resolve_search_values_subtracts_the_offset():
     assert resolved.children[0].values == (NOW.year - 5,)
 
 
-def test_resolve_search_values_replaces_today_with_the_moment():
+def test_resolve_search_values_replaces_today_with_the_moments_date():
+    """A bare date, not a timestamp: ``search_url._arguments``' date branch is
+    ``value.isoformat()`` and every OTHER date on this path is a ``dt.date``
+    (``_as_date`` returns one), so a resolved ``_Today`` has to match --
+    Kometa's own driver truncates to the day too, its ``.before``/``.after``
+    branch being ``return_as="%Y-%m-%d"``
+    (``tests/oracle/9b/kometa_build_filter.py:800``). A full ``datetime``
+    here would render ``YYYY-MM-DDTHH:MM:SS.ffffff``, which is a query
+    string Plex does not parse as a date."""
     group = parse_filters({"release.after": "today"}, searching=True)
     resolved = resolve_search_values(group, now=NOW)
-    assert resolved.children[0].values == (NOW,)
+    assert resolved.children[0].values == (NOW.date(),)
 
 
 def test_resolve_search_values_leaves_an_ordinary_value_alone():
