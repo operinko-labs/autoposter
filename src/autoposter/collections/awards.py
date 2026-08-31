@@ -372,7 +372,6 @@ def uncovered_categories(
     """
     if not categories:
         return ()
-    wanted = {c.lower() for c in categories}
     groups = _wanted_groups(award_filter)
     seen: set[str] = set()
     for year_data in _by_year(event).values():
