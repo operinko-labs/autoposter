@@ -259,18 +259,18 @@ async def test_updater_skips_an_item_that_already_has_a_logo(session, config, se
     assert await _marker(session, row.id) is None
 
 
-async def test_updater_logs_one_line_for_a_stale_rating_key(session, config, serving, caplog):
-    """A stale rating_key 404s against Plex as ``plexapi``'s ``NotFound`` -- an
+async def test_updater_logs_a_missing_item_at_info_not_warning(
+    session, config, serving, caplog
+):
+    """A stale rating_key 404s against Plex as plexapi's NotFound -- an
     expected probe failure (the item was deleted/moved in Plex), not a crash
-    worth a traceback. ``NotFound``'s message embeds the server URL, so the
-    log line must never carry ``str(exc)`` -- only the item and the
-    exception's class name, project-wide convention (see e.g.
-    ``api/manual.py``'s ``type(exc).__name__`` logging).
+    worth a traceback. Row 218's upgrade: logo.py already special-cased
+    NotFound here, but at WARNING and with no tally -- this brings it onto
+    backup.py's PR #112 hotfix shape (INFO, tallied, id-only, no traceback),
+    the same shape the other four sites in this row now share.
 
-    Also the counting proof: a probe failure must cost the item its line in
-    ``items_missing_logo``, exactly like a download failure does elsewhere in
-    this mode -- not abort the run.
-    """
+    NotFound's message embeds the server URL, so the log line must never
+    carry str(exc) -- only the rating key."""
 
     class GoneClient(FakePlexClient):
         async def fetch_item(self, rating_key):
@@ -282,20 +282,26 @@ async def test_updater_logs_one_line_for_a_stale_rating_key(session, config, ser
     await _add_item(session, rating_key="rk-gone")
     plex = GoneClient({})
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         result = await LogoMode(
             config, plex, serving(), _headers(), [FakeProvider()], apply=True
         ).run(session)
 
-    assert (result.items, result.items_missing_logo) == (1, 0)
-    assert len(caplog.records) == 1
-    record = caplog.records[0]
-    assert record.exc_info is None
-    assert record.exc_text is None
-    message = record.getMessage()
-    assert "plex.local" not in message  # never the URL-bearing str(exc)
-    assert "NotFound" in message
-    assert "rk-gone" in message
+    assert (result.items, result.items_missing_logo, result.missing) == (1, 0, 1)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == []
+    assert not any(r.exc_info for r in caplog.records)
+
+    logo_records = [r for r in caplog.records if r.name == "autoposter.artwork_modes.logo"]
+    per_item = [r.message for r in logo_records if "rk-gone" in r.message]
+    assert len(per_item) == 1
+    assert per_item[0].startswith("logo: ") and "no longer in Plex" in per_item[0]
+    assert "plex.local" not in per_item[0]  # never the URL-bearing str(exc)
+
+    summary = [r.message for r in logo_records if r.message not in per_item]
+    assert len(summary) == 1
+    assert summary[0].startswith("logo: ") and "1" in summary[0]
 
 
 async def test_updater_dry_run_uploads_nothing(session, config, serving):
@@ -554,7 +560,7 @@ async def test_updater_refuses_an_empty_table(session, config, serving):
     assert result.refused is not None and "media_items" in result.refused
     assert result.as_response() == {
         "mode": "logo", "status": "refused", "reason": result.refused,
-        "dry_run": False, "items": 0, "items_missing_logo": 0,
+        "dry_run": False, "items": 0, "items_missing_logo": 0, "missing": 0,
     }
 
 
@@ -730,7 +736,7 @@ async def test_revert_refuses_an_empty_table(session, config, serving):
     assert result.refused is not None and "media_items" in result.refused
     assert result.as_response() == {
         "mode": "logo_revert", "status": "refused", "reason": result.refused,
-        "dry_run": False, "items": 0, "items_with_our_logo": 0,
+        "dry_run": False, "items": 0, "items_with_our_logo": 0, "missing": 0,
     }
 
 
@@ -768,4 +774,72 @@ async def test_revert_never_refreshes_the_plex_object(session, config, serving):
     await LogoRevertMode(config, plex, serving(), _headers(), apply=True).run(session)
 
     assert item.deleted == 1  # the write half actually ran
+
+
+async def test_revert_logs_a_missing_item_at_probe_at_info_not_warning(
+    session, config, serving, caplog
+):
+    """A marked item 404s on the LogoRevertMode PROBE fetch -- it never
+    becomes a candidate, so it costs its own INFO line and a tally, not a
+    WARNING. Row 218."""
+    await _add_item(session, rating_key="rk-gone", logo_upload_key=OUR_KEY)
+    await _add_item(session, rating_key="rk-ok", logo_upload_key=OUR_KEY, tmdb_id=2)
+    ok = FakeItem(logo="/ok", logos=((OUR_KEY, True),))
+
+    class GoneClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if rating_key == "rk-gone":
+                raise PlexNotFound(f"(404) not_found ({rating_key})")
+            return self._items[rating_key]
+
+    plex = GoneClient({"rk-ok": ok})
+
+    with caplog.at_level(logging.INFO):
+        result = await LogoRevertMode(
+            config, plex, serving(), _headers(), apply=True
+        ).run(session)
+
+    assert (result.items, result.items_with_our_logo, result.missing) == (2, 1, 1)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == []
+    assert not any(r.exc_info for r in caplog.records)
+
+    revert_records = [
+        r for r in caplog.records if r.name == "autoposter.artwork_modes.logo"
+    ]
+    per_item = [r.message for r in revert_records if "rk-gone" in r.message]
+    assert len(per_item) == 1
+    assert per_item[0].startswith("logo revert: ") and "no longer in Plex" in per_item[0]
+
+
+async def test_revert_logs_a_missing_item_at_apply_at_info_not_warning(
+    session, config, serving, caplog
+):
+    """The marked item is still ours at probe time, but is gone from Plex by
+    the time the apply loop re-fetches it to clear -- a second, later 404 the
+    probe cannot see."""
+    await _add_item(session, rating_key="rk1", logo_upload_key=OUR_KEY)
+    item = FakeItem(logo="/ours", logos=((OUR_KEY, True),))
+
+    class SecondFetchGoneClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if self.fetched.count(rating_key) > 1:
+                raise PlexNotFound(f"(404) not_found ({rating_key})")
+            return self._items[rating_key]
+
+    plex = SecondFetchGoneClient({"rk1": item})
+
+    with caplog.at_level(logging.INFO):
+        result = await LogoRevertMode(
+            config, plex, serving(), _headers(), apply=True
+        ).run(session)
+
+    assert (result.items_with_our_logo, result.cleared, result.failed, result.missing) == (1, 0, 0, 1)
+    assert item.unlocked == [] and item.deleted == 0
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == []
     assert item.refreshed is False
