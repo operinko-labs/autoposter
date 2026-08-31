@@ -142,6 +142,64 @@ async def test_a_404_leaves_no_file_returns_none_and_is_not_refetched(
     assert (root / "Nope.miss").is_file()
 
 
+async def test_a_transient_failure_leaves_no_marker_and_is_retried(
+    tmp_path, config_factory
+):
+    """The negative cache may only poison on a PROVEN absence. A 429 (or a
+    timeout/connection error) is unproven -- it could be a rate limit, not a
+    real miss -- so it must leave no `.miss` marker and must be retried on the
+    next pass, unlike the 404 case above."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    calls = []
+
+    async def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(429)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        assert await ensure_default_image(config, http, "genre", "Nope") is None
+        assert await ensure_default_image(config, http, "genre", "Nope") is None
+
+    # Retried both times: no marker short-circuited the second call.
+    assert len(calls) == 2
+    root = tmp_path / ".generated" / "collection-posters" / "genre"
+    assert not root.exists() or not (root / "Nope.miss").is_file()
+
+
+async def test_a_500_leaves_no_marker(tmp_path, config_factory):
+    """Same rule, a different unproven status: a 500 is not proof of absence
+    either."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+
+    async def handler(request):
+        return httpx.Response(500)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        assert await ensure_default_image(config, http, "genre", "Nope") is None
+
+    root = tmp_path / ".generated" / "collection-posters" / "genre"
+    assert not root.exists() or not (root / "Nope.miss").is_file()
+
+
+async def test_the_request_url_carries_the_percent_encoded_form(
+    tmp_path, config_factory
+):
+    """`candidate_urls` percent-encodes the key; this pins that the encoded
+    string reaches the transport un-mangled rather than being re-encoded (or
+    decoded) somewhere on the way to `httpx.AsyncClient.get`."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    seen = []
+
+    async def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await ensure_default_image(config, http, "genre", "Science Fiction")
+
+    assert seen == [candidate_urls("genre", "Science Fiction")[0]]
+
+
 async def test_a_variant_hit_is_cached_under_our_own_key(
     tmp_path, config_factory, jpeg_bytes
 ):

@@ -52,11 +52,16 @@ one is structurally impossible. ``.generated`` is already exempt from the asset
 prune (``scheduler/jobs.py``). The cache stem is OUR key, percent-encoded with
 nothing safe -- so no collection title can add a path segment, and a name
 variant that answered is not re-walked on the next pass. A MISS is cached too,
-as an empty ``.miss`` marker: the display-name families try several candidate
-names, and without the marker a library of 250 unmatched franchises would spend
-a thousand requests per pass proving the same absence. The consequence is
-stated rather than hidden -- newly-added upstream art is picked up on cache
-loss, and deleting the cache directory is the way to re-check.
+but only a PROVEN one: a 404 on every candidate name writes an empty ``.miss``
+marker, because the display-name families try several candidate names and
+without the marker a library of 250 unmatched franchises would spend a
+thousand requests per pass proving the same absence. Anything else -- a 429, a
+5xx, a timeout, a connection error, a 200 that doesn't decode as an image -- is
+an UNPROVEN failure and writes nothing, so the next pass retries it; that
+mirrors the shipped award/chart path, where a failed fetch simply leaves
+``poster_sha256`` NULL for the next pass to pick up. The consequence of a
+proven miss is stated rather than hidden -- newly-added upstream art is picked
+up on cache loss, and deleting the cache directory is the way to re-check.
 
 **Licence, unchanged and not re-litigated here.** ``Default-Images`` carries no
 LICENSE file, deliberately: asked directly, the maintainer said "nearly all the
@@ -74,7 +79,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
-from autoposter.collections.posters import DEFAULT_IMAGES_BASE, fetch_poster
+import httpx
+
+from autoposter.collections.posters import DEFAULT_IMAGES_BASE, _is_image
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +334,36 @@ def _cache_paths(config, family: str, key: str) -> tuple[Path, Path]:
     return folder / (stem + ".jpg"), folder / (stem + ".miss")
 
 
+async def _fetch_candidate(http: httpx.AsyncClient, url: str) -> tuple[bytes | None, bool]:
+    """One candidate URL's fetch, plus whether the miss PROVES an absence.
+
+    A 404 is upstream's proof that no such file exists -- the only failure
+    allowed to write the ``.miss`` marker. Everything else (a 429/403/5xx, a
+    timeout, a connection error, a 200 that doesn't decode as an image) is an
+    UNPROVEN failure: it could be a rate limit or a network blip rather than a
+    real absence, so it must not poison the cache -- the caller retries it on
+    the next pass instead. This is ``posters.fetch_poster``'s validation, split
+    so the 404 case can be told apart from the rest.
+    """
+    try:
+        response = await http.get(url)
+    except httpx.HTTPError:
+        logger.info("could not fetch poster from %s", url)
+        return None, False
+    if response.status_code == 404:
+        return None, True
+    try:
+        response.raise_for_status()
+    except httpx.HTTPError:
+        logger.info("could not fetch poster from %s", url)
+        return None, False
+    data = response.content
+    if not _is_image(data):
+        logger.info("poster at %s did not decode as an image", url)
+        return None, False
+    return data, False
+
+
 async def ensure_default_image(config, http, family: str, key: str) -> Path | None:
     """This collection's cached default poster file, or ``None``.
 
@@ -335,7 +372,9 @@ async def ensure_default_image(config, http, family: str, key: str) -> Path | No
     a real image. Every failure -- an unknown family, no client and no cached
     file, a 404 on every candidate, a body no decoder accepts -- returns
     ``None`` and leaves no partial file, and the caller then reports "no poster
-    source" exactly as it does today.
+    source" exactly as it does today. The ``.miss`` marker is written only if
+    every candidate came back a PROVEN 404; any unproven failure along the way
+    means nothing is written, so the next pass retries.
 
     ``http`` may be ``None``: that refuses the FETCH only, so a family whose
     image is already cached still resolves. Same posture as
@@ -349,17 +388,20 @@ async def ensure_default_image(config, http, family: str, key: str) -> Path | No
         return target
     if marker.is_file() or http is None:
         return None
+    proved_absent = True
     for url in urls:
-        data = await fetch_poster(http, url)
-        if data is None:
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-        return target
+        data, absent = await _fetch_candidate(http, url)
+        if data is not None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            return target
+        if not absent:
+            proved_absent = False
     logger.debug(
         "no Default-Images asset for %s %r (tried %d candidate name(s))",
         family, key, len(urls),
     )
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_bytes(b"")
+    if proved_absent:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_bytes(b"")
     return None
