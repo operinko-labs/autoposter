@@ -180,9 +180,10 @@ class TextStyle(BaseModel):
     )
     min_point_size: int = Field(
         description=(
-            "The smallest point size the text is allowed to shrink to while "
-            "auto-fitting. Text that would need to go smaller is drawn at this "
-            "size and the render is abandoned instead of shipping illegible text."
+            "The floor the auto-fitter will shrink text to. Text that would need "
+            "to go smaller reports truncation instead, and the render is "
+            "abandoned unwritten -- Posterizarr never wrote a file in that case "
+            "either."
         ),
     )
     max_point_size: int = Field(
