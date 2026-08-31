@@ -826,6 +826,7 @@ async def test_the_leftovers_bucket_is_never_given_a_family_poster():
 
     assert poster_for_unit(row, ordinary) == ("country", "France")
     assert poster_for_unit(row, leftovers) == (None, None)
+    assert poster_for_unit(DYNAMIC_TYPES["content_rating"], ordinary) == (None, None)
 
 
 async def test_a_streaming_definition_takes_its_service_poster():
