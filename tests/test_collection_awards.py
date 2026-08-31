@@ -343,6 +343,36 @@ async def test_uncovered_categories_is_empty_for_a_ceremony_with_no_category_fil
     assert uncovered_categories(event, None) == ()
 
 
+async def test_a_drifted_category_logs_a_warning_and_still_builds(caplog):
+    """The BINDING shape (p-tails2-facts.md C1): WARNING to the pod log, not
+    a raise -- the collection still builds with whatever it DID match, so one
+    renamed category does not take an otherwise-healthy ceremony's whole
+    build down. Proven by mutating the registry's category tuple against the
+    pinned fixture, never against live IMDb (conftest.py's no_outbound_network
+    fixture forbids that transport)."""
+    import logging
+
+    event = EVENTS["oscars"]
+    award = event.awards["best_picture"]
+    drifted_award = award._replace(
+        categories=award.categories + ("a category imdb quietly renamed",)
+    )
+    drifted_event = replace(event, awards={**event.awards, "best_picture": drifted_award})
+
+    with caplog.at_level(logging.WARNING):
+        async with _events_client() as http:
+            from unittest.mock import patch
+
+            with patch.dict(EVENTS, {"oscars": drifted_event}):
+                result = await ImdbAwardBuilder().build(
+                    _ctx(http, {"event": "oscars", "award": "best_picture"})
+                )
+
+    assert result.ids, "the real categories still resolved winners"
+    assert "a category imdb quietly renamed" in caplog.text
+    assert "oscars" in caplog.text.lower() or event.name in caplog.text
+
+
 # --------------------------------------------------------------------------
 # The award group -- Kometa's outer filter (roadmap row 149).
 # --------------------------------------------------------------------------

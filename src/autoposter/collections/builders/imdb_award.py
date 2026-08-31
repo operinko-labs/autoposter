@@ -37,6 +37,7 @@ sweep deletes it. So the expanding builder is registered once per ceremony
 (``AwardEvent.years_builder`` names each registration), and the asymmetry
 between the two builders is the engine's requirement rather than a preference.
 """
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import NamedTuple
@@ -69,6 +70,7 @@ from autoposter.collections.awards import (
     fetch_event_validation,
     recent_years,
     require_known_event,
+    uncovered_categories,
     winners_for_categories,
     winners_for_year,
 )
@@ -78,6 +80,8 @@ from autoposter.collections.builders.base import (
     require_library_type,
 )
 from autoposter.config.schema import CollectionDefinition
+
+logger = logging.getLogger(__name__)
 
 _OSCAR_SUMMARY = (
     "The Academy Award for Best %s is one of the Academy Awards presented "
@@ -648,6 +652,17 @@ class ImdbAwardBuilder:
             event.library_types,
         )
         data = await _event(ctx, event)
+        # Roadmap row 153: a category tuple is this codebase's OWN transcribed
+        # vocabulary (BEST_PICTURE and its siblings), never text read live off
+        # IMDb -- so logging it verbatim carries no injection surface, unlike
+        # a fetched title or summary would. class/id-style content only, per
+        # the row's binding shape: WARNING, not a raise, because one renamed
+        # category should not take the whole ceremony's build down.
+        for category in uncovered_categories(data, award.categories, award.award_filter):
+            logger.warning(
+                "%s %r: category %r matched nothing in the live dataset -- "
+                "check for an upstream rename", event.name, params.award, category,
+            )
         poster_key = _poster(event, award.poster_stem)
         return BuilderResult(
             ids=[
