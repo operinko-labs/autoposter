@@ -459,36 +459,6 @@ async def reconcile_libraries(
                 )
 
             await session.commit()
-
-            for note in run.notifications:
-                send_in_background(
-                    notifier.send(
-                        note.event, note.summary, note.detail, url=note.url or None
-                    )
-                )
-
-            # Below the commit, and with its own handler: the reconcile's Plex
-            # writes have already landed, so a read failure in this purely
-            # diagnostic scan must not reach the handler below and roll back
-            # the library's ManagedCollection rows. Losing them would make the
-            # next pass rewrite the whole library -- exactly what this
-            # function's per-library commit boundary exists to prevent.
-            leftovers: list[str] = []
-            try:
-                leftovers = unmanaged_prior_collections(section, library_type, config)
-            except Exception:
-                logger.exception("failed scanning %r for prior-tool leftovers", name)
-
-            if leftovers:
-                logger.info(
-                    "%s: %d prior-tool collection(s) left behind: %s",
-                    name, len(leftovers), ", ".join(leftovers),
-                )
-
-            result.libraries.append(LibraryOutcome(
-                library=name, actions=actions,
-                failed_definitions=run.failures, leftovers=leftovers,
-            ))
         except Exception as error:
             await session.rollback()
             logger.exception("failed reconciling %r", name)
@@ -505,5 +475,44 @@ async def reconcile_libraries(
             result.libraries.append(
                 LibraryOutcome(library=name, error=type(error).__name__)
             )
+            continue
+
+        # Outside the try/except above, by one indentation level, and with its
+        # own handler: a notifier whose send raises must not roll back this
+        # library's already-committed ManagedCollection rows or mark it
+        # failed. Structurally so, not just because both shipped notifiers
+        # happen to be coroutine functions that cannot raise by being called.
+        try:
+            for note in run.notifications:
+                send_in_background(
+                    notifier.send(
+                        note.event, note.summary, note.detail, url=note.url or None
+                    )
+                )
+        except Exception:
+            logger.exception("failed dispatching notifications for %r", name)
+
+        # Also below the commit, and with its own handler: the reconcile's Plex
+        # writes have already landed, so a read failure in this purely
+        # diagnostic scan must not roll back the library's ManagedCollection
+        # rows. Losing them would make the next pass rewrite the whole library
+        # -- exactly what this function's per-library commit boundary exists
+        # to prevent.
+        leftovers: list[str] = []
+        try:
+            leftovers = unmanaged_prior_collections(section, library_type, config)
+        except Exception:
+            logger.exception("failed scanning %r for prior-tool leftovers", name)
+
+        if leftovers:
+            logger.info(
+                "%s: %d prior-tool collection(s) left behind: %s",
+                name, len(leftovers), ", ".join(leftovers),
+            )
+
+        result.libraries.append(LibraryOutcome(
+            library=name, actions=actions,
+            failed_definitions=run.failures, leftovers=leftovers,
+        ))
 
     return result

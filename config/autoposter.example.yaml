@@ -104,7 +104,9 @@ collections:
   #       # Row 19: POST this collection's membership changes here, on top of
   #       # whatever `notifications` does. Read live -- an edit applies at the
   #       # next pass, not the next restart -- but only ever sent to when
-  #       # `notifications.enabled` is true. May embed a token; never logged
+  #       # `notifications.enabled` is true and a global `notifications.url`
+  #       # is configured: the notifier is built once from it, and serves
+  #       # every per-collection target. May embed a token; never logged
   #       # in full. A family definition's hook covers every collection in
   #       # it -- one POST per expanded member per pass, so a large family is
   #       # a burst worth expecting. A smart-built collection never fires

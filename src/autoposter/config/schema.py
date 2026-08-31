@@ -381,8 +381,9 @@ class CollectionDefinition(BaseModel):
     # that collection here. Deliberately NOT in ``config/live.FROZEN_SECTIONS``
     # -- the engine reads the definition off the live config on every pass, so
     # an edited URL applies at the next pass rather than the next restart. Only
-    # ever sent to when ``notifications.enabled`` is true: the notifier itself
-    # is still built once at startup. May embed a token in its path, so it is
+    # ever sent to when ``notifications.enabled`` is true and a global
+    # ``notifications.url`` is configured: the notifier is built once from it,
+    # and serves every per-collection target. May embed a token in its path, so it is
     # never logged in full -- host only, the same rule the global URL has.
     # A smart-built collection never fires this: Plex owns smart membership,
     # so no pass ever computes a per-item delta for it. On a family

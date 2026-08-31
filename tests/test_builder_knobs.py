@@ -1498,6 +1498,53 @@ async def test_a_dry_run_posts_nothing(session, registry_entry):
     assert catcher.posts == []
 
 
+class _RaisingNotifier:
+    """A duck-typed notifier whose ``send`` raises synchronously -- worse than
+    either shipped notifier, which are coroutine functions and so cannot raise
+    by being called. Pins the structural guarantee: the dispatch loop sits
+    below the per-library try/except, so a raising send can never roll back
+    or fail a library whose commit already landed."""
+
+    def send(self, event, summary, detail, url=None):
+        raise RuntimeError("notifier exploded")
+
+
+async def test_a_failed_send_never_fails_the_library_it_describes(
+    session, registry_entry
+):
+    """A notification describes work that already committed; its failure must
+    never un-record that work, structurally -- not merely because the shipped
+    notifiers happen to be coroutine functions that cannot raise on call."""
+    registry_entry(_Listing("knobs_hooked_raise", [("imdb", "tt1")]))
+    section = FakeSection([("m1", ["imdb://tt1"])])
+    config = _service_config()
+    config.collections.definitions = [
+        CollectionDefinition(
+            title="Hooked", builder="knobs_hooked_raise",
+            changes_webhook=COLLECTION_HOOK_URL,
+        )
+    ]
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200))
+    ) as http:
+        result = await reconcile_libraries(
+            session, FakeServer({"Movies": section}), config, http,
+            notifier=_RaisingNotifier(),
+        )
+
+    (outcome,) = result.libraries
+    assert outcome.ok, "the raising send must not fail the library"
+    assert outcome.error is None
+
+    row = (
+        await session.execute(
+            select(ManagedCollection).where(ManagedCollection.title == "Hooked")
+        )
+    ).scalar_one()
+    assert row is not None, "the commit must have landed, not been rolled back"
+
+
 async def test_a_swept_family_delete_is_routed_to_the_family_webhook(session):
     """Facts adjudication 4: the sweep's existing ``collection_deleted``
     EventLog site is ROUTED rather than a second delete detection invented, and

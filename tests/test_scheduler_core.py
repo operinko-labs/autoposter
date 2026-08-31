@@ -568,7 +568,9 @@ async def test_notification_failure_does_not_mark_the_run_failed(session_factory
     stop = asyncio.Event()
     scheduler = Scheduler(session_factory, [_job()], poll_seconds=0.01, notifier=notifier)
     task = asyncio.create_task(scheduler.run(stop))
-    await asyncio.wait_for(notifier.done.wait(), timeout=5)
+    # calls[0] is the start event; calls[1] is the completion send this test
+    # needs to have landed (and raised) before checking the scheduler survived.
+    await _await_calls(notifier, 2)
     assert not task.done(), "the scheduler died with the notification"
     stop.set()
     await task
