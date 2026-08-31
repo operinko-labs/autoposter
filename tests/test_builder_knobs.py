@@ -18,6 +18,7 @@ list", each with a guard that has to be provably falsifiable:
   is the only place an operator ever sees it.
 """
 import asyncio
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -32,8 +33,9 @@ from autoposter.collections.service import (
 )
 from autoposter.collections.sources import AWARD_YEARS_TITLE, chart_and_award_definitions
 from autoposter.config.holder import ConfigHolder
-from autoposter.config.schema import CollectionDefinition
+from autoposter.config.schema import CollectionDefinition, NotificationsConfig
 from autoposter.db.models import EventLog, ManagedCollection, ScheduledRun
+from autoposter.notify.dispatch import build_notifier
 from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.jobs import make_collections_job
 
@@ -1361,3 +1363,215 @@ async def test_the_scheduled_run_row_records_the_failure(
         ).scalar_one()
     assert row.last_status == "failed"
     assert "Dead Chart" in row.last_detail
+
+
+# --- roadmap row 19: per-collection changes and delete webhooks -------------
+
+GLOBAL_HOOK_URL = "http://hooks.example.test/notify/tok-SECRET123"
+COLLECTION_HOOK_URL = "http://collections.example.test/hook/tok-SECRET456"
+
+
+class _Catcher:
+    """A webhook catcher over a MockTransport: what the operator's endpoint
+    actually receives. ``seen`` awaits one fire-and-forget send rather than
+    sleeping on it; the events waited for are named at construction, because a
+    waiter created after the POST landed would wait forever."""
+
+    def __init__(self, *events: str):
+        self.posts: list[tuple[str, dict]] = []
+        self._waiters = {
+            f"autoposter: {event}": asyncio.Event() for event in events
+        }
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        self.posts.append((str(request.url), body))
+        waiter = self._waiters.get(body["title"])
+        if waiter is not None:
+            waiter.set()
+        return httpx.Response(200)
+
+    async def seen(self, event: str) -> tuple[str, dict]:
+        await asyncio.wait_for(self._waiters[f"autoposter: {event}"].wait(), timeout=5)
+        (found,) = [
+            post for post in self.posts if post[1]["title"] == f"autoposter: {event}"
+        ]
+        return found
+
+
+def _refuse_db():
+    raise AssertionError("a successful send must never touch the events log")
+
+
+def _notifier_for(catcher, http):
+    return build_notifier(
+        NotificationsConfig(enabled=True, url=GLOBAL_HOOK_URL), http, _refuse_db
+    )
+
+
+async def test_a_changed_collection_posts_to_its_own_webhook(session, registry_entry):
+    """Kometa's ``changes_webhooks``, as adjudicated: the URL is a field on the
+    definition, read live at dispatch time, and the payload carries the deltas
+    the pass actually applied -- not the preview counts, which a real pass
+    never fills."""
+    registry_entry(_Listing("knobs_hooked", [("imdb", "tt1"), ("imdb", "tt2")]))
+    section = FakeSection([("m1", ["imdb://tt1"]), ("m2", ["imdb://tt2"])])
+    config = _service_config()
+    config.collections.definitions = [
+        CollectionDefinition(
+            title="Hooked", builder="knobs_hooked",
+            changes_webhook=COLLECTION_HOOK_URL,
+        )
+    ]
+
+    catcher = _Catcher("collection_changed")
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(catcher.handler)
+    ) as http:
+        await reconcile_libraries(
+            session, FakeServer({"Movies": section}), config, http,
+            notifier=_notifier_for(catcher, http),
+        )
+        url, body = await catcher.seen("collection_changed")
+
+    assert url == COLLECTION_HOOK_URL
+    assert body == {
+        "version": "1.0",
+        "title": "autoposter: collection_changed",
+        "message": "Movies: 'Hooked' changed: +2 -0",
+        "attachments": [],
+        "type": "success",
+    }
+    assert [post[0] for post in catcher.posts] == [COLLECTION_HOOK_URL], (
+        "a membership change never reaches the global target"
+    )
+
+
+async def test_a_definition_without_a_webhook_posts_nothing(session, registry_entry):
+    """Opt-in, and never a fallback to the global URL: a POST per changed
+    collection per pass would be an unbounded volume change to the shipped
+    integration row 18 exists to keep alive."""
+    registry_entry(_Listing("knobs_unhooked", [("imdb", "tt1")]))
+    section = FakeSection([("m1", ["imdb://tt1"])])
+    config = _service_config()
+    config.collections.definitions = [
+        CollectionDefinition(title="Unhooked", builder="knobs_unhooked")
+    ]
+
+    catcher = _Catcher()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(catcher.handler)
+    ) as http:
+        await reconcile_libraries(
+            session, FakeServer({"Movies": section}), config, http,
+            notifier=_notifier_for(catcher, http),
+        )
+        # Nothing to await: assert the absence after the pass has returned and
+        # any task it started has had the loop to itself.
+        await asyncio.sleep(0)
+
+    assert catcher.posts == []
+
+
+async def test_a_dry_run_posts_nothing(session, registry_entry):
+    """``apply_to_plex: false`` is a periodic dry run -- it changed nothing, so
+    it has nothing to announce."""
+    registry_entry(_Listing("knobs_dry", [("imdb", "tt1")]))
+    section = FakeSection([("m1", ["imdb://tt1"])])
+    config = _service_config(apply_to_plex=False)
+    config.collections.definitions = [
+        CollectionDefinition(
+            title="Dry", builder="knobs_dry", changes_webhook=COLLECTION_HOOK_URL
+        )
+    ]
+
+    catcher = _Catcher()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(catcher.handler)
+    ) as http:
+        await reconcile_libraries(
+            session, FakeServer({"Movies": section}), config, http,
+            notifier=_notifier_for(catcher, http),
+        )
+        await asyncio.sleep(0)
+
+    assert catcher.posts == []
+
+
+async def test_a_swept_family_delete_is_routed_to_the_family_webhook(session):
+    """Facts adjudication 4: the sweep's existing ``collection_deleted``
+    EventLog site is ROUTED rather than a second delete detection invented, and
+    it keeps the same event name on the wire that it writes to the log.
+
+    A collection with a definition that still owns it is the DYNAMIC family
+    case -- an ordinary definition's title is never a sweep candidate, because
+    a configured title is managed whether or not this pass built it. The
+    routing is asserted on what the engine collected; the payload itself is
+    asserted at the dispatch seam by the global-fallback test below."""
+    from autoposter.collections.builders.dynamic import (
+        _generated_key, family_label,
+    )
+
+    definition = CollectionDefinition(
+        title="Genres", builder="dynamic", params={"type": "genre"},
+        changes_webhook=COLLECTION_HOOK_URL,
+    )
+    gone = FakeCollection(
+        "Top Western movies", [FakeItem("m1")],
+        labels=[LABEL, family_label(definition)],
+    )
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[gone])
+    session.add(ManagedCollection(
+        library="Movies", title="Top Western movies", kind="smart",
+        plex_rating_key="c-Top Western movies", definition_hash="seed",
+    ))
+    await session.flush()
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition],
+        _config(delete_unconfigured=True), sweep=True,
+        run_cache_seed={_generated_key(family_label(definition)): set()},
+    )
+
+    assert gone.deleted is True
+    (note,) = run.notifications
+    assert note.event == "collection_deleted"
+    assert note.url == COLLECTION_HOOK_URL, "the family's hook, not the global one"
+    assert note.summary == "deleted collection 'Top Western movies' in Movies"
+    assert note.detail == {
+        "library": "Movies",
+        "collection": "Top Western movies",
+        "rating_key": "c-Top Western movies",
+        "reason": "the 'Genres' family no longer builds it",
+    }
+
+
+async def test_a_swept_delete_without_a_family_webhook_posts_to_the_global_url(
+    session, registry_entry
+):
+    """The one new event an existing global consumer sees. A collection swept
+    because NO definition builds it any more has no per-collection webhook to
+    route to by construction, and a delete is destructive, rare and capped by
+    ``max_deletes`` -- so it goes to the global target rather than nowhere."""
+    registry_entry(_Listing("knobs_sweep_global", [("imdb", "tt1")]))
+    orphan = FakeCollection("Retired Chart", [FakeItem("m1")], labels=[LABEL])
+    section = FakeSection([("m1", ["imdb://tt1"])], existing=[orphan])
+    await _managed_row(session, "Movies", "Retired Chart")
+    config = _service_config(delete_unconfigured=True)
+    config.collections.definitions = [
+        CollectionDefinition(title="Kept", builder="knobs_sweep_global")
+    ]
+
+    catcher = _Catcher("collection_deleted")
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(catcher.handler)
+    ) as http:
+        await reconcile_libraries(
+            session, FakeServer({"Movies": section}), config, http,
+            notifier=_notifier_for(catcher, http),
+        )
+        url, body = await catcher.seen("collection_deleted")
+
+    assert orphan.deleted is True
+    assert url == GLOBAL_HOOK_URL
+    assert body["message"] == "deleted collection 'Retired Chart' in Movies"

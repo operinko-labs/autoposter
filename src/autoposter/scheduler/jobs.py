@@ -51,6 +51,7 @@ def make_collections_job(
     summaries=None,
     secrets: Secrets | None = None,
     cache=None,
+    notifier=None,
 ) -> Job:
     """Build the scheduled collections-reconcile job.
 
@@ -84,6 +85,9 @@ def make_collections_job(
     the pass still runs, with every source client absent: the shipped
     definitions need none of them, and a definition that does reports itself
     failed rather than taking the pass down.
+
+    ``notifier`` is the process's notifier, forwarded to the pass for row 19's
+    per-collection webhooks. Absent, the pass sends nothing.
     """
 
     async def run(session: AsyncSession) -> str:
@@ -104,7 +108,7 @@ def make_collections_job(
         )
         result = await reconcile_libraries(
             session, server, config, http, run_index=run_index, summaries=summaries,
-            sources=sources, cache=cache,
+            sources=sources, cache=cache, notifier=notifier,
         )
         # Raised, not returned, because ``last_status`` is decided by whether
         # this coroutine raised (scheduler/core.py). Returning the summary of a

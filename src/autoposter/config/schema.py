@@ -373,6 +373,18 @@ class CollectionDefinition(BaseModel):
     # because an empty mapping is a block an operator wrote and left empty and
     # the parser refuses that.
     filters: dict | None = None
+    # Row 19 (Kometa's ``changes_webhooks``): a webhook this collection's
+    # membership changes are POSTed to, in addition to whatever the global
+    # ``notifications`` block does. A field on the definition rather than a
+    # separate pattern list, for the reason ``labels`` and ``sync_mode`` are:
+    # this is a property of one collection, and the operator already writes
+    # that collection here. Deliberately NOT in ``config/live.FROZEN_SECTIONS``
+    # -- the engine reads the definition off the live config on every pass, so
+    # an edited URL applies at the next pass rather than the next restart. Only
+    # ever sent to when ``notifications.enabled`` is true: the notifier itself
+    # is still built once at startup. May embed a token in its path, so it is
+    # never logged in full -- host only, the same rule the global URL has.
+    changes_webhook: str = ""
 
     @field_validator("builder")
     @classmethod

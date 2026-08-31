@@ -655,6 +655,7 @@ _RIDE_ALONGS = {
     "limit": 25,
     "sync_mode": "append",
     "tmdb_summary": 42,
+    "changes_webhook": "http://hooks.example.test/changes/fake-1",
 }
 
 

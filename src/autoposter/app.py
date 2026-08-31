@@ -290,7 +290,7 @@ def create_app(
             if config.collections.enabled:
                 scheduler_jobs.append(make_collections_job(
                     holder, server_factory, http, summaries=app.state.tmdb_facts,
-                    secrets=secrets, cache=cache,
+                    secrets=secrets, cache=cache, notifier=notifier,
                 ))
             scheduler_jobs.append(make_drift_job(holder))
             scheduler_jobs.append(make_credits_job(holder, server_factory))

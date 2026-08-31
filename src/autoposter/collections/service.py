@@ -40,6 +40,7 @@ from autoposter.collections.reconcile import (
 from autoposter.collections.sources import default_definitions
 from autoposter.config.schema import Config, Secrets
 from autoposter.facts.mdblist import MDBListClient
+from autoposter.notify.dispatch import NullNotifier, send_in_background
 from autoposter.providers.cache import ProviderCache
 from autoposter.providers.tmdb_lists import TmdbListClient
 from autoposter.providers.tracearr import TracearrClient
@@ -396,6 +397,7 @@ async def reconcile_libraries(
     summaries=None,
     sources: SourceClients | None = None,
     cache: ProviderCache | None = None,
+    notifier=None,
 ) -> ReconcileResult:
     """Reconcile every configured library, committing after each one.
 
@@ -420,7 +422,16 @@ async def reconcile_libraries(
     reason -- see ``build_source_clients``, which is what the callers with
     secrets in hand build the bundle with. Both are optional here so a caller
     that has neither still reconciles everything that needs neither.
+
+    ``notifier`` receives the per-collection webhooks the pass collected
+    (row 19). A ``NullNotifier`` stand-in when the caller has none -- the
+    ``app._build_mdblist`` precedent -- so the dispatch below is
+    unconditional. Sends are fired below the per-library commit and never
+    awaited, for the two reasons every other send site here has: a
+    notification must not describe work the database does not yet show, and a
+    pass must not wait on a webhook.
     """
+    notifier = notifier if notifier is not None else NullNotifier()
     result = ReconcileResult()
     for name in config.collections.libraries:
         try:
@@ -448,6 +459,13 @@ async def reconcile_libraries(
                 )
 
             await session.commit()
+
+            for note in run.notifications:
+                send_in_background(
+                    notifier.send(
+                        note.event, note.summary, note.detail, url=note.url or None
+                    )
+                )
 
             # Below the commit, and with its own handler: the reconcile's Plex
             # writes have already landed, so a read failure in this purely

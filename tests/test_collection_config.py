@@ -722,3 +722,12 @@ def test_plex_search_is_not_a_smart_builder_so_the_membership_knobs_apply():
     )
     assert definition.limit == 25
     assert definition.params["limit"] == 50
+
+
+def test_a_definition_defaults_to_no_changes_webhook():
+    """Row 19's per-collection webhook is opt-in per definition: an operator
+    who configures none gets exactly the notifications they get today."""
+    definition = CollectionDefinition(
+        title="Hand Picked", builder="plex_id", params={"ids": ["1"]}
+    )
+    assert definition.changes_webhook == ""

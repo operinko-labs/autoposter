@@ -186,6 +186,7 @@ async def reconcile_list_collection(
     settings=None,
     sort_prefix: str | None = None,
     sort_order: str | None = None,
+    deltas: dict | None = None,
 ) -> list[str]:
     """Bring one list collection in line with ``items`` (already in source order).
 
@@ -194,6 +195,14 @@ async def reconcile_list_collection(
     library -- 305 of them on the production Movies section -- so the caller
     reconciling several collections in a row passes one listing in rather than
     paying for it per collection. Omitting it falls back to listing here.
+
+    ``deltas``, when given, is filled with the members this call actually
+    added and removed (``{"added": int, "removed": int}``) on a pass that
+    wrote. It is an out-param rather than a second return value because every
+    caller wants the action strings and only one wants the numbers -- row 19's
+    per-collection webhook, which reports what changed. A dry run, an
+    unchanged membership and a refused claim all leave it untouched, which is
+    exactly the "nothing to announce" case.
 
     ``sync_mode`` is ``sync`` (the collection is exactly ``items``) or
     ``append`` (``items`` are added; nothing is ever removed and nothing
@@ -360,6 +369,14 @@ async def reconcile_list_collection(
                     "updated %r: +%d -%d, %d move(s)"
                     % (title, added_count, removed_count, moves)
                 )
+
+        if deltas is not None and not dry_run:
+            # After both write paths, so a create (every item added) and an
+            # update (its own diff) report through one statement. `added_count`
+            # and `removed_count` are initialised to 0 above, so a branch that
+            # wrote nothing reports nothing.
+            deltas["added"] = added_count
+            deltas["removed"] = removed_count
 
         # Below both write branches and skipped entirely under dry_run: every
         # step of this writes to Plex. It runs on an update as well as a create

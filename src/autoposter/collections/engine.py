@@ -105,17 +105,48 @@ class DefinitionResult:
     # when it has none, and zero -- not the whole set -- when the stage could
     # not run: see ``_passing``.
     filtered: int = 0
+    # What the pass ACTUALLY applied, as opposed to ``adding``/``removing``
+    # above, which are preview counts and stay zero on a real pass. Filled
+    # from ``reconcile_list_collection``'s ``deltas`` out-param, and read by
+    # row 19's per-collection ``changes`` webhook -- which must report what
+    # happened, not what a preview would have said.
+    added: int = 0
+    removed: int = 0
     failed: bool = False
     skipped: bool = False
     actions: list[str] = field(default_factory=list)
 
 
 @dataclass
+class CollectionNotification:
+    """One outbound webhook this pass owes, collected but not yet sent.
+
+    The engine decides WHAT to announce and WHERE; ``service.reconcile_libraries``
+    decides WHEN, which is after its per-library commit -- the same
+    "never describe work the database does not yet show" rule both shipped
+    call sites follow. Collecting rather than sending also keeps the notifier
+    out of ``run_library``'s signature, which every preview and CLI caller
+    would otherwise have to learn about.
+
+    ``url`` empty means the globally configured target (a swept delete of a
+    collection no definition owns any more has no per-collection webhook to
+    route to).
+    """
+
+    event: str
+    summary: str
+    detail: dict
+    url: str = ""
+
+
+@dataclass
 class LibraryRun:
-    """One library's pass: every action string, and how each definition fared."""
+    """One library's pass: every action string, how each definition fared, and
+    the per-collection webhooks the pass owes."""
 
     actions: list[str]
     definitions: list[DefinitionResult]
+    notifications: list[CollectionNotification] = field(default_factory=list)
 
     @property
     def failures(self) -> list[str]:
@@ -162,6 +193,10 @@ def _due(definition: CollectionDefinition, run_index: int, now: datetime) -> boo
 # capped at 25" and "Oscar winners, nothing before 2000" are the same kind of
 # instruction, written once for a family an operator cannot enumerate; dropping
 # the second silently would be row 141's defect again, one field along.
+#
+# ``changes_webhook`` rides along for the same reason, one step further out:
+# the placeholder is the only definition an operator writes for the family, so
+# a webhook on it is a webhook for every collection in it.
 _INHERITED_BY_EXPANSION = (
     "labels",
     "label_sync",
@@ -176,6 +211,7 @@ _INHERITED_BY_EXPANSION = (
     "filters",
     "sync_mode",
     "tmdb_summary",
+    "changes_webhook",
 )
 
 
@@ -306,6 +342,7 @@ async def run_library(
 
     actions: list[str] = []
     results: list[DefinitionResult] = []
+    notifications: list[CollectionNotification] = []
     run_cache: dict = dict(run_cache_seed or {})
     index = None
     existing: dict | None = None
@@ -479,6 +516,25 @@ async def run_library(
             )
             actions += result.actions
             results.append(result)
+            if not dry_run and unit.changes_webhook and (result.added or result.removed):
+                # Row 19's ``changes``: opt-in per definition and never a
+                # fallback to the global target -- a POST per changed
+                # collection per pass would be an unbounded volume change to
+                # the shipped integration. A dry run announces nothing because
+                # it changed nothing.
+                notifications.append(CollectionNotification(
+                    event="collection_changed",
+                    summary="%s: %r changed: +%d -%d" % (
+                        library, unit.title, result.added, result.removed
+                    ),
+                    detail={
+                        "library": library,
+                        "collection": unit.title,
+                        "added": result.added,
+                        "removed": result.removed,
+                    },
+                    url=unit.changes_webhook,
+                ))
 
     # Deliberately NOT wrapped in a ``try``, unlike the sweep below. A separator
     # write failing is a Plex write failing, which belongs to
@@ -497,7 +553,7 @@ async def run_library(
             swept = await _sweep(
                 session, section, library, library_type, definitions, config,
                 label=label, dry_run=dry_run, listing=listing,
-                run_cache=run_cache,
+                run_cache=run_cache, notifications=notifications,
             )
         except Exception:
             # Mirrors ``service.unmanaged_prior_collections``'s containment:
@@ -515,7 +571,9 @@ async def run_library(
             actions += result.actions
             results.append(result)
 
-    return LibraryRun(actions=actions, definitions=results)
+    return LibraryRun(
+        actions=actions, definitions=results, notifications=notifications
+    )
 
 
 async def _run_one(
@@ -709,6 +767,7 @@ async def _run_one(
             "leaving the collection untouched" % (definition.title, len(result.ids))
         )
     else:
+        deltas: dict = {}
         outcome.actions += await reconcile_list_collection(
             session, section, library, definition.title, items, label,
             summary=summary,
@@ -731,7 +790,12 @@ async def _run_one(
             settings=definition,
             sort_prefix=sort_prefix,
             sort_order=sort_order,
+            deltas=deltas,
         )
+        # What the pass applied, for row 19's per-collection webhook. Absent
+        # keys mean a dry run or an unchanged membership: nothing to announce.
+        outcome.added = deltas.get("added", 0)
+        outcome.removed = deltas.get("removed", 0)
     return outcome
 
 
@@ -916,6 +980,22 @@ def _why(family_title: str | None) -> str:
     )
 
 
+def _webhook_for(definitions: list[CollectionDefinition], title: str | None) -> str:
+    """The per-collection webhook of the definition that owns ``title``.
+
+    Empty when no definition names it -- which is the ordinary case for a
+    swept collection: it is being deleted precisely because nothing builds it
+    any more, so there is no per-collection target and the delete goes to the
+    global one.
+    """
+    if title is None:
+        return ""
+    for definition in definitions:
+        if definition.title == title:
+            return definition.changes_webhook
+    return ""
+
+
 async def _sweep(
     session: AsyncSession,
     section,
@@ -927,6 +1007,7 @@ async def _sweep(
     dry_run: bool,
     listing,
     run_cache: dict,
+    notifications: list | None = None,
 ) -> list[DefinitionResult]:
     """Collections this service owns that no definition builds any more.
 
@@ -1101,6 +1182,24 @@ async def _sweep(
         # next candidate's ``collection.delete()`` -- the one Plex-side call
         # in this loop that can raise -- gets a chance to.
         await session.flush()
+        if notifications is not None:
+            # Facts adjudication 4: the EventLog row above is the ready hook,
+            # so this is the same fact reaching a second sink under the same
+            # event name -- not a second delete detection. Routed to the
+            # family's webhook when a definition still owns the title, and to
+            # the global target otherwise: a delete is destructive, rare and
+            # capped by max_deletes, so "nowhere" is the wrong answer for it.
+            notifications.append(CollectionNotification(
+                event="collection_deleted",
+                summary="deleted collection %r in %s" % (title, library),
+                detail={
+                    "library": library,
+                    "collection": title,
+                    "rating_key": str(getattr(collection, "ratingKey", "") or ""),
+                    "reason": why,
+                },
+                url=_webhook_for(definitions, family_title),
+            ))
         results.append(_swept(
             title, library, "deleted %r: %s" % (title, why), 1
         ))

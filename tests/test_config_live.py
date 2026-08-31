@@ -220,3 +220,19 @@ def test_a_live_exception_beats_the_frozen_prefix_containing_it():
     assert LIVE_EXCEPTIONS == frozenset({"plex.resolve_max_attempts"})
     assert frozen_reason("plex") is not None
     assert frozen_reason("plex.resolve_max_attempts") is None
+
+
+def test_per_collection_webhooks_are_not_frozen():
+    """Facts adjudication 3, the frozen split. The global notifications block
+    is frozen -- the notifier is built once at startup -- but the
+    per-collection URLs are fields on a definition the engine reads off the
+    live config on every pass, so an edited one applies at the next pass and
+    the settings editor must not claim otherwise.
+
+    Asserted through ``frozen_reason`` rather than by scanning the prefixes:
+    ``collections.enabled`` IS frozen, for the unrelated reason that the job
+    set is registered once at startup, and it is a leaf prefix that does not
+    cover the definitions beside it."""
+    assert "notifications" in FROZEN_SECTIONS
+    assert frozen_reason("notifications") is not None
+    assert frozen_reason("collections.definitions") is None

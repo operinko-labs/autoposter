@@ -53,6 +53,44 @@ def build_notifier(config: NotificationsConfig, http, session_factory):
     return Notifier(config, http, session_factory)
 
 
+def _host_of(url: str) -> str:
+    """The one URL component that may ever be logged or stored."""
+    try:
+        return httpx.URL(url).host or "(unknown host)"
+    except Exception:  # a malformed URL must not break a send or construction
+        return "(unknown host)"
+
+
+# Strong references to in-flight sends: asyncio holds only a weak reference to
+# a created task, so a fire-and-forget send nothing else references could be
+# garbage-collected mid-flight. The done-callback drops each reference.
+_background_tasks: set = set()
+
+
+def send_in_background(coroutine) -> None:
+    """Fire one ``Notifier.send`` without awaiting it.
+
+    The collections pass must not wait on a webhook: one send's worst case is
+    ``retry_count * timeout_seconds`` plus backoff (~31.5s on the defaults),
+    and a pass can have several collections to report. ``send`` never raises
+    and does its own outcome logging, so the result is deliberately dropped --
+    in particular a disabled notifier's vacuous ``True`` is never reported as
+    a delivery.
+    """
+    task = asyncio.create_task(coroutine)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_done)
+
+
+def _background_done(task) -> None:
+    _background_tasks.discard(task)
+    # send never raises by contract, but an exception a task holds unretrieved
+    # becomes a GC-time warning; retrieve and log it here so a misbehaving
+    # notifier is named, not leaked.
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("notification task failed", exc_info=task.exception())
+
+
 class NullNotifier:
     """Stand-in used when notifications are off or unconfigured.
 
@@ -62,7 +100,9 @@ class NullNotifier:
     treats an intentionally disabled config as a failure.
     """
 
-    async def send(self, event: str, summary: str, detail: dict) -> bool:
+    async def send(
+        self, event: str, summary: str, detail: dict, url: str | None = None
+    ) -> bool:
         return True
 
 
@@ -86,15 +126,22 @@ class Notifier:
         self._http = http
         self._session_factory = session_factory
         # The only URL component that may ever be logged or stored.
-        try:
-            self._host = httpx.URL(config.url).host or "(unknown host)"
-        except Exception:  # a malformed URL must not break construction
-            self._host = "(unknown host)"
+        self._host = _host_of(config.url)
 
-    async def send(self, event: str, summary: str, detail: dict) -> bool:
-        """Deliver one notification. Never raises: ``False`` means failed."""
+    async def send(
+        self, event: str, summary: str, detail: dict, url: str | None = None
+    ) -> bool:
+        """Deliver one notification. Never raises: ``False`` means failed.
+
+        ``url`` overrides the configured target for this send alone -- row
+        19's per-collection webhooks, which are read off the collection's
+        definition at dispatch time and so are not part of the frozen config
+        this notifier was built from. Everything else -- the mode, the
+        timeout, the retry policy, the host-only rule -- is the same for
+        every target.
+        """
         try:
-            return await self._send(event, summary, detail)
+            return await self._send(event, summary, detail, url or self._url)
         except Exception:
             # Unexpected -- _send already contains transport failures, so
             # reaching here means a bug in OUR code: error, not warning, so it
@@ -103,8 +150,9 @@ class Notifier:
             logger.error("notification %r failed unexpectedly", event, exc_info=True)
             return False
 
-    async def _send(self, event: str, summary: str, detail: dict) -> bool:
+    async def _send(self, event: str, summary: str, detail: dict, url: str) -> bool:
         payload = build_payload(self._mode, event, summary, detail)
+        host = self._host if url == self._url else _host_of(url)
         attempts = 0
         failure = "not attempted"
         for attempt in range(self._retry_count):
@@ -113,7 +161,7 @@ class Notifier:
             attempts = attempt + 1
             try:
                 response = await self._http.post(
-                    self._url, json=payload, timeout=self._timeout
+                    url, json=payload, timeout=self._timeout
                 )
             except httpx.HTTPError as exc:
                 # Transport-level: the next attempt may find the host back.
@@ -124,7 +172,7 @@ class Notifier:
                 failure = f"{type(exc).__name__}: {exc}"
                 continue
             if response.is_success:
-                logger.debug("notification %r delivered to %s", event, self._host)
+                logger.debug("notification %r delivered to %s", event, host)
                 return True
             failure = f"HTTP {response.status_code}"
             if response.status_code < 500:
@@ -134,12 +182,12 @@ class Notifier:
         logger.warning(
             "notification %r to %s failed after %d attempt(s): %s",
             event,
-            self._host,
+            host,
             attempts,
             failure,
         )
         try:
-            await self._record_failure(event, summary, attempts, failure)
+            await self._record_failure(event, summary, host, attempts, failure)
         except Exception:
             # The events-log write is best-effort bookkeeping: if the DB is
             # down too, keep the invariant of exactly one WARNING per failed
@@ -151,10 +199,12 @@ class Notifier:
         return False
 
     async def _record_failure(
-        self, event: str, summary: str, attempts: int, failure: str
+        self, event: str, summary: str, host: str, attempts: int, failure: str
     ) -> None:
         # Host only, never the URL: events_log payloads reach the operator
-        # through the API and must not carry an embedded token.
+        # through the API and must not carry an embedded token. The host is
+        # the one this send actually used, which for a per-collection webhook
+        # is not the configured target's.
         async with self._session_factory() as session:
             session.add(
                 EventLog(
@@ -162,7 +212,7 @@ class Notifier:
                     event_type=event,
                     payload={
                         "summary": summary,
-                        "host": self._host,
+                        "host": host,
                         "attempts": attempts,
                         "error": failure,
                     },

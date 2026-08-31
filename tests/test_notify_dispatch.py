@@ -287,3 +287,67 @@ async def test_the_request_carries_the_configured_timeout(make_client):
         "write": CONFIGURED_TIMEOUT,
         "pool": CONFIGURED_TIMEOUT,
     }
+
+
+# --- roadmap row 19: a per-collection target on one notifier ----------------
+
+COLLECTION_HOOK_HOST = "collections.example.test"
+COLLECTION_HOOK_URL = f"http://{COLLECTION_HOOK_HOST}/hook/tok-SECRET456"
+
+
+async def test_an_explicit_url_overrides_the_configured_target(make_client):
+    """Row 19's per-collection webhooks read their URL from the definition at
+    dispatch time, so one notifier -- built once, from the frozen config --
+    serves the global target and every per-collection one."""
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200)
+
+    notifier = build_notifier(_config(), make_client(handler), _refuse_db)
+
+    ok = await notifier.send(
+        "collection_changed",
+        "Movies: 'Hand Picked' changed: +2 -1",
+        {"library": "Movies", "collection": "Hand Picked", "added": 2, "removed": 1},
+        url=COLLECTION_HOOK_URL,
+    )
+
+    assert ok is True
+    assert str(seen[0].url) == COLLECTION_HOOK_URL, "never the configured target"
+    assert json.loads(seen[0].content) == {
+        "version": "1.0",
+        "title": "autoposter: collection_changed",
+        "message": "Movies: 'Hand Picked' changed: +2 -1",
+        "attachments": [],
+        "type": "success",
+    }
+
+
+async def test_a_failure_against_an_explicit_url_names_that_host_only(
+    make_client, session_factory, session, sleeps, caplog
+):
+    """The host-only rule follows the URL, not the config: a per-collection
+    hook can embed a token in its path exactly as the global one can."""
+
+    def handler(request):
+        raise httpx.ConnectError("connection refused")
+
+    notifier = build_notifier(_config(), make_client(handler), session_factory)
+
+    with caplog.at_level(logging.DEBUG):
+        ok = await notifier.send(
+            "collection_changed", "s", {"library": "Movies"}, url=COLLECTION_HOOK_URL
+        )
+
+    assert ok is False
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert COLLECTION_HOOK_HOST in warnings[0].getMessage()
+    assert HOOK_HOST not in warnings[0].getMessage(), "the global host is not this one"
+    assert COLLECTION_HOOK_URL not in caplog.text
+    assert "tok-SECRET456" not in caplog.text
+
+    rows = (await session.execute(select(EventLog))).scalars().all()
+    assert "tok-SECRET456" not in json.dumps(rows[0].payload)

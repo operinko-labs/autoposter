@@ -101,6 +101,12 @@ collections:
   #       summary: A few favourites.
   #       sync_mode: sync # the collection is exactly this list; `append` only ever adds
   #       limit: 50 # cap on members, applied after resolution
+  #       # Row 19: POST this collection's membership changes here, on top of
+  #       # whatever `notifications` does. Read live -- an edit applies at the
+  #       # next pass, not the next restart -- but only ever sent to when
+  #       # `notifications.enabled` is true. May embed a token; never logged
+  #       # in full. A family definition's hook covers every collection in it.
+  #       changes_webhook: "" # e.g. http://n8n.n8n-prod.svc.cluster.local:5678/webhook/collection
   #       # Post-builder filtering (roadmap row 96): Kometa's
   #       # `attribute[.modifier]: value`, evaluated on the resolved items
   #       # BEFORE limit -- so a cap counts what survives the filter. Nest
