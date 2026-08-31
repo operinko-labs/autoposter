@@ -306,7 +306,7 @@ jobs:
         # or `-n 4` here, not a change to conftest.py. It would announce itself
         # as connection errors from every worker at once, which is loud.
         #
-        # The ImageMagick step below stays serial. It is eleven tests against
+        # The ImageMagick step below stays serial. It is fourteen tests against
         # one private database, so there is nothing to gain and a second
         # per-worker database scheme to get wrong.
         #

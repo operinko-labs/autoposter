@@ -166,7 +166,7 @@ def test_the_run_now_allowlist_agrees_with_the_job_factories():
         Path(jobs_module.__file__).read_text(encoding="utf-8")
         + Path(prune_module.__file__).read_text(encoding="utf-8")
     )
-    declared = set(re.findall(r'\bname=["\']([a-z_]+)["\']', source))
+    declared = set(re.findall(r'\bname=["\']([a-z0-9_]+)["\']', source))
 
     assert declared, "the regex found no Job(name=...) literals at all"
     assert declared == set(SCHEDULED_JOB_NAMES), (
