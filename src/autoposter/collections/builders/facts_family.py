@@ -38,8 +38,9 @@ numbers into the run cache, which the pass reads back into its actions
 
 **Every refusal RETURNS**, as a note in the pass's run cache the engine
 surfaces: an empty enumeration, an all-excluded family, an over-cap fan-out, a
-duplicate title and a franchise TMDb cannot name are all reported rather than
-raised. ``expand`` returning ``[]`` is a family that built nothing, and
+duplicate title, a franchise TMDb cannot name and a title another definition
+in the config already manages are all reported rather than raised.
+``expand`` returning ``[]`` is a family that built nothing, and
 ``generated_titles`` answering ``None`` is what stops the sweep treating that as
 narrowing.
 """
@@ -85,8 +86,14 @@ def family_label(definition) -> str:
     return "%s%s" % (FAMILY_LABEL_PREFIX, definition.title)
 
 
+# Written out as a constant because it is now READ as well as written: a family
+# scans the pass's records for the titles the families BEFORE it claimed, which
+# is the only place a second enumerated family's member titles exist.
+_GENERATED_PREFIX = "facts_family:generated:"
+
+
 def _generated_key(label: str) -> str:
-    return "facts_family:generated:%s" % label
+    return _GENERATED_PREFIX + label
 
 
 def notes(run_cache: dict) -> list[str]:
@@ -385,6 +392,63 @@ class FactsFamilyBuilder:
                 "if that is really what you want"
                 % (definition.title, len(titled), ctx.library, params.type,
                    len(enumerated), params.max_collections, len(titled))
+            )
+            return []
+
+        # Curated wins. Two independent presets may name one real-world
+        # collection -- ``content_universes``' hand-written "Fast & Furious"
+        # and this family's TMDb enumeration of the same franchise -- with two
+        # different membership rules, and before this filter whichever
+        # definition ran last in ``config.collections.presets`` order
+        # overwrote the other's Plex object every pass (and mis-banded it on
+        # the way, since ``groups.group_for`` resolves a unit's title through
+        # the OTHER preset's index entry). ``group_for``'s precedence is not
+        # the defect and is not touched: the defect is that this family was
+        # allowed to claim a title somebody else already manages.
+        #
+        # Two sources, because one is blind to the other. ``managed_titles``
+        # is every CURATED definition's own title, which is the franchise
+        # case. The pass's own generated records are the second: a family
+        # contributes only its PLACEHOLDER title to ``definition_titles``
+        # (``engine.py:1348-1355``), so "Regions" and "Continents" both
+        # enumerating one country name is invisible until both have run.
+        # Whichever ran first keeps it; ordering is preset order, which is
+        # deterministic and is a strict improvement on the silent every-pass
+        # fight it replaces.
+        own_key = _generated_key(family_label(definition))
+        contested = set(ctx.managed_titles)
+        for key, claimed in ctx.run_cache.items():
+            if key.startswith(_GENERATED_PREFIX) and key != own_key:
+                contested |= claimed
+
+        kept = []
+        for unit in titled:
+            if unit.title in contested:
+                # Reported, not raised, and not a warning: with a curated pack
+                # and this family both switched on, this is the expected
+                # steady state rather than anything going wrong.
+                report.append(
+                    "%r: %r is already managed by another definition in this "
+                    "config, so this family left it alone -- that collection "
+                    "keeps its own membership. Expected when a curated pack "
+                    "covers something the enumeration also finds; switch the "
+                    "other definition off if you want this family to build it "
+                    "instead" % (definition.title, unit.title)
+                )
+                continue
+            kept.append(unit)
+        titled = kept
+
+        if not titled:
+            # Every title went to somebody else. Returning here rather than
+            # falling through is what leaves ``generated`` UNWRITTEN, so
+            # ``generated_titles`` answers None -- the fail-closed value -- and
+            # the delete sweep does not read this as "the operator narrowed the
+            # family" and take collections another definition now owns.
+            report.append(
+                "%r built nothing: every %s value it enumerated is already "
+                "managed by another definition in this config"
+                % (definition.title, params.type)
             )
             return []
 

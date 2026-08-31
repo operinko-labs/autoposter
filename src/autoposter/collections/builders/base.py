@@ -152,6 +152,17 @@ class BuilderContext:
     read the first half from anywhere else. None for a direct caller, and for
     every builder that does not expand.
 
+    ``managed_titles`` is every collection title the REST of this library's
+    config already manages -- ``engine.definition_titles_for``'s set, the same
+    one the delete sweep and the leftovers report share. Only a family builder
+    that ENUMERATES its titles needs it, and it needs it for one thing: two
+    independent presets may name the same real-world collection with two
+    different membership rules (``content_franchises``' TMDb enumeration and
+    ``content_universes``' curated list both reach "Fast & Furious"), and
+    without this the two overwrite one Plex object every pass. Read-only, and
+    empty for a direct caller: contesting nothing is the honest answer when
+    there is no config around the call.
+
     Still absent: application config, raw secrets, and any way to *write*.
     Builders do not resolve and do not apply. The library itself is reachable
     only through ``sources.plex`` (``PlexSectionAccess``), read-only and
@@ -168,6 +179,7 @@ class BuilderContext:
     sources: SourceClients = field(default_factory=SourceClients)
     session: AsyncSession | None = None
     definition: Any = None
+    managed_titles: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

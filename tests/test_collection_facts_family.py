@@ -475,3 +475,112 @@ def test_the_ten_dynamic_types_are_still_exactly_ten():
     assert "origin_country" not in DYNAMIC_TYPES
     assert "original_language" not in DYNAMIC_TYPES
     assert "tmdb_collection" not in DYNAMIC_TYPES
+
+
+async def test_a_contested_unit_is_skipped_and_reported(session):
+    """The precedence rule. A curated definition elsewhere in this config
+    already manages 'Fast & Furious' (``catalog._UNIVERSE_LISTS``), and the
+    enumeration finds the same franchise through TMDb. Curated wins: the
+    family builds the rest and names what it left alone, the same way it
+    already names an over-cap fan-out or a franchise TMDb cannot title."""
+    await _item(session, "1", tmdb_origin_country=["US"])
+    await _item(session, "2", tmdb_origin_country=["FI"])
+    definition = _definition(
+        title="Regions", params={"type": "origin_country"},
+    )
+    ctx = _ctx(
+        session, definition,
+        managed_titles=frozenset({iso_names.COUNTRY_NAMES["US"]}),
+    )
+    units = await FactsFamilyBuilder().expand(ctx)
+
+    # The contested unit is not built...
+    assert [unit.title for unit in units] == [iso_names.COUNTRY_NAMES["FI"]]
+    # ...and the pass report says which one, and who kept it.
+    reported = "\n".join(facts_family_module.notes(ctx.run_cache))
+    assert iso_names.COUNTRY_NAMES["US"] in reported
+    assert "already managed by another definition" in reported
+
+
+async def test_the_contested_title_stays_the_curated_definitions_alone(session):
+    """The other half of the law, asserted through the only two handles by
+    which this family could reach that Plex collection: a returned unit (which
+    would drive ``engine._run_one`` and rewrite its membership) and the delete
+    sweep's ``generated`` record (which would let ``_sweep`` delete it as a
+    narrowed family's leftover). Neither names the contested title."""
+    await _item(session, "1", tmdb_origin_country=["US"])
+    await _item(session, "2", tmdb_origin_country=["FI"])
+    definition = _definition(
+        title="Regions", params={"type": "origin_country"},
+    )
+    contested = iso_names.COUNTRY_NAMES["US"]
+    managed = frozenset({contested})
+    ctx = _ctx(session, definition, managed_titles=managed)
+    units = await FactsFamilyBuilder().expand(ctx)
+
+    assert contested not in {unit.title for unit in units}
+    assert contested not in generated_titles(ctx.run_cache, definition)
+    assert generated_titles(ctx.run_cache, definition) == {
+        iso_names.COUNTRY_NAMES["FI"]
+    }
+    # Read, never edited: the rest of the config is not this builder's to touch.
+    assert ctx.managed_titles == managed
+
+
+async def test_two_enumerated_families_in_one_pass_do_not_contest_each_other(
+    session,
+):
+    """The location latent contest, guarded. ``Regions`` and ``Continents``
+    are both ``facts_family`` and both title with the bare name, so the same
+    country name can be a bucket in each -- and neither is visible to
+    ``engine.definition_titles`` (a family contributes only its placeholder
+    title). The pass's own ``generated`` records are the ledger: whichever
+    family runs first keeps the title, the second stands down and reports.
+    """
+    await _item(session, "1", tmdb_origin_country=["US"])
+    first = _definition(title="Regions", params={"type": "origin_country"})
+    second = _definition(title="Continents", params={"type": "origin_country"})
+    run_cache: dict = {}
+
+    first_units = await FactsFamilyBuilder().expand(
+        _ctx(session, first, run_cache=run_cache)
+    )
+    second_units = await FactsFamilyBuilder().expand(
+        _ctx(session, second, run_cache=run_cache)
+    )
+
+    assert [unit.title for unit in first_units] == [iso_names.COUNTRY_NAMES["US"]]
+    assert second_units == []
+    reported = "\n".join(facts_family_module.notes(run_cache))
+    assert iso_names.COUNTRY_NAMES["US"] in reported
+    # Fail-closed: the second family never decided, so the sweep must not read
+    # its empty output as "the operator narrowed it" and delete the first
+    # family's collection.
+    assert generated_titles(run_cache, second) is None
+
+
+def test_the_engine_computes_the_contested_set_from_the_definitions_it_has():
+    """The wiring, at the seam. ``definition_titles_for`` is the set the delete
+    sweep and the leftovers report already share; a curated preset's own
+    collections are in it by their own titles (``engine.py:1355``), which is
+    exactly what makes the franchise contest visible. The empty ``collections``
+    argument is deliberate -- see the call site's comment."""
+    from types import SimpleNamespace
+
+    from autoposter.collections.engine import definition_titles_for
+    from autoposter.config.schema import CollectionsConfig
+
+    curated = CollectionDefinition(
+        title="Fast & Furious", builder="imdb_list",
+        params={"list": "ls4102351575"},
+    )
+    placeholder = CollectionDefinition(
+        title="Franchises", builder="facts_family",
+        params={"type": "tmdb_collection"},
+    )
+    config = SimpleNamespace(collections=CollectionsConfig())
+    titles = definition_titles_for(
+        [curated, placeholder], [], "Movies", "Movie", config,
+    )
+    assert "Fast & Furious" in titles
+    assert "Franchises" in titles

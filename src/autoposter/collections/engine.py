@@ -376,6 +376,21 @@ async def run_library(
     group_order = groups.effective_order(config)
     group_index = groups.preset_groups(config, library_type)
 
+    # The titles the REST of this config already manages, resolved once per
+    # library beside the group index above and for the same reason. A family
+    # builder that ENUMERATES its collections checks its units against this,
+    # which is what stops two presets rebuilding one Plex collection from two
+    # membership rules every pass (``builders/facts_family.py``).
+    #
+    # The empty ``collections`` argument is deliberate: that argument feeds only
+    # the ``TITLE_PATTERN`` branch, which matches against Plex's own listing, and
+    # calling ``listing()`` here would buy the section listing before the first
+    # definition ran -- on every pass, including the narrow callers that build one
+    # definition. No pattern-titled builder is in the contest class.
+    managed_titles = frozenset(
+        definition_titles_for(definitions, [], library, library_type, config)
+    )
+
     def context(definition: CollectionDefinition) -> BuilderContext:
         return BuilderContext(
             library=library,
@@ -387,6 +402,7 @@ async def run_library(
             sources=bound_sources,
             session=session,
             definition=definition,
+            managed_titles=managed_titles,
         )
 
     for definition in definitions:
