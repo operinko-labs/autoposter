@@ -383,7 +383,7 @@ def test_the_test_step_defers_the_deep_lane_only_on_pull_requests():
     """The lane split must never reach the run that publishes.
 
     A pull request deselects ``deep`` as well as ``imagemagick`` -- 525 of the
-    4,182 tests, every ASGI-plus-database suite in tests/conftest.py's
+    4,184 tests, every ASGI-plus-database suite in tests/conftest.py's
     DEEP_SUITES bar the six that carry ``imagemagick`` too and run in their
     own step on every event. That is only safe while the other lane runs them
     *and* gates the push, which

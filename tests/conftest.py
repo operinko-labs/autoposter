@@ -21,7 +21,7 @@ from autoposter.db.base import Base
 #
 # Chosen by measurement rather than by taste. A serial run of the whole suite
 # spends 459.7s inside tests; these 22 files are 299.7s of that -- about two
-# thirds of the time for 525 of the 4,168 non-ImageMagick tests. They have one
+# thirds of the time for 525 of the 4,170 non-ImageMagick tests. They have one
 # cause in common, which is also why nothing cheaper is on the list: each of
 # these tests builds the ASGI application and drives it against a real
 # database.

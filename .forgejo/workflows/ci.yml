@@ -314,8 +314,8 @@ jobs:
         #
         # A pull request additionally deselects `deep`: the 22 ASGI-plus-
         # database suites listed in tests/conftest.py's DEEP_SUITES, which are
-        # 531 of the 4,182 tests and about two thirds of the serial time.
-        # Everything else -- and that is 3,643 tests, ruff, and the whole
+        # 531 of the 4,184 tests and about two thirds of the serial time.
+        # Everything else -- and that is 3,645 tests, ruff, and the whole
         # frontend suite -- still runs on every push to the branch. Six of
         # those 531 carry `imagemagick` as well (the render tests in
         # tests/test_api_testing.py, which is a DEEP_SUITES file): both lanes
@@ -323,7 +323,7 @@ jobs:
         # event, so they are gated rather than deferred and only 525 of the
         # deep suites' tests are actually held back from a pull request. Count
         # each test where it runs and the three numbers partition the suite
-        # exactly: 3,643 fast + 525 deferred + 14 ImageMagick-gated = 4,182
+        # exactly: 3,645 fast + 525 deferred + 14 ImageMagick-gated = 4,184
         # collected.
         #
         # The contract that makes deferring them safe is that main runs them
