@@ -347,6 +347,19 @@ def config_badges_disabled():
 
 
 @pytest.fixture
+def jpeg_bytes():
+    """A real 4x4 JPEG, so ``_is_image`` is exercised against real bytes rather
+    than mocked."""
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+@pytest.fixture
 def config_factory():
     """A config with the given attribute overrides applied to the example config."""
 

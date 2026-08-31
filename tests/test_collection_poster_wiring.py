@@ -666,3 +666,56 @@ async def test_a_kind_without_a_key_makes_no_request(session, config_factory, tm
     assert collection.uploaded_bytes == []
     row = (await session.execute(select(ManagedCollection))).scalars().one()
     assert row.poster_sha256 is None
+
+
+async def test_the_franchise_builder_names_its_own_collection_as_the_poster_key():
+    """Upstream keys franchise art by NAME, never by TMDb collection id
+    (p-defimg-probe.md §1 and its 'Confirmed non-findings' section), and the
+    name we have is the unit's own title -- TMDb's collection name with the
+    pack's ' Collection' suffix already stripped by `family_titles`."""
+    from autoposter.collections.builders.base import BuilderContext, BuilderResult
+    from autoposter.collections.builders.tmdb import TmdbCollectionBuilder
+
+    class _Client:
+        async def collection_parts(self, collection_id):
+            return ["603"]
+
+    class _Sources:
+        tmdb = _Client()
+
+    ctx = BuilderContext(
+        library="Movies", library_type="Movie",
+        config={"id": 1241},
+        sources=_Sources(),
+        definition=CollectionDefinition(
+            title="Harry Potter", builder="tmdb_collection", params={"id": 1241},
+        ),
+    )
+    result = await TmdbCollectionBuilder().build(ctx)
+
+    assert isinstance(result, BuilderResult)
+    assert result.poster_kind == "franchise"
+    assert result.poster_key == "Harry Potter"
+
+
+async def test_a_franchise_built_without_a_definition_offers_no_poster_key():
+    """A direct caller has no definition (`BuilderContext.definition` is None
+    for one), and a poster key invented from an id would be a URL that 404s."""
+    from autoposter.collections.builders.base import BuilderContext
+    from autoposter.collections.builders.tmdb import TmdbCollectionBuilder
+
+    class _Client:
+        async def collection_parts(self, collection_id):
+            return ["603"]
+
+    class _Sources:
+        tmdb = _Client()
+
+    ctx = BuilderContext(
+        library="Movies", library_type="Movie",
+        config={"id": 1241}, sources=_Sources(),
+    )
+    result = await TmdbCollectionBuilder().build(ctx)
+
+    assert result.poster_kind is None
+    assert result.poster_key is None

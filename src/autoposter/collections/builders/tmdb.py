@@ -23,13 +23,16 @@ three decisions that are not TMDb's to make.
   ``SourceClients``; a 404 raises out of the client for the same reason. An
   empty membership one layer down means "remove every member".
 
-No summary and no poster, unlike ``imdb_chart``: that builder's title and
-summary are Kometa translation strings transcribed verbatim in
-``docs/research/kometa-collections.md`` §5, and no such transcription exists
-for TMDb's charts. A summary invented here would not be parity, and a guessed
-poster key is a hosted URL that 404s and leaves the collection quietly without
-artwork (``posters.hosted_poster_url``). The definition's own ``summary:`` is
-the way to set one until the strings are recorded.
+No summary, and a poster on one builder only, unlike ``imdb_chart``: that
+builder's title and summary are Kometa translation strings transcribed
+verbatim in ``docs/research/kometa-collections.md`` §5, and no such
+transcription exists for TMDb's charts. A summary invented here would not be
+parity, and a guessed poster key is a hosted URL that 404s and leaves the
+collection quietly without artwork (``posters.hosted_poster_url``). The
+definition's own ``summary:`` is the way to set one until the strings are
+recorded. ``tmdb_collection`` is the exception on the poster half alone, and
+only because upstream's franchise art is keyed by a name the definition
+already carries; see that builder.
 """
 import re
 
@@ -256,7 +259,24 @@ class TmdbListBuilder(_TmdbBuilder):
 
 class TmdbCollectionBuilder(_TmdbBuilder):
     """A franchise collection's parts. Movie libraries only: TMDb collections
-    are movie franchises and their ``parts`` are movies."""
+    are movie franchises and their ``parts`` are movies.
+
+    The one builder here that carries a poster key, and it is the collection's
+    own TITLE rather than its id. ``Kometa-Team/Default-Images`` keys franchise
+    art by display name -- ``franchise/Jurassic Park.jpg`` -- and holds no
+    id-based naming anywhere in the repository
+    (``.superpowers/sdd/p-defimg-probe.md`` §1, and its "Confirmed
+    non-findings" section). For a unit the ``content_franchises`` pack expanded,
+    the definition's title IS TMDb's own collection name with the pack's
+    ``remove_suffix: [' Collection']`` applied and any ``title_override``
+    honoured, so it is both the best name we have and the one an operator can
+    correct by hand. Upstream curates 116 franchises against TMDb's whole
+    collection space, so a MISS is ordinary: ``default_images`` answers None,
+    and the collection keeps whatever poster it had.
+
+    A direct caller has no definition, and a key invented from the id would be
+    a URL that 404s quietly -- so both fields stay None there.
+    """
 
     type_name = "tmdb_collection"
     params_model = TmdbEntityParams
@@ -266,7 +286,12 @@ class TmdbCollectionBuilder(_TmdbBuilder):
         require_library_type("the 'tmdb_collection' builder", ctx.library_type, ("Movie",))
         client = self._client(ctx)
         ids = await client.collection_parts(params.id)
-        return BuilderResult(ids=[("tmdb", value) for value in ids])
+        title = getattr(ctx.definition, "title", None)
+        return BuilderResult(
+            ids=[("tmdb", value) for value in ids],
+            poster_kind="franchise" if title else None,
+            poster_key=title or None,
+        )
 
 
 class _DiscoverBuilder(_TmdbBuilder):

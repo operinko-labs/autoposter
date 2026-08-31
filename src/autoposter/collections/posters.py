@@ -360,13 +360,15 @@ async def apply_poster(
     """Give ``collection`` its poster, uploading only when something changed.
 
     Resolution order: a local override first (read directly off disk, no
-    request made), generated separator art second when the caller resolved
-    some (``collections/separator_art.py`` -- also a cache file, read
-    directly, no request), the source ``kind`` names third -- a hosted
-    default, or a person's TMDb profile photo -- nothing fourth. The bytes are
-    hashed and compared against ``record.poster_sha256`` -- a match means an
-    unchanged pass uploads nothing, the same guarantee ``definition_hash``
-    already gives the collection's filter.
+    request made), a file some source already produced second when one
+    resolves -- the caller's generated separator art
+    (``collections/separator_art.py``), or this collection's family poster
+    cached from ``Kometa-Team/Default-Images`` (``collections/default_images.py``),
+    both read directly off disk -- the source ``kind`` names third (a hosted
+    default from the six-kind table, or a person's TMDb profile photo), nothing
+    fourth. The bytes are hashed and compared against ``record.poster_sha256``
+    -- a match means an unchanged pass uploads nothing, the same guarantee
+    ``definition_hash`` already gives the collection's filter.
 
     Both branches are validated with ``_is_image``: an operator's file can be
     truncated, zero-byte, or an HTML error page saved as ``poster.jpg`` just
@@ -411,22 +413,40 @@ async def apply_poster(
                 "local poster %s did not decode as an image; using whatever source kind names",
                 local,
             )
-    if data is None and generated is not None:
-        # A file the caller already produced, below the operator's own override
-        # and above anything fetched: generated art is a poster SOURCE, not an
-        # override, so ``prioritize_assets``' guarantee is unchanged.
-        try:
-            candidate = generated.read_bytes()
-        except OSError:
-            candidate = b""
-        if _is_image(candidate):
-            data = candidate
-            source = "generated separator art"
-        else:
-            logger.info(
-                "generated separator art %s did not decode as an image; using "
-                "whatever source kind names", generated,
+    if data is None:
+        # A file some source already produced, below the operator's own
+        # override and above anything fetched fresh: generated separator art
+        # (``separator_art.py``) or a cached Default-Images family poster
+        # (``default_images.py``). Both are poster SOURCES, not overrides, so
+        # ``prioritize_assets``' guarantee is unchanged -- the local branch
+        # above has already had its say.
+        #
+        # Imported here rather than at module scope: ``default_images`` reads
+        # ``DEFAULT_IMAGES_BASE`` and ``fetch_poster`` from THIS module, and a
+        # top-level import would be a cycle. The one call is per collection,
+        # not per item.
+        from autoposter.collections import default_images
+
+        cached = generated
+        label = "generated separator art"
+        if cached is None and kind in default_images.FAMILIES:
+            cached = await default_images.ensure_default_image(
+                config, http, kind, key,
             )
+            label = "the hosted default image"
+        if cached is not None:
+            try:
+                candidate = cached.read_bytes()
+            except OSError:
+                candidate = b""
+            if _is_image(candidate):
+                data = candidate
+                source = label
+            else:
+                logger.info(
+                    "%s %s did not decode as an image; using whatever source "
+                    "kind names", label, cached,
+                )
     if data is None:
         # Two poster SOURCES now, dispatched on ``kind`` here rather than inside
         # ``hosted_poster_url`` -- see ``tmdb_profile_url`` for why a TMDb file

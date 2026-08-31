@@ -562,3 +562,110 @@ async def test_the_hosted_defaults_are_untouched_by_the_new_branch(
     assert fetched[0].startswith(
         "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/"
     )
+
+
+# --- the Default-Images family posters (default_images.FAMILIES) -----------
+
+
+async def test_a_default_image_family_is_fetched_cached_and_reported_as_such(
+    tmp_path, config_factory, session
+):
+    """The new fourth source. It rides the same rank the generated separator
+    art already occupies -- below the operator's own file, above nothing --
+    so the priority guarantee `prioritize_assets` gave is unchanged."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    data = _jpeg_bytes()
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        assert request.url.path.endswith("/genre/Action.jpg")
+        return httpx.Response(200, content=data)
+
+    async with _client(handler) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY,
+            "genre", "Action", dry_run=False,
+        )
+
+    assert message == "set the poster for %r from the hosted default image" % TITLE
+    assert collection.uploaded_bytes == [data]
+    assert record.poster_sha256 == hashlib.sha256(data).hexdigest()
+    assert (
+        tmp_path / ".generated" / "collection-posters" / "genre" / "Action.jpg"
+    ).is_file()
+
+
+async def test_a_local_override_beats_a_default_image_and_makes_no_request(
+    tmp_path, config_factory, session
+):
+    """Constraint 4, pinned on the new branch: the operator's file is read
+    first, unconditionally, before `kind`/`key` is consulted."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    local = tmp_path / LIBRARY / TITLE
+    local.mkdir(parents=True)
+    mine = _jpeg_bytes("blue")
+    (local / "poster.jpg").write_bytes(mine)
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        raise AssertionError("a local override must not be fetched over")
+
+    async with _client(handler) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY,
+            "genre", "Action", dry_run=False,
+        )
+
+    assert collection.uploaded_bytes == [mine]
+    assert "local file" in message
+
+
+async def test_a_default_image_that_404s_leaves_the_collection_exactly_as_today(
+    tmp_path, config_factory, session
+):
+    """The fallback that makes the whole feature safe to switch on: a family
+    with no matching asset renders today's behaviour -- no upload, no hash
+    written, the same 'no poster source' report a `kind=None` collection gets."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        return httpx.Response(404)
+
+    async with _client(handler) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY,
+            "franchise", "A Franchise Kometa Never Drew", dry_run=False,
+        )
+
+    assert message == "no poster source for %r" % TITLE
+    assert collection.uploaded_bytes == []
+    assert record.poster_sha256 is None
+
+
+async def test_the_six_original_kinds_are_untouched_by_the_new_branch(
+    tmp_path, config_factory, session
+):
+    """`hosted_poster_url`'s table is not extended by this phase, and a chart
+    still goes straight down the old path with no cache file written."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    data = _jpeg_bytes()
+    record = await _record(session)
+    collection = _FakeCollection()
+    seen = []
+
+    async def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, content=data)
+
+    async with _client(handler) as http:
+        await apply_poster(
+            session, http, config, collection, record, LIBRARY, KIND, KEY,
+            dry_run=False,
+        )
+
+    assert seen == [hosted_poster_url(KIND, KEY)]
+    assert not (tmp_path / ".generated").exists()
