@@ -30,4 +30,13 @@ describe("fieldErrors", () => {
       "plex.url": "not a URL; value error",
     });
   });
+
+  it("does not treat an inherited property name as an already-seen path", () => {
+    // `errors` is an object literal, so a membership test that walks the
+    // prototype chain reports `constructor` as present on its first sighting
+    // and prepends `Object`'s own source to the message.
+    const detail = [{ path: "constructor", message: "not a config section" }];
+
+    expect(fieldErrors(detail)).toEqual({ constructor: "not a config section" });
+  });
 });

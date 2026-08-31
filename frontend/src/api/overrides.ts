@@ -129,7 +129,12 @@ export function documentFromConfig(config: ConfigResponse): OverridesDocument {
   return document;
 }
 
-/** A 422's `detail` flattened to path -> message.
+/** A 422's `detail` flattened to path -> message, with several messages on one
+ * path joined by `"; "` into that path's single string.
+ *
+ * The separator is part of the contract, not an implementation detail:
+ * `refusalMessage` joins the map's *values* with the same `"; "`, so a
+ * multi-message path composes into that sentence rather than nesting inside it.
  *
  * Two shapes arrive through one endpoint: the handler's own `{path, message}`
  * entries, and FastAPI's `{loc, msg}` when the request validator rejects the
@@ -141,7 +146,11 @@ export function fieldErrors(detail: unknown): Record<string, string> {
   // Joined, not last-writer-wins: two entries on one path both survive
   // (ccui review M6 -- the collapse hid every earlier message for a field).
   const add = (path: string, message: string) => {
-    errors[path] = path in errors ? `${errors[path]}; ${message}` : message;
+    // `hasOwn`, not `in`: `errors` is a literal, so `in` would find
+    // `constructor`/`toString` on the prototype and join onto them.
+    errors[path] = Object.hasOwn(errors, path)
+      ? `${errors[path]}; ${message}`
+      : message;
   };
   for (const entry of detail) {
     if (!isPlainObject(entry)) continue;
