@@ -23,7 +23,7 @@ reason this builder has a bigger params model than the list ones.
 **Introspection is refused on this endpoint.** The constraint input objects,
 their field names, the range shapes, the date format and the sort enums were all
 walked live on 2026-08-25 through the GraphQL validator's own error messages;
-the full probe log is in ``.superpowers/sdd/task-3-report.md`` and the fixtures
+the full probe log is in ``.superpowers/sdd/archive/p8c-task-3-report.md`` and the fixtures
 under ``tests/fixtures/collections/imdb_search_*.json`` are recordings of what
 the endpoint answered. Nothing here is recalled.
 
