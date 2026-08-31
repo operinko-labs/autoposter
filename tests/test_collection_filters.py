@@ -539,10 +539,10 @@ def test_country_is_rescoped_for_a_show_library_and_decade_refuses_one():
 
 def test_the_text_rows_take_the_string_operators_and_rescope():
     """Row 170's two rows. ``title`` is the bare field re-scoped to
-    ``show.title`` (kometa_build_filter.py:164); ``edition`` is the one row in
+    ``show.title`` (kometa_build_filter.py:166); ``edition`` is the one row in
     the table that composes BOTH translation tables -- search_translation's
-    ``editionTitle`` (:86), then show_translation's entry for the TRANSLATED
-    name (:180). Both are dual-vocabulary on ``unprobed`` (the ``country``
+    ``editionTitle`` (:88), then show_translation's entry for the TRANSLATED
+    name (:182). Both are dual-vocabulary on ``unprobed`` (the ``country``
     pattern): a ``filters:`` block parses the key and refuses at the accessor
     by naming the tier."""
     from autoposter.collections.filter_values import (
@@ -573,10 +573,10 @@ def test_the_text_rows_take_the_string_operators_and_rescope():
 
 def test_the_media_booleans_are_search_only_and_libtype_gated():
     """Row 172's five rows. ``duplicate`` is movie-only (movie_only_searches,
-    kometa_build_filter.py:280), so a show library refuses it BY NAME;
+    kometa_build_filter.py:282), so a show library refuses it BY NAME;
     ``hdr``/``dovi``/``trash`` re-scope to the EPISODE libtype on a show
-    library (:182-186) exactly as ``resolution`` does, and ``unmatched`` to
-    ``show.unmatched`` (:173) -- the SHOW level, because a match belongs to
+    library (:184-188) exactly as ``resolution`` does, and ``unmatched`` to
+    ``show.unmatched`` (:175) -- the SHOW level, because a match belongs to
     the item and not the file. All five are ``search-only``: Kometa has no
     filter of any of these names (row 96's 29-name search-only list), so a
     ``filters:`` block refuses by pointing at the search block."""

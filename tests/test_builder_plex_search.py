@@ -61,7 +61,7 @@ def test_an_empty_any_base_names_any_not_all():
 
 def test_a_non_mapping_base_is_refused_naming_its_own_key():
     """Kometa's other empty-base message (``{base} must be a dictionary``,
-    kometa_build_filter.py:953), reproduced alongside the blank one."""
+    kometa_build_filter.py:964), reproduced alongside the blank one."""
     with pytest.raises(ValidationError) as error:
         PlexSearchParams.model_validate({"all": ["genre: Horror"]})
     assert "`all:` must be a mapping" in str(error.value)

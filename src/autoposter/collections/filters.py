@@ -1158,7 +1158,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "for the TRANSLATED name (kometa_build_filter.py:182) -- the one row "
         "in the table that composes both tables, which is why oracle config "
         "19 pins the show render. Dual-LISTED in `searches` exactly like "
-        "`studio` -- a string_attribute (:353) AND a tag_attribute (:419) -- "
+        "`studio` -- a string_attribute (:355) AND a tag_attribute (:421) -- "
         "and for `studio`'s own reason every operator this table ships takes "
         "the STRING branch: the value goes to Plex quoted and unresolved. "
         "Dual-VOCABULARY like `country` (`edition` is in Kometa's "
