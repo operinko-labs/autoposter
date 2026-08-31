@@ -449,14 +449,16 @@ def _apply_mode(collection, definition) -> list[str]:
     return ["set the display mode of %r to %r" % (collection.title, wanted)]
 
 
-def _apply_hub(section, collection, definition) -> list[str]:
+def _apply_hub(section, collection, definition) -> tuple[list[str], bool]:
     """Row 68: pin the collection to Plex's recommendation hubs.
 
     Contained, unlike the writes above: promoting a collection to a hub is a
     Plex Pass feature, so on a server without one every call here fails and
     that must cost the definition an action string rather than the library its
     pass. Nothing is read back from the exception -- the same rule the engine
-    applies to a builder's.
+    applies to a builder's. The second half of the return says whether every
+    write here landed -- a failed hub write must cost the definition a RETRY
+    next pass (row 142c), and the callers gate the stored hash on it.
 
     ``None`` leaves a flag alone: "not visible on the home page" and "this
     definition does not manage the home page" are different requests, and only
@@ -464,9 +466,10 @@ def _apply_hub(section, collection, definition) -> list[str]:
     """
     flags = (definition.visible_library, definition.visible_home, definition.visible_shared)
     if all(flag is None for flag in flags) and definition.hub_priority is None:
-        return []
+        return [], True
 
     actions: list[str] = []
+    ok = True
     try:
         hub = collection.visibility()
         if any(flag is not None for flag in flags):
@@ -482,6 +485,7 @@ def _apply_hub(section, collection, definition) -> list[str]:
         if definition.hub_priority is not None:
             actions += _move_hub(section, hub, definition.hub_priority, collection.title)
     except Exception:
+        ok = False
         logger.exception(
             "could not set the hub visibility of %r; a Plex Pass is required",
             collection.title,
@@ -493,7 +497,7 @@ def _apply_hub(section, collection, definition) -> list[str]:
             "could not set the hub visibility of %r: see logs (a Plex Pass is "
             "required for hub pinning)" % collection.title
         )
-    return actions
+    return actions, ok
 
 
 def _move_hub(section, hub, priority: int, title: str) -> list[str]:
@@ -515,7 +519,9 @@ def _move_hub(section, hub, priority: int, title: str) -> list[str]:
     return ["moved %r to position %d in the managed recommendations" % (title, index)]
 
 
-def apply_collection_settings(section, collection, definition, label: str, config) -> list[str]:
+def apply_collection_settings(
+    section, collection, definition, label: str, config
+) -> tuple[list[str], bool]:
     """Every per-definition setting that lives on the collection *object*.
 
     Shared by both reconcilers -- the list collections in ``lists.py`` and the
@@ -526,15 +532,35 @@ def apply_collection_settings(section, collection, definition, label: str, confi
     Never called under ``dry_run``: every step writes to Plex. ``definition``
     is None for the direct callers that predate definitions (most tests, and
     the separator, which owns its own sort title).
+
+    Returns (actions, ok): ok is False when a setting could not be applied
+    (today only the hub write can fail contained), and every caller that
+    stores a definition hash stores "" instead of the real one on not-ok --
+    an empty string never equals a sha256 hexdigest, so the next pass
+    re-reconciles and retries.
+
+    The retry is unbounded, and that cost is disclosed rather than paid down:
+    on a server that will never have a Plex Pass, a definition carrying a hub
+    setting re-reconciles on EVERY pass, forever. What that costs is the
+    re-run of writes that are idempotent anyway plus one action string per
+    pass -- which is the operator's standing signal to drop the hub setting
+    or get the Pass -- and the alternative, a failure count on the row to give
+    up after N, would put retry policy in the schema for one contained write.
+    A permanent failure retried is the cheaper wrong than a transient one
+    abandoned until somebody edits the definition.
     """
     if definition is None:
-        return []
-    return [
+        return [], True
+    # The hub write stays LAST, as it was before it grew a second return
+    # value: unpacking it into a name above the list literal would have moved
+    # the one contained write ahead of the three uncontained ones.
+    actions = [
         *_apply_labels(collection, definition, label, config),
         *_apply_sort_title(collection, definition),
         *_apply_mode(collection, definition),
-        *_apply_hub(section, collection, definition),
     ]
+    hub_actions, hub_ok = _apply_hub(section, collection, definition)
+    return [*actions, *hub_actions], hub_ok
 
 
 def create_blank_collection(section, libtype: str, title: str):
@@ -1032,19 +1058,20 @@ async def reconcile_content_ratings(
                     actions.append("updated %r" % bucket.title)
 
                 _edit_collection_summary(collection, bucket.summary)
-                actions += apply_collection_settings(
+                settings_actions, settings_ok = apply_collection_settings(
                     section, collection, bucket_settings, label, config
                 )
+                actions += settings_actions
 
                 if record is None:
                     record = ManagedCollection(
                         library=library_name, title=bucket.title, kind="smart",
                         plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
-                        definition_hash=wanted,
+                        definition_hash=wanted if settings_ok else "",
                     )
                     session.add(record)
                 else:
-                    record.definition_hash = wanted
+                    record.definition_hash = wanted if settings_ok else ""
                     record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
 
         if posters_on and collection is not None and record is not None:

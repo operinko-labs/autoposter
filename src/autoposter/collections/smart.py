@@ -371,6 +371,7 @@ async def reconcile_smart_collection(
         # applied one.
         matched = require_matches(section, url)
 
+        settings_ok = True
         if dry_run:
             actions.append(
                 "%s %r from a smart filter matching %d item(s)"
@@ -416,19 +417,20 @@ async def reconcile_smart_collection(
                 # hash as done. Only under ``summary_asserted``: see above for
                 # the two callers for whom an absent summary asserts nothing.
                 actions.append("cleared the summary of %r" % title)
-            actions += apply_collection_settings(
+            settings_actions, settings_ok = apply_collection_settings(
                 section, collection, settings, label, config
             )
+            actions += settings_actions
 
             if record is None:
                 record = ManagedCollection(
                     library=library, title=title, kind="smart",
                     plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
-                    definition_hash=wanted,
+                    definition_hash=wanted if settings_ok else "",
                 )
                 session.add(record)
             else:
-                record.definition_hash = wanted
+                record.definition_hash = wanted if settings_ok else ""
                 record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
                 # The row can predate this definition's SHAPE. ``shape_conflict``
                 # tells an operator switching a definition from a list builder to

@@ -366,10 +366,12 @@ async def reconcile_list_collection(
         # because the settings are in the hash -- reaching here at all means
         # either the membership or one of them changed, and which one it was is
         # not worth a second hash to learn.
+        settings_ok = True
         if not dry_run and collection is not None:
-            actions += apply_collection_settings(
+            settings_actions, settings_ok = apply_collection_settings(
                 section, collection, settings, label, config
             )
+            actions += settings_actions
             actions += _label_members(items, settings, title)
 
         if not dry_run:
@@ -377,11 +379,11 @@ async def reconcile_list_collection(
                 record = ManagedCollection(
                     library=library, title=title, kind="manual",
                     plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
-                    definition_hash=wanted,
+                    definition_hash=wanted if settings_ok else "",
                 )
                 session.add(record)
             else:
-                record.definition_hash = wanted
+                record.definition_hash = wanted if settings_ok else ""
                 record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
                 if record.kind != "manual":
                     # A row written under another kind can sit under a title

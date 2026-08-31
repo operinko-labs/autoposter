@@ -681,6 +681,30 @@ async def test_a_server_without_a_plex_pass_reports_and_carries_on(
     )
 
 
+async def test_a_failed_hub_write_is_retried_on_the_next_pass(
+    session, registry_entry
+):
+    """Roadmap row 142(c). A failed ``_apply_hub`` used to let the definition
+    hash store as current, so a Plex-Pass-required failure was never retried
+    until the operator edited the definition. The hash now stores empty on a
+    settings failure, so the next pass takes the update path again and the
+    hub write is re-attempted -- observable as the failure action appearing
+    on the SECOND pass too, where the old code short-circuited silently."""
+    registry_entry(_Listing("settings_hub_retry", [("imdb", "tt1")]))
+    live = NoPlexPassCollection("Pinned", labels=[LABEL])
+    section = _one_item_section(existing=[live])
+    definition = CollectionDefinition(
+        title="Pinned", builder="settings_hub_retry", visible_home=True,
+    )
+
+    await _run(session, section, [definition])
+    actions = await _run(session, section, [definition])
+
+    assert any(
+        "could not set the hub visibility of 'Pinned'" in a for a in actions
+    ), "the second pass must retry the hub write, not skip on the stored hash"
+
+
 async def test_a_failed_move_does_not_discard_a_successful_visibility_write(
     session, registry_entry
 ):
