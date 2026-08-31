@@ -21,10 +21,14 @@ Three rules, three tests:
    that fact and the editor already renders it on the restart pill, so a
    second copy here would be a copy that drifts.
 """
+from typing import get_args
+
 from pydantic import BaseModel
 
 from autoposter.config.descriptions import (
     FIELD_DESCRIPTIONS,
+    _item_model_of,
+    _model_of,
     build_field_descriptions,
 )
 from autoposter.config.schema import Config, Secrets
@@ -108,3 +112,82 @@ def test_a_description_never_says_when_a_setting_takes_effect():
         if word in description.lower()
     ]
     assert offenders == [], f"descriptions that describe timing: {offenders}"
+
+
+def _model_types_reachable(annotation) -> bool:
+    """True if this annotation is a shape ``_model_of``/``_item_model_of``
+    cover: a model, ``Model | None``, or ``list[Model]`` (each optionally
+    wrapped in the other)."""
+    return _model_of(annotation) is not None or _item_model_of(annotation) is not None
+
+
+def _model_types_present(annotation) -> set[type]:
+    """Every ``BaseModel`` subclass named anywhere in this annotation's type
+    arguments, however deeply wrapped -- a generic scan independent of the two
+    helpers above, so it can tell when their vocabulary has missed one."""
+    found: set[type] = set()
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        found.add(annotation)
+        return found
+    for arg in get_args(annotation):
+        found |= _model_types_present(arg)
+    return found
+
+
+def _unsupported_container_fields() -> list[str]:
+    """Every field, across every model class ``config/schema.py`` defines,
+    whose annotation names a ``BaseModel`` type in a container shape neither
+    ``_model_of`` nor ``_item_model_of`` can reach -- a ``dict[str, Model]`` or
+    a ``tuple[Model, ...]``, say. The walk and the guard both find nested
+    models through only those two helpers, so a field shaped like this would
+    be served silently as nothing, rather than failing loudly."""
+    import autoposter.config.schema as schema_module
+
+    offenders = []
+    for obj in vars(schema_module).values():
+        if not (isinstance(obj, type) and issubclass(obj, BaseModel)):
+            continue
+        if obj.__module__ != schema_module.__name__:
+            continue
+        for name, field in obj.model_fields.items():
+            if _model_types_reachable(field.annotation):
+                continue
+            if _model_types_present(field.annotation):
+                offenders.append(f"{obj.__name__}.{name}")
+    return offenders
+
+
+def test_unsupported_container_shape_is_detected():
+    """The detector's own correctness, pinned against a throwaway model rather
+    than the real schema: a ``dict[str, Model]`` field is a shape neither
+    ``_model_of`` nor ``_item_model_of`` covers, so it must be reported."""
+
+    class _Nested(BaseModel):
+        name: str = ""
+
+    class _Holder(BaseModel):
+        by_key: dict[str, _Nested] = {}
+        plain: str = ""
+        wrapped: _Nested | None = None
+        many: list[_Nested] = []
+
+    offenders = []
+    for name, field in _Holder.model_fields.items():
+        if _model_types_reachable(field.annotation):
+            continue
+        if _model_types_present(field.annotation):
+            offenders.append(name)
+    assert offenders == ["by_key"]
+
+
+def test_every_model_holding_field_uses_a_shape_the_walk_covers():
+    """The completeness guard's own blind spot, closed: a future field whose
+    annotation buries a model inside a container the walk's vocabulary does
+    not cover (``dict[str, Model]``, ``tuple[Model, ...]``) fails here loudly,
+    instead of being served as nothing and passing every other test silently
+    (settings-clarity review, Minor 2)."""
+    offenders = _unsupported_container_fields()
+    assert offenders == [], (
+        "fields whose model is buried in an unsupported container shape: "
+        f"{offenders}"
+    )
