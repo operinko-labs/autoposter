@@ -44,6 +44,7 @@ from autoposter.collections.filters import (
     batched_attributes,
     evaluate,
     parse_filters,
+    resolve_search_values,
 )
 
 # The moment every date case is measured against. Pinned rather than
@@ -1468,6 +1469,62 @@ def test_plain_year_numbers_still_parse_as_before():
     group = parse_filters({"year": 1990})
     assert evaluate(group, _view("year", 1990), now=NOW) is True
     assert evaluate(group, _view("year", 1991), now=NOW) is False
+
+
+# --- resolve_search_values: the plex_search half of current_year/today ------
+#
+# ``evaluate``/``_matches_one`` resolve ``_CurrentYear``/``_Today`` at compare
+# time; a ``plex_search`` has no compare step, so ``build_search_url`` needs a
+# concrete value handed to it. Controller ruling (search-tails-2 Task 3
+# review): before this function existed, a ``plex_search:`` config writing
+# ``year: current_year`` parsed without error -- ``year`` is searchable and
+# ``_as_current_year`` is not gated by ``searching`` -- and then reached
+# ``search_url``'s plain ``str(value)`` int/float fallback carrying the
+# unresolved sentinel, rendering its own ``repr()`` into the query Plex
+# actually received.
+
+
+def test_resolve_search_values_replaces_a_bare_current_year():
+    group = parse_filters({"year": "current_year"}, searching=True)
+    resolved = resolve_search_values(group, now=NOW)
+    predicate = resolved.children[0]
+    assert predicate.values == (NOW.year,)
+
+
+def test_resolve_search_values_subtracts_the_offset():
+    group = parse_filters({"year": "current_year-5"}, searching=True)
+    resolved = resolve_search_values(group, now=NOW)
+    assert resolved.children[0].values == (NOW.year - 5,)
+
+
+def test_resolve_search_values_replaces_today_with_the_moment():
+    group = parse_filters({"release.after": "today"}, searching=True)
+    resolved = resolve_search_values(group, now=NOW)
+    assert resolved.children[0].values == (NOW,)
+
+
+def test_resolve_search_values_leaves_an_ordinary_value_alone():
+    """No relative sentinel anywhere -- the common case, and the one
+    ``resolve_search_values`` should touch least: the returned tree is the
+    SAME object, not a rebuilt copy, when nothing needed resolving."""
+    group = parse_filters({"year": 1990, "studio": "A24"}, searching=True)
+    resolved = resolve_search_values(group, now=NOW)
+    assert resolved is group
+
+
+def test_resolve_search_values_reaches_into_a_nested_group():
+    group = parse_filters({"any": {"year": "current_year"}}, searching=True)
+    resolved = resolve_search_values(group, now=NOW)
+    nested = resolved.children[0]
+    assert nested.children[0].values == (NOW.year,)
+
+
+def test_resolve_search_values_only_rebuilds_the_predicate_that_changed():
+    group = parse_filters({"year": "current_year", "studio": "A24"}, searching=True)
+    resolved = resolve_search_values(group, now=NOW)
+    original_studio = next(c for c in group.children if c.field == "filters.studio")
+    resolved_studio = next(c for c in resolved.children if c.field == "filters.studio")
+    assert resolved_studio is original_studio
 
 
 # --- the language base-code fold (roadmap row 204) ---------------------------

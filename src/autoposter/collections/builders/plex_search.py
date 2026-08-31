@@ -46,6 +46,7 @@ One ``listFilterChoices`` per (library, field, libtype) per pass, memoised in
 not known until the pass, which is the same reason ``require_library_type``
 is a build-time check (``builders/base.py:246-269``).
 """
+import datetime as dt
 import logging
 from typing import Any
 from xml.etree import ElementTree
@@ -60,7 +61,12 @@ from autoposter.collections.builders.base import (
     SmartContext,
     require_library_type,
 )
-from autoposter.collections.filters import BY_NAME, base_language_code, parse_filters
+from autoposter.collections.filters import (
+    BY_NAME,
+    base_language_code,
+    parse_filters,
+    resolve_search_values,
+)
 from autoposter.collections.search_sorts import KNOWN_SORT_NAMES
 from autoposter.collections.search_url import build_search_url
 
@@ -320,8 +326,18 @@ class PlexSearchBuilder:
         # AND -- because it runs ahead of ``_render_group`` -- still costs
         # this builder zero ``listFilterChoices`` round-trips before a
         # wrong-libtype sort refuses.
+        #
+        # ``resolve_search_values`` first, against ONE moment for this build
+        # -- the same "one moment for the whole collection" reasoning
+        # ``engine.py``'s own filters pass already uses, not a clock read per
+        # value. ``build_search_url`` stays pure (roadmap row 171's
+        # ``plex_search`` half, controller ruling): a ``_CurrentYear``/
+        # ``_Today`` sentinel left unresolved would reach its plain
+        # ``str(value)``/``value.isoformat()`` branches and render either the
+        # sentinel's own ``repr()`` or raise, rather than the year or date an
+        # operator meant.
         url = build_search_url(
-            params.group,
+            resolve_search_values(params.group, now=dt.datetime.now()),
             libtype=libtype,
             sort_by=params.sort_by or (),
             limit=params.limit,

@@ -5,6 +5,7 @@ byte-identical against Kometa). What is proven here is the surface an operator
 touches: which spellings load, which refuse and what they say, what the builder
 asks Plex, and how many times it asks.
 """
+import datetime as dt
 from xml.etree import ElementTree
 
 import pytest
@@ -261,6 +262,56 @@ async def test_the_builder_sends_the_query_to_the_sections_all_endpoint():
         "/library/sections/1/all?type=1&sort=titleSort&genre=1138"
     ]
     assert result.ids == [("plex", "11"), ("plex", "12")]
+
+
+async def test_current_year_in_a_plex_search_resolves_to_the_real_year():
+    """Row 171's ``plex_search`` half (search-tails-2 Task 3, controller
+    ruling). ``year`` is searchable and ``_as_current_year`` is not gated by
+    ``searching``, so ``year: current_year`` parsed without error even before
+    this fix -- and then reached ``search_url``'s plain ``str(value)``
+    fallback carrying the unresolved ``_CurrentYear`` sentinel, rendering its
+    own ``repr()`` (``year=_CurrentYear(offset=0)``) into the query Plex
+    actually received. ``PlexSearchBuilder.build`` now resolves it against
+    the run's own moment before calling ``build_search_url``, which stays
+    pure and unchanged."""
+    section = FakeSection()
+    ctx = context(section, config={"all": {"year": "current_year"}})
+    await PlexSearchBuilder().build(ctx)
+    year = dt.datetime.now().year
+    assert section.fetch_calls == [
+        f"/library/sections/1/all?type=1&sort=titleSort&year={year}"
+    ]
+
+
+async def test_current_year_with_an_offset_resolves_too():
+    section = FakeSection()
+    ctx = context(section, config={"all": {"year": "current_year-5"}})
+    await PlexSearchBuilder().build(ctx)
+    year = dt.datetime.now().year - 5
+    assert section.fetch_calls == [
+        f"/library/sections/1/all?type=1&sort=titleSort&year={year}"
+    ]
+
+
+async def test_today_in_a_plex_search_date_predicate_resolves_to_the_real_moment():
+    """``_Today`` shares ``_CurrentYear``'s exact gap shape -- an unresolved
+    sentinel with no ``search_url.py`` branch of its own -- and the same fix
+    (``filters.resolve_search_values``) closes it too. Bracketed rather than
+    an exact string: the resolved value is ``datetime.now().isoformat()`` at
+    build time, and there is no clock to freeze here without adding a new
+    test dependency this fix does not otherwise need."""
+    before = dt.datetime.now()
+    section = FakeSection()
+    ctx = context(section, config={"all": {"release.after": "today"}})
+    await PlexSearchBuilder().build(ctx)
+    after = dt.datetime.now()
+
+    (call,) = section.fetch_calls
+    prefix = "/library/sections/1/all?type=1&sort=titleSort&originallyAvailableAt%3E%3E="
+    assert call.startswith(prefix)
+    assert "_Today" not in call
+    resolved = dt.datetime.fromisoformat(call[len(prefix):])
+    assert before <= resolved <= after
 
 
 async def test_a_tag_value_is_looked_up_once_per_pass_and_cached():

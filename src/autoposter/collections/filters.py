@@ -127,7 +127,7 @@ The two must not be reported as one number, which is what row 96's original
 import datetime as dt
 import re
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 import langcodes
@@ -158,6 +158,7 @@ __all__ = [
     "evaluate",
     "parse_filters",
     "predicates",
+    "resolve_search_values",
 ]
 
 # The four categorical columns, as closed sets. A row outside them would parse,
@@ -1520,6 +1521,54 @@ def _as_current_year(value: object, field: str) -> "_CurrentYear | None":
         return None
     suffix = match.group(1)
     return _CurrentYear(offset=int(suffix) if suffix else 0)
+
+
+def _resolve_search_value(value: object, now: dt.datetime) -> object:
+    if isinstance(value, _CurrentYear):
+        return now.year - value.offset
+    if isinstance(value, _Today):
+        return now
+    return value
+
+
+def _resolve_predicate(predicate: FilterPredicate, now: dt.datetime) -> FilterPredicate:
+    resolved = tuple(_resolve_search_value(value, now) for value in predicate.values)
+    return predicate if resolved == predicate.values else replace(predicate, values=resolved)
+
+
+def resolve_search_values(group: FilterGroup, *, now: dt.datetime) -> FilterGroup:
+    """``_CurrentYear``/``_Today``, resolved against ``now`` -- the same
+    deferred-resolution shape both sentinels already have for ``filters:``
+    (``evaluate``/``_matches_one`` resolve them at compare time), applied
+    here for a ``plex_search``, which has no compare step: it has to send
+    Plex a concrete value.
+
+    ``search_url.build_search_url`` is documented PURE -- no clock -- because
+    that purity is what lets ``tests/test_collection_search_oracle.py``
+    compare its output byte for byte against Kometa's own ``build_filter``
+    with no dependence on when the suite runs. Resolving the sentinels HERE,
+    before that call, is what keeps both true at once: an operator can still
+    write ``year: current_year`` or ``release.after: today`` in a
+    ``plex_search:`` block, and ``build_search_url`` itself never reads a
+    clock. Without this step, a ``_CurrentYear``/``_Today`` value would reach
+    ``search_url._arguments``' plain ``str(value)`` (int/float) or
+    ``value.isoformat()`` (date) branches unresolved -- a query string
+    carrying the sentinel's own ``repr()``, or an ``AttributeError``, rather
+    than the year or date an operator meant. Neither sentinel has a case in
+    ``search_url.py`` itself, on purpose: the resolution belongs where the
+    two classes are defined, once, not duplicated at every render branch that
+    might see one.
+
+    Returns a new tree only where something actually changed -- most groups
+    carry no relative value at all, and reusing the input avoids rebuilding a
+    frozen-dataclass tree for nothing.
+    """
+    children = tuple(
+        resolve_search_values(child, now=now) if isinstance(child, FilterGroup)
+        else _resolve_predicate(child, now)
+        for child in group.children
+    )
+    return group if children == group.children else replace(group, children=children)
 
 
 @dataclass(frozen=True)
