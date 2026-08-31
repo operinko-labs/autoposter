@@ -57,6 +57,7 @@ from autoposter.collections.reconcile import (
     load_labels,
     protected_label,
     reconcile_separator,
+    resolve_collision,
 )
 from autoposter.collections.resolve import build_owned_index, resolve_external
 from autoposter.config.schema import CollectionDefinition
@@ -647,8 +648,24 @@ async def _run_one(
         if collection is None:
             outcome.adding = len(items)
         elif items:
-            adding, removing = member_diff(collection, items, definition.sync_mode)
-            outcome.adding, outcome.removing = len(adding), len(removing)
+            # Row 142(b): the same ownership rule the pass applies, read-only
+            # (dry_run=True keeps ``claim_ownership`` unreached). A
+            # collision-blocked collection must not preview a write the pass
+            # will refuse. The message is dropped here on purpose:
+            # ``reconcile_list_collection`` below runs the same check under
+            # the same dry_run and reports it, and appending it twice would
+            # double the action. Costs one ``collection.reload()`` GET per
+            # previewed title that exists in Plex -- the per-title price the
+            # real pass already pays in ``lists.py``.
+            ok, _ = resolve_collision(
+                collection, label,
+                config.collections.adopt, config.collections.adopt_from,
+                config.collections.adopt_removes_prior_label, True,
+                config.collections.protect_labels,
+            )
+            if ok:
+                adding, removing = member_diff(collection, items, definition.sync_mode)
+                outcome.adding, outcome.removing = len(adding), len(removing)
 
     summary, summary_action = await _summary_for(definition, result, summaries)
     if summary_action:

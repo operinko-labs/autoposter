@@ -1350,6 +1350,44 @@ async def test_the_preview_diff_is_taken_against_the_filtered_set(
     assert result.filtered == 1
 
 
+async def test_the_preview_counts_respect_ownership_resolution(
+    session, registry_entry
+):
+    """Roadmap row 142(b). The preview's ``adding``/``removing`` used to be
+    diffed against the current Plex listing BEFORE the ownership rule ran, so
+    a collision-blocked collection -- one that exists under our title without
+    our label -- previewed as if the write would apply when the pass will
+    refuse it. The counts must be zero, and the conflict must still be
+    reported exactly once (by the reconcile step's own dry-run message, not
+    doubled by the preview block)."""
+    registry_entry(_Listing(
+        "test_preview_conflict", [("imdb", "tt1"), ("imdb", "tt2")]
+    ))
+    # No LABEL: this collection is somebody else's, and adopt is off in
+    # ``_config()``.
+    foreign = FakeCollection("Contested", [FakeItem("m9", ["imdb://tt9"])])
+    section = FakeSection(
+        [("m1", ["imdb://tt1"]), ("m2", ["imdb://tt2"])], existing=[foreign],
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(title="Contested", builder="test_preview_conflict")],
+        _config(), dry_run=True, preview=True,
+    )
+
+    [result] = run.definitions
+    assert (result.adding, result.removing) == (0, 0), (
+        "a collision-blocked collection must not preview a write the pass "
+        "will refuse"
+    )
+    conflicts = [a for a in result.actions if "conflict" in a]
+    assert len(conflicts) == 1, (
+        "the conflict is reported exactly once -- by the reconcile step, "
+        "not doubled by the preview block: %r" % result.actions
+    )
+
+
 async def test_a_filter_that_cannot_evaluate_leaves_its_collection_alone(
     session, registry_entry
 ):
