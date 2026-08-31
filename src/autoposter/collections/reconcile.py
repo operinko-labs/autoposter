@@ -261,7 +261,7 @@ def claim_ownership(collection, label: str, prior: str, remove_prior: bool) -> N
 #: decided apart from the writing. ``resolve_collision`` below folds them into
 #: the ``(ok, message)`` pair its two reconcilers want, and that pair is lossy:
 #: ``ok=False`` covers both a write the pass will REFUSE and an adoption it
-#: will PERFORM as soon as it is not a dry run. Row 193: the preview needs the
+#: will PERFORM as soon as it is not a dry run. Row 142(b): the preview needs the
 #: distinction the pair throws away, so the rule answers here in three states
 #: and ``would_proceed`` reads the same three -- rather than the preview
 #: re-deriving ownership for itself, which is the drift this module's one

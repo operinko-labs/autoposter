@@ -1391,10 +1391,10 @@ async def test_the_preview_counts_respect_ownership_resolution(
 async def test_the_preview_counts_an_adoption_the_pass_will_carry_out(
     session, registry_entry
 ):
-    """Row 193. ``resolve_collision`` answers three ways, not two: ``ok`` is
-    ``False`` both for a write the pass will REFUSE and for an eligible
-    adoption held back only by ``dry_run`` -- a write the real pass WILL
-    perform. Gating the preview on ``ok`` alone reported 0/0 for exactly the
+    """Row 142(b), fix round. ``resolve_collision`` answers three ways, not
+    two: ``ok`` is ``False`` both for a write the pass will REFUSE and for an
+    eligible adoption held back only by ``dry_run`` -- a write the real pass
+    WILL perform. Gating the preview on ``ok`` alone reported 0/0 for exactly the
     collection ``adopt`` exists to take over: a prior tool's, under our title,
     with adoption on. The counts must be the real ones the adopting pass would
     write, and the "would adopt" message must still arrive exactly once."""
@@ -1430,8 +1430,8 @@ async def test_the_preview_counts_an_adoption_the_pass_will_carry_out(
 async def test_the_preview_still_refuses_a_protected_collection_under_adopt(
     session, registry_entry
 ):
-    """The other half of row 193: turning ``adopt`` on must not turn the gate
-    off. A protected collection is a refusal ``resolve_collision`` reaches
+    """The other half of row 142(b)'s fix round: turning ``adopt`` on must not
+    turn the gate off. A protected collection is a refusal ``resolve_collision`` reaches
     BEFORE adoption, so the preview owes it zeros even though the collection
     also carries an ``adopt_from`` label."""
     registry_entry(_Listing(

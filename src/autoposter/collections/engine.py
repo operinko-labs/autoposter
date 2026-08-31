@@ -650,9 +650,9 @@ async def _run_one(
         elif items:
             # Row 142(b): the same ownership rule the pass applies, read-only.
             # A collision-blocked collection must not preview a write the pass
-            # will refuse. Row 193: nor may the reverse happen -- gating on
-            # ``resolve_collision``'s ``ok`` previewed 0/0 for an eligible
-            # adoption, which is a write the pass DOES perform, so the
+            # will refuse. And its fix round: nor may the reverse happen --
+            # gating on ``resolve_collision``'s ``ok`` previewed 0/0 for an
+            # eligible adoption, which is a write the pass DOES perform, so the
             # question asked here is ``would_proceed``'s "will the pass
             # reconcile this?" and not "is it already ours?". No message is
             # taken: ``reconcile_list_collection`` below runs the rule again
