@@ -394,6 +394,21 @@ async def install_collection_poster(
             ) from None
 
     async with session_factory() as session:
+        record = (
+            await session.execute(
+                select(ManagedCollection).where(ManagedCollection.id == collection_id)
+            )
+        ).scalar_one_or_none()
+        if record is not None:
+            # The poster short-circuit sits above apply_poster
+            # (collections/lists.py:305, smart.py:375, reconcile.py:853,1107),
+            # so without this the next pass -- dry-run or real -- answers
+            # "unchanged" for a membership-stable collection and the
+            # operator's image never reaches Plex. Mirrors the fingerprint
+            # null in install_manual_source above. No row yet is a no-op,
+            # the same posture that endpoint takes when render is None.
+            record.poster_sha256 = None
+
         session.add(
             EventLog(
                 source="manual",

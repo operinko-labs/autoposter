@@ -865,6 +865,71 @@ async def test_the_collection_endpoint_does_not_upload_to_plex(
     assert collection.poster_sha256 is None
 
 
+async def test_a_collection_poster_install_reopens_the_reconcile_gate(
+    client, auth_headers, session, assets_root, transport
+):
+    """The setposter-invalidation bug, at the endpoint.
+
+    Every reconciler short-circuits the poster step once ``poster_sha256`` is
+    non-NULL and membership is unchanged (``lists.py:305``, ``smart.py:375``,
+    ``reconcile.py:853,1107``) -- the ONLY thing that reopens it is that field
+    going back to NULL. A collection that already carries a hash (a prior
+    automatic or manual poster) is exactly DC Extended Universe's situation:
+    without this, a freshly installed poster is written to disk and never
+    reaches a pixel, on "Diff now" or on any real reconcile, forever. Mirrors
+    the fingerprint null ``install_manual_source`` already does at row
+    298-299 above, for the identical reason.
+    """
+    collection_id = await _collection(session, poster_sha256="e" * 64)
+
+    response = await _set_poster(client, collection_id, auth_headers)
+
+    assert response.status_code == 200
+    row = (
+        await session.execute(
+            select(ManagedCollection).where(ManagedCollection.id == collection_id)
+        )
+    ).scalar_one()
+    await session.refresh(row)
+    assert row.poster_sha256 is None
+
+
+async def test_a_collection_poster_install_is_a_no_op_if_the_row_vanishes(
+    client, auth_headers, session, session_factory, assets_root, monkeypatch
+):
+    """No row yet is a no-op, not an error -- the same posture
+    ``install_manual_source`` takes when ``render is None`` (row 294 above).
+    In practice this can only happen if the row is deleted between the
+    endpoint's first lookup and its final commit, so the disappearance is
+    forced from inside ``_install`` -- the synchronous write that runs in
+    that window -- via a coroutine handed back to this test's own event loop,
+    since ``_install`` itself runs off it in a worker thread."""
+    import asyncio
+
+    from autoposter.api import manual as manual_module
+
+    collection_id = await _collection(session)
+    loop = asyncio.get_running_loop()
+    original_install = manual_module._install
+
+    def vanish_then_install(staged, target):
+        async def _delete():
+            async with session_factory() as other:
+                row = await other.get(ManagedCollection, collection_id)
+                await other.delete(row)
+                await other.commit()
+
+        asyncio.run_coroutine_threadsafe(_delete(), loop).result()
+        return original_install(staged, target)
+
+    monkeypatch.setattr(manual_module, "_install", vanish_then_install)
+
+    response = await _set_poster(client, collection_id, auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "installed", "applies": "next reconcile"}
+
+
 async def test_a_collection_title_that_escapes_the_assets_root_is_refused(
     client, auth_headers, session, assets_root, transport
 ):

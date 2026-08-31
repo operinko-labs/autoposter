@@ -124,6 +124,13 @@ class FakeCollection:
     def addLabel(self, labels, locked=True):
         self._labels.append(type("L", (), {"tag": labels})())
 
+    def uploadPoster(self, filepath):
+        with open(filepath, "rb") as handle:
+            self.uploaded_poster = handle.read()
+
+    def lockPoster(self):
+        self.poster_locked = True
+
 
 class FakeSection:
     def __init__(self, existing=()):
@@ -716,3 +723,69 @@ async def test_the_poster_refresh_fall_through_still_refreshes_the_stats(
     assert added == 0, "the fall-through left the create pass's stale delta behind"
     assert removed == 0
     assert reconciled_at is not None
+
+
+def _jpeg(color: str) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), color).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+async def test_a_freshly_installed_local_poster_is_picked_up_next_pass(
+    session, config_factory, tmp_path
+):
+    """The consumer side of the setposter-invalidation contract
+    (``api/manual.py::install_collection_poster``).
+
+    A stable collection (``+0 -0``) is gated on ``record.poster_sha256 is
+    None`` (``lists.py:305``) once ``definition_hash`` is unchanged -- the
+    ONLY thing that reopens the gate is that field going back to NULL. This
+    reproduces exactly what a fixed ``install_collection_poster`` does: it
+    overwrites the local override file the reconciler already resolves
+    (``local_poster_path`` -- the same ``assets_root/library/title/poster.jpg``
+    the endpoint writes to) and nulls ``poster_sha256`` in the same commit as
+    the install. Membership never changes here, so if the reconciler picks up
+    the new file and re-hashes it, that can only be because the NULL reopened
+    the gate -- proving the endpoint's half of the contract is what the whole
+    fix hinges on.
+    """
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    config.collections.posters = True
+    section = FakeSection()
+    items = [FakeItem("a"), FakeItem("b")]
+    poster_path = tmp_path / "Movies" / "IMDb Top 250" / "poster.jpg"
+    poster_path.parent.mkdir(parents=True)
+    poster_path.write_bytes(_jpeg("red"))
+
+    async def unreachable(request):
+        raise AssertionError("a local override exists; nothing should be fetched")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(unreachable)) as http:
+        await reconcile_list_collection(
+            session, section, "Movies", "IMDb Top 250", items, LABEL, dry_run=False,
+            kind="chart", key="IMDb Top 250", http=http, config=config,
+        )
+        row = (await session.execute(select(ManagedCollection))).scalars().one()
+        old_sha = row.poster_sha256
+        assert old_sha is not None, "precondition: the row already carries a hash"
+
+        # What install_collection_poster does once fixed: overwrite the file,
+        # and null the hash in the same commit.
+        poster_path.write_bytes(_jpeg("blue"))
+        row.poster_sha256 = None
+        await session.commit()
+
+        actions = await reconcile_list_collection(
+            session, section, "Movies", "IMDb Top 250", items, LABEL, dry_run=False,
+            kind="chart", key="IMDb Top 250", http=http, config=config,
+        )
+
+    assert any("poster" in a for a in actions), actions
+    await session.refresh(row)
+    assert row.poster_sha256 is not None
+    assert row.poster_sha256 != old_sha
