@@ -160,6 +160,20 @@ class Scheduler:
         # whole run, indistinguishable from a scheduler that never woke up.
         logger.info("scheduler: %s started", job.name)
 
+        # Roadmap row 19's run_start, from the same after-the-commit position
+        # the completion send uses: the claim above is committed, so the
+        # scheduled_runs row already shows this run in flight and the payload
+        # never describes a run the database does not. Fire-and-forget for the
+        # completion send's reason -- an awaited send's worst case is ~31.5s on
+        # the default retry config (notify/dispatch.py) and this loop runs
+        # every job sequentially, so awaiting it here would delay the work the
+        # notification is announcing.
+        self._start_notification(
+            "scheduled_run_started",
+            f"scheduled run {job.name} started",
+            {"job": job.name},
+        )
+
         status, detail = "ok", ""
         try:
             async with self._session_factory() as session:
@@ -210,16 +224,28 @@ class Scheduler:
         # recorded. send's boolean is deliberately ignored: the Notifier does
         # its own outcome logging, and a disabled notifier's vacuous True
         # must not be reported as a delivery.
-        self._start_notification(job.name, status, detail[:2000])
-
-    def _start_notification(self, name: str, status: str, detail: str) -> None:
-        task = asyncio.create_task(
-            self._notifier.send(
-                "scheduled_run_completed",
-                f"scheduled run {name} finished: {status}",
-                {"job": name, "status": status, "detail": detail},
-            )
+        recorded = detail[:2000]
+        self._start_notification(
+            "scheduled_run_completed",
+            f"scheduled run {job.name} finished: {status}",
+            {"job": job.name, "status": status, "detail": recorded},
         )
+        if status == "failed":
+            # Row 19's `error` event, and its ONE call site: this is the only
+            # boundary that knows a scheduled run failed, so emitting it here
+            # rather than per job body keeps one event with one shape. Additive
+            # on purpose -- scheduled_run_completed still fires for every run,
+            # because dropping or renaming a shipped event would break the n8n
+            # flow row 18 exists to keep alive. `recorded` is the same
+            # class-name-only string the row holds (see the handler above).
+            self._start_notification(
+                "scheduled_run_failed",
+                f"scheduled run {job.name} failed: {recorded}",
+                {"job": job.name, "status": "failed", "detail": recorded},
+            )
+
+    def _start_notification(self, event: str, summary: str, detail: dict) -> None:
+        task = asyncio.create_task(self._notifier.send(event, summary, detail))
         self._notify_tasks.add(task)
         task.add_done_callback(self._notification_done)
 

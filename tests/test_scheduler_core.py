@@ -1,14 +1,18 @@
 """Scheduler bookkeeping and claiming."""
 import asyncio
 import inspect
+import json
 import logging
 from pathlib import Path
 
+import httpx
 from sqlalchemy import select, text
 
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import load_config
+from autoposter.config.schema import NotificationsConfig
 from autoposter.db.models import ScheduledRun
+from autoposter.notify.dispatch import build_notifier
 from autoposter.scheduler.core import Job, Scheduler, claim_due
 from autoposter.scheduler.jobs import make_drift_job
 
@@ -333,6 +337,68 @@ class _RecordingNotifier:
         return True
 
 
+async def _await_calls(notifier: "_RecordingNotifier", count: int) -> None:
+    """Wait until ``notifier.calls`` reaches ``count`` entries.
+
+    ``notifier.done`` is set by the FIRST send, which is now the start event
+    -- a test that needs a later send (the completion, or the additive
+    failure event) to have landed must wait on the call count instead.
+    """
+
+    async def _reached():
+        while len(notifier.calls) < count:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_reached(), timeout=5)
+
+
+HOOK_HOST = "hooks.example.test"
+HOOK_URL = f"http://{HOOK_HOST}/notify/tok-SECRET123"
+
+
+def _refuse_db():
+    raise AssertionError("a successful send must never touch the events log")
+
+
+class _Catcher:
+    """A webhook catcher: the real dispatcher POSTs into this.
+
+    These tests assert the payload the operator's endpoint actually receives,
+    not the arguments a fake notifier recorded -- the dispatch seam is where a
+    wrong shape would reach n8n. ``seen`` lets a test await one fire-and-forget
+    send instead of sleeping: the events it will wait for are named at
+    construction, because a waiter created after the POST landed would wait
+    forever.
+    """
+
+    def __init__(self, *events: str):
+        self.bodies: list[dict] = []
+        self._waiters = {
+            f"autoposter: {event}": asyncio.Event() for event in events
+        }
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        self.bodies.append(body)
+        waiter = self._waiters.get(body["title"])
+        if waiter is not None:
+            waiter.set()
+        return httpx.Response(200)
+
+    async def seen(self, event: str) -> dict:
+        """Wait for one event and return its body."""
+        await asyncio.wait_for(self._waiters[f"autoposter: {event}"].wait(), timeout=5)
+        return self.body(event)
+
+    def body(self, event: str) -> dict:
+        (found,) = [b for b in self.bodies if b["title"] == f"autoposter: {event}"]
+        return found
+
+    @property
+    def titles(self) -> list[str]:
+        return [body["title"] for body in self.bodies]
+
+
 async def test_a_completed_job_notifies_with_the_job_name_and_ok_status(session_factory):
     async def body(session):
         return "did the thing"
@@ -343,11 +409,13 @@ async def test_a_completed_job_notifies_with_the_job_name_and_ok_status(session_
         session_factory, [_job(run=body)], poll_seconds=0.01, notifier=notifier
     )
     task = asyncio.create_task(scheduler.run(stop))
-    await asyncio.wait_for(notifier.done.wait(), timeout=5)
+    await _await_calls(notifier, 2)
     stop.set()
     await task
 
-    event, summary, detail = notifier.calls[0]
+    assert notifier.calls[0][0] == "scheduled_run_started"
+
+    event, summary, detail = notifier.calls[1]
     assert event == "scheduled_run_completed"
     assert detail == {"job": "demo", "status": "ok", "detail": "did the thing"}
     assert "demo" in summary
@@ -363,17 +431,132 @@ async def test_a_failed_job_notifies_with_failed_status(session_factory):
         session_factory, [_job(run=body)], poll_seconds=0.01, notifier=notifier
     )
     task = asyncio.create_task(scheduler.run(stop))
-    await asyncio.wait_for(notifier.done.wait(), timeout=5)
+    await _await_calls(notifier, 2)
     stop.set()
     await task
 
-    event, _summary, detail = notifier.calls[0]
+    assert notifier.calls[0][0] == "scheduled_run_started"
+
+    event, _summary, detail = notifier.calls[1]
     assert event == "scheduled_run_completed"
     assert detail["job"] == "demo"
     assert detail["status"] == "failed"
     # Row 209: the notification payload is a served surface and carries the
     # same narrowed detail the scheduled_runs row records.
     assert detail["detail"] == "RuntimeError"
+
+
+# --- roadmap row 19: the run_start and error events -------------------------
+
+
+async def test_a_due_job_posts_a_run_start_payload_before_its_completion(
+    session_factory,
+):
+    """Row 19's ``run_start``, asserted at the dispatch seam: this is the exact
+    body the operator's endpoint receives. It fires after the claim commits --
+    the row already says the run is in flight -- and before the completion
+    payload, which is the ordering a consumer pairing the two depends on."""
+
+    async def body(session):
+        return "did the thing"
+
+    catcher = _Catcher("scheduled_run_started", "scheduled_run_completed")
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(catcher.handler)
+    ) as http:
+        notifier = build_notifier(
+            NotificationsConfig(enabled=True, url=HOOK_URL), http, _refuse_db
+        )
+        stop = asyncio.Event()
+        scheduler = Scheduler(
+            session_factory, [_job(run=body)], poll_seconds=0.01, notifier=notifier
+        )
+        task = asyncio.create_task(scheduler.run(stop))
+        started = await catcher.seen("scheduled_run_started")
+        await catcher.seen("scheduled_run_completed")
+        stop.set()
+        await task
+
+    assert started == {
+        "version": "1.0",
+        "title": "autoposter: scheduled_run_started",
+        "message": "scheduled run demo started",
+        "attachments": [],
+        # No status field, so an n8n gate on `body.type === "success"` passes
+        # for a start too -- the shipped derivation (payload.py), unchanged.
+        "type": "success",
+    }
+    assert catcher.titles.index("autoposter: scheduled_run_started") < (
+        catcher.titles.index("autoposter: scheduled_run_completed")
+    )
+
+
+async def test_a_failed_job_posts_the_error_event_as_well_as_the_completion(
+    session_factory,
+):
+    """Row 19's ``error``: one call site, the same boundary that writes the
+    failed status. ADDITIVE -- ``scheduled_run_completed`` still fires, because
+    removing a shipped event would break the n8n flow row 18 exists for. The
+    message carries the class name only: an unmarked exception's str() is not
+    a served surface (rows 209/213)."""
+
+    async def body(session):
+        raise RuntimeError("job exploded")
+
+    catcher = _Catcher("scheduled_run_failed", "scheduled_run_completed")
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(catcher.handler)
+    ) as http:
+        notifier = build_notifier(
+            NotificationsConfig(enabled=True, url=HOOK_URL), http, _refuse_db
+        )
+        stop = asyncio.Event()
+        scheduler = Scheduler(
+            session_factory, [_job(run=body)], poll_seconds=0.01, notifier=notifier
+        )
+        task = asyncio.create_task(scheduler.run(stop))
+        failed = await catcher.seen("scheduled_run_failed")
+        completed = await catcher.seen("scheduled_run_completed")
+        stop.set()
+        await task
+
+    assert failed == {
+        "version": "1.0",
+        "title": "autoposter: scheduled_run_failed",
+        "message": "scheduled run demo failed: RuntimeError",
+        "attachments": [],
+        "type": "failure",
+    }
+    assert completed["type"] == "failure", "the shipped event is unchanged"
+    assert "job exploded" not in json.dumps(catcher.bodies), (
+        "the exception's own message never reaches a served surface"
+    )
+
+
+async def test_a_successful_run_posts_no_error_event(session_factory):
+    """The error event is a failure signal, not a run marker: a consumer
+    routing on it must never be woken by a run that worked."""
+
+    async def body(session):
+        return "did the thing"
+
+    catcher = _Catcher("scheduled_run_completed")
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(catcher.handler)
+    ) as http:
+        notifier = build_notifier(
+            NotificationsConfig(enabled=True, url=HOOK_URL), http, _refuse_db
+        )
+        stop = asyncio.Event()
+        scheduler = Scheduler(
+            session_factory, [_job(run=body)], poll_seconds=0.01, notifier=notifier
+        )
+        task = asyncio.create_task(scheduler.run(stop))
+        await catcher.seen("scheduled_run_completed")
+        stop.set()
+        await task
+
+    assert "autoposter: scheduled_run_failed" not in catcher.titles
 
 
 async def test_notification_failure_does_not_mark_the_run_failed(session_factory):
@@ -410,11 +593,13 @@ async def test_the_notification_fires_after_the_run_is_committed(session_factory
         session_factory, [_job(run=body)], poll_seconds=0.01, notifier=notifier
     )
     task = asyncio.create_task(scheduler.run(stop))
-    await asyncio.wait_for(notifier.done.wait(), timeout=5)
+    # calls[0] is the start event, which reads the row before the job even
+    # runs -- the completion event (calls[1]) is the one this test pins.
+    await _await_calls(notifier, 2)
     stop.set()
     await task
 
-    assert notifier.observed == [("ok", True, "did the thing")]
+    assert notifier.observed[1] == ("ok", True, "did the thing")
 
 
 async def test_the_scheduler_holds_the_notification_task_until_it_finishes(
@@ -445,9 +630,17 @@ async def test_the_scheduler_holds_the_notification_task_until_it_finishes(
             await asyncio.sleep(0.01)
 
     await asyncio.wait_for(parked(), timeout=5)
-    assert len(scheduler._notify_tasks) == 1
+    # A successful run now sends two events (start, then completion), both
+    # parked on the same ``release`` -- there can be one or both in flight
+    # by the time this observes the set, depending on scheduling.
+    assert len(scheduler._notify_tasks) >= 1
     release.set()
-    await asyncio.wait_for(notifier.done.wait(), timeout=5)
+
+    async def drained():
+        while scheduler._notify_tasks:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(drained(), timeout=5)
     stop.set()
     await task
     assert not scheduler._notify_tasks, "the done-callback must drop the reference"
