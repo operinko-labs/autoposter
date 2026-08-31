@@ -1473,10 +1473,15 @@ FRANCHISE_PARAMS: tuple[tuple[str, object], ...] = (
     # loudly, reversibly, naming both numbers and the knob
     # (`builders/facts_family.py`'s over-cap branch). Too high creates hundreds
     # of collections an operator then deletes one at a time, at `max_deletes` a
-    # pass. 250 is five times the engine's own default of 50, which is the
-    # number a franchise family would hit on a mid-sized library and be refused
-    # by for no reason anybody chose. Record §5 row 1.
-    ("max_collections", 250),
+    # pass. A refused family never reconciles its existing members -- they stay
+    # frozen at stale sort prefixes -- so the cost of guessing too low is not
+    # "try again higher" but a library stuck mid-migration. 500 is ten times the
+    # engine's own default of 50: still a guard against the failure mode a cap
+    # exists for (a mount or filter break that turns into runaway enumeration,
+    # thousands of buckets from nothing), not against a large library's organic
+    # franchise count -- a ~16k-item library legitimately clears 250. Record §5
+    # row 1.
+    ("max_collections", 500),
     # Three of upstream's keys are deliberately NOT here, each because nothing
     # in this service can consume it rather than because it was overlooked:
     #
