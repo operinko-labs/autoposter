@@ -72,7 +72,11 @@ _CREDENTIAL_PARAM = re.compile(r"(?i)([-\w]*(?:api[-_]?key|token))(=|%3D)[^&\s'\
 # as the plain path does. This buys exactly one level: %253A (double-encoded)
 # still passes, the same accepted residual the row records -- no shipped
 # provider or client produces it, and the pod log keeps the full line either
-# way. The %2F tempering is scoped to the ENCODED branch only, as a separate
+# way. Also unmatched: urllib.parse.quote's default safe='/' leaves the
+# slashes literal and encodes only the colon, so a quoted URL renders as
+# http%3A//host%3A32400/x -- caught by neither pattern here, no call to
+# quote( exists in src/, and the pod log keeps the full line either way.
+# The %2F tempering is scoped to the ENCODED branch only, as a separate
 # pattern: sharing one character class between both branches (as first
 # shipped) also stopped the PLAIN branch at any literal %2F in the authority
 # -- e.g. percent-encoded userinfo -- serving a host that c79d7f4 redacted
