@@ -1,6 +1,6 @@
 """The two public-IMDb-list builders: a list by id, and a watchlist by user.
 
-The transport is ``collections/imdb_lists.py``, which raises on anything it
+The transport is ``collections/imdb_graphql.py``, which raises on anything it
 did not expect -- see its docstring for why a list builder that degrades to
 fewer ids is worse than one that fails.
 
@@ -50,7 +50,7 @@ import re
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from autoposter.collections.builders.base import BuilderContext, BuilderResult
-from autoposter.collections.imdb_lists import fetch_list, fetch_watchlist
+from autoposter.collections.imdb_graphql import fetch_list, fetch_watchlist
 
 logger = logging.getLogger(__name__)
 

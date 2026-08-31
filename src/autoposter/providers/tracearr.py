@@ -316,7 +316,7 @@ class TracearrClient:
             # Every page spent with a cursor still outstanding: the one exit
             # that hands back a *truncated* window. Silent truncation looks
             # exactly like a complete answer -- the judgement
-            # ``providers/tmdb_lists`` and ``collections/imdb_lists`` both made.
+            # ``providers/tmdb_lists`` and ``collections/imdb_graphql`` both made.
             logger.warning(
                 "%s: stopped at the %d-page cap with %d record(s); the window may "
                 "hold more plays than this pass will see",

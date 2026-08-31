@@ -3,7 +3,7 @@
 Never touches the real API -- MockTransport only. The fixtures under
 ``tests/fixtures/collections/imdb_search_*.json`` are recordings of what
 ``api.graphql.imdb.com`` actually answered on 2026-08-25 to the query pinned in
-``src/autoposter/collections/imdb_lists.py`` as ``SEARCH_QUERY``, and
+``src/autoposter/collections/imdb_graphql.py`` as ``SEARCH_QUERY``, and
 ``RECORDED_CONSTRAINTS``/``RECORDED_SORT`` below are the variables that produced
 them. Introspection is refused on this endpoint, so the whole constraint schema
 was walked through the GraphQL validator's own error messages -- the walk log is
@@ -32,7 +32,7 @@ from pydantic import ValidationError
 from autoposter.collections.builders import REGISTRY, BuilderContext, SourceClients
 from autoposter.collections.builders.base import LibraryTypeMismatch
 from autoposter.collections.builders.imdb_search import GENRES, SORTS
-from autoposter.collections.imdb_lists import (
+from autoposter.collections.imdb_graphql import (
     MAX_PAGES,
     PAGE_SIZE,
     SEARCH_QUERY,
@@ -358,7 +358,7 @@ async def test_the_cap_warning_names_the_search(caplog):
         "pageInfo": {"hasNextPage": True, "endCursor": "more"},
         "edges": [{"node": {"title": {"id": "tt0043014"}}}],
     }}}
-    with caplog.at_level(logging.WARNING, logger="autoposter.collections.imdb_lists"):
+    with caplog.at_level(logging.WARNING, logger="autoposter.collections.imdb_graphql"):
         async with httpx.AsyncClient(transport=_answers(payload)) as http:
             await _build(http, genres=["Film-Noir"])
 

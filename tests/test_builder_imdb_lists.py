@@ -27,7 +27,7 @@ import pytest
 from pydantic import ValidationError
 
 from autoposter.collections.builders import REGISTRY, BuilderContext, SourceClients
-from autoposter.collections.imdb_lists import (
+from autoposter.collections.imdb_graphql import (
     LIST_QUERY,
     MAX_PAGES,
     PAGE_SIZE,

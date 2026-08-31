@@ -182,7 +182,7 @@ async def test_history_follows_the_cursor_until_it_is_null():
 
 async def test_history_stops_at_the_page_cap_and_says_so(caplog):
     """A truncated answer that says nothing looks exactly like a complete one
-    -- the ``tmdb_lists``/``imdb_lists`` judgement, one API over."""
+    -- the ``tmdb_lists``/``imdb_graphql`` judgement, one API over."""
     routes = {f"{API_PREFIX}/history": lambda request: _matched(
         _history([{"id": "x"}], cursor="ALWAYS-MORE")
     )}

@@ -265,13 +265,13 @@ class TmdbListClient:
             # Every page spent and no stop condition met, which is the one exit
             # from this loop that hands back a *truncated* answer. It used to be
             # silent, and a silently short collection looks exactly like a
-            # correct one -- `imdb_lists._fetch` says so out loud at its own cap
+            # correct one -- `imdb_graphql._fetch` says so out loud at its own cap
             # and this is the same read. Generic discover is what forced it:
             # `vote_average.gte: 5` matches tens of thousands of titles, so the
             # cap is reachable by an ordinary definition rather than only by a
             # runaway upstream. It stays a warning rather than a raise because
             # the ids collected are real members in TMDb's order -- the same
-            # judgement `imdb_lists` made.
+            # judgement `imdb_graphql` made.
             logger.warning(
                 "%s: stopped at the %d-page cap with %d id(s); there may be more that "
                 "this pass will not see",

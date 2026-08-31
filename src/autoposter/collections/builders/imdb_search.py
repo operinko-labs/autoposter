@@ -1,6 +1,6 @@
 """``imdb_search``: IMDb's advanced title search, as a builder.
 
-The transport is ``collections/imdb_lists.py`` -- the same endpoint, the same
+The transport is ``collections/imdb_graphql.py`` -- the same endpoint, the same
 mandatory ``x-imdb-client-name`` header, the same level-by-level drift
 validation and the same raise-on-anything-unexpected posture the list builders
 get, because the failure that matters is identical either way: a wrong
@@ -47,7 +47,7 @@ from autoposter.collections.builders.base import (
     BuilderResult,
     require_library_type,
 )
-from autoposter.collections.imdb_lists import fetch_search
+from autoposter.collections.imdb_graphql import fetch_search
 
 __all__ = [
     "GENRES",
