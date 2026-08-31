@@ -268,9 +268,13 @@ CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     # 4/1/0 until the divider-polish phase: `content_franchises` moved to the
     # tenth category, `franchises`, when C2 gave the franchises block its own
     # group and divider. The row itself did not change -- only its tab.
-    "content": (3, 1, 0),
+    # 3/1/0 until the franchise-grouping phase: `content_universes` and
+    # `content_dc` followed `content_franchises` into the `franchises` tab on
+    # an operator directive. The rows themselves did not change -- only their
+    # tab.
+    "content": (1, 1, 0),
     "content_ratings": (7, 0, 1),
-    "franchises": (1, 0, 0),
+    "franchises": (3, 0, 0),
     # 1/2/0 until the location-names phase: `location_region` and
     # `location_continent` flipped GATED -> READY when row 196's code->name
     # join shipped (`collections/iso_names.py`).

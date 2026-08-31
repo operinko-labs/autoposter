@@ -956,3 +956,28 @@ async def test_a_universe_list_takes_its_short_code_poster():
 
     assert (mcu.poster_kind, mcu.poster_key) == ("universe", "mcu")
     assert (other.poster_kind, other.poster_key) == (None, None)
+
+
+def test_the_universe_poster_keys_survive_the_category_move():
+    """The design note's own watch item. Universe art is keyed by the LIST REF
+    a definition carries (`UNIVERSE_CODES`, resolved inside the three generic
+    list builders), never by the preset's tab -- so moving both packs into the
+    `franchises` category cannot change which poster any of them gets. Pinned
+    because 'franchise/' art is keyed by DISPLAY NAME and these collections
+    must NOT start resolving through it."""
+    from autoposter.collections.catalog import BY_KEY
+    from autoposter.collections.default_images import UNIVERSE_CODES
+
+    universes = BY_KEY["content_universes"]
+    dc = BY_KEY["content_dc"]
+    assert universes.category == "franchises"
+    assert dc.category == "franchises"
+
+    refs = [d.params["list"] for d in universes.definitions("Movie")]
+    refs += [
+        str(d.params["list"]) if "list" in d.params else str(d.params["id"])
+        for d in dc.definitions("Movie")
+    ]
+    assert len(refs) == 11
+    unmapped = [ref for ref in refs if ref not in UNIVERSE_CODES]
+    assert unmapped == ["fa11en82/in-association-with-dc"]

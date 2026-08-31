@@ -221,10 +221,15 @@ UNIVERSE_CODES: dict[str, str] = {
     "ls547463722": "trek",        # Star Trek (§6 `universe/`: `trek.jpg`)
     "ls501373412": "star",        # Star Wars Universe (§6: `star.jpg`)
     "ls567618635": "xmen",        # X-Men Universe (§6: `xmen.jpg`)
-    # DC Extended Universe (mdblist fa11en82/dc-extended-universe) has no
-    # upstream code: §6's full `universe/` listing holds only `dca` (DC
-    # Animated) and `dcu` (already mapped above), no third DC entry -- left
-    # out per T1's own rule rather than guessed onto a near-miss code.
+    # DC Extended Universe reuses DC Universe's `dcu`. §6's full `universe/`
+    # listing holds only `dca` (DC Animated) and `dcu`, no third DC entry, and
+    # T1 of the posters phase therefore left this ref out under its own
+    # "a code the listing does not show is LEFT OUT, not guessed" rule. This
+    # entry is not a guess overturning that rule -- it is an operator
+    # RATIFICATION (2026-09-01) of the reuse, recorded in p-defimg-probe.md §6
+    # beside the original finding. 'In Association With DC' is NOT ratified
+    # and stays out.
+    "fa11en82/dc-extended-universe": "dcu",
 }
 
 

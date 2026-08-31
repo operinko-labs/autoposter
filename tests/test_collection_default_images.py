@@ -303,8 +303,16 @@ def test_the_universe_codes_are_short_codes_not_display_names():
     assert UNIVERSE_CODES["ls566667558"] == "arrow"    # Arrowverse
     assert UNIVERSE_CODES["ls543971628"] == "avp"      # Alien / Predator
     assert UNIVERSE_CODES["8642250"] == "dcu"          # DC Universe (TMDb list)
-    # 'In Association With DC' has no upstream entry and must not borrow one:
-    # §5 names `dca` as DC ANIMATED, a different continuity.
+    # The DCEU wears `dcu`. p-defimg-probe.md §6's full `universe/` listing
+    # holds no third DC code, and T1 of the posters phase therefore left this
+    # ref OUT rather than guess one. The operator has since RATIFIED the reuse
+    # (2026-09-01) -- an explicit call to share DC Universe's art, not an
+    # inference -- and §6 of the probe doc records the ratification beside its
+    # original finding.
+    assert UNIVERSE_CODES["fa11en82/dc-extended-universe"] == "dcu"
+    # 'In Association With DC' still has no entry and must not borrow one:
+    # §5 names `dca` as DC ANIMATED, a different continuity, and the operator
+    # ratified the DCEU alone.
     assert "fa11en82/in-association-with-dc" not in UNIVERSE_CODES
     for code in UNIVERSE_CODES.values():
         assert code == code.lower()

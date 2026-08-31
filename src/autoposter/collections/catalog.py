@@ -76,7 +76,10 @@ from autoposter.providers.tmdb_lists import CHART_ENDPOINTS
 # ``franchises`` is the tenth and it is OURS, not upstream's: Kometa files
 # ``franchise.yml`` under content, but 65 live franchise collections are a
 # block of their own rather than four rows inside Content -- C2,
-# ``.superpowers/sdd/p-dividers-facts.md``. Universes stay in content.
+# ``.superpowers/sdd/p-dividers-facts.md``. The Universes and DC packs joined
+# it on 2026-09-01 (operator directive): they are franchise blocks by every
+# reading an operator does, and keeping them a tab away from the enumerated
+# family they overlap was the thing that made the overlap hard to see.
 CATEGORIES: dict[str, str] = {
     "awards": "Awards",
     "charts": "Charts",
@@ -989,7 +992,7 @@ _DC_LISTS: tuple[tuple[str, str, tuple[str, object], tuple[str, ...] | None], ..
 CONTENT_PRESETS: tuple[Preset, ...] = (
     Preset(
         key="content_universes",
-        category="content",
+        category="franchises",
         name="Universes",
         description=(
             "Eight cross-franchise universes -- %s -- each built from the "
@@ -1043,7 +1046,7 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
     # ref here is a two-site change, table plus digest.
     Preset(
         key="content_dc",
-        category="content",
+        category="franchises",
         name="DC",
         description=(
             "Three DC collections where the Universes pack used to have one, "

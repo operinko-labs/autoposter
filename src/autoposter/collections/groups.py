@@ -66,8 +66,12 @@ from dataclasses import dataclass
 #
 # The tenth ("franchises") is OURS too: upstream files franchise.yml under
 # content, but 65 live franchise collections are a block, not a member list --
-# C2, p-dividers-facts.md. Universes STAY in content (upstream's own separate
-# franchise/universe art agrees).
+# C2, p-dividers-facts.md. Universes were kept in content on the strength of
+# upstream's separate franchise/universe ART; on 2026-09-01 an operator
+# directive moved them and the DC pack here anyway -- the art keys are
+# unaffected (universe posters resolve from the definition's LIST REF through
+# ``default_images.UNIVERSE_CODES``, never from the tab), and the tab is what
+# an operator navigates.
 #
 # Written out rather than derived from ``CATEGORIES``, and that is the point:
 # ``CATEGORIES`` declares its keys ALPHABETICALLY (``catalog.py:69-79``), so

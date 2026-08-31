@@ -12,6 +12,14 @@ def config(**kwargs):
     return SimpleNamespace(collections=CollectionsConfig(**kwargs))
 
 
+def catalog_definitions(key, library_type="Movie"):
+    """A catalog preset's own definitions -- what the engine would be handed
+    for a config that ticked that key."""
+    from autoposter.collections.catalog import BY_KEY
+
+    return BY_KEY[key].definitions(library_type)
+
+
 @pytest.fixture
 def chart_section():
     """A section double with two items in it, for the end-to-end reconciles.
@@ -959,3 +967,74 @@ def test_group_order_cannot_name_the_fence():
     with pytest.raises(ValidationError):
         CollectionsConfig(group_order=["other"])
     assert all(entry["key"] != "other" for entry in groups.group_listing(config()))
+
+
+def test_the_universe_and_dc_units_file_under_franchises():
+    """The operator directive's first half. Both packs' collections are
+    curated LIST definitions carrying their own titles, so they resolve
+    through ``group_for``'s route 1 -- the preset index -- and the index is
+    built from the preset's ``category``. Moving the category moves the band,
+    with no per-definition edit."""
+    index = groups.preset_groups(
+        config(presets=["content_universes", "content_dc"]), "Movie",
+    )
+    assert index["Fast & Furious"] == "franchises"
+    assert index["Marvel Cinematic Universe"] == "franchises"
+    assert index["Star Wars Universe"] == "franchises"
+    assert index["DC Universe"] == "franchises"
+    assert index["DC Extended Universe"] == "franchises"
+    assert index["In Association With DC"] == "franchises"
+
+    unit = CollectionDefinition(
+        title="Fast & Furious", builder="imdb_list",
+        params={"list": "ls4102351575"},
+    )
+    order = groups.CANONICAL_ORDER
+    assert groups.group_for(unit, index) == "franchises"
+    assert groups.sort_prefix_for(unit, index, order) == "!050_"
+
+
+def test_the_moved_packs_activate_the_franchise_separator_at_050():
+    """The separator half, asserted beside the units: a band whose members
+    moved but whose divider did not would be the exact disagreement the
+    !040 split was. The universes packs alone -- no ``content_franchises`` --
+    must now raise the franchises divider on their own."""
+    cfg = config(
+        presets=["content_universes", "content_dc"], separators=True,
+    )
+    definitions = [
+        *catalog_definitions("content_universes"),
+        *catalog_definitions("content_dc"),
+    ]
+    specs = groups.separator_specs(definitions, "Movie", cfg)
+    franchises = next(spec for spec in specs if spec.group == "franchises")
+    assert franchises.title == "Franchise Collections"
+    assert franchises.sort_title == "!050_!Franchise Collections"
+    # ...and nothing of theirs is left behind in the content band.
+    assert "content" not in {spec.group for spec in specs}
+
+
+def test_a_moved_category_changes_the_definition_hash_so_the_prefix_self_heals():
+    """No migration. ``sort_prefix`` reaches the stored hash through
+    ``with_derived_sort_title`` -> ``lists._settings_parts`` (which is why
+    that wrapper exists at all, ``groups._DerivedSortTitle``'s docstring), so
+    a collection whose band changed is not short-circuited as already-current
+    on the next real pass -- it is re-reconciled and its sort title rewritten.
+    This pins the mechanism the phase relies on rather than trusting it."""
+    from autoposter.collections import lists
+
+    definition = CollectionDefinition(
+        title="Fast & Furious", builder="imdb_list",
+        params={"list": "ls4102351575"},
+    )
+    items = [SimpleNamespace(ratingKey=1), SimpleNamespace(ratingKey=2)]
+    order = groups.CANONICAL_ORDER
+    assert groups.sort_prefix("content", order) == "!040_"
+    assert groups.sort_prefix("franchises", order) == "!050_"
+
+    def hashed(group):
+        return lists._members_hash(items, None, "sync", groups.with_derived_sort_title(
+            definition, groups.sort_prefix(group, order), definition.title, None,
+        ))
+
+    assert hashed("content") != hashed("franchises")
