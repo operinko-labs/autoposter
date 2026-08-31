@@ -226,6 +226,7 @@ describe("dry run", () => {
         items: 120,
         items_with_backup: 34,
         files: 51,
+        missing: 2,
       }),
     );
 
@@ -246,6 +247,8 @@ describe("dry run", () => {
     expect(within(result).getByText("34")).toBeInTheDocument();
     expect(within(result).getByText("items with a file in the backup tree")).toBeInTheDocument();
     expect(within(result).getByText("51")).toBeInTheDocument();
+    expect(within(result).getByText("2")).toBeInTheDocument();
+    expect(within(result).getByText("no longer in Plex")).toBeInTheDocument();
     expect(result.textContent).toContain("Nothing was changed");
   });
 

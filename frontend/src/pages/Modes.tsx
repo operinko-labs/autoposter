@@ -243,6 +243,7 @@ const COUNT_LABELS: Record<string, string> = {
   written: "artwork files written",
   skipped: "skipped",
   failed: "failed",
+  missing: "no longer in Plex",
 };
 
 /** The envelope keys that are not counts. */

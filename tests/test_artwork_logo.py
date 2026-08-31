@@ -774,6 +774,7 @@ async def test_revert_never_refreshes_the_plex_object(session, config, serving):
     await LogoRevertMode(config, plex, serving(), _headers(), apply=True).run(session)
 
     assert item.deleted == 1  # the write half actually ran
+    assert item.refreshed is False
 
 
 async def test_revert_logs_a_missing_item_at_probe_at_info_not_warning(
@@ -842,4 +843,3 @@ async def test_revert_logs_a_missing_item_at_apply_at_info_not_warning(
 
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert warnings == []
-    assert item.refreshed is False
