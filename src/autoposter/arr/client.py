@@ -183,7 +183,7 @@ class ArrClient:
         """Add a label to the instance's tag vocabulary and return its id.
 
         ``POST /api/v3/tag`` with a ``TagResource`` body (banked:
-        ``.superpowers/sdd/p-arr-api-capture.md``, ``paths → "/api/v3/tag" →
+        ``docs/superpowers/captures/2026-09-arr-openapi.md``, ``paths → "/api/v3/tag" →
         post``). One flat vocabulary per service, as ``tags()`` above says.
 
         Raises on a non-2xx like everything else here, and for a sharp reason:
@@ -201,7 +201,7 @@ class ArrClient:
         ``PUT /api/v3/movie/editor`` (Radarr) / ``PUT /api/v3/series/editor``
         (Sonarr) with ``{"<resource>Ids": [...], "tags": [...], "applyTags":
         "add"}`` -- banked verbatim in
-        ``.superpowers/sdd/p-arr-api-capture.md``.
+        ``docs/superpowers/captures/2026-09-arr-openapi.md``.
 
         The editor endpoint rather than ``PUT /api/v3/{movie,series}/{id}``,
         deliberately. That one takes the FULL resource (49 properties on

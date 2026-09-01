@@ -402,7 +402,7 @@ async def test_tags_raises_on_non_2xx():
 # --- roadmap row 89(b): the client's first WRITE ----------------------------
 #
 # Shapes are the services' own, banked verbatim in
-# `.superpowers/sdd/p-arr-api-capture.md` -- `paths → "/api/v3/tag" → post`
+# `docs/superpowers/captures/2026-09-arr-openapi.md` -- `paths → "/api/v3/tag" → post`
 # and `paths → "/api/v3/{movie,series}/editor" → put`. Nothing here is recalled
 # from memory, and nothing here uses the full-body `PUT /api/v3/movie/{id}`:
 # echoing a 49-property resource back is how a dropped field becomes a NULLed
