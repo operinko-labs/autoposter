@@ -55,6 +55,16 @@ operations:
   # genres_source: tvdb
   # studio_source: tvdb
   # originally_available_source: tvdb
+  # Roadmap row 87 -- a verb applied to a field INSTEAD of writing a
+  # provider's value into it. Each verb has its own apply flag, off by default.
+  # field_verbs:
+  #   studio: unlock
+  # lock_apply: false
+  # unlock_apply: false
+  # remove_apply: false
+  # Roadmap row 86 -- export current Plex metadata to a YAML backup.
+  # metadata_backup_enabled: false
+  # metadata_backup_root: /metadatabackup
   tmdb_backoff_seconds: 60 # how long TMDb is left alone after a 429 with no Retry-After; 0 disables the shared window
 
 badges:

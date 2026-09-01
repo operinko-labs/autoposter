@@ -762,6 +762,25 @@ class OperationsConfig(BaseModel):
                 )
         return value
 
+    # Roadmap row 86. Off by default: the mode reads Plex and writes a tree,
+    # and a deployment that has not provided the mount must get a refusal
+    # rather than a backup filling the container's own disk.
+    metadata_backup_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the metadata backup export runs at all. Off refuses the "
+            "trigger and writes nothing."
+        ),
+    )
+    metadata_backup_root: Path = Field(
+        default=Path("/metadatabackup"),
+        description=(
+            "Where the metadata backup writes one YAML file per Plex library, "
+            "holding the current value and lock state of every field this "
+            "service writes."
+        ),
+    )
+
     # Roadmap row 84. TVDb as a nameable source for the three fields its
     # extended record carries, alongside TMDb. The explicit-source model again:
     # exactly one source per field, no precedence and no tiebreak. Unset keeps

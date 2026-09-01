@@ -19,6 +19,7 @@ from autoposter.artwork_modes.logo import LogoMode, LogoRevertMode
 from autoposter.artwork_modes.reset import ResetMode
 from autoposter.artwork_modes.restore import RestoreMode
 from autoposter.artwork_modes.revert import RevertMode
+from autoposter.metadata_backup import MetadataBackupMode
 from autoposter.api.candidates import router as candidates_router
 from autoposter.api.collections_builders import router as collections_builders_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
@@ -935,6 +936,27 @@ async def run_artwork_backup(
     config = request.app.state.config
     headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
     mode = BackupMode(config, plex, http, headers)
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        result = await mode.run(session)
+    return result.as_response()
+
+
+@router.post("/metadata-backup")
+async def run_metadata_backup(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Export Plex's current metadata to a YAML backup (roadmap row 86).
+
+    Read-only w.r.t. Plex and the database -- it reads what Plex is serving and
+    writes one file per library under ``operations.metadata_backup_root`` -- so
+    there is no dry run to run and no worker pause to raise. Gated on
+    ``operations.metadata_backup_enabled``, which is what the refusal names
+    while it is off.
+    """
+    plex, _http = _require_plex(request)
+    config = request.app.state.config
+    mode = MetadataBackupMode(config, plex)
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         result = await mode.run(session)
