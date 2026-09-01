@@ -500,4 +500,109 @@ describe("the custom collections panel", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "TV Shows" }));
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });
+
+  it("offers Edit on override rows and never on file rows", async () => {
+    await renderPanel({
+      definitions: listing([FILE_ROW]),
+      config: config(),
+    });
+
+    // Provenance is uniform: a listing with a file row has no override rows
+    // at all, so the guard is structural -- there is nothing to edit.
+    expect(screen.queryByRole("button", { name: "Edit Hand Picked" })).toBeNull();
+  });
+
+  it("seeds the edit form from the STORED entry, never from the listing", async () => {
+    await renderPanel({
+      definitions: listing(OVERRIDE_ROWS),
+      config: overriddenConfig(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Weekly Watched" }));
+
+    // `summary` is in the stored entry and NOT in the seven-field listing --
+    // a form built from the listing would show it empty and then save the
+    // blank over the operator's text.
+    expect(screen.getByLabelText("Summary")).toHaveValue(
+      "What the household watched this week.",
+    );
+    expect(screen.getByLabelText("Limit")).toHaveValue(25);
+  });
+
+  it("writes the whole list back with only the edited entry changed", async () => {
+    const { puts } = await renderPanel({
+      definitions: listing(OVERRIDE_ROWS),
+      config: overriddenConfig(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Weekly Watched" }));
+    fireEvent.change(screen.getByLabelText("Limit"), { target: { value: "10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/^Saved\./);
+
+    const document = sentDocument(puts);
+    // The negative assertion: the sibling is byte-identical.
+    expect(document.collections.definitions[0]).toEqual(STORED_ENTRIES[0]);
+    expect(document.collections.definitions[1]).toEqual({
+      ...STORED_ENTRIES[1],
+      limit: 10,
+    });
+    expect(document.collections.definitions).toHaveLength(2);
+    // And an override about something else is still there.
+    expect(document.plex.url).toBe("http://plex:32400");
+  });
+
+  it("renders a 422 from the edit against the path the server named", async () => {
+    await renderPanel({
+      definitions: listing(OVERRIDE_ROWS),
+      config: overriddenConfig(),
+      save: () =>
+        json(
+          {
+            detail: [
+              {
+                path: "collections.definitions",
+                message: "the mounted config file lists collections.definitions",
+              },
+            ],
+          },
+          422,
+        ),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Star Wars" }));
+    fireEvent.change(screen.getByLabelText("Limit"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("The server rejected this change.")).toBeInTheDocument();
+    // The path scoped to the errors list: the panel's own intro sentence also
+    // carries the literal text "collections.definitions" in a span of its own.
+    expect(
+      screen.getByText("collections.definitions", { selector: ".custom-errors .mono" }),
+    ).toBeInTheDocument();
+  });
+
+  it("closes the form and re-reads after a save", async () => {
+    const { fetchMock } = await renderPanel({
+      definitions: listing(OVERRIDE_ROWS),
+      config: overriddenConfig(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Star Wars" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/^Saved\./);
+
+    expect(screen.queryByText("Edit definition")).toBeNull();
+    // Two definitions reads and two config reads: the mount, then the re-read.
+    const reads = fetchMock.mock.calls.filter(
+      ([path]) => path === "/api/collections/definitions",
+    );
+    expect(reads).toHaveLength(2);
+  });
+
+  it("no longer claims there is no edit", async () => {
+    await renderPanel({ definitions: listing(OVERRIDE_ROWS), config: overriddenConfig() });
+
+    expect(screen.queryByText(/There is no edit/)).toBeNull();
+  });
 });
