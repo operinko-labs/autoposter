@@ -525,7 +525,7 @@ docker compose -p pcs1 -f docker-compose.yml -f .superpowers/isolated-db.yml \
 
 **Read `D:\Sites\autoposter\.superpowers\run-p-configsafety-t1-red1.log`.**
 
-Expected: **9 failed, 5 passed.** The failures and their mechanisms — check each one,
+Expected: **7 failed, 7 passed.** The failures and their mechanisms — check each one,
 because a test that fails for the wrong reason is not a RED:
 
 | Test | Expected failure |
@@ -918,7 +918,7 @@ async def test_the_two_page_stale_save_is_refused_instead_of_clobbering(
     even listed in overridden_paths, so the page had nothing to show the
     operator. It must now be a 409 that says what happened.
     """
-    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
 
     # T0: page A mounts and seeds. It is now holding the document as of now.
     page_a_seed = deepcopy(THE_INCIDENT_DOCUMENT)
@@ -960,7 +960,7 @@ async def test_a_save_against_a_fresh_seed_is_untouched_by_the_revision_check(
 ):
     """"UI saves generally working": neither defect fires when one page saves
     against a seed nothing has moved under."""
-    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
     revision = await _revision(client, auth_headers)
 
     edited = deepcopy(THE_INCIDENT_DOCUMENT)
@@ -978,7 +978,7 @@ async def test_a_client_that_sends_no_revision_is_not_broken_by_the_upgrade(
 ):
     """A scripted client predates the token. Absent means "proceed" -- the
     frontend is held to sending it by its own tests, not by this endpoint."""
-    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
     edited = deepcopy(THE_INCIDENT_DOCUMENT)
     edited["workers"] = 11
     response = await client.put(
@@ -998,11 +998,11 @@ async def test_the_revision_is_a_content_hash_not_a_timestamp(
     container clock steps *backwards*, which would make a timestamp token go
     backwards.
     """
-    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
     first = await _revision(client, auth_headers)
 
     # The same document written again -- a real write, a new updated_at.
-    await _store(client, auth_headers, deepcopy(THE_INCIDENT_DOCUMENT))
+    await _put_document(client, auth_headers, deepcopy(THE_INCIDENT_DOCUMENT))
     assert await _revision(client, auth_headers) == first
 
     edited = deepcopy(THE_INCIDENT_DOCUMENT)
@@ -1042,7 +1042,7 @@ async def test_the_save_response_carries_the_revision_it_just_wrote(
 async def test_the_apply_arm_checks_the_revision_too(client, auth_headers):
     """Both write arms funnel through _persist_and_swap, so one insertion
     covers both -- and a test says so, because "both" is the claim."""
-    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
     stale = EMPTY_DOCUMENT_REVISION
 
     edited = deepcopy(THE_INCIDENT_DOCUMENT)
@@ -1061,7 +1061,7 @@ async def test_the_preview_accepts_the_revision_and_ignores_it(
     """All three arms take one body shape. A preview that 409'd would be
     refusing to answer "what would this do" for the one case where the
     operator most needs to know."""
-    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
 
     edited = deepcopy(THE_INCIDENT_DOCUMENT)
     edited["workers"] = 11
@@ -1078,7 +1078,7 @@ async def test_a_stale_save_writes_nothing_at_all(
 ):
     """Never half-apply, on the 409 path too: no row change, no swap, no audit
     event for the refused write."""
-    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
     events_before = len(
         (
             await session.execute(
