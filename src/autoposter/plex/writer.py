@@ -259,7 +259,77 @@ def map_values(mapping: dict[str, str], values: list[str]) -> list[str]:
     return mapped
 
 
-def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]:
+def _current_labels(item) -> dict[str, str]:
+    """``{casefolded tag: the tag as the server spells it}`` for one item.
+
+    Mirrors ``collections/reconcile.py``'s ``_folded_labels`` for the same
+    reason: Plex canonicalises label case, so an exact compare would add a
+    label already present under different casing every single pass.
+    """
+    return {
+        tag.casefold(): tag
+        for tag in (getattr(entry, "tag", entry) for entry in getattr(item, "labels", None) or [])
+        if isinstance(tag, str)
+    }
+
+
+def _label_text(category_text: str, severity_text: str) -> str:
+    """``"Violence & Gore: Severe"``. Not a Kometa-mandated string -- row 85's
+    roadmap cell and its Kometa-inventory source name no label format at
+    all -- so this is the build's own documented choice (see the row close),
+    built only from ``category.text``/``severity.text``, never an id."""
+    return f"{category_text}: {severity_text}"
+
+
+def parental_label_edits(
+    item, categories: list[tuple[str, str, str]] | None, operations
+) -> dict[str, object]:
+    """Row 85: the labels IMDb's parental-guide categories add to this item.
+
+    ``categories`` is ``None`` or ``[]`` for "nothing to label" (see
+    ``providers/imdb_parental_guide.py``'s module docstring for every reason)
+    and produces no edits either way.
+
+    Each entry is ``(category id, category text, severity text)`` --
+    ``severity.text``, never ``severity.id``. A category whose severity is
+    ``"None"`` is skipped unless ``operations.parental_labels_include_none``
+    says otherwise.
+
+    Additive only, like ``collections/reconcile.py``'s ``_apply_labels``
+    without ``label_sync``: this op has no removal semantics stated anywhere
+    in its row, so it never strips a label IMDb's guide no longer supports.
+
+    Dry-run by default, the same split row 87's verbs draw: with
+    ``parental_labels_apply`` off, a wanted-but-missing label is LOGGED and
+    no edit is produced.
+    """
+    if not categories:
+        return {}
+    include_none = bool(getattr(operations, "parental_labels_include_none", False))
+    wanted = [
+        _label_text(category_text, severity_text)
+        for _category_id, category_text, severity_text in categories
+        if severity_text != "None" or include_none
+    ]
+    if not wanted:
+        return {}
+    stored = _current_labels(item)
+    missing = [tag for tag in wanted if tag.casefold() not in stored]
+    if not missing:
+        return {}
+    if not getattr(operations, "parental_labels_apply", False):
+        logger.info(
+            "plex: would add parental-guide label(s) %s to %s "
+            "(operations.parental_labels_apply is off)",
+            ", ".join(missing), _item_label(item),
+        )
+        return {}
+    return {"labels.added": missing}
+
+
+def plan_edits(
+    item, facts: GatheredFacts, operations=None, parental_categories=None,
+) -> dict[str, object]:
     """Field/value pairs that differ from what Plex already holds.
 
     Ratings compare on their *formatted* value, because that is what a viewer
@@ -268,7 +338,9 @@ def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]
 
     ``operations`` is the ``OperationsConfig``; ``None`` -- what a direct
     caller and most tests pass -- means no mapper and no verb, which is
-    byte-identical to the pre-row-34 behaviour.
+    byte-identical to the pre-row-34 behaviour. ``parental_categories`` is the
+    row-85 fetch's result -- ``None``/most callers, in which case this folds
+    in nothing new.
     """
     verbs = getattr(operations, "field_verbs", None) or {}
     # A field named in field_verbs drops out of the value-write path entirely:
@@ -329,6 +401,7 @@ def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]
             edits.update(_genre_plan(current_genres, genres))
 
     edits.update(verb_edits(item, operations))
+    edits.update(parental_label_edits(item, parental_categories, operations))
 
     return edits
 
@@ -381,26 +454,42 @@ def _item_label(item) -> str:
     return label
 
 
-async def apply_facts(item, facts: GatheredFacts, operations=None) -> dict[str, object]:
+def _apply_label_edits(item, additions: list[str]) -> None:
+    """Queue label additions via plexapi's documented ``addLabel`` mixin
+    method. Must be called after ``item.batchEdits()`` and before
+    ``item.saveEdits()``, alongside ``_apply_genre_edits`` -- additions only,
+    since ``parental_label_edits`` never produces a removal.
+    """
+    for tag in additions:
+        item.addLabel(tag)
+
+
+async def apply_facts(
+    item, facts: GatheredFacts, operations=None, parental_categories=None,
+) -> dict[str, object]:
     """Write the changed fields in one HTTP call.
 
     plexapi routes even a single-item edit through the library section, so
-    batching the fields together turns six writes into one. Genres are
-    queued through the documented `removeGenre`/`addGenre` mixin methods
-    (see `_genre_plan`) rather than `item.edit()`, but still land inside the
-    same `batchEdits()`/`saveEdits()` block, so it's still a single request.
+    batching the fields together turns several writes into one. Genres and
+    parental-guide labels are both queued through their own mixin methods
+    (``addGenre``/``removeGenre``, ``addLabel``) rather than ``item.edit()``,
+    but still land inside the same ``batchEdits()``/``saveEdits()`` block, so
+    it's still a single request.
     """
-    edits = plan_edits(item, facts, operations)
+    edits = plan_edits(item, facts, operations, parental_categories)
     if not edits:
         return {}
 
-    field_edits = {k: v for k, v in edits.items() if not k.startswith("genres.")}
+    field_edits = {
+        k: v for k, v in edits.items() if not k.startswith(("genres.", "labels."))
+    }
 
     def _write() -> None:
         item.batchEdits()
         if field_edits:
             item.edit(**field_edits)
         _apply_genre_edits(item, edits.get("genres.added", []), edits.get("genres.removed", []))
+        _apply_label_edits(item, edits.get("labels.added", []))
         item.saveEdits()
 
     await asyncio.to_thread(_write)

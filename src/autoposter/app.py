@@ -39,6 +39,7 @@ from autoposter.plex.client import PlexClient
 from autoposter.plex.health import PlexHealth
 from autoposter.providers.cache import ProviderCache
 from autoposter.providers.fanart import FanartClient
+from autoposter.providers.imdb_parental_guide import IMDbParentalGuideClient
 from autoposter.providers.tmdb import TMDBClient
 from autoposter.providers.tvdb import TVDBClient
 from autoposter.queue.jobs import reclaim_stale
@@ -189,6 +190,15 @@ def create_app(
         app.state.mdblist = _build_mdblist(
             secrets, http, cache=cache, cache_ttl_seconds=config.providers.cache_ttl_seconds
         )
+        # Row 85. No API key needed -- the endpoint is public and
+        # unauthenticated, same as charts.py/imdb_graphql.py -- so this is
+        # always built, unlike TVDb/MDBList's credential-gated stand-ins.
+        # Whether it is ever asked anything is entirely
+        # operations.parental_labels_enabled's call, made per item in
+        # render.pipeline.apply_metadata.
+        app.state.imdb_parental = IMDbParentalGuideClient(
+            http, cache=cache, cache_ttl_seconds=config.providers.cache_ttl_seconds
+        )
         # The real sender when the config can send, otherwise a NullNotifier
         # (never None) -- see notify/dispatch.build_notifier. Published for
         # the full-pass endpoint's fire-and-forget hook; also handed to the
@@ -239,7 +249,7 @@ def create_app(
             _handle_intent, config_holder=app.state.config_holder, http=http,
             plex=app.state.plex, providers=app.state.providers,
             tmdb_facts=app.state.tmdb_facts, mdblist=app.state.mdblist,
-            artwork_probe=artwork_probe,
+            artwork_probe=artwork_probe, imdb_parental=app.state.imdb_parental,
         )
 
         # The dispatch map the worker pool runs. process_item is registered
@@ -476,6 +486,7 @@ def create_app(
     app.state.providers = []
     app.state.tmdb_facts = None
     app.state.mdblist = None
+    app.state.imdb_parental = None
     # A NullNotifier, never None: the full-pass endpoint fires its hook
     # unconditionally, so test apps and no-lifespan instances must still hold
     # something with a send(). The lifespan replaces it with build_notifier's
@@ -557,7 +568,7 @@ def _build_mdblist(
 
 async def _handle_intent(
     session, intent, *, config_holder, http, plex, providers, tmdb_facts=None, mdblist=None,
-    artwork_probe=None,
+    artwork_probe=None, imdb_parental=None,
 ):
     # Dereferenced once per job, at the top: process_item takes a config per
     # call already, so one read here is all it takes for a config swap to be
@@ -568,6 +579,7 @@ async def _handle_intent(
         await process_item(
             session, config, http, plex, providers, intent,
             tmdb_facts=tmdb_facts, mdblist=mdblist, artwork_probe=artwork_probe,
+            imdb_parental=imdb_parental,
         )
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         # PlexHealth (see plex/health.py) gating run_worker's claiming is now
