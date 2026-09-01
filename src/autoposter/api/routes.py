@@ -57,8 +57,10 @@ from autoposter.config.overrides import (
     load_overrides_document,
     merge_overrides,
     unknown_key_paths,
+    without_migrated_sections,
 )
 from autoposter.config.schema import Config
+from autoposter.config.snapshots import capture_snapshot, list_snapshots, load_snapshot
 from autoposter.db.models import (
     ConfigOverride,
     EventLog,
@@ -1669,6 +1671,9 @@ async def _persist_and_swap(
     for a TOCTOU bug. ``SELECT ... FOR UPDATE`` is what makes read-compare-write
     one step; the unconditional upsert it replaced was not.
 
+    The pre-write snapshot goes in the same block for the same reason the guards
+    do -- it is part of the write, not a step beside it.
+
     Crash-consistent by construction: if the process dies between the commit
     and ``swap_config``, requests keep being served by the old generation until
     restart, at which point ``load_effective_config`` reads the persisted
@@ -1705,6 +1710,11 @@ async def _persist_and_swap(
                 raise HTTPException(
                     status_code=422, detail=[_error("document", refusal)]
                 )
+
+        # Pre-write, in this session and this transaction. Same transaction is
+        # the whole point: a snapshot that commits without its write, or a
+        # write that commits without its snapshot, is worse than neither.
+        await capture_snapshot(session, stored, reason)
 
         stmt = insert(ConfigOverride).values(id=OVERRIDES_ROW_ID, document=document)
         stmt = stmt.on_conflict_do_update(
@@ -1848,3 +1858,115 @@ async def apply_config_overrides(
     else:
         queued = 0
     return {**saved, "queued": queued, "skipped": len(entries) - queued}
+
+
+class SnapshotRestoreBody(BaseModel):
+    """Restore one previous overrides document. ``confirm`` for a big drop.
+
+    Restore is a save, not a bypass: it re-validates against the config on
+    file, snapshots the current document first (so the restore is itself
+    undoable), and respects the same drop cap and the same revision check a PUT
+    does. Its body is therefore the save body minus the document, which the
+    snapshot id supplies.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: str | None = None
+    confirm: bool = False
+
+
+def _redacted_document(document: dict) -> dict:
+    """A snapshot as it may be served: the same redaction ``GET /api/config``
+    applies, applied to the same paths.
+
+    A stored snapshot holds ``notifications.url`` in full -- it has to, or a
+    restore could not put the push token back. Serving that raw from a new
+    endpoint would hand out the exact value the config endpoint is careful to
+    withhold.
+    """
+    shown = deepcopy(document)
+    for path, redact in _REDACTORS.items():
+        value = _read_path(shown, path)
+        if isinstance(value, str) and value:
+            _set_path(shown, path, redact(value))
+    return shown
+
+
+@router.get("/config/snapshots")
+async def get_config_snapshots(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> list[dict]:
+    """Every kept previous overrides document, newest first, metadata only.
+
+    Enough to label a row -- how many settings it held, when it was displaced
+    and by what -- and no documents: see ``list_snapshots``.
+    """
+    async with request.app.state.session_factory() as session:
+        return await list_snapshots(session)
+
+
+@router.get("/config/snapshots/{snapshot_id}")
+async def get_config_snapshot(
+    snapshot_id: int, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """One previous overrides document, redacted the way the live one is."""
+    async with request.app.state.session_factory() as session:
+        try:
+            document = await load_snapshot(session, snapshot_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=404, detail=f"no config snapshot {snapshot_id}"
+            ) from None
+        rows = {row["id"]: row for row in await list_snapshots(session)}
+    meta = rows.get(snapshot_id, {})
+    return {
+        "id": snapshot_id,
+        "created_at": meta.get("created_at"),
+        "path_count": meta.get("path_count"),
+        "reason": meta.get("reason"),
+        "document": _redacted_document(document),
+    }
+
+
+@router.post("/config/snapshots/{snapshot_id}/restore")
+async def restore_config_snapshot(
+    snapshot_id: int,
+    body: SnapshotRestoreBody,
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Put a previous overrides document back, as a save.
+
+    Not a bypass and not a second write path: the stored (unredacted) document
+    goes through ``_validated_generation`` and ``_persist_and_swap`` exactly as
+    a PUT's would, so it is re-validated against the config file as it stands
+    *now* -- the mounted YAML may have moved under this snapshot since it was
+    taken, and a snapshot from before a schema change must fail loudly here
+    rather than brick the pod at the next boot.
+
+    ``without_migrated_sections`` runs first, and it is not optional. A whole
+    section that left the schema is stripped from the *stored* document on
+    every read, but a raw snapshot row still holds it -- so without this the
+    one recovery path would 422 on exactly the old snapshots recovery exists
+    for.
+    """
+    async with request.app.state.session_factory() as session:
+        try:
+            snapshot = await load_snapshot(session, snapshot_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=404, detail=f"no config snapshot {snapshot_id}"
+            ) from None
+
+    document, after = await _validated_generation(
+        request, without_migrated_sections(snapshot)
+    )
+    return await _persist_and_swap(
+        request,
+        document,
+        after,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+        reason="restore",
+    )
