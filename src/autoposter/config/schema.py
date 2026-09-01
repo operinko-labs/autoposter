@@ -1068,6 +1068,28 @@ class CollectionDefinition(BaseModel):
             "their seasons, or their episodes."
         ),
     )
+    # Roadmap row 89(a). Read-only: the membership is narrowed to what the one
+    # configured instance already holds. Kometa's add_missing family -- telling
+    # Radarr/Sonarr to ACQUIRE content -- is a declared non-goal.
+    radarr_restrict: bool = Field(
+        default=False,
+        description="Keep only the members Radarr already holds; drop the rest from this collection.",
+    )
+    sonarr_restrict: bool = Field(
+        default=False,
+        description="Keep only the members Sonarr already holds; drop the rest from this collection.",
+    )
+    # Roadmap row 89(b). Unset writes nothing; the deployment ALSO has to set
+    # collections.arr_tag_apply, so a definition copied from someone else's
+    # config cannot start writing to their Radarr on its own.
+    item_radarr_tag: list[str] = Field(
+        default_factory=list,
+        description="Radarr tags added to every member of this collection that Radarr holds.",
+    )
+    item_sonarr_tag: list[str] = Field(
+        default_factory=list,
+        description="Sonarr tags added to every member of this collection that Sonarr holds.",
+    )
     # Cap on members, applied after resolution. ge=1: a limit that could only
     # ever produce an empty collection is a mistake, and empty means "make no
     # changes" downstream, so it would not even fail visibly.
@@ -1375,6 +1397,42 @@ class CollectionDefinition(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _arr_overrides_need_a_list_builder_at_item_level(self) -> "CollectionDefinition":
+        """Row 89's fields describe MEMBERS an arr instance could know.
+
+        Two combinations cannot mean anything, and both would load clean and do
+        nothing visible: a smart collection's members are chosen by Plex, so
+        there is no resolved membership to restrict or tag; and a season or an
+        episode carries no tmdbId or tvdbId an arr instance holds, so the
+        restriction could only ever exclude everything.
+        """
+        from autoposter.collections.builders import REGISTRY
+
+        named = [
+            name for name in
+            ("radarr_restrict", "sonarr_restrict", "item_radarr_tag", "item_sonarr_tag")
+            if getattr(self, name)
+        ]
+        if not named:
+            return self
+        listed = ", ".join(repr(name) for name in named)
+        if getattr(REGISTRY.get(self.builder), "smart", False):
+            raise ValueError(
+                f"{listed} does not apply to {self.builder!r}: a smart "
+                "collection's members are chosen by a filter Plex evaluates "
+                "itself, so this definition has no resolved membership to "
+                "restrict or tag"
+            )
+        if self.builder_level != "item":
+            raise ValueError(
+                f"{listed} cannot be combined with builder_level "
+                f"{self.builder_level!r}: a season or an episode carries no "
+                "tmdb or tvdb id Radarr or Sonarr would know it by, so the "
+                "restriction could only ever exclude every member"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _hub_priority_needs_a_promotion(self) -> "CollectionDefinition":
         """``hub_priority`` is "only meaningful once the collection is
         promoted to a hub by one of the visible_* flags above" (see that
@@ -1541,6 +1599,16 @@ class CollectionsConfig(BaseModel):
         description=(
             "Actually add collection members to the MDBList lists definitions "
             "name; off only reports what would be pushed."
+        ),
+    )
+    # Roadmap row 89(b), the deployment-level half of the two gates. Off
+    # reports what each definition would tag and writes nothing, the same
+    # posture apply_to_plex takes for Plex itself.
+    arr_tag_apply: bool = Field(
+        default=False,
+        description=(
+            "Actually write definitions' item_radarr_tag/item_sonarr_tag tags "
+            "to Radarr and Sonarr; off only reports what would be written."
         ),
     )
     # The ownership boundary: only collections carrying this label are ever

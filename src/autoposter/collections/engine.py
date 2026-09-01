@@ -60,6 +60,7 @@ from autoposter.collections.reconcile import (
     shape_conflict,
     would_proceed,
 )
+from autoposter.collections.arr_overrides import restricted_members, tag_members
 from autoposter.collections.mdblist_sync import sync_membership
 from autoposter.collections.posters import LOCAL_ASSET_KIND, apply_local_posters_to_unmanaged
 from autoposter.collections.resolve import build_owned_index, resolve_external
@@ -785,6 +786,33 @@ async def _run_one(
         # would misattribute the filter's outcome to the source.
         filter_emptied_a_non_empty_set = had_items and not items
 
+    # Roadmap row 89(a). After the filter and before the cap, for the reason
+    # the filter is before the cap (row 96): ``limit`` counts collection
+    # MEMBERS, and capping before a stage that can still remove one would leave
+    # a short collection. Read-only -- see ``arr_overrides``.
+    restriction_stopped = False
+    if not filter_failed and (
+        definition.radarr_restrict or definition.sonarr_restrict
+    ):
+        had_items = bool(items)
+        kept, restrict_actions = await restricted_members(
+            definition, items,
+            library_type=ctx.library_type,
+            radarr=ctx.sources.radarr, sonarr=ctx.sources.sonarr,
+            run_cache=ctx.run_cache,
+        )
+        outcome.actions += restrict_actions
+        if kept is None:
+            outcome.failed = True
+            items = []
+            restriction_stopped = True
+        else:
+            items = kept
+            # ``restricted_members`` has already appended the sentence naming
+            # what happened, so the reconcile call below must be skipped rather
+            # than allowed to report "source returned no items" on top of it.
+            restriction_stopped = had_items and not items
+
     if definition.limit is not None:
         # After resolution -- and, since row 96, after the filter -- so a limit
         # counts collection members rather than candidate ids: capping before
@@ -832,7 +860,13 @@ async def _run_one(
     if summary_action:
         outcome.actions.append(summary_action)
 
-    if filter_emptied_a_non_empty_set:
+    if restriction_stopped:
+        # ``restricted_members`` said which service and why; calling the
+        # reconciler with an empty list would add "source returned no items",
+        # which is false -- the source returned items and the restriction is
+        # what removed them.
+        pass
+    elif filter_emptied_a_non_empty_set:
         # ``reconcile_list_collection`` would report this as "source returned
         # no items", which is true of its own ``items`` argument but false of
         # what actually happened -- the source returned items, and the filter
@@ -898,6 +932,17 @@ async def _run_one(
             is_movie=ctx.library_type == "Movie",
             client=ctx.sources.mdblist,
             apply=config.collections.mdblist_sync_apply and not dry_run and not preview,
+        )
+    # Roadmap row 89(b), in the same place and for the same reason as row 31's
+    # push: after everything that decides the membership, so what is tagged is
+    # what the collection actually holds.
+    if definition.item_radarr_tag or definition.item_sonarr_tag:
+        outcome.actions += await tag_members(
+            definition, items,
+            library_type=ctx.library_type,
+            radarr=ctx.sources.radarr, sonarr=ctx.sources.sonarr,
+            run_cache=ctx.run_cache,
+            apply=config.collections.arr_tag_apply and not dry_run and not preview,
         )
     return outcome
 
