@@ -19,10 +19,13 @@ Three rules the walk encodes:
 * A field whose annotation is a model gets both an entry of its own -- an
   unset optional submodel renders as one leaf row, and a set one renders as a
   section heading -- and a recursion beneath it. A ``list`` of models gets an
-  entry plus a recursion under a ``[]`` segment: those paths address no row
-  today, because the editor renders a list of objects read-only (roadmap row
-  138), and they are served so that they do the day that row lands. ``[]`` is
-  a marker in this map, never a path the API accepts.
+  entry plus a recursion under a ``[]`` segment. The generic Settings editor
+  still renders a list of objects read-only, so the paths it addresses are the
+  scalar ones; the ``[]`` paths are read by the Custom collections panel's
+  edit form (roadmap row 138), for the eleven ``CollectionDefinition`` fields
+  it edits -- which is what those entries were served for before there was a
+  row to hang them on. ``[]`` is a marker in this map, never a path the API
+  accepts.
 """
 from types import UnionType
 from typing import Union, get_args, get_origin

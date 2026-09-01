@@ -618,6 +618,31 @@ URL, name the collection, pick which of `collections.libraries` it applies to
   UI-created definition drops the override key entirely, handing the
   decision back to whatever the file lists.
 
+### Editing a custom collection
+
+Rows marked **override** carry an **Edit** button. The form edits a curated
+set of the definition's fields — title, library scope, summary, sort, sync
+mode, limit, sort title, collection mode, labels, label sync and member
+labels — and leaves every other field of that definition exactly as stored.
+
+Three things are shown and not editable:
+
+- the **builder** and its **parameters**, because a builder is a registry key
+  and each builder defines its own parameter shape; change those by removing
+  the definition and creating it again from a URL;
+- the **change webhook**, shown as its host only, because it may carry a token
+  in its path. It is preserved across an edit untouched — edit it in the config
+  file.
+
+Renaming a definition leaves the collection already in Plex under its old
+title, which `collections.delete_unconfigured` then treats as an orphan — the
+same rule Remove follows.
+
+Rows marked **config file** carry no Edit button, for the reason they carry no
+Remove button: an overrides list replaces the file's wholesale, so the first
+one stored would stop every file-defined definition being built. The API
+refuses that write too, not only the page.
+
 ## Collection posters
 
 The same `collections:` block also controls whether the collections this
