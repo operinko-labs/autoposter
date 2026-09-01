@@ -614,7 +614,7 @@ URL, name the collection, pick which of `collections.libraries` it applies to
   and empty the file's `definitions:` list.
 - **Removing** a definition only stops the pass building it; the collection
   in Plex follows `delete_unconfigured` (reported as an orphan by default).
-  There is no edit control: edit = remove + create. Removing the last
+  Removing the last
   UI-created definition drops the override key entirely, handing the
   decision back to whatever the file lists.
 
