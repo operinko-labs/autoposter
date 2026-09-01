@@ -99,6 +99,17 @@ def art_config_for(config: Config, art_kind: str):
     return getattr(config.artwork, art_kind)
 
 
+def draw_text_for_local_source(config: Config, art_kind: str) -> bool:
+    """Whether text is drawn on a locally supplied base image (roadmap row 39).
+
+    True unless this art kind's ``skip_local_text_add`` is on. Split out as a
+    named predicate rather than inlined into ``render_artifact``'s already
+    dense ``draw_text`` expression: the branch has its own row, its own
+    default pin and its own test.
+    """
+    return not art_config_for(config, art_kind).skip_local_text_add
+
+
 def language_order_for(config: Config, library: str, art_kind: str) -> list[str]:
     """This artifact's language ladder in this library (roadmap row 38).
 
@@ -132,9 +143,13 @@ def title_text_for(
     if art_kind == "title_card":
         secondary = None
         if settings.episode_text is not None and settings.episode_text.add_text:
+            # Row 43: an override replaces the whole season half, label and
+            # number both -- "Specials", not "Specials 0".
+            season = settings.season_name_overrides.get(
+                str(item.season_number), f"{settings.season_label} {item.season_number}"
+            )
             secondary = (
-                f"{settings.season_label} {item.season_number} "
-                f"{_BULLET} {settings.episode_label} {item.episode_number}"
+                f"{season} {_BULLET} {settings.episode_label} {item.episode_number}"
             )
         return item.title, secondary
     return item.title, None
@@ -203,11 +218,50 @@ def find_logo_override(config: Config, item: ResolvedItem) -> Path | None:
     return None
 
 
+# Hiragana, Katakana, the Katakana phonetic extensions, CJK Unified Ideographs
+# and their Extension A, and the compatibility ideographs. Deliberately not
+# Hangul or Cyrillic: row 40 names Japanese and Chinese, and a broader net
+# would skip title cards nobody asked to skip.
+_CJK_RANGES = (
+    (0x3040, 0x309F),  # Hiragana
+    (0x30A0, 0x30FF),  # Katakana
+    (0x31F0, 0x31FF),  # Katakana phonetic extensions
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+)
+
+
+def has_cjk(text: str) -> bool:
+    """Whether ``text`` contains any Japanese or Chinese character.
+
+    Any, not all: an episode titled with one Han character and three Latin
+    words is still a title this rule is asked to skip, and requiring every
+    character to be CJK would let a single stray ASCII colon defeat it.
+    """
+    return any(
+        any(low <= ord(char) <= high for low, high in _CJK_RANGES) for char in text
+    )
+
+
 def _should_skip_title(config: Config, item: ResolvedItem, art_kind: str) -> bool:
-    if art_kind != "title_card" or not config.skip_tba:
+    """Whether this title card must not be built at all.
+
+    Two independent rules, deliberately not chained: ``skip_tba`` owns the
+    literal ``skip_words`` list (row 13), and ``skip_cjk_titles`` owns the
+    script test (row 40). Tying the second to the first would make one setting
+    silently disable the other, which is exactly the kind of coupling an
+    operator discovers by finding a title card they thought they had switched
+    off.
+    """
+    if art_kind != "title_card":
         return False
-    skip_words = {word.lower() for word in art_config_for(config, art_kind).skip_words}
-    return item.title.strip().lower() in skip_words
+    settings = art_config_for(config, art_kind)
+    if config.skip_tba:
+        skip_words = {word.lower() for word in settings.skip_words}
+        if item.title.strip().lower() in skip_words:
+            return True
+    return settings.skip_cjk_titles and has_cjk(item.title)
 
 
 async def gather_fingerprint_inputs(
@@ -544,9 +598,11 @@ async def render_artifact(
         # mount cannot stall the event loop.
         override = await asyncio.to_thread(manual_override_path, config, item, art_kind)
         show_fallback = False
+        local_source = False
         if override is not None:
             base_sha = await asyncio.to_thread(_stage_override, override, working)
             source_url, provider_name, textless = str(override), "manual", None
+            local_source = True
         else:
             selection = await select_artwork(
                 providers,
@@ -638,6 +694,8 @@ async def render_artifact(
                     suppress_text = True
 
         draw_text = not (art_kind == "poster" and (logo_path is not None or suppress_text))
+        if local_source and not draw_text_for_local_source(config, art_kind):
+            draw_text = False
 
         text_inputs, asset_hashes = await gather_fingerprint_inputs(
             config, item, art_kind, draw_text=draw_text, logo_sha=logo_sha

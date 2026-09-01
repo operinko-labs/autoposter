@@ -308,6 +308,7 @@ artwork:
     add_border: false
     border_color: white
     border_width: 30
+    skip_local_text_add: false
     text:
       font: Comfortaa-Medium.ttf
       all_caps: true
@@ -323,6 +324,8 @@ artwork:
       add_stroke: false
       stroke_color: black
       stroke_width: 6
+      newline_on_symbols: []
+      newline_words: {}
 
   season_poster:
     enabled: true
@@ -330,6 +333,7 @@ artwork:
     overlay_file: bottom-up-fade.png
     add_overlay: true
     add_border: false
+    skip_local_text_add: false
     text:
       font: Comfortaa-Medium.ttf
       all_caps: true
@@ -342,6 +346,8 @@ artwork:
       gravity: south
       add_text: true
       add_stroke: false
+      newline_on_symbols: []
+      newline_words: {}
 
   background:
     enabled: true
@@ -349,6 +355,7 @@ artwork:
     overlay_file: bottom-up-fade-background.png
     add_overlay: true
     add_border: false
+    skip_local_text_add: false
     text:
       font: Comfortaa-Medium.ttf
       all_caps: true
@@ -361,6 +368,8 @@ artwork:
       gravity: south
       add_text: false
       add_stroke: false
+      newline_on_symbols: []
+      newline_words: {}
 
   title_card:
     enabled: true
@@ -371,6 +380,9 @@ artwork:
     season_label: Season
     episode_label: Episode
     skip_words: [TBA]
+    skip_local_text_add: false
+    skip_cjk_titles: false
+    season_name_overrides: {}
     text:
       font: Comfortaa-Medium.ttf
       all_caps: true
@@ -388,6 +400,8 @@ artwork:
       gravity: south
       add_text: true
       add_stroke: false
+      newline_on_symbols: []
+      newline_words: {}
     episode_text:
       font: Comfortaa-Medium.ttf
       all_caps: true

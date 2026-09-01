@@ -1,3 +1,4 @@
+import re
 import subprocess
 from dataclasses import dataclass
 
@@ -23,8 +24,35 @@ class FitResult:
 
 
 def prepare_text(text: str, style: TextStyle) -> str:
-    """Normalise quote characters, then apply all-caps."""
+    """Normalise quote characters, apply the forced line breaks, then all-caps.
+
+    Order matters and is fixed by roadmap row 42's two halves. Quotes are
+    normalised first, so a ``newline_words`` key written with a plain
+    apostrophe still matches a title that arrived with a typographic one.
+    ``newline_words`` runs before ``newline_on_symbols``, so a manual break
+    map can pre-empt a symbol rule for one specific phrase. Both run before
+    ``all_caps``, so the keys are written in the title's own casing rather
+    than shouted.
+
+    ImageMagick's ``caption:`` honours a literal newline, so a break inserted
+    here survives ``build_fit_argv``'s measurement and ``build_text_argv``'s
+    draw identically -- the fit is measured on exactly the string drawn.
+
+    With both settings at their defaults this returns exactly what it always
+    did: an empty map substitutes nothing and an empty symbol list breaks
+    nothing.
+    """
     cleaned = text.translate(_QUOTE_TRANSLATION)
+    for needle, replacement in style.newline_words.items():
+        cleaned = cleaned.replace(needle, replacement)
+    for symbol in style.newline_on_symbols:
+        # The symbol swallows any whitespace immediately after it, so a break
+        # after ": " doesn't leave a stray leading space on the next line.
+        cleaned = re.sub(re.escape(symbol) + r"[ \t]*", f"{symbol}\n", cleaned)
+    if style.newline_on_symbols:
+        # A symbol at the very end of the text must not leave a trailing
+        # blank line ImageMagick would measure.
+        cleaned = cleaned.rstrip("\n")
     return cleaned.upper() if style.all_caps else cleaned
 
 

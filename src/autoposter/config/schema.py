@@ -225,6 +225,25 @@ class TextStyle(BaseModel):
         default=6,
         description="The text outline's width in pixels. Only used when add_stroke is on.",
     )
+    # Roadmap row 42. Both empty by default, so prepare_text's output for an
+    # untouched config is byte-identical to what it produced before.
+    newline_on_symbols: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Characters that force the text onto a new line immediately after "
+            "them, e.g. [':', '-']. A symbol at the very end of the text adds "
+            "no trailing break."
+        ),
+    )
+    newline_words: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "A manual line-break map applied before the text is measured: each "
+            "key found in the text is replaced by its value, which may contain "
+            "a newline. Matched before all_caps is applied, so the keys are "
+            "written in the title's own casing."
+        ),
+    )
 
     @field_validator("text_offset")
     @classmethod
@@ -298,6 +317,16 @@ class ArtKindConfig(BaseModel):
             "positioning. Unset means no text is drawn."
         ),
     )
+    # Roadmap row 39. Off by default, so a manually supplied asset is still
+    # styled exactly as it is today.
+    skip_local_text_add: bool = Field(
+        default=False,
+        description=(
+            "Do not draw text on this artifact when its base image came from a "
+            "manually supplied local asset rather than a provider -- for assets "
+            "that already carry their own title treatment."
+        ),
+    )
 
     @field_validator("language_order")
     @classmethod
@@ -335,6 +364,27 @@ class TitleCardConfig(ArtKindConfig):
             "Episode titles that mean 'no title yet'. When skip_tba is on and an "
             "episode's title matches one of these (case-insensitive), no episode "
             "title text is drawn."
+        ),
+    )
+    # Roadmap row 40. Independent of skip_tba: that switch owns the literal
+    # skip_words list, this one owns a script test, and tying them together
+    # would make one setting silently disable the other.
+    skip_cjk_titles: bool = Field(
+        default=False,
+        description=(
+            "Skip building a title card when the episode's title is written in "
+            "Japanese or Chinese script -- Hiragana, Katakana or Han "
+            "characters -- rather than transliterated."
+        ),
+    )
+    # Roadmap row 43. One field, not two: "0" is the specials season, so the
+    # specials wording is an entry here rather than a setting of its own.
+    season_name_overrides: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The text printed in place of 'Season N' on a title card, keyed by "
+            "season number written as a string -- '0' is the specials season, "
+            "e.g. {'0': 'Specials'}. A season not listed keeps season_label."
         ),
     )
 
@@ -1208,7 +1258,7 @@ class CollectionsConfig(BaseModel):
             "Apply an operator's local poster to collections this service does "
             "not manage, when one is filed under assets_root beside the "
             "collection's title. The ownership label is never applied and such "
-            "a collection is never deleted."
+            "a collection is never deleted. Only runs as part of a full sweep."
         ),
     )
     # Reorder the collection groups in the tab. None is the canonical order
