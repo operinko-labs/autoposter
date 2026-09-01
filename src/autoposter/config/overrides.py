@@ -160,8 +160,12 @@ def document_paths(document: dict, path: str = "") -> list[str]:
     return paths
 
 
-def _without_migrated_sections(document: dict) -> dict:
+def without_migrated_sections(document: dict) -> dict:
     """``document`` minus any ``MIGRATED_SECTIONS`` key, warning once per key.
+
+    Public because the stored document is no longer its only source: a restored
+    snapshot is a raw row this function never ran over, and a snapshot taken
+    before a section left the schema still holds it (config/snapshots.py).
 
     Top-level only, and deliberately so: these are whole sections that left the
     schema, not individual settings, and a walk looking for the name at depth
@@ -213,7 +217,7 @@ async def load_overrides_document(session: AsyncSession) -> dict:
             "the config_overrides document must be a JSON object, not "
             f"{type(row.document).__name__}"
         )
-    return _without_migrated_sections(row.document)
+    return without_migrated_sections(row.document)
 
 
 async def load_effective_config(path: Path, session: AsyncSession) -> Config:

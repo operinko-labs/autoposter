@@ -399,7 +399,13 @@ async def test_omitting_a_key_reverts_it_to_the_file(client, auth_headers, app):
     await client.put("/api/config/overrides", headers=auth_headers, json={"document": {"workers": 9}})
     assert app.state.config.workers == 9
 
-    await client.put("/api/config/overrides", headers=auth_headers, json={"document": {}})
+    # Clearing every override is still the documented revert-everything -- it
+    # is now a *deliberate* one (OVERRIDE_DROP_CAP's empty-document arm).
+    await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": {}, "confirm": True},
+    )
     assert app.state.config.workers == 5, "the example config's value did not come back"
     body = (await client.get("/api/config", headers=auth_headers)).json()
     assert body["overridden_paths"] == []
@@ -1107,3 +1113,304 @@ async def test_the_served_config_round_trips_a_definition_the_editor_reads_back(
         if key == "schedule":
             continue  # pydantic fills the model's own unset field, checked above
         assert served_second[key] == value
+
+
+# --- Config safety: the shape guard and the destructiveness guards -------
+#
+# These reproduce the 2026-09-01 incident (.superpowers/sdd/progress.md:3851).
+# Defect D1: a PUT whose JSON body is a well-formed object that does NOT carry
+# a top-level `document` key was silently read as "the operator's complete set
+# of deltas is now empty" -- pydantic v2's default extra="ignore" matched it
+# against zero declared fields and threw 757 bytes away -- and the unconditional
+# upsert wrote {} over seventeen stored overrides with a 200.
+
+THE_INCIDENT_DOCUMENT = {
+    "workers": 9,
+    "artwork": {
+        "title_card": {"season_label": "Kausi"},
+        "poster": {"text": {"min_point_size": 22}},
+    },
+    "plex": {"resolve_max_attempts": 7},
+    "badges": {"enabled": False, "upload_to_plex": False},
+    "notifications": {"enabled": False},
+    "collections": {
+        "separator_style": "sand",
+        "ownership_label": "Autoposter",
+        "delete_unconfigured": False,
+        "max_deletes": 100,
+    },
+    "scheduler": {"enabled": False},
+}
+
+
+async def _put_document(client, auth_headers, document: dict) -> None:
+    """Put a document in the store the ordinary way, and insist it landed."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": document}
+    )
+    assert response.status_code == 200, response.text
+
+
+async def test_an_unwrapped_document_body_is_refused_not_silently_emptied(
+    client, auth_headers, session
+):
+    """The incident's first PUT: the document sent bare, at top level.
+
+    Before the fix this answered 200 and wiped the store. `document` defaulted
+    to {}, {} is a fully valid document (it is the *documented* revert-
+    everything), and _persist_and_swap wrote it unconditionally.
+    """
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json=THE_INCIDENT_DOCUMENT
+    )
+
+    assert response.status_code == 422, (
+        "an unwrapped body was accepted. It binds to document={} and wipes the "
+        "store with a 200 -- this is the incident"
+    )
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT, "the refused request still wrote"
+
+
+async def test_the_incident_restore_body_is_refused_rather_than_written_as_empty(
+    client, auth_headers, session, app
+):
+    """The incident's second PUT: the same mistake over an already-empty row.
+
+    757 bytes of perfectly good JSON, a 200, and version_before ==
+    version_after *by construction* -- the merged config was the file alone,
+    which was already what was running. Nothing landed and nothing said so.
+    """
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json=THE_INCIDENT_DOCUMENT
+    )
+
+    assert response.status_code == 422
+    # FastAPI's request-validation shape, which the frontend's `fieldErrors`
+    # already renders: the extras are named by `loc`.
+    named = {tuple(entry["loc"]) for entry in response.json()["detail"]}
+    assert ("body", "workers") in named, response.text
+    assert (await session.execute(select(ConfigOverride))).scalars().all() == []
+    assert app.state.config.workers == 5, "a refused body must not swap anything"
+
+
+async def test_a_correctly_wrapped_body_is_untouched_by_the_shape_guard(
+    client, auth_headers, session
+):
+    """The negative: the SPA's own body shape still saves. It sends exactly one
+    key, so forbidding extras on the envelope cannot reach it."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT
+
+
+async def test_the_preview_refuses_the_unwrapped_body_the_same_way(
+    client, auth_headers
+):
+    """All three arms share the model, so all three harden together."""
+    response = await client.post(
+        "/api/config/preview", headers=auth_headers, json=THE_INCIDENT_DOCUMENT
+    )
+    assert response.status_code == 422
+
+
+async def test_emptying_a_non_empty_store_needs_confirm(
+    client, auth_headers, session, app
+):
+    """`{}` is a legal document and the documented revert-everything. What was
+    missing was any way to tell a deliberate clear-all apart from a request
+    that *degenerated* into one."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {}}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == [
+        {
+            "path": "document",
+            "message": (
+                "this would clear all 12 stored overrides; send confirm: true "
+                "to do it deliberately"
+            ),
+        }
+    ]
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT
+    assert app.state.config.workers == 9, "a refused write must not swap"
+
+
+async def test_emptying_a_non_empty_store_is_allowed_with_confirm(
+    client, auth_headers, session, app
+):
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": {}, "confirm": True},
+    )
+
+    assert response.status_code == 200
+    assert (await session.execute(select(ConfigOverride))).scalar_one().document == {}
+    assert app.state.config.workers == 5, "the example config's value did not come back"
+
+
+async def test_an_empty_document_over_an_empty_store_stays_a_legal_no_op(
+    client, auth_headers
+):
+    """What a fresh deployment's first save looks like. There is nothing to
+    destroy, so there is nothing to confirm."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {}}
+    )
+    assert response.status_code == 200
+
+
+async def test_a_write_that_drops_more_than_the_cap_is_refused(
+    client, auth_headers, session
+):
+    """The drop cap. A normal edit drops 0 or 1 path; the incident dropped 17.
+
+    `document_paths` is exactly the unit `GET /api/config`'s `overridden_paths`
+    reports, so the operator, the API and this refusal all count the same
+    things.
+    """
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 9}}
+    )
+
+    assert response.status_code == 422
+    [detail] = response.json()["detail"]
+    assert detail["path"] == "document"
+    assert detail["message"].startswith("this would drop 11 stored overrides")
+    # Named, not just counted: an operator cannot judge a refusal they cannot see.
+    assert "collections.separator_style" in detail["message"]
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT
+
+
+async def test_a_drop_over_the_cap_is_allowed_with_confirm(
+    client, auth_headers, session
+):
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": {"workers": 9}, "confirm": True},
+    )
+
+    assert response.status_code == 200
+    assert (await session.execute(select(ConfigOverride))).scalar_one().document == {
+        "workers": 9
+    }
+
+
+async def test_a_normal_one_field_edit_never_trips_the_drop_cap(
+    client, auth_headers, session
+):
+    """The blast-radius negative, and the one that matters most: the guards are
+    worthless if the ordinary save has to learn about them."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    edited = deepcopy(THE_INCIDENT_DOCUMENT)
+    edited["workers"] = 11
+    await _put_document(client, auth_headers, edited)
+
+    # And clearing exactly one override -- the drop cap's other boundary.
+    reduced = deepcopy(edited)
+    del reduced["scheduler"]
+    await _put_document(client, auth_headers, reduced)
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert "scheduler" not in stored
+
+
+async def test_dropping_exactly_the_cap_is_allowed_and_one_more_is_not(
+    client, auth_headers
+):
+    """The boundary, both sides of it. OVERRIDE_DROP_CAP is 3: three dropped
+    paths pass, four do not."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    three_fewer = deepcopy(THE_INCIDENT_DOCUMENT)
+    del three_fewer["badges"]              # 2 paths
+    del three_fewer["scheduler"]           # 1 path
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": three_fewer}
+    )
+    assert response.status_code == 200, response.text
+
+    four_fewer = deepcopy(three_fewer)
+    del four_fewer["notifications"]        # 1 path
+    del four_fewer["plex"]                 # 1 path
+    del four_fewer["workers"]              # 1 path
+    del four_fewer["artwork"]              # 2 paths
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": four_fewer}
+    )
+    assert response.status_code == 422
+
+
+async def test_the_preview_is_never_refused_for_being_destructive(
+    client, auth_headers
+):
+    """`_validated_generation` promises every failure mode is reached before
+    the first write, and the preview's whole job is answering "what would this
+    do". A preview that refused to describe a destructive edit would be
+    refusing the one question worth asking about it."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    for document in ({}, {"workers": 9}):
+        response = await client.post(
+            "/api/config/preview", headers=auth_headers, json={"document": document}
+        )
+        assert response.status_code == 200, (document, response.text)
+
+
+async def test_the_preview_ignores_confirm_rather_than_rejecting_it(
+    client, auth_headers
+):
+    """One body shape across all three arms -- the property Settings.tsx's
+    `submit()` docstring says the three actions must never drift on."""
+    response = await client.post(
+        "/api/config/preview",
+        headers=auth_headers,
+        json={"document": {"workers": 9}, "confirm": True},
+    )
+    assert response.status_code == 200
+
+
+async def test_the_audit_row_records_the_path_counts(
+    client, auth_headers, session
+):
+    """The incident would have been visible in the audit log as `12 -> 0`
+    rather than requiring an investigation. Counts, not settings: the payload's
+    "versions, never the document" rule is about what an operator changed, and
+    how many is not that."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": {}, "confirm": True},
+    )
+
+    rows = (
+        (
+            await session.execute(
+                select(EventLog)
+                .where(EventLog.event_type == "overrides_updated")
+                .order_by(EventLog.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [row.payload["paths_before"] for row in rows] == [0, 12]
+    assert [row.payload["paths_after"] for row in rows] == [12, 0]
+    assert "document" not in rows[-1].payload

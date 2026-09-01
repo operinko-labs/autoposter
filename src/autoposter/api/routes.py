@@ -8,7 +8,7 @@ from dataclasses import asdict
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
@@ -1365,6 +1365,13 @@ async def get_config(
     return body
 
 
+# A normal edit drops 0 or 1 override; the 2026-09-01 incident dropped 17. A
+# module constant rather than a setting on purpose: a destructiveness cap an
+# operator can raise from the same page the destructive write comes from is
+# not a cap, and this phase is deliberately disjoint from config/schema.py.
+OVERRIDE_DROP_CAP = 3
+
+
 class OverridesBody(BaseModel):
     """The whole overrides document, always sent whole.
 
@@ -1373,9 +1380,31 @@ class OverridesBody(BaseModel):
     absent from it. A patch shape would need an out-of-band way to say
     "delete", and the obvious candidate -- sending ``null`` -- already means
     something else (see ``_validated_generation``).
+
+    The envelope forbids extras and the *document* does not, and the asymmetry
+    is deliberate. Forbidding here turns one specific catastrophe into an error
+    message: a body of ``{"artwork": ..., "scheduler": ...}`` -- the document
+    sent bare, which is what a hand-written fetch produces -- used to match
+    zero declared fields under pydantic's default ``extra="ignore"``, bind
+    ``document`` to its ``{}`` default, and wipe every stored override with a
+    200 (the 2026-09-01 incident). Inside the document, ``unknown_key_paths``
+    gives a far better error than pydantic could, at full depth and with the
+    dotted path an operator can act on, so nothing is gained by forbidding
+    twice.
+
+    ``confirm`` authorises a destructive write -- one that empties the store or
+    drops more than ``OVERRIDE_DROP_CAP`` paths. A flag rather than a second
+    endpoint, for the reason ``DeleteRequest.confirm`` gives in
+    ``api/collections_builders.py``: what is being confirmed is *this*
+    document against *this* store, which a separate endpoint could not name.
+    ``POST /api/config/preview`` accepts it and ignores it, so all three arms
+    keep taking one body shape.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     document: dict = Field(default_factory=dict)
+    confirm: bool = False
 
 
 def _error(path: str, message: str) -> dict:
@@ -1552,13 +1581,59 @@ async def _validated_generation(request: Request, document: dict) -> tuple[dict,
         ) from exc
 
 
-async def _persist_and_swap(request: Request, document: dict, after: Config) -> dict:
+def _drop_refusal(stored: dict, document: dict) -> str | None:
+    """Why this write is too destructive to do unasked, or None.
+
+    Counted in ``document_paths`` units -- exactly what ``GET /api/config``
+    reports as ``overridden_paths`` -- so the operator, the API and this
+    sentence all count the same things.
+    """
+    before = set(document_paths(stored))
+    if not before:
+        # Nothing to destroy. A fresh deployment's first save lands here and
+        # must not be asked to confirm anything.
+        return None
+    if not document:
+        return (
+            f"this would clear all {len(before)} stored overrides; "
+            "send confirm: true to do it deliberately"
+        )
+    dropped = sorted(before - set(document_paths(document)))
+    if len(dropped) <= OVERRIDE_DROP_CAP:
+        return None
+    return (
+        f"this would drop {len(dropped)} stored overrides "
+        f"({', '.join(dropped)}); send confirm: true to do it deliberately"
+    )
+
+
+async def _persist_and_swap(
+    request: Request,
+    document: dict,
+    after: Config,
+    *,
+    confirm: bool = False,
+    reason: str = "save",
+) -> dict:
     """Store the document, swap the running generation, log the event.
 
     Only ever called with an ``after`` that ``_validated_generation`` already
     built, so by the time anything is written the config is known to be whole.
     ``swap_config`` is three assignments and a dict refresh with no I/O, so it
     cannot fail after the row is committed either.
+
+    This is also where every *write-only* guard lives, and none of them live in
+    ``_validated_generation``. That function promises "nothing here persists,
+    swaps or enqueues anything" and ``POST /api/config/preview`` routes through
+    it -- a preview must never be refused for being destructive, because
+    answering "what would this do" is the whole of its job. Guards that fire on
+    a write belong on the write path, which ``put_config_overrides`` and
+    ``apply_config_overrides`` both funnel through, so one insertion covers
+    both.
+
+    The stored document is read here, in the same session as the upsert, rather
+    than in an earlier one: a separate read would be a TOCTOU window inside the
+    fix for a TOCTOU bug.
 
     Crash-consistent by construction: if the process dies between the commit
     and ``swap_config``, requests keep being served by the old generation until
@@ -1571,6 +1646,14 @@ async def _persist_and_swap(request: Request, document: dict, after: Config) -> 
     """
     before = request.app.state.config
     async with request.app.state.session_factory() as session:
+        stored = await load_overrides_document(session)
+        if not confirm:
+            refusal = _drop_refusal(stored, document)
+            if refusal is not None:
+                raise HTTPException(
+                    status_code=422, detail=[_error("document", refusal)]
+                )
+
         stmt = insert(ConfigOverride).values(id=OVERRIDES_ROW_ID, document=document)
         stmt = stmt.on_conflict_do_update(
             index_elements=["id"], set_={"document": document, "updated_at": func.now()}
@@ -1580,11 +1663,20 @@ async def _persist_and_swap(request: Request, document: dict, after: Config) -> 
             EventLog(
                 source="config",
                 event_type="overrides_updated",
-                # Versions, never the document. The overrides carry no secrets
-                # (merge_overrides refuses a `secrets` key outright), but an
-                # audit row is read casually and copied into tickets, and the
-                # settings an operator changes are not this table's business.
-                payload={"version_before": before.version, "version_after": after.version},
+                # Versions and counts, never the document. The overrides carry
+                # no secrets (merge_overrides refuses a `secrets` key
+                # outright), but an audit row is read casually and copied into
+                # tickets, and *which* settings an operator changed are not
+                # this table's business. How many there were before and after
+                # is: the 2026-09-01 wipe would have read `12 -> 0` here
+                # instead of costing an investigation.
+                payload={
+                    "version_before": before.version,
+                    "version_after": after.version,
+                    "paths_before": len(document_paths(stored)),
+                    "paths_after": len(document_paths(document)),
+                    "reason": reason,
+                },
                 outcome=f"version {before.version} -> {after.version}",
             )
         )
@@ -1614,9 +1706,14 @@ async def put_config_overrides(
 
     An invalid document changes nothing at all -- no row, no swap, no event --
     and comes back as a 422 listing ``{path, message}`` per problem.
+
+    A destructive save -- one that empties a non-empty store, or drops more
+    than ``OVERRIDE_DROP_CAP`` of its paths -- is refused with a 422 naming the
+    paths, and needs ``confirm: true``. A body that is not the ``{"document":
+    ...}`` envelope is refused by the model before this runs.
     """
     document, after = await _validated_generation(request, body.document)
-    return await _persist_and_swap(request, document, after)
+    return await _persist_and_swap(request, document, after, confirm=body.confirm)
 
 
 @router.post("/config/preview")
@@ -1666,7 +1763,9 @@ async def apply_config_overrides(
     """
     document, after = await _validated_generation(request, body.document)
     before = request.app.state.config
-    saved = await _persist_and_swap(request, document, after)
+    saved = await _persist_and_swap(
+        request, document, after, confirm=body.confirm, reason="apply"
+    )
 
     entries: list[tuple[dict, str]] = []
     if _render_affecting(before, after):
