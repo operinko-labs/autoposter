@@ -419,7 +419,7 @@ async def item_filters(
     Python -- the items table runs to ~15,000 rows.
 
     "statuses" reports `Render.status` (pending|rendered|truncated|no_art|
-    failed), not `Render.upload_status`. That is what list_items()'s own
+    failed|skipped), not `Render.upload_status`. That is what list_items()'s own
     `status` query parameter already filters on, and what a user picking an
     item filter means by "status" -- whether the art rendered, not whether
     it made it to Plex.
