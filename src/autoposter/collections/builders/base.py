@@ -41,7 +41,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections.builders.sources_bundle import PlexSectionAccess, SourceClients
-from autoposter.collections.ids import NAMESPACES, ExternalId, Namespace
+from autoposter.collections.ids import (
+    MEMBER_LEVELS,
+    NAMESPACES,
+    ExternalId,
+    MemberLevel,
+    Namespace,
+)
 from autoposter.providers.cache import ProviderCache
 
 # ``Namespace``/``NAMESPACES``/``ExternalId`` moved to ``collections/ids.py``:
@@ -49,6 +55,7 @@ from autoposter.providers.cache import ProviderCache
 # resolver depend on the builder package it sits underneath. Re-exported so
 # nothing that reads them from the builder contract has to care.
 __all__ = [
+    "MEMBER_LEVELS",
     "NAMESPACES",
     "PREFERENCE",
     "Builder",
@@ -56,6 +63,7 @@ __all__ = [
     "BuilderResult",
     "ExternalId",
     "LibraryTypeMismatch",
+    "MemberLevel",
     "Namespace",
     "PlexIdBuilder",
     "PlexIdParams",
@@ -107,6 +115,13 @@ class BuilderResult:
     summary: str | None = None
     poster_kind: str | None = None
     poster_key: str | None = None
+    # Roadmap row 143. What this builder's ids NAME: the library's own items
+    # (the default, and what every builder written before 143 means), or the
+    # seasons/episodes inside them. The engine resolves against an index of
+    # this level, and a builder that gets it wrong resolves nothing and is
+    # reported as such -- which is the honest failure, since the alternative
+    # (matching a series id to an episode) is a wrong collection nobody can see.
+    level: MemberLevel = "item"
 
 
 @dataclass(frozen=True)

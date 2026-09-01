@@ -61,7 +61,7 @@ class PlexSectionAccess:
     ownership and dry-run guard the engine exists to keep.
     """
 
-    def __init__(self, section: object, owned_index: Callable[[], dict]):
+    def __init__(self, section: object, owned_index: Callable[..., dict]):
         self._section = section
         self._owned_index = owned_index
 
@@ -69,12 +69,16 @@ class PlexSectionAccess:
         """The plexapi ``LibrarySection`` this pass is running against."""
         return self._section
 
-    def owned_index(self) -> dict:
+    def owned_index(self, level: str = "item") -> dict:
         """``{namespace: {value: plex_item}}`` for the whole library.
 
-        The engine's own index, built at most once per library per pass.
+        The engine's own index, built at most once per LEVEL per library per
+        pass (roadmap row 143). ``"item"`` is the library's own granularity and
+        costs the ``section.all()`` the engine was paying anyway;
+        ``"episode"``/``"season"`` cost one extra traversal, and only for the
+        builders and definitions that ask.
         """
-        return self._owned_index()
+        return self._owned_index(level)
 
 
 @dataclass(frozen=True)

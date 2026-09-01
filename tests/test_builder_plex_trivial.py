@@ -59,7 +59,7 @@ def _library():
     ])
     index = {}
 
-    def owned_index():
+    def owned_index(level: str = "item"):
         if not index:
             index.update(build_owned_index(section))
         return index
@@ -99,7 +99,7 @@ async def test_the_order_is_the_order_plex_lists_the_library_in():
     section = CountingSection([FakeItem(name) for name in ("C", "A", "B")])
     index = {}
 
-    def owned_index():
+    def owned_index(level: str = "item"):
         if not index:
             index.update(build_owned_index(section))
         return index

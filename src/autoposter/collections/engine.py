@@ -351,14 +351,17 @@ async def run_library(
     results: list[DefinitionResult] = []
     notifications: list[CollectionNotification] = []
     run_cache: dict = dict(run_cache_seed or {})
-    index = None
+    # One owned index per MEMBER LEVEL (roadmap row 143), each built at most
+    # once. A dict rather than a single slot because an episode-level
+    # definition and an item-level one in the same pass are two different
+    # traversals of the same library, and neither may pay for the other's.
+    indexes: dict[str, dict] = {}
     existing: dict | None = None
 
-    def owned_index():
-        nonlocal index
-        if index is None:
-            index = build_owned_index(section)
-        return index
+    def owned_index(level: str = "item"):
+        if level not in indexes:
+            indexes[level] = build_owned_index(section, level)
+        return indexes[level]
 
     def listing() -> dict:
         nonlocal existing
@@ -673,7 +676,12 @@ async def _run_one(
         # into a poster URL. The pairing is deliberate, not incidental.
         result = BuilderResult(ids=[])
 
-    resolved = resolve_external(owned_index(), result.ids)
+    # Roadmap row 143: the level is the BUILDER's answer to "what do my ids
+    # name". Resolving episode ids against the item index does not error, it
+    # matches nothing -- and "matched nothing" looks exactly like a correct
+    # collection of titles the library does not own.
+    index = owned_index(result.level)
+    resolved = resolve_external(index, result.ids)
     outcome.unresolved = resolved.unresolved
     if resolved.unresolved:
         logger.info(
@@ -860,7 +868,7 @@ async def _run_one(
     # ``sync_membership`` reports rather than pushing in that case.
     if getattr(definition, "sync_to_mdb_list", None):
         outcome.actions += await sync_membership(
-            definition, items, owned_index(), result.ids,
+            definition, items, index, result.ids,
             is_movie=ctx.library_type == "Movie",
             client=ctx.sources.mdblist,
             apply=config.collections.mdblist_sync_apply and not dry_run and not preview,

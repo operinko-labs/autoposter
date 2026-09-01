@@ -42,7 +42,7 @@ def _context(items, params=None, section=None, run_cache=None):
         library="Movies", library_type="Movie",
         config=params or {},
         run_cache=run_cache if run_cache is not None else {},
-        sources=SourceClients(plex=PlexSectionAccess(section, lambda: index)),
+        sources=SourceClients(plex=PlexSectionAccess(section, lambda level="item": index)),
     )
 
 

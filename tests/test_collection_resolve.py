@@ -139,3 +139,104 @@ def test_resolving_no_ids_yields_nothing():
     items, unresolved = resolve_external(build_owned_index(_section()), [])
     assert items == []
     assert unresolved == 0
+
+
+# --- roadmap row 143: the index at season and episode level -----------------
+#
+# A Show library's ``section.all()`` returns Shows only, and a Show carries no
+# per-episode guid, so an episode-level definition has nothing to resolve
+# against. The traversal answer was banked by 8b Task 5
+# (``.superpowers/sdd/task-5-report.md``): ``section.search(libtype="episode")``
+# returns episodes in one call. What was missing is the CONTRACT, not the query.
+
+
+class FakeSearchSection(FakeSection):
+    """A section that answers ``all()`` and ``search(libtype=...)`` separately.
+
+    Deliberately DIFFERENT objects per level: an implementation that walked
+    ``all()`` and filtered would find episodes that are not there, which is the
+    whole point of the second traversal.
+    """
+
+    def __init__(self, items, by_libtype=None):
+        super().__init__(items)
+        self._by_libtype = dict(by_libtype or {})
+        self.searches: list[str] = []
+
+    def search(self, libtype=None, **kwargs):
+        self.searches.append(libtype)
+        return list(self._by_libtype.get(libtype, []))
+
+
+def _show_section():
+    return FakeSearchSection(
+        [FakeItem("Severance", ["tvdb://371980"])],
+        {
+            "episode": [
+                FakeItem("S01E01", ["tvdb://7645236", "imdb://tt11248124"]),
+                FakeItem("NoEpisodeGuids", []),
+            ],
+            "season": [FakeItem("Season 1", [])],
+        },
+    )
+
+
+def test_the_item_level_index_is_still_one_all_call_and_no_search():
+    """Gate-off byte-identity: an item-level pass must not gain a request."""
+    section = _show_section()
+    build_owned_index(section)
+    assert section.all_calls == 1
+    assert section.searches == []
+
+
+def test_an_episode_level_index_comes_from_a_libtype_search_not_from_all():
+    section = _show_section()
+    index = build_owned_index(section, "episode")
+    assert section.searches == ["episode"]
+    assert section.all_calls == 0
+    assert index["tvdb"]["7645236"].title == "S01E01"
+    assert index["imdb"]["tt11248124"].title == "S01E01"
+
+
+def test_a_season_level_index_comes_from_the_season_libtype_search():
+    section = _show_section()
+    index = build_owned_index(section, "season")
+    assert section.searches == ["season"]
+    assert index["plex"]["Season 1"].title == "Season 1"
+
+
+def test_an_episode_with_no_guids_is_still_reachable_by_rating_key():
+    """Season and episode guid coverage is agent-dependent; the rating key is
+    always there, which is what makes ``plex_id``-shaped episode definitions
+    work on a library whose agent populates no episode guids."""
+    index = build_owned_index(_show_section(), "episode")
+    assert index["plex"]["NoEpisodeGuids"].title == "NoEpisodeGuids"
+
+
+def test_the_show_and_the_episode_index_are_separate_answers():
+    """The show's own tvdb id must not appear in the episode index, and the
+    episode's must not appear in the item index: they are different id spaces
+    and merging them would resolve a series id to an episode."""
+    section = _show_section()
+    items = build_owned_index(section, "item")
+    episodes = build_owned_index(section, "episode")
+    assert "371980" in items["tvdb"] and "371980" not in episodes["tvdb"]
+    assert "7645236" in episodes["tvdb"] and "7645236" not in items["tvdb"]
+
+
+def test_an_unknown_level_is_a_key_error_not_a_silent_item_walk():
+    """A typo must not quietly resolve the whole library at item level, which
+    is a full, plausible, wrong membership."""
+    import pytest
+    with pytest.raises(KeyError):
+        build_owned_index(_show_section(), "chapter")
+
+
+def test_resolving_against_an_episode_index_needs_no_new_resolver():
+    """``resolve_external`` is namespace-generic: the level is a property of
+    the INDEX, not of the lookup. This test exists so a future refactor that
+    adds a level parameter to the resolver has to delete it deliberately."""
+    index = build_owned_index(_show_section(), "episode")
+    resolved = resolve_external(index, [("tvdb", "7645236"), ("tvdb", "999")])
+    assert [i.title for i in resolved.items] == ["S01E01"]
+    assert resolved.unresolved == 1
