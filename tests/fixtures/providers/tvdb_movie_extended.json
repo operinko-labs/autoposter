@@ -1,0 +1,1098 @@
+{
+  "status": "success",
+  "data": {
+    "id": 1074,
+    "name": "El laberinto del fauno",
+    "slug": "pans-labyrinth",
+    "image": "https://artworks.thetvdb.com/banners/v4/movie/1074/posters/69c09300d3ece.jpg",
+    "nameTranslations": [
+      "ces",
+      "dan",
+      "fra",
+      "deu",
+      "slv",
+      "por",
+      "spa",
+      "swe",
+      "hun",
+      "kor",
+      "jpn",
+      "heb",
+      "zho",
+      "rus",
+      "ita",
+      "pol",
+      "tur",
+      "eng",
+      "pt",
+      "ara",
+      "ara",
+      "ara"
+    ],
+    "overviewTranslations": [
+      "ces",
+      "dan",
+      "fra",
+      "deu",
+      "slv",
+      "por",
+      "spa",
+      "swe",
+      "hun",
+      "kor",
+      "jpn",
+      "heb",
+      "zho",
+      "rus",
+      "ita",
+      "pol",
+      "tur",
+      "eng",
+      "pt",
+      "ara",
+      "ara"
+    ],
+    "aliases": [
+      {
+        "language": "ara",
+        "name": "متاهة الكائن الأسطوري"
+      },
+      {
+        "language": "ara",
+        "name": "متاهة الفاون"
+      }
+    ],
+    "score": 257340,
+    "runtime": 145,
+    "status": {
+      "id": 5,
+      "name": "Released",
+      "recordType": "movie",
+      "keepUpdated": true
+    },
+    "lastUpdated": "2026-03-23 01:14:20",
+    "year": "2006",
+    "trailers": [
+      {
+        "id": 182371,
+        "name": "Trailer",
+        "url": "https://www.youtube.com/watch?v=AcHasH-nLhU",
+        "language": "eng",
+        "runtime": 0
+      }
+    ],
+    "genres": [
+      {
+        "id": 12,
+        "name": "Drama",
+        "slug": "drama"
+      },
+      {
+        "id": 10,
+        "name": "Fantasy",
+        "slug": "fantasy"
+      }
+    ],
+    "releases": [
+      {
+        "country": "global",
+        "date": "2006-08-25",
+        "detail": null
+      }
+    ],
+    "artworks": [
+      {
+        "id": 62627569,
+        "image": "https://artworks.thetvdb.com/banners/v4/movie/1074/backgrounds/60b464daa8e43.jpg",
+        "thumbnail": "https://artworks.thetvdb.com/banners/v4/movie/1074/backgrounds/60b464daa8e43_t.jpg",
+        "language": null,
+        "type": 15,
+        "score": 100002,
+        "width": 1920,
+        "height": 1080,
+        "includesText": false
+      },
+      {
+        "id": 62841328,
+        "image": "https://artworks.thetvdb.com/banners/v4/movie/164529/clearlogo/6158a5394b0b6.png",
+        "thumbnail": "https://artworks.thetvdb.com/banners/v4/movie/164529/clearlogo/6158a5394b0b6_t.png",
+        "language": "spa",
+        "type": 25,
+        "score": 100001,
+        "width": 800,
+        "height": 310,
+        "includesText": true
+      }
+    ],
+    "remoteIds": [
+      {
+        "id": "PansLabyrinthMovie",
+        "type": 5,
+        "sourceName": "Facebook"
+      },
+      {
+        "id": "tt0457430",
+        "type": 2,
+        "sourceName": "IMDB"
+      },
+      {
+        "id": "1417",
+        "type": 10,
+        "sourceName": "TheMovieDB.com"
+      }
+    ],
+    "characters": [
+      {
+        "id": 12166114,
+        "name": "Ofelia",
+        "peopleId": 663839,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 1,
+        "isFeatured": true,
+        "url": "663839-ivana-baquero",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Ivana Baquero",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/663839/photo/675506af9f891.jpg"
+      },
+      {
+        "id": 12166115,
+        "name": "Mercedes",
+        "peopleId": 473658,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/v4/actor/473658/photo/6482e62252e65.jpg",
+        "sort": 2,
+        "isFeatured": true,
+        "url": "473658-maribel-verdu",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Maribel Verdú",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/473658/photo/657700e41b37c.jpg"
+      },
+      {
+        "id": 12166116,
+        "name": "Fauno / Pale Man",
+        "peopleId": 252499,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/v4/actor/252499/photo/68fcb070a9d83.jpg",
+        "sort": 3,
+        "isFeatured": true,
+        "url": "252499-doug-jones",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Doug Jones",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/252499/637a0153e4b7f.jpg"
+      },
+      {
+        "id": 12166117,
+        "name": "Carmen",
+        "peopleId": 561389,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 4,
+        "isFeatured": true,
+        "url": "561389-ariadna-gil",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Ariadna Gil",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/561389/photo/62af33b42d7e7.jpg"
+      },
+      {
+        "id": 12166118,
+        "name": "Pedro",
+        "peopleId": 513283,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 7,
+        "isFeatured": false,
+        "url": "513283-roger-casamajor",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Roger Casamajor",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/513283/5ed219df51afd.jpg"
+      },
+      {
+        "id": 12166119,
+        "name": "Garcés",
+        "peopleId": 294463,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 10,
+        "isFeatured": false,
+        "url": "294463-manolo-solo",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Manolo Solo",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/294463/photo/638b78dd11a89.jpg"
+      },
+      {
+        "id": 12166120,
+        "name": "Serrano",
+        "peopleId": 465794,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 8,
+        "isFeatured": false,
+        "url": "465794-cesar-vea",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "César Vea",
+        "tagOptions": null,
+        "personImgURL": ""
+      },
+      {
+        "id": 12166121,
+        "name": "El Tarta",
+        "peopleId": 7925919,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 12,
+        "isFeatured": false,
+        "url": "7925919-ivan-massague",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Iván Massagué",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/7925919/photo/60f550339c3be.jpg"
+      },
+      {
+        "id": 12166122,
+        "name": "Padre",
+        "peopleId": 640368,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 13,
+        "isFeatured": false,
+        "url": "640368-eusebio-lazaro",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Eusebio Lázaro",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/640368/photo/67aec7c56698f.jpg"
+      },
+      {
+        "id": 12166123,
+        "name": "Sacerdote",
+        "peopleId": 473334,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 14,
+        "isFeatured": false,
+        "url": "473334-francisco-vidal",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Francisco Vidal",
+        "tagOptions": null,
+        "personImgURL": ""
+      },
+      {
+        "id": 12166124,
+        "name": "Alcalde",
+        "peopleId": 448253,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 15,
+        "isFeatured": false,
+        "url": "448253-juanjo-cucalon",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Juanjo Cucalón",
+        "tagOptions": null,
+        "personImgURL": ""
+      },
+      {
+        "id": 12166125,
+        "name": "Jefe de botiquín",
+        "peopleId": 611150,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 16,
+        "isFeatured": false,
+        "url": "611150-mario-zorrilla",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Mario Zorrilla",
+        "tagOptions": null,
+        "personImgURL": ""
+      },
+      {
+        "id": 12166126,
+        "name": "Capitán Guardia Civil",
+        "peopleId": 562306,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 11,
+        "isFeatured": false,
+        "url": "562306-sebastian-haro",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Sebastián Haro",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/562306/photo/640af8d935f09.jpg"
+      },
+      {
+        "id": 12166127,
+        "name": "Trigo",
+        "peopleId": 667784,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 17,
+        "isFeatured": false,
+        "url": "667784-chani-martin",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Chani Martín",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/667784/primary.jpg"
+      },
+      {
+        "id": 12166128,
+        "name": "Rey",
+        "peopleId": 292558,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 9,
+        "isFeatured": false,
+        "url": "292558-federico-luppi",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Federico Luppi",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/292558/photo/63179d88b98e1.jpg"
+      },
+      {
+        "id": 12166129,
+        "name": "Narrator / Fauno (voice)",
+        "peopleId": 528844,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 18,
+        "isFeatured": false,
+        "url": "528844-pablo-adan",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Pablo Adán",
+        "tagOptions": null,
+        "personImgURL": ""
+      },
+      {
+        "id": 12166130,
+        "name": null,
+        "peopleId": 360389,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 1,
+        "image": "",
+        "sort": 9,
+        "isFeatured": false,
+        "url": "360389-guillermo-del-toro",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Director",
+        "personName": "Guillermo del Toro",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/360389/primary.jpg"
+      },
+      {
+        "id": 12166131,
+        "name": null,
+        "peopleId": 360389,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 2,
+        "image": "",
+        "sort": 9,
+        "isFeatured": false,
+        "url": "360389-guillermo-del-toro",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Writer",
+        "personName": "Guillermo del Toro",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/360389/primary.jpg"
+      },
+      {
+        "id": 12166132,
+        "name": null,
+        "peopleId": 360389,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 7,
+        "image": "",
+        "sort": 9,
+        "isFeatured": false,
+        "url": "360389-guillermo-del-toro",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Producer",
+        "personName": "Guillermo del Toro",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/360389/primary.jpg"
+      },
+      {
+        "id": 12166133,
+        "name": null,
+        "peopleId": 301798,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 7,
+        "image": "",
+        "sort": 4,
+        "isFeatured": false,
+        "url": "301798-cristina-perales",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Producer",
+        "personName": "Cristina Perales",
+        "tagOptions": null,
+        "personImgURL": ""
+      },
+      {
+        "id": 65539128,
+        "name": "Capitaine Vidal",
+        "peopleId": 7904473,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 5,
+        "isFeatured": true,
+        "url": "7904473-sergi-lopez",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Sergi López",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/7904473/5ed66f0d3e9ea.jpg"
+      },
+      {
+        "id": 69419171,
+        "name": "Doctor Ferreiro",
+        "peopleId": 294460,
+        "seriesId": null,
+        "series": null,
+        "movie": null,
+        "movieId": 1074,
+        "episodeId": null,
+        "type": 3,
+        "image": "",
+        "sort": 6,
+        "isFeatured": true,
+        "url": "294460-alex-angulo",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Álex Angulo",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/294460/photo/6281385e16762.jpg"
+      }
+    ],
+    "budget": "19000000.00",
+    "boxOffice": "83300000.00",
+    "boxOfficeUS": "",
+    "originalCountry": "mex",
+    "originalLanguage": "spa",
+    "audioLanguages": null,
+    "subtitleLanguages": null,
+    "studios": null,
+    "awards": [
+      {
+        "id": 109988,
+        "year": "2007",
+        "details": null,
+        "isWinner": false,
+        "category": "Foreign Language Film",
+        "name": "Academy Awards",
+        "series": null,
+        "movie": null,
+        "episode": null,
+        "character": null
+      },
+      {
+        "id": 109989,
+        "year": "2007",
+        "details": null,
+        "isWinner": false,
+        "category": "Writing (Original Screenplay)",
+        "name": "Academy Awards",
+        "series": null,
+        "movie": null,
+        "episode": null,
+        "character": null
+      },
+      {
+        "id": 109990,
+        "year": "2007",
+        "details": null,
+        "isWinner": true,
+        "category": "Cinematography",
+        "name": "Academy Awards",
+        "series": null,
+        "movie": null,
+        "episode": null,
+        "character": null
+      },
+      {
+        "id": 109991,
+        "year": "2007",
+        "details": null,
+        "isWinner": true,
+        "category": "Production Design",
+        "name": "Academy Awards",
+        "series": null,
+        "movie": null,
+        "episode": null,
+        "character": null
+      },
+      {
+        "id": 109992,
+        "year": "2007",
+        "details": null,
+        "isWinner": true,
+        "category": "Makeup and Hairstyling",
+        "name": "Academy Awards",
+        "series": null,
+        "movie": null,
+        "episode": null,
+        "character": null
+      },
+      {
+        "id": 109993,
+        "year": "2007",
+        "details": null,
+        "isWinner": false,
+        "category": "Music (Original Score)",
+        "name": "Academy Awards",
+        "series": null,
+        "movie": null,
+        "episode": null,
+        "character": null
+      },
+      {
+        "id": 109994,
+        "year": "2007",
+        "details": null,
+        "isWinner": false,
+        "category": "Best Motion Picture – Foreign Language",
+        "name": "Golden Globe Awards",
+        "series": null,
+        "movie": null,
+        "episode": null,
+        "character": null
+      },
+      {
+        "id": 109995,
+        "year": "2007",
+        "details": null,
+        "isWinner": true,
+        "category": "Best Film Not In The English Language",
+        "name": "BAFTA Awards",
+        "series": null,
+        "movie": null,
+        "episode": null,
+        "character": null
+      },
+      {
+        "id": 109996,
+        "year": "2007",
+        "details": null,
+        "isWinner": false,
+        "category": "Best Original Screenplay",
+        "name": "BAFTA Awards",
+        "series": null,
+        "movie": null,
+        "episode": null,
+        "character": null
+      }
+    ],
+    "tagOptions": [
+      {
+        "id": 166,
+        "tag": 10,
+        "tagName": "Relationship Types",
+        "name": "Family",
+        "helpText": null
+      },
+      {
+        "id": 206,
+        "tag": 32,
+        "tagName": "Geographic Location",
+        "name": "Europe",
+        "helpText": null
+      },
+      {
+        "id": 234,
+        "tag": 14,
+        "tagName": "Supernatural Beings",
+        "name": "Monsters",
+        "helpText": null
+      }
+    ],
+    "lists": [
+      {
+        "id": 14753,
+        "name": "MOVIES",
+        "overview": "",
+        "url": "14753",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14967,
+        "name": "Guillermo Del Toro's Spanish Civil War",
+        "overview": "",
+        "url": "14967",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      }
+    ],
+    "contentRatings": null,
+    "companies": {
+      "studio": [],
+      "network": [],
+      "production": [
+        {
+          "id": 393,
+          "name": "Telecinco",
+          "slug": "telecinco",
+          "nameTranslations": null,
+          "overviewTranslations": null,
+          "aliases": null,
+          "country": "esp",
+          "primaryCompanyType": 1,
+          "activeDate": null,
+          "inactiveDate": null,
+          "companyType": {
+            "companyTypeId": 3,
+            "companyTypeName": "Production Company"
+          },
+          "parentCompany": {
+            "id": null,
+            "name": null,
+            "relation": {
+              "id": null,
+              "typeName": null
+            }
+          },
+          "tagOptions": null
+        },
+        {
+          "id": 8878,
+          "name": "CafeFX",
+          "slug": "cafefx",
+          "nameTranslations": null,
+          "overviewTranslations": null,
+          "aliases": null,
+          "country": null,
+          "primaryCompanyType": 3,
+          "activeDate": null,
+          "inactiveDate": null,
+          "companyType": {
+            "companyTypeId": 3,
+            "companyTypeName": "Production Company"
+          },
+          "parentCompany": {
+            "id": null,
+            "name": null,
+            "relation": {
+              "id": null,
+              "typeName": null
+            }
+          },
+          "tagOptions": null
+        },
+        {
+          "id": 15450,
+          "name": "Esperanto Filmoj",
+          "slug": "esperanto-filmoj",
+          "nameTranslations": null,
+          "overviewTranslations": null,
+          "aliases": null,
+          "country": null,
+          "primaryCompanyType": 3,
+          "activeDate": null,
+          "inactiveDate": null,
+          "companyType": {
+            "companyTypeId": 3,
+            "companyTypeName": "Production Company"
+          },
+          "parentCompany": {
+            "id": null,
+            "name": null,
+            "relation": {
+              "id": null,
+              "typeName": null
+            }
+          },
+          "tagOptions": null
+        },
+        {
+          "id": 15513,
+          "name": "Estudios Picasso",
+          "slug": "estudios-picasso",
+          "nameTranslations": null,
+          "overviewTranslations": null,
+          "aliases": null,
+          "country": null,
+          "primaryCompanyType": 3,
+          "activeDate": null,
+          "inactiveDate": null,
+          "companyType": {
+            "companyTypeId": 3,
+            "companyTypeName": "Production Company"
+          },
+          "parentCompany": {
+            "id": null,
+            "name": null,
+            "relation": {
+              "id": null,
+              "typeName": null
+            }
+          },
+          "tagOptions": null
+        },
+        {
+          "id": 38138,
+          "name": "Sententia Entertainment",
+          "slug": "sententia-entertainment",
+          "nameTranslations": null,
+          "overviewTranslations": null,
+          "aliases": null,
+          "country": null,
+          "primaryCompanyType": 3,
+          "activeDate": null,
+          "inactiveDate": null,
+          "companyType": {
+            "companyTypeId": 3,
+            "companyTypeName": "Production Company"
+          },
+          "parentCompany": {
+            "id": null,
+            "name": null,
+            "relation": {
+              "id": null,
+              "typeName": null
+            }
+          },
+          "tagOptions": null
+        },
+        {
+          "id": 42098,
+          "name": "Tequila Gang",
+          "slug": "tequila-gang",
+          "nameTranslations": null,
+          "overviewTranslations": null,
+          "aliases": null,
+          "country": null,
+          "primaryCompanyType": 3,
+          "activeDate": null,
+          "inactiveDate": null,
+          "companyType": {
+            "companyTypeId": 3,
+            "companyTypeName": "Production Company"
+          },
+          "parentCompany": {
+            "id": null,
+            "name": null,
+            "relation": {
+              "id": null,
+              "typeName": null
+            }
+          },
+          "tagOptions": null
+        },
+        {
+          "id": 46302,
+          "name": "Wild Bunch",
+          "slug": "wild-bunch",
+          "nameTranslations": null,
+          "overviewTranslations": null,
+          "aliases": null,
+          "country": null,
+          "primaryCompanyType": 3,
+          "activeDate": null,
+          "inactiveDate": null,
+          "companyType": {
+            "companyTypeId": 3,
+            "companyTypeName": "Production Company"
+          },
+          "parentCompany": {
+            "id": null,
+            "name": null,
+            "relation": {
+              "id": null,
+              "typeName": null
+            }
+          },
+          "tagOptions": null
+        }
+      ],
+      "distributor": [
+        {
+          "id": 33464,
+          "name": "Picturehouse",
+          "slug": "picturehouse",
+          "nameTranslations": null,
+          "overviewTranslations": null,
+          "aliases": null,
+          "country": null,
+          "primaryCompanyType": 3,
+          "activeDate": null,
+          "inactiveDate": null,
+          "companyType": {
+            "companyTypeId": 4,
+            "companyTypeName": "Distributor"
+          },
+          "parentCompany": {
+            "id": null,
+            "name": null,
+            "relation": {
+              "id": null,
+              "typeName": null
+            }
+          },
+          "tagOptions": null
+        },
+        {
+          "id": 32031,
+          "name": "Oro Film",
+          "slug": "oro-film",
+          "nameTranslations": null,
+          "overviewTranslations": null,
+          "aliases": null,
+          "country": null,
+          "primaryCompanyType": 3,
+          "activeDate": null,
+          "inactiveDate": null,
+          "companyType": {
+            "companyTypeId": 4,
+            "companyTypeName": "Distributor"
+          },
+          "parentCompany": {
+            "id": null,
+            "name": null,
+            "relation": {
+              "id": null,
+              "typeName": null
+            }
+          },
+          "tagOptions": null
+        },
+        {
+          "id": 46302,
+          "name": "Wild Bunch",
+          "slug": "wild-bunch",
+          "nameTranslations": null,
+          "overviewTranslations": null,
+          "aliases": null,
+          "country": null,
+          "primaryCompanyType": 3,
+          "activeDate": null,
+          "inactiveDate": null,
+          "companyType": {
+            "companyTypeId": 4,
+            "companyTypeName": "Distributor"
+          },
+          "parentCompany": {
+            "id": null,
+            "name": null,
+            "relation": {
+              "id": null,
+              "typeName": null
+            }
+          },
+          "tagOptions": null
+        }
+      ],
+      "special_effects": []
+    },
+    "production_countries": [
+      {
+        "id": 241199,
+        "country": "esp",
+        "name": "Spain"
+      },
+      {
+        "id": 241200,
+        "country": "usa",
+        "name": "United States of America"
+      },
+      {
+        "id": 241201,
+        "country": "mex",
+        "name": "Mexico"
+      }
+    ],
+    "inspirations": [],
+    "spoken_languages": [
+      "spa"
+    ],
+    "first_release": {
+      "country": "global",
+      "date": "2006-08-25",
+      "detail": null
+    }
+  }
+}

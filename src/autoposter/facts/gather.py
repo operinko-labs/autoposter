@@ -81,7 +81,7 @@ def _user_rating(source: str | None, critic: float | None, audience: float | Non
 
 
 async def gather_facts(
-    session: AsyncSession, item: ResolvedItem, tmdb, mdblist, *, operations=None
+    session: AsyncSession, item: ResolvedItem, tmdb, mdblist, *, operations=None, tvdb=None
 ) -> GatheredFacts:
     """Collect everything the providers know about one item.
 
@@ -91,7 +91,9 @@ async def gather_facts(
     ``operations`` is the ``OperationsConfig`` naming each mass-op field's
     source (rows 32/33a/84). ``None`` -- what every direct caller and most
     tests pass -- names no source, so those fields are gathered as ``None``
-    and nothing new is written.
+    and nothing new is written. ``tvdb`` is the process's ``TVDBClient``;
+    ``None`` -- what every direct caller and most tests pass -- means row 84's
+    overlay below is never asked for, whatever ``operations`` names.
     """
     if item.kind == "season":
         return GatheredFacts()
@@ -120,6 +122,32 @@ async def gather_facts(
             sources.update(facts.sources)
         except TmdbRateLimited as exc:
             logger.warning("tmdb rate budget reached; skipping tmdb facts: %s", exc)
+
+    # Row 84. Only asked for when config NAMES tvdb for at least one of the
+    # three fields, so a deployment that names none pays no request and gets
+    # today's behaviour exactly.
+    wanted = {
+        field
+        for field in ("genres", "studio", "originally_available")
+        if getattr(operations, f"{field}_source", None) == "tvdb"
+    }
+    if wanted and tvdb is not None and item.tvdb_id and item.kind in ("movie", "show"):
+        try:
+            tvdb_facts = await tvdb.extended_facts(item.tvdb_id, item.kind == "movie")
+        except httpx.HTTPError as exc:
+            # The MDBList precedent: one provider's transient failure must not
+            # throw away everything else this pass gathered.
+            logger.warning("tvdb request failed; skipping tvdb facts: %s", exc)
+            tvdb_facts = None
+        if tvdb_facts is not None:
+            overlay = {
+                field: getattr(tvdb_facts, field)
+                for field in wanted
+                if getattr(tvdb_facts, field)
+            }
+            if overlay:
+                facts = replace(facts, **overlay)
+                sources.update({field: "tvdb" for field in overlay})
 
     critic = await _critic_rating(session, item)
     if critic is not None:

@@ -691,6 +691,51 @@ class OperationsConfig(BaseModel):
             "Plex, library-wide. Unset writes no original title at all."
         ),
     )
+    # Roadmap row 34. Applied AHEAD of the diff, so the mapped value is both
+    # what is compared and what is written -- mapping after the diff would
+    # rewrite the same item every pass. Exact-key and case-sensitive: an
+    # operator's hand-written table means the strings it holds.
+    genre_mapper: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Genre names to rewrite before they are written to Plex, e.g. "
+            "'Sci-Fi & Fantasy' to 'Sci-Fi'. A genre not named here is written "
+            "unchanged; two genres mapped onto one are written once."
+        ),
+    )
+    content_rating_mapper: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Content-rating values to rewrite before they are written to Plex, "
+            "e.g. 'TV-MA' to '18'. A value not named here is written unchanged."
+        ),
+    )
+    # Roadmap row 84. TVDb as a nameable source for the three fields its
+    # extended record carries, alongside TMDb. The explicit-source model again:
+    # exactly one source per field, no precedence and no tiebreak. Unset keeps
+    # each field on the TMDb value gather_facts already produces, which is what
+    # every config that does not set these does today.
+    genres_source: Literal["tmdb", "tvdb"] | None = Field(
+        default=None,
+        description=(
+            "Which provider supplies the genres written to Plex. Unset keeps "
+            "the TMDb genres this service already gathers."
+        ),
+    )
+    studio_source: Literal["tmdb", "tvdb"] | None = Field(
+        default=None,
+        description=(
+            "Which provider supplies the studio written to Plex. Unset keeps "
+            "the TMDb studio this service already gathers."
+        ),
+    )
+    originally_available_source: Literal["tmdb", "tvdb"] | None = Field(
+        default=None,
+        description=(
+            "Which provider supplies the release date written to Plex. Unset "
+            "keeps the TMDb date this service already gathers."
+        ),
+    )
     # This section owns WHEN, not WHETHER, in the split ``SchedulerConfig``'s
     # docstring states: there is no ``tmdb_budget_enabled`` beside this,
     # because 0 already means that and two spellings of one setting is one

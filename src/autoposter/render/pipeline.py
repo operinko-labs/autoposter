@@ -922,6 +922,7 @@ async def apply_metadata(
     plex_item,
     tmdb_facts,
     mdblist,
+    tvdb=None,
 ) -> GatheredFacts:
     """Gather this item's facts, store them, and write the changed ones to Plex.
 
@@ -932,7 +933,7 @@ async def apply_metadata(
         return GatheredFacts()
 
     facts = await gather_facts(
-        session, item, tmdb_facts, mdblist, operations=config.operations
+        session, item, tmdb_facts, mdblist, operations=config.operations, tvdb=tvdb
     )
     await persist_facts(session, media_item_id, facts)
 
@@ -948,7 +949,7 @@ async def apply_metadata(
         if exempt is not None:
             logger.info("plex: skipped writing %s: %s", item.rating_key, exempt)
         else:
-            await apply_facts(plex_item, facts)
+            await apply_facts(plex_item, facts, config.operations)
     return facts
 
 
@@ -1121,8 +1122,12 @@ async def process_item(
         try:
             media_item = await _upsert_media_item(session, item)
             plex_item = await fetch_item(item.rating_key)
+            # Row 84's tvdb client, if the deployment's provider order builds
+            # one -- the same object `providers` already holds, never a new
+            # one, so it shares that client's cached token and cache.
+            tvdb = next((p for p in providers if getattr(p, "name", None) == "TVDB"), None)
             await apply_metadata(
-                session, config, media_item.id, item, plex_item, tmdb_facts, mdblist
+                session, config, media_item.id, item, plex_item, tmdb_facts, mdblist, tvdb
             )
         except Exception:
             # Finding 5: if the failure was a database error, the transaction

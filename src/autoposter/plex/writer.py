@@ -125,15 +125,56 @@ def _genre_plan(current: list[str], target: list[str]) -> dict[str, object]:
     return plan
 
 
-def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
+def map_value(mapping: dict[str, str], value: str | None) -> str | None:
+    """``value`` rewritten by ``mapping``, or unchanged (roadmap row 34).
+
+    Exact-key and case-sensitive. The label case-folding rule this project
+    holds elsewhere is about Plex LABELS, which Plex itself canonicalises;
+    this is an operator's own table of genre and rating strings, and folding it
+    would silently merge two keys they wrote separately.
+    """
+    if not mapping or value is None:
+        return value
+    return mapping.get(value, value)
+
+
+def map_values(mapping: dict[str, str], values: list[str]) -> list[str]:
+    """``values`` rewritten by ``mapping``, in order, each result once.
+
+    Deduplicated because two source genres commonly map onto one target and
+    the genre diff below compares sorted sets -- a duplicate would make an
+    already-correct item look like it needed a write.
+    """
+    if not mapping:
+        return values
+    mapped: list[str] = []
+    for value in values:
+        rewritten = mapping.get(value, value)
+        if rewritten not in mapped:
+            mapped.append(rewritten)
+    return mapped
+
+
+def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]:
     """Field/value pairs that differ from what Plex already holds.
 
     Ratings compare on their *formatted* value, because that is what a viewer
     sees: 8.65 and 8.6 both render "86%", so rewriting one as the other would
     churn Plex for no visible gain.
+
+    ``operations`` is the ``OperationsConfig``; ``None`` -- what a direct
+    caller and most tests pass -- means no mapper and no verb, which is
+    byte-identical to the pre-row-34 behaviour.
     """
     writable = WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set())
     edits: dict[str, object] = {}
+
+    # Row 34: normalise once, here, so the mapped value is what the diff below
+    # compares AND what is written.
+    genre_mapper = getattr(operations, "genre_mapper", None) or {}
+    content_rating_mapper = getattr(operations, "content_rating_mapper", None) or {}
+    content_rating = map_value(content_rating_mapper, facts.content_rating)
+    genres = map_values(genre_mapper, facts.genres)
 
     def put(field: str, value: object) -> None:
         edits[f"{field}.value"] = value
@@ -149,9 +190,9 @@ def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
         if current != format_audience(facts.audience_rating):
             put("audienceRating", _one_decimal(facts.audience_rating))
 
-    if "content_rating" in writable and facts.content_rating:
-        if getattr(item, "contentRating", None) != facts.content_rating:
-            put("contentRating", facts.content_rating)
+    if "content_rating" in writable and content_rating:
+        if getattr(item, "contentRating", None) != content_rating:
+            put("contentRating", content_rating)
 
     if "studio" in writable and facts.studio:
         if getattr(item, "studio", None) != facts.studio:
@@ -174,10 +215,10 @@ def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
         if getattr(item, "originalTitle", None) != facts.original_title:
             put("originalTitle", facts.original_title)
 
-    if "genres" in writable and facts.genres:
+    if "genres" in writable and genres:
         current_genres = _current_genres(item)
-        if sorted(current_genres) != sorted(facts.genres):
-            edits.update(_genre_plan(current_genres, facts.genres))
+        if sorted(current_genres) != sorted(genres):
+            edits.update(_genre_plan(current_genres, genres))
 
     return edits
 
@@ -230,7 +271,7 @@ def _item_label(item) -> str:
     return label
 
 
-async def apply_facts(item, facts: GatheredFacts) -> dict[str, object]:
+async def apply_facts(item, facts: GatheredFacts, operations=None) -> dict[str, object]:
     """Write the changed fields in one HTTP call.
 
     plexapi routes even a single-item edit through the library section, so
@@ -239,7 +280,7 @@ async def apply_facts(item, facts: GatheredFacts) -> dict[str, object]:
     (see `_genre_plan`) rather than `item.edit()`, but still land inside the
     same `batchEdits()`/`saveEdits()` block, so it's still a single request.
     """
-    edits = plan_edits(item, facts)
+    edits = plan_edits(item, facts, operations)
     if not edits:
         return {}
 

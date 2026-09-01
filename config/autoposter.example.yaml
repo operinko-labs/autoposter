@@ -46,6 +46,15 @@ operations:
   # Roadmap row 33 -- which provider supplies the original-language title.
   # 'tmdb' is the only source served today. Unset writes no original title.
   # original_title_source: tmdb
+  # Roadmap row 34 -- normalise values before they are written to Plex.
+  # genre_mapper:
+  #   "Sci-Fi & Fantasy": "Sci-Fi"
+  # content_rating_mapper:
+  #   "TV-MA": "18"
+  # Roadmap row 84 -- which provider supplies each field. Unset keeps TMDb's.
+  # genres_source: tvdb
+  # studio_source: tvdb
+  # originally_available_source: tvdb
   tmdb_backoff_seconds: 60 # how long TMDb is left alone after a 429 with no Retry-After; 0 disables the shared window
 
 badges:
