@@ -10,6 +10,7 @@ migration and no ownership claim: the ownership label is never applied.
 """
 from pathlib import Path
 
+from autoposter.collections.engine import run_library
 from autoposter.collections.posters import apply_local_posters_to_unmanaged
 from autoposter.config.loader import load_config
 from autoposter.db.models import ManagedCollection
@@ -91,6 +92,51 @@ async def test_a_second_pass_uploads_nothing(session, tmp_path, jpeg_bytes):
     )
     assert second.uploaded == []
     assert results == []
+
+
+class FakeSection:
+    """Just enough of a Plex section for ``run_library``'s row-37 pass: a
+    fixed list of pre-existing collections, none of them defined here."""
+
+    def __init__(self, collections):
+        self._collections = list(collections)
+
+    def collections(self, **kw):
+        return list(self._collections)
+
+
+async def test_a_second_sweep_reuploads_a_replaced_local_poster(
+    session, tmp_path, jpeg_bytes
+):
+    """I1: the ledger row row 37 writes on the first sweep must not shadow
+    the collection on the second, or a replaced local poster is never
+    re-uploaded. Driven through ``run_library`` -- the wired path -- not the
+    helper directly, since the helper's own short-circuit passes for a
+    reason that does not exist in the wired-up path (see the branch review)."""
+    import io
+
+    from PIL import Image
+
+    title = "Someone Elses Collection"
+    _place(tmp_path, "Movies", title, jpeg_bytes)
+    config = _config(tmp_path, assets_for_all_collections=True)
+    collection = FakeCollection(title)
+    section = FakeSection([collection])
+
+    await run_library(
+        session, section, "Movies", "Movie", [], config, sweep=True,
+    )
+    assert collection.uploaded == [jpeg_bytes]
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "blue").save(buffer, format="JPEG")
+    replaced_bytes = buffer.getvalue()
+    _place(tmp_path, "Movies", title, replaced_bytes)
+
+    await run_library(
+        session, section, "Movies", "Movie", [], config, sweep=True,
+    )
+    assert collection.uploaded == [jpeg_bytes, replaced_bytes]
 
 
 async def test_a_collection_with_no_local_poster_is_left_alone(session, tmp_path):

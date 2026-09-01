@@ -610,7 +610,10 @@ async def run_library(
             row.title
             for row in (
                 await session.execute(
-                    select(ManagedCollection).where(ManagedCollection.library == library)
+                    select(ManagedCollection).where(
+                        ManagedCollection.library == library,
+                        ManagedCollection.kind != LOCAL_ASSET_KIND,
+                    )
                 )
             ).scalars()
         }
