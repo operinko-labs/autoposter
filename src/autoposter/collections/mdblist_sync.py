@@ -76,9 +76,11 @@ async def sync_membership(
 ) -> list[str]:
     """Push this definition's membership, or report why nothing was pushed.
 
-    Returns action strings for ``DefinitionResult.actions``. Never raises: the
-    push is a side channel, and a third-party service being down must not fail
-    a collection that applied to Plex perfectly well.
+    Returns action strings for ``DefinitionResult.actions``. The network call
+    itself never raises: the push is a side channel, and a third-party service
+    being down must not fail a collection that applied to Plex perfectly well.
+    (``pushable_ids``/``push_payload`` above it are pure set/dict operations
+    over already-resolved objects and are not wrapped.)
     """
     reference = getattr(definition, "sync_to_mdb_list", None)
     if not reference:

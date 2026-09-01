@@ -57,9 +57,10 @@ family:
 This is `operations.metadata_backup_root` (default `/metadatabackup`) — where
 `POST /api/metadata-backup` writes one YAML file per library, keyed by rating
 key, as the undo story for the metadata mass ops. It carries the same warning
-`plex_backup_root` does: it must be a real mount, because an unmounted path is
-indistinguishable from a mounted one to the writer and every file would land
-on the node's own disk and vanish with the pod.
+`plex_backup_root` does: the mode **refuses to run** when this path is not
+mounted, rather than creating the directory — without that refusal every file
+would be written into the container's own filesystem, filling the node's disk
+and vanishing with the pod.
 
 The config file itself is read from the path in `AUTOPOSTER_CONFIG`, which
 the image sets to `/config/autoposter.yaml` — so mount `autoposter.yaml`
