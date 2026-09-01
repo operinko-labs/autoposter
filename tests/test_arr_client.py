@@ -456,15 +456,17 @@ async def test_apply_tags_puts_the_editor_body_for_radarr():
         seen["method"] = request.method
         seen["url"] = str(request.url)
         seen["body"] = json.loads(request.read())
+        seen["key"] = request.headers.get("X-Api-Key")
         return httpx.Response(200)
 
     async with _fake_http(handler) as http:
-        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        client = ArrClient(http, "https://radarr.example", "secret-key", RADARR)
         await client.apply_tags([1, 2], [9])
 
     assert seen["method"] == "PUT", "DELETE takes the same body and deletes the movies"
     assert seen["url"] == "https://radarr.example/api/v3/movie/editor"
     assert seen["body"] == {"movieIds": [1, 2], "tags": [9], "applyTags": "add"}
+    assert seen["key"] == "secret-key"
 
 
 async def test_apply_tags_puts_the_editor_body_for_sonarr():
