@@ -22,6 +22,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
+import { STALE_SAVE_NOTE } from "../api/overrides";
 import { CustomCollectionsPanel } from "./CustomCollectionsPanel";
 
 const LIBRARIES = ["Movies", "TV Shows"];
@@ -604,5 +605,48 @@ describe("the custom collections panel", () => {
     await renderPanel({ definitions: listing(OVERRIDE_ROWS), config: overriddenConfig() });
 
     expect(screen.queryByText(/There is no edit/)).toBeNull();
+  });
+});
+
+describe("CustomCollectionsPanel stale-save recovery", () => {
+  /** This file's parse-then-create idiom, matching the neighbouring create
+   * tests -- there is no shared helper for it. */
+  async function createDefinition(puts: RequestInit[]) {
+    await fillAndParse();
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(puts).toHaveLength(1));
+  }
+
+  it("sends the revision it seeded from", async () => {
+    const { puts } = await renderPanel({
+      config: { ...config(), overrides_revision: "rev-1" },
+    });
+    await createDefinition(puts);
+
+    expect(JSON.parse(String(puts[0].body)).expected_revision).toBe("rev-1");
+  });
+
+  it("tells the operator and re-reads when the server refuses a stale save", async () => {
+    const { fetchMock, puts } = await renderPanel({
+      config: { ...config(), overrides_revision: "rev-1" },
+      save: () =>
+        json(
+          {
+            message: "these settings changed somewhere else",
+            current_revision: "rev-9",
+            changed_paths: ["collections.definitions"],
+          },
+          409,
+        ),
+    });
+    await createDefinition(puts);
+
+    await screen.findByText(STALE_SAVE_NOTE);
+    expect(puts).toHaveLength(1);
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([path]) => path === "/api/config"),
+      ).toHaveLength(2),
+    );
   });
 });

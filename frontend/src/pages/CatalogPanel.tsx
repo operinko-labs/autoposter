@@ -5,7 +5,14 @@ import { ApiError, apiFetch } from "../api/client";
 // The overrides document is shared with the settings page, helpers and all --
 // see `api/overrides.ts` for why a second copy of the seeding rule would be a
 // bug rather than a duplication.
-import { documentFromConfig, fieldErrors, withPath } from "../api/overrides";
+import {
+  documentFromConfig,
+  fieldErrors,
+  revisionFromConfig,
+  saveBody,
+  STALE_SAVE_NOTE,
+  withPath,
+} from "../api/overrides";
 import type {
   CatalogCategory,
   CatalogPreset,
@@ -242,6 +249,10 @@ export function CatalogPanel() {
   // the collections section: a save here must not drop an override the
   // settings page stored.
   const [stored, setStored] = useState<OverridesDocument>({});
+  // The revision `stored` was seeded from, sent with every write so a save
+  // composed against a document another page has since moved is refused
+  // rather than silently overwriting it.
+  const [storedRevision, setStoredRevision] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   // Separate from `saveError` on purpose: a re-read that fails after the store
@@ -273,6 +284,7 @@ export function CatalogPanel() {
       setCategories(catalog.categories);
       setChosen(storedChoices(catalog.categories));
       setStored(documentFromConfig(config));
+      setStoredRevision(revisionFromConfig(config));
       setSelected((current) => current ?? catalog.categories[0]?.key ?? null);
     },
     [],
@@ -362,18 +374,23 @@ export function CatalogPanel() {
     setReloadError(null);
     setResult(null);
     let saved = false;
+    let stale = false;
     try {
       const response = await apiFetch<ConfigSaveResponse>("/api/config/overrides", {
         method: "PUT",
-        body: JSON.stringify({
-          document: documentToSave(stored, categories!, chosen),
-        }),
+        body: saveBody(documentToSave(stored, categories!, chosen), storedRevision),
       });
       if (live.current) setResult(response);
       saved = true;
     } catch (caught) {
       if (live.current) {
-        if (caught instanceof ApiError && caught.status === 422) {
+        if (caught instanceof ApiError && caught.status === 409) {
+          // Not retried: re-read, and say what happened. `stale` makes the
+          // re-read below run even though nothing was saved -- the panel is
+          // showing a document that is no longer true.
+          setSaveError(STALE_SAVE_NOTE);
+          stale = true;
+        } else if (caught instanceof ApiError && caught.status === 422) {
           setErrors(fieldErrors(caught.detail));
           setSaveError("The server rejected these choices.");
         } else {
@@ -386,7 +403,7 @@ export function CatalogPanel() {
     // re-seeded from the paths the server now says are overridden. Outside the
     // save's own try on purpose -- the store already succeeded, so a failure
     // here means the panel is showing stale state, not that nothing was saved.
-    if (saved) {
+    if (saved || stale) {
       try {
         await reload();
       } catch (caught) {

@@ -14,6 +14,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
+import { STALE_SAVE_NOTE } from "../api/overrides";
 import { GroupsPanel } from "./GroupsPanel";
 
 /** Four groups, deliberately not ten: the panel must render whatever the
@@ -439,5 +440,48 @@ describe("the style select", () => {
       badge.compareDocumentPosition(styleBlock!) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+});
+
+describe("GroupsPanel stale-save recovery", () => {
+  /** This file's move-then-save idiom, matching the neighbouring saving
+   * tests -- there is no shared helper for it. */
+  async function saveOrder(puts: RequestInit[]) {
+    fireEvent.click(screen.getByRole("button", { name: "Move Award Collections up" }));
+    await save();
+    await waitFor(() => expect(puts).toHaveLength(1));
+  }
+
+  it("sends the revision it seeded from", async () => {
+    const { puts } = await renderPanel({
+      config: { ...config(), overrides_revision: "rev-1" },
+    });
+    await saveOrder(puts);
+
+    expect(JSON.parse(String(puts[0].body)).expected_revision).toBe("rev-1");
+  });
+
+  it("tells the operator and re-reads when the server refuses a stale save", async () => {
+    const { fetchMock, puts } = await renderPanel({
+      config: { ...config(), overrides_revision: "rev-1" },
+      save: () =>
+        json(
+          {
+            message: "these settings changed somewhere else",
+            current_revision: "rev-9",
+            changed_paths: ["collections.separator_style"],
+          },
+          409,
+        ),
+    });
+    await saveOrder(puts);
+
+    await screen.findByText(STALE_SAVE_NOTE);
+    expect(puts).toHaveLength(1);
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([path]) => path === "/api/config"),
+      ).toHaveLength(2),
+    );
   });
 });

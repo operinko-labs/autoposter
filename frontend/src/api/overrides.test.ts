@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { fieldErrors } from "./overrides";
+import {
+  fieldErrors,
+  revisionFromConfig,
+  saveBody,
+  STALE_SAVE_NOTE,
+} from "./overrides";
 
 /** M6 (the ccui review, deferred cross-phase): two 422 entries on the same
  * path used to collapse to the LAST one -- last-writer-wins hid every earlier
@@ -38,5 +43,42 @@ describe("fieldErrors", () => {
     const detail = [{ path: "constructor", message: "not a config section" }];
 
     expect(fieldErrors(detail)).toEqual({ constructor: "not a config section" });
+  });
+});
+
+describe("the revision a page carries with its seed", () => {
+  it("reads the revision the config response served", () => {
+    expect(revisionFromConfig({ overrides_revision: "abc" })).toBe("abc");
+  });
+
+  it("reads null from a response that has no revision, rather than throwing", () => {
+    // A response from before the field existed. The save then omits the key
+    // and the server proceeds -- the same posture the endpoint takes.
+    expect(revisionFromConfig({})).toBeNull();
+    expect(revisionFromConfig({ overrides_revision: "" })).toBeNull();
+    expect(revisionFromConfig({ overrides_revision: 7 })).toBeNull();
+  });
+
+  it("sends the revision alongside the document, wrapped", () => {
+    expect(JSON.parse(saveBody({ workers: 9 }, "abc"))).toEqual({
+      document: { workers: 9 },
+      expected_revision: "abc",
+    });
+  });
+
+  it("omits the key entirely when there is no revision to send", () => {
+    // Not `expected_revision: null` -- the body model types it as
+    // `str | None` and null would read as "I have no seed", which is exactly
+    // what it means, but omitting is what the four pages' tests assert and
+    // what an older client sends. One shape, not two.
+    const body = JSON.parse(saveBody({ workers: 9 }, null));
+    expect(body).toEqual({ document: { workers: 9 } });
+    expect("expected_revision" in body).toBe(false);
+  });
+
+  it("never tells the operator to retry", () => {
+    // A retry would re-apply the edit onto a document they have not seen.
+    expect(STALE_SAVE_NOTE).not.toMatch(/try again|retry/i);
+    expect(STALE_SAVE_NOTE).toMatch(/nothing was saved/i);
   });
 });

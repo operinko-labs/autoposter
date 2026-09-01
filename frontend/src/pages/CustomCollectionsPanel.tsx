@@ -9,6 +9,9 @@ import {
   fieldErrors,
   isPlainObject,
   readPath,
+  revisionFromConfig,
+  saveBody,
+  STALE_SAVE_NOTE,
   withPath,
   withoutPath,
 } from "../api/overrides";
@@ -185,6 +188,10 @@ export function CustomCollectionsPanel() {
   // to the one path: a save here must not drop an override another page
   // stored.
   const [stored, setStored] = useState<OverridesDocument>({});
+  // The revision `stored` was seeded from, sent with every write so a save
+  // composed against a document another page has since moved is refused
+  // rather than silently overwriting it.
+  const [storedRevision, setStoredRevision] = useState<string | null>(null);
   // The schema's own per-field text, served by `GET /api/config` under a `[]`
   // segment (`collections.definitions[].limit`). Row 138's own text said these
   // were waiting for a row to hang on; the edit form is that row.
@@ -230,6 +237,7 @@ export function CustomCollectionsPanel() {
     (definitions: DefinitionsListingResponse, config: ConfigResponse) => {
       setListing(definitions);
       setStored(documentFromConfig(config));
+      setStoredRevision(revisionFromConfig(config));
       const described = config.field_descriptions;
       setDescriptions(
         isPlainObject(described)
@@ -343,7 +351,9 @@ export function CustomCollectionsPanel() {
         "/api/config/preview",
         {
           method: "POST",
-          body: JSON.stringify({ document: documentForCreate(stored, entry()) }),
+          // The same body shape the save sends: the preview accepts the token
+          // and ignores it, so the three arms never drift apart.
+          body: saveBody(documentForCreate(stored, entry()), storedRevision),
         },
       );
       if (live.current) setChecked(response);
@@ -368,16 +378,23 @@ export function CustomCollectionsPanel() {
     setBusy(key);
     touch();
     let saved = false;
+    let stale = false;
     try {
       const response = await apiFetch<ConfigSaveResponse>("/api/config/overrides", {
         method: "PUT",
-        body: JSON.stringify({ document }),
+        body: saveBody(document, storedRevision),
       });
       if (live.current) setResult(response);
       saved = true;
     } catch (caught) {
       if (live.current) {
-        if (caught instanceof ApiError && caught.status === 422) {
+        if (caught instanceof ApiError && caught.status === 409) {
+          // Not retried: re-read, and say what happened. `stale` makes the
+          // re-read below run even though nothing was saved -- the panel is
+          // showing a document that is no longer true.
+          setSaveError(STALE_SAVE_NOTE);
+          stale = true;
+        } else if (caught instanceof ApiError && caught.status === 422) {
           setErrors(fieldErrors(caught.detail));
           setSaveError("The server rejected this change.");
         } else {
@@ -385,8 +402,10 @@ export function CustomCollectionsPanel() {
         }
       }
     }
-    if (saved) {
-      if (live.current && key === "saving") {
+    if (saved || stale) {
+      // Still gated on `saved`, never on `stale`: a save that did not happen
+      // must not clear the form the operator would otherwise have to re-type.
+      if (live.current && saved && key === "saving") {
         // The created definition is stored; a form still holding it would
         // invite a duplicate-title 422 on the very next click.
         setTitle("");

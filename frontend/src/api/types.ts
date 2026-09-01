@@ -642,6 +642,10 @@ export interface ConfigSaveResponse {
   version_after: string;
   restart_required: string[];
   inert?: string[];
+  /** The revision of the document this write stored — the token the next save
+   * from this page must carry. Optional so a response from before it existed
+   * still parses; a page that gets none falls back to the re-read GET. */
+  overrides_revision?: string;
 }
 
 /** The rows a candidate config would invalidate, as
