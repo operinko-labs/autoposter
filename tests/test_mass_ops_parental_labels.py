@@ -19,3 +19,90 @@ def test_the_three_fields_default_off():
     assert operations.parental_labels_enabled is False
     assert operations.parental_labels_apply is False
     assert operations.parental_labels_include_none is False
+
+
+from autoposter.plex.writer import parental_label_edits
+
+from test_mass_ops_fields import FakeItem
+
+
+class LabelledItem(FakeItem):
+    """A FakeItem that also carries Plex labels, tag-object shaped."""
+
+    def __init__(self, labels=(), **attrs):
+        super().__init__(**attrs)
+        self.labels = [_Tag(t) for t in labels]
+
+
+class _Tag:
+    def __init__(self, tag):
+        self.tag = tag
+
+
+CATEGORIES = [
+    ("NUDITY", "Sex & Nudity", "Mild"),
+    ("VIOLENCE", "Violence & Gore", "Severe"),
+    ("PROFANITY", "Profanity", "None"),
+]
+
+
+def test_no_categories_produces_nothing():
+    operations = OperationsConfig(parental_labels_apply=True)
+    assert parental_label_edits(LabelledItem(), None, operations) == {}
+    assert parental_label_edits(LabelledItem(), [], operations) == {}
+
+
+def test_none_severity_is_excluded_by_default():
+    operations = OperationsConfig(parental_labels_apply=True)
+    edits = parental_label_edits(LabelledItem(), CATEGORIES, operations)
+    assert edits == {"labels.added": ["Sex & Nudity: Mild", "Violence & Gore: Severe"]}
+
+
+def test_none_severity_is_included_when_configured():
+    operations = OperationsConfig(parental_labels_apply=True, parental_labels_include_none=True)
+    edits = parental_label_edits(LabelledItem(), CATEGORIES, operations)
+    assert edits == {
+        "labels.added": [
+            "Sex & Nudity: Mild", "Violence & Gore: Severe", "Profanity: None",
+        ]
+    }
+
+
+def test_a_label_already_on_the_item_is_not_re_added():
+    item = LabelledItem(labels=["Sex & Nudity: Mild"])
+    operations = OperationsConfig(parental_labels_apply=True)
+    edits = parental_label_edits(item, CATEGORIES, operations)
+    assert edits == {"labels.added": ["Violence & Gore: Severe"]}
+
+
+def test_the_match_is_casefolded_like_every_other_label_comparison():
+    """Plex canonicalises label case -- an exact compare would re-add a
+    label already present under different casing every single pass."""
+    item = LabelledItem(labels=["sex & nudity: mild"])
+    operations = OperationsConfig(parental_labels_apply=True)
+    edits = parental_label_edits(item, CATEGORIES, operations)
+    assert edits == {"labels.added": ["Violence & Gore: Severe"]}
+
+
+def test_every_label_already_present_produces_no_edit():
+    item = LabelledItem(labels=["Sex & Nudity: Mild", "Violence & Gore: Severe"])
+    operations = OperationsConfig(parental_labels_apply=True)
+    assert parental_label_edits(item, CATEGORIES, operations) == {}
+
+
+def test_apply_off_reports_and_writes_nothing():
+    operations = OperationsConfig()  # parental_labels_apply defaults False
+    edits = parental_label_edits(LabelledItem(), CATEGORIES, operations)
+    assert edits == {}
+
+
+def test_severity_id_never_reaches_the_label_text():
+    """Belt and braces: even a caller that (wrongly) hands this function
+    IMDb's internal severity.id-shaped string must not see it echoed back --
+    the label text is built from the tuple's own fields, category text and
+    severity TEXT only."""
+    operations = OperationsConfig(parental_labels_apply=True)
+    edits = parental_label_edits(
+        LabelledItem(), [("VIOLENCE", "Violence & Gore", "Severe")], operations
+    )
+    assert "Votes" not in edits["labels.added"][0]

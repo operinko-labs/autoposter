@@ -259,6 +259,74 @@ def map_values(mapping: dict[str, str], values: list[str]) -> list[str]:
     return mapped
 
 
+def _current_labels(item) -> dict[str, str]:
+    """``{casefolded tag: the tag as the server spells it}`` for one item.
+
+    Mirrors ``collections/reconcile.py``'s ``_folded_labels`` for the same
+    reason: Plex canonicalises label case, so an exact compare would add a
+    label already present under different casing every single pass.
+    """
+    return {
+        tag.casefold(): tag
+        for tag in (getattr(entry, "tag", entry) for entry in getattr(item, "labels", None) or [])
+        if isinstance(tag, str)
+    }
+
+
+def _label_text(category_text: str, severity_text: str) -> str:
+    """``"Violence & Gore: Severe"``. Not a Kometa-mandated string -- row 85's
+    roadmap cell and its Kometa-inventory source name no label format at
+    all -- so this is the build's own documented choice (see the row close),
+    built only from ``category.text``/``severity.text``, never an id."""
+    return f"{category_text}: {severity_text}"
+
+
+def parental_label_edits(
+    item, categories: list[tuple[str, str, str]] | None, operations
+) -> dict[str, object]:
+    """Row 85: the labels IMDb's parental-guide categories add to this item.
+
+    ``categories`` is ``None`` or ``[]`` for "nothing to label" (see
+    ``providers/imdb_parental_guide.py``'s module docstring for every reason)
+    and produces no edits either way.
+
+    Each entry is ``(category id, category text, severity text)`` --
+    ``severity.text``, never ``severity.id``. A category whose severity is
+    ``"None"`` is skipped unless ``operations.parental_labels_include_none``
+    says otherwise.
+
+    Additive only, like ``collections/reconcile.py``'s ``_apply_labels``
+    without ``label_sync``: this op has no removal semantics stated anywhere
+    in its row, so it never strips a label IMDb's guide no longer supports.
+
+    Dry-run by default, the same split row 87's verbs draw: with
+    ``parental_labels_apply`` off, a wanted-but-missing label is LOGGED and
+    no edit is produced.
+    """
+    if not categories:
+        return {}
+    include_none = bool(getattr(operations, "parental_labels_include_none", False))
+    wanted = [
+        _label_text(category_text, severity_text)
+        for _category_id, category_text, severity_text in categories
+        if severity_text != "None" or include_none
+    ]
+    if not wanted:
+        return {}
+    stored = _current_labels(item)
+    missing = [tag for tag in wanted if tag.casefold() not in stored]
+    if not missing:
+        return {}
+    if not getattr(operations, "parental_labels_apply", False):
+        logger.info(
+            "plex: would add parental-guide label(s) %s to %s "
+            "(operations.parental_labels_apply is off)",
+            ", ".join(missing), _item_label(item),
+        )
+        return {}
+    return {"labels.added": missing}
+
+
 def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]:
     """Field/value pairs that differ from what Plex already holds.
 
