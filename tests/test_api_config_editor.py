@@ -14,6 +14,7 @@ says which one broke.
    asks for a null value and is rejected like any other bad value.
 """
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -853,3 +854,256 @@ async def test_the_sentinel_resolves_on_preview_and_apply_too(client, auth_heade
     assert applied.status_code == 200, applied.json()
     stored = (await session.execute(select(ConfigOverride))).scalar_one().document
     assert stored["notifications"]["url"] == WEBHOOK_URL
+
+
+# --- The definitions guard (row 138) -------------------------------------
+#
+# The panel refuses to CREATE while any listed definition comes from the
+# mounted file, because an overrides list replaces the file's WHOLESALE: the
+# first stored list would silently stop every file row from being built, and
+# copying the file's rows in to "preserve" them is the freezing hazard. That
+# refusal was UI-only. These pin it in the API, where a UI cannot be bypassed.
+#
+# The predicate is the FIRST such store, not "the file lists definitions":
+# once an override is stored the file's list is already shadowed, which is the
+# state the panel edits in, and refusing there would brick the editor.
+
+
+def _with_file_definitions(config_file: Path) -> None:
+    """Give the mounted file a non-empty ``collections.definitions``."""
+    document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    document["collections"]["definitions"] = [
+        {"title": "Hand Picked", "builder": "plex_id", "params": {"ids": ["12345"]}}
+    ]
+    config_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+
+AN_OVERRIDE_LIST = {
+    "collections": {
+        "definitions": [
+            {"title": "Star Wars", "builder": "tmdb_collection", "params": {"id": 10}}
+        ]
+    }
+}
+
+
+async def _store(session_factory, document: dict) -> None:
+    """Put a stored overrides document in place, the way a prior save would."""
+    async with session_factory() as session:
+        stmt = insert(ConfigOverride).values(id=1, document=document)
+        stmt = stmt.on_conflict_do_update(index_elements=["id"], set_={"document": document})
+        await session.execute(stmt)
+        await session.commit()
+
+
+async def test_the_first_definitions_override_is_refused_while_the_file_lists_some(
+    client, auth_headers, config_file, session_factory
+):
+    """The freezing guard, API-side. The refusal names the path so the panel's
+    `fieldErrors` renders it against `collections.definitions`."""
+    _with_file_definitions(config_file)
+
+    response = await client.put(
+        "/api/config/overrides", json={"document": AN_OVERRIDE_LIST}, headers=auth_headers
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert [item["path"] for item in detail] == ["collections.definitions"]
+    assert "replaces" in detail[0]["message"]
+
+    # Never half-apply: no row was written.
+    async with session_factory() as session:
+        assert (await session.execute(select(ConfigOverride))).scalars().first() is None
+
+
+async def test_the_preview_refuses_the_same_document_the_save_does(
+    client, auth_headers, config_file
+):
+    """Check must not answer "the server would accept this" about a document
+    the server refuses -- the panel's Check button offers exactly that."""
+    _with_file_definitions(config_file)
+
+    response = await client.post(
+        "/api/config/preview", json={"document": AN_OVERRIDE_LIST}, headers=auth_headers
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["path"] == "collections.definitions"
+
+
+async def test_apply_refuses_the_same_document_the_save_does(
+    client, auth_headers, config_file
+):
+    """`POST /api/config/apply` shares `_validated_generation` with the save
+    and the preview, so the guard is not something each caller re-implements
+    -- pinned directly rather than trusted by inference from the other two."""
+    _with_file_definitions(config_file)
+
+    response = await client.post(
+        "/api/config/apply", json={"document": AN_OVERRIDE_LIST}, headers=auth_headers
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["path"] == "collections.definitions"
+
+
+async def test_editing_a_stored_definitions_override_is_allowed_while_the_file_lists_some(
+    client, auth_headers, config_file, session_factory
+):
+    """The state the editor lives in. The file's list is already shadowed by
+    the stored one, so the destructive transition has already happened and
+    refusing here would brick every subsequent edit."""
+    _with_file_definitions(config_file)
+    await _store(session_factory, AN_OVERRIDE_LIST)
+    edited = {
+        "collections": {
+            "definitions": [
+                {
+                    "title": "Star Wars",
+                    "builder": "tmdb_collection",
+                    "params": {"id": 10},
+                    "limit": 25,
+                }
+            ]
+        }
+    }
+
+    response = await client.put(
+        "/api/config/overrides", json={"document": edited}, headers=auth_headers
+    )
+
+    assert response.status_code == 200
+
+
+async def test_the_first_definitions_override_is_allowed_when_the_file_lists_none(
+    client, auth_headers
+):
+    """The migrated deployment: an empty `definitions:` in the YAML is the
+    second way forward the panel's guard note names."""
+    response = await client.put(
+        "/api/config/overrides", json={"document": AN_OVERRIDE_LIST}, headers=auth_headers
+    )
+
+    assert response.status_code == 200
+
+
+async def test_an_unrelated_save_is_untouched_while_the_file_lists_definitions(
+    client, auth_headers, config_file
+):
+    """The guard is about one key. An operator editing a text setting must not
+    be refused because their YAML happens to define collections."""
+    _with_file_definitions(config_file)
+
+    response = await client.put(
+        "/api/config/overrides", json={"document": TEXT_EDIT}, headers=auth_headers
+    )
+
+    assert response.status_code == 200
+
+
+# --- The wholesale-replace law (row 138's editor is built on it) ----------
+#
+# CHARACTERIZATION, not RED-first: these pin behavior `merge_overrides` and
+# `GET /api/config` already have. They exist so the day the panel's splice is
+# rewritten as a rebuild, something says so out loud.
+
+THREE_DEFINITIONS = {
+    "collections": {
+        "definitions": [
+            {"title": "First", "builder": "tmdb_collection", "params": {"id": 1}},
+            {
+                "title": "Second",
+                "builder": "mdblist_list",
+                "params": {"list": "someone/weekly"},
+                "summary": "What the household watched.",
+                "schedule": {"every_n_runs": 3},
+                "changes_webhook": "https://hooks.example/T0K3N/path",
+                "item_label": ["Weekly"],
+            },
+            {"title": "Third", "builder": "tmdb_collection", "params": {"id": 3}},
+        ]
+    }
+}
+
+
+async def test_editing_one_definition_does_not_perturb_its_siblings(
+    client, auth_headers
+):
+    """The negative assertion (facts C2). A whole-list write that changed
+    ONLY the entry the operator edited is the whole contract; entries either
+    side must come back byte-identical -- the WHOLE dict, not just the two
+    fields this test used to sample, since a sibling also carries `builder`
+    and `params` that a careless splice could just as easily disturb."""
+    await client.put(
+        "/api/config/overrides", json={"document": THREE_DEFINITIONS}, headers=auth_headers
+    )
+    before = (await client.get("/api/config", headers=auth_headers)).json()
+    sibling_first = before["collections"]["definitions"][0]
+    sibling_third = before["collections"]["definitions"][2]
+
+    entries = deepcopy(THREE_DEFINITIONS["collections"]["definitions"])
+    entries[1] = {**entries[1], "limit": 25}
+
+    response = await client.put(
+        "/api/config/overrides",
+        json={"document": {"collections": {"definitions": entries}}},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+    definitions = served["collections"]["definitions"]
+    assert definitions[0] == sibling_first
+    assert definitions[2] == sibling_third
+    assert definitions[1]["limit"] == 25
+
+
+async def test_an_edited_definition_keeps_every_field_the_edit_did_not_reach(
+    client, auth_headers
+):
+    """The loss-free law. `summary`, `schedule`, `item_label` and
+    `changes_webhook` are none of them in the editor's curated subset -- an
+    entry rewritten around them has to bring them through untouched, which is
+    what `{...storedEntry, ...edits}` buys and what a rebuild from the
+    seven-field listing would destroy."""
+    await client.put(
+        "/api/config/overrides", json={"document": THREE_DEFINITIONS}, headers=auth_headers
+    )
+    entries = deepcopy(THREE_DEFINITIONS["collections"]["definitions"])
+    entries[1] = {**entries[1], "limit": 25}
+
+    await client.put(
+        "/api/config/overrides",
+        json={"document": {"collections": {"definitions": entries}}},
+        headers=auth_headers,
+    )
+
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+    second = served["collections"]["definitions"][1]
+    assert second["summary"] == "What the household watched."
+    assert second["schedule"] == {"every_n_runs": 3, "months": None}
+    assert second["item_label"] == ["Weekly"]
+    assert second["changes_webhook"] == "https://hooks.example/T0K3N/path"
+
+
+async def test_the_served_config_round_trips_a_definition_the_editor_reads_back(
+    client, auth_headers
+):
+    """What the panel's `documentFromConfig` seeds from. The served
+    `collections.definitions` IS the stored array (an override wins the
+    merge), so an editor seeded from the GET writes back what it was given --
+    every key, at full depth."""
+    await client.put(
+        "/api/config/overrides", json={"document": THREE_DEFINITIONS}, headers=auth_headers
+    )
+
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+
+    assert "collections.definitions" in served["overridden_paths"]
+    stored_second = THREE_DEFINITIONS["collections"]["definitions"][1]
+    served_second = served["collections"]["definitions"][1]
+    for key, value in stored_second.items():
+        if key == "schedule":
+            continue  # pydantic fills the model's own unset field, checked above
+        assert served_second[key] == value

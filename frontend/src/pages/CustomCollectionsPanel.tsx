@@ -7,10 +7,12 @@ import { ApiError, apiFetch } from "../api/client";
 import {
   documentFromConfig,
   fieldErrors,
+  isPlainObject,
   readPath,
   withPath,
   withoutPath,
 } from "../api/overrides";
+import { DefinitionEditor } from "./DefinitionEditor";
 import type {
   ConfigPreviewResponse,
   ConfigResponse,
@@ -44,13 +46,23 @@ const SHAPE_ONLY_NOTE =
   "when the reconcile pass next runs it, and a source that fails leaves its " +
   "collection untouched rather than emptying it.";
 
-/** Facts C3: the orphan story on remove, one honest sentence -- plus why
- * there is no edit control. */
+/** Facts C3: the orphan story on remove, one honest sentence. */
 const REMOVE_NOTE =
   "Removing a definition only stops the pass building it — the collection " +
   "already in Plex follows collections.delete_unconfigured: reported as an " +
-  "orphan by default, deleted only when that setting says so. There is no " +
-  "edit: change a definition by removing and re-creating it.";
+  "orphan by default, deleted only when that setting says so.";
+
+/** What Edit reaches, and what it deliberately does not (roadmap row 138).
+ *
+ * The builder and its params are shown and not edited: a builder is a registry
+ * key, and a params dict is shaped by the builder that reads it, so no generic
+ * widget round-trips one safely. Renaming gets the same sentence Remove gets,
+ * because it has the same consequence. */
+const EDIT_NOTE =
+  "Edit changes a definition's own fields. The builder and its parameters are " +
+  "not editable — change those by removing the definition and creating it " +
+  "again from a URL. Renaming leaves the collection already in Plex under its " +
+  "old title, which collections.delete_unconfigured then treats as an orphan.";
 
 /** The HARD GUARD (facts Addendum), and the whole of its explanation.
  *
@@ -108,6 +120,21 @@ function documentForRemove(
     : withPath(stored, DEFINITIONS_PATH, remaining);
 }
 
+/** The stored document with the entry at `ordinal` REPLACED.
+ *
+ * A splice, never a rebuild: the entries either side are the same object
+ * references that came out of `overrideList`, so an edit cannot perturb a
+ * sibling even by accident. The key is never dropped — an edit always leaves
+ * at least the entry it edited. */
+function documentForEdit(
+  stored: OverridesDocument,
+  ordinal: number,
+  entry: Record<string, unknown>,
+): OverridesDocument {
+  const next = overrideList(stored).map((item, at) => (at === ordinal ? entry : item));
+  return withPath(stored, DEFINITIONS_PATH, next);
+}
+
 /** A listing row's position within the stored override list: its index among
  * the override-provenance rows. Provenance is uniform today (the wholesale
  * replace makes the supplying layer single-valued), so this equals the raw
@@ -158,6 +185,10 @@ export function CustomCollectionsPanel() {
   // to the one path: a save here must not drop an override another page
   // stored.
   const [stored, setStored] = useState<OverridesDocument>({});
+  // The schema's own per-field text, served by `GET /api/config` under a `[]`
+  // segment (`collections.definitions[].limit`). Row 138's own text said these
+  // were waiting for a row to hang on; the edit form is that row.
+  const [descriptions, setDescriptions] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // The create form.
@@ -179,6 +210,11 @@ export function CustomCollectionsPanel() {
   const [checked, setChecked] = useState<ConfigPreviewResponse | null>(null);
   const [result, setResult] = useState<ConfigSaveResponse | null>(null);
 
+  // Which override ordinal is open in the edit form, or null. The ORDINAL, not
+  // the entry: the entry is read from `stored` at render time, so a re-read
+  // after somebody else's save cannot leave the form editing a stale copy.
+  const [editing, setEditing] = useState<number | null>(null);
+
   // A ref rather than an effect-local `cancelled`: the save handler's
   // continuation lands outside any effect, the same reasoning the
   // neighbouring panels use.
@@ -194,11 +230,22 @@ export function CustomCollectionsPanel() {
     (definitions: DefinitionsListingResponse, config: ConfigResponse) => {
       setListing(definitions);
       setStored(documentFromConfig(config));
+      const described = config.field_descriptions;
+      setDescriptions(
+        isPlainObject(described)
+          ? Object.fromEntries(
+              Object.entries(described).map(([key, value]) => [key, String(value)]),
+            )
+          : {},
+      );
       // Scope starts as "every library": all boxes checked, which the entry
       // builder writes as NO `libraries` key at all.
       setChosen(
         Object.fromEntries(definitions.libraries.map((name) => [name, true])),
       );
+      // A fresh listing may renumber the ordinals; an open form pointing at
+      // the old numbering would write the edit into the wrong entry.
+      setEditing(null);
     },
     [],
   );
@@ -372,6 +419,7 @@ export function CustomCollectionsPanel() {
         like the settings page's edits.
       </p>
       <p className="muted custom-note">{REMOVE_NOTE}</p>
+      <p className="muted custom-note">{EDIT_NOTE}</p>
       {fileRows && (
         <p className="muted custom-note custom-file-note" id={GUARD_ID}>
           {FILE_ROWS_NOTE}
@@ -407,28 +455,43 @@ export function CustomCollectionsPanel() {
                       {row.provenance === "file" ? "config file" : "override"}
                     </span>
                   </td>
-                  <td>
-                    {/* Remove is create's undo, so it exists only for rows
-                        the overrides document supplies. A file row's missing
-                        control IS the freezing guard made visible: this
-                        panel never writes file entries anywhere. */}
+                  <td className="custom-row-actions">
+                    {/* Edit and Remove exist only for rows the overrides
+                        document supplies. A file row's missing controls ARE
+                        the freezing guard made visible: this panel never
+                        writes file entries anywhere. Provenance is uniform, so
+                        a listing carrying a file row has no override row at
+                        all and neither control can appear. */}
                     {row.provenance === "override" && (
-                      <button
-                        type="button"
-                        aria-label={`Remove ${row.title}`}
-                        disabled={busy !== null}
-                        onClick={() =>
-                          void put(
-                            documentForRemove(
-                              stored,
-                              overrideOrdinal(listing.definitions, index),
-                            ),
-                            `removing-${index}`,
-                          )
-                        }
-                      >
-                        {busy === `removing-${index}` ? "Removing…" : "Remove"}
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          aria-label={`Edit ${row.title}`}
+                          disabled={busy !== null}
+                          onClick={() => {
+                            touch();
+                            setEditing(overrideOrdinal(listing.definitions, index));
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Remove ${row.title}`}
+                          disabled={busy !== null}
+                          onClick={() =>
+                            void put(
+                              documentForRemove(
+                                stored,
+                                overrideOrdinal(listing.definitions, index),
+                              ),
+                              `removing-${index}`,
+                            )
+                          }
+                        >
+                          {busy === `removing-${index}` ? "Removing…" : "Remove"}
+                        </button>
+                      </>
                     )}
                   </td>
                 </tr>
@@ -436,6 +499,22 @@ export function CustomCollectionsPanel() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {editing !== null && overrideList(stored)[editing] !== undefined && (
+        <DefinitionEditor
+          // Remounts when the ordinal changes, so the draft is re-seeded from
+          // the entry being edited rather than carrying the previous one's.
+          key={editing}
+          entry={overrideList(stored)[editing] as Record<string, unknown>}
+          libraries={listing.libraries}
+          descriptions={descriptions}
+          busy={busy !== null}
+          onSave={(entry) =>
+            void put(documentForEdit(stored, editing, entry), "editing")
+          }
+          onCancel={() => setEditing(null)}
+        />
       )}
 
       <h3 className="custom-form-title">Create from a list URL</h3>

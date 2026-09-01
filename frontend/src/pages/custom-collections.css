@@ -135,3 +135,82 @@
   color: var(--warn);
   font-size: 13px;
 }
+
+/* The edit form (roadmap row 138). Its own block rather than reusing the
+   create form's classes: the two forms sit on the same page and a shared
+   class would make a change to one silently move the other. */
+.definition-editor {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.definition-editor h4 {
+  margin: 0 0 0.5rem;
+}
+
+.definition-field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.35rem 0;
+}
+
+.definition-field > span:first-child {
+  flex: 0 0 9rem;
+}
+
+.definition-scope {
+  margin: 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem;
+}
+
+.definition-library {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-right: 0.75rem;
+}
+
+.definition-list-edit,
+.definition-list-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.definition-readonly {
+  display: grid;
+  grid-template-columns: 9rem 1fr;
+  gap: 0.25rem 0.5rem;
+  margin: 0.75rem 0 0;
+}
+
+.definition-readonly dt {
+  color: var(--text-muted);
+}
+
+.definition-readonly dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.definition-refusal {
+  margin: 0.4rem 0 0;
+  color: var(--warn);
+}
+
+.definition-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.custom-row-actions {
+  display: flex;
+  gap: 0.4rem;
+}
