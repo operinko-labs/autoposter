@@ -3,9 +3,18 @@
 Fetched 2026-09-01 from:
 
 - Radarr: `https://raw.githubusercontent.com/Radarr/Radarr/develop/src/Radarr.Api.V3/openapi.json`
-  sha256 `95ea9062485118d6a8abed8250b9bfbf94e4de0f55e9c5611da6805864f9a26`
+  sha256 `95ea9062485118d6a8abed8250b9bfbf94e4de0f55e9c5611da6805864f9a26e`
 - Sonarr: `https://raw.githubusercontent.com/Sonarr/Sonarr/develop/src/Sonarr.Api.V3/openapi.json`
-  sha256 `03108f7f6b20300b84af879392ac44947cd3d3c19c073184e5fbf94e127165f`
+  sha256 `03108f7f6b20300b84af879392ac44947cd3d3c19c073184e5fbf94e127165f9`
+
+Correction (2026-09-01, same day, branch review): both digests above were
+originally banked at 63 hex characters — one short of a real SHA-256 — and so
+could never verify. Both files were re-fetched from the same `develop`-tracked
+URLs and re-hashed; the corrected 64-character digests are recorded above.
+The re-fetch also confirmed there was no drift: every extract below still
+matches the refetched files verbatim (same JSON, same key order, and the same
+`MovieResource`/`SeriesResource` required/additionalProperties/tags/property-
+count summary — 49 and 45 properties respectively).
 
 Both specs report `info.version: "3.0.0"`. No API key was required to fetch either
 file (both are public, unauthenticated GitHub raw content) — the commands below
