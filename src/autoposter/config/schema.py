@@ -1057,6 +1057,39 @@ class CollectionDefinition(BaseModel):
             "output; 'append' only ever adds members, never removes them."
         ),
     )
+    # Roadmap row 88, on top of row 143's resolution contract. The default is
+    # the library's own granularity, which is what every definition written
+    # before this meant. LIST collections only: the smart/`plex_search` side of
+    # season/episode collections is rows 173/179 and is refused below.
+    builder_level: Literal["item", "season", "episode"] = Field(
+        default="item",
+        description=(
+            "Whether this definition's members are the library's own items, "
+            "their seasons, or their episodes."
+        ),
+    )
+    # Roadmap row 89(a). Read-only: the membership is narrowed to what the one
+    # configured instance already holds. Kometa's add_missing family -- telling
+    # Radarr/Sonarr to ACQUIRE content -- is a declared non-goal.
+    radarr_restrict: bool = Field(
+        default=False,
+        description="Keep only the members Radarr already holds; drop the rest from this collection.",
+    )
+    sonarr_restrict: bool = Field(
+        default=False,
+        description="Keep only the members Sonarr already holds; drop the rest from this collection.",
+    )
+    # Roadmap row 89(b). Unset writes nothing; the deployment ALSO has to set
+    # collections.arr_tag_apply, so a definition copied from someone else's
+    # config cannot start writing to their Radarr on its own.
+    item_radarr_tag: list[str] = Field(
+        default_factory=list,
+        description="Radarr tags added to every member of this collection that Radarr holds.",
+    )
+    item_sonarr_tag: list[str] = Field(
+        default_factory=list,
+        description="Sonarr tags added to every member of this collection that Sonarr holds.",
+    )
     # Cap on members, applied after resolution. ge=1: a limit that could only
     # ever produce an empty collection is a mistake, and empty means "make no
     # changes" downstream, so it would not even fail visibly.
@@ -1319,6 +1352,87 @@ class CollectionDefinition(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _builder_level_needs_a_list_builder(self) -> "CollectionDefinition":
+        """Row 88 ships the LIST half of season/episode collections.
+
+        A smart collection's membership is a filter Plex evaluates itself, so
+        the level is part of the SEARCH -- the ``type:`` selector (roadmap row
+        179) and the season/episode predicate families (row 173), both filed as
+        their own rows with their own sort matrices. Accepting the field here
+        would load clean, apply nothing, and read as configured.
+        """
+        from autoposter.collections.builders import REGISTRY
+
+        if self.builder_level == "item":
+            return self
+        if getattr(REGISTRY.get(self.builder), "smart", False):
+            raise ValueError(
+                f"'builder_level' does not apply to {self.builder!r}: a smart "
+                "collection's members are chosen by a filter Plex evaluates "
+                "itself, so asking for seasons or episodes is a question about "
+                "the SEARCH -- the 'type:' selector (roadmap row 179) and the "
+                "season/episode predicate families (row 173), neither of which "
+                "is built yet. Use a list builder for a season- or "
+                "episode-level collection"
+            )
+        # A non-item builder_level resolves against a season/episode index,
+        # so this definition's members are seasons or episodes -- and
+        # sync_to_mdb_list pushes THOSE ids (mdblist_sync.push_payload always
+        # reports is_movie=ctx.library_type == "Movie", never per-item), which
+        # is a season/episode id reported to MDBList as a show. MDBList lists
+        # hold movies and shows; there is no season/episode list kind to push
+        # to instead, so the only safe reading is to refuse the combination
+        # here rather than push the wrong id shape to a list the operator does
+        # not own.
+        if self.sync_to_mdb_list is not None:
+            raise ValueError(
+                f"'builder_level' cannot be combined with 'sync_to_mdb_list' "
+                f"on {self.title!r}: MDBList lists hold movies and shows, not "
+                "seasons or episodes, and pushing this definition's "
+                f"{self.builder_level}-level ids there would report them as "
+                "show-level ids on a list the operator does not own. Remove "
+                "sync_to_mdb_list, or drop builder_level and point this "
+                "definition at an item-level collection"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _arr_overrides_need_a_list_builder_at_item_level(self) -> "CollectionDefinition":
+        """Row 89's fields describe MEMBERS an arr instance could know.
+
+        Two combinations cannot mean anything, and both would load clean and do
+        nothing visible: a smart collection's members are chosen by Plex, so
+        there is no resolved membership to restrict or tag; and a season or an
+        episode carries no tmdbId or tvdbId an arr instance holds, so the
+        restriction could only ever exclude everything.
+        """
+        from autoposter.collections.builders import REGISTRY
+
+        named = [
+            name for name in
+            ("radarr_restrict", "sonarr_restrict", "item_radarr_tag", "item_sonarr_tag")
+            if getattr(self, name)
+        ]
+        if not named:
+            return self
+        listed = ", ".join(repr(name) for name in named)
+        if getattr(REGISTRY.get(self.builder), "smart", False):
+            raise ValueError(
+                f"{listed} does not apply to {self.builder!r}: a smart "
+                "collection's members are chosen by a filter Plex evaluates "
+                "itself, so this definition has no resolved membership to "
+                "restrict or tag"
+            )
+        if self.builder_level != "item":
+            raise ValueError(
+                f"{listed} cannot be combined with builder_level "
+                f"{self.builder_level!r}: a season or an episode carries no "
+                "tmdb or tvdb id Radarr or Sonarr would know it by, so the "
+                "restriction could only ever exclude every member"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _hub_priority_needs_a_promotion(self) -> "CollectionDefinition":
         """``hub_priority`` is "only meaningful once the collection is
         promoted to a hub by one of the visible_* flags above" (see that
@@ -1485,6 +1599,16 @@ class CollectionsConfig(BaseModel):
         description=(
             "Actually add collection members to the MDBList lists definitions "
             "name; off only reports what would be pushed."
+        ),
+    )
+    # Roadmap row 89(b), the deployment-level half of the two gates. Off
+    # reports what each definition would tag and writes nothing, the same
+    # posture apply_to_plex takes for Plex itself.
+    arr_tag_apply: bool = Field(
+        default=False,
+        description=(
+            "Actually write definitions' item_radarr_tag/item_sonarr_tag tags "
+            "to Radarr and Sonarr; off only reports what would be written."
         ),
     )
     # The ownership boundary: only collections carrying this label are ever

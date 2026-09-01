@@ -20,7 +20,12 @@ Two rules the engine above depends on:
 import logging
 from typing import NamedTuple
 
-from autoposter.collections.ids import NAMESPACES, ExternalId
+from autoposter.collections.ids import (
+    LIBTYPE_FOR_LEVEL,
+    NAMESPACES,
+    ExternalId,
+    MemberLevel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +59,7 @@ def _identity(item: object) -> object:
     return str(rating_key) if rating_key is not None else id(item)
 
 
-def build_owned_index(section) -> OwnedIndex:
+def build_owned_index(section, level: MemberLevel = "item") -> OwnedIndex:
     """``{namespace: {value: plex_item}}`` for everything in the library.
 
     One ``section.all()`` pass. Within an item, the first guid of a namespace
@@ -62,9 +67,24 @@ def build_owned_index(section) -> OwnedIndex:
     ``imdb://`` guid, and reproducing that exactly is what lets the ported
     sources keep their output. Across items, the first item to claim a value
     keeps it; a duplicate guid on a second item does not steal the mapping.
+
+    ``level`` (roadmap row 143) is what the index's entries ARE. ``"item"`` is
+    the library's own granularity and still costs exactly one ``section.all()``.
+    ``"season"``/``"episode"`` walk the same library again through
+    ``section.search(libtype=...)``, because a Show's own guids say nothing
+    about its episodes -- which is precisely why no builder could hand an
+    episode back before this. The two indexes are kept SEPARATE rather than
+    merged: a tvdb series id and a tvdb episode id are different id spaces, and
+    merging them would let a series id resolve to an episode.
+
+    An unknown level raises ``KeyError`` rather than falling back to the item
+    walk. The fallback would be a full, plausible, wrong membership, which is
+    the one outcome every rule in this package exists to prevent.
     """
+    libtype = LIBTYPE_FOR_LEVEL[level]
+    entries = section.all() if libtype is None else section.search(libtype=libtype)
     index: OwnedIndex = {namespace: {} for namespace in NAMESPACES}
-    for item in section.all():
+    for item in entries:
         rating_key = getattr(item, "ratingKey", None)
         if rating_key is not None:
             index["plex"].setdefault(str(rating_key), item)
@@ -77,8 +97,9 @@ def build_owned_index(section) -> OwnedIndex:
                     claimed.add(namespace)
                     break
     logger.debug(
-        "indexed %d item(s): %s",
+        "indexed %d %s(s): %s",
         len(index["plex"]),
+        level,
         ", ".join("%d by %s" % (len(index[ns]), ns) for ns in GUID_PREFIXES),
     )
     return index

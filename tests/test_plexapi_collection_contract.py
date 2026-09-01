@@ -525,3 +525,32 @@ def test_no_reconciler_reads_a_collections_content_echo():
         if re.search(r"\.content\b", (root / name).read_text(encoding="utf-8"))
     ]
     assert offenders == [], offenders
+
+
+# --- Roadmap row 143/88: a collection's Plex type comes from its members -----
+#
+# ``lists.reconcile_list_collection`` creates through ``section.createCollection``
+# and never passes a type. That is safe at season/episode granularity ONLY
+# because plexapi derives the type from the members themselves. If a plexapi
+# upgrade ever changes that, an episode-level collection would be created as a
+# show collection and every member would silently fail to attach -- so the
+# derivation is pinned here rather than assumed.
+
+def test_collection_create_derives_the_plex_type_from_the_first_items_type():
+    import inspect
+
+    from plexapi.collection import Collection
+
+    source = inspect.getsource(Collection._create)
+    assert "itemType = items[0].type" in source
+    assert "utils.searchType(itemType)" in source
+
+
+def test_search_type_still_maps_season_and_episode_to_3_and_4():
+    """The four values ``create_blank_collection`` branches on (row 88)."""
+    from plexapi.utils import SEARCHTYPES
+
+    assert SEARCHTYPES["movie"] == 1
+    assert SEARCHTYPES["show"] == 2
+    assert SEARCHTYPES["season"] == 3
+    assert SEARCHTYPES["episode"] == 4

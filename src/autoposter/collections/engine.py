@@ -60,6 +60,7 @@ from autoposter.collections.reconcile import (
     shape_conflict,
     would_proceed,
 )
+from autoposter.collections.arr_overrides import restricted_members, tag_members
 from autoposter.collections.mdblist_sync import sync_membership
 from autoposter.collections.posters import LOCAL_ASSET_KIND, apply_local_posters_to_unmanaged
 from autoposter.collections.resolve import build_owned_index, resolve_external
@@ -351,14 +352,17 @@ async def run_library(
     results: list[DefinitionResult] = []
     notifications: list[CollectionNotification] = []
     run_cache: dict = dict(run_cache_seed or {})
-    index = None
+    # One owned index per MEMBER LEVEL (roadmap row 143), each built at most
+    # once. A dict rather than a single slot because an episode-level
+    # definition and an item-level one in the same pass are two different
+    # traversals of the same library, and neither may pay for the other's.
+    indexes: dict[str, dict] = {}
     existing: dict | None = None
 
-    def owned_index():
-        nonlocal index
-        if index is None:
-            index = build_owned_index(section)
-        return index
+    def owned_index(level: str = "item"):
+        if level not in indexes:
+            indexes[level] = build_owned_index(section, level)
+        return indexes[level]
 
     def listing() -> dict:
         nonlocal existing
@@ -673,7 +677,64 @@ async def _run_one(
         # into a poster URL. The pairing is deliberate, not incidental.
         result = BuilderResult(ids=[])
 
-    resolved = resolve_external(owned_index(), result.ids)
+    # Roadmap rows 143 + 88: what this definition's members ARE. The builder's
+    # own answer (``result.level``) is what a builder that KNOWS says --
+    # a library-walking episode builder; the definition's ``builder_level`` is
+    # what an operator says for a builder that produces plain ids and cannot
+    # know. Either may be non-default; both being non-default and DIFFERENT is
+    # two answers to one question, and picking one silently resolves against an
+    # index the other half never meant.
+    declared = getattr(definition, "builder_level", "item")
+    if declared != "item" and result.level != "item" and declared != result.level:
+        outcome.failed = True
+        outcome.skipped = True
+        outcome.actions.append(
+            "%r: builder_level is %r but %r builds %s-level members; nothing "
+            "was applied. Remove builder_level, or point the definition at a "
+            "builder that produces %s ids"
+            % (definition.title, declared, definition.builder, result.level, declared)
+        )
+        return outcome
+    level = declared if declared != "item" else result.level
+    if level != "item" and ctx.library_type != "Show":
+        outcome.failed = True
+        outcome.skipped = True
+        outcome.actions.append(
+            "%r: %s-level members exist only in a Show library, and this pass "
+            "is running against a %s library, where the search would match "
+            "nothing at all. Narrow the definition with `libraries:` so it only "
+            "targets Show libraries"
+            % (definition.title, level, ctx.library_type)
+        )
+        return outcome
+    # Belt-and-braces on the EFFECTIVE level, not the declared one. The three
+    # schema validators above (`_arr_overrides_need_a_list_builder_at_item_level`,
+    # `_builder_level_needs_a_list_builder`) run at config load and can only
+    # ever see `definition.builder_level` -- so a builder that self-declares a
+    # non-item `result.level` while `builder_level` stays "item" (the default)
+    # satisfies every one of them and would otherwise reach `restricted_members`
+    # / `tag_members` / `sync_membership` below with season/episode members. An
+    # episode's TVDB id and a series' TVDB id share one integer namespace, so a
+    # numeric collision there is a live write to the wrong series. No shipped
+    # builder sets `result.level` today, but nothing else stands between one
+    # that does and this refusal.
+    if level != "item" and (
+        definition.radarr_restrict
+        or definition.sonarr_restrict
+        or definition.item_radarr_tag
+        or definition.item_sonarr_tag
+        or getattr(definition, "sync_to_mdb_list", None)
+    ):
+        outcome.failed = True
+        outcome.skipped = True
+        outcome.actions.append(
+            "%r: %s-level members cannot be restricted, tagged, or synced to "
+            "Radarr/Sonarr/MDBList -- those services only know movies and "
+            "shows; nothing was applied" % (definition.title, level)
+        )
+        return outcome
+    index = owned_index(level)
+    resolved = resolve_external(index, result.ids)
     outcome.unresolved = resolved.unresolved
     if resolved.unresolved:
         logger.info(
@@ -751,6 +812,33 @@ async def _run_one(
         # would misattribute the filter's outcome to the source.
         filter_emptied_a_non_empty_set = had_items and not items
 
+    # Roadmap row 89(a). After the filter and before the cap, for the reason
+    # the filter is before the cap (row 96): ``limit`` counts collection
+    # MEMBERS, and capping before a stage that can still remove one would leave
+    # a short collection. Read-only -- see ``arr_overrides``.
+    restriction_stopped = False
+    if not filter_failed and (
+        definition.radarr_restrict or definition.sonarr_restrict
+    ):
+        had_items = bool(items)
+        kept, restrict_actions = await restricted_members(
+            definition, items,
+            library_type=ctx.library_type,
+            radarr=ctx.sources.radarr, sonarr=ctx.sources.sonarr,
+            run_cache=ctx.run_cache,
+        )
+        outcome.actions += restrict_actions
+        if kept is None:
+            outcome.failed = True
+            items = []
+            restriction_stopped = True
+        else:
+            items = kept
+            # ``restricted_members`` has already appended the sentence naming
+            # what happened, so the reconcile call below must be skipped rather
+            # than allowed to report "source returned no items" on top of it.
+            restriction_stopped = had_items and not items
+
     if definition.limit is not None:
         # After resolution -- and, since row 96, after the filter -- so a limit
         # counts collection members rather than candidate ids: capping before
@@ -798,7 +886,13 @@ async def _run_one(
     if summary_action:
         outcome.actions.append(summary_action)
 
-    if filter_emptied_a_non_empty_set:
+    if restriction_stopped:
+        # ``restricted_members`` said which service and why; calling the
+        # reconciler with an empty list would add "source returned no items",
+        # which is false -- the source returned items and the restriction is
+        # what removed them.
+        pass
+    elif filter_emptied_a_non_empty_set:
         # ``reconcile_list_collection`` would report this as "source returned
         # no items", which is true of its own ``items`` argument but false of
         # what actually happened -- the source returned items, and the filter
@@ -860,10 +954,21 @@ async def _run_one(
     # ``sync_membership`` reports rather than pushing in that case.
     if getattr(definition, "sync_to_mdb_list", None):
         outcome.actions += await sync_membership(
-            definition, items, owned_index(), result.ids,
+            definition, items, index, result.ids,
             is_movie=ctx.library_type == "Movie",
             client=ctx.sources.mdblist,
             apply=config.collections.mdblist_sync_apply and not dry_run and not preview,
+        )
+    # Roadmap row 89(b), in the same place and for the same reason as row 31's
+    # push: after everything that decides the membership, so what is tagged is
+    # what the collection actually holds.
+    if definition.item_radarr_tag or definition.item_sonarr_tag:
+        outcome.actions += await tag_members(
+            definition, items,
+            library_type=ctx.library_type,
+            radarr=ctx.sources.radarr, sonarr=ctx.sources.sonarr,
+            run_cache=ctx.run_cache,
+            apply=config.collections.arr_tag_apply and not dry_run and not preview,
         )
     return outcome
 

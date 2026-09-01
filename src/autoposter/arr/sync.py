@@ -27,7 +27,12 @@ from autoposter.queue.jobs import enqueue
 logger = logging.getLogger(__name__)
 
 # ArrKind.name -> the key parse_guids() uses for that kind's external id.
-_GUID_KEY = {"radarr": "tmdb", "sonarr": "tvdb"}
+#
+# Public, like ``source_path``/``norm_path``/``shares_tree`` below and for the
+# same reason: ``collections/arr_overrides.py`` (roadmap row 89) matches Plex
+# items to arr entries by exactly this rule, and two spellings of it would
+# eventually disagree about whether an item is registered.
+GUID_KEY = {"radarr": "tmdb", "sonarr": "tvdb"}
 
 # A service answering a listing request with nothing at all, for a Plex
 # section holding more than this many items, is refused rather than acted
@@ -76,7 +81,11 @@ class ArrSyncReport:
     misassignments: list[str]
 
 
-def _external_id(item, guid_key: str) -> str | None:
+def external_id(item, guid_key: str) -> str | None:
+    """The external id an arr instance would know this Plex item by.
+
+    Public for the reason ``GUID_KEY`` above is.
+    """
     guids = parse_guids([g.id for g in getattr(item, "guids", None) or []])
     return guids.get(guid_key)
 
@@ -207,7 +216,7 @@ async def sync_section(
     guid such as ``tvdb://12345/1/2`` fails to become an integer, and that
     is one item's failure, not the end of the pass.
     """
-    guid_key = _GUID_KEY[kind.name]
+    guid_key = GUID_KEY[kind.name]
 
     arr_root = norm_path(settings.arr_root)
     root_folders = [norm_path(path) for path in await client.root_folders()]
@@ -242,7 +251,7 @@ async def sync_section(
     for item in items:
         checked += 1
 
-        ext_id = _external_id(item, guid_key)
+        ext_id = external_id(item, guid_key)
         if ext_id is None:
             unmatched_path = source_path(item, kind)
             mapped_for_check = map_path(unmatched_path, settings.plex_root, settings.arr_root)

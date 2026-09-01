@@ -161,3 +161,72 @@ class ArrClient:
         response = await self._http.post(url, json=payload, headers=self._headers())
         response.raise_for_status()
         return response.json()
+
+    def entry_ids_by_external_id(self, entries: list[dict]) -> dict[str, int]:
+        """``{external id: the service's own id}`` for a listing.
+
+        The join the tag write needs: a Plex item is matched by its tmdb/tvdb
+        guid, and the editor endpoint takes the service's INTERNAL ids. Derived
+        from the listing already fetched rather than from a second request, and
+        skipping the same entries ``ordered_ids_in`` skips -- an entry with no
+        external id cannot be matched to a Plex item at all, so tagging it
+        would be tagging something nobody named.
+        """
+        mapping: dict[str, int] = {}
+        for entry in entries:
+            value, entry_id = entry.get(self._kind.id_field), entry.get("id")
+            if value and entry_id is not None:
+                mapping.setdefault(str(value), int(entry_id))
+        return mapping
+
+    async def create_tag(self, label: str) -> int:
+        """Add a label to the instance's tag vocabulary and return its id.
+
+        ``POST /api/v3/tag`` with a ``TagResource`` body (banked:
+        ``docs/superpowers/captures/2026-09-arr-openapi.md``, ``paths → "/api/v3/tag" →
+        post``). One flat vocabulary per service, as ``tags()`` above says.
+
+        Raises on a non-2xx like everything else here, and for a sharp reason:
+        a creation that failed but was treated as fine would leave the caller
+        writing an id that means nothing, or another tag entirely.
+        """
+        url = f"{self._base_url}/api/v3/tag"
+        response = await self._http.post(url, json={"label": label}, headers=self._headers())
+        response.raise_for_status()
+        return int(response.json()["id"])
+
+    async def apply_tags(self, entry_ids: list[int], tag_ids: list[int]) -> None:
+        """Add tags to entries the service already holds. The client's first PUT.
+
+        ``PUT /api/v3/movie/editor`` (Radarr) / ``PUT /api/v3/series/editor``
+        (Sonarr) with ``{"<resource>Ids": [...], "tags": [...], "applyTags":
+        "add"}`` -- banked verbatim in
+        ``docs/superpowers/captures/2026-09-arr-openapi.md``.
+
+        The editor endpoint rather than ``PUT /api/v3/{movie,series}/{id}``,
+        deliberately. That one takes the FULL resource (49 properties on
+        Radarr's ``MovieResource``, ``additionalProperties: false``), so a
+        write built from anything less than a fresh, complete GET can blank a
+        field on the operator's own instance -- and it costs one request per
+        item where this costs one per pass.
+
+        ``applyTags`` is pinned to ``"add"``. The enum also has ``"remove"``
+        and ``"replace"``; this service tags items it manages and does not own
+        the instance's tag vocabulary, so it must never take a tag off
+        anything. **Note that ``DELETE`` on this same URL takes this same body
+        and deletes the items** -- the method is part of the contract, which is
+        why the tests pin it.
+
+        Nothing to tag is not a request: an empty list on either side would be
+        a body the service is free to interpret however it likes.
+        """
+        if not entry_ids or not tag_ids:
+            return
+        url = f"{self._base_url}/api/v3/{self._kind.resource}/editor"
+        payload = {
+            f"{self._kind.resource}Ids": list(entry_ids),
+            "tags": list(tag_ids),
+            "applyTags": "add",
+        }
+        response = await self._http.put(url, json=payload, headers=self._headers())
+        response.raise_for_status()

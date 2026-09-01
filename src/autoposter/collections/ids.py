@@ -16,3 +16,21 @@ Namespace = Literal["imdb", "tmdb", "tvdb", "plex"]
 NAMESPACES: frozenset[str] = frozenset({"imdb", "tmdb", "tvdb", "plex"})
 
 ExternalId = tuple[Namespace, str]
+
+# What a definition's members ARE, as opposed to what namespace names them.
+# "item" is the library's own granularity -- a Movie in a Movie library, a Show
+# in a Show library -- and is what every builder that predates roadmap row 143
+# means. The other two exist because a Show library's own items carry no
+# per-episode guid, so an episode-level membership has to be resolved against a
+# SECOND traversal of the same library (``resolve.build_owned_index``).
+MemberLevel = Literal["item", "season", "episode"]
+MEMBER_LEVELS: frozenset[str] = frozenset({"item", "season", "episode"})
+
+# The ``libtype`` each level is searched under. None is "do not search at all":
+# ``section.all()`` is one request for the whole library and is what the item
+# level has always used, so the item level must keep costing exactly that.
+LIBTYPE_FOR_LEVEL: dict[str, str | None] = {
+    "item": None,
+    "season": "season",
+    "episode": "episode",
+}

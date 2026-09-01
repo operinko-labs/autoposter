@@ -84,6 +84,7 @@ collections:
   enabled: true # reconcile the Common Sense age-bucket collections
   apply_to_plex: false # dry run by default: report the actions, change nothing
   mdblist_sync_apply: false # row 31: actually push definitions' sync_to_mdb_list members; off only reports what would be pushed
+  arr_tag_apply: false # row 89: actually write definitions' item_radarr_tag/item_sonarr_tag tags to Radarr/Sonarr; off only reports what would be written
   ownership_label: autoposter # only collections carrying this label are ever modified
   libraries: # Plex library names to reconcile
     - Movies
@@ -146,6 +147,14 @@ collections:
   #       # imdb/tmdb/tvdb ids to this MDBList list (additions only). Requires
   #       # collections.mdblist_sync_apply above; off reports what would push.
   #       sync_to_mdb_list: "myuser/my-list"
+  #       # row 89: keep only the members the configured instance already
+  #       # holds, and tag those members there. Read-only otherwise -- this
+  #       # never asks Radarr or Sonarr to acquire anything. Item-level only
+  #       # (the default here) -- an Arr instance knows nothing below
+  #       # movie/show granularity, which is also why this can't combine with
+  #       # `builder_level:` below (see the `Season Premieres` example).
+  #       radarr_restrict: true
+  #       item_radarr_tag: ["autoposter"]
   #       # Row 19: POST this collection's membership changes here, on top of
   #       # whatever `notifications` does. Read live -- an edit applies at the
   #       # next pass, not the next restart -- but only ever sent to when
@@ -217,6 +226,18 @@ collections:
   #       libraries: [Movies]
   #       labels: [Decades] # every collection in the family carries them
   #       sort_title: "!050_Decades" # ...and this, so the family sorts as a block
+  #     # row 88: whether a definition's members are the library's own items
+  #     # (the default, as above), their seasons, or their episodes. Show
+  #     # libraries only, and list builders only -- a smart collection's level
+  #     # is rows 173/179. A non-item level cannot also set sync_to_mdb_list or
+  #     # the row 89 Arr fields (see `Hand Picked` above) -- an Arr instance,
+  #     # and an MDBList list, know nothing below movie/show granularity.
+  #     - title: Season Premieres
+  #       builder: plex_id
+  #       params:
+  #         ids: ["54321"]
+  #       libraries: [TV Shows]
+  #       builder_level: episode
   definitions: []
 
 cleanup:

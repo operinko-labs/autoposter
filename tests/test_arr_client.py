@@ -5,6 +5,8 @@ both services also accept an ``apikey`` query parameter, but the header is
 what this client must use, and the key must never leak into a URL or a log
 line.
 """
+import json
+
 import httpx
 import pytest
 
@@ -395,3 +397,130 @@ async def test_tags_raises_on_non_2xx():
         client = ArrClient(http, "https://radarr.example", "key", RADARR)
         with pytest.raises(httpx.HTTPStatusError):
             await client.tags()
+
+
+# --- roadmap row 89(b): the client's first WRITE ----------------------------
+#
+# Shapes are the services' own, banked verbatim in
+# `docs/superpowers/captures/2026-09-arr-openapi.md` -- `paths → "/api/v3/tag" → post`
+# and `paths → "/api/v3/{movie,series}/editor" → put`. Nothing here is recalled
+# from memory, and nothing here uses the full-body `PUT /api/v3/movie/{id}`:
+# echoing a 49-property resource back is how a dropped field becomes a NULLed
+# one on the operator's own Radarr.
+
+
+async def test_entry_ids_by_external_id_maps_the_service_ids():
+    """The Arr's INTERNAL id is what the editor endpoint takes; the external id
+    is what a Plex item can be matched by. This is the join between them."""
+    async with _fake_http(lambda request: httpx.Response(200, json=RADARR_MOVIES)) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        mapping = client.entry_ids_by_external_id(await client.listing())
+
+    assert mapping == {"438631": 1}
+
+
+async def test_create_tag_posts_the_label_and_returns_the_new_id():
+    seen = {}
+
+    async def handler(request):
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.read())
+        seen["key"] = request.headers.get("X-Api-Key")
+        return httpx.Response(200, json={"id": 9, "label": "autoposter"})
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "secret-key", RADARR)
+        tag_id = await client.create_tag("autoposter")
+
+    assert tag_id == 9
+    assert seen["method"] == "POST"
+    assert seen["url"] == "https://radarr.example/api/v3/tag"
+    assert seen["body"] == {"label": "autoposter"}
+    assert seen["key"] == "secret-key"
+
+
+async def test_create_tag_raises_on_non_2xx():
+    """An unknown tag id would be written onto items as a number meaning
+    nothing, so a failed creation must never be swallowed."""
+    async with _fake_http(lambda request: httpx.Response(400)) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.create_tag("autoposter")
+
+
+async def test_apply_tags_puts_the_editor_body_for_radarr():
+    seen = {}
+
+    async def handler(request):
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.read())
+        seen["key"] = request.headers.get("X-Api-Key")
+        return httpx.Response(200)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "secret-key", RADARR)
+        await client.apply_tags([1, 2], [9])
+
+    assert seen["method"] == "PUT", "DELETE takes the same body and deletes the movies"
+    assert seen["url"] == "https://radarr.example/api/v3/movie/editor"
+    assert seen["body"] == {"movieIds": [1, 2], "tags": [9], "applyTags": "add"}
+    assert seen["key"] == "secret-key"
+
+
+async def test_apply_tags_puts_the_editor_body_for_sonarr():
+    seen = {}
+
+    async def handler(request):
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://sonarr.example", "key", SONARR)
+        await client.apply_tags([4], [9])
+
+    assert seen["method"] == "PUT"
+    assert seen["url"] == "https://sonarr.example/api/v3/series/editor"
+    assert seen["body"] == {"seriesIds": [4], "tags": [9], "applyTags": "add"}
+
+
+async def test_apply_tags_is_additive_never_replace():
+    """``applyTags`` is the enum ["add", "remove", "replace"] (banked). This
+    service tags items it manages; it does not own an Arr's tag vocabulary, so
+    it must never take a tag off something."""
+    seen = {}
+
+    async def handler(request):
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        await client.apply_tags([1], [9])
+
+    assert seen["body"]["applyTags"] == "add"
+
+
+async def test_apply_tags_with_nothing_to_tag_makes_no_request():
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(200)
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        await client.apply_tags([], [9])
+        await client.apply_tags([1], [])
+
+    assert requests == []
+
+
+async def test_apply_tags_raises_on_non_2xx():
+    async with _fake_http(lambda request: httpx.Response(500)) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.apply_tags([1], [9])
