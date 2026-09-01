@@ -1353,6 +1353,25 @@ class CollectionDefinition(BaseModel):
                 "is built yet. Use a list builder for a season- or "
                 "episode-level collection"
             )
+        # A non-item builder_level resolves against a season/episode index,
+        # so this definition's members are seasons or episodes -- and
+        # sync_to_mdb_list pushes THOSE ids (mdblist_sync.push_payload always
+        # reports is_movie=ctx.library_type == "Movie", never per-item), which
+        # is a season/episode id reported to MDBList as a show. MDBList lists
+        # hold movies and shows; there is no season/episode list kind to push
+        # to instead, so the only safe reading is to refuse the combination
+        # here rather than push the wrong id shape to a list the operator does
+        # not own.
+        if self.sync_to_mdb_list is not None:
+            raise ValueError(
+                f"'builder_level' cannot be combined with 'sync_to_mdb_list' "
+                f"on {self.title!r}: MDBList lists hold movies and shows, not "
+                "seasons or episodes, and pushing this definition's "
+                f"{self.builder_level}-level ids there would report them as "
+                "show-level ids on a list the operator does not own. Remove "
+                "sync_to_mdb_list, or drop builder_level and point this "
+                "definition at an item-level collection"
+            )
         return self
 
     @model_validator(mode="after")

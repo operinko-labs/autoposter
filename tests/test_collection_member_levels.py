@@ -401,3 +401,38 @@ def test_builder_level_is_refused_on_a_smart_builder():
             title="Smart", builder="cs_bucket", builder_level="episode"
         )
     assert "173" in str(error.value) and "179" in str(error.value)
+
+
+def test_builder_level_is_refused_with_sync_to_mdb_list():
+    """MDBList lists hold movies/shows. A season- or episode-level definition
+    that also pushes to MDBList would push season/episode ids through
+    ``sync_membership`` -> ``push_payload(is_movie=...)``, which reports them
+    as show-level ids -- wrong data on a list the operator does not own, and
+    nothing short of reading ``mdblist_sync.py`` would tell you why."""
+    with pytest.raises(Exception) as error:
+        CollectionDefinition(
+            title="Nope", builder="plex_id", params={"ids": ["1"]},
+            builder_level="episode", sync_to_mdb_list="someuser/some-list",
+        )
+    assert "sync_to_mdb_list" in str(error.value)
+
+
+async def test_a_definition_and_a_builder_that_agree_are_not_refused(
+    session, registry_entry
+):
+    """The agree-and-both-set cell: a definition's ``builder_level`` and its
+    builder's ``result.level`` naming the SAME non-default level is not a
+    disagreement, so the collection builds rather than being refused."""
+    registry_entry(_LevelledBuilder("test_bl_agree", [("tvdb", "7645236")], "episode"))
+    section = _section()
+
+    run = await run_library(
+        session, section, "TV Shows", "Show",
+        [CollectionDefinition(
+            title="Agree", builder="test_bl_agree", builder_level="episode"
+        )],
+        _config(), sources=SourceClients(),
+    )
+
+    assert [i.title for i in section.created["Agree"]] == ["S01E01"]
+    assert run.definitions[0].failed is False
