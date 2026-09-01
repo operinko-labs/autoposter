@@ -861,7 +861,7 @@ async def _run_one(
     if getattr(definition, "sync_to_mdb_list", None):
         outcome.actions += await sync_membership(
             definition, items, owned_index(), result.ids,
-            is_movie=ctx.library_type == "movie",
+            is_movie=ctx.library_type == "Movie",
             client=ctx.sources.mdblist,
             apply=config.collections.mdblist_sync_apply and not dry_run and not preview,
         )

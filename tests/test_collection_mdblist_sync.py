@@ -68,20 +68,24 @@ def test_push_payload_groups_by_media_type():
 @pytest.mark.asyncio
 async def test_no_list_named_pushes_nothing():
     # The negative case: an untouched definition never reaches the network.
+    # Pinned at the httpx.MockTransport level -- a real MDBListClient posting
+    # through a transport that fails the test if it is ever invoked, not a
+    # hand-rolled fake whose spy list only proves its own method wasn't
+    # called (that would pin "the fake wasn't asked", not "no bytes left the
+    # process").
     definition = CollectionDefinition(
         title="Heat", builder="plex_id", params={"ids": ["1"]}
     )
-    calls = []
 
-    class Recording:
-        async def add_list_items(self, reference, payload):
-            calls.append((reference, payload))
-            return {}
+    def handler(request):
+        pytest.fail(f"unexpected outbound request: {request.method} {request.url}")
 
-    actions = await sync_membership(
-        definition, [], {}, [], is_movie=True, client=Recording(), apply=True
-    )
-    assert calls == []
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http:
+        client = MDBListClient("KEY", http)
+        actions = await sync_membership(
+            definition, [], {}, [], is_movie=True, client=client, apply=True
+        )
     assert actions == []
 
 
