@@ -383,3 +383,35 @@ async def test_a_non_dict_document_fails_with_a_clear_error(session):
     await session.commit()
     with pytest.raises(ValueError, match="must be a JSON object"):
         await load_overrides_document(session)
+
+
+def test_the_document_revision_is_stable_across_key_order_and_whitespace():
+    """The token is about what the document says, not how it was serialised.
+    A page that rebuilt the same deltas in a different order must not be told
+    its seed is stale."""
+    from autoposter.config.overrides import document_revision
+
+    one = {"badges": {"enabled": True}, "workers": 9}
+    other = {"workers": 9, "badges": {"enabled": True}}
+    assert document_revision(one) == document_revision(other)
+
+
+def test_the_empty_document_revision_is_the_pinned_constant():
+    """Pinned by value, not by re-deriving it: a change to the canonical dump
+    would invalidate every seed every open page is holding, and that must be a
+    deliberate act with a red test in front of it."""
+    from autoposter.config.overrides import (
+        EMPTY_DOCUMENT_REVISION,
+        document_revision,
+    )
+
+    assert EMPTY_DOCUMENT_REVISION == (
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    )
+    assert document_revision({}) == EMPTY_DOCUMENT_REVISION
+
+
+def test_a_changed_value_changes_the_revision():
+    from autoposter.config.overrides import document_revision
+
+    assert document_revision({"workers": 9}) != document_revision({"workers": 10})

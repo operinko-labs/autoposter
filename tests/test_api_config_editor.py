@@ -28,6 +28,7 @@ from autoposter.api.auth import hash_password
 from autoposter.api.routes import KEEP_SENTINEL
 from autoposter.app import create_app
 from autoposter.config.loader import build_config
+from autoposter.config.overrides import EMPTY_DOCUMENT_REVISION
 from autoposter.config.schema import Secrets
 from autoposter.db.models import ConfigOverride, EventLog, Job, MediaItem, Render
 from autoposter.plex.client import ResolvedItem
@@ -249,6 +250,9 @@ PROVENANCE_KEYS = {
     "field_descriptions",
     "computed_paths",
     "live_paths",
+    # The eighth, and provenance in the same sense as the rest: a content hash
+    # of the stored document, not a setting anybody edits.
+    "overrides_revision",
 }
 
 
@@ -1455,3 +1459,236 @@ async def test_the_apply_arm_records_reason_apply_on_the_same_audit_row(
         )
     ).scalar_one()
     assert row.payload["reason"] == "apply"
+
+
+# --- Config safety: the revision token and the loud 409 ------------------
+#
+# Defect D2 (.superpowers/sdd/progress.md:3853): four pages each seed the WHOLE
+# document at mount and PUT the whole result. The seed is refreshed only by
+# that page's own save, so a page holding a mount-time seed writes its stale
+# document over everything a different page added since -- with a 200. That is
+# the operator's own observation: a Settings save of
+# `collections.separator_style: sand` did not stick, and the identical second
+# save did, because nothing stale followed it.
+
+
+async def _revision(client, auth_headers) -> str:
+    """What a page seeding from GET /api/config carries away with the seed."""
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    return body["overrides_revision"]
+
+
+async def test_the_two_page_stale_save_is_refused_instead_of_clobbering(
+    client, auth_headers, session
+):
+    """T0 page A mounts. T1 page B saves separator_style. T2 page A saves.
+
+    Before the fix, T2 answered 200 and separator_style was gone -- and not
+    even listed in overridden_paths, so the page had nothing to show the
+    operator. It must now be a 409 that says what happened.
+    """
+    # The store as both pages find it: the incident document WITHOUT the
+    # separator style, because that is the setting the operator was about to
+    # save. Seeding `sand` and then having page B "save" `sand` again would be
+    # a no-op write -- no content moves, so there would be nothing to clobber
+    # and nothing to refuse.
+    seed = deepcopy(THE_INCIDENT_DOCUMENT)
+    del seed["collections"]["separator_style"]
+    await _put_document(client, auth_headers, seed)
+
+    # T0: page A mounts and seeds. It is now holding the document as of now.
+    page_a_seed = deepcopy(seed)
+    page_a_revision = await _revision(client, auth_headers)
+
+    # T1: page B, mounted from the same state, saves one field.
+    page_b = deepcopy(seed)
+    page_b["collections"]["separator_style"] = "sand"
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": page_b, "expected_revision": page_a_revision},
+    )
+    assert response.status_code == 200, response.text
+
+    # T2: page A saves anything at all, against the seed it took at T0. It
+    # drops exactly one path, which is inside OVERRIDE_DROP_CAP -- so Task 1's
+    # destructiveness guard does not fire here and cannot be what refuses it.
+    page_a_seed["workers"] = 11
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": page_a_seed, "expected_revision": page_a_revision},
+    )
+
+    assert response.status_code == 409, (
+        "a stale whole-document write was accepted. It silently deletes every "
+        "override added since the writer mounted -- this is the incident's UI half"
+    )
+    detail = response.json()["detail"]
+    assert detail["current_revision"] == await _revision(client, auth_headers)
+    assert "collections.separator_style" in detail["changed_paths"]
+
+    # T3: and the field is still there, which is the whole point.
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored["collections"]["separator_style"] == "sand"
+
+
+async def test_a_save_against_a_fresh_seed_is_untouched_by_the_revision_check(
+    client, auth_headers
+):
+    """"UI saves generally working": neither defect fires when one page saves
+    against a seed nothing has moved under."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    revision = await _revision(client, auth_headers)
+
+    edited = deepcopy(THE_INCIDENT_DOCUMENT)
+    edited["workers"] = 11
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": edited, "expected_revision": revision},
+    )
+    assert response.status_code == 200, response.text
+
+
+async def test_a_client_that_sends_no_revision_is_not_broken_by_the_upgrade(
+    client, auth_headers
+):
+    """A scripted client predates the token. Absent means "proceed" -- the
+    frontend is held to sending it by its own tests, not by this endpoint."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    edited = deepcopy(THE_INCIDENT_DOCUMENT)
+    edited["workers"] = 11
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": edited}
+    )
+    assert response.status_code == 200, response.text
+
+
+async def test_the_revision_is_a_content_hash_not_a_timestamp(client, auth_headers):
+    """Two writers that independently produced the same document are not in
+    conflict, and a no-op rewrite does not invalidate anybody's seed.
+
+    `updated_at` is the obvious candidate and is wrong twice over: it moves on
+    a no-op rewrite, and this project has a recorded environment whose
+    container clock steps *backwards*, which would make a timestamp token go
+    backwards.
+    """
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    first = await _revision(client, auth_headers)
+
+    # The same document written again -- a real write, a new updated_at.
+    await _put_document(client, auth_headers, deepcopy(THE_INCIDENT_DOCUMENT))
+    assert await _revision(client, auth_headers) == first
+
+    edited = deepcopy(THE_INCIDENT_DOCUMENT)
+    edited["workers"] = 11
+    await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": edited, "expected_revision": first},
+    )
+    assert await _revision(client, auth_headers) != first
+
+
+async def test_the_empty_store_serves_the_empty_document_revision(client, auth_headers):
+    """A page that mounts against a fresh deployment gets a real token, not a
+    null the four pages would each have to special-case."""
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    assert body["overrides_revision"] == EMPTY_DOCUMENT_REVISION
+
+
+async def test_the_save_response_carries_the_revision_it_just_wrote(
+    client, auth_headers
+):
+    """So a page can re-seed from its own write even if the follow-up GET
+    fails -- and so the two never disagree about what was stored."""
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": THE_INCIDENT_DOCUMENT},
+    )
+    assert response.json()["overrides_revision"] == await _revision(
+        client, auth_headers
+    )
+
+
+async def test_the_apply_arm_checks_the_revision_too(client, auth_headers):
+    """Both write arms funnel through _persist_and_swap, so one insertion
+    covers both -- and a test says so, because "both" is the claim."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    stale = EMPTY_DOCUMENT_REVISION
+
+    edited = deepcopy(THE_INCIDENT_DOCUMENT)
+    edited["workers"] = 11
+    response = await client.post(
+        "/api/config/apply",
+        headers=auth_headers,
+        json={"document": edited, "expected_revision": stale},
+    )
+    assert response.status_code == 409
+
+
+async def test_the_preview_accepts_the_revision_and_ignores_it(client, auth_headers):
+    """All three arms take one body shape. A preview that 409'd would be
+    refusing to answer "what would this do" for the one case where the
+    operator most needs to know."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    edited = deepcopy(THE_INCIDENT_DOCUMENT)
+    edited["workers"] = 11
+    response = await client.post(
+        "/api/config/preview",
+        headers=auth_headers,
+        json={"document": edited, "expected_revision": EMPTY_DOCUMENT_REVISION},
+    )
+    assert response.status_code == 200, response.text
+
+
+async def test_a_stale_save_writes_nothing_at_all(client, auth_headers, session, app):
+    """Never half-apply, on the 409 path too: no row change, no swap, no audit
+    event for the refused write."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    events_before = len(
+        (
+            await session.execute(
+                select(EventLog).where(EventLog.event_type == "overrides_updated")
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    edited = deepcopy(THE_INCIDENT_DOCUMENT)
+    edited["workers"] = 11
+    await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": edited, "expected_revision": EMPTY_DOCUMENT_REVISION},
+    )
+
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT
+    assert app.state.config.workers == 9
+    events_after = len(
+        (
+            await session.execute(
+                select(EventLog).where(EventLog.event_type == "overrides_updated")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert events_after == events_before
+
+
+async def test_an_unknown_field_on_the_body_is_still_refused(client, auth_headers):
+    """The envelope's forbid-extras survives the two new fields -- a typo'd
+    `expected_version` must not be silently ignored, which would put the
+    sender straight back in the incident."""
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": {"workers": 9}, "expected_version": "whatever"},
+    )
+    assert response.status_code == 422

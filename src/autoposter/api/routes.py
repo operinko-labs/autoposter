@@ -53,6 +53,7 @@ from autoposter.config.loader import build_config, read_config_document
 from autoposter.config.overrides import (
     OVERRIDES_ROW_ID,
     document_paths,
+    document_revision,
     load_overrides_document,
     merge_overrides,
     unknown_key_paths,
@@ -1306,7 +1307,7 @@ async def get_config(
     ``_REDACTORS``; the full URL stays in the config file the operator
     already owns.
 
-    Carries seven things the editor needs beyond the values themselves.
+    Carries eight things the editor needs beyond the values themselves.
     ``overridden_paths`` is the provenance: which of these values come from
     the database overrides rather than the mounted YAML, so the UI can mark
     them and offer "revert to base". ``frozen_paths`` maps each restart-only
@@ -1335,6 +1336,12 @@ async def get_config(
     (``config/live.LIVE_EXCEPTIONS``) -- without it the editor flags
     ``plex.resolve_max_attempts`` as needing a restart while ``frozen_reason``
     here correctly says it does not.
+    ``overrides_revision`` is the eighth and the newest: a content hash of the
+    stored overrides document, which every editor carries away with its seed
+    and sends back with its save. It is what lets the write path tell a save
+    composed against *this* document apart from one composed against a document
+    that has since moved -- the difference between a save and a silent deletion
+    of everything another page added in between.
     """
     config = request.app.state.config
     secrets = request.app.state.secrets
@@ -1356,6 +1363,11 @@ async def get_config(
                 detail="config overrides row is corrupt (not a JSON object); fix or delete it",
             ) from exc
     body["overridden_paths"] = sorted(document_paths(document))
+    # Computed from the same document `overridden_paths` came from: one extra
+    # hash, no extra query, and it arrives with the seed -- which is exactly
+    # the invariant a stale-write check needs, because a page that seeded from
+    # this response holds this token for what it seeded from.
+    body["overrides_revision"] = document_revision(document)
     body["frozen_paths"] = dict(FROZEN_SECTIONS)
     body["redacted_paths"] = list(REDACTED_PATHS)
     body["keep_sentinel"] = KEEP_SENTINEL
@@ -1406,11 +1418,19 @@ class OverridesBody(BaseModel):
     store with no ``document`` key in sight. Requiring the field costs no
     caller anything real (every one of them always sends it) and closes that
     hole for free.
+
+    ``expected_revision`` is the token that came with the seed this document
+    was composed from (``GET /api/config``'s ``overrides_revision``). When it
+    is present and no longer current, the write is refused with a 409 rather
+    than overwriting whatever arrived in between. When it is absent the write
+    proceeds, so a scripted client is not broken by this upgrade; the four
+    pages are held to sending it by their own tests, not by this model.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     document: dict
+    expected_revision: str | None = None
     confirm: bool = False
 
 
@@ -1619,6 +1639,7 @@ async def _persist_and_swap(
     document: dict,
     after: Config,
     *,
+    expected_revision: str | None = None,
     confirm: bool = False,
     reason: str = "save",
 ) -> dict:
@@ -1642,6 +1663,12 @@ async def _persist_and_swap(
     than in an earlier one: a separate read would be a TOCTOU window inside the
     fix for a TOCTOU bug.
 
+    The revision compare goes here, under the row lock, for the same reason and
+    one more: a check in ``_validated_generation`` would 409 a preview, and a
+    check in a separate earlier session would be a TOCTOU window inside the fix
+    for a TOCTOU bug. ``SELECT ... FOR UPDATE`` is what makes read-compare-write
+    one step; the unconditional upsert it replaced was not.
+
     Crash-consistent by construction: if the process dies between the commit
     and ``swap_config``, requests keep being served by the old generation until
     restart, at which point ``load_effective_config`` reads the persisted
@@ -1653,7 +1680,25 @@ async def _persist_and_swap(
     """
     before = request.app.state.config
     async with request.app.state.session_factory() as session:
-        stored = await load_overrides_document(session)
+        stored = await load_overrides_document(session, for_update=True)
+        if expected_revision is not None:
+            current = document_revision(stored)
+            if expected_revision != current:
+                # Loudly, and without a suggestion to retry: a client that
+                # retried would re-apply an edit onto a document its operator
+                # has not seen, which is a quieter version of the bug this
+                # check exists to stop.
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": (
+                            "these settings changed somewhere else while this "
+                            "page was open; nothing was saved"
+                        ),
+                        "current_revision": current,
+                        "changed_paths": sorted(_changed_paths(stored, document)),
+                    },
+                )
         if not confirm:
             refusal = _drop_refusal(stored, document)
             if refusal is not None:
@@ -1697,6 +1742,7 @@ async def _persist_and_swap(
         "version_after": after.version,
         "restart_required": restart_required,
         "inert": inert,
+        "overrides_revision": document_revision(document),
     }
 
 
@@ -1720,7 +1766,13 @@ async def put_config_overrides(
     ...}`` envelope is refused by the model before this runs.
     """
     document, after = await _validated_generation(request, body.document)
-    return await _persist_and_swap(request, document, after, confirm=body.confirm)
+    return await _persist_and_swap(
+        request,
+        document,
+        after,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+    )
 
 
 @router.post("/config/preview")
@@ -1777,7 +1829,12 @@ async def apply_config_overrides(
     document, after = await _validated_generation(request, body.document)
     before = request.app.state.config
     saved = await _persist_and_swap(
-        request, document, after, confirm=body.confirm, reason="apply"
+        request,
+        document,
+        after,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+        reason="apply",
     )
 
     entries: list[tuple[dict, str]] = []

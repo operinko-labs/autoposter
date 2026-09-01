@@ -6,6 +6,8 @@ single-row ``config_overrides`` table instead (``db/models.py``) and are merged
 over the file every time a ``Config`` is built. The file keeps owning the
 defaults; the database owns the deltas.
 """
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import get_args
@@ -44,6 +46,32 @@ OVERRIDES_ROW_ID = 1
 # longer produce it, the next save of the overrides document writes it out of
 # existence for good.
 MIGRATED_SECTIONS = ("version_check",)
+
+
+def document_revision(document: dict) -> str:
+    """A token identifying exactly this document's *content*.
+
+    Sent to every editor with its seed and sent back with its save, so the
+    write path can refuse a document composed against a store that has since
+    moved (the 2026-09-01 lost update). The alternative token -- the row's own
+    ``updated_at`` -- is wrong twice over. It moves on a no-op rewrite, so an
+    unchanged document would invalidate every open page for nothing; and this
+    project has a recorded deployment whose container clock steps ~2.7s
+    backwards every ~27s, which would make a timestamp token travel backwards.
+    A content hash has neither problem and has the right semantics besides:
+    two writers that independently produced the same document are not in
+    conflict, because there is nothing to lose.
+
+    Canonical dump -- sorted keys, no whitespace -- so the token depends on
+    what the document says and not on how it was serialised on the way in.
+    """
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+#: What a fresh deployment serves. A real token rather than null, so an editor
+#: seeding against an empty store carries the same shape as every other one.
+EMPTY_DOCUMENT_REVISION = document_revision({})
 
 
 def _reject_secrets(document: dict, path: str = "") -> None:
@@ -188,7 +216,9 @@ def without_migrated_sections(document: dict) -> dict:
     return {key: value for key, value in document.items() if key not in present}
 
 
-async def load_overrides_document(session: AsyncSession) -> dict:
+async def load_overrides_document(
+    session: AsyncSession, *, for_update: bool = False
+) -> dict:
     """The stored overrides document, or ``{}`` when there is no row.
 
     An empty document is the pre-edit state of every deployment, and merging
@@ -200,10 +230,23 @@ async def load_overrides_document(session: AsyncSession) -> dict:
     boot-time merge (``load_effective_config``) that would otherwise refuse to
     validate, and ``GET /api/config``'s ``overridden_paths``, which would
     otherwise mark a setting the editor no longer renders as overridden.
+
+    ``for_update`` takes a row lock, and only ``_persist_and_swap`` passes it:
+    a reader that locked would serialise ``GET /api/config`` behind every save
+    for no benefit. One honest limit: when no row exists yet there is nothing
+    to lock, so two *simultaneous* first-ever saves on a fresh deployment can
+    still race. The upsert keeps the row consistent either way, both writers
+    legitimately saw ``{}``, and the drop cap bounds what the loser can lose --
+    so this is a documented residual, not a silent one.
     """
-    row = await session.scalar(
-        select(ConfigOverride).where(ConfigOverride.id == OVERRIDES_ROW_ID)
-    )
+    statement = select(ConfigOverride).where(ConfigOverride.id == OVERRIDES_ROW_ID)
+    if for_update:
+        # The write path reads and compares and writes as one step. Without the
+        # lock, two overlapping transactions can both read the same document,
+        # both find their expected revision current, and both write -- which is
+        # the lost update this whole check exists to stop, just narrower.
+        statement = statement.with_for_update()
+    row = await session.scalar(statement)
     if row is None or not row.document:
         return {}
     if not isinstance(row.document, dict):
