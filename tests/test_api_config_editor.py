@@ -932,6 +932,22 @@ async def test_the_preview_refuses_the_same_document_the_save_does(
     assert response.json()["detail"][0]["path"] == "collections.definitions"
 
 
+async def test_apply_refuses_the_same_document_the_save_does(
+    client, auth_headers, config_file
+):
+    """`POST /api/config/apply` shares `_validated_generation` with the save
+    and the preview, so the guard is not something each caller re-implements
+    -- pinned directly rather than trusted by inference from the other two."""
+    _with_file_definitions(config_file)
+
+    response = await client.post(
+        "/api/config/apply", json={"document": AN_OVERRIDE_LIST}, headers=auth_headers
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["path"] == "collections.definitions"
+
+
 async def test_editing_a_stored_definitions_override_is_allowed_while_the_file_lists_some(
     client, auth_headers, config_file, session_factory
 ):
@@ -1016,10 +1032,16 @@ async def test_editing_one_definition_does_not_perturb_its_siblings(
 ):
     """The negative assertion (facts C2). A whole-list write that changed
     ONLY the entry the operator edited is the whole contract; entries either
-    side must come back byte-identical."""
+    side must come back byte-identical -- the WHOLE dict, not just the two
+    fields this test used to sample, since a sibling also carries `builder`
+    and `params` that a careless splice could just as easily disturb."""
     await client.put(
         "/api/config/overrides", json={"document": THREE_DEFINITIONS}, headers=auth_headers
     )
+    before = (await client.get("/api/config", headers=auth_headers)).json()
+    sibling_first = before["collections"]["definitions"][0]
+    sibling_third = before["collections"]["definitions"][2]
+
     entries = deepcopy(THREE_DEFINITIONS["collections"]["definitions"])
     entries[1] = {**entries[1], "limit": 25}
 
@@ -1032,10 +1054,8 @@ async def test_editing_one_definition_does_not_perturb_its_siblings(
 
     served = (await client.get("/api/config", headers=auth_headers)).json()
     definitions = served["collections"]["definitions"]
-    assert definitions[0]["title"] == "First"
-    assert definitions[0]["limit"] is None
-    assert definitions[2]["title"] == "Third"
-    assert definitions[2]["limit"] is None
+    assert definitions[0] == sibling_first
+    assert definitions[2] == sibling_third
     assert definitions[1]["limit"] == 25
 
 
