@@ -5,10 +5,11 @@ import os
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
@@ -1969,4 +1970,110 @@ async def restore_config_snapshot(
         expected_revision=body.expected_revision,
         confirm=body.confirm,
         reason="restore",
+    )
+
+
+#: The export envelope's format discriminator. Bumped only when the shape of
+#: `document` changes in a way an older reader would misread -- not when a
+#: config field is added, which the document already absorbs by construction.
+OVERRIDES_EXPORT_FORMAT = 1
+
+
+class ConfigImportBody(BaseModel):
+    """An exported overrides file, on its way back in.
+
+    The same envelope ``GET /api/config/overrides/export`` writes, so the two
+    are one format rather than two that agree by habit. ``autoposter_overrides``
+    is required and is the point of the envelope: without a discriminator,
+    somebody would eventually import a whole ``GET /api/config`` dump, which
+    would freeze today's file values as permanent overrides -- the exact hazard
+    ``documentFromConfig``'s docstring warns about, arriving through a button.
+
+    ``exported_at`` is carried so a hand-inspected file round-trips unchanged;
+    nothing reads it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    autoposter_overrides: int
+    document: dict = Field(default_factory=dict)
+    exported_at: str | None = None
+    expected_revision: str | None = None
+    confirm: bool = False
+
+
+@router.get("/config/overrides/export")
+async def export_config_overrides(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """The stored overrides document, in a thin envelope, for safekeeping.
+
+    ``document`` is deliberately the same key name and the same shape ``PUT
+    /api/config/overrides`` takes, so an exported file's ``document`` value
+    pastes straight into a PUT body and back.
+
+    **Unredacted, deliberately, and this is a trade rather than an oversight.**
+    ``GET /api/config`` reduces ``notifications.url`` to its host because that
+    response is for a page; this response is a backup, and a backup that
+    redacts is broken -- re-importing one would write the bare host over the
+    real URL and destroy the push token it embeds. So the file holds the
+    notification URL, the UI's download button says so in plain words, and the
+    operator decides where the file goes. ``secrets`` is absent by
+    construction: ``merge_overrides`` refuses the key outright, so there is no
+    API token in it either way.
+
+    (The alternative considered and rejected: exporting with the keep sentinel
+    at every redacted path. That round-trips correctly on the *same*
+    deployment and is useless as a transfer to a different one, which is most
+    of what a backup is for.)
+    """
+    async with request.app.state.session_factory() as session:
+        document = await load_overrides_document(session)
+    return {
+        "autoposter_overrides": OVERRIDES_EXPORT_FORMAT,
+        "exported_at": datetime.now(UTC).isoformat(),
+        "document": document,
+    }
+
+
+@router.post("/config/overrides/import")
+async def import_config_overrides(
+    body: ConfigImportBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Restore an exported overrides file. A save with a file picker in front.
+
+    No import-only code path exists on purpose. The document goes through
+    ``_validated_generation`` and ``_persist_and_swap`` exactly as a PUT's
+    would: the same five refusal gates, the same pre-write snapshot, the same
+    drop cap, the same revision check. An import is the highest-risk *drop* in
+    this service -- one stale export can drop dozens of paths at once -- which
+    is precisely the reason to route it through the guards rather than around
+    them.
+
+    Migrated sections are stripped first, for the reason
+    ``restore_config_snapshot`` gives: a file exported before a section left the
+    schema is exactly the file somebody reaches for a year later.
+    """
+    if body.autoposter_overrides != OVERRIDES_EXPORT_FORMAT:
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                _error(
+                    "autoposter_overrides",
+                    f"unsupported export format {body.autoposter_overrides}; "
+                    f"this service writes and reads {OVERRIDES_EXPORT_FORMAT}",
+                )
+            ],
+        )
+
+    document, after = await _validated_generation(
+        request, without_migrated_sections(body.document)
+    )
+    return await _persist_and_swap(
+        request,
+        document,
+        after,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+        reason="import",
     )

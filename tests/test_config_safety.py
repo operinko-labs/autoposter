@@ -406,3 +406,199 @@ async def test_every_snapshot_endpoint_needs_a_session(client):
     assert (
         await client.post("/api/config/snapshots/1/restore", json={})
     ).status_code == 401
+
+
+# --- export / import ------------------------------------------------------
+
+
+async def test_the_export_carries_the_document_under_the_same_key_the_put_takes(
+    client, auth_headers
+):
+    """Deliberately the same key name and the same shape, so an exported
+    file's `document` value pastes straight into a PUT body and back."""
+    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    body = (
+        await client.get("/api/config/overrides/export", headers=auth_headers)
+    ).json()
+
+    assert body["autoposter_overrides"] == 1
+    assert body["document"] == THE_INCIDENT_DOCUMENT
+    assert body["exported_at"].endswith("+00:00") or body["exported_at"].endswith("Z")
+
+
+async def test_the_export_is_unredacted_by_design(client, auth_headers):
+    """A redacted backup is a broken backup: re-importing one would write the
+    bare host over notifications.url and destroy the push token. The trade is
+    deliberate and is stated in the docstring and in the UI's download copy --
+    the file holds the notification URL."""
+    await _store(
+        client,
+        auth_headers,
+        {"notifications": {"enabled": True, "url": "https://kuma.example.com/api/push/s3cr3t"}},
+    )
+
+    body = (
+        await client.get("/api/config/overrides/export", headers=auth_headers)
+    ).json()
+
+    assert body["document"]["notifications"]["url"] == (
+        "https://kuma.example.com/api/push/s3cr3t"
+    )
+
+
+async def test_an_empty_store_still_exports_a_valid_envelope(client, auth_headers):
+    """A backup taken before the first edit is a legitimate backup of nothing;
+    an endpoint that 404'd there would make the button lie on a fresh
+    deployment."""
+    body = (
+        await client.get("/api/config/overrides/export", headers=auth_headers)
+    ).json()
+    assert body == {
+        "autoposter_overrides": 1,
+        "exported_at": body["exported_at"],
+        "document": {},
+    }
+
+
+async def test_an_export_round_trips_through_import(
+    client, auth_headers, session
+):
+    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    exported = (
+        await client.get("/api/config/overrides/export", headers=auth_headers)
+    ).json()
+    await _store(client, auth_headers, {"workers": 1}, confirm=True)
+
+    response = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={**exported, "confirm": True},
+    )
+
+    assert response.status_code == 200, response.text
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT
+
+
+async def test_an_import_without_the_format_marker_is_refused(
+    client, auth_headers, session
+):
+    """The marker is what stops somebody importing a whole `GET /api/config`
+    dump, which would freeze today's file values as overrides for ever -- the
+    exact hazard `documentFromConfig`'s docstring warns about."""
+    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    response = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={"document": {"workers": 1}, "confirm": True},
+    )
+
+    assert response.status_code == 422
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT
+
+
+async def test_an_import_declaring_an_unknown_format_is_refused(
+    client, auth_headers
+):
+    response = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={"autoposter_overrides": 2, "document": {"workers": 1}, "confirm": True},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == [
+        {
+            "path": "autoposter_overrides",
+            "message": "unsupported export format 2; this service writes and reads 1",
+        }
+    ]
+
+
+async def test_an_import_is_refused_when_it_drops_too_much_without_confirm(
+    client, auth_headers, session
+):
+    """Import is the highest-risk drop in the phase: one stale export can drop
+    dozens of paths at once. It is a save, so the cap applies unchanged."""
+    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    response = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={"autoposter_overrides": 1, "document": {"workers": 1}},
+    )
+
+    assert response.status_code == 422
+    assert "confirm: true" in response.json()["detail"][0]["message"]
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT
+
+
+async def test_an_import_is_snapshotted_and_validated_like_any_other_save(
+    client, auth_headers, session
+):
+    """No import-only code path: the same five refusal gates, the same
+    snapshot, the same drop cap."""
+    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    bad = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={
+            "autoposter_overrides": 1,
+            "document": {"workers": "not a number"},
+            "confirm": True,
+        },
+    )
+    assert bad.status_code == 422
+    assert bad.json()["detail"][0]["path"] == "workers"
+    assert await _snapshots(session) == [], "a refused import must snapshot nothing"
+
+    good = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={"autoposter_overrides": 1, "document": {"workers": 1}, "confirm": True},
+    )
+    assert good.status_code == 200, good.text
+    rows = await _snapshots(session)
+    assert [row.reason for row in rows] == ["import"]
+    assert rows[0].document == THE_INCIDENT_DOCUMENT
+
+
+async def test_an_import_honours_the_revision_check(client, auth_headers):
+    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+    response = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={
+            "autoposter_overrides": 1,
+            "document": {"workers": 1},
+            "confirm": True,
+            "expected_revision": EMPTY_DOCUMENT_REVISION,
+        },
+    )
+    assert response.status_code == 409
+
+
+async def test_an_import_body_with_an_unknown_key_is_refused(client, auth_headers):
+    """The envelope forbids extras here too. A hand-edited backup with a typo'd
+    key must not be half-applied under a 200."""
+    response = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={
+            "autoposter_overrides": 1,
+            "document": {"workers": 1},
+            "exported_ad": "2026-09-03T00:00:00+00:00",
+        },
+    )
+    assert response.status_code == 422
+
+
+async def test_both_export_and_import_need_a_session(client):
+    assert (await client.get("/api/config/overrides/export")).status_code == 401
+    assert (
+        await client.post("/api/config/overrides/import", json={})
+    ).status_code == 401
