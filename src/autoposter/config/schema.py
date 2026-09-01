@@ -468,10 +468,10 @@ class ArtworkConfig(BaseModel):
         default=False,
         description=(
             "Make no online provider request for any artifact. An artifact "
-            "with no local asset (or, for a poster, no picked logo either) is "
-            "skipped rather than fetched. A manually supplied local asset is "
-            "unaffected and still used. Individual art kinds can override this "
-            "either way."
+            "with no local base asset is skipped rather than fetched -- a "
+            "picked logo cannot substitute for it, even for a poster. A "
+            "manually supplied local asset is unaffected and still used. "
+            "Individual art kinds can override this either way."
         ),
     )
     # Roadmap row 48.
