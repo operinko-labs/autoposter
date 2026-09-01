@@ -1259,6 +1259,28 @@ async def test_emptying_a_non_empty_store_is_allowed_with_confirm(
     assert app.state.config.workers == 5, "the example config's value did not come back"
 
 
+async def test_confirm_alone_cannot_stand_in_for_a_document(
+    client, auth_headers, session
+):
+    """The last silent-empty hole. ``document`` defaulting to ``{}`` meant a
+    body carrying only ``confirm`` bound ``document={}`` *and* the confirm
+    suppressed ``_drop_refusal`` -- a 200 that wiped the store exactly like
+    the incident, just spelled with one field instead of zero. ``document``
+    is required now, so this body is refused before either guard runs."""
+    await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"confirm": True}
+    )
+
+    assert response.status_code == 422, (
+        "confirm alone was accepted. It binds document={} and, unlike a bare "
+        "{}, skips the drop refusal outright -- a 200 that wipes the store"
+    )
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT, "the refused request still wrote"
+
+
 async def test_an_empty_document_over_an_empty_store_stays_a_legal_no_op(
     client, auth_headers
 ):
@@ -1349,8 +1371,7 @@ async def test_dropping_exactly_the_cap_is_allowed_and_one_more_is_not(
     four_fewer = deepcopy(three_fewer)
     del four_fewer["notifications"]        # 1 path
     del four_fewer["plex"]                 # 1 path
-    del four_fewer["workers"]              # 1 path
-    del four_fewer["artwork"]              # 2 paths
+    del four_fewer["artwork"]              # 2 paths  -> 4 dropped, one over the cap
     response = await client.put(
         "/api/config/overrides", headers=auth_headers, json={"document": four_fewer}
     )
@@ -1413,4 +1434,24 @@ async def test_the_audit_row_records_the_path_counts(
     )
     assert [row.payload["paths_before"] for row in rows] == [0, 12]
     assert [row.payload["paths_after"] for row in rows] == [12, 0]
+    assert [row.payload["reason"] for row in rows] == ["save", "save"]
     assert "document" not in rows[-1].payload
+
+
+async def test_the_apply_arm_records_reason_apply_on_the_same_audit_row(
+    client, auth_headers, session
+):
+    """`POST /api/config/apply` funnels through the same `_persist_and_swap`,
+    passing `reason="apply"` -- the only thing distinguishing an apply's audit
+    row from a plain save's."""
+    response = await client.post(
+        "/api/config/apply", headers=auth_headers, json={"document": {"workers": 9}}
+    )
+    assert response.status_code == 200, response.text
+
+    row = (
+        await session.execute(
+            select(EventLog).where(EventLog.event_type == "overrides_updated")
+        )
+    ).scalar_one()
+    assert row.payload["reason"] == "apply"

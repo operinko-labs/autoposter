@@ -8,7 +8,7 @@ from dataclasses import asdict
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
@@ -1399,11 +1399,18 @@ class OverridesBody(BaseModel):
     document against *this* store, which a separate endpoint could not name.
     ``POST /api/config/preview`` accepts it and ignores it, so all three arms
     keep taking one body shape.
+
+    ``document`` has no default. It did once, and a body carrying only
+    ``confirm`` bound it to ``{}`` -- the confirm was truthy, so
+    ``_drop_refusal`` never ran, and the result was a 200 that emptied the
+    store with no ``document`` key in sight. Requiring the field costs no
+    caller anything real (every one of them always sends it) and closes that
+    hole for free.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    document: dict = Field(default_factory=dict)
+    document: dict
     confirm: bool = False
 
 
@@ -1760,6 +1767,12 @@ async def apply_config_overrides(
 
     An edit that cannot change a rendered image queues nothing, for the reason
     the preview reports null impact for it.
+
+    A destructive save -- one that empties a non-empty store, or drops more
+    than ``OVERRIDE_DROP_CAP`` of its paths -- is refused with a 422 naming the
+    paths, and needs ``confirm: true``, exactly as ``PUT /api/config/overrides``
+    is. A body that is not the ``{"document": ...}`` envelope is refused by the
+    model before this runs.
     """
     document, after = await _validated_generation(request, body.document)
     before = request.app.state.config
