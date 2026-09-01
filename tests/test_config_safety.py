@@ -25,6 +25,7 @@ from copy import deepcopy
 import pytest
 from sqlalchemy import select
 
+from autoposter.api import routes as routes_module
 from autoposter.config.overrides import EMPTY_DOCUMENT_REVISION
 from autoposter.config.snapshots import SNAPSHOT_RETENTION
 from autoposter.db.models import ConfigOverride, ConfigOverrideSnapshot
@@ -115,6 +116,40 @@ async def test_a_refused_write_leaves_no_snapshot_orphan(
     assert await _snapshots(session) == [], (
         "a refused write left a snapshot behind. The capture and the upsert "
         "must commit together or not at all"
+    )
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT
+
+
+async def test_a_failure_between_capture_and_commit_leaves_no_snapshot_orphan(
+    client, auth_headers, session, monkeypatch
+):
+    """The refusal test above only reaches refusals raised BEFORE
+    ``capture_snapshot`` runs -- it would pass even if ``capture_snapshot``
+    opened its own session and committed independently. This is the other
+    half: something fails AFTER the snapshot row is added but BEFORE the
+    transaction commits. Only a same-transaction rollback keeps the promise
+    that a snapshot and its write commit together, so the failure is placed
+    at the ``EventLog`` insert -- the last thing that happens after the
+    capture and before ``session.commit()``.
+    """
+    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    def _raiser(*args, **kwargs):
+        raise RuntimeError("simulated failure between capture and commit")
+
+    monkeypatch.setattr(routes_module, "EventLog", _raiser)
+
+    edited = deepcopy(THE_INCIDENT_DOCUMENT)
+    edited["workers"] = 11
+    with pytest.raises(RuntimeError):
+        await client.put(
+            "/api/config/overrides", headers=auth_headers, json={"document": edited}
+        )
+
+    assert await _snapshots(session) == [], (
+        "a snapshot committed even though the write it belongs to failed "
+        "before its own commit"
     )
     stored = (await session.execute(select(ConfigOverride))).scalar_one().document
     assert stored == THE_INCIDENT_DOCUMENT
