@@ -536,6 +536,50 @@ async def test_an_import_is_refused_when_it_drops_too_much_without_confirm(
     assert stored == THE_INCIDENT_DOCUMENT
 
 
+async def test_an_import_missing_the_document_key_is_refused(
+    client, auth_headers, session
+):
+    """The `OverridesBody` incident, replayed on the import arm: `confirm:
+    true` skips the drop refusal, so a body that omits `document` used to
+    bind it to the pydantic default `{}` and empty the store under a 200,
+    with no `document` key anywhere in the request. `document` has no
+    default for the same reason `OverridesBody.document` no longer does."""
+    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    response = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={"autoposter_overrides": 1, "confirm": True},
+    )
+
+    assert response.status_code == 422
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT
+    assert await _snapshots(session) == []
+
+
+async def test_an_import_of_a_bare_document_with_no_envelope_is_refused(
+    client, auth_headers, session
+):
+    """The literal incident shape: an overrides document pasted straight into
+    the import body with no envelope around it at all -- none of
+    `autoposter_overrides`, `document`, or `confirm`. The missing
+    `autoposter_overrides` key and `extra=\"forbid\"` rejecting `workers` both
+    catch it; either keeps this a 422 rather than a 200 that misreads the
+    document as an empty envelope."""
+    await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
+
+    response = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={"workers": 9},
+    )
+
+    assert response.status_code == 422
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == THE_INCIDENT_DOCUMENT
+
+
 async def test_an_import_is_snapshotted_and_validated_like_any_other_save(
     client, auth_headers, session
 ):

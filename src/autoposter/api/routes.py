@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
@@ -1991,12 +1991,19 @@ class ConfigImportBody(BaseModel):
 
     ``exported_at`` is carried so a hand-inspected file round-trips unchanged;
     nothing reads it.
+
+    ``document`` has no default, for the same reason ``OverridesBody.document``
+    no longer does: a body carrying only ``autoposter_overrides`` and
+    ``confirm`` used to bind ``document`` to its ``{}`` default, and with
+    ``confirm`` truthy the drop refusal never ran -- a 200 that emptied the
+    store with no ``document`` key in sight. Requiring the field costs no
+    caller anything real and closes that hole for free.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     autoposter_overrides: int
-    document: dict = Field(default_factory=dict)
+    document: dict
     exported_at: str | None = None
     expected_revision: str | None = None
     confirm: bool = False
