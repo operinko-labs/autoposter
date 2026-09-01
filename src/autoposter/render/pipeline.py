@@ -914,6 +914,27 @@ def _publish(working: Path, target: Path, backup_root: Path | None, assets_root:
         raise
 
 
+async def _fetch_parental_categories(imdb_parental, item) -> list[tuple[str, str, str]] | None:
+    """Row 85's fetch, isolated so one IMDb hiccup costs only this item's
+    labels, not everything else this pass gathered.
+
+    ``None`` -- for every reason ``parental_label_edits`` treats as "nothing
+    to label" -- covers: no client (feature disabled upstream), no IMDb id,
+    an item kind IMDb's parental guide is not modelled for (season/episode --
+    the guide is a title-level concept, the same scope row 84's TVDb overlay
+    already uses), and a transport failure.
+    """
+    if imdb_parental is None or not item.imdb_id or item.kind not in ("movie", "show"):
+        return None
+    try:
+        return await imdb_parental.categories(item.imdb_id)
+    except httpx.HTTPError as exc:
+        # The row-84 precedent: one provider's transient failure must not
+        # throw away everything else this pass gathered.
+        logger.warning("IMDb parental-guide request failed; skipping labels: %s", exc)
+        return None
+
+
 async def apply_metadata(
     session: AsyncSession,
     config: Config,
@@ -923,6 +944,7 @@ async def apply_metadata(
     tmdb_facts,
     mdblist,
     tvdb=None,
+    imdb_parental=None,
 ) -> GatheredFacts:
     """Gather this item's facts, store them, and write the changed ones to Plex.
 
@@ -937,15 +959,23 @@ async def apply_metadata(
     )
     await persist_facts(session, media_item_id, facts)
 
+    # Row 85. Only fetched when config enables it, so a deployment that never
+    # turns this on pays no request and gets today's behaviour exactly.
+    parental_categories = None
+    if config.operations.parental_labels_enabled:
+        parental_categories = await _fetch_parental_categories(imdb_parental, item)
+
     # Row 87: a verb IS its field's source, so it must fire even when the
     # provider facts are empty -- ``facts.is_empty()`` alone would otherwise
     # skip apply_facts (and every verb with it) on an item no provider has
-    # anything to say about.
+    # anything to say about. Row 85's fetched categories are the same shape
+    # of "the only thing this pass has to write."
     has_verbs = bool(config.operations.field_verbs)
+    has_parental = parental_categories is not None
     if (
         config.operations.write_to_plex
         and plex_item is not None
-        and (not facts.is_empty() or has_verbs)
+        and (not facts.is_empty() or has_verbs or has_parental)
     ):
         # Row 35. Checked here, at the facts/write seam, and not earlier: the
         # facts above are still gathered and persisted for an exempt item,
@@ -958,7 +988,7 @@ async def apply_metadata(
         if exempt is not None:
             logger.info("plex: skipped writing %s: %s", item.rating_key, exempt)
         else:
-            await apply_facts(plex_item, facts, config.operations)
+            await apply_facts(plex_item, facts, config.operations, parental_categories)
     return facts
 
 
@@ -1098,6 +1128,7 @@ async def process_item(
     tmdb_facts=None,
     mdblist=None,
     artwork_probe=None,
+    imdb_parental=None,
 ) -> list[Render]:
     """Resolve one intent and build every artifact it implies.
 
@@ -1112,6 +1143,11 @@ async def process_item(
 
     ``artwork_probe`` is passed straight to ``apply_badges``; see
     ``_already_in_plex`` for what it is for and why it is optional.
+
+    ``imdb_parental`` is row 85's ``IMDbParentalGuideClient``; ``None`` --
+    what every direct caller and most tests pass -- means the fetch in
+    ``apply_metadata`` is skipped, whatever ``operations.parental_labels_enabled``
+    says (the same shape ``tvdb=None`` already has for row 84).
 
     A failure anywhere in this step is caught and logged rather than
     propagated — a ratings-provider hiccup must not cost the item its
@@ -1136,7 +1172,8 @@ async def process_item(
             # one, so it shares that client's cached token and cache.
             tvdb = next((p for p in providers if getattr(p, "name", None) == "TVDB"), None)
             await apply_metadata(
-                session, config, media_item.id, item, plex_item, tmdb_facts, mdblist, tvdb
+                session, config, media_item.id, item, plex_item, tmdb_facts, mdblist, tvdb,
+                imdb_parental,
             )
         except Exception:
             # Finding 5: if the failure was a database error, the transaction
