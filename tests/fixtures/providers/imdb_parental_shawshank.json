@@ -1,0 +1,26 @@
+{
+  "data": {
+    "title": {
+      "id": "tt0111161",
+      "parentsGuide": {
+        "categories": [
+          {"category": {"id": "NUDITY", "text": "Sex & Nudity"},
+           "severity": {"id": "mildVotes", "text": "Mild"},
+           "totalSeverityVotes": 1675},
+          {"category": {"id": "VIOLENCE", "text": "Violence & Gore"},
+           "severity": {"id": "moderateVotes", "text": "Moderate"},
+           "totalSeverityVotes": 868},
+          {"category": {"id": "PROFANITY", "text": "Profanity"},
+           "severity": {"id": "severeVotes", "text": "Severe"},
+           "totalSeverityVotes": 1114},
+          {"category": {"id": "ALCOHOL", "text": "Alcohol, Drugs & Smoking"},
+           "severity": {"id": "mildVotes", "text": "Mild"},
+           "totalSeverityVotes": 801},
+          {"category": {"id": "FRIGHTENING", "text": "Frightening & Intense Scenes"},
+           "severity": {"id": "moderateVotes", "text": "Moderate"},
+           "totalSeverityVotes": 808}
+        ]
+      }
+    }
+  }
+}
