@@ -853,3 +853,133 @@ async def test_the_sentinel_resolves_on_preview_and_apply_too(client, auth_heade
     assert applied.status_code == 200, applied.json()
     stored = (await session.execute(select(ConfigOverride))).scalar_one().document
     assert stored["notifications"]["url"] == WEBHOOK_URL
+
+
+# --- The definitions guard (row 138) -------------------------------------
+#
+# The panel refuses to CREATE while any listed definition comes from the
+# mounted file, because an overrides list replaces the file's WHOLESALE: the
+# first stored list would silently stop every file row from being built, and
+# copying the file's rows in to "preserve" them is the freezing hazard. That
+# refusal was UI-only. These pin it in the API, where a UI cannot be bypassed.
+#
+# The predicate is the FIRST such store, not "the file lists definitions":
+# once an override is stored the file's list is already shadowed, which is the
+# state the panel edits in, and refusing there would brick the editor.
+
+
+def _with_file_definitions(config_file: Path) -> None:
+    """Give the mounted file a non-empty ``collections.definitions``."""
+    document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    document["collections"]["definitions"] = [
+        {"title": "Hand Picked", "builder": "plex_id", "params": {"ids": ["12345"]}}
+    ]
+    config_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+
+AN_OVERRIDE_LIST = {
+    "collections": {
+        "definitions": [
+            {"title": "Star Wars", "builder": "tmdb_collection", "params": {"id": 10}}
+        ]
+    }
+}
+
+
+async def _store(session_factory, document: dict) -> None:
+    """Put a stored overrides document in place, the way a prior save would."""
+    async with session_factory() as session:
+        stmt = insert(ConfigOverride).values(id=1, document=document)
+        stmt = stmt.on_conflict_do_update(index_elements=["id"], set_={"document": document})
+        await session.execute(stmt)
+        await session.commit()
+
+
+async def test_the_first_definitions_override_is_refused_while_the_file_lists_some(
+    client, auth_headers, config_file, session_factory
+):
+    """The freezing guard, API-side. The refusal names the path so the panel's
+    `fieldErrors` renders it against `collections.definitions`."""
+    _with_file_definitions(config_file)
+
+    response = await client.put(
+        "/api/config/overrides", json={"document": AN_OVERRIDE_LIST}, headers=auth_headers
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert [item["path"] for item in detail] == ["collections.definitions"]
+    assert "replaces" in detail[0]["message"]
+
+    # Never half-apply: no row was written.
+    async with session_factory() as session:
+        assert (await session.execute(select(ConfigOverride))).scalars().first() is None
+
+
+async def test_the_preview_refuses_the_same_document_the_save_does(
+    client, auth_headers, config_file
+):
+    """Check must not answer "the server would accept this" about a document
+    the server refuses -- the panel's Check button offers exactly that."""
+    _with_file_definitions(config_file)
+
+    response = await client.post(
+        "/api/config/preview", json={"document": AN_OVERRIDE_LIST}, headers=auth_headers
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["path"] == "collections.definitions"
+
+
+async def test_editing_a_stored_definitions_override_is_allowed_while_the_file_lists_some(
+    client, auth_headers, config_file, session_factory
+):
+    """The state the editor lives in. The file's list is already shadowed by
+    the stored one, so the destructive transition has already happened and
+    refusing here would brick every subsequent edit."""
+    _with_file_definitions(config_file)
+    await _store(session_factory, AN_OVERRIDE_LIST)
+    edited = {
+        "collections": {
+            "definitions": [
+                {
+                    "title": "Star Wars",
+                    "builder": "tmdb_collection",
+                    "params": {"id": 10},
+                    "limit": 25,
+                }
+            ]
+        }
+    }
+
+    response = await client.put(
+        "/api/config/overrides", json={"document": edited}, headers=auth_headers
+    )
+
+    assert response.status_code == 200
+
+
+async def test_the_first_definitions_override_is_allowed_when_the_file_lists_none(
+    client, auth_headers
+):
+    """The migrated deployment: an empty `definitions:` in the YAML is the
+    second way forward the panel's guard note names."""
+    response = await client.put(
+        "/api/config/overrides", json={"document": AN_OVERRIDE_LIST}, headers=auth_headers
+    )
+
+    assert response.status_code == 200
+
+
+async def test_an_unrelated_save_is_untouched_while_the_file_lists_definitions(
+    client, auth_headers, config_file
+):
+    """The guard is about one key. An operator editing a text setting must not
+    be refused because their YAML happens to define collections."""
+    _with_file_definitions(config_file)
+
+    response = await client.put(
+        "/api/config/overrides", json={"document": TEXT_EDIT}, headers=auth_headers
+    )
+
+    assert response.status_code == 200

@@ -1422,6 +1422,64 @@ def _render_affecting(before: Config, after: Config) -> bool:
     return after.version != before.version or after.skip_tba != before.skip_tba
 
 
+# The refusal the Custom collections panel makes in copy (`FILE_ROWS_NOTE`),
+# said once here so the API and the UI cannot drift apart on the wording.
+DEFINITIONS_GUARD_REFUSAL = (
+    "the mounted config file lists collections.definitions, and an overrides "
+    "list replaces the file's WHOLESALE -- storing this one would stop every "
+    "file-defined definition being built. Either keep managing definitions in "
+    "the config file, or move those rows into the overrides once and empty the "
+    "file's definitions list"
+)
+
+
+async def _definitions_guard(request: Request, base: dict, document: dict) -> None:
+    """Refuse the FIRST stored ``collections.definitions`` override while the
+    mounted file still lists definitions.
+
+    The freezing guard, moved from the panel into the API. It was UI-only:
+    `CustomCollectionsPanel` disables Create while any listed row has
+    ``provenance: "file"``, which is a control an operator can bypass with one
+    `curl`. What the bypass costs is not a validation error -- the document is
+    perfectly valid -- it is every file-defined collection silently ceasing to
+    be built, discovered whenever somebody next looks at Plex.
+
+    The predicate is the FIRST such store, not "the file lists definitions".
+    Once an override is stored the file's list is already shadowed, and that
+    is the state the definitions EDITOR lives in (the listing reads
+    ``"override"`` there, and the panel offers Edit and Remove) -- refusing
+    there would brick the editor on every deployment whose YAML kept a
+    ``definitions:`` block. So this fires exactly on the transition, which is
+    exactly when ``fileRows`` is true in the panel.
+
+    Reached before anything is written, like every other refusal on this path.
+    """
+    incoming = document.get("collections")
+    if not isinstance(incoming, dict) or "definitions" not in incoming:
+        return
+    section = base.get("collections")
+    file_rows = section.get("definitions") if isinstance(section, dict) else None
+    if not isinstance(file_rows, list) or not file_rows:
+        return
+    async with request.app.state.session_factory() as session:
+        try:
+            held = await load_overrides_document(session)
+        except ValueError as exc:
+            # The same answer `GET /api/config` gives the same corrupt row: an
+            # operator needs to know what to fix, not an AttributeError.
+            raise HTTPException(
+                status_code=500,
+                detail="config overrides row is corrupt (not a JSON object); fix or delete it",
+            ) from exc
+    stored_section = held.get("collections")
+    if isinstance(stored_section, dict) and "definitions" in stored_section:
+        return
+    raise HTTPException(
+        status_code=422,
+        detail=[_error("collections.definitions", DEFINITIONS_GUARD_REFUSAL)],
+    )
+
+
 async def _validated_generation(request: Request, document: dict) -> tuple[dict, Config]:
     """The document to store and the generation it describes, or a 422.
 
@@ -1458,6 +1516,7 @@ async def _validated_generation(request: Request, document: dict) -> tuple[dict,
         )
 
     base = await asyncio.to_thread(read_config_document, request.app.state.config_path)
+    await _definitions_guard(request, base, document)
     try:
         merged = merge_overrides(base, document)
     except ValueError as exc:  # a `secrets` key anywhere in the document
