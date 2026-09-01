@@ -710,6 +710,58 @@ class OperationsConfig(BaseModel):
             "e.g. 'TV-MA' to '18'. A value not named here is written unchanged."
         ),
     )
+    # Roadmap row 87. Keyed by this service's own field names
+    # (plex/writer.py::WRITABLE_BY_KIND); the value is the verb, which
+    # REPLACES that field's provider source. An empty map -- the default --
+    # is exactly today's behaviour.
+    field_verbs: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "A verb to apply to a metadata field instead of writing a "
+            "provider's value into it: 'lock', 'unlock' or 'remove'. Keyed by "
+            "field name, e.g. 'studio'. A field not named here is written from "
+            "its provider source as usual."
+        ),
+    )
+    lock_apply: bool = Field(
+        default=False,
+        description="Actually apply the 'lock' verb to Plex; off only reports which fields it would lock.",
+    )
+    unlock_apply: bool = Field(
+        default=False,
+        description="Actually apply the 'unlock' verb to Plex; off only reports which fields it would unlock.",
+    )
+    remove_apply: bool = Field(
+        default=False,
+        description="Actually apply the 'remove' verb to Plex; off only reports which fields it would clear.",
+    )
+
+    @field_validator("field_verbs")
+    @classmethod
+    def _known_fields_and_verbs(cls, value: dict[str, str]) -> dict[str, str]:
+        """Refuse an unknown field name or verb at LOAD time.
+
+        The row-81 precedent, one vocabulary along: a typo'd field name would
+        otherwise be a setting that silently never fires, which is
+        indistinguishable from the feature not working.
+        """
+        from autoposter.plex.writer import FIELD_VERBS, WRITABLE_BY_KIND
+
+        known = set().union(*WRITABLE_BY_KIND.values())
+        for field, verb in value.items():
+            if field not in known:
+                raise ValueError(
+                    f"operations.field_verbs names {field!r}, which is not a "
+                    f"field this service writes; known fields are "
+                    f"{', '.join(sorted(known))}"
+                )
+            if verb not in FIELD_VERBS:
+                raise ValueError(
+                    f"operations.field_verbs[{field!r}] is {verb!r}; the verbs "
+                    f"are {', '.join(sorted(FIELD_VERBS))}"
+                )
+        return value
+
     # Roadmap row 84. TVDb as a nameable source for the three fields its
     # extended record carries, alongside TMDb. The explicit-source model again:
     # exactly one source per field, no precedence and no tiebreak. Unset keeps

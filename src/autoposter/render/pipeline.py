@@ -937,7 +937,16 @@ async def apply_metadata(
     )
     await persist_facts(session, media_item_id, facts)
 
-    if config.operations.write_to_plex and plex_item is not None and not facts.is_empty():
+    # Row 87: a verb IS its field's source, so it must fire even when the
+    # provider facts are empty -- ``facts.is_empty()`` alone would otherwise
+    # skip apply_facts (and every verb with it) on an item no provider has
+    # anything to say about.
+    has_verbs = bool(config.operations.field_verbs)
+    if (
+        config.operations.write_to_plex
+        and plex_item is not None
+        and (not facts.is_empty() or has_verbs)
+    ):
         # Row 35. Checked here, at the facts/write seam, and not earlier: the
         # facts above are still gathered and persisted for an exempt item,
         # because the badge stage reads the persisted row rather than this

@@ -37,6 +37,107 @@ WRITABLE_BY_KIND: dict[str, set[str]] = {
 }
 
 
+# Our field name -> (the plexapi attribute holding the value, the name Plex
+# uses for that field's LOCK). The two differ for exactly one entry: the
+# attribute is ``genres`` and the lock field is ``genre``, singular. Every
+# other entry is the same string twice, and is written out anyway rather than
+# special-cased -- a map with one exception in it is read wrong exactly once.
+_PLEX_FIELD_NAMES: dict[str, tuple[str, str]] = {
+    "critic_rating": ("rating", "rating"),
+    "audience_rating": ("audienceRating", "audienceRating"),
+    "user_rating": ("userRating", "userRating"),
+    "content_rating": ("contentRating", "contentRating"),
+    "studio": ("studio", "studio"),
+    "originally_available": ("originallyAvailableAt", "originallyAvailableAt"),
+    "original_title": ("originalTitle", "originalTitle"),
+    "genres": ("genres", "genre"),
+}
+
+# Roadmap row 87's ``remove`` ships for these four and no others. A scalar's
+# "remove" is unambiguous -- clear the value. ``genres`` is list-shaped and the
+# row records no semantics for a verb used AS THE SOURCE with no items
+# supplied, so it is STOP-and-filed rather than guessed. The three rating
+# fields are excluded for a different reason: Plex has no empty rating, and
+# writing "" into one is a shape this project has never sent.
+_REMOVABLE_FIELDS = frozenset(
+    {"content_rating", "studio", "originally_available", "original_title"}
+)
+
+# ``reset`` is absent on purpose -- see the STOP-and-file row. It would mean
+# restoring the value Plex's own agent produces, and this project holds no
+# agent value anywhere and has never called a Plex refresh.
+FIELD_VERBS = frozenset({"lock", "unlock", "remove", "reset"})
+
+
+def _locked_in_plex(item, plex_field: str) -> bool | None:
+    """Whether Plex reports this field locked, or ``None`` if it does not say.
+
+    plexapi exposes per-field locks as ``item.fields``, each entry carrying a
+    ``name`` and a ``locked`` flag; a field Plex has never written about is
+    simply not in the list. ``None`` -- "it did not say" -- is treated by the
+    verbs as "not yet in the wanted state", so a verb writes once rather than
+    silently doing nothing on an item Plex is quiet about.
+    """
+    for field in getattr(item, "fields", None) or []:
+        if getattr(field, "name", None) == plex_field:
+            return bool(getattr(field, "locked", False))
+    return None
+
+
+def verb_edits(item, operations) -> dict[str, object]:
+    """The lock/unlock/remove edits ``operations.field_verbs`` asks for (row 87).
+
+    Each verb is dry-run-by-default behind its own apply flag: with the flag
+    off the verb is LOGGED and nothing is written, and the field does NOT fall
+    back to being written from its provider source -- the verb IS the source
+    (the row's own phrasing), so an unapplied verb means "nothing happens to
+    this field", never "do the old thing instead".
+
+    Every verb is compared against what Plex currently reports, so a second
+    pass over an item already in the wanted state writes nothing. That is what
+    makes this steady-state rather than a rewrite every pass.
+    """
+    verbs = getattr(operations, "field_verbs", None) or {}
+    if not verbs:
+        return {}
+    writable = WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set())
+    applied = {
+        "lock": getattr(operations, "lock_apply", False),
+        "unlock": getattr(operations, "unlock_apply", False),
+        "remove": getattr(operations, "remove_apply", False),
+    }
+    edits: dict[str, object] = {}
+    for field, verb in verbs.items():
+        if field not in writable or field not in _PLEX_FIELD_NAMES:
+            continue
+        if verb == "reset":
+            # STOP-and-filed: see the module's _REMOVABLE_FIELDS comment.
+            continue
+        if verb == "remove" and field not in _REMOVABLE_FIELDS:
+            continue
+        if not applied.get(verb):
+            logger.info(
+                "plex: would %s %s on %s (operations.%s_apply is off)",
+                verb, field, _item_label(item), verb,
+            )
+            continue
+        attribute, plex_field = _PLEX_FIELD_NAMES[field]
+        if verb == "lock":
+            if _locked_in_plex(item, plex_field) is not True:
+                edits[f"{plex_field}.locked"] = 1
+        elif verb == "unlock":
+            if _locked_in_plex(item, plex_field) is not False:
+                edits[f"{plex_field}.locked"] = 0
+        elif verb == "remove":
+            if getattr(item, attribute, None) not in (None, ""):
+                edits[f"{plex_field}.value"] = ""
+                # Locked after clearing: an unlocked empty field is refilled by
+                # Plex's own agent on its next refresh, which would make this
+                # verb a no-op with extra requests.
+                edits[f"{plex_field}.locked"] = 1
+    return edits
+
+
 def exemption_reason(
     operations, rating_key: str | None, imdb_id: str | None, labels
 ) -> str | None:
@@ -166,7 +267,11 @@ def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]
     caller and most tests pass -- means no mapper and no verb, which is
     byte-identical to the pre-row-34 behaviour.
     """
-    writable = WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set())
+    verbs = getattr(operations, "field_verbs", None) or {}
+    # A field named in field_verbs drops out of the value-write path entirely:
+    # the verb replaces the source for that field, so the two can never both
+    # touch it in one payload.
+    writable = WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set()) - set(verbs)
     edits: dict[str, object] = {}
 
     # Row 34: normalise once, here, so the mapped value is what the diff below
@@ -219,6 +324,8 @@ def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]
         current_genres = _current_genres(item)
         if sorted(current_genres) != sorted(genres):
             edits.update(_genre_plan(current_genres, genres))
+
+    edits.update(verb_edits(item, operations))
 
     return edits
 
