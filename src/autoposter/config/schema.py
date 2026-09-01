@@ -760,6 +760,16 @@ class OperationsConfig(BaseModel):
                     f"operations.field_verbs[{field!r}] is {verb!r}; the verbs "
                     f"are {', '.join(sorted(FIELD_VERBS))}"
                 )
+            # Row 87's STOP-and-file: ``remove`` on the list-shaped ``genres``
+            # has no defined semantics (a verb-as-source with no items
+            # supplied) -- refused here rather than accepted and silently
+            # doing nothing. lock/unlock on genres are unaffected.
+            if field == "genres" and verb == "remove":
+                raise ValueError(
+                    "operations.field_verbs['genres'] cannot be 'remove': "
+                    "removing a list-shaped field has no defined semantics "
+                    "(row 87 STOP-and-file); 'lock' and 'unlock' are valid"
+                )
         return value
 
     # Roadmap row 86. Off by default: the mode reads Plex and writes a tree,

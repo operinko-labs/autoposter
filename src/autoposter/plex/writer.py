@@ -65,8 +65,11 @@ _REMOVABLE_FIELDS = frozenset(
 
 # ``reset`` is absent on purpose -- see the STOP-and-file row. It would mean
 # restoring the value Plex's own agent produces, and this project holds no
-# agent value anywhere and has never called a Plex refresh.
-FIELD_VERBS = frozenset({"lock", "unlock", "remove", "reset"})
+# agent value anywhere and has never called a Plex refresh. Absent here means
+# absent from the config validator too (schema.py's ``_known_fields_and_verbs``
+# checks membership in this set), so ``{field: reset}`` is a load-time error
+# rather than a setting that loads and silently does nothing.
+FIELD_VERBS = frozenset({"lock", "unlock", "remove"})
 
 
 def _locked_in_plex(item, plex_field: str) -> bool | None:

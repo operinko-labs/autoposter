@@ -3,11 +3,16 @@
 Two STOP-and-file cells are deliberately absent and must stay absent:
 ``remove`` on the list-shaped ``genres`` (the row records no semantics for a
 verb-as-source with no items supplied) and ``reset`` on any type (this project
-holds no agent value to restore and has never called a Plex refresh).
+holds no agent value to restore and has never called a Plex refresh). Both are
+REFUSED at config load time (``OperationsConfig`` raises) rather than accepted
+and silently doing nothing -- see the branch review's I1: an accepted-but-
+ignored verb was previously indistinguishable from a working field write that
+had just been switched off, with no log line anywhere.
 
 The last test in this file is the gated-feature entry-point test the memory's
 law requires: gate-off byte-identical, gate-on fires, second pass steady.
 """
+import logging
 from pathlib import Path
 
 import pytest
@@ -87,10 +92,11 @@ def test_remove_is_steady_on_an_already_empty_scalar():
     assert verb_edits(item, operations) == {}
 
 
-def test_remove_on_genres_does_nothing_because_it_is_stop_and_filed():
-    item = LockableItem(genres=["Drama"], locks=[("genre", False)])
-    operations = OperationsConfig(field_verbs={"genres": "remove"}, remove_apply=True)
-    assert verb_edits(item, operations) == {}
+def test_remove_on_genres_is_a_config_load_error():
+    # I1 fix: previously loaded and silently no-opped. Now refused at load
+    # time, matching the STOP-and-file posture instead of a silent switch-off.
+    with pytest.raises(ValueError, match="genres.*remove"):
+        OperationsConfig(field_verbs={"genres": "remove"}, remove_apply=True)
 
 
 def test_lock_on_genres_uses_plexs_singular_lock_field_name():
@@ -109,10 +115,11 @@ def test_unlock_on_genres_uses_plexs_singular_lock_field_name():
     assert verb_edits(item, operations) == {"genre.locked": 0}
 
 
-def test_reset_does_nothing_because_it_is_stop_and_filed():
-    item = LockableItem(studio="Warner", locks=[("studio", False)])
-    operations = OperationsConfig(field_verbs={"studio": "reset"}, remove_apply=True)
-    assert verb_edits(item, operations) == {}
+def test_reset_is_a_config_load_error():
+    # I1 fix: previously loaded and silently no-opped, switching off a
+    # working ``studio`` write with no log line. Now refused at load time.
+    with pytest.raises(ValueError, match="reset"):
+        OperationsConfig(field_verbs={"studio": "reset"}, remove_apply=True)
 
 
 def test_a_verb_on_a_field_this_kind_cannot_carry_is_ignored():
