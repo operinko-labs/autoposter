@@ -93,6 +93,22 @@ def test_remove_on_genres_does_nothing_because_it_is_stop_and_filed():
     assert verb_edits(item, operations) == {}
 
 
+def test_lock_on_genres_uses_plexs_singular_lock_field_name():
+    # _PLEX_FIELD_NAMES["genres"] is the map's one asymmetric entry -- the
+    # attribute is "genres" but Plex's lock field is "genre", singular. This
+    # exercises that translation on the WRITE path (verb_edits), not just the
+    # read path metadata_backup's capture_item goes through.
+    item = LockableItem(genres=["Drama"], locks=[("genre", False)])
+    operations = OperationsConfig(field_verbs={"genres": "lock"}, lock_apply=True)
+    assert verb_edits(item, operations) == {"genre.locked": 1}
+
+
+def test_unlock_on_genres_uses_plexs_singular_lock_field_name():
+    item = LockableItem(genres=["Drama"], locks=[("genre", True)])
+    operations = OperationsConfig(field_verbs={"genres": "unlock"}, unlock_apply=True)
+    assert verb_edits(item, operations) == {"genre.locked": 0}
+
+
 def test_reset_does_nothing_because_it_is_stop_and_filed():
     item = LockableItem(studio="Warner", locks=[("studio", False)])
     operations = OperationsConfig(field_verbs={"studio": "reset"}, remove_apply=True)
