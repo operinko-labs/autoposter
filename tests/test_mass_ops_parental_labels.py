@@ -11,7 +11,24 @@ requires: gate-off byte-identical, gate-on fires through the real seam
 (`render.pipeline.apply_metadata`), second pass steady (no label churn when
 IMDb's answer hasn't changed).
 """
+from pathlib import Path
+
+import httpx as _httpx
+import pytest
+import pytest_asyncio
+
+from autoposter.config.loader import load_config
 from autoposter.config.schema import OperationsConfig
+from autoposter.db.models import MediaItem
+from autoposter.facts.mdblist import NullMDBListClient
+from autoposter.facts.models import GatheredFacts
+from autoposter.plex.writer import apply_facts, parental_label_edits, plan_edits
+from autoposter.render.pipeline import _fetch_parental_categories, apply_metadata
+
+from test_mass_ops_fields import FakeItem, FakeTMDB, _item
+from test_mass_ops_verbs import RecordingPlexItem
+
+EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
 
 def test_the_three_fields_default_off():
@@ -19,11 +36,6 @@ def test_the_three_fields_default_off():
     assert operations.parental_labels_enabled is False
     assert operations.parental_labels_apply is False
     assert operations.parental_labels_include_none is False
-
-
-from autoposter.plex.writer import parental_label_edits
-
-from test_mass_ops_fields import FakeItem
 
 
 class LabelledItem(FakeItem):
@@ -108,10 +120,6 @@ def test_severity_id_never_reaches_the_label_text():
     assert "Votes" not in edits["labels.added"][0]
 
 
-from autoposter.facts.models import GatheredFacts
-from autoposter.plex.writer import apply_facts, plan_edits
-
-
 def test_plan_edits_folds_in_parental_labels():
     item = LabelledItem()
     operations = OperationsConfig(parental_labels_apply=True)
@@ -145,21 +153,6 @@ async def test_apply_facts_calls_addlabel_for_each_addition():
     assert edits["labels.added"] == ["Sex & Nudity: Mild", "Violence & Gore: Severe"]
     assert item.added_labels == ["Sex & Nudity: Mild", "Violence & Gore: Severe"]
     assert item.saved == 1
-
-
-import pytest
-import pytest_asyncio
-from pathlib import Path
-
-from autoposter.config.loader import load_config
-from autoposter.db.models import MediaItem
-from autoposter.facts.mdblist import NullMDBListClient
-from autoposter.render.pipeline import _fetch_parental_categories, apply_metadata
-
-from test_mass_ops_fields import FakeTMDB, _item
-from test_mass_ops_verbs import RecordingPlexItem
-
-EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
 
 @pytest.fixture
@@ -207,8 +200,6 @@ async def test_fetch_delegates_to_the_client_for_a_movie():
 
 
 async def test_fetch_returns_none_on_a_transport_error(caplog):
-    import httpx as _httpx
-
     class FailingClient:
         async def categories(self, imdb_id):
             raise _httpx.HTTPError("boom")
