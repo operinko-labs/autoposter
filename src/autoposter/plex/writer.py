@@ -327,7 +327,9 @@ def parental_label_edits(
     return {"labels.added": missing}
 
 
-def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]:
+def plan_edits(
+    item, facts: GatheredFacts, operations=None, parental_categories=None,
+) -> dict[str, object]:
     """Field/value pairs that differ from what Plex already holds.
 
     Ratings compare on their *formatted* value, because that is what a viewer
@@ -336,7 +338,9 @@ def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]
 
     ``operations`` is the ``OperationsConfig``; ``None`` -- what a direct
     caller and most tests pass -- means no mapper and no verb, which is
-    byte-identical to the pre-row-34 behaviour.
+    byte-identical to the pre-row-34 behaviour. ``parental_categories`` is the
+    row-85 fetch's result -- ``None``/most callers, in which case this folds
+    in nothing new.
     """
     verbs = getattr(operations, "field_verbs", None) or {}
     # A field named in field_verbs drops out of the value-write path entirely:
@@ -397,6 +401,7 @@ def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]
             edits.update(_genre_plan(current_genres, genres))
 
     edits.update(verb_edits(item, operations))
+    edits.update(parental_label_edits(item, parental_categories, operations))
 
     return edits
 
@@ -449,26 +454,42 @@ def _item_label(item) -> str:
     return label
 
 
-async def apply_facts(item, facts: GatheredFacts, operations=None) -> dict[str, object]:
+def _apply_label_edits(item, additions: list[str]) -> None:
+    """Queue label additions via plexapi's documented ``addLabel`` mixin
+    method. Must be called after ``item.batchEdits()`` and before
+    ``item.saveEdits()``, alongside ``_apply_genre_edits`` -- additions only,
+    since ``parental_label_edits`` never produces a removal.
+    """
+    for tag in additions:
+        item.addLabel(tag)
+
+
+async def apply_facts(
+    item, facts: GatheredFacts, operations=None, parental_categories=None,
+) -> dict[str, object]:
     """Write the changed fields in one HTTP call.
 
     plexapi routes even a single-item edit through the library section, so
-    batching the fields together turns six writes into one. Genres are
-    queued through the documented `removeGenre`/`addGenre` mixin methods
-    (see `_genre_plan`) rather than `item.edit()`, but still land inside the
-    same `batchEdits()`/`saveEdits()` block, so it's still a single request.
+    batching the fields together turns several writes into one. Genres and
+    parental-guide labels are both queued through their own mixin methods
+    (``addGenre``/``removeGenre``, ``addLabel``) rather than ``item.edit()``,
+    but still land inside the same ``batchEdits()``/``saveEdits()`` block, so
+    it's still a single request.
     """
-    edits = plan_edits(item, facts, operations)
+    edits = plan_edits(item, facts, operations, parental_categories)
     if not edits:
         return {}
 
-    field_edits = {k: v for k, v in edits.items() if not k.startswith("genres.")}
+    field_edits = {
+        k: v for k, v in edits.items() if not k.startswith(("genres.", "labels."))
+    }
 
     def _write() -> None:
         item.batchEdits()
         if field_edits:
             item.edit(**field_edits)
         _apply_genre_edits(item, edits.get("genres.added", []), edits.get("genres.removed", []))
+        _apply_label_edits(item, edits.get("labels.added", []))
         item.saveEdits()
 
     await asyncio.to_thread(_write)

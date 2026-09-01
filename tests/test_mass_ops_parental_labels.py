@@ -106,3 +106,42 @@ def test_severity_id_never_reaches_the_label_text():
         LabelledItem(), [("VIOLENCE", "Violence & Gore", "Severe")], operations
     )
     assert "Votes" not in edits["labels.added"][0]
+
+
+from autoposter.facts.models import GatheredFacts
+from autoposter.plex.writer import apply_facts, plan_edits
+
+
+def test_plan_edits_folds_in_parental_labels():
+    item = LabelledItem()
+    operations = OperationsConfig(parental_labels_apply=True)
+    edits = plan_edits(item, GatheredFacts(), operations, parental_categories=CATEGORIES)
+    assert edits["labels.added"] == ["Sex & Nudity: Mild", "Violence & Gore: Severe"]
+
+
+async def test_apply_facts_calls_addlabel_for_each_addition():
+    class RecordingLabelItem(LabelledItem):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.added_labels = []
+            self.saved = 0
+
+        def batchEdits(self):  # noqa: N802 - plexapi name
+            pass
+
+        def edit(self, **fields):
+            pass
+
+        def addLabel(self, tag):  # noqa: N802 - plexapi name
+            self.added_labels.append(tag)
+
+        def saveEdits(self):  # noqa: N802 - plexapi name
+            self.saved += 1
+
+    item = RecordingLabelItem()
+    operations = OperationsConfig(parental_labels_apply=True)
+    edits = await apply_facts(item, GatheredFacts(), operations, parental_categories=CATEGORIES)
+
+    assert edits["labels.added"] == ["Sex & Nudity: Mild", "Violence & Gore: Severe"]
+    assert item.added_labels == ["Sex & Nudity: Mild", "Violence & Gore: Severe"]
+    assert item.saved == 1
