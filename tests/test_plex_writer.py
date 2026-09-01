@@ -114,7 +114,11 @@ def test_zero_rating_is_written_rather_than_clearing_the_field():
 
 
 def test_seasons_accept_only_ratings():
-    assert WRITABLE_BY_KIND["season"] == {"critic_rating", "audience_rating"}
+    # Roadmap row 32 added ``user_rating`` to every kind, season included --
+    # still a rating, so the set stays "ratings only".
+    assert WRITABLE_BY_KIND["season"] == {
+        "critic_rating", "audience_rating", "user_rating",
+    }
 
 
 def test_episodes_do_not_accept_genres_or_studio():

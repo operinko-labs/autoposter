@@ -15,6 +15,12 @@ from autoposter.plex.client import ResolvedItem
 
 logger = logging.getLogger(__name__)
 
+# Render jobs are queue-drained per item, not swept in a discrete "pass" the
+# way the collections engine is -- there is no boundary to reset this on. A
+# process-wide latch is the simplest thing that still stops a misconfigured
+# deployment from spamming one warning line per item across a whole library.
+_tvdb_source_unconfigured_warned = False
+
 
 def format_critic(value: float | None) -> str | None:
     """One decimal, always — ``9.0`` rather than ``9``.
@@ -65,13 +71,35 @@ async def _critic_rating(session: AsyncSession, item: ResolvedItem) -> float | N
     return rating
 
 
+def _user_rating(source: str | None, critic: float | None, audience: float | None) -> float | None:
+    """The value the named source supplies for Plex's user rating (row 32).
+
+    The explicit-source model, in three lines: a source is named or it is not,
+    and there is no fallback between them. Naming ``imdb`` when this item has
+    no stored IMDb rating yields nothing -- it does NOT quietly become TMDb's
+    audience rating, which would make the setting a suggestion.
+    """
+    if source == "imdb":
+        return critic
+    if source == "tmdb":
+        return audience
+    return None
+
+
 async def gather_facts(
-    session: AsyncSession, item: ResolvedItem, tmdb, mdblist
+    session: AsyncSession, item: ResolvedItem, tmdb, mdblist, *, operations=None, tvdb=None
 ) -> GatheredFacts:
     """Collect everything the providers know about one item.
 
     A season carries no facts of its own — its badge inherits the show's
     content rating — so it returns empty rather than making pointless calls.
+
+    ``operations`` is the ``OperationsConfig`` naming each mass-op field's
+    source (rows 32/33a/84). ``None`` -- what every direct caller and most
+    tests pass -- names no source, so those fields are gathered as ``None``
+    and nothing new is written. ``tvdb`` is the process's ``TVDBClient``;
+    ``None`` -- what every direct caller and most tests pass -- means row 84's
+    overlay below is never asked for, whatever ``operations`` names.
     """
     if item.kind == "season":
         return GatheredFacts()
@@ -101,6 +129,41 @@ async def gather_facts(
         except TmdbRateLimited as exc:
             logger.warning("tmdb rate budget reached; skipping tmdb facts: %s", exc)
 
+    # Row 84. Only asked for when config NAMES tvdb for at least one of the
+    # three fields, so a deployment that names none pays no request and gets
+    # today's behaviour exactly.
+    wanted = {
+        field
+        for field in ("genres", "studio", "originally_available")
+        if getattr(operations, f"{field}_source", None) == "tvdb"
+    }
+    if wanted and tvdb is None:
+        global _tvdb_source_unconfigured_warned
+        if not _tvdb_source_unconfigured_warned:
+            logger.warning(
+                "operations names tvdb as a source for %s, but no TVDb "
+                "provider is configured (check providers.order)",
+                ", ".join(sorted(wanted)),
+            )
+            _tvdb_source_unconfigured_warned = True
+    if wanted and tvdb is not None and item.tvdb_id and item.kind in ("movie", "show"):
+        try:
+            tvdb_facts = await tvdb.extended_facts(item.tvdb_id, item.kind == "movie")
+        except httpx.HTTPError as exc:
+            # The MDBList precedent: one provider's transient failure must not
+            # throw away everything else this pass gathered.
+            logger.warning("tvdb request failed; skipping tvdb facts: %s", exc)
+            tvdb_facts = None
+        if tvdb_facts is not None:
+            overlay = {
+                field: getattr(tvdb_facts, field)
+                for field in wanted
+                if getattr(tvdb_facts, field)
+            }
+            if overlay:
+                facts = replace(facts, **overlay)
+                sources.update({field: "tvdb" for field in overlay})
+
     critic = await _critic_rating(session, item)
     if critic is not None:
         sources["critic_rating"] = "imdb"
@@ -124,8 +187,29 @@ async def gather_facts(
         if content_rating:
             sources["content_rating"] = "mdb_commonsense"
 
+    user_rating = _user_rating(
+        getattr(operations, "user_rating_source", None), critic, facts.audience_rating
+    )
+    if user_rating is not None:
+        sources["user_rating"] = operations.user_rating_source
+
+    # Parsed unconditionally by tmdb_facts (the payload is already fetched, so
+    # reading one more key is free); the source key is what decides whether it
+    # survives the gather. Stripped rather than never-parsed so the parser
+    # stays a pure function of the payload.
+    original_title = facts.original_title
+    if getattr(operations, "original_title_source", None) != "tmdb":
+        original_title = None
+    if original_title:
+        sources["original_title"] = "tmdb"
+
     return replace(
-        facts, critic_rating=critic, content_rating=content_rating, sources=sources
+        facts,
+        critic_rating=critic,
+        content_rating=content_rating,
+        user_rating=user_rating,
+        original_title=original_title,
+        sources=sources,
     )
 
 
@@ -183,13 +267,16 @@ async def persist_facts(
         .where(MediaItem.id == media_item_id)
         .values(facts_attempted_at=func.now())
     )
-    if facts.is_empty():
+    async def _stored() -> ItemFacts | None:
         await session.commit()
         return (
             await session.execute(
                 select(ItemFacts).where(ItemFacts.item_id == media_item_id)
             )
         ).scalar_one_or_none()
+
+    if facts.is_empty():
+        return await _stored()
 
     values: dict[str, object] = {"item_id": media_item_id}
     if facts.critic_rating is not None:
@@ -212,6 +299,14 @@ async def persist_facts(
         values["tmdb_collection_id"] = facts.tmdb_collection_id
     if facts.sources:
         values["sources"] = facts.sources
+
+    if len(values) == 1:
+        # ``item_id`` only. Rows 32/33a added GatheredFacts fields with no
+        # item_facts column, so a gather whose sole result is one of those is
+        # non-empty (the Plex write needs it) yet has nothing to store. Writing
+        # a row of timestamps for it would be pure noise -- the same reasoning
+        # as the is_empty short-circuit above, one field-set narrower.
+        return await _stored()
 
     stmt = insert(ItemFacts).values(**values)
     set_ = {

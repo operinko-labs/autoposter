@@ -39,6 +39,32 @@ operations:
   # The per-item opt-out label. Empty by default; add "skip_autoposter" (or a
   # label of your own) to use it.
   ignore_labels: []
+  # Roadmap row 32 -- which provider's rating is written to Plex's user rating.
+  # 'imdb' (the IMDb rating) or 'tmdb' (the TMDb audience rating). Unset writes
+  # no user rating at all.
+  # user_rating_source: tmdb
+  # Roadmap row 33 -- which provider supplies the original-language title.
+  # 'tmdb' is the only source served today. Unset writes no original title.
+  # original_title_source: tmdb
+  # Roadmap row 34 -- normalise values before they are written to Plex.
+  # genre_mapper:
+  #   "Sci-Fi & Fantasy": "Sci-Fi"
+  # content_rating_mapper:
+  #   "TV-MA": "18"
+  # Roadmap row 84 -- which provider supplies each field. Unset keeps TMDb's.
+  # genres_source: tvdb
+  # studio_source: tvdb
+  # originally_available_source: tvdb
+  # Roadmap row 87 -- a verb applied to a field INSTEAD of writing a
+  # provider's value into it. Each verb has its own apply flag, off by default.
+  # field_verbs:
+  #   studio: unlock
+  # lock_apply: false
+  # unlock_apply: false
+  # remove_apply: false
+  # Roadmap row 86 -- export current Plex metadata to a YAML backup.
+  # metadata_backup_enabled: false
+  # metadata_backup_root: /metadatabackup
   tmdb_backoff_seconds: 60 # how long TMDb is left alone after a 429 with no Retry-After; 0 disables the shared window
 
 badges:
@@ -51,6 +77,7 @@ badges:
 collections:
   enabled: true # reconcile the Common Sense age-bucket collections
   apply_to_plex: false # dry run by default: report the actions, change nothing
+  mdblist_sync_apply: false # row 31: actually push definitions' sync_to_mdb_list members; off only reports what would be pushed
   ownership_label: autoposter # only collections carrying this label are ever modified
   libraries: # Plex library names to reconcile
     - Movies
@@ -109,6 +136,10 @@ collections:
   #       summary: A few favourites.
   #       sync_mode: sync # the collection is exactly this list; `append` only ever adds
   #       limit: 50 # cap on members, applied after resolution
+  #       # Row 31: after this definition's own membership is resolved, push its
+  #       # imdb/tmdb/tvdb ids to this MDBList list (additions only). Requires
+  #       # collections.mdblist_sync_apply above; off reports what would push.
+  #       sync_to_mdb_list: "myuser/my-list"
   #       # Row 19: POST this collection's membership changes here, on top of
   #       # whatever `notifications` does. Read live -- an edit applies at the
   #       # next pass, not the next restart -- but only ever sent to when

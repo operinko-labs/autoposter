@@ -43,6 +43,7 @@ from autoposter.collections.service import _managed_titles
 from autoposter.collections.sources import AWARD_YEARS_TITLE, default_definitions
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.facts.mdblist import MDBListClient
 from autoposter.providers.tmdb_lists import TmdbListClient
 
 LABEL = "autoposter"
@@ -632,6 +633,51 @@ async def test_the_plex_accessor_shares_the_engines_owned_index(session, registr
     assert first.index is second.index
     assert first.section is section
     assert "m1" in first.index["plex"]
+
+
+async def test_mdblist_sync_reads_is_movie_off_the_real_library_type(
+    session, registry_entry
+):
+    """Row 31, entry-point law. ``ctx.library_type`` is title-cased
+    (``"Movie"``/``"Show"``, per ``service.LIBRARY_TYPES`` and every other
+    consumer of the field) -- not the lowercase ``"movie"`` a helper-level
+    test asserting ``is_movie`` as a literal would let slip past. Both passes
+    go through the real ``run_library`` entry point and the real
+    ``MDBListClient`` over an ``httpx.MockTransport``, so what is pinned is
+    the actual payload key on the wire, not an intermediate value."""
+    registry_entry(_Listing("test_mdblist_movie", [("imdb", "tt1")]))
+    registry_entry(_Listing("test_mdblist_show", [("imdb", "tt1")]))
+
+    seen: dict[str, str] = {}
+
+    def handler(request):
+        seen["body"] = request.read().decode()
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = MDBListClient("KEY", http)
+
+        await run_library(
+            session, FakeSection([("m1", ["imdb://tt1"])]), "Movies", "Movie",
+            [CollectionDefinition(
+                title="Movie Push", builder="test_mdblist_movie",
+                sync_to_mdb_list="me/heat",
+            )],
+            _config(mdblist_sync_apply=True),
+            sources=SourceClients(mdblist=client),
+        )
+        assert '"movies"' in seen["body"], seen["body"]
+
+        await run_library(
+            session, FakeSection([("m1", ["imdb://tt1"])]), "TV Shows", "Show",
+            [CollectionDefinition(
+                title="Show Push", builder="test_mdblist_show",
+                sync_to_mdb_list="me/heat",
+            )],
+            _config(mdblist_sync_apply=True),
+            sources=SourceClients(mdblist=client),
+        )
+        assert '"shows"' in seen["body"], seen["body"]
 
 
 # --- roadmap row 141: expansion drops the placeholder's settings -----------

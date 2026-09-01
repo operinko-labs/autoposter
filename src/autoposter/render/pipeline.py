@@ -922,6 +922,7 @@ async def apply_metadata(
     plex_item,
     tmdb_facts,
     mdblist,
+    tvdb=None,
 ) -> GatheredFacts:
     """Gather this item's facts, store them, and write the changed ones to Plex.
 
@@ -931,10 +932,21 @@ async def apply_metadata(
     if not config.operations.enabled:
         return GatheredFacts()
 
-    facts = await gather_facts(session, item, tmdb_facts, mdblist)
+    facts = await gather_facts(
+        session, item, tmdb_facts, mdblist, operations=config.operations, tvdb=tvdb
+    )
     await persist_facts(session, media_item_id, facts)
 
-    if config.operations.write_to_plex and plex_item is not None and not facts.is_empty():
+    # Row 87: a verb IS its field's source, so it must fire even when the
+    # provider facts are empty -- ``facts.is_empty()`` alone would otherwise
+    # skip apply_facts (and every verb with it) on an item no provider has
+    # anything to say about.
+    has_verbs = bool(config.operations.field_verbs)
+    if (
+        config.operations.write_to_plex
+        and plex_item is not None
+        and (not facts.is_empty() or has_verbs)
+    ):
         # Row 35. Checked here, at the facts/write seam, and not earlier: the
         # facts above are still gathered and persisted for an exempt item,
         # because the badge stage reads the persisted row rather than this
@@ -946,7 +958,7 @@ async def apply_metadata(
         if exempt is not None:
             logger.info("plex: skipped writing %s: %s", item.rating_key, exempt)
         else:
-            await apply_facts(plex_item, facts)
+            await apply_facts(plex_item, facts, config.operations)
     return facts
 
 
@@ -1119,8 +1131,12 @@ async def process_item(
         try:
             media_item = await _upsert_media_item(session, item)
             plex_item = await fetch_item(item.rating_key)
+            # Row 84's tvdb client, if the deployment's provider order builds
+            # one -- the same object `providers` already holds, never a new
+            # one, so it shares that client's cached token and cache.
+            tvdb = next((p for p in providers if getattr(p, "name", None) == "TVDB"), None)
             await apply_metadata(
-                session, config, media_item.id, item, plex_item, tmdb_facts, mdblist
+                session, config, media_item.id, item, plex_item, tmdb_facts, mdblist, tvdb
             )
         except Exception:
             # Finding 5: if the failure was a database error, the transaction

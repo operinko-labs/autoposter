@@ -21,15 +21,124 @@ WRITABLE_BY_KIND: dict[str, set[str]] = {
     "movie": {
         "critic_rating", "audience_rating", "content_rating",
         "genres", "studio", "originally_available",
+        # Roadmap rows 32 and 33a. ``original_title`` is movies only: Plex
+        # carries originalTitle for movies and not for shows or episodes
+        # (plex/client.py:59-61, row 44's finding).
+        "user_rating", "original_title",
     },
     "show": {
         "critic_rating", "audience_rating", "content_rating",
         "genres", "studio", "originally_available",
+        "user_rating",
     },
-    "season": {"critic_rating", "audience_rating"},
+    "season": {"critic_rating", "audience_rating", "user_rating"},
     "episode": {"critic_rating", "audience_rating", "content_rating",
-                "originally_available"},
+                "originally_available", "user_rating"},
 }
+
+
+# Our field name -> (the plexapi attribute holding the value, the name Plex
+# uses for that field's LOCK). The two differ for exactly one entry: the
+# attribute is ``genres`` and the lock field is ``genre``, singular. Every
+# other entry is the same string twice, and is written out anyway rather than
+# special-cased -- a map with one exception in it is read wrong exactly once.
+_PLEX_FIELD_NAMES: dict[str, tuple[str, str]] = {
+    "critic_rating": ("rating", "rating"),
+    "audience_rating": ("audienceRating", "audienceRating"),
+    "user_rating": ("userRating", "userRating"),
+    "content_rating": ("contentRating", "contentRating"),
+    "studio": ("studio", "studio"),
+    "originally_available": ("originallyAvailableAt", "originallyAvailableAt"),
+    "original_title": ("originalTitle", "originalTitle"),
+    "genres": ("genres", "genre"),
+}
+
+# Roadmap row 87's ``remove`` ships for these four and no others. A scalar's
+# "remove" is unambiguous -- clear the value. ``genres`` is list-shaped and the
+# row records no semantics for a verb used AS THE SOURCE with no items
+# supplied, so it is STOP-and-filed rather than guessed. The three rating
+# fields are excluded for a different reason: Plex has no empty rating, and
+# writing "" into one is a shape this project has never sent.
+_REMOVABLE_FIELDS = frozenset(
+    {"content_rating", "studio", "originally_available", "original_title"}
+)
+
+# ``reset`` is absent on purpose -- see the STOP-and-file row. It would mean
+# restoring the value Plex's own agent produces, and this project holds no
+# agent value anywhere and has never called a Plex refresh. Absent here means
+# absent from the config validator too (schema.py's ``_known_fields_and_verbs``
+# checks membership in this set), so ``{field: reset}`` is a load-time error
+# rather than a setting that loads and silently does nothing.
+FIELD_VERBS = frozenset({"lock", "unlock", "remove"})
+
+
+def _locked_in_plex(item, plex_field: str) -> bool | None:
+    """Whether Plex reports this field locked, or ``None`` if it does not say.
+
+    plexapi exposes per-field locks as ``item.fields``, each entry carrying a
+    ``name`` and a ``locked`` flag; a field Plex has never written about is
+    simply not in the list. ``None`` -- "it did not say" -- is treated by the
+    verbs as "not yet in the wanted state", so a verb writes once rather than
+    silently doing nothing on an item Plex is quiet about.
+    """
+    for field in getattr(item, "fields", None) or []:
+        if getattr(field, "name", None) == plex_field:
+            return bool(getattr(field, "locked", False))
+    return None
+
+
+def verb_edits(item, operations) -> dict[str, object]:
+    """The lock/unlock/remove edits ``operations.field_verbs`` asks for (row 87).
+
+    Each verb is dry-run-by-default behind its own apply flag: with the flag
+    off the verb is LOGGED and nothing is written, and the field does NOT fall
+    back to being written from its provider source -- the verb IS the source
+    (the row's own phrasing), so an unapplied verb means "nothing happens to
+    this field", never "do the old thing instead".
+
+    Every verb is compared against what Plex currently reports, so a second
+    pass over an item already in the wanted state writes nothing. That is what
+    makes this steady-state rather than a rewrite every pass.
+    """
+    verbs = getattr(operations, "field_verbs", None) or {}
+    if not verbs:
+        return {}
+    writable = WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set())
+    applied = {
+        "lock": getattr(operations, "lock_apply", False),
+        "unlock": getattr(operations, "unlock_apply", False),
+        "remove": getattr(operations, "remove_apply", False),
+    }
+    edits: dict[str, object] = {}
+    for field, verb in verbs.items():
+        if field not in writable or field not in _PLEX_FIELD_NAMES:
+            continue
+        if verb == "reset":
+            # STOP-and-filed: see the module's _REMOVABLE_FIELDS comment.
+            continue
+        if verb == "remove" and field not in _REMOVABLE_FIELDS:
+            continue
+        if not applied.get(verb):
+            logger.info(
+                "plex: would %s %s on %s (operations.%s_apply is off)",
+                verb, field, _item_label(item), verb,
+            )
+            continue
+        attribute, plex_field = _PLEX_FIELD_NAMES[field]
+        if verb == "lock":
+            if _locked_in_plex(item, plex_field) is not True:
+                edits[f"{plex_field}.locked"] = 1
+        elif verb == "unlock":
+            if _locked_in_plex(item, plex_field) is not False:
+                edits[f"{plex_field}.locked"] = 0
+        elif verb == "remove":
+            if getattr(item, attribute, None) not in (None, ""):
+                edits[f"{plex_field}.value"] = ""
+                # Locked after clearing: an unlocked empty field is refilled by
+                # Plex's own agent on its next refresh, which would make this
+                # verb a no-op with extra requests.
+                edits[f"{plex_field}.locked"] = 1
+    return edits
 
 
 def exemption_reason(
@@ -120,15 +229,60 @@ def _genre_plan(current: list[str], target: list[str]) -> dict[str, object]:
     return plan
 
 
-def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
+def map_value(mapping: dict[str, str], value: str | None) -> str | None:
+    """``value`` rewritten by ``mapping``, or unchanged (roadmap row 34).
+
+    Exact-key and case-sensitive. The label case-folding rule this project
+    holds elsewhere is about Plex LABELS, which Plex itself canonicalises;
+    this is an operator's own table of genre and rating strings, and folding it
+    would silently merge two keys they wrote separately.
+    """
+    if not mapping or value is None:
+        return value
+    return mapping.get(value, value)
+
+
+def map_values(mapping: dict[str, str], values: list[str]) -> list[str]:
+    """``values`` rewritten by ``mapping``, in order, each result once.
+
+    Deduplicated because two source genres commonly map onto one target and
+    the genre diff below compares sorted sets -- a duplicate would make an
+    already-correct item look like it needed a write.
+    """
+    if not mapping:
+        return values
+    mapped: list[str] = []
+    for value in values:
+        rewritten = mapping.get(value, value)
+        if rewritten not in mapped:
+            mapped.append(rewritten)
+    return mapped
+
+
+def plan_edits(item, facts: GatheredFacts, operations=None) -> dict[str, object]:
     """Field/value pairs that differ from what Plex already holds.
 
     Ratings compare on their *formatted* value, because that is what a viewer
     sees: 8.65 and 8.6 both render "86%", so rewriting one as the other would
     churn Plex for no visible gain.
+
+    ``operations`` is the ``OperationsConfig``; ``None`` -- what a direct
+    caller and most tests pass -- means no mapper and no verb, which is
+    byte-identical to the pre-row-34 behaviour.
     """
-    writable = WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set())
+    verbs = getattr(operations, "field_verbs", None) or {}
+    # A field named in field_verbs drops out of the value-write path entirely:
+    # the verb replaces the source for that field, so the two can never both
+    # touch it in one payload.
+    writable = WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set()) - set(verbs)
     edits: dict[str, object] = {}
+
+    # Row 34: normalise once, here, so the mapped value is what the diff below
+    # compares AND what is written.
+    genre_mapper = getattr(operations, "genre_mapper", None) or {}
+    content_rating_mapper = getattr(operations, "content_rating_mapper", None) or {}
+    content_rating = map_value(content_rating_mapper, facts.content_rating)
+    genres = map_values(genre_mapper, facts.genres)
 
     def put(field: str, value: object) -> None:
         edits[f"{field}.value"] = value
@@ -144,9 +298,9 @@ def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
         if current != format_audience(facts.audience_rating):
             put("audienceRating", _one_decimal(facts.audience_rating))
 
-    if "content_rating" in writable and facts.content_rating:
-        if getattr(item, "contentRating", None) != facts.content_rating:
-            put("contentRating", facts.content_rating)
+    if "content_rating" in writable and content_rating:
+        if getattr(item, "contentRating", None) != content_rating:
+            put("contentRating", content_rating)
 
     if "studio" in writable and facts.studio:
         if getattr(item, "studio", None) != facts.studio:
@@ -159,10 +313,22 @@ def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
         if current_str != formatted:
             put("originallyAvailableAt", formatted)
 
-    if "genres" in writable and facts.genres:
+    if "user_rating" in writable and facts.user_rating is not None:
+        # Compared on the formatted value for the same reason the critic
+        # rating is: 8.65 and 8.7 both render "8.7" to a viewer.
+        if format_critic(getattr(item, "userRating", None)) != format_critic(facts.user_rating):
+            put("userRating", _one_decimal(facts.user_rating))
+
+    if "original_title" in writable and facts.original_title:
+        if getattr(item, "originalTitle", None) != facts.original_title:
+            put("originalTitle", facts.original_title)
+
+    if "genres" in writable and genres:
         current_genres = _current_genres(item)
-        if sorted(current_genres) != sorted(facts.genres):
-            edits.update(_genre_plan(current_genres, facts.genres))
+        if sorted(current_genres) != sorted(genres):
+            edits.update(_genre_plan(current_genres, genres))
+
+    edits.update(verb_edits(item, operations))
 
     return edits
 
@@ -215,7 +381,7 @@ def _item_label(item) -> str:
     return label
 
 
-async def apply_facts(item, facts: GatheredFacts) -> dict[str, object]:
+async def apply_facts(item, facts: GatheredFacts, operations=None) -> dict[str, object]:
     """Write the changed fields in one HTTP call.
 
     plexapi routes even a single-item edit through the library section, so
@@ -224,7 +390,7 @@ async def apply_facts(item, facts: GatheredFacts) -> dict[str, object]:
     (see `_genre_plan`) rather than `item.edit()`, but still land inside the
     same `batchEdits()`/`saveEdits()` block, so it's still a single request.
     """
-    edits = plan_edits(item, facts)
+    edits = plan_edits(item, facts, operations)
     if not edits:
         return {}
 

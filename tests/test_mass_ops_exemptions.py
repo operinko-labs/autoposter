@@ -72,7 +72,7 @@ def _config(**operations):
 
 
 async def _run(session, config, item, plex_item, monkeypatch):
-    async def fake_gather(_session, _item, _tmdb, _mdblist):
+    async def fake_gather(_session, _item, _tmdb, _mdblist, **_kwargs):
         return GatheredFacts(critic_rating=4.9, sources={"critic_rating": "imdb"})
 
     monkeypatch.setattr(pipeline, "gather_facts", fake_gather)

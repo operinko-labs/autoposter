@@ -16,6 +16,14 @@ class GatheredFacts:
     genres: list[str] = field(default_factory=list)
     studio: str | None = None
     originally_available: date | None = None
+    # Roadmap rows 32 and 33a. NEITHER is persisted: there is no item_facts
+    # column for either, because both are derived per pass from data already
+    # fetched -- ``user_rating`` from the critic/audience values persist_facts
+    # already stores, ``original_title`` from a TMDb payload the provider cache
+    # already holds. A column would be a migration for a cache. They are
+    # mass-op WRITE values, not badge inputs.
+    user_rating: float | None = None
+    original_title: str | None = None
     # The three prefetch fields (roadmap rows 189/192). Named OURS, never
     # Kometa's filter names, and enumeration-only: row 156 owns the question of
     # ever making a facts-backed value `filters:`-writable, and it needs a
@@ -36,6 +44,8 @@ class GatheredFacts:
                 self.genres,
                 self.studio,
                 self.originally_available,
+                self.user_rating is not None,
+                self.original_title,
                 self.tmdb_origin_country,
                 self.tmdb_original_language,
                 self.tmdb_collection_id is not None,

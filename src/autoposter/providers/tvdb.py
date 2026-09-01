@@ -1,7 +1,9 @@
 import asyncio
+from datetime import date
 
 import httpx
 
+from autoposter.facts.models import GatheredFacts
 from autoposter.providers.base import (
     BACKGROUND, LOGO, POSTER, SEASON_POSTER, TITLE_CARD, ArtCandidate, ArtRequest,
 )
@@ -69,6 +71,83 @@ def parse_tvdb_artworks(payload: dict, art_kind: str, is_movie: bool) -> list[Ar
             )
         )
     return candidates
+
+
+def _first_company(companies, categories: tuple[str, ...]) -> str | None:
+    """First named company off a movie's ``companies`` object, tried in
+    ``categories`` order.
+
+    A movie's ``companies`` is a dict of company-type buckets (``studio``,
+    ``production``, ``distributor``, ``special_effects``, ``network``) --
+    confirmed against the mass-ops-2 capture, which differs from a series'
+    ``companies`` (a flat list; see ``parse_tvdb_facts``). Only the ``studio``
+    bucket is read: a ``production``-bucket fallback was tried and reverted
+    (mass-ops-2 review) because the one captured movie fixture (an empty
+    ``studio`` bucket, seven arbitrary ``production`` entries) cannot
+    establish that TVDb orders ``production`` by studio-ness -- see the
+    roadmap row filed for it. An empty ``studio`` bucket reads as "TVDb has
+    no studio for this title", same as an absent key.
+    """
+    if not isinstance(companies, dict):
+        return None
+    for category in categories:
+        for entry in companies.get(category) or []:
+            if isinstance(entry, dict) and entry.get("name"):
+                return entry["name"]
+    return None
+
+
+def _tvdb_date(value) -> date | None:
+    """Parse a TVDb ``YYYY-MM-DD`` date string, or ``None`` for anything else."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def parse_tvdb_facts(payload: dict, is_movie: bool) -> GatheredFacts:
+    """Genres, studio/network and release date off a TVDb extended record.
+
+    The second parser over a payload ``fetch`` already retrieves for artwork
+    (``/movies/{id}/extended``, ``/series/{id}/extended``) -- so this costs no
+    request, no new endpoint and no change to the login/token/cache machinery.
+
+    Every key read here is pinned by the fixtures captured in the mass-ops-2
+    phase and by nothing else. An absent key reads as "TVDb has nothing for
+    this field", never as an empty value: a missing value must not be written
+    to Plex as a blank one.
+
+    A movie's release date lives at ``first_release.date`` and its companies
+    under the bucketed ``companies`` object (see ``_first_company``); a
+    series' date is the flat top-level ``firstAired`` string and its network
+    is ``latestNetwork`` (falling back to ``originalNetwork``), each a single
+    company object rather than a list -- the two payload shapes genuinely
+    differ and neither is guessed.
+    """
+    data = payload.get("data") or payload
+    genres = [
+        name for name in (
+            entry.get("name") if isinstance(entry, dict) else entry
+            for entry in (data.get("genres") or [])
+        ) if isinstance(name, str) and name
+    ]
+    if is_movie:
+        studio = _first_company(data.get("companies"), ("studio",))
+        released = _tvdb_date((data.get("first_release") or {}).get("date"))
+    else:
+        network = data.get("latestNetwork") or data.get("originalNetwork")
+        studio = network.get("name") if isinstance(network, dict) else None
+        released = _tvdb_date(data.get("firstAired"))
+    sources: dict[str, str] = {}
+    for key, value in (("genres", genres), ("studio", studio),
+                       ("originally_available", released)):
+        if value:
+            sources[key] = "tvdb"
+    return GatheredFacts(
+        genres=genres, studio=studio, originally_available=released, sources=sources,
+    )
 
 
 def _find_season_id(payload: dict, season_number: int) -> int | None:
@@ -250,6 +329,20 @@ class TVDBClient:
         if payload is None:
             return None
         return _find_season_id(payload, season_number)
+
+    async def extended_facts(self, tvdb_id: int, is_movie: bool) -> GatheredFacts | None:
+        """This title's metadata off the extended record, or ``None``.
+
+        Goes through ``_fetch_json`` like every other read here, so it shares
+        the cached token, the one-shot re-login on a 401, and the provider
+        cache -- an item whose artwork was fetched this pass pays nothing for
+        its facts.
+        """
+        path = f"/movies/{tvdb_id}/extended" if is_movie else f"/series/{tvdb_id}/extended"
+        payload = await self._fetch_json(path)
+        if payload is None:
+            return None
+        return parse_tvdb_facts(payload, is_movie)
 
     async def fetch(self, request: ArtRequest) -> list[ArtCandidate]:
         if request.tvdb_id is None:

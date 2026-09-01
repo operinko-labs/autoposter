@@ -670,6 +670,153 @@ class OperationsConfig(BaseModel):
             "case-insensitively, because Plex canonicalises label case."
         ),
     )
+    # Roadmap rows 32 and 33a, under the explicit-source model: a mass-op field
+    # is written only when config NAMES the provider it comes from. There is no
+    # default source and no fallback chain, so an untouched config writes
+    # neither field. A ``Literal`` rather than a plain string: a source this
+    # service cannot serve is a config load error, not a value that silently
+    # never appears.
+    user_rating_source: Literal["imdb", "tmdb"] | None = Field(
+        default=None,
+        description=(
+            "Which provider's rating is written to Plex's user rating, "
+            "library-wide: 'imdb' for the IMDb rating, 'tmdb' for the TMDb "
+            "audience rating. Unset writes no user rating at all."
+        ),
+    )
+    original_title_source: Literal["tmdb"] | None = Field(
+        default=None,
+        description=(
+            "Which provider supplies the original-language title written to "
+            "Plex, library-wide. Unset writes no original title at all."
+        ),
+    )
+    # Roadmap row 34. Applied AHEAD of the diff, so the mapped value is both
+    # what is compared and what is written -- mapping after the diff would
+    # rewrite the same item every pass. Exact-key and case-sensitive: an
+    # operator's hand-written table means the strings it holds.
+    genre_mapper: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Genre names to rewrite before they are written to Plex, e.g. "
+            "'Sci-Fi & Fantasy' to 'Sci-Fi'. A genre not named here is written "
+            "unchanged; two genres mapped onto one are written once."
+        ),
+    )
+    content_rating_mapper: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Content-rating values to rewrite before they are written to Plex, "
+            "e.g. 'TV-MA' to '18'. A value not named here is written unchanged."
+        ),
+    )
+    # Roadmap row 87. Keyed by this service's own field names
+    # (plex/writer.py::WRITABLE_BY_KIND); the value is the verb, which
+    # REPLACES that field's provider source. An empty map -- the default --
+    # is exactly today's behaviour.
+    field_verbs: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "A verb to apply to a metadata field instead of writing a "
+            "provider's value into it: 'lock', 'unlock' or 'remove'. Keyed by "
+            "field name, e.g. 'studio'. A field not named here is written from "
+            "its provider source as usual."
+        ),
+    )
+    lock_apply: bool = Field(
+        default=False,
+        description="Actually apply the 'lock' verb to Plex; off only reports which fields it would lock.",
+    )
+    unlock_apply: bool = Field(
+        default=False,
+        description="Actually apply the 'unlock' verb to Plex; off only reports which fields it would unlock.",
+    )
+    remove_apply: bool = Field(
+        default=False,
+        description="Actually apply the 'remove' verb to Plex; off only reports which fields it would clear.",
+    )
+
+    @field_validator("field_verbs")
+    @classmethod
+    def _known_fields_and_verbs(cls, value: dict[str, str]) -> dict[str, str]:
+        """Refuse an unknown field name or verb at LOAD time.
+
+        The row-81 precedent, one vocabulary along: a typo'd field name would
+        otherwise be a setting that silently never fires, which is
+        indistinguishable from the feature not working.
+        """
+        from autoposter.plex.writer import FIELD_VERBS, WRITABLE_BY_KIND
+
+        known = set().union(*WRITABLE_BY_KIND.values())
+        for field, verb in value.items():
+            if field not in known:
+                raise ValueError(
+                    f"operations.field_verbs names {field!r}, which is not a "
+                    f"field this service writes; known fields are "
+                    f"{', '.join(sorted(known))}"
+                )
+            if verb not in FIELD_VERBS:
+                raise ValueError(
+                    f"operations.field_verbs[{field!r}] is {verb!r}; the verbs "
+                    f"are {', '.join(sorted(FIELD_VERBS))}"
+                )
+            # Row 87's STOP-and-file: ``remove`` on the list-shaped ``genres``
+            # has no defined semantics (a verb-as-source with no items
+            # supplied) -- refused here rather than accepted and silently
+            # doing nothing. lock/unlock on genres are unaffected.
+            if field == "genres" and verb == "remove":
+                raise ValueError(
+                    "operations.field_verbs['genres'] cannot be 'remove': "
+                    "removing a list-shaped field has no defined semantics "
+                    "(row 87 STOP-and-file); 'lock' and 'unlock' are valid"
+                )
+        return value
+
+    # Roadmap row 86. Off by default: the mode reads Plex and writes a tree,
+    # and a deployment that has not provided the mount must get a refusal
+    # rather than a backup filling the container's own disk.
+    metadata_backup_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether the metadata backup export runs at all. Off refuses the "
+            "trigger and writes nothing."
+        ),
+    )
+    metadata_backup_root: Path = Field(
+        default=Path("/metadatabackup"),
+        description=(
+            "Where the metadata backup writes one YAML file per Plex library, "
+            "holding the current value and lock state of every field this "
+            "service writes."
+        ),
+    )
+
+    # Roadmap row 84. TVDb as a nameable source for the three fields its
+    # extended record carries, alongside TMDb. The explicit-source model again:
+    # exactly one source per field, no precedence and no tiebreak. Unset keeps
+    # each field on the TMDb value gather_facts already produces, which is what
+    # every config that does not set these does today.
+    genres_source: Literal["tmdb", "tvdb"] | None = Field(
+        default=None,
+        description=(
+            "Which provider supplies the genres written to Plex. Unset keeps "
+            "the TMDb genres this service already gathers."
+        ),
+    )
+    studio_source: Literal["tmdb", "tvdb"] | None = Field(
+        default=None,
+        description=(
+            "Which provider supplies the studio written to Plex. Unset keeps "
+            "the TMDb studio this service already gathers."
+        ),
+    )
+    originally_available_source: Literal["tmdb", "tvdb"] | None = Field(
+        default=None,
+        description=(
+            "Which provider supplies the release date written to Plex. Unset "
+            "keeps the TMDb date this service already gathers."
+        ),
+    )
     # This section owns WHEN, not WHETHER, in the split ``SchedulerConfig``'s
     # docstring states: there is no ``tmdb_budget_enabled`` beside this,
     # because 0 already means that and two spellings of one setting is one
@@ -856,6 +1003,17 @@ class CollectionDefinition(BaseModel):
     summary: str | None = Field(
         default=None,
         description="A summary text that overrides what the builder would otherwise derive for this collection.",
+    )
+    # Roadmap row 31. Unset means this definition pushes nothing; the
+    # deployment ALSO has to set collections.mdblist_sync_apply, so a
+    # definition copied from someone else's config cannot start writing to a
+    # third-party service on its own.
+    sync_to_mdb_list: str | None = Field(
+        default=None,
+        description=(
+            "An MDBList list -- '<user>/<slug>' or a numeric list id -- this "
+            "collection's members are added to. Unset pushes nothing."
+        ),
     )
     sort: str = Field(
         default="custom",
@@ -1287,6 +1445,16 @@ class CollectionsConfig(BaseModel):
     apply_to_plex: bool = Field(
         default=False,
         description="Actually write collection changes to Plex; off only reports what reconciliation would do.",
+    )
+    # Roadmap row 31, the deployment-level half of the two gates. Off reports
+    # what each definition would push and sends nothing, the same posture
+    # apply_to_plex takes for Plex itself.
+    mdblist_sync_apply: bool = Field(
+        default=False,
+        description=(
+            "Actually add collection members to the MDBList lists definitions "
+            "name; off only reports what would be pushed."
+        ),
     )
     # The ownership boundary: only collections carrying this label are ever
     # created or modified. Must not be "Kometa" -- that is the label the tool

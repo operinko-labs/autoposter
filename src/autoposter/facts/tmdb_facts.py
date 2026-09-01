@@ -108,6 +108,23 @@ def _collection_id(payload: dict) -> int | None:
         return None
 
 
+def _original_title(payload: dict, key: str) -> str | None:
+    """TMDb's original-language title, or ``None``.
+
+    ``original_title`` on a movie, ``original_name`` on a show -- TMDb's
+    asymmetry, not ours. Blank and whitespace-only are read as absent: a
+    missing value must never be written to Plex as an empty one.
+
+    Provenance is NOT recorded here. Whether this value is used at all depends
+    on ``operations.original_title_source`` naming tmdb, and this parser cannot
+    see config -- ``gather_facts`` records the source when it keeps the value.
+    """
+    value = payload.get(key)
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
+
+
 def parse_movie_facts(payload: dict) -> GatheredFacts:
     rating = _rating(payload)
     studio = _first_name(payload.get("production_companies"))
@@ -116,6 +133,7 @@ def parse_movie_facts(payload: dict) -> GatheredFacts:
     countries = _countries(payload)
     language = _language(payload)
     collection_id = _collection_id(payload)
+    original_title = _original_title(payload, "original_title")
     sources = {}
     if rating is not None:
         sources["audience_rating"] = "tmdb"
@@ -132,6 +150,7 @@ def parse_movie_facts(payload: dict) -> GatheredFacts:
         genres=genres,
         studio=studio,
         originally_available=released,
+        original_title=original_title,
         tmdb_origin_country=countries,
         tmdb_original_language=language,
         tmdb_collection_id=collection_id,
@@ -147,6 +166,7 @@ def parse_show_facts(payload: dict) -> GatheredFacts:
     aired = _as_date(payload.get("first_air_date"))
     countries = _countries(payload)
     language = _language(payload)
+    original_title = _original_title(payload, "original_name")
     sources = {}
     if rating is not None:
         sources["audience_rating"] = "tmdb"
@@ -161,6 +181,7 @@ def parse_show_facts(payload: dict) -> GatheredFacts:
         genres=genres,
         studio=studio,
         originally_available=aired,
+        original_title=original_title,
         tmdb_origin_country=countries,
         tmdb_original_language=language,
         sources=sources,

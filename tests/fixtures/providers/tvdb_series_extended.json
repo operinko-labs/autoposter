@@ -1,0 +1,3061 @@
+{
+  "status": "success",
+  "data": {
+    "id": 121361,
+    "name": "Game of Thrones",
+    "slug": "game-of-thrones",
+    "image": "https://artworks.thetvdb.com/banners/posters/121361-4.jpg",
+    "nameTranslations": [
+      "ces",
+      "dan",
+      "deu",
+      "ell",
+      "eng",
+      "fin",
+      "fra",
+      "heb",
+      "hrv",
+      "hun",
+      "ita",
+      "jpn",
+      "kor",
+      "nld",
+      "pol",
+      "por",
+      "rus",
+      "spa",
+      "swe",
+      "tur",
+      "zho",
+      "bul",
+      "est",
+      "slk",
+      "pt",
+      "ara",
+      "yue",
+      "zhtw",
+      "kur",
+      "vie",
+      "fas"
+    ],
+    "overviewTranslations": [
+      "ces",
+      "dan",
+      "deu",
+      "ell",
+      "eng",
+      "fin",
+      "fra",
+      "heb",
+      "hrv",
+      "hun",
+      "ita",
+      "nld",
+      "nor",
+      "pol",
+      "por",
+      "rus",
+      "spa",
+      "swe",
+      "tur",
+      "zho",
+      "bul",
+      "est",
+      "slk",
+      "pt",
+      "ara",
+      "yue",
+      "zhtw",
+      "kur",
+      "vie"
+    ],
+    "aliases": [
+      {
+        "language": "zho",
+        "name": "权力的游戏"
+      },
+      {
+        "language": "ara",
+        "name": "قيم اوف ثرونز"
+      },
+      {
+        "language": "ara",
+        "name": "الثرونز"
+      },
+      {
+        "language": "eng",
+        "name": "GoT"
+      },
+      {
+        "language": "fra",
+        "name": "Le Trône de fer"
+      },
+      {
+        "language": "fra",
+        "name": "GAME OF THRONES"
+      },
+      {
+        "language": "tur",
+        "name": "Taht Oyunları"
+      }
+    ],
+    "firstAired": "2011-04-17",
+    "lastAired": "2019-05-19",
+    "nextAired": "",
+    "score": 6631485,
+    "status": {
+      "id": 2,
+      "name": "Ended",
+      "recordType": "series",
+      "keepUpdated": false
+    },
+    "originalCountry": "usa",
+    "originalLanguage": "eng",
+    "defaultSeasonType": 1,
+    "isOrderRandomized": false,
+    "lastUpdated": "2026-08-26 11:30:37",
+    "averageRuntime": 57,
+    "episodes": null,
+    "overview": "Seven noble families fight for control of the mythical land of Westeros. Friction between the houses leads to full-scale war. All while a very ancient evil awakens in the farthest north. Amidst the war, a neglected military order of misfits, the Night's Watch, is all that stands between the realms of men and the icy horrors beyond.",
+    "year": "2011",
+    "artworks": [
+      {
+        "id": 833691,
+        "image": "https://artworks.thetvdb.com/banners/posters/121361-4.jpg",
+        "thumbnail": "https://artworks.thetvdb.com/banners/posters/121361-4_t.jpg",
+        "language": "eng",
+        "type": 2,
+        "score": 100172,
+        "width": 680,
+        "height": 1000,
+        "includesText": true,
+        "thumbnailWidth": 0,
+        "thumbnailHeight": 0,
+        "updatedAt": 0,
+        "status": {
+          "id": 0,
+          "name": null
+        },
+        "tagOptions": null
+      },
+      {
+        "id": 1061959,
+        "image": "https://artworks.thetvdb.com/banners/posters/121361-34.jpg",
+        "thumbnail": "https://artworks.thetvdb.com/banners/posters/121361-34_t.jpg",
+        "language": "eng",
+        "type": 2,
+        "score": 100110,
+        "width": 680,
+        "height": 1000,
+        "includesText": true,
+        "thumbnailWidth": 0,
+        "thumbnailHeight": 0,
+        "updatedAt": 0,
+        "status": {
+          "id": 0,
+          "name": null
+        },
+        "tagOptions": null
+      }
+    ],
+    "companies": [
+      {
+        "id": 328,
+        "name": "HBO",
+        "slug": "hbo",
+        "nameTranslations": [
+          "eng",
+          "nld",
+          "pt",
+          "spa"
+        ],
+        "overviewTranslations": [
+          "pt",
+          "spa"
+        ],
+        "aliases": [
+          {
+            "language": "eng",
+            "name": "Home Box Office"
+          }
+        ],
+        "country": "usa",
+        "primaryCompanyType": 1,
+        "activeDate": "1972-11-08",
+        "inactiveDate": null,
+        "companyType": {
+          "companyTypeId": 1,
+          "companyTypeName": "Network"
+        },
+        "parentCompany": {
+          "id": null,
+          "name": null,
+          "relation": {
+            "id": null,
+            "typeName": null
+          }
+        },
+        "tagOptions": null
+      }
+    ],
+    "originalNetwork": {
+      "id": 328,
+      "name": "HBO",
+      "slug": "hbo",
+      "nameTranslations": [
+        "eng",
+        "nld",
+        "pt",
+        "spa"
+      ],
+      "overviewTranslations": [
+        "pt",
+        "spa"
+      ],
+      "aliases": [
+        {
+          "language": "eng",
+          "name": "Home Box Office"
+        }
+      ],
+      "country": "usa",
+      "primaryCompanyType": 1,
+      "activeDate": "1972-11-08",
+      "inactiveDate": null,
+      "companyType": {
+        "companyTypeId": 1,
+        "companyTypeName": "Network"
+      },
+      "parentCompany": {
+        "id": null,
+        "name": null,
+        "relation": {
+          "id": null,
+          "typeName": null
+        }
+      },
+      "tagOptions": [
+        {
+          "id": 494,
+          "tag": 24,
+          "tagName": "Company Type",
+          "name": "Premium Cable",
+          "helpText": "Subscription based premium networks. Examples: HBO, Starz, Showtime"
+        }
+      ]
+    },
+    "latestNetwork": {
+      "id": 328,
+      "name": "HBO",
+      "slug": "hbo",
+      "nameTranslations": [
+        "eng",
+        "nld",
+        "pt",
+        "spa"
+      ],
+      "overviewTranslations": [
+        "pt",
+        "spa"
+      ],
+      "aliases": [
+        {
+          "language": "eng",
+          "name": "Home Box Office"
+        }
+      ],
+      "country": "usa",
+      "primaryCompanyType": 1,
+      "activeDate": "1972-11-08",
+      "inactiveDate": null,
+      "companyType": {
+        "companyTypeId": 1,
+        "companyTypeName": "Network"
+      },
+      "parentCompany": {
+        "id": null,
+        "name": null,
+        "relation": {
+          "id": null,
+          "typeName": null
+        }
+      },
+      "tagOptions": [
+        {
+          "id": 494,
+          "tag": 24,
+          "tagName": "Company Type",
+          "name": "Premium Cable",
+          "helpText": "Subscription based premium networks. Examples: HBO, Starz, Showtime"
+        }
+      ]
+    },
+    "genres": [
+      {
+        "id": 10,
+        "name": "Fantasy",
+        "slug": "fantasy"
+      },
+      {
+        "id": 12,
+        "name": "Drama",
+        "slug": "drama"
+      },
+      {
+        "id": 18,
+        "name": "Adventure",
+        "slug": "adventure"
+      },
+      {
+        "id": 19,
+        "name": "Action",
+        "slug": "action"
+      }
+    ],
+    "trailers": [],
+    "lists": [
+      {
+        "id": 6783,
+        "name": "To watch",
+        "overview": "",
+        "url": "6783",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 6785,
+        "name": "Serie TV USA",
+        "overview": "",
+        "url": "6785",
+        "isOfficial": false,
+        "nameTranslations": [
+          "ita"
+        ],
+        "overviewTranslations": [
+          "ita"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 7038,
+        "name": "Game of Thrones Franchise",
+        "overview": "When you play the game of thrones, you win or you die.\r\n\r\nSeven noble families — including the houses of Targaryan, Lannister, and Stark — fight for control of the mythical land of Westeros while a very ancient evil awakens in the farthest north. Amidst the war, a neglected military order of misfits, the Night's Watch, is all that stands between the realms of men and the icy horrors beyond.",
+        "url": "game-of-thrones",
+        "isOfficial": true,
+        "nameTranslations": [
+          "deu",
+          "eng",
+          "fra",
+          "por",
+          "spa"
+        ],
+        "overviewTranslations": [
+          "deu",
+          "eng",
+          "spa"
+        ],
+        "aliases": [
+          {
+            "language": "fra",
+            "name": "Franchise Le Trône de fer"
+          },
+          {
+            "language": "por",
+            "name": "A Guerra dos Tronos - Coleção"
+          }
+        ],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 7807,
+        "name": "Seen",
+        "overview": "",
+        "url": "7807",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 7997,
+        "name": "All Time Favorit",
+        "overview": "",
+        "url": "7997",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 8051,
+        "name": "ended",
+        "overview": "Shows I've completed seen and have ended",
+        "url": "8051",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 8212,
+        "name": "Favorite Shows",
+        "overview": "",
+        "url": "8212",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 8448,
+        "name": "Completed",
+        "overview": "",
+        "url": "8448",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 8586,
+        "name": "Series",
+        "overview": "",
+        "url": "8586",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 8646,
+        "name": "TVLibrary",
+        "overview": "My TV Shows",
+        "url": "8646",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 8649,
+        "name": "Best and Worst Wigs on TV",
+        "overview": "Jennifer Garner rocked a now-iconic bright red wig on “Alias” (a color Rihanna would bring back to the public eye years later); Julianna Margulies had it written into her contract for “The Good Wife” that she would be donning a wig; and Julia Roberts’ wig on “Homecoming” was arguably so terrible it almost distracted viewers from her wonderful performance.\r\nA hairpiece can truly transform an actor’s appearance — when it’s good, you might not even know it’s there, but when it’s bad, it might make it impossible to focus on anything else! Let’s take a look at some of the most famous and infamous wigs worn on television series over the past few decades.",
+        "url": "8649",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 8710,
+        "name": "Game of Thrones Main Franchise",
+        "overview": "Game of Thrones and its priquels.",
+        "url": "8710",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 8718,
+        "name": "Tv shows I've watched",
+        "overview": "Tv shows I've watched even if it is for a few episodes (with minimum 3 episodes)",
+        "url": "8718",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 52665066,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 8760,
+        "name": "TV Series",
+        "overview": "TV series I have watched and i remember well or kinda",
+        "url": "8760",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 7610,
+        "name": "مسلسلاتي",
+        "overview": "..مسلسلاتي و بس..",
+        "url": "7610",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 13310,
+        "name": "TV Series",
+        "overview": "",
+        "url": "13310",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 13428,
+        "name": "TV Shows - Completed",
+        "overview": "",
+        "url": "13428",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 13534,
+        "name": "Library",
+        "overview": "",
+        "url": "13534",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 13739,
+        "name": "TV Shows",
+        "overview": "",
+        "url": "13739",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 13600,
+        "name": "Completed",
+        "overview": "Titles I've finished watching :) ",
+        "url": "13600",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 58106017,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 13821,
+        "name": "TV Series",
+        "overview": "",
+        "url": "13821",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 13861,
+        "name": "Watched",
+        "overview": "Shows I already watched",
+        "url": "13861",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 13886,
+        "name": "top notch",
+        "overview": "",
+        "url": "13886",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 13983,
+        "name": "All TV Series Seen in Full Throughout Life",
+        "overview": "A comprehensive list of all TV series seen and experienced throughout my life from early childhood to the present day. Usually full completion including all seasons, but at least a mandatory minimum of one full season. Will include live action and Western animation/cartoons, but exclude anime, which is on a separate list.",
+        "url": "13983",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14224,
+        "name": "Watched & Finished",
+        "overview": "",
+        "url": "14224",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14232,
+        "name": "Rolling Stone's The 100 Greatest TV Shows of All Time (2022)",
+        "overview": "A ranking of the most game-changing, side-splitting, tear-jerking, mind-blowing, world-building, genre-busting programs in television history, from the medium’s inception in the early 20th century through the ever-metastasizing era of Peak TV\r\nBY ALAN SEPINWALL",
+        "url": "14232",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14237,
+        "name": "IGN's Top 100 TV Shows of All Time (2017)",
+        "overview": null,
+        "url": "14237",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": null,
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14245,
+        "name": "Empire's The 100 Best TV Shows Of All Time (2021)",
+        "overview": "From iconic British sitcoms to epic American sagas, inventive animations and daring anthologies, these are the shows worth getting lost in, that have proved instrumental in evolving a storytelling form that continues to offer deeper and more complex narratives",
+        "url": "14245",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14268,
+        "name": "WGA's 101 Best Written TV Series Of All Time (2013)",
+        "overview": "The “TV 101” list honors classic, trailblazing series and miniseries, as well as current and critically acclaimed programs, from comedies and dramas to variety/talk and children’s programming. At their core, all of these wonderful series began with the words of the writers who created them and were sustained by the writers who joined their staffs or worked on individual episodes. “This list is not only a tribute to great TV, it is a dedication to all writers who devote their hearts and minds to advancing their craft.",
+        "url": "14268",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [
+          {
+            "language": "eng",
+            "name": "Writers Guild of America's 101 Best Written TV Series Of All Time"
+          }
+        ],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14280,
+        "name": "Rolling Stone's 100 Greatest TV Shows of All Time (2016)",
+        "overview": "From time-capsule sitcoms to cutting-edge Peak-TV dramas — the definitive ranking of the game-changing small-screen classics",
+        "url": "14280",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14287,
+        "name": "EW's The 100 All-Time Greatest TV Shows (2013)",
+        "overview": "From a pioneering variety show from the black-and-white days to two faves on now -- see our No. 1. To see EW's picks of the top 100 all-time greatest TV shows",
+        "url": "14287",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [
+          {
+            "language": "eng",
+            "name": "Entertainment Weekly's The 100 All-Time Greatest TV Shows"
+          }
+        ],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14372,
+        "name": "Insider's 50 TV Shows Everyone Should Watch in Their Lifetime (2019)",
+        "overview": "The best shows are the ones that take advantage of the length that movies don't have and use the imagery that novels can't conjure. They can captivate big audiences and change their lives forever.",
+        "url": "14372",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 32399893,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14376,
+        "name": "Hollywood’s 100 Favorite TV Shows (2015)",
+        "overview": "What's the best TV show of all time? Who knows? This poll is strictly about favorite shows, the programs people in Hollywood hold nearest to their hearts — that remind them of better times or speak to their inner child or inspire their creativity or just help them unwind after a crappy day at the studio — even if one or two of the programs listed here aren't exactly masterpieces of the medium.",
+        "url": "14376",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [
+          {
+            "language": "eng",
+            "name": "THR's 100 Favorite TV Shows"
+          },
+          {
+            "language": "eng",
+            "name": "The Hollywood Reporter's 100 Favorite TV Shows"
+          }
+        ],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14481,
+        "name": "Brother/Sister Incest",
+        "overview": "",
+        "url": "14481",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14712,
+        "name": " ✓Fɪɴɪꜱʜᴇᴅ",
+        "overview": "Shows that I have watched all episodes & seasons. ",
+        "url": "14712",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14752,
+        "name": "Series",
+        "overview": "",
+        "url": "14752",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14757,
+        "name": "Watched TV",
+        "overview": "",
+        "url": "14757",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14803,
+        "name": "Tim Wisniewski's Top Series",
+        "overview": "I quite enjoy good television series. Some of them so much that I recommend them to others. I'm very selective about my recommendations, so this list represents only \"hands down\" great television series.",
+        "url": "14803",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 14773,
+        "name": "Shows On Server",
+        "overview": "Shows I own and are on my home server",
+        "url": "14773",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 15343,
+        "name": "World of Ice and Fire",
+        "overview": "TV Shows in the Game of Thrones universe",
+        "url": "15343",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 15832,
+        "name": "IGN's The Top 100 Best TV Shows of All Time (2023)",
+        "overview": "IGN and some of our friends have decided the best in the world of TV.",
+        "url": "15832",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 15931,
+        "name": "Library",
+        "overview": "",
+        "url": "15931",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 78546683,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 16056,
+        "name": "Variety's The 100 Greatest TV Shows of All Time (2023)",
+        "overview": "What makes a great television show?\r\n\r\nThere may be as many types of excellence as there are excellent shows. Series can wow us with how broadly they changed society, from “Seinfeld” redefining American slang to “Mad Men” bearing all the hallmarks of an early-21st-century TV Golden Age to “The Oprah Winfrey Show” making daytime viewers feel part of a special club of millions. Or they can feel like closely held secrets, always ready to welcome curious viewers for the first time, like “The Leftovers” or “Enlightened.” They can bring together insights about a rapidly shifting society with humor that stands the test of time, like the shows created by Norman Lear, who died this month at age 101. And they can dazzle us with spectacle or entrance us with intimate character moments — or, if they’re “The Sopranos,” they can do both.",
+        "url": "16056",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 16254,
+        "name": "Vista",
+        "overview": "",
+        "url": "16254",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 15968,
+        "name": "Terminé",
+        "overview": "",
+        "url": "15968",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 16565,
+        "name": "Fantasy TV Shows",
+        "overview": "",
+        "url": "16565",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 16685,
+        "name": "SERIES DE TV",
+        "overview": "SERIES DE TV NO MUNDO.",
+        "url": "16685",
+        "isOfficial": false,
+        "nameTranslations": [
+          "pt"
+        ],
+        "overviewTranslations": [
+          "pt"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 16704,
+        "name": "Chci vidět",
+        "overview": "",
+        "url": "16704",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 16795,
+        "name": "NICKY_NICOMEDES",
+        "overview": "Series de TV en DVD y Blu-ray ",
+        "url": "16795",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 79660585,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 16959,
+        "name": "MultiVersus",
+        "overview": "Universes represented in MultiVersus. ",
+        "url": "16959",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 15286530,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 17026,
+        "name": "Top TV shows",
+        "overview": "",
+        "url": "17026",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 17251,
+        "name": "SERIES VISTES",
+        "overview": "",
+        "url": "17251",
+        "isOfficial": false,
+        "nameTranslations": [
+          "cat"
+        ],
+        "overviewTranslations": [
+          "cat"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 8516,
+        "name": "SERIE TV",
+        "overview": "Elenco delle SERIE TV e MINISERIE VISTE (Episodi e Stagioni)",
+        "url": "8516",
+        "isOfficial": false,
+        "nameTranslations": [
+          "ita"
+        ],
+        "overviewTranslations": [
+          "ita"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      },
+      {
+        "id": 17491,
+        "name": "Series",
+        "overview": "",
+        "url": "17491",
+        "isOfficial": false,
+        "nameTranslations": [
+          "eng"
+        ],
+        "overviewTranslations": [
+          "eng"
+        ],
+        "aliases": [],
+        "score": 0,
+        "image": "",
+        "imageIsFallback": false,
+        "remoteIds": null,
+        "tags": null
+      }
+    ],
+    "remoteIds": [
+      {
+        "id": "10.5240/C1B5-3BA1-8991-A571-8472-W",
+        "type": 13,
+        "sourceName": "EIDR"
+      },
+      {
+        "id": "tt0944947",
+        "type": 2,
+        "sourceName": "IMDB"
+      },
+      {
+        "id": "1399",
+        "type": 12,
+        "sourceName": "TheMovieDB.com"
+      },
+      {
+        "id": "82",
+        "type": 19,
+        "sourceName": "TV Maze"
+      }
+    ],
+    "characters": [
+      {
+        "id": 63975938,
+        "name": "Catelyn Stark",
+        "peopleId": 247831,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/120821.jpg",
+        "sort": 4,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247831-michelle-fairley",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Michelle Fairley",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247831/photo/62742718e0819.jpg"
+      },
+      {
+        "id": 63975957,
+        "name": "Gendry",
+        "peopleId": 247836,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/299630.jpg",
+        "sort": 32,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247836-joe-dempsie",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Joe Dempsie",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247836/photo/6080b05a1c408.jpg"
+      },
+      {
+        "id": 63975976,
+        "name": "Talisa Maegyr",
+        "peopleId": 247840,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/299787.jpg",
+        "sort": 30,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247840-oona-chaplin",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Oona Chaplin",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247840/photo/65edd47269e12.jpg"
+      },
+      {
+        "id": 63975991,
+        "name": "Gilly",
+        "peopleId": 247845,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/309869.jpg",
+        "sort": 36,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247845-hannah-murray",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Hannah Murray",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247845/photo/60629cec9ae5f.jpg"
+      },
+      {
+        "id": 63976004,
+        "name": "Roose Bolton",
+        "peopleId": 247847,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/328232.jpg",
+        "sort": 42,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247847-michael-mcelhatton",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Michael McElhatton",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247847/photo/66d456189d0fc.jpg"
+      },
+      {
+        "id": 63976011,
+        "name": "Tommen Baratheon",
+        "peopleId": 247849,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/332464.jpg",
+        "sort": 39,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247849-dean-charles-chapman",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Dean-Charles Chapman",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247849/primary.jpg"
+      },
+      {
+        "id": 63976026,
+        "name": "Melisandre",
+        "peopleId": 247851,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346217.jpg",
+        "sort": 23,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247851-carice-van-houten",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Carice van Houten",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247851/photo/65f87c860e86c.jpg"
+      },
+      {
+        "id": 63976031,
+        "name": "Ygritte",
+        "peopleId": 247852,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346218.jpg",
+        "sort": 31,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247852-rose-leslie",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Rose Leslie",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247852/primary.jpg"
+      },
+      {
+        "id": 63976035,
+        "name": "Joffrey Baratheon",
+        "peopleId": 247853,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346220.jpg",
+        "sort": 15,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247853-jack-gleeson",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Jack Gleeson",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247853/photo/67ff24c1d2e96.jpg"
+      },
+      {
+        "id": 63976039,
+        "name": "Jaime Lannister",
+        "peopleId": 247854,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346224.jpg",
+        "sort": 3,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247854-nikolaj-coster-waldau",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Nikolaj Coster-Waldau",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247854/5ead83fc6e584.jpg"
+      },
+      {
+        "id": 63976043,
+        "name": "Robb Stark",
+        "peopleId": 247855,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346225.jpg",
+        "sort": 12,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247855-richard-madden",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Richard Madden",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247855/photo/64ca88947e024.jpg"
+      },
+      {
+        "id": 63976047,
+        "name": "Khal Drogo",
+        "peopleId": 247856,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346226.jpg",
+        "sort": 19,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247856-jason-momoa",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Jason Momoa",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247856/6343625d24343.jpg"
+      },
+      {
+        "id": 63976052,
+        "name": "Theon Greyjoy",
+        "peopleId": 247857,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346227.jpg",
+        "sort": 13,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247857-alfie-allen",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Alfie Allen",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247857/60143f0d51a50.jpg"
+      },
+      {
+        "id": 63976056,
+        "name": "Ned Stark",
+        "peopleId": 247858,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346228.jpg",
+        "sort": 1,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247858-sean-bean",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Sean Bean",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247858/primary.jpg"
+      },
+      {
+        "id": 63976058,
+        "name": "Viserys Targaryen",
+        "peopleId": 247859,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346229.jpg",
+        "sort": 8,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247859-harry-lloyd",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Harry Lloyd",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247859/photo/68fe24994af1f.jpg"
+      },
+      {
+        "id": 63976069,
+        "name": "Bronn",
+        "peopleId": 247862,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346232.jpg",
+        "sort": 25,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247862-jerome-flynn",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Jerome Flynn",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247862/photo/63219c7220abc.jpg"
+      },
+      {
+        "id": 63976079,
+        "name": "Shae",
+        "peopleId": 247864,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346234.jpg",
+        "sort": 27,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247864-sibel-kekilli",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Sibel Kekilli",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247864/photo/64cbf444c6d9a.jpg"
+      },
+      {
+        "id": 63976083,
+        "name": "Jeor Mormont",
+        "peopleId": 247865,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346235.jpg",
+        "sort": 24,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247865-james-cosmo",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "James Cosmo",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247865/photo/60b23c3814880.jpg"
+      },
+      {
+        "id": 63976093,
+        "name": "Sandor Clegane",
+        "peopleId": 247868,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346238.jpg",
+        "sort": 16,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247868-rory-mccann",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Rory McCann",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247868/photo/666dbf548d7b9.jpg"
+      },
+      {
+        "id": 63976096,
+        "name": "Stannis Baratheon",
+        "peopleId": 247869,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346239.jpg",
+        "sort": 22,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247869-stephen-dillane",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Stephen Dillane",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247869/photo/66d643ac1b153.jpg"
+      },
+      {
+        "id": 63976101,
+        "name": "Tywin Lannister",
+        "peopleId": 247871,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346241.jpg",
+        "sort": 29,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247871-charles-dance",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Charles Dance",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247871/primary.jpg"
+      },
+      {
+        "id": 63976104,
+        "name": "Jorah Mormont",
+        "peopleId": 247872,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346242.jpg",
+        "sort": 7,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247872-iain-glen",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Iain Glen",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247872/photo/6053afa5ab7d4.jpg"
+      },
+      {
+        "id": 63976107,
+        "name": "Petyr Baelish",
+        "peopleId": 247873,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346243.jpg",
+        "sort": 18,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247873-aidan-gillen",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Aidan Gillen",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247873/primary.jpg"
+      },
+      {
+        "id": 63976110,
+        "name": "Brienne of Tarth",
+        "peopleId": 247874,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346304.jpg",
+        "sort": 34,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247874-gwendoline-christie",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Gwendoline Christie",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247874/62fbcb33d48ab.jpg"
+      },
+      {
+        "id": 63976116,
+        "name": "Daario Naharis",
+        "peopleId": 247876,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346306.jpg",
+        "sort": 37,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247876-michiel-huisman",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Michiel Huisman",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247876/25872573.jpg"
+      },
+      {
+        "id": 63976119,
+        "name": "Ellaria Sand",
+        "peopleId": 247877,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346307.jpg",
+        "sort": 40,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247877-indira-varma",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Indira Varma",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247877/photo/66b24f3feb91a.jpg"
+      },
+      {
+        "id": 63976122,
+        "name": "Robert Baratheon",
+        "peopleId": 247878,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346308.jpg",
+        "sort": 2,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247878-mark-addy",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Mark Addy",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247878/photo/667e14d54869d.jpg"
+      },
+      {
+        "id": 63976129,
+        "name": "Grey Worm",
+        "peopleId": 247880,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346311.jpg",
+        "sort": 44,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247880-jacob-anderson",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Jacob Anderson",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247880/photo/60a31995f3bce.jpg"
+      },
+      {
+        "id": 63976133,
+        "name": "Ramsay Bolton",
+        "peopleId": 247881,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346312.jpg",
+        "sort": 35,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247881-iwan-rheon",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Iwan Rheon",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247881/photo/609c685b98411.jpg"
+      },
+      {
+        "id": 63976139,
+        "name": "Jaqen H'ghar",
+        "peopleId": 247882,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346313.jpg",
+        "sort": 41,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247882-tom-wlaschiha",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Tom Wlaschiha",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247882/photo/617335f44690b.jpg"
+      },
+      {
+        "id": 63976144,
+        "name": "Davos Seaworth",
+        "peopleId": 247883,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346314.jpg",
+        "sort": 20,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247883-liam-cunningham",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Liam Cunningham",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247883/5e81ea1b53897.jpg"
+      },
+      {
+        "id": 63976148,
+        "name": "Missandei",
+        "peopleId": 247884,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/346315.jpg",
+        "sort": 38,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247884-nathalie-emmanuel",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Nathalie Emmanuel",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247884/photo/64f8a9d3c55ec.jpg"
+      },
+      {
+        "id": 63976158,
+        "name": "High Sparrow",
+        "peopleId": 247886,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/348354.jpg",
+        "sort": 43,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247886-jonathan-pryce",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Jonathan Pryce",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247886/primary.jpg"
+      },
+      {
+        "id": 63976184,
+        "name": "Tormund Giantsbane",
+        "peopleId": 247891,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/358912.jpg",
+        "sort": 33,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247891-kristofer-hivju",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Kristofer Hivju",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247891/5fe262620856f.jpg"
+      },
+      {
+        "id": 63976209,
+        "name": "Samwell Tarly",
+        "peopleId": 247899,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/438518.jpg",
+        "sort": 21,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247899-john-bradley",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "John Bradley",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247899/photo/687cd4cd0b58b.jpg"
+      },
+      {
+        "id": 63976211,
+        "name": "Varys",
+        "peopleId": 247900,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/440587.jpg",
+        "sort": 26,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247900-conleth-hill",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Conleth Hill",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247900/primary.jpg"
+      },
+      {
+        "id": 63976213,
+        "name": "Sansa Stark",
+        "peopleId": 247901,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/440588.jpg",
+        "sort": 10,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247901-sophie-turner",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Sophie Turner",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247901/primary.jpg"
+      },
+      {
+        "id": 63976215,
+        "name": "Arya Stark",
+        "peopleId": 247902,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/440589.jpg",
+        "sort": 11,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247902-maisie-williams",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Maisie Williams",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247902/photo/6077c42ef20a1.jpg"
+      },
+      {
+        "id": 63976217,
+        "name": "Bran Stark",
+        "peopleId": 247903,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/440593.jpg",
+        "sort": 14,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247903-isaac-hempstead-wright",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Isaac Hempstead Wright",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247903/photo/682cba797d279.jpg"
+      },
+      {
+        "id": 63976219,
+        "name": "Cersei Lannister",
+        "peopleId": 247904,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/440974.jpg",
+        "sort": 5,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247904-lena-kathren-headey",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Lena Headey",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247904/645bd91a86a0c.jpg"
+      },
+      {
+        "id": 63976221,
+        "name": "Margaery Tyrell",
+        "peopleId": 247905,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/440975.jpg",
+        "sort": 28,
+        "isFeatured": false,
+        "url": "https://thetvdb.com/people/247905-natalie-dormer",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Natalie Dormer",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247905/62a943c6d9efd.jpg"
+      },
+      {
+        "id": 63976223,
+        "name": "Daenerys Targaryen",
+        "peopleId": 247906,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/440976.jpg",
+        "sort": 6,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247906-emilia-clarke",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Emilia Clarke",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247906/6429e219916ec.jpg"
+      },
+      {
+        "id": 63976226,
+        "name": "Tyrion Lannister",
+        "peopleId": 247907,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/440978.jpg",
+        "sort": 17,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247907-peter-dinklage",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Peter Dinklage",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/v4/actor/247907/photo/64f8a89538126.jpg"
+      },
+      {
+        "id": 63976230,
+        "name": "Jon Snow",
+        "peopleId": 247909,
+        "seriesId": 121361,
+        "series": null,
+        "movie": null,
+        "movieId": null,
+        "episodeId": null,
+        "type": 3,
+        "image": "https://artworks.thetvdb.com/banners/actors/481088.jpg",
+        "sort": 9,
+        "isFeatured": true,
+        "url": "https://thetvdb.com/people/247909-kit-harington",
+        "nameTranslations": null,
+        "overviewTranslations": null,
+        "aliases": null,
+        "peopleType": "Actor",
+        "personName": "Kit Harington",
+        "tagOptions": null,
+        "personImgURL": "https://artworks.thetvdb.com/banners/person/247909/primary.jpg"
+      }
+    ],
+    "airsDays": {
+      "sunday": true,
+      "monday": false,
+      "tuesday": false,
+      "wednesday": false,
+      "thursday": false,
+      "friday": false,
+      "saturday": false
+    },
+    "airsTime": "21:00",
+    "seasons": [
+      {
+        "id": 137481,
+        "seriesId": 121361,
+        "type": {
+          "id": 1,
+          "name": "Aired Order",
+          "type": "official",
+          "alternateName": null
+        },
+        "number": 0,
+        "nameTranslations": [],
+        "overviewTranslations": [],
+        "image": "https://artworks.thetvdb.com/banners/series/121361/seasons/137481/posters/62035582.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-04-28 06:33:44"
+      },
+      {
+        "id": 364731,
+        "seriesId": 121361,
+        "type": {
+          "id": 1,
+          "name": "Aired Order",
+          "type": "official",
+          "alternateName": null
+        },
+        "name": "Winter is Coming",
+        "number": 1,
+        "nameTranslations": [
+          "spa,fra,eng"
+        ],
+        "overviewTranslations": [
+          "por,spa,fra,hun,ell,slk,ara,eng,deu,ita,swe,rus,tur,pt"
+        ],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-1-6.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-07-23 02:42:28"
+      },
+      {
+        "id": 473271,
+        "seriesId": 121361,
+        "type": {
+          "id": 1,
+          "name": "Aired Order",
+          "type": "official",
+          "alternateName": null
+        },
+        "name": "Hear me Roar!",
+        "number": 2,
+        "nameTranslations": [
+          "fra,eng,spa"
+        ],
+        "overviewTranslations": [
+          "fra,hun,ell,slk,eng,ara,deu,ita,swe,spa,rus,pt"
+        ],
+        "image": "https://artworks.thetvdb.com/banners/v4/season/473271/posters/637fa4ddb1b98.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-07-23 02:43:50"
+      },
+      {
+        "id": 488434,
+        "seriesId": 121361,
+        "type": {
+          "id": 1,
+          "name": "Aired Order",
+          "type": "official",
+          "alternateName": null
+        },
+        "name": "Fire and Blood",
+        "number": 3,
+        "nameTranslations": [
+          "fra,eng,spa"
+        ],
+        "overviewTranslations": [
+          "hun,ell,slk,fra,ara,eng,deu,ita,swe,rus,spa,pt"
+        ],
+        "image": "https://artworks.thetvdb.com/banners/v4/season/488434/posters/637fa504435b1.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-07-23 02:45:32"
+      },
+      {
+        "id": 568657,
+        "seriesId": 121361,
+        "type": {
+          "id": 1,
+          "name": "Aired Order",
+          "type": "official",
+          "alternateName": null
+        },
+        "name": "Ours is the Fury",
+        "number": 4,
+        "nameTranslations": [
+          "fra,eng,spa,tur"
+        ],
+        "overviewTranslations": [
+          "zho,hun,ell,slk,fra,eng,ara,deu,ita,swe,rus,spa,tur,pt"
+        ],
+        "image": "https://artworks.thetvdb.com/banners/v4/season/568657/posters/637fa522dbf05.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-07-23 02:46:19"
+      },
+      {
+        "id": 607490,
+        "seriesId": 121361,
+        "type": {
+          "id": 1,
+          "name": "Aired Order",
+          "type": "official",
+          "alternateName": null
+        },
+        "name": "Above the Rest",
+        "number": 5,
+        "nameTranslations": [
+          "fra,eng,spa"
+        ],
+        "overviewTranslations": [
+          "zho,hun,ell,slk,fra,ara,eng,ita,swe,rus,spa,deu,pt"
+        ],
+        "image": "https://artworks.thetvdb.com/banners/seasons/5cc75288f1efc.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-07-23 02:47:05"
+      },
+      {
+        "id": 651357,
+        "seriesId": 121361,
+        "type": {
+          "id": 1,
+          "name": "Aired Order",
+          "type": "official",
+          "alternateName": null
+        },
+        "name": "We do not Sow",
+        "number": 6,
+        "nameTranslations": [
+          "fra,eng,spa"
+        ],
+        "overviewTranslations": [
+          "zho,hun,ell,slk,fra,eng,ara,deu,ita,swe,rus,spa,pt"
+        ],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-6.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-07-23 02:47:32"
+      },
+      {
+        "id": 703353,
+        "seriesId": 121361,
+        "type": {
+          "id": 1,
+          "name": "Aired Order",
+          "type": "official",
+          "alternateName": null
+        },
+        "name": "Winter is Here",
+        "number": 7,
+        "nameTranslations": [
+          "fra,eng,spa"
+        ],
+        "overviewTranslations": [
+          "zho,hun,ell,slk,fra,ara,eng,deu,ita,swe,rus,spa,pt"
+        ],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-7-5.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-07-23 02:48:04"
+      },
+      {
+        "id": 793782,
+        "seriesId": 121361,
+        "type": {
+          "id": 1,
+          "name": "Aired Order",
+          "type": "official",
+          "alternateName": null
+        },
+        "name": "Ice and Fire",
+        "number": 8,
+        "nameTranslations": [
+          "fra,eng,spa"
+        ],
+        "overviewTranslations": [
+          "zho,fra,hun,ell,slk,ara,ita,eng,swe,rus,deu,spa,pt"
+        ],
+        "image": "https://artworks.thetvdb.com/banners/seasons/5cb693e7d5443.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-07-23 02:48:29"
+      },
+      {
+        "id": 1713607,
+        "seriesId": 121361,
+        "type": {
+          "id": 2,
+          "name": "DVD Order",
+          "type": "dvd",
+          "alternateName": null
+        },
+        "number": 1,
+        "nameTranslations": [],
+        "overviewTranslations": [],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-1-14.jpg",
+        "imageType": 6,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-01-23 18:36:41"
+      },
+      {
+        "id": 1713608,
+        "seriesId": 121361,
+        "type": {
+          "id": 2,
+          "name": "DVD Order",
+          "type": "dvd",
+          "alternateName": null
+        },
+        "number": 3,
+        "nameTranslations": [],
+        "overviewTranslations": [],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-3-2.jpg",
+        "imageType": 6,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-01-23 18:55:19"
+      },
+      {
+        "id": 1713609,
+        "seriesId": 121361,
+        "type": {
+          "id": 2,
+          "name": "DVD Order",
+          "type": "dvd",
+          "alternateName": null
+        },
+        "number": 5,
+        "nameTranslations": [],
+        "overviewTranslations": [],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-5.jpg",
+        "imageType": 6,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2024-01-04 21:40:36"
+      },
+      {
+        "id": 1713610,
+        "seriesId": 121361,
+        "type": {
+          "id": 2,
+          "name": "DVD Order",
+          "type": "dvd",
+          "alternateName": null
+        },
+        "number": 6,
+        "nameTranslations": [],
+        "overviewTranslations": [],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-6-9.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2024-01-04 21:53:35"
+      },
+      {
+        "id": 1713611,
+        "seriesId": 121361,
+        "type": {
+          "id": 2,
+          "name": "DVD Order",
+          "type": "dvd",
+          "alternateName": null
+        },
+        "number": 7,
+        "nameTranslations": [],
+        "overviewTranslations": [],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-7-11.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2024-01-04 22:00:49"
+      },
+      {
+        "id": 1713612,
+        "seriesId": 121361,
+        "type": {
+          "id": 2,
+          "name": "DVD Order",
+          "type": "dvd",
+          "alternateName": null
+        },
+        "number": 0,
+        "nameTranslations": [],
+        "overviewTranslations": [],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-0.jpg",
+        "imageType": 6,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2019-11-13 11:02:09"
+      },
+      {
+        "id": 1713613,
+        "seriesId": 121361,
+        "type": {
+          "id": 2,
+          "name": "DVD Order",
+          "type": "dvd",
+          "alternateName": null
+        },
+        "number": 2,
+        "nameTranslations": [],
+        "overviewTranslations": [],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-2-19.jpg",
+        "imageType": 6,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-01-23 18:49:49"
+      },
+      {
+        "id": 1713614,
+        "seriesId": 121361,
+        "type": {
+          "id": 2,
+          "name": "DVD Order",
+          "type": "dvd",
+          "alternateName": null
+        },
+        "number": 4,
+        "nameTranslations": [],
+        "overviewTranslations": [],
+        "image": "https://artworks.thetvdb.com/banners/seasons/121361-4-8.jpg",
+        "imageType": 6,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-01-23 19:37:09"
+      },
+      {
+        "id": 1713615,
+        "seriesId": 121361,
+        "type": {
+          "id": 2,
+          "name": "DVD Order",
+          "type": "dvd",
+          "alternateName": null
+        },
+        "number": 8,
+        "nameTranslations": [],
+        "overviewTranslations": [],
+        "image": "https://artworks.thetvdb.com/banners/seasons/5cb33320d6e9c.jpg",
+        "imageType": 7,
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2024-01-04 22:06:13"
+      },
+      {
+        "id": 1713606,
+        "seriesId": 121361,
+        "type": {
+          "id": 3,
+          "name": "Absolute Order",
+          "type": "absolute",
+          "alternateName": null
+        },
+        "number": 1,
+        "nameTranslations": [
+          "nld"
+        ],
+        "overviewTranslations": [],
+        "companies": {
+          "studio": null,
+          "network": null,
+          "production": null,
+          "distributor": null,
+          "special_effects": null
+        },
+        "lastUpdated": "2026-01-23 19:37:09"
+      }
+    ],
+    "tags": [
+      {
+        "id": 250,
+        "tag": 15,
+        "tagName": "Plot Characteristics",
+        "name": "Betrayal",
+        "helpText": null
+      },
+      {
+        "id": 252,
+        "tag": 15,
+        "tagName": "Plot Characteristics",
+        "name": "Deception",
+        "helpText": null
+      },
+      {
+        "id": 264,
+        "tag": 15,
+        "tagName": "Plot Characteristics",
+        "name": "Revenge",
+        "helpText": null
+      },
+      {
+        "id": 147,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Brother/Brother",
+        "helpText": null
+      },
+      {
+        "id": 155,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Brother/Sister",
+        "helpText": null
+      },
+      {
+        "id": 148,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Family",
+        "helpText": null
+      },
+      {
+        "id": 149,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Father/Daughter",
+        "helpText": null
+      },
+      {
+        "id": 150,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Father/Son",
+        "helpText": null
+      },
+      {
+        "id": 157,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Friends",
+        "helpText": null
+      },
+      {
+        "id": 151,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Husband/Wife",
+        "helpText": null
+      },
+      {
+        "id": 153,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Mother/Daughter",
+        "helpText": null
+      },
+      {
+        "id": 152,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Mother/Son",
+        "helpText": null
+      },
+      {
+        "id": 633,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Siblings",
+        "helpText": null
+      },
+      {
+        "id": 154,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Sister/Sister",
+        "helpText": null
+      },
+      {
+        "id": 620,
+        "tag": 9,
+        "tagName": "Relationship Types",
+        "name": "Student/Teacher",
+        "helpText": null
+      },
+      {
+        "id": 550,
+        "tag": 11,
+        "tagName": "Setting",
+        "name": "Castle / Palace",
+        "helpText": null
+      },
+      {
+        "id": 4,
+        "tag": 1,
+        "tagName": "Sub-Genre",
+        "name": "Blockbuster",
+        "helpText": null
+      },
+      {
+        "id": 7,
+        "tag": 1,
+        "tagName": "Sub-Genre",
+        "name": "Coming of Age",
+        "helpText": null
+      },
+      {
+        "id": 398,
+        "tag": 13,
+        "tagName": "Supernatural Beings",
+        "name": "Dragons",
+        "helpText": null
+      },
+      {
+        "id": 228,
+        "tag": 13,
+        "tagName": "Supernatural Beings",
+        "name": "Monsters",
+        "helpText": null
+      },
+      {
+        "id": 225,
+        "tag": 13,
+        "tagName": "Supernatural Beings",
+        "name": "Witches and Warlocks",
+        "helpText": null
+      },
+      {
+        "id": 217,
+        "tag": 13,
+        "tagName": "Supernatural Beings",
+        "name": "Zombies",
+        "helpText": null
+      },
+      {
+        "id": 63,
+        "tag": 3,
+        "tagName": "TV Type or Format",
+        "name": "Story-based Drama",
+        "helpText": "Drama series where you must watch all episodes in order. Ex: Game of Thrones, The Walking Dead, Killing Eve"
+      }
+    ],
+    "contentRatings": [
+      {
+        "id": 177,
+        "name": "M16",
+        "country": "prt",
+        "description": "Suitable for viewers aged 16 and older",
+        "contentType": "",
+        "order": 0,
+        "fullname": null
+      },
+      {
+        "id": 247,
+        "name": "TV-MA",
+        "country": "usa",
+        "description": "Not suitable for children and teens under 17",
+        "contentType": "",
+        "order": 0,
+        "fullname": null
+      }
+    ],
+    "seasonTypes": [
+      {
+        "id": 1,
+        "name": "Aired Order",
+        "type": "official",
+        "alternateName": null
+      },
+      {
+        "id": 2,
+        "name": "DVD Order",
+        "type": "dvd",
+        "alternateName": null
+      },
+      {
+        "id": 3,
+        "name": "Absolute Order",
+        "type": "absolute",
+        "alternateName": null
+      }
+    ]
+  }
+}
