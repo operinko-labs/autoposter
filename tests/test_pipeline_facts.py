@@ -59,7 +59,7 @@ async def _media(session):
 async def test_facts_are_gathered_persisted_and_written(session, monkeypatch):
     media = await _media(session)
 
-    async def fake_gather(_session, _item, _tmdb, _mdblist):
+    async def fake_gather(_session, _item, _tmdb, _mdblist, **_kwargs):
         return GatheredFacts(critic_rating=4.9, sources={"critic_rating": "imdb"})
 
     monkeypatch.setattr(pipeline, "gather_facts", fake_gather)
@@ -97,7 +97,7 @@ async def test_write_to_plex_false_still_stores_facts(session, monkeypatch):
     """The safe setting while the tool being replaced still owns these fields."""
     media = await _media(session)
 
-    async def fake_gather(_session, _item, _tmdb, _mdblist):
+    async def fake_gather(_session, _item, _tmdb, _mdblist, **_kwargs):
         return GatheredFacts(critic_rating=4.9)
 
     monkeypatch.setattr(pipeline, "gather_facts", fake_gather)

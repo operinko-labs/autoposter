@@ -21,14 +21,19 @@ WRITABLE_BY_KIND: dict[str, set[str]] = {
     "movie": {
         "critic_rating", "audience_rating", "content_rating",
         "genres", "studio", "originally_available",
+        # Roadmap rows 32 and 33a. ``original_title`` is movies only: Plex
+        # carries originalTitle for movies and not for shows or episodes
+        # (plex/client.py:59-61, row 44's finding).
+        "user_rating", "original_title",
     },
     "show": {
         "critic_rating", "audience_rating", "content_rating",
         "genres", "studio", "originally_available",
+        "user_rating",
     },
-    "season": {"critic_rating", "audience_rating"},
+    "season": {"critic_rating", "audience_rating", "user_rating"},
     "episode": {"critic_rating", "audience_rating", "content_rating",
-                "originally_available"},
+                "originally_available", "user_rating"},
 }
 
 
@@ -158,6 +163,16 @@ def plan_edits(item, facts: GatheredFacts) -> dict[str, object]:
         current_str = current.strftime("%Y-%m-%d") if hasattr(current, "strftime") else current
         if current_str != formatted:
             put("originallyAvailableAt", formatted)
+
+    if "user_rating" in writable and facts.user_rating is not None:
+        # Compared on the formatted value for the same reason the critic
+        # rating is: 8.65 and 8.7 both render "8.7" to a viewer.
+        if format_critic(getattr(item, "userRating", None)) != format_critic(facts.user_rating):
+            put("userRating", _one_decimal(facts.user_rating))
+
+    if "original_title" in writable and facts.original_title:
+        if getattr(item, "originalTitle", None) != facts.original_title:
+            put("originalTitle", facts.original_title)
 
     if "genres" in writable and facts.genres:
         current_genres = _current_genres(item)

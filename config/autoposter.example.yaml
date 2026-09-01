@@ -39,6 +39,13 @@ operations:
   # The per-item opt-out label. Empty by default; add "skip_autoposter" (or a
   # label of your own) to use it.
   ignore_labels: []
+  # Roadmap row 32 -- which provider's rating is written to Plex's user rating.
+  # 'imdb' (the IMDb rating) or 'tmdb' (the TMDb audience rating). Unset writes
+  # no user rating at all.
+  # user_rating_source: tmdb
+  # Roadmap row 33 -- which provider supplies the original-language title.
+  # 'tmdb' is the only source served today. Unset writes no original title.
+  # original_title_source: tmdb
   tmdb_backoff_seconds: 60 # how long TMDb is left alone after a 429 with no Retry-After; 0 disables the shared window
 
 badges:

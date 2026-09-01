@@ -931,7 +931,9 @@ async def apply_metadata(
     if not config.operations.enabled:
         return GatheredFacts()
 
-    facts = await gather_facts(session, item, tmdb_facts, mdblist)
+    facts = await gather_facts(
+        session, item, tmdb_facts, mdblist, operations=config.operations
+    )
     await persist_facts(session, media_item_id, facts)
 
     if config.operations.write_to_plex and plex_item is not None and not facts.is_empty():

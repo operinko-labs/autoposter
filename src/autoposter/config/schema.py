@@ -670,6 +670,27 @@ class OperationsConfig(BaseModel):
             "case-insensitively, because Plex canonicalises label case."
         ),
     )
+    # Roadmap rows 32 and 33a, under the explicit-source model: a mass-op field
+    # is written only when config NAMES the provider it comes from. There is no
+    # default source and no fallback chain, so an untouched config writes
+    # neither field. A ``Literal`` rather than a plain string: a source this
+    # service cannot serve is a config load error, not a value that silently
+    # never appears.
+    user_rating_source: Literal["imdb", "tmdb"] | None = Field(
+        default=None,
+        description=(
+            "Which provider's rating is written to Plex's user rating, "
+            "library-wide: 'imdb' for the IMDb rating, 'tmdb' for the TMDb "
+            "audience rating. Unset writes no user rating at all."
+        ),
+    )
+    original_title_source: Literal["tmdb"] | None = Field(
+        default=None,
+        description=(
+            "Which provider supplies the original-language title written to "
+            "Plex, library-wide. Unset writes no original title at all."
+        ),
+    )
     # This section owns WHEN, not WHETHER, in the split ``SchedulerConfig``'s
     # docstring states: there is no ``tmdb_budget_enabled`` beside this,
     # because 0 already means that and two spellings of one setting is one
