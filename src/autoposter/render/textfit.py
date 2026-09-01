@@ -48,7 +48,12 @@ def prepare_text(text: str, style: TextStyle) -> str:
     for symbol in style.newline_on_symbols:
         # The symbol swallows any whitespace immediately after it, so a break
         # after ": " doesn't leave a stray leading space on the next line.
-        cleaned = re.sub(re.escape(symbol) + r"[ \t]*", f"{symbol}\n", cleaned)
+        # The replacement is a callable, not an f-string, so a symbol
+        # containing a backslash (e.g. "\") can never be misread as a
+        # backreference such as \1 by re.sub's template parser.
+        cleaned = re.sub(
+            re.escape(symbol) + r"[ \t]*", lambda _m, symbol=symbol: f"{symbol}\n", cleaned
+        )
     if style.newline_on_symbols:
         # A symbol at the very end of the text must not leave a trailing
         # blank line ImageMagick would measure.

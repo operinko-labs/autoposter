@@ -156,7 +156,7 @@ def test_should_skip_title_flags_tba(config):
     # Finding 4: reachable only once the resolver returns real episode titles.
     assert _should_skip_title(
         config, item(kind="episode", title="TBA", season=1, episode=1), "title_card"
-    ) is True
+    ) is not None
 
 
 def test_should_skip_title_leaves_a_normal_episode_title_alone(config):
@@ -164,7 +164,7 @@ def test_should_skip_title_leaves_a_normal_episode_title_alone(config):
         config,
         item(kind="episode", title="Who Is Alive?", season=2, episode=3),
         "title_card",
-    ) is False
+    ) is None
 
 
 async def test_tba_title_card_is_skipped_without_writing_a_file(session, tmp_path):

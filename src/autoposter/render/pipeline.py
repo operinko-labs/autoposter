@@ -110,6 +110,19 @@ def draw_text_for_local_source(config: Config, art_kind: str) -> bool:
     return not art_config_for(config, art_kind).skip_local_text_add
 
 
+def online_fetch_disabled(config: Config, art_kind: str) -> bool:
+    """Whether this artifact may make provider requests (roadmap row 47).
+
+    The per-kind value wins in BOTH directions when it is set -- a ``False``
+    beneath a global ``True`` re-enables just that kind, which is the whole
+    reason the per-kind field is ``bool | None`` rather than ``bool``.
+    """
+    per_kind = art_config_for(config, art_kind).disable_online_asset_fetch
+    if per_kind is not None:
+        return per_kind
+    return config.artwork.disable_online_asset_fetch
+
+
 def language_order_for(config: Config, library: str, art_kind: str) -> list[str]:
     """This artifact's language ladder in this library (roadmap row 38).
 
@@ -170,14 +183,50 @@ def manual_override_target(config: Config, item: ResolvedItem, art_kind: str) ->
     )
 
 
+# Roadmap row 48. Posterizarr's own key names, kept verbatim so an operator
+# migrating a manual-assets tree does not have to rename anything. Fixed
+# ``.jpg``, like every other file `naming._file_name` produces.
+_TEMPLATE_NAME = {"season_poster": "SeasonTemplate.jpg", "title_card": "EpisodeTemplate.jpg"}
+
+
+def template_override_path(config: Config, item: ResolvedItem, art_kind: str) -> Path | None:
+    """A show-scoped manual asset that stands in for every season/episode.
+
+    Filed beside the show's own overrides -- same directory under
+    ``library_folders``, same ``<root_folder>`` prefix in the flat layout --
+    which is exactly where ``logo_override_path`` files its own non-render
+    asset, so everything one show can be overridden with sits together.
+
+    Only ``season_poster`` and ``title_card`` have a template: a poster and a
+    background are already one file per item, so a template for them would be
+    that same file under a second name.
+    """
+    name = _TEMPLATE_NAME.get(art_kind)
+    if name is None or not config.artwork.season_episode_templates:
+        return None
+    manual = config.model_copy(update={"assets_root": config.manual_assets_root})
+    poster = naming.asset_path(manual, item.library, item.root_folder, "poster")
+    path = (
+        poster.with_name(name) if config.library_folders
+        else poster.with_name(f"{item.root_folder}_{name}")
+    )
+    return path if path.exists() else None
+
+
 def manual_override_path(config: Config, item: ResolvedItem, art_kind: str) -> Path | None:
     """A hand-placed asset wins over anything fetched from a provider.
+
+    The item's own file first; a show-scoped template second (roadmap row 48),
+    so a season or episode that has been given its own image keeps it and only
+    the ones that have not fall back to the show's template.
 
     Synchronous by design (see the offloaded call site in ``render_artifact``):
     plain tests call this directly without an event loop to hop off of.
     """
     relative = manual_override_target(config, item, art_kind)
-    return relative if relative.exists() else None
+    if relative.exists():
+        return relative
+    return template_override_path(config, item, art_kind)
 
 
 # A picked logo keeps whatever container it arrived in -- a logo is composited
@@ -244,24 +293,27 @@ def has_cjk(text: str) -> bool:
     )
 
 
-def _should_skip_title(config: Config, item: ResolvedItem, art_kind: str) -> bool:
-    """Whether this title card must not be built at all.
+def _should_skip_title(config: Config, item: ResolvedItem, art_kind: str) -> str | None:
+    """The reason this title card must not be built at all, or ``None`` to build it.
 
     Two independent rules, deliberately not chained: ``skip_tba`` owns the
     literal ``skip_words`` list (row 13), and ``skip_cjk_titles`` owns the
     script test (row 40). Tying the second to the first would make one setting
     silently disable the other, which is exactly the kind of coupling an
     operator discovers by finding a title card they thought they had switched
-    off.
+    off. Returning which rule fired -- rather than a bare bool -- keeps
+    ``render.detail`` naming the actual rule instead of guessing at it.
     """
     if art_kind != "title_card":
-        return False
+        return None
     settings = art_config_for(config, art_kind)
     if config.skip_tba:
         skip_words = {word.lower() for word in settings.skip_words}
         if item.title.strip().lower() in skip_words:
-            return True
-    return settings.skip_cjk_titles and has_cjk(item.title)
+            return f"title {item.title!r} matches a skip word"
+    if settings.skip_cjk_titles and has_cjk(item.title):
+        return f"title {item.title!r} is written in Japanese or Chinese script"
+    return None
 
 
 async def gather_fingerprint_inputs(
@@ -546,9 +598,10 @@ async def render_artifact(
         await session.commit()
         return render
 
-    if _should_skip_title(config, item, art_kind):
+    skip_title_reason = _should_skip_title(config, item, art_kind)
+    if skip_title_reason is not None:
         render.status = "skipped"
-        render.detail = f"title {item.title!r} matches a skip word"
+        render.detail = skip_title_reason
         await session.commit()
         return render
 
@@ -604,6 +657,17 @@ async def render_artifact(
             source_url, provider_name, textless = str(override), "manual", None
             local_source = True
         else:
+            if online_fetch_disabled(config, art_kind):
+                # Row 47: no local asset and no provider allowed. Skipped with
+                # the setting named, rather than reported as "no art on any
+                # provider" -- no provider was asked.
+                render.status = "skipped"
+                render.detail = (
+                    f"no local asset for {art_kind} and online asset fetch is "
+                    "disabled by artwork.disable_online_asset_fetch"
+                )
+                await session.commit()
+                return render
             selection = await select_artwork(
                 providers,
                 language_order_for(config, item.library, art_kind),
@@ -660,7 +724,12 @@ async def render_artifact(
         logo_path: Path | None = None
         logo_sha = ""
         suppress_text = False
-        if art_kind == "poster" and config.artwork.use_logo and settings.text is not None:
+        if (
+            art_kind == "poster"
+            and config.artwork.use_logo
+            and settings.text is not None
+            and not online_fetch_disabled(config, art_kind)
+        ):
             # An operator's picked logo comes first, and stops the ladder from
             # running at all: a selection made here would be staged over the
             # choice, and the request it costs is one the choice made pointless.

@@ -66,24 +66,26 @@ def test_non_cjk_titles_are_not_detected(title):
 
 def test_a_cjk_title_is_not_skipped_when_the_key_is_unset():
     config = load_config(EXAMPLE)
-    assert pipeline._should_skip_title(config, episode("彼女"), "title_card") is False
+    assert pipeline._should_skip_title(config, episode("彼女"), "title_card") is None
 
 
 def test_a_cjk_title_is_skipped_when_the_key_is_on():
     config = _title_card(load_config(EXAMPLE), skip_cjk_titles=True)
-    assert pipeline._should_skip_title(config, episode("彼女"), "title_card") is True
+    reason = pipeline._should_skip_title(config, episode("彼女"), "title_card")
+    assert reason is not None
+    assert "Japanese or Chinese script" in reason
 
 
 def test_the_cjk_rule_is_independent_of_skip_tba():
     config = _title_card(load_config(EXAMPLE), skip_cjk_titles=True)
     config = config.model_copy(update={"skip_tba": False})
-    assert pipeline._should_skip_title(config, episode("彼女"), "title_card") is True
-    assert pipeline._should_skip_title(config, episode("TBA"), "title_card") is False
+    assert pipeline._should_skip_title(config, episode("彼女"), "title_card") is not None
+    assert pipeline._should_skip_title(config, episode("TBA"), "title_card") is None
 
 
 def test_the_cjk_rule_only_applies_to_title_cards():
     config = _title_card(load_config(EXAMPLE), skip_cjk_titles=True)
-    assert pipeline._should_skip_title(config, episode("彼女"), "poster") is False
+    assert pipeline._should_skip_title(config, episode("彼女"), "poster") is None
 
 
 # --- row 42: newline rules ---------------------------------------------------

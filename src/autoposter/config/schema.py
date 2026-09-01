@@ -327,6 +327,16 @@ class ArtKindConfig(BaseModel):
             "that already carry their own title treatment."
         ),
     )
+    # Roadmap row 47, the per-kind half. None -- not False -- so "this kind
+    # says nothing" and "this kind says no" stay distinguishable and the
+    # global switch can be overridden in both directions.
+    disable_online_asset_fetch: bool | None = Field(
+        default=None,
+        description=(
+            "Render this artifact from local assets only, making no provider "
+            "request for it at all. Unset inherits artwork.disable_online_asset_fetch."
+        ),
+    )
 
     @field_validator("language_order")
     @classmethod
@@ -438,6 +448,24 @@ class ArtworkConfig(BaseModel):
             "'title_card'). An art kind not named keeps its own language_order, "
             "so a library can change its posters while its title cards keep "
             "leading with 'xx'."
+        ),
+    )
+    # Roadmap row 47, the global half.
+    disable_online_asset_fetch: bool = Field(
+        default=False,
+        description=(
+            "Render every artifact from local assets only, making no provider "
+            "request at all. An artifact with no local asset is skipped rather "
+            "than fetched. Individual art kinds can override this either way."
+        ),
+    )
+    # Roadmap row 48.
+    season_episode_templates: bool = Field(
+        default=False,
+        description=(
+            "Apply a show's SeasonTemplate and EpisodeTemplate manual assets to "
+            "every season poster and title card beneath it that has no manual "
+            "asset of its own. A season's or episode's own file always wins."
         ),
     )
 
