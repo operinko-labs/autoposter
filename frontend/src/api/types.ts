@@ -680,6 +680,31 @@ export interface ConfigPreviewResponse extends ConfigSaveResponse {
   impact: ConfigImpact | null;
 }
 
+/** One row of GET /api/config/snapshots -- metadata only. The documents are
+ * not in the listing on purpose: the list needs to label its rows, and one of
+ * those documents holds the notification URL. */
+export interface ConfigSnapshot {
+  id: number;
+  created_at: string;
+  path_count: number;
+  reason: string;
+}
+
+/** GET /api/config/snapshots/{id}. `document` is redacted exactly as
+ * `GET /api/config` redacts the live one. */
+export interface ConfigSnapshotDetail extends ConfigSnapshot {
+  document: OverridesDocument;
+}
+
+/** GET /api/config/overrides/export. `document` is UNREDACTED -- a redacted
+ * backup would write the bare notification host back over the real URL on the
+ * next import. The download copy tells the operator so. */
+export interface ConfigExport {
+  autoposter_overrides: number;
+  exported_at: string;
+  document: OverridesDocument;
+}
+
 /** POST /api/config/apply: the PUT's own response plus what it enqueued.
  * `skipped` counts items whose identical job was already pending -- the same
  * dedupe arbiter the full-pass button reports through, not a failure. */

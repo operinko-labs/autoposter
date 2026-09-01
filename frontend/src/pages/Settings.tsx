@@ -25,6 +25,7 @@ import type {
   OverridesDocument,
 } from "../api/types";
 import { ProviderAttribution } from "../ProviderAttribution";
+import { ConfigSafetyPanel } from "./ConfigSafetyPanel";
 import "./settings.css";
 
 /** The attribution block and its required wording live with the component now
@@ -775,6 +776,15 @@ export function Settings() {
           </>
         )}
       </section>
+
+      {config !== null && (
+        <ConfigSafetyPanel
+          revision={storedRevision}
+          onChanged={async () => {
+            adopt(await apiFetch<ConfigResponse>("/api/config"));
+          }}
+        />
+      )}
 
       {dirty && (
         <section className="panel config-pending">

@@ -199,6 +199,41 @@
   color: var(--warn);
 }
 
+.config-safety-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+
+.config-safety-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.config-safety-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-safety-warning {
+  color: var(--warn);
+}
+
+.config-safety-import {
+  display: block;
+  margin-top: 12px;
+}
+
+.config-safety-download {
+  display: inline-block;
+  margin-left: 12px;
+}
+
 /* A 220px label beside its value leaves under half a phone screen for the
  * widget, so both halves crush. Below this the row stacks: label over value,
  * each with the full width of the panel. */

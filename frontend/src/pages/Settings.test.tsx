@@ -198,6 +198,17 @@ describe("Settings configuration", () => {
     // licence condition, not a view of server data.
     expect(screen.getByAltText("TMDB")).toBeInTheDocument();
   });
+
+  it("offers backup and previous versions on the settings page, not a new route", async () => {
+    // The panel does its own fetching; `stubConfig` answers every request with
+    // the config body, which the panel reads as an empty snapshot list.
+    stubConfig();
+    await renderSettings();
+
+    expect(
+      screen.getByRole("heading", { name: "Backup and previous versions" }),
+    ).toBeInTheDocument();
+  });
 });
 
 /** The editor's own fixture: it carries the two provenance keys the enriched
