@@ -62,6 +62,12 @@ operations:
   # lock_apply: false
   # unlock_apply: false
   # remove_apply: false
+  # Roadmap row 85 -- IMDb's own parental-guide categories, written as Plex
+  # labels (e.g. "Violence & Gore: Severe"). `enabled` gates the fetch,
+  # `apply` gates the write -- the same split row 87's verbs use.
+  # parental_labels_enabled: false
+  # parental_labels_apply: false
+  # parental_labels_include_none: false
   # Roadmap row 86 -- export current Plex metadata to a YAML backup.
   # metadata_backup_enabled: false
   # metadata_backup_root: /metadatabackup
