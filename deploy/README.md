@@ -49,6 +49,18 @@ than creating the directory. Without that refusal every file would be written
 into the container's own filesystem: the run would report success, fill the
 node's disk, and the "backup" would disappear with the pod.
 
+One more mount, for the metadata-backup endpoint added alongside the mass-ops
+family:
+
+- `/metadatabackup`
+
+This is `operations.metadata_backup_root` (default `/metadatabackup`) — where
+`POST /api/metadata-backup` writes one YAML file per library, keyed by rating
+key, as the undo story for the metadata mass ops. It carries the same warning
+`plex_backup_root` does: it must be a real mount, because an unmounted path is
+indistinguishable from a mounted one to the writer and every file would land
+on the node's own disk and vanish with the pod.
+
 The config file itself is read from the path in `AUTOPOSTER_CONFIG`, which
 the image sets to `/config/autoposter.yaml` — so mount `autoposter.yaml`
 (e.g. from a ConfigMap) at `/config/autoposter.yaml`. Mounting it anywhere
