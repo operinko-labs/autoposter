@@ -89,6 +89,17 @@ def test_movie_clearart_uses_the_movie_key_names():
     assert urls == ["https://x/a.png", "https://x/l.png"]
 
 
+def test_clearart_preference_degrades_to_the_logo_when_no_clearart_exists():
+    """The graceful-miss side: a payload with no clearart keys at all still
+    returns the logo, unaffected by prefer_clearart being on."""
+    payload = {"hdtvlogo": [{"url": "http://x/logo.png", "lang": "en", "likes": "3"}]}
+    urls = [
+        c.url for c in
+        parse_fanart(payload, LOGO, False, None, prefer_clearart=True)
+    ]
+    assert urls == ["https://x/logo.png"]
+
+
 # --- row 46: logo recolour ---------------------------------------------------
 
 def _style():
@@ -135,6 +146,77 @@ def test_an_item_with_no_original_title_falls_back_to_the_localized_one():
     })
     primary, _ = pipeline.title_text_for("poster", movie("Heat", None), config)
     assert primary == "Heat"
+
+
+# --- row 41: compose_styled's own suppression, driven directly -------------
+#
+# The render-decision tests below monkeypatch pipeline.compose_styled out
+# entirely, so they never exercise its own add_overlay/add_border-dropping
+# logic. These two drive compose_styled directly, with compositor.run
+# monkeypatched instead, and compare the composed base-canvas argv against
+# compositor.build_base_argv called with the expected overlay/border
+# arguments -- the suppressed side omits both, the unsuppressed side (a
+# parity pin, matching what test_compositor.py / test_artwork_logo.py already
+# cover) keeps them.
+
+async def test_compose_styled_suppresses_overlay_and_border_when_flagged(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(compositor, "run", lambda argv: calls.append(argv))
+
+    config = load_config(EXAMPLE)
+    config = config.model_copy(update={
+        "artwork": config.artwork.model_copy(update={
+            "background": config.artwork.background.model_copy(
+                update={"add_border": True}
+            ),
+        }),
+    })
+    settings = config.artwork.background
+    working = tmp_path / "w.jpg"
+    working.write_bytes(b"x")
+
+    await pipeline.compose_styled(
+        config, "background", working,
+        primary_text=None, secondary_text=None, draw_text=False,
+        suppress_styling=True,
+    )
+    base_argv = calls[1]
+    assert base_argv == compositor.build_base_argv(
+        config.magick_binary, str(working), compositor.BACKGROUND_SIZE, None,
+        config.artwork.output_quality, False,
+        settings.border_color, settings.border_width,
+    )
+
+
+async def test_compose_styled_keeps_overlay_and_border_when_not_flagged(tmp_path, monkeypatch):
+    """Parity pin for the unsuppressed side of the same branch."""
+    calls = []
+    monkeypatch.setattr(compositor, "run", lambda argv: calls.append(argv))
+
+    config = load_config(EXAMPLE)
+    config = config.model_copy(update={
+        "artwork": config.artwork.model_copy(update={
+            "background": config.artwork.background.model_copy(
+                update={"add_border": True}
+            ),
+        }),
+    })
+    settings = config.artwork.background
+    working = tmp_path / "w.jpg"
+    working.write_bytes(b"x")
+
+    await pipeline.compose_styled(
+        config, "background", working,
+        primary_text=None, secondary_text=None, draw_text=False,
+        suppress_styling=False,
+    )
+    base_argv = calls[1]
+    assert base_argv == compositor.build_base_argv(
+        config.magick_binary, str(working), compositor.BACKGROUND_SIZE,
+        str(Path(config.overlays_root) / settings.overlay_file),
+        config.artwork.output_quality, True,
+        settings.border_color, settings.border_width,
+    )
 
 
 # --- row 41: render-decision -------------------------------------------------
