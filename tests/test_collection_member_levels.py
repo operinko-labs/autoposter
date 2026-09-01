@@ -13,8 +13,10 @@ for nothing) and an episode-level membership resolved against the item index
 """
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
+from autoposter.arr.client import RADARR, ArrClient
 from autoposter.collections.builders import (
     BuilderContext,
     BuilderResult,
@@ -436,3 +438,49 @@ async def test_a_definition_and_a_builder_that_agree_are_not_refused(
 
     assert [i.title for i in section.created["Agree"]] == ["S01E01"]
     assert run.definitions[0].failed is False
+
+
+# --- I1: the effective level, not just the declared one ---------------------
+#
+# The three `builder_level`-keyed schema validators run at config load and can
+# only ever see `definition.builder_level`. A builder that self-declares a
+# non-item `result.level` while `builder_level` stays at its "item" default
+# satisfies every one of them -- so without a guard on the EFFECTIVE level,
+# an episode-level builder reaches the Arr tag write with episode members.
+
+
+async def test_an_effective_episode_level_with_an_arr_tag_is_refused_not_sent(
+    session, registry_entry
+):
+    """``builder_level`` is undeclared (item, the default); the BUILDER says
+    episode. That combination passes every schema validator, so the refusal
+    must come from the engine, after it computes the effective level -- and it
+    must fire before any Arr request, not merely before Plex is written to."""
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=[])
+
+    registry_entry(_LevelledBuilder(
+        "test_bl_effective_episode", [("tvdb", "7645236")], "episode"
+    ))
+    section = _section()
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = ArrClient(http, "https://radarr.example", "key", RADARR)
+
+    async with http:
+        run = await run_library(
+            session, section, "TV Shows", "Show",
+            [CollectionDefinition(
+                title="Pilots", builder="test_bl_effective_episode",
+                item_radarr_tag=["autoposter"],
+            )],
+            _config(arr_tag_apply=True), sources=SourceClients(radarr=client),
+        )
+
+    assert requests == [], "no listing, no tag lookup, no PUT -- nothing sent"
+    assert section.created == {}, "nothing written"
+    assert run.definitions[0].failed is True
+    [action] = [a for a in run.actions if "Pilots" in a]
+    assert "episode" in action

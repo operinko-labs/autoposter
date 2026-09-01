@@ -707,6 +707,32 @@ async def _run_one(
             % (definition.title, level, ctx.library_type)
         )
         return outcome
+    # Belt-and-braces on the EFFECTIVE level, not the declared one. The three
+    # schema validators above (`_arr_overrides_need_a_list_builder_at_item_level`,
+    # `_builder_level_needs_a_list_builder`) run at config load and can only
+    # ever see `definition.builder_level` -- so a builder that self-declares a
+    # non-item `result.level` while `builder_level` stays "item" (the default)
+    # satisfies every one of them and would otherwise reach `restricted_members`
+    # / `tag_members` / `sync_membership` below with season/episode members. An
+    # episode's TVDB id and a series' TVDB id share one integer namespace, so a
+    # numeric collision there is a live write to the wrong series. No shipped
+    # builder sets `result.level` today, but nothing else stands between one
+    # that does and this refusal.
+    if level != "item" and (
+        definition.radarr_restrict
+        or definition.sonarr_restrict
+        or definition.item_radarr_tag
+        or definition.item_sonarr_tag
+        or getattr(definition, "sync_to_mdb_list", None)
+    ):
+        outcome.failed = True
+        outcome.skipped = True
+        outcome.actions.append(
+            "%r: %s-level members cannot be restricted, tagged, or synced to "
+            "Radarr/Sonarr/MDBList -- those services only know movies and "
+            "shows; nothing was applied" % (definition.title, level)
+        )
+        return outcome
     index = owned_index(level)
     resolved = resolve_external(index, result.ids)
     outcome.unresolved = resolved.unresolved
