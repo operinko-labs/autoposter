@@ -298,8 +298,9 @@ artwork:
   #     Anime:
   #       poster: [ja, en]
   library_language_overrides: {}
-  # Roadmap row 47 -- render every artifact from local assets only, making no
-  # provider request at all. Individual art kinds can override this either way.
+  # Roadmap row 47 -- make no online provider request for any artifact. A
+  # manually supplied local asset (including a picked logo) is unaffected and
+  # still used. Individual art kinds can override this either way.
   disable_online_asset_fetch: false
   # Roadmap row 48 -- apply a show's SeasonTemplate/EpisodeTemplate manual
   # assets to every season poster and title card beneath it that has none of

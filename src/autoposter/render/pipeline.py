@@ -724,23 +724,21 @@ async def render_artifact(
         logo_path: Path | None = None
         logo_sha = ""
         suppress_text = False
-        if (
-            art_kind == "poster"
-            and config.artwork.use_logo
-            and settings.text is not None
-            and not online_fetch_disabled(config, art_kind)
-        ):
+        if art_kind == "poster" and config.artwork.use_logo and settings.text is not None:
             # An operator's picked logo comes first, and stops the ladder from
             # running at all: a selection made here would be staged over the
             # choice, and the request it costs is one the choice made pointless.
             # Nested inside the use_logo guard on purpose -- `use_logo: false`
             # is a deployment saying it does not composite logos, and a file on
-            # a mount does not overrule the config.
+            # a mount does not overrule the config. Unconditional on
+            # online_fetch_disabled -- row 47 suppresses provider requests, not
+            # local lookups, and find_logo_override makes none: mirrors how
+            # manual_override_path treats the artifact's own base image.
             picked_logo = await asyncio.to_thread(find_logo_override, config, item)
             if picked_logo is not None:
                 logo_path = Path(tmpdir) / f"logo{picked_logo.suffix}"
                 logo_sha = await asyncio.to_thread(_stage_override, picked_logo, logo_path)
-            else:
+            elif not online_fetch_disabled(config, art_kind):
                 logo_selection = await select_artwork(
                     providers,
                     config.artwork.logo_language_order,

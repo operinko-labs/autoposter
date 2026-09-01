@@ -333,8 +333,9 @@ class ArtKindConfig(BaseModel):
     disable_online_asset_fetch: bool | None = Field(
         default=None,
         description=(
-            "Render this artifact from local assets only, making no provider "
-            "request for it at all. Unset inherits artwork.disable_online_asset_fetch."
+            "Make no online provider request for this artifact. A manually "
+            "supplied local asset (including a picked logo) is unaffected and "
+            "still used. Unset inherits artwork.disable_online_asset_fetch."
         ),
     )
 
@@ -454,9 +455,11 @@ class ArtworkConfig(BaseModel):
     disable_online_asset_fetch: bool = Field(
         default=False,
         description=(
-            "Render every artifact from local assets only, making no provider "
-            "request at all. An artifact with no local asset is skipped rather "
-            "than fetched. Individual art kinds can override this either way."
+            "Make no online provider request for any artifact. An artifact "
+            "with no local asset (or, for a poster, no picked logo either) is "
+            "skipped rather than fetched. A manually supplied local asset is "
+            "unaffected and still used. Individual art kinds can override this "
+            "either way."
         ),
     )
     # Roadmap row 48.

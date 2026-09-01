@@ -165,3 +165,76 @@ async def test_the_ladder_is_walked_when_the_switch_is_unset(
         )
     assert len(provider.requests) == 1
     assert render.status == "no_art"
+
+
+# --- the crux: a local logo pick must survive disable_online_asset_fetch ----
+#
+# The field's own name and docstring say "no provider request", not "no local
+# lookup" -- and find_logo_override makes zero network calls, it only stats
+# files under manual_assets_root. Every asset in this scenario is local (a
+# manual poster override, a manual logo pick), so no provider is ever a
+# candidate to be asked. The logo must still be composited.
+
+def _movie():
+    return ResolvedItem(
+        rating_key="m1", library="Movies", kind="movie", title="Dune: Part Two",
+        year=2024, season_number=None, episode_number=None, root_folder="Dune (2024)",
+        file_path=None, art_url=None, tmdb_id=1, tvdb_id=None, imdb_id="tt1",
+        parent_rating_key=None,
+    )
+
+
+def _stub_out_imagemagick(monkeypatch):
+    from autoposter.render.textfit import FitResult
+
+    calls: list[list[str]] = []
+    logo_calls: list = []
+    monkeypatch.setattr(pipeline.compositor, "run", lambda argv: calls.append(argv))
+    monkeypatch.setattr(
+        pipeline, "fit_point_size",
+        lambda *a, **k: FitResult(point_size=120, truncated=False),
+    )
+    original_build_logo_argv = pipeline.compositor.build_logo_argv
+
+    def spy_build_logo_argv(*args, **kwargs):
+        logo_calls.append((args, kwargs))
+        return original_build_logo_argv(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.compositor, "build_logo_argv", spy_build_logo_argv)
+    return calls, logo_calls
+
+
+async def test_a_manual_logo_still_composites_when_online_fetch_is_disabled(
+    session, tmp_path, monkeypatch
+):
+    """The crux: a manual poster override + a manual logo pick +
+    disable_online_asset_fetch on for 'poster'. No provider is ever a
+    candidate here, so the logo must not be silently dropped."""
+    import httpx
+
+    from autoposter.render import naming
+
+    movie = _movie()
+    config = _config(tmp_path, disable_online_asset_fetch=True)
+    config = config.model_copy(update={"assets_root": tmp_path / "out"})
+
+    manual = config.model_copy(update={"assets_root": config.manual_assets_root})
+    poster_override = naming.asset_path(manual, movie.library, movie.root_folder, "poster")
+    poster_override.parent.mkdir(parents=True, exist_ok=True)
+    poster_override.write_bytes(b"manual poster")
+
+    logo_override = pipeline.logo_override_path(config, movie, ".png")
+    logo_override.parent.mkdir(parents=True, exist_ok=True)
+    logo_override.write_bytes(b"manual logo")
+
+    _calls, logo_calls = _stub_out_imagemagick(monkeypatch)
+    provider = RecordingProvider()
+
+    async with httpx.AsyncClient() as http:
+        render = await pipeline.render_artifact(
+            session, config, http, movie, "poster", [provider]
+        )
+
+    assert provider.requests == []
+    assert render.status == "rendered"
+    assert len(logo_calls) == 1
