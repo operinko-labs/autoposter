@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import get_args
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.loader import build_config, read_config_document
@@ -24,6 +24,19 @@ logger = logging.getLogger(__name__)
 
 # The single-document table's only row.
 OVERRIDES_ROW_ID = 1
+
+#: The advisory-lock key the write path takes when there is no row to lock yet.
+#:
+#: Pinned by value rather than derived at import, for the reason
+#: ``EMPTY_DOCUMENT_REVISION`` is: two pods running different keys would not
+#: serialise against each other, so a change to it must be a deliberate act
+#: with a red test in front of it. The value is the top 63 bits of
+#: ``sha256(b"autoposter.config_overrides.insert")`` -- an arbitrary number,
+#: but one derived from what it protects, so it cannot collide by accident
+#: with an advisory lock some other part of this database picks by hand.
+#: PostgreSQL's advisory locks share one cluster-wide namespace per database
+#: and nothing else in this codebase takes one.
+OVERRIDES_INSERT_LOCK_KEY = 4907594664404778877
 
 # Sections that left the config schema behind and are dropped out of a stored
 # overrides document instead of being refused with it.
@@ -233,11 +246,31 @@ async def load_overrides_document(
 
     ``for_update`` takes a row lock, and only ``_persist_and_swap`` passes it:
     a reader that locked would serialise ``GET /api/config`` behind every save
-    for no benefit. One honest limit: when no row exists yet there is nothing
-    to lock, so two *simultaneous* first-ever saves on a fresh deployment can
-    still race. The upsert keeps the row consistent either way, both writers
-    legitimately saw ``{}``, and the drop cap bounds what the loser can lose --
-    so this is a documented residual, not a silent one.
+    for no benefit.
+
+    When there is no row yet, ``SELECT ... FOR UPDATE`` has nothing to lock, so
+    the row lock alone left one hole: two *simultaneous* first-ever saves on a
+    fresh deployment both read ``{}``, both found ``EMPTY_DOCUMENT_REVISION``
+    current, and the loser's entire first save was replaced wholesale by the
+    winner's upsert -- after it had already been answered 200. That case is the
+    *least* bounded of all, not the most: ``_drop_refusal`` returns ``None``
+    the moment the stored document is empty ("nothing to destroy"), so the drop
+    cap short-circuits for both writers and bounds nothing.
+
+    So the no-row path takes a transaction-scoped advisory lock and reads
+    again. The second read is what does the work: the first writer's row is
+    committed by the time the second acquires the lock, so the second sees it,
+    its ``EMPTY_DOCUMENT_REVISION`` no longer matches, and it gets the same 409
+    every other stale writer gets. The row-present path is untouched -- the
+    lock is taken only on a store that has never been written.
+
+    Two properties this leans on, named because a future change to either would
+    reopen the hole silently. The re-read must see a row committed after this
+    transaction began, which is READ COMMITTED's per-statement snapshot
+    (``db/base.py`` sets no ``isolation_level``); under REPEATABLE READ it
+    would come back empty. And the lock must be released by the commit that
+    makes the row visible, which is what ``_xact_`` means -- a session-scoped
+    advisory lock would leak on the 409 path.
     """
     statement = select(ConfigOverride).where(ConfigOverride.id == OVERRIDES_ROW_ID)
     if for_update:
@@ -247,6 +280,12 @@ async def load_overrides_document(
         # the lost update this whole check exists to stop, just narrower.
         statement = statement.with_for_update()
     row = await session.scalar(statement)
+    if for_update and row is None:
+        # Nothing was locked, because there was nothing to lock. Serialise the
+        # first-ever save on the key instead, then look again: whoever gets
+        # here second is now looking at whoever got here first.
+        await session.execute(select(func.pg_advisory_xact_lock(OVERRIDES_INSERT_LOCK_KEY)))
+        row = await session.scalar(statement)
     if row is None or not row.document:
         return {}
     if not isinstance(row.document, dict):

@@ -415,3 +415,24 @@ def test_a_changed_value_changes_the_revision():
     from autoposter.config.overrides import document_revision
 
     assert document_revision({"workers": 9}) != document_revision({"workers": 10})
+
+
+def test_the_first_save_lock_key_is_pinned_and_fits_a_postgres_bigint():
+    """Pinned by value, like EMPTY_DOCUMENT_REVISION and for the same kind of
+    reason: during a rolling deploy two pods run at once, and two pods holding
+    different keys would not serialise against each other at all -- which is
+    the one moment the lock exists for. Changing it must be deliberate.
+
+    Also pinned as *derived*: the key is the top 63 bits of the sha256 of what
+    it protects, so it cannot collide by accident with an advisory lock some
+    other part of this database picks by hand. `pg_advisory_xact_lock(bigint)`
+    would raise on anything that does not fit a signed 64-bit integer.
+    """
+    import hashlib
+
+    from autoposter.config.overrides import OVERRIDES_INSERT_LOCK_KEY
+
+    assert OVERRIDES_INSERT_LOCK_KEY == 4907594664404778877
+    digest = hashlib.sha256(b"autoposter.config_overrides.insert").digest()
+    assert OVERRIDES_INSERT_LOCK_KEY == int.from_bytes(digest[:8], "big") >> 1
+    assert 0 < OVERRIDES_INSERT_LOCK_KEY < 2**63

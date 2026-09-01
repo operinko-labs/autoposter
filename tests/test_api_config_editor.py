@@ -13,6 +13,7 @@ says which one broke.
    file's is expressed by leaving the key out of the document; writing null
    asks for a null value and is rejected like any other bad value.
 """
+import asyncio
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -21,14 +22,17 @@ import pytest
 import pytest_asyncio
 import yaml
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.api.auth import hash_password
 from autoposter.api.routes import KEEP_SENTINEL
 from autoposter.app import create_app
 from autoposter.config.loader import build_config
-from autoposter.config.overrides import EMPTY_DOCUMENT_REVISION
+from autoposter.config.overrides import (
+    EMPTY_DOCUMENT_REVISION,
+    OVERRIDES_INSERT_LOCK_KEY,
+)
 from autoposter.config.schema import Secrets
 from autoposter.db.models import ConfigOverride, EventLog, Job, MediaItem, Render
 from autoposter.plex.client import ResolvedItem
@@ -1680,6 +1684,95 @@ async def test_a_stale_save_writes_nothing_at_all(client, auth_headers, session,
         .all()
     )
     assert events_after == events_before
+
+
+async def _blocked_on_the_insert_lock(probe) -> bool:
+    """Wait until somebody is *waiting* for the first-save advisory lock.
+
+    A condition, not a duration: it polls ``pg_locks`` -- which is shared
+    memory rather than an MVCC relation, so a waiter is visible the instant it
+    exists -- and returns as soon as one appears. The bound exists only so a
+    version that never takes the lock fails in five seconds with a sentence
+    instead of hanging the suite forever.
+
+    Scoped to this connection's own database, because the whole cluster's
+    advisory locks are in one view and xdist gives each worker its own
+    database.
+    """
+    waiting = text(
+        "SELECT count(*) FROM pg_locks "
+        " WHERE locktype = 'advisory' AND NOT granted "
+        "   AND database = (SELECT oid FROM pg_database "
+        "                    WHERE datname = current_database())"
+    )
+    for _ in range(500):
+        await probe.rollback()
+        if await probe.scalar(waiting):
+            return True
+        await asyncio.sleep(0.01)
+    return False
+
+
+async def test_two_simultaneous_first_ever_saves_cannot_both_win(
+    client, auth_headers, session, session_factory
+):
+    """The fresh-deploy race: with no row, FOR UPDATE has nothing to lock.
+
+    Every other case in this file is covered by the row lock. This one is not,
+    and it is the case with the *least* bounded loss: `_drop_refusal` returns
+    None the moment the stored document is empty ("nothing to destroy"), so
+    both racing writers sail past the drop cap too. The loser's entire
+    first-ever save is replaced wholesale, after it has already been told 200.
+
+    Writer A is a stand-in rather than a second HTTP request, and deliberately
+    so: what has to be held still is the *middle* of A's transaction -- lock
+    taken, row inserted, not yet committed -- and an in-flight request cannot
+    be paused there without monkeypatching the thing under test. It takes the
+    same advisory lock on the same key and inserts the same row, which is
+    exactly the state a real `_persist_and_swap` is in at that moment.
+    """
+    a_document = {"workers": 3, "badges": {"enabled": True}}
+    b_document = {"collections": {"separator_style": "sand"}}
+
+    async with session_factory() as writer_a:
+        # A is mid-save: it holds the insert lock and its row is written but
+        # invisible to everybody else.
+        await writer_a.execute(select(func.pg_advisory_xact_lock(OVERRIDES_INSERT_LOCK_KEY)))
+        await writer_a.execute(
+            insert(ConfigOverride).values(id=1, document=a_document)
+        )
+
+        # B is a genuine first-ever save through the real endpoint, carrying
+        # the token a page that mounted against the empty store would hold.
+        b = asyncio.create_task(
+            client.put(
+                "/api/config/overrides",
+                headers=auth_headers,
+                json={
+                    "document": b_document,
+                    "expected_revision": EMPTY_DOCUMENT_REVISION,
+                },
+            )
+        )
+        blocked = await _blocked_on_the_insert_lock(session)
+
+        # Whatever B is waiting on, releasing A frees it.
+        await writer_a.commit()
+        response = await b
+
+    assert blocked, (
+        "B never waited for the first-save lock. With no row to lock, "
+        "SELECT ... FOR UPDATE locked nothing, so B read stored == {}, found "
+        "its EMPTY_DOCUMENT_REVISION current, and walked straight into the "
+        "upsert -- the fresh-deploy lost update"
+    )
+    assert response.status_code == 409, response.text
+
+    # A's save is what stands, whole. B was told nothing was saved, which is
+    # the truth.
+    await session.rollback()
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == a_document
 
 
 async def test_an_unknown_field_on_the_body_is_still_refused(client, auth_headers):
