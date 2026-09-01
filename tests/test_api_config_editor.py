@@ -14,6 +14,7 @@ says which one broke.
    asks for a null value and is rejected like any other bad value.
 """
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -983,3 +984,106 @@ async def test_an_unrelated_save_is_untouched_while_the_file_lists_definitions(
     )
 
     assert response.status_code == 200
+
+
+# --- The wholesale-replace law (row 138's editor is built on it) ----------
+#
+# CHARACTERIZATION, not RED-first: these pin behavior `merge_overrides` and
+# `GET /api/config` already have. They exist so the day the panel's splice is
+# rewritten as a rebuild, something says so out loud.
+
+THREE_DEFINITIONS = {
+    "collections": {
+        "definitions": [
+            {"title": "First", "builder": "tmdb_collection", "params": {"id": 1}},
+            {
+                "title": "Second",
+                "builder": "mdblist_list",
+                "params": {"list": "someone/weekly"},
+                "summary": "What the household watched.",
+                "schedule": {"every_n_runs": 3},
+                "changes_webhook": "https://hooks.example/T0K3N/path",
+                "item_label": ["Weekly"],
+            },
+            {"title": "Third", "builder": "tmdb_collection", "params": {"id": 3}},
+        ]
+    }
+}
+
+
+async def test_editing_one_definition_does_not_perturb_its_siblings(
+    client, auth_headers
+):
+    """The negative assertion (facts C2). A whole-list write that changed
+    ONLY the entry the operator edited is the whole contract; entries either
+    side must come back byte-identical."""
+    await client.put(
+        "/api/config/overrides", json={"document": THREE_DEFINITIONS}, headers=auth_headers
+    )
+    entries = deepcopy(THREE_DEFINITIONS["collections"]["definitions"])
+    entries[1] = {**entries[1], "limit": 25}
+
+    response = await client.put(
+        "/api/config/overrides",
+        json={"document": {"collections": {"definitions": entries}}},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+    definitions = served["collections"]["definitions"]
+    assert definitions[0]["title"] == "First"
+    assert definitions[0]["limit"] is None
+    assert definitions[2]["title"] == "Third"
+    assert definitions[2]["limit"] is None
+    assert definitions[1]["limit"] == 25
+
+
+async def test_an_edited_definition_keeps_every_field_the_edit_did_not_reach(
+    client, auth_headers
+):
+    """The loss-free law. `summary`, `schedule`, `item_label` and
+    `changes_webhook` are none of them in the editor's curated subset -- an
+    entry rewritten around them has to bring them through untouched, which is
+    what `{...storedEntry, ...edits}` buys and what a rebuild from the
+    seven-field listing would destroy."""
+    await client.put(
+        "/api/config/overrides", json={"document": THREE_DEFINITIONS}, headers=auth_headers
+    )
+    entries = deepcopy(THREE_DEFINITIONS["collections"]["definitions"])
+    entries[1] = {**entries[1], "limit": 25}
+
+    await client.put(
+        "/api/config/overrides",
+        json={"document": {"collections": {"definitions": entries}}},
+        headers=auth_headers,
+    )
+
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+    second = served["collections"]["definitions"][1]
+    assert second["summary"] == "What the household watched."
+    assert second["schedule"] == {"every_n_runs": 3, "months": None}
+    assert second["item_label"] == ["Weekly"]
+    assert second["changes_webhook"] == "https://hooks.example/T0K3N/path"
+
+
+async def test_the_served_config_round_trips_a_definition_the_editor_reads_back(
+    client, auth_headers
+):
+    """What the panel's `documentFromConfig` seeds from. The served
+    `collections.definitions` IS the stored array (an override wins the
+    merge), so an editor seeded from the GET writes back what it was given --
+    every key, at full depth."""
+    await client.put(
+        "/api/config/overrides", json={"document": THREE_DEFINITIONS}, headers=auth_headers
+    )
+
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+
+    assert "collections.definitions" in served["overridden_paths"]
+    stored_second = THREE_DEFINITIONS["collections"]["definitions"][1]
+    served_second = served["collections"]["definitions"][1]
+    for key, value in stored_second.items():
+        if key == "schedule":
+            continue  # pydantic fills the model's own unset field, checked above
+        assert served_second[key] == value
