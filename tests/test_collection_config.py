@@ -298,14 +298,27 @@ def test_the_commented_example_definition_is_one_the_schema_accepts():
 
     config = CollectionsConfig(**block)
 
-    assert [one.builder for one in config.definitions] == ["plex_id", "dynamic"]
+    assert [one.builder for one in config.definitions] == [
+        "plex_id", "dynamic", "plex_id"
+    ]
     assert config.definitions[0].filters == {
         "year.gte": 2000, "content_rating": ["PG-13", "R"]
     }, "the documented filter has to be one the filter model accepts too"
+    assert config.definitions[0].sync_to_mdb_list == "myuser/my-list"
+    assert config.definitions[0].radarr_restrict is True
+    assert config.definitions[0].item_radarr_tag == ["autoposter"], (
+        "row 89's fields are documented on the item-level Hand Picked "
+        "example, which the schema has to actually accept"
+    )
     assert config.definitions[1].params["type"] == "decade", (
         "every key in the dynamic example is held to DynamicParams by "
         "CollectionDefinition itself, so a documented `<<token>>` nothing "
         "resolves, a dead upstream knob or an unknown type fails right here"
+    )
+    assert config.definitions[2].builder_level == "episode", (
+        "row 88's builder_level is documented on its own list-builder "
+        "example (Season Premieres), separate from Hand Picked, since it "
+        "cannot combine with sync_to_mdb_list or the row 89 Arr fields"
     )
 
 
