@@ -10,15 +10,11 @@ The capture itself takes a caller's session and adds to it rather than opening
 one, because it has to land in the same transaction as the write it is a
 snapshot of. See ``api/routes._persist_and_swap``.
 """
-import logging
-
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.overrides import document_paths
 from autoposter.db.models import ConfigOverrideSnapshot
-
-logger = logging.getLogger(__name__)
 
 #: How many previous documents to keep. A module constant rather than a
 #: setting, for the same reason the drop cap is one: a recovery depth an

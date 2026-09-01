@@ -1800,9 +1800,15 @@ async def preview_config_overrides(
     is an approximation (config/impact.py) and reporting its noise for a
     scheduler tweak would be worse than reporting nothing. When it is not
     null, it is an over-estimate by construction -- render it with a "~".
+
+    Migrated sections are stripped first, for the same reason
+    ``import_config_overrides`` strips them: a pre-migration backup previewed
+    here must validate the same way importing it would, or the panel's
+    "Import these settings" button never appears for the file the strip
+    exists to accept.
     """
     before = request.app.state.config
-    _, after = await _validated_generation(request, body.document)
+    _, after = await _validated_generation(request, without_migrated_sections(body.document))
     impact = None
     if _render_affecting(before, after):
         async with request.app.state.session_factory() as session:
@@ -2035,7 +2041,16 @@ async def export_config_overrides(
     of what a backup is for.)
     """
     async with request.app.state.session_factory() as session:
-        document = await load_overrides_document(session)
+        try:
+            document = await load_overrides_document(session)
+        except ValueError as exc:
+            # A hand-edited config_overrides row whose document is not a JSON
+            # object -- see load_overrides_document's docstring. An operator
+            # needs to know what to fix, not a traceback.
+            raise HTTPException(
+                status_code=500,
+                detail="config overrides row is corrupt (not a JSON object); fix or delete it",
+            ) from exc
     return {
         "autoposter_overrides": OVERRIDES_EXPORT_FORMAT,
         "exported_at": datetime.now(UTC).isoformat(),

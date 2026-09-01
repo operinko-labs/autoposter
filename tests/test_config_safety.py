@@ -24,6 +24,7 @@ from copy import deepcopy
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.api import routes as routes_module
 from autoposter.config.overrides import EMPTY_DOCUMENT_REVISION
@@ -97,21 +98,24 @@ async def test_a_refused_write_leaves_no_snapshot_orphan(
     await _store(client, auth_headers, THE_INCIDENT_DOCUMENT)
 
     # The drop cap.
-    await client.put(
+    drop_cap_response = await client.put(
         "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 9}}
     )
+    assert drop_cap_response.status_code == 422
     # The empty-document guard.
-    await client.put(
+    empty_document_response = await client.put(
         "/api/config/overrides", headers=auth_headers, json={"document": {}}
     )
+    assert empty_document_response.status_code == 422
     # The revision check.
     edited = deepcopy(THE_INCIDENT_DOCUMENT)
     edited["workers"] = 11
-    await client.put(
+    revision_response = await client.put(
         "/api/config/overrides",
         headers=auth_headers,
         json={"document": edited, "expected_revision": EMPTY_DOCUMENT_REVISION},
     )
+    assert revision_response.status_code == 409
 
     assert await _snapshots(session) == [], (
         "a refused write left a snapshot behind. The capture and the upsert "
@@ -461,6 +465,26 @@ async def test_an_empty_store_still_exports_a_valid_envelope(client, auth_header
     }
 
 
+async def test_the_export_reports_a_corrupt_overrides_row_as_500_with_detail(
+    client, auth_headers, session_factory
+):
+    """m2: `get_config` already catches `load_overrides_document`'s ValueError
+    on a hand-edited non-object row (`test_get_config_reports_a_corrupt_
+    overrides_row_as_500_with_detail`); export must be refused the same way
+    rather than letting the ValueError escape as a bare traceback 500."""
+    async with session_factory() as session:
+        stmt = insert(ConfigOverride).values(id=1, document=["not", "a", "dict"])
+        stmt = stmt.on_conflict_do_update(index_elements=["id"], set_={"document": stmt.excluded.document})
+        await session.execute(stmt)
+        await session.commit()
+
+    response = await client.get("/api/config/overrides/export", headers=auth_headers)
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "config overrides row is corrupt (not a JSON object); fix or delete it"
+    )
+
+
 async def test_an_export_round_trips_through_import(
     client, auth_headers, session
 ):
@@ -479,6 +503,33 @@ async def test_an_export_round_trips_through_import(
     assert response.status_code == 200, response.text
     stored = (await session.execute(select(ConfigOverride))).scalar_one().document
     assert stored == THE_INCIDENT_DOCUMENT
+
+
+async def test_a_preview_of_a_migrated_section_envelope_is_not_refused(
+    client, auth_headers, session
+):
+    """M1: the import endpoint strips MIGRATED_SECTIONS before validating
+    (`test_a_restore_strips_a_migrated_section`'s design trap, replayed on the
+    envelope arm). The preview arm must strip identically, or a pre-migration
+    backup carrying `version_check` 422s at the panel's preview gate and the
+    "Import these settings" button never appears for exactly the file the
+    strip exists to accept -- even though importing it directly would have
+    worked."""
+    document = {"workers": 9, "version_check": {"enabled": True}}
+
+    preview = await client.post(
+        "/api/config/preview", headers=auth_headers, json={"document": document}
+    )
+    assert preview.status_code == 200, preview.text
+
+    imported = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={"autoposter_overrides": 1, "document": document},
+    )
+    assert imported.status_code == 200, imported.text
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == {"workers": 9}
 
 
 async def test_an_import_without_the_format_marker_is_refused(
