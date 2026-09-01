@@ -817,6 +817,37 @@ class OperationsConfig(BaseModel):
             "keeps the TMDb date this service already gathers."
         ),
     )
+
+    # Roadmap row 85. IMDb's own parental-guide categories, written as Plex
+    # labels. Default OFF -- the family posture rows 86 (backup) and 87
+    # (verbs) already use. Two flags, not one, on purpose: `enabled` gates
+    # the FETCH (one cached title(id:) GraphQL request per in-scope item --
+    # a cost even in dry-run reporting mode), `apply` gates the WRITE, the
+    # same split row 87's lock/unlock/remove already draws between "would
+    # write" and "wrote."
+    parental_labels_enabled: bool = Field(
+        default=False,
+        description=(
+            "Fetch IMDb's parental-guide categories (violence, profanity, "
+            "nudity, alcohol, frightening) for each in-scope item and report "
+            "which labels would be added. Off makes no request."
+        ),
+    )
+    parental_labels_apply: bool = Field(
+        default=False,
+        description=(
+            "Actually write the fetched parental-guide labels to Plex; off "
+            "only reports which labels it would add."
+        ),
+    )
+    parental_labels_include_none: bool = Field(
+        default=False,
+        description=(
+            "Also add a label for a category IMDb's consensus rates 'None', "
+            "e.g. 'Alcohol, Drugs & Smoking: None'. Off -- the default -- "
+            "labels only Mild/Moderate/Severe categories."
+        ),
+    )
     # This section owns WHEN, not WHETHER, in the split ``SchedulerConfig``'s
     # docstring states: there is no ``tmdb_budget_enabled`` beside this,
     # because 0 already means that and two spellings of one setting is one
