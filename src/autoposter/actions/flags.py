@@ -30,8 +30,7 @@ Nothing here writes anything. That is the property
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, Text, and_, cast, func, literal, or_
-from sqlalchemy.dialects.postgresql import BYTEA
+from sqlalchemy import ColumnElement, Text, and_, case, cast, func, literal, or_
 
 from autoposter.config.schema import Config
 from autoposter.db.models import MediaItem, Render
@@ -127,19 +126,27 @@ def _language_miss(config: Config) -> ColumnElement[bool]:
     every preference. Without the gate the whole pre-existing library would
     read as a language miss the pipeline never made.
 
-    Textless art carries no language tag and the ladder ranks it at ``xx``'s
-    position, so a NULL is compared as ``xx`` here. That is what makes an
-    ``xx``-leading order silent on a textless row.
+    ``Render.textless`` is ``ArtCandidate.is_textless`` (``providers/base.py``),
+    which is authoritative over the tag: a provider can (TVDB does, see
+    ``providers/tvdb.py``) mark an image textless *and* still carry a language
+    tag inherited from the entry. A textless row therefore achieves ``xx``
+    here regardless of what tag rode along with it -- coalescing a NULL tag to
+    ``xx`` is not enough on its own, because a textless row's tag need not be
+    NULL.
     """
-    achieved = func.coalesce(Render.selected_language, literal("xx"))
+    achieved = case(
+        (Render.textless.is_(True), literal("xx")),
+        else_=func.coalesce(Render.selected_language, literal("xx")),
+    )
     terms: list[ColumnElement[bool]] = []
     for art_kind in ART_KINDS:
-        overridden = {
-            library: by_kind[art_kind]
+        overridden_libraries = sorted(
+            library
             for library, by_kind in config.artwork.library_language_overrides.items()
             if by_kind.get(art_kind)
-        }
-        for library, order in overridden.items():
+        )
+        for library in overridden_libraries:
+            order = _language_order(config, library, art_kind)
             terms.append(
                 and_(
                     Render.art_kind == art_kind,
@@ -147,14 +154,14 @@ def _language_miss(config: Config) -> ColumnElement[bool]:
                     achieved != literal(order[0]),
                 )
             )
-        base = getattr(config.artwork, art_kind).language_order
+        base = _language_order(config, None, art_kind)
         if base:
             clauses = [Render.art_kind == art_kind, achieved != literal(base[0])]
-            if overridden:
+            if overridden_libraries:
                 # The libraries above answer for themselves; this clause is
                 # every other library, or a row whose library the override
                 # does not name would be judged twice under two orders.
-                clauses.append(MediaItem.library.notin_(sorted(overridden)))
+                clauses.append(MediaItem.library.notin_(overridden_libraries))
             terms.append(and_(*clauses))
     if not terms:
         return literal(False)
@@ -436,4 +443,11 @@ def evidence_expression() -> ColumnElement[str]:
         func.coalesce(cast(column, Text), literal("~")) for column in _EVIDENCE_COLUMNS
     ]
     joined = func.concat_ws(literal("|"), *parts)
-    return func.encode(func.sha256(cast(joined, BYTEA)), literal("hex"))
+    # Not `cast(joined, BYTEA)`: Postgres has no text->bytea cast, so that
+    # resolves to the I/O-conversion cast and runs `byteain`, which *parses*
+    # the text as a bytea literal rather than encoding it -- a `\` in a
+    # provider-supplied fact (e.g. `selected_language`) would raise
+    # "invalid input syntax for type bytea" and take the whole query down.
+    # `convert_to` just encodes bytes; it does not parse.
+    encoded = func.convert_to(joined, literal("UTF8"))
+    return func.encode(func.sha256(encoded), literal("hex"))

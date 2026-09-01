@@ -174,6 +174,37 @@ async def test_language_miss_follows_the_library_language_override(session, conf
     assert missed.id in fired
 
 
+async def test_language_miss_is_silent_on_textless_art_carrying_a_non_first_language_tag(
+    session, config
+):
+    """`ArtCandidate.is_textless` (`providers/base.py`) is authoritative over
+    the tag: `providers/tvdb.py` reports `includesText: false` alongside a
+    language tag (`eng`) inherited from the entry, so a real TVDB pick can be
+    textless and still carry `selected_language = "en"`. The shipped example
+    config leads every art kind with `xx`, which is exactly the position a
+    textless row occupies -- so this row achieved the operator's first choice
+    and must not read as a miss."""
+    assert config.artwork.poster.language_order[0] == "xx"
+    silent = await _seed(session, selected_language="en", language_rank=0, textless=True)
+    fired_id = silent.id
+
+    fired = await _fires_on(session, config, "language_miss")
+
+    assert fired_id not in fired
+
+
+async def test_language_miss_fires_on_the_same_row_once_it_is_not_textless(session, config):
+    """The mirror of the row above: identical tag and rank, but the candidate
+    was not textless, so the tag itself is what the row achieved and `en`
+    loses to the `xx`-leading order."""
+    assert config.artwork.poster.language_order[0] == "xx"
+    flagged = await _seed(session, selected_language="en", language_rank=0, textless=False)
+
+    fired = await _fires_on(session, config, "language_miss")
+
+    assert flagged.id in fired
+
+
 async def test_provider_downgrade_fires_on_a_second_choice_provider(session, config):
     assert config.providers.order[0] == "TMDB"
     flagged = await _seed(session, provider="TVDB", provider_rank=1)
@@ -346,6 +377,23 @@ async def test_the_evidence_hash_ignores_a_column_no_flag_rests_on(session, conf
     await session.commit()
 
     assert await evidence() == before
+
+
+async def test_the_evidence_hash_survives_a_backslash_in_a_stored_fact(session, config):
+    """`selected_language` is provider-supplied. `cast(text, BYTEA)` resolves
+    to Postgres's I/O-conversion cast, which *parses* the text as a bytea
+    literal (`byteain`) rather than encoding its bytes -- a lone `\\` is not a
+    valid escape and raises `invalid input syntax for type bytea`, taking the
+    whole evidence query down. `convert_to` only encodes; it does not parse."""
+    render = await _seed(session, selected_language="en\\fi", language_rank=1)
+
+    evidence = (
+        await session.execute(
+            select(flags.evidence_expression()).where(Render.id == render.id)
+        )
+    ).scalar_one()
+
+    assert len(evidence) == 64
 
 
 # --- the registry's agreement with the pipeline ------------------------------
