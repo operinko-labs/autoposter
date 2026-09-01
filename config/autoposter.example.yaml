@@ -146,6 +146,11 @@ collections:
   #       # imdb/tmdb/tvdb ids to this MDBList list (additions only). Requires
   #       # collections.mdblist_sync_apply above; off reports what would push.
   #       sync_to_mdb_list: "myuser/my-list"
+  #       # row 88: whether this definition's members are the library's own
+  #       # items (the default), their seasons, or their episodes. Show
+  #       # libraries only, and list builders only -- a smart collection's
+  #       # level is rows 173/179.
+  #       builder_level: episode
   #       # Row 19: POST this collection's membership changes here, on top of
   #       # whatever `notifications` does. Read live -- an edit applies at the
   #       # next pass, not the next restart -- but only ever sent to when

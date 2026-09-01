@@ -35,6 +35,15 @@ logger = logging.getLogger(__name__)
 
 LIBTYPES = {"Movie": "movie", "Show": "show"}
 
+# Plex's own collection ``type`` values, which are ``plexapi.utils.SEARCHTYPES``
+# for the four libtypes a collection can hold (pinned in
+# tests/test_plexapi_collection_contract.py). A table rather than the
+# ``1 if movie else 2`` this replaces: that expression answered "season" and
+# "episode" with "show" (roadmap row 88), and a KeyError on an unknown libtype
+# is a loud failure where the old default was a real collection of the wrong
+# kind, created and reported as a success.
+COLLECTION_TYPES = {"movie": 1, "show": 2, "season": 3, "episode": 4}
+
 # Row 49 retired the module constants ``SEPARATOR_TITLE`` and
 # ``SEPARATOR_SUMMARY`` that used to live here: neither has a production
 # reader any more (the content-ratings divider is one of ten now, driven by
@@ -651,10 +660,18 @@ def create_blank_collection(section, libtype: str, title: str):
     collection this service creates: roadmap row 28's ``blank`` operator
     endpoint makes one on demand, and two spellings of this POST would be two
     chances to get the ``uri`` wrong.
+
+    ``libtype`` is Plex's own name for what the collection HOLDS -- movie,
+    show, season or episode (roadmap row 88). Nothing in the list path reaches
+    here: ``lists.reconcile_list_collection`` creates through
+    ``section.createCollection``, where plexapi derives the type from the
+    members themselves. This route is the separator's and the ``ops/blank``
+    endpoint's, and it carries the full table so the two creation paths cannot
+    disagree about what a season collection is.
     """
     server = section._server
     args = {
-        "type": 1 if libtype == "movie" else 2,
+        "type": COLLECTION_TYPES[libtype],
         "title": title,
         "smart": 0,
         "sectionId": section.key,

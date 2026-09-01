@@ -676,11 +676,37 @@ async def _run_one(
         # into a poster URL. The pairing is deliberate, not incidental.
         result = BuilderResult(ids=[])
 
-    # Roadmap row 143: the level is the BUILDER's answer to "what do my ids
-    # name". Resolving episode ids against the item index does not error, it
-    # matches nothing -- and "matched nothing" looks exactly like a correct
-    # collection of titles the library does not own.
-    index = owned_index(result.level)
+    # Roadmap rows 143 + 88: what this definition's members ARE. The builder's
+    # own answer (``result.level``) is what a builder that KNOWS says --
+    # a library-walking episode builder; the definition's ``builder_level`` is
+    # what an operator says for a builder that produces plain ids and cannot
+    # know. Either may be non-default; both being non-default and DIFFERENT is
+    # two answers to one question, and picking one silently resolves against an
+    # index the other half never meant.
+    declared = getattr(definition, "builder_level", "item")
+    if declared != "item" and result.level != "item" and declared != result.level:
+        outcome.failed = True
+        outcome.skipped = True
+        outcome.actions.append(
+            "%r: builder_level is %r but %r builds %s-level members; nothing "
+            "was applied. Remove builder_level, or point the definition at a "
+            "builder that produces %s ids"
+            % (definition.title, declared, definition.builder, result.level, declared)
+        )
+        return outcome
+    level = declared if declared != "item" else result.level
+    if level != "item" and ctx.library_type != "Show":
+        outcome.failed = True
+        outcome.skipped = True
+        outcome.actions.append(
+            "%r: %s-level members exist only in a Show library, and this pass "
+            "is running against a %s library, where the search would match "
+            "nothing at all. Narrow the definition with `libraries:` so it only "
+            "targets Show libraries"
+            % (definition.title, level, ctx.library_type)
+        )
+        return outcome
+    index = owned_index(level)
     resolved = resolve_external(index, result.ids)
     outcome.unresolved = resolved.unresolved
     if resolved.unresolved:

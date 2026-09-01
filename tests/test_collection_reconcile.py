@@ -696,3 +696,61 @@ def test_shape_conflict_treats_a_missing_attribute_as_a_list_collection():
     bare = FakeCollection("Hand Picked")
     assert shape_conflict(bare, "Hand Picked", want_smart=False) is None
     assert shape_conflict(bare, "Hand Picked", want_smart=True) is not None
+
+
+# --- roadmap row 88: a blank collection at season or episode granularity -----
+#
+# The LIST path creates through ``section.createCollection``, where plexapi
+# derives the type from the members (pinned in
+# tests/test_plexapi_collection_contract.py). This raw POST is the OTHER
+# creation route -- the separator and the ``ops/blank`` endpoint -- and it
+# hardcoded ``1 if libtype == "movie" else 2``, which answers "season" and
+# "episode" with "show".
+
+
+class _BlankPostSection:
+    """Captures the raw POST ``create_blank_collection`` makes."""
+
+    key = "7"
+
+    def __init__(self):
+        self.queries: list[str] = []
+        self._server = self
+        self._session = type("Sess", (), {"post": "POST-SENTINEL"})()
+
+    def _uriRoot(self):
+        return "server://abc/com.plexapp.plugins.library"
+
+    def query(self, key, method=None, **kwargs):
+        self.queries.append(key)
+
+    def collection(self, title):
+        return type("C", (), {"title": title})()
+
+
+def _created_type(libtype: str) -> str:
+    from urllib.parse import parse_qs, urlsplit
+
+    from autoposter.collections.reconcile import create_blank_collection
+
+    section = _BlankPostSection()
+    create_blank_collection(section, libtype, "Blank")
+    [query] = section.queries
+    return parse_qs(urlsplit(query).query)["type"][0]
+
+
+def test_a_blank_collection_carries_plexs_own_type_for_every_libtype():
+    assert _created_type("movie") == "1"
+    assert _created_type("show") == "2"
+    assert _created_type("season") == "3"
+    assert _created_type("episode") == "4"
+
+
+def test_an_unknown_libtype_raises_instead_of_creating_a_show_collection():
+    """The old ``else 2`` made every unrecognised libtype a show collection --
+    a real object in the operator's library, of the wrong kind, reported as
+    created."""
+    import pytest
+
+    with pytest.raises(KeyError):
+        _created_type("chapter")

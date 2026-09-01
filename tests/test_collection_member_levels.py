@@ -289,3 +289,115 @@ async def test_a_builder_reads_the_engines_episode_index_through_the_bundle(
     assert seen["keys"] == ["S01E01", "S01E02"]
     assert [i.title for i in section.created["Walked"]] == ["S01E01", "S01E02"]
     assert section.searches == ["episode"], "the accessor must reuse the pass's index"
+
+
+# --- roadmap row 88: the operator-facing level ------------------------------
+#
+# Row 143 made the ENGINE able to resolve at episode level when a builder says
+# its ids name episodes. Row 88 is the other direction: an operator declaring
+# it on the definition, for the builders that produce plain ids and cannot
+# know (``plex_id``, a text file, an MDBList list of episode ids).
+
+
+def test_builder_level_defaults_to_item():
+    """Every definition in every existing config keeps meaning what it meant."""
+    definition = CollectionDefinition(
+        title="Anything", builder="plex_id", params={"ids": ["1"]}
+    )
+    assert definition.builder_level == "item"
+
+
+async def test_a_definition_can_declare_episode_level_for_a_plain_builder(
+    session, registry_entry
+):
+    """The entry-point law for row 88: a ``builder_level`` definition through
+    the real ``run_library``, resolving against the real episode index."""
+    registry_entry(_LevelledBuilder("test_bl_plain", [("tvdb", "7645236")]))
+    section = _section()
+
+    await run_library(
+        session, section, "TV Shows", "Show",
+        [CollectionDefinition(
+            title="Pilots", builder="test_bl_plain", builder_level="episode"
+        )],
+        _config(), sources=SourceClients(),
+    )
+
+    assert [i.title for i in section.created["Pilots"]] == ["S01E01"]
+    assert section.searches == ["episode"]
+
+
+async def test_an_item_level_definition_is_byte_identical_to_before(
+    session, registry_entry
+):
+    """Gate-off: the default value must not buy a traversal, a refusal or a
+    single new action string."""
+    registry_entry(_LevelledBuilder("test_bl_off", [("tvdb", "371980")]))
+    section = _section()
+
+    run = await run_library(
+        session, section, "TV Shows", "Show",
+        [CollectionDefinition(title="Shows", builder="test_bl_off")],
+        _config(), sources=SourceClients(),
+    )
+
+    assert section.searches == []
+    assert [i.title for i in section.created["Shows"]] == ["Severance"]
+    assert run.definitions[0].failed is False
+    assert not [a for a in run.actions if "builder_level" in a]
+
+
+async def test_a_definition_and_a_builder_that_disagree_are_refused(
+    session, registry_entry
+):
+    """Two non-default answers to the same question. Refusing is the only safe
+    reading: silently preferring either one resolves against an index the other
+    half never meant, which is an empty collection nobody asked for."""
+    registry_entry(_LevelledBuilder("test_bl_clash", [("tvdb", "7645236")], "episode"))
+    section = _section()
+
+    run = await run_library(
+        session, section, "TV Shows", "Show",
+        [CollectionDefinition(
+            title="Clash", builder="test_bl_clash", builder_level="season"
+        )],
+        _config(), sources=SourceClients(),
+    )
+
+    assert section.created == {}
+    assert run.definitions[0].failed is True
+    [action] = [a for a in run.actions if "Clash" in a]
+    assert "builder_level" in action and "season" in action and "episode" in action
+
+
+async def test_a_non_item_level_on_a_movie_library_is_refused(
+    session, registry_entry
+):
+    """A Movie library has no seasons and no episodes, so the search would
+    return nothing -- and "returned nothing" is indistinguishable from a
+    correct empty collection. Same refusal shape as ``require_library_type``."""
+    registry_entry(_LevelledBuilder("test_bl_movie", [("tmdb", "278")]))
+    section = FakeSection(shows=[FakeItem("Shawshank", ["tmdb://278"], "movie")])
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(
+            title="Nope", builder="test_bl_movie", builder_level="episode"
+        )],
+        _config(), sources=SourceClients(),
+    )
+
+    assert section.created == {}
+    assert run.definitions[0].failed is True
+    [action] = [a for a in run.actions if "Nope" in a]
+    assert "libraries:" in action and "Movie" in action
+
+
+def test_builder_level_is_refused_on_a_smart_builder():
+    """Rows 173/179 own the smart/`plex_search` side of this question. A
+    definition that asked for it here would load clean and never apply."""
+    with pytest.raises(Exception) as error:
+        CollectionDefinition(
+            title="Smart", builder="cs_bucket", builder_level="episode"
+        )
+    assert "173" in str(error.value) and "179" in str(error.value)

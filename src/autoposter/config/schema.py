@@ -1057,6 +1057,17 @@ class CollectionDefinition(BaseModel):
             "output; 'append' only ever adds members, never removes them."
         ),
     )
+    # Roadmap row 88, on top of row 143's resolution contract. The default is
+    # the library's own granularity, which is what every definition written
+    # before this meant. LIST collections only: the smart/`plex_search` side of
+    # season/episode collections is rows 173/179 and is refused below.
+    builder_level: Literal["item", "season", "episode"] = Field(
+        default="item",
+        description=(
+            "Whether this definition's members are the library's own items, "
+            "their seasons, or their episodes."
+        ),
+    )
     # Cap on members, applied after resolution. ge=1: a limit that could only
     # ever produce an empty collection is a mistake, and empty means "make no
     # changes" downstream, so it would not even fail visibly.
@@ -1316,6 +1327,32 @@ class CollectionDefinition(BaseModel):
                 raise ValueError(
                     f"{field_name!r} does not apply to {self.builder!r}: {why}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _builder_level_needs_a_list_builder(self) -> "CollectionDefinition":
+        """Row 88 ships the LIST half of season/episode collections.
+
+        A smart collection's membership is a filter Plex evaluates itself, so
+        the level is part of the SEARCH -- the ``type:`` selector (roadmap row
+        179) and the season/episode predicate families (row 173), both filed as
+        their own rows with their own sort matrices. Accepting the field here
+        would load clean, apply nothing, and read as configured.
+        """
+        from autoposter.collections.builders import REGISTRY
+
+        if self.builder_level == "item":
+            return self
+        if getattr(REGISTRY.get(self.builder), "smart", False):
+            raise ValueError(
+                f"'builder_level' does not apply to {self.builder!r}: a smart "
+                "collection's members are chosen by a filter Plex evaluates "
+                "itself, so asking for seasons or episodes is a question about "
+                "the SEARCH -- the 'type:' selector (roadmap row 179) and the "
+                "season/episode predicate families (row 173), neither of which "
+                "is built yet. Use a list builder for a season- or "
+                "episode-level collection"
+            )
         return self
 
     @model_validator(mode="after")
