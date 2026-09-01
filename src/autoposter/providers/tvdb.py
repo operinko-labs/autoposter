@@ -80,10 +80,13 @@ def _first_company(companies, categories: tuple[str, ...]) -> str | None:
     A movie's ``companies`` is a dict of company-type buckets (``studio``,
     ``production``, ``distributor``, ``special_effects``, ``network``) --
     confirmed against the mass-ops-2 capture, which differs from a series'
-    ``companies`` (a flat list; see ``parse_tvdb_facts``). TVDb's own
-    ``studio`` bucket is what this field means, but the captured movie
-    fixture carries its actual studios tagged ``production`` instead, so
-    that bucket is tried second rather than left unread.
+    ``companies`` (a flat list; see ``parse_tvdb_facts``). Only the ``studio``
+    bucket is read: a ``production``-bucket fallback was tried and reverted
+    (mass-ops-2 review) because the one captured movie fixture (an empty
+    ``studio`` bucket, seven arbitrary ``production`` entries) cannot
+    establish that TVDb orders ``production`` by studio-ness -- see the
+    roadmap row filed for it. An empty ``studio`` bucket reads as "TVDb has
+    no studio for this title", same as an absent key.
     """
     if not isinstance(companies, dict):
         return None
@@ -131,7 +134,7 @@ def parse_tvdb_facts(payload: dict, is_movie: bool) -> GatheredFacts:
         ) if isinstance(name, str) and name
     ]
     if is_movie:
-        studio = _first_company(data.get("companies"), ("studio", "production"))
+        studio = _first_company(data.get("companies"), ("studio",))
         released = _tvdb_date((data.get("first_release") or {}).get("date"))
     else:
         network = data.get("latestNetwork") or data.get("originalNetwork")

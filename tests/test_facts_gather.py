@@ -3,11 +3,13 @@ from datetime import date
 from pathlib import Path
 import asyncio
 import gzip
+import logging
 
 import httpx
 import pytest
 from sqlalchemy import func, select
 
+from autoposter.config.schema import OperationsConfig
 from autoposter.db.models import ItemFacts, MediaItem
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.gather import (
@@ -18,6 +20,7 @@ from autoposter.facts.gather import (
 )
 from autoposter.facts.models import GatheredFacts
 from autoposter.plex.client import ResolvedItem
+from autoposter.providers.tvdb import TVDBClient
 
 FIXTURES = Path(__file__).parent / "fixtures" / "facts"
 
@@ -462,3 +465,99 @@ async def test_a_failed_miss_refresh_still_returns_a_null_rating(session, monkey
 
     assert facts.critic_rating is None
     assert "critic_rating" not in facts.sources
+
+
+# --- row 84: TVDb as a named source (genres/studio/originally_available) ---
+#
+# gather_facts's own entry point for the overlay, driven through a REAL
+# TVDBClient over httpx.MockTransport -- not a hand-rolled fake client -- so
+# these prove the wiring gather_facts actually does (the gate, the call, the
+# httpx.HTTPError swallow) rather than a double's promise to behave like it.
+
+
+def _tvdb_login_response(request: httpx.Request) -> httpx.Response | None:
+    if request.url.path.endswith("/login"):
+        return httpx.Response(200, json={"data": {"token": "faketoken"}})
+    return None
+
+
+async def test_no_tvdb_source_named_makes_no_tvdb_request(session):
+    """C2's gate-off half: naming no ``*_source`` as ``tvdb`` must not touch
+    the network at all, and the gathered facts must be byte-identical to a
+    pass given no tvdb client whatsoever.
+    """
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return _tvdb_login_response(request) or httpx.Response(500)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        tvdb = TVDBClient("key", http)
+        with_tvdb = await gather_facts(
+            session, item(), FakeTMDB(), FakeMDBList(),
+            operations=OperationsConfig(), tvdb=tvdb,
+        )
+    without_tvdb = await gather_facts(session, item(), FakeTMDB(), FakeMDBList())
+
+    assert calls == []
+    assert with_tvdb == without_tvdb
+
+
+async def test_tvdb_source_named_overlays_the_gathered_facts(session):
+    """C2's gate-on half: naming ``tvdb`` for all three fields makes the
+    overlay fire, replacing TMDb's genres/studio/date with TVDb's and
+    recording ``tvdb`` as each field's source.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        login = _tvdb_login_response(request)
+        if login is not None:
+            return login
+        assert request.url.path == "/v4/movies/371980/extended"
+        return httpx.Response(200, json={"data": {
+            "genres": [{"name": "Fantasy"}],
+            "companies": {"studio": [{"name": "Studio Ghibli"}]},
+            "first_release": {"date": "2001-07-20"},
+        }})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        tvdb = TVDBClient("key", http)
+        operations = OperationsConfig(
+            genres_source="tvdb", studio_source="tvdb",
+            originally_available_source="tvdb",
+        )
+        facts = await gather_facts(
+            session, item(), FakeTMDB(), FakeMDBList(),
+            operations=operations, tvdb=tvdb,
+        )
+
+    assert facts.genres == ["Fantasy"]
+    assert facts.studio == "Studio Ghibli"
+    assert facts.originally_available == date(2001, 7, 20)
+    assert facts.sources["genres"] == "tvdb"
+    assert facts.sources["studio"] == "tvdb"
+    assert facts.sources["originally_available"] == "tvdb"
+
+
+async def test_tvdb_http_failure_leaves_the_field_ungathered(session, caplog):
+    """The MDBList precedent, one provider along: a TVDb 500 must not throw
+    away everything else this pass gathered, and the pod log must carry the
+    detail rather than swallowing it silently.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _tvdb_login_response(request) or httpx.Response(500, text="tvdb is down")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        tvdb = TVDBClient("key", http)
+        operations = OperationsConfig(genres_source="tvdb")
+        with caplog.at_level(logging.WARNING):
+            facts = await gather_facts(
+                session, item(), FakeTMDB(), FakeMDBList(),
+                operations=operations, tvdb=tvdb,
+            )
+
+    # TVDb never answers, so TMDb's own genres (FakeTMDB's "Horror") survive
+    # untouched -- the overlay simply never fires.
+    assert facts.genres == ["Horror"]
+    assert facts.sources.get("genres") != "tvdb"
+    assert "tvdb request failed" in caplog.text

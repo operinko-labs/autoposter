@@ -22,11 +22,22 @@ def _payload(name):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def test_a_movie_extended_payload_yields_genres_studio_and_date():
+def test_a_movie_extended_payload_yields_genres_and_date():
     facts = parse_tvdb_facts(_payload("tvdb_movie_extended.json"), is_movie=True)
     assert facts.genres == ["Drama", "Fantasy"]
-    assert facts.studio == "Telecinco"
     assert facts.originally_available == date(2006, 8, 25)
+
+
+def test_a_movie_with_an_empty_studio_bucket_yields_no_studio():
+    # The captured fixture's `companies.studio` bucket is empty and its
+    # `companies.production` bucket carries seven arbitrary entries -- reading
+    # the first `production` entry as "the studio" was tried and reverted
+    # (mass-ops-2 review) because one fixture cannot establish that TVDb
+    # orders `production` by studio-ness. Filed rather than guessed; see the
+    # roadmap row this pins.
+    facts = parse_tvdb_facts(_payload("tvdb_movie_extended.json"), is_movie=True)
+    assert facts.studio is None
+    assert "studio" not in facts.sources
 
 
 def test_a_series_extended_payload_yields_genres_network_and_first_aired():
