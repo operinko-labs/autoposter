@@ -265,3 +265,109 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     )
     assert plex_item.edits == [{"studio.locked": 0}]
     assert plex_item.saved == 1
+
+
+# --- I2: pipeline.py:1137's `p.name == "TVDB"` lookup, driven end to end ----
+#
+# Not through gather_facts directly (test_facts_gather.py already covers the
+# ``tvdb is None`` gate) but through ``process_item``, the real caller that
+# resolves ``tvdb`` out of the process's ``providers`` list before handing it
+# to ``apply_metadata``. This is the seam the branch review found untested.
+
+import httpx  # noqa: E402
+
+from autoposter.facts import gather as _gather_module  # noqa: E402
+from autoposter.intake.arr import RenderIntent  # noqa: E402
+from autoposter.providers.tvdb import TVDBClient  # noqa: E402
+from autoposter.render.pipeline import process_item  # noqa: E402
+
+
+class FakePlexServer:
+    """The minimum ``plex`` surface ``process_item`` calls."""
+
+    def __init__(self, item, plex_item):
+        self._item = item
+        self._plex_item = plex_item
+
+    async def resolve(self, intent):
+        return self._item
+
+    async def fetch_item(self, rating_key):
+        return self._plex_item
+
+
+def _movie_intent():
+    return RenderIntent(kind="movie", title="Heat", tmdb_id=949)
+
+
+def _tvdb_login_response(request: httpx.Request) -> httpx.Response | None:
+    if request.url.path.endswith("/login"):
+        return httpx.Response(200, json={"data": {"token": "faketoken"}})
+    return None
+
+
+@pytest.mark.asyncio
+async def test_process_item_wires_a_real_tvdb_provider_into_the_request(session, config):
+    # Artwork disabled so this drives only the metadata-operations block --
+    # no provider, no imagemagick, needed for the render loop below it.
+    config.artwork.poster.enabled = False
+    config.artwork.background.enabled = False
+    config.operations.genres_source = "tvdb"
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        login = _tvdb_login_response(request)
+        if login is not None:
+            return login
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"data": {
+            "genres": [{"name": "Fantasy"}],
+            "companies": {"studio": []},
+            "first_release": {},
+        }})
+
+    plex_item = RecordingPlexItem(studio="Warner", locks=[])
+    item = _item(tvdb_id=371980)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        tvdb = TVDBClient("key", http)
+        await process_item(
+            session, config, http, FakePlexServer(item, plex_item), [tvdb],
+            _movie_intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
+            mdblist=NullMDBListClient(),
+        )
+
+    assert calls == ["/v4/movies/371980/extended"]
+
+
+@pytest.mark.asyncio
+async def test_process_item_warns_when_tvdb_is_absent_from_providers(
+    session, config, caplog, monkeypatch
+):
+    # Same config, but the ``providers`` list process_item is handed (built
+    # from ``providers.order`` in real wiring, see app.py's _build_providers)
+    # carries no TVDB client -- e.g. an operator removed "TVDB" from that
+    # list, or a rename broke pipeline.py's name lookup.
+    monkeypatch.setattr(_gather_module, "_tvdb_source_unconfigured_warned", False)
+    config.artwork.poster.enabled = False
+    config.artwork.background.enabled = False
+    config.operations.genres_source = "tvdb"
+
+    plex_item = RecordingPlexItem(studio="Warner", locks=[])
+    item = _item(tvdb_id=371980)
+
+    class NotTVDB:
+        name = "TMDB"
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(500)
+    )) as http:
+        with caplog.at_level(logging.WARNING):
+            await process_item(
+                session, config, http, FakePlexServer(item, plex_item), [NotTVDB()],
+                _movie_intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
+                mdblist=NullMDBListClient(),
+            )
+
+    assert "no TVDb provider is configured" in caplog.text

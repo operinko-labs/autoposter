@@ -15,6 +15,12 @@ from autoposter.plex.client import ResolvedItem
 
 logger = logging.getLogger(__name__)
 
+# Render jobs are queue-drained per item, not swept in a discrete "pass" the
+# way the collections engine is -- there is no boundary to reset this on. A
+# process-wide latch is the simplest thing that still stops a misconfigured
+# deployment from spamming one warning line per item across a whole library.
+_tvdb_source_unconfigured_warned = False
+
 
 def format_critic(value: float | None) -> str | None:
     """One decimal, always — ``9.0`` rather than ``9``.
@@ -131,6 +137,15 @@ async def gather_facts(
         for field in ("genres", "studio", "originally_available")
         if getattr(operations, f"{field}_source", None) == "tvdb"
     }
+    if wanted and tvdb is None:
+        global _tvdb_source_unconfigured_warned
+        if not _tvdb_source_unconfigured_warned:
+            logger.warning(
+                "operations names tvdb as a source for %s, but no TVDb "
+                "provider is configured (check providers.order)",
+                ", ".join(sorted(wanted)),
+            )
+            _tvdb_source_unconfigured_warned = True
     if wanted and tvdb is not None and item.tvdb_id and item.kind in ("movie", "show"):
         try:
             tvdb_facts = await tvdb.extended_facts(item.tvdb_id, item.kind == "movie")

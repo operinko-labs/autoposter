@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from autoposter.config.schema import OperationsConfig
 from autoposter.db.models import ItemFacts, MediaItem
 from autoposter.facts import imdb as imdb_module
+from autoposter.facts import gather as gather_module
 from autoposter.facts.gather import (
     format_audience,
     format_critic,
@@ -561,3 +562,22 @@ async def test_tvdb_http_failure_leaves_the_field_ungathered(session, caplog):
     assert facts.genres == ["Horror"]
     assert facts.sources.get("genres") != "tvdb"
     assert "tvdb request failed" in caplog.text
+
+
+async def test_tvdb_source_named_but_no_tvdb_client_configured_warns(session, monkeypatch, caplog):
+    """I2: naming ``genres_source: tvdb`` while ``providers.order`` builds no
+    TVDb client (or a rename breaks pipeline.py's ``p.name == "TVDB"`` lookup)
+    must not fail silently -- gather_facts's own ``tvdb is None`` gate is the
+    one place both failure modes funnel through, so the warning belongs here.
+    """
+    monkeypatch.setattr(gather_module, "_tvdb_source_unconfigured_warned", False)
+    operations = OperationsConfig(genres_source="tvdb")
+
+    with caplog.at_level(logging.WARNING):
+        facts = await gather_facts(
+            session, item(), FakeTMDB(), FakeMDBList(), operations=operations, tvdb=None,
+        )
+
+    assert facts.genres == ["Horror"]  # TMDb's own value, untouched
+    assert "genres" in caplog.text
+    assert "no TVDb provider is configured" in caplog.text
