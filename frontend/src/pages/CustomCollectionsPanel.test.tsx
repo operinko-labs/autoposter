@@ -649,4 +649,40 @@ describe("CustomCollectionsPanel stale-save recovery", () => {
       ).toHaveLength(2),
     );
   });
+
+  it("never says 'Saved' when the refused save's re-read also fails", async () => {
+    // The doubly-degraded path: a 409 saved nothing, and the re-read that
+    // would have told the truth about what IS stored failed too. Saying
+    // "Saved, but..." here would be the incident's own lie in miniature.
+    let configReads = 0;
+    const fetchMock = vi.fn(async (path: string) => {
+      if (path === "/api/collections/definitions") return json(listing());
+      if (path === "/api/config") {
+        configReads += 1;
+        if (configReads > 1) return json({ detail: "the database is unreachable" }, 500);
+        return json({ ...config(), overrides_revision: "rev-1" });
+      }
+      if (path === "/api/collections/parse-source") {
+        return json({
+          builder: "imdb_list",
+          params: { list: "ls055350410" },
+          display_note: "an IMDb list, in list order",
+        });
+      }
+      if (path === "/api/config/overrides") {
+        return json({ message: "changed elsewhere", changed_paths: [] }, 409);
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<CustomCollectionsPanel />);
+    await screen.findByText("Create from a list URL");
+
+    await fillAndParse();
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    const note = await screen.findByText(/could not be re-read/);
+    expect(note).toHaveTextContent(/^Nothing was saved, and/);
+    expect(note).not.toHaveTextContent(/Saved, but/);
+  });
 });

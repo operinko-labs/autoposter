@@ -642,9 +642,14 @@ export interface ConfigSaveResponse {
   version_after: string;
   restart_required: string[];
   inert?: string[];
-  /** The revision of the document this write stored — the token the next save
-   * from this page must carry. Optional so a response from before it existed
-   * still parses; a page that gets none falls back to the re-read GET. */
+  /** The revision of the document this write stored.
+   *
+   * Served for a future consumer and for cross-checking; no page reads it
+   * today. All four re-seed from the follow-up `GET /api/config` instead,
+   * which is the same token by construction (the backend pins that the two
+   * agree) and also refreshes everything else the page renders. A page that
+   * wanted to skip that round trip could take the revision from here.
+   * Optional so a response from before the field existed still parses. */
   overrides_revision?: string;
 }
 

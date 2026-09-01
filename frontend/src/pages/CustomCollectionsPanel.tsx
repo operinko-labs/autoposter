@@ -418,7 +418,12 @@ export function CustomCollectionsPanel() {
       } catch (caught) {
         if (live.current) {
           setReloadError(
-            `Saved, but the panel could not be re-read (${(caught as Error).message}). ` +
+            // Branching rather than one sentence: this block runs for a save
+            // that happened AND for a 409 that saved nothing, and telling an
+            // operator "Saved, but..." about a write the server refused is the
+            // one thing this whole phase exists to stop.
+            `${saved ? "Saved, but" : "Nothing was saved, and"} the panel ` +
+              `could not be re-read (${(caught as Error).message}). ` +
               "What is shown may be stale — reload the page.",
           );
         }
@@ -655,11 +660,16 @@ export function CustomCollectionsPanel() {
         </p>
       )}
 
+      {/* Outside the `result` gate, not inside it: a refused save never sets
+          `result`, so a re-read failure reported in there would be invisible
+          on exactly the path where the panel is most misleading -- showing
+          settings it failed to refresh, under a note promising it did. */}
+      {reloadError !== null && <p className="custom-stale">{reloadError}</p>}
+
       {result !== null && (
         <div className="custom-saved" role="status">
           <p>{`Saved. Config ${result.version_before} → ${result.version_after}.`}</p>
           <p className="muted">{APPLIES_NOTE}</p>
-          {reloadError !== null && <p className="custom-stale">{reloadError}</p>}
           {result.restart_required.length > 0 && (
             <p className="muted">
               {`Needs a restart: ${result.restart_required.join(", ")}.`}
