@@ -306,6 +306,15 @@ artwork:
   # assets to every season poster and title card beneath it that has none of
   # its own.
   season_episode_templates: false
+  # Roadmap row 44 -- draw an item's original-language title instead of the
+  # localized one, where Plex carries one.
+  use_original_title: false
+  # Roadmap row 45 -- prefer Fanart.tv clearart over clearlogo when
+  # compositing a logo onto a poster.
+  use_clearart: false
+  # Roadmap row 46 -- flatten every composited clearlogo to this one colour.
+  # Unset leaves each logo its own colours.
+  logo_flat_color: null
   output_quality: 92%
 
   poster:
@@ -318,6 +327,7 @@ artwork:
     border_width: 30
     skip_local_text_add: false
     disable_online_asset_fetch: null
+    skip_add_text_when_with_text: false
     text:
       font: Comfortaa-Medium.ttf
       all_caps: true
@@ -344,6 +354,7 @@ artwork:
     add_border: false
     skip_local_text_add: false
     disable_online_asset_fetch: null
+    skip_add_text_when_with_text: false
     text:
       font: Comfortaa-Medium.ttf
       all_caps: true
@@ -367,6 +378,7 @@ artwork:
     add_border: false
     skip_local_text_add: false
     disable_online_asset_fetch: null
+    skip_add_text_when_with_text: false
     text:
       font: Comfortaa-Medium.ttf
       all_caps: true
@@ -393,6 +405,7 @@ artwork:
     skip_words: [TBA]
     skip_local_text_add: false
     disable_online_asset_fetch: null
+    skip_add_text_when_with_text: false
     skip_cjk_titles: false
     season_name_overrides: {}
     text:

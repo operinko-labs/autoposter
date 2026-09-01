@@ -142,6 +142,38 @@ def language_order_for(config: Config, library: str, art_kind: str) -> list[str]
     return art_config_for(config, art_kind).language_order
 
 
+def primary_title_for(item: ResolvedItem, config: Config) -> str:
+    """The title drawn on an artifact (roadmap row 44).
+
+    ``artwork.use_original_title`` swaps in the original-language title where
+    Plex has one. Fail-open by construction: Plex carries ``originalTitle`` for
+    movies and not for shows or episodes, so an absent value is the ordinary
+    case and must quietly keep the localized title rather than draw nothing.
+    """
+    if config.artwork.use_original_title and item.original_title:
+        return item.original_title
+    return item.title
+
+
+def known_with_text(candidate) -> bool:
+    """Whether a provider STATED that this artwork carries text (row 41).
+
+    Deliberately not ``not candidate.is_textless``. That property falls back
+    to a language-token guess when no provider said anything
+    (``providers/base.py``: "TVDB states textlessness outright; the others only
+    imply it"), so an ordinary English-tagged TMDb poster reads as
+    with-text under it. Stripping an operator's overlay, border and title on
+    that inference would be a guess with a visible cost, so this rule fires
+    only on the explicit statement and fails open otherwise -- the controller's
+    adjudication 2, and the reason a provider carrying no signal simply does
+    not trigger the rule.
+
+    ``None`` -- a manual override, which resolved no candidate at all -- is
+    likewise not known with text.
+    """
+    return getattr(candidate, "includes_text", None) is True
+
+
 def title_text_for(
     art_kind: str, item: ResolvedItem, config: Config
 ) -> tuple[str | None, str | None]:
@@ -164,8 +196,8 @@ def title_text_for(
             secondary = (
                 f"{season} {_BULLET} {settings.episode_label} {item.episode_number}"
             )
-        return item.title, secondary
-    return item.title, None
+        return primary_title_for(item, config), secondary
+    return primary_title_for(item, config), None
 
 
 def manual_override_target(config: Config, item: ResolvedItem, art_kind: str) -> Path:
@@ -323,6 +355,7 @@ async def gather_fingerprint_inputs(
     *,
     draw_text: bool = True,
     logo_sha: str = "",
+    suppress_styling: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Collect the ``(text_inputs, asset_hashes)`` halves of the fingerprint.
 
@@ -333,9 +366,13 @@ async def gather_fingerprint_inputs(
     and the cost of that disagreement is re-rendering the whole library.
 
     ``draw_text`` and ``logo_sha`` are what the render path knows and adoption
-    does not: whether a clearlogo replaced the title text, and which logo. The
-    defaults are the adoption case — no logo, title text drawn — so an adopted
-    row and the short-circuit that reads it always agree.
+    does not: whether a clearlogo replaced the title text, and which logo.
+    ``suppress_styling`` (roadmap row 41) is the third thing the render path
+    knows and adoption does not: whether the chosen candidate is known to
+    already carry text, which drops the overlay from the fingerprint too. All
+    three default to the adoption case — no logo, title text drawn, styling
+    not suppressed — so an adopted row and the short-circuit that reads it
+    always agree.
     """
     settings = art_config_for(config, art_kind)
     primary_text, secondary_text = title_text_for(art_kind, item, config)
@@ -345,7 +382,7 @@ async def gather_fingerprint_inputs(
         await asyncio.to_thread(
             _file_sha256, Path(config.overlays_root) / settings.overlay_file
         )
-        if settings.add_overlay
+        if settings.add_overlay and not suppress_styling
         else ""
     )
     font_hashes = []
@@ -492,6 +529,7 @@ async def compose_styled(
     secondary_text: str | None,
     draw_text: bool,
     logo_path: Path | None = None,
+    suppress_styling: bool = False,
 ) -> ComposeResult:
     """Style ``working`` in place -- stamp, base canvas, optional logo, text.
 
@@ -509,9 +547,14 @@ async def compose_styled(
     not wrapped in a thread again.
     """
     settings = art_config_for(config, art_kind)
+    # Row 41: the provider said this image already carries text, so the
+    # overlay and border go with the text rather than being layered onto
+    # somebody's finished design.
+    add_overlay = settings.add_overlay and not suppress_styling
+    add_border = settings.add_border and not suppress_styling
     overlay = (
         str(Path(config.overlays_root) / settings.overlay_file)
-        if settings.add_overlay
+        if add_overlay
         else None
     )
     await asyncio.to_thread(
@@ -522,7 +565,7 @@ async def compose_styled(
         compositor.run,
         compositor.build_base_argv(
             config.magick_binary, str(working), _CANVAS[art_kind], overlay,
-            config.artwork.output_quality, settings.add_border,
+            config.artwork.output_quality, add_border,
             settings.border_color, settings.border_width,
         ),
     )
@@ -532,6 +575,7 @@ async def compose_styled(
             compositor.build_logo_argv(
                 config.magick_binary, str(working), str(logo_path),
                 settings.text, config.artwork.output_quality,
+                config.artwork.logo_flat_color,
             ),
         )
     blocks = []
@@ -652,6 +696,7 @@ async def render_artifact(
         override = await asyncio.to_thread(manual_override_path, config, item, art_kind)
         show_fallback = False
         local_source = False
+        chosen_candidate = None
         if override is not None:
             base_sha = await asyncio.to_thread(_stage_override, override, working)
             source_url, provider_name, textless = str(override), "manual", None
@@ -712,6 +757,7 @@ async def render_artifact(
                 await session.commit()
                 return render
             candidate = selection.candidate
+            chosen_candidate = candidate
             base_sha = await _download(http, candidate.url, working)
             source_url = candidate.url
             provider_name = candidate.provider
@@ -750,6 +796,7 @@ async def render_artifact(
                         imdb_id=item.imdb_id,
                         season_number=item.season_number,
                         episode_number=item.episode_number,
+                        prefer_clearart=config.artwork.use_clearart,
                     ),
                 )
                 if logo_selection.candidate is not None:
@@ -760,12 +807,18 @@ async def render_artifact(
                 elif not config.artwork.logo_text_fallback:
                     suppress_text = True
 
+        suppress_styling = (
+            settings.skip_add_text_when_with_text and known_with_text(chosen_candidate)
+        )
         draw_text = not (art_kind == "poster" and (logo_path is not None or suppress_text))
         if local_source and not draw_text_for_local_source(config, art_kind):
             draw_text = False
+        if suppress_styling:
+            draw_text = False
 
         text_inputs, asset_hashes = await gather_fingerprint_inputs(
-            config, item, art_kind, draw_text=draw_text, logo_sha=logo_sha
+            config, item, art_kind, draw_text=draw_text, logo_sha=logo_sha,
+            suppress_styling=suppress_styling,
         )
 
         fingerprint = compute_fingerprint(
@@ -791,6 +844,7 @@ async def render_artifact(
                 config, art_kind, working,
                 primary_text=primary_text, secondary_text=secondary_text,
                 draw_text=draw_text, logo_path=logo_path,
+                suppress_styling=suppress_styling,
             )
             if styled.truncated:
                 render.status = "truncated"

@@ -27,6 +27,11 @@ class ArtRequest:
     season_number: int | None = None
     episode_number: int | None = None
     season_id: int | None = None
+    # Roadmap row 45. Carried on the request rather than on the client so the
+    # setting stays live: the Fanart response is cached whole and parsed
+    # afterwards, so the same cached payload is simply read differently and no
+    # cache key changes.
+    prefer_clearart: bool = False
 
 
 @dataclass(frozen=True)

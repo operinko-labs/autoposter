@@ -22,18 +22,35 @@ _KEYS = {
     (LOGO, False): ["hdtvlogo", "clearlogo"],
 }
 
+# Roadmap row 45. Fanart's clearart keys, HD first, in the same
+# highest-quality-first order ``_KEYS`` uses for logos.
+_CLEARART_KEYS = {
+    True: ["hdmovieclearart", "movieart"],
+    False: ["hdclearart", "clearart"],
+}
+
 
 def parse_fanart(
-    payload: dict, art_kind: str, is_movie: bool, season_number: int | None
+    payload: dict, art_kind: str, is_movie: bool, season_number: int | None,
+    prefer_clearart: bool = False,
 ) -> list[ArtCandidate]:
     """Convert a Fanart.tv response into candidates.
 
     ``lang`` is ``"00"`` when a designer explicitly tagged the image textless and
     ``""`` when it was simply never tagged; both count as no-language. Every value
     in a Fanart response is a JSON string, including the numbers.
+
+    ``prefer_clearart`` (roadmap row 45) puts the clearart keys AHEAD of the
+    logo keys rather than instead of them: a title with no clearart still gets
+    its clearlogo, which is the difference between a preference and a
+    requirement. Off by default, so a Fanart response is parsed exactly as it
+    was before this row.
     """
+    keys = list(_KEYS.get((art_kind, is_movie), []))
+    if prefer_clearart and art_kind == LOGO:
+        keys = _CLEARART_KEYS[is_movie] + keys
     candidates = []
-    for key in _KEYS.get((art_kind, is_movie), []):
+    for key in keys:
         for entry in payload.get(key) or []:
             url = entry.get("url")
             if not url:
@@ -104,4 +121,7 @@ class FanartClient:
         )
         if payload is None:
             return []
-        return parse_fanart(payload, request.art_kind, request.is_movie, request.season_number)
+        return parse_fanart(
+            payload, request.art_kind, request.is_movie, request.season_number,
+            request.prefer_clearart,
+        )

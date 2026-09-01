@@ -18,6 +18,12 @@ poster whose real render composited a logo will not match the recomputed
 value, so it is reported as affected *whatever the edit was*. That is an
 overcount, never an undercount, of the text and version changes the operator
 is actually asking about. The UI must therefore say "~N", not "N".
+
+A third input is now in the same position: with
+``artwork.use_original_title`` on, the real render drew an original-language
+title this walk cannot know (``renders`` stores no title at all), so such an
+item is reported as affected whatever the edit was. Overcount, never
+undercount, exactly like the logo case above.
 """
 import asyncio
 import hashlib

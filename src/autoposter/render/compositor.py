@@ -119,17 +119,27 @@ def build_text_argv(
 
 
 def build_logo_argv(
-    magick: str, image: str, logo_path: str, style: TextStyle, quality: str
+    magick: str, image: str, logo_path: str, style: TextStyle, quality: str,
+    flat_color: str | None = None,
 ) -> list[str]:
     """Composite a clearlogo in place of the title text.
 
     The logo is fitted to the same box as the text block and placed at the same
     gravity and offset.
+
+    ``flat_color`` (roadmap row 46) flattens the logo to one colour before it
+    is resized: ``-fill C -colorize 100`` recolours every pixel while leaving
+    the alpha channel alone, which is what keeps a flattened logo a logo
+    rather than a coloured rectangle. Applied before ``-resize`` so the
+    recolour costs one pass over the original, smaller-or-equal image.
     """
     group = ["(", "-background", "none"]
     if logo_path.lower().endswith(".svg"):
         group += ["-density", "300"]
-    group += [logo_path, "-resize", f"{style.max_width}x{style.max_height}", ")"]
+    group += [logo_path]
+    if flat_color:
+        group += ["-fill", flat_color, "-colorize", "100"]
+    group += ["-resize", f"{style.max_width}x{style.max_height}", ")"]
     return (
         [magick, image]
         + group

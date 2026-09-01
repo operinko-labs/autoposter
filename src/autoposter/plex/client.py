@@ -56,6 +56,9 @@ class ResolvedItem:
     tvdb_id: int | None
     imdb_id: str | None
     parent_rating_key: str | None = None
+    # Roadmap row 44. Plex carries originalTitle for movies and not for shows
+    # or episodes, so None is the ordinary case rather than the corner one.
+    original_title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -294,6 +297,7 @@ class _RawMatch:
     art_url: str | None
     guids: list[str]
     parent_rating_key: str | None
+    original_title: str | None = None
 
 
 class PlexClient:
@@ -445,6 +449,7 @@ class PlexClient:
             art_url=getattr(container, "thumb", None),
             guids=[g.id for g in getattr(container, "guids", [])],
             parent_rating_key=parent_rating_key,
+            original_title=getattr(item, "originalTitle", None),
         )
 
     def _search_sync(self, intent: RenderIntent) -> _RawMatch | None:
@@ -553,6 +558,7 @@ class PlexClient:
                         art_url=getattr(item, "thumb", None),
                         guids=[g.id for g in getattr(item, "guids", [])],
                         parent_rating_key=parent_rating_key,
+                        original_title=getattr(target, "originalTitle", None),
                     )
         return None
 
@@ -691,4 +697,5 @@ class PlexClient:
             tvdb_id=as_int(guids.get("tvdb")) or intent.tvdb_id,
             imdb_id=guids.get("imdb") or intent.imdb_id,
             parent_rating_key=match.parent_rating_key,
+            original_title=match.original_title,
         )

@@ -338,6 +338,18 @@ class ArtKindConfig(BaseModel):
             "still used. Unset inherits artwork.disable_online_asset_fetch."
         ),
     )
+    # Roadmap row 41. Fires only on a provider's explicit statement that the
+    # image carries text -- never on the language-token inference, which
+    # guesses and would strip an operator's styling on a guess.
+    skip_add_text_when_with_text: bool = Field(
+        default=False,
+        description=(
+            "Skip this artifact's text, overlay and border when the chosen "
+            "provider artwork is known to already carry text. Only a provider "
+            "that states this outright counts; artwork with no such statement "
+            "is treated as unknown and styled normally."
+        ),
+    )
 
     @field_validator("language_order")
     @classmethod
@@ -469,6 +481,33 @@ class ArtworkConfig(BaseModel):
             "Apply a show's SeasonTemplate and EpisodeTemplate manual assets to "
             "every season poster and title card beneath it that has no manual "
             "asset of its own. A season's or episode's own file always wins."
+        ),
+    )
+    # Roadmap row 44.
+    use_original_title: bool = Field(
+        default=False,
+        description=(
+            "Draw an item's original-language title instead of the localized "
+            "one, where Plex carries an original title for it. An item with "
+            "none keeps its localized title."
+        ),
+    )
+    # Roadmap row 45.
+    use_clearart: bool = Field(
+        default=False,
+        description=(
+            "Prefer Fanart.tv clearart over clearlogo when compositing a logo "
+            "onto a poster. Clearlogo is still used when no clearart exists."
+        ),
+    )
+    # Roadmap row 46. One nullable colour, not a bool plus a colour: unset
+    # means no recolour, and two spellings of one setting is one too many.
+    logo_flat_color: str | None = Field(
+        default=None,
+        description=(
+            "Flatten every composited clearlogo to this one colour -- an "
+            "ImageMagick colour name or hex value, e.g. 'white' or '#ff0000'. "
+            "Unset leaves each logo its own colours."
         ),
     )
 
