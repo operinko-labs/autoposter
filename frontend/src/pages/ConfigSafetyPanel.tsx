@@ -113,14 +113,25 @@ export function ConfigSafetyPanel({
     } catch (caught) {
       if (!live.current) return;
       if (caught instanceof ApiError && caught.status === 409) {
-        // Never retried. Re-read, and say what happened.
-        setNote(STALE_SAVE_NOTE);
-        await onChanged();
+        // Never retried. Re-read, and only claim the page shows current
+        // settings once that re-read has actually happened -- a failed
+        // re-read is a different, worse failure than the save it followed.
+        try {
+          await onChanged();
+          if (live.current) setNote(STALE_SAVE_NOTE);
+        } catch (reread) {
+          if (live.current) setError((reread as Error).message);
+        }
       } else {
         setError(refusal(caught));
       }
     } finally {
-      if (live.current) setBusy(false);
+      if (live.current) {
+        setBusy(false);
+        // A tick made for this submit does not carry over to the next one,
+        // win or lose -- the drop cap it disarms must be re-armed by intent.
+        setConfirm(false);
+      }
     }
   }
 
@@ -130,8 +141,10 @@ export function ConfigSafetyPanel({
         method: "POST",
         body: JSON.stringify(guards()),
       });
-      if (live.current) setNote("Restored. The settings below are the restored ones.");
+      // Said only once the re-read it describes has actually happened --
+      // otherwise it is a claim about settings the page has not yet seen.
       await onChanged();
+      if (live.current) setNote("Restored. The settings below are the restored ones.");
       await reload();
     });
   }
@@ -144,6 +157,10 @@ export function ConfigSafetyPanel({
       });
       const stamp = envelope.exported_at.replace(/[:.]/g, "-");
       if (live.current) {
+        // The previous download's URL has served its purpose the moment a
+        // new one replaces it; only the object it names would otherwise
+        // outlive the click that made it.
+        if (download !== null) URL.revokeObjectURL(download.href);
         setDownload({ href: URL.createObjectURL(blob), name: `autoposter-overrides-${stamp}.json` });
       }
     });
@@ -152,6 +169,7 @@ export function ConfigSafetyPanel({
   async function choose(file: File | undefined) {
     if (file === undefined) return;
     setPending(null);
+    setNote(null);
     let parsed: unknown;
     try {
       parsed = JSON.parse(await file.text());
@@ -164,6 +182,7 @@ export function ConfigSafetyPanel({
       envelope === null ||
       typeof envelope !== "object" ||
       envelope.autoposter_overrides !== 1 ||
+      envelope.document === null ||
       typeof envelope.document !== "object"
     ) {
       // Checked here as well as on the server, because the two refusals say
@@ -192,11 +211,10 @@ export function ConfigSafetyPanel({
         method: "POST",
         body: JSON.stringify({ ...pending.envelope, ...guards() }),
       });
-      if (live.current) {
-        setPending(null);
-        setNote(`Imported ${pending.name}.`);
-      }
+      if (live.current) setPending(null);
       await onChanged();
+      // Same reasoning as restore(): said only once the re-read has happened.
+      if (live.current) setNote(`Imported ${pending.name}.`);
       await reload();
     });
   }
@@ -262,7 +280,11 @@ export function ConfigSafetyPanel({
         type="file"
         accept="application/json,.json"
         disabled={busy}
-        onChange={(event) => void choose(event.target.files?.[0])}
+        onChange={(event) => {
+          void choose(event.target.files?.[0]);
+          // Reset so picking the same file again fires another change event.
+          event.target.value = "";
+        }}
       />
       {pending !== null && (
         <>

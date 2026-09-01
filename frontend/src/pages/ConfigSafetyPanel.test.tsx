@@ -181,6 +181,101 @@ describe("the previous-versions list", () => {
     expect(screen.getByText(STALE_SAVE_NOTE)).toBeInTheDocument();
     expect(onChanged).toHaveBeenCalledTimes(1);
   });
+
+  it("surfaces a failed re-read on a stale restore too, instead of claiming the page is current", async () => {
+    const onChanged = vi.fn(async () => {
+      throw new Error("network dropped");
+    });
+    stubFetch({
+      restore: () =>
+        json({ message: "moved", current_revision: "rev-9", changed_paths: [] }, 409),
+    });
+    await act(async () => {
+      render(<ConfigSafetyPanel revision="rev-1" onChanged={onChanged} />);
+    });
+
+    // The unhandled-rejection concern: this must not throw out of the click
+    // handler even though the re-read itself fails.
+    await clickRestore();
+
+    expect(screen.getByText("network dropped")).toBeInTheDocument();
+    // The claim that "the page now shows the current settings" would be a
+    // lie here -- the re-read that would make it true never completed.
+    expect(screen.queryByText(STALE_SAVE_NOTE)).not.toBeInTheDocument();
+  });
+
+  it("re-submits a refused restore with confirm once the operator ticks the box, carrying the same snapshot", async () => {
+    let restoreCalls = 0;
+    const { calls } = await renderPanel({
+      restore: () => {
+        restoreCalls += 1;
+        return restoreCalls === 1
+          ? json(
+              {
+                detail: [
+                  {
+                    path: "document",
+                    message: "this would drop 11 stored overrides; send confirm: true to do it deliberately",
+                  },
+                ],
+              },
+              422,
+            )
+          : json({ version_before: "a", version_after: "b", restart_required: [] });
+      },
+    });
+
+    await clickRestore(0);
+    expect(screen.getByText(/would drop 11 stored overrides/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/Allow this to remove settings/i));
+    await clickRestore(0);
+
+    const restores = calls.filter((call) => call.path.endsWith("/restore"));
+    expect(restores).toHaveLength(2);
+    // Same snapshot both times.
+    expect(restores[0].path).toBe(restores[1].path);
+    expect(JSON.parse(String(restores[0].init?.body))).toEqual({
+      confirm: false,
+      expected_revision: "rev-1",
+    });
+    expect(JSON.parse(String(restores[1].init?.body))).toEqual({
+      confirm: true,
+      expected_revision: "rev-1",
+    });
+    expect(screen.queryByText(/would drop 11 stored overrides/)).not.toBeInTheDocument();
+  });
+
+  it("does not carry a confirm tick into a later restore -- it resets after every submit, win or lose", async () => {
+    let restoreCalls = 0;
+    const { calls } = await renderPanel({
+      restore: () => {
+        restoreCalls += 1;
+        return restoreCalls === 1
+          ? json({ version_before: "a", version_after: "b", restart_required: [] })
+          : json(
+              {
+                detail: [
+                  { path: "document", message: "this would drop 4 stored overrides; send confirm: true" },
+                ],
+              },
+              422,
+            );
+      },
+    });
+
+    fireEvent.click(screen.getByLabelText(/Allow this to remove settings/i));
+    await clickRestore(0);
+    // The tick that pushed the first restore through does not survive it.
+    expect(screen.getByLabelText(/Allow this to remove settings/i)).not.toBeChecked();
+
+    await clickRestore(0);
+    expect(screen.getByText(/this would drop 4 stored overrides/)).toBeInTheDocument();
+
+    const restores = calls.filter((call) => call.path.endsWith("/restore"));
+    expect(restores).toHaveLength(2);
+    expect(JSON.parse(String(restores[1].init?.body)).confirm).toBe(false);
+  });
 });
 
 describe("export", () => {
@@ -280,5 +375,72 @@ describe("import", () => {
     await click(/Import these settings/i);
 
     expect(screen.getByText(/workers: Input should be a valid integer/)).toBeInTheDocument();
+  });
+
+  it("renders a FastAPI-shaped 422 (loc/msg) readably instead of [object Object]", async () => {
+    await renderPanel({
+      imported: () =>
+        json(
+          {
+            detail: [
+              { loc: ["body", "document", "foo"], msg: "Extra inputs are not permitted", type: "extra_forbidden" },
+            ],
+          },
+          422,
+        ),
+    });
+
+    await choose(FILE);
+    await click(/Import these settings/i);
+
+    expect(screen.getByText("foo: Extra inputs are not permitted")).toBeInTheDocument();
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
+  });
+
+  it("re-submits a refused import with confirm once the operator ticks the box, carrying the same approved envelope", async () => {
+    let importCalls = 0;
+    const { calls } = await renderPanel({
+      imported: () => {
+        importCalls += 1;
+        return importCalls === 1
+          ? json(
+              {
+                detail: [
+                  {
+                    path: "document",
+                    message: "this would drop 11 stored overrides; send confirm: true to do it deliberately",
+                  },
+                ],
+              },
+              422,
+            )
+          : json({ version_before: "a", version_after: "b", restart_required: [] });
+      },
+    });
+
+    await choose(FILE);
+    await click(/Import these settings/i);
+    expect(screen.getByText(/would drop 11 stored overrides/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/Allow this to remove settings/i));
+    await click(/Import these settings/i);
+
+    const imports = calls.filter((call) => call.path === "/api/config/overrides/import");
+    expect(imports).toHaveLength(2);
+    expect(JSON.parse(String(imports[0].init?.body))).toEqual({
+      autoposter_overrides: 1,
+      exported_at: "x",
+      document: { workers: 9 },
+      confirm: false,
+      expected_revision: "rev-1",
+    });
+    expect(JSON.parse(String(imports[1].init?.body))).toEqual({
+      autoposter_overrides: 1,
+      exported_at: "x",
+      document: { workers: 9 },
+      confirm: true,
+      expected_revision: "rev-1",
+    });
+    expect(screen.queryByText(/would drop 11 stored overrides/)).not.toBeInTheDocument();
   });
 });

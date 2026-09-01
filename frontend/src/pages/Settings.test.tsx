@@ -200,14 +200,27 @@ describe("Settings configuration", () => {
   });
 
   it("offers backup and previous versions on the settings page, not a new route", async () => {
-    // The panel does its own fetching; `stubConfig` answers every request with
-    // the config body, which the panel reads as an empty snapshot list.
-    stubConfig();
+    // The panel does its own fetching, against a different endpoint than the
+    // page's config load -- routed per URL, and a fresh Response per call, so
+    // this actually exercises the panel against the snapshot list's real
+    // shape rather than a config body it happens to tolerate.
+    const snapshot = { id: 42, created_at: "2026-09-03T14:22:00+00:00", path_count: 3, reason: "save" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => {
+        const body = path === "/api/config/snapshots" ? [snapshot] : CONFIG;
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
     await renderSettings();
 
     expect(
       screen.getByRole("heading", { name: "Backup and previous versions" }),
     ).toBeInTheDocument();
+    expect(screen.getByText(/3 settings/)).toBeInTheDocument();
   });
 });
 
