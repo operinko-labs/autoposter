@@ -60,6 +60,7 @@ from autoposter.collections.reconcile import (
     shape_conflict,
     would_proceed,
 )
+from autoposter.collections.mdblist_sync import sync_membership
 from autoposter.collections.posters import LOCAL_ASSET_KIND, apply_local_posters_to_unmanaged
 from autoposter.collections.resolve import build_owned_index, resolve_external
 from autoposter.config.schema import CollectionDefinition
@@ -852,6 +853,18 @@ async def _run_one(
         # keys mean a dry run or an unchanged membership: nothing to announce.
         outcome.added = deltas.get("added", 0)
         outcome.removed = deltas.get("removed", 0)
+    # Row 31, after everything that decides the membership -- resolution, the
+    # filter and the limit -- so what is pushed is what the collection actually
+    # holds. Outside the if/elif/else above on purpose: a definition whose
+    # filter emptied it still has a truthful (empty) membership to report, and
+    # ``sync_membership`` reports rather than pushing in that case.
+    if getattr(definition, "sync_to_mdb_list", None):
+        outcome.actions += await sync_membership(
+            definition, items, owned_index(), result.ids,
+            is_movie=ctx.library_type == "movie",
+            client=ctx.sources.mdblist,
+            apply=config.collections.mdblist_sync_apply and not dry_run and not preview,
+        )
     return outcome
 
 

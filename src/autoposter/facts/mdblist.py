@@ -294,3 +294,33 @@ class MDBListClient:
             )
         _raise_for_error(payload, subject)
         return parse_list_items(payload, subject)
+
+    async def add_list_items(self, reference: str, payload: dict) -> dict:
+        """Add members to one MDBList list. **The only WRITE in this client.**
+
+        ``reference`` is the same ``"<user>/<slug>"``-or-numeric-id the read
+        path takes, so a definition points at one list for both directions.
+
+        Deliberately NOT routed through ``fetch_json``: that seam exists to
+        cache reads, and caching a write would mean a second identical push
+        silently did nothing. This posts directly and never touches the
+        provider cache.
+
+        Additions only -- there is no remove counterpart. A removal path would
+        make a third-party list's contents deletable by a definition edit,
+        which is a destructive capability roadmap row 31 does not ask for.
+
+        The apikey travels as a query parameter, so it is in the request URL
+        and therefore in ``str()`` of any httpx error raised from here. Callers
+        must report the exception's CLASS NAME on served surfaces and let the
+        message reach the pod log only.
+        """
+        url = f"{BASE_URL}/lists/{reference}/items/add"
+        params = {"apikey": self._apikey}
+        response = await self._client.post(
+            url, params=params, json=payload, headers={"User-Agent": "autoposter"}
+        )
+        response.raise_for_status()
+        body = response.json()
+        _raise_for_error(body, f"MDBList list {reference!r}")
+        return body

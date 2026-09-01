@@ -923,6 +923,17 @@ class CollectionDefinition(BaseModel):
         default=None,
         description="A summary text that overrides what the builder would otherwise derive for this collection.",
     )
+    # Roadmap row 31. Unset means this definition pushes nothing; the
+    # deployment ALSO has to set collections.mdblist_sync_apply, so a
+    # definition copied from someone else's config cannot start writing to a
+    # third-party service on its own.
+    sync_to_mdb_list: str | None = Field(
+        default=None,
+        description=(
+            "An MDBList list -- '<user>/<slug>' or a numeric list id -- this "
+            "collection's members are added to. Unset pushes nothing."
+        ),
+    )
     sort: str = Field(
         default="custom",
         description="The order Plex applies to this collection's members, e.g. 'custom' (the default) or 'release'.",
@@ -1353,6 +1364,16 @@ class CollectionsConfig(BaseModel):
     apply_to_plex: bool = Field(
         default=False,
         description="Actually write collection changes to Plex; off only reports what reconciliation would do.",
+    )
+    # Roadmap row 31, the deployment-level half of the two gates. Off reports
+    # what each definition would push and sends nothing, the same posture
+    # apply_to_plex takes for Plex itself.
+    mdblist_sync_apply: bool = Field(
+        default=False,
+        description=(
+            "Actually add collection members to the MDBList lists definitions "
+            "name; off only reports what would be pushed."
+        ),
     )
     # The ownership boundary: only collections carrying this label are ever
     # created or modified. Must not be "Kometa" -- that is the label the tool

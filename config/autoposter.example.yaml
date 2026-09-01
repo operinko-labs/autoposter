@@ -67,6 +67,7 @@ badges:
 collections:
   enabled: true # reconcile the Common Sense age-bucket collections
   apply_to_plex: false # dry run by default: report the actions, change nothing
+  mdblist_sync_apply: false # row 31: actually push definitions' sync_to_mdb_list members; off only reports what would be pushed
   ownership_label: autoposter # only collections carrying this label are ever modified
   libraries: # Plex library names to reconcile
     - Movies
@@ -125,6 +126,10 @@ collections:
   #       summary: A few favourites.
   #       sync_mode: sync # the collection is exactly this list; `append` only ever adds
   #       limit: 50 # cap on members, applied after resolution
+  #       # Row 31: after this definition's own membership is resolved, push its
+  #       # imdb/tmdb/tvdb ids to this MDBList list (additions only). Requires
+  #       # collections.mdblist_sync_apply above; off reports what would push.
+  #       sync_to_mdb_list: "myuser/my-list"
   #       # Row 19: POST this collection's membership changes here, on top of
   #       # whatever `notifications` does. Read live -- an edit applies at the
   #       # next pass, not the next restart -- but only ever sent to when
