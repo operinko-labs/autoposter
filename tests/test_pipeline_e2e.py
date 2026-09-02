@@ -5,7 +5,9 @@ import pytest
 from sqlalchemy import select
 
 from autoposter.config.loader import load_config
-from autoposter.db.models import Render
+from autoposter.db.models import ItemFacts, Render
+from autoposter.facts.mdblist import NullMDBListClient
+from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
@@ -354,3 +356,80 @@ async def test_every_kind_refusing_still_fails_the_job(config, session):
 
     rows = (await session.execute(select(Render))).scalars().all()
     assert {r.status for r in rows} == {"failed"}
+
+
+async def test_a_last_kind_refusing_with_facts_enabled_still_writes_facts(config, session):
+    """Regression coverage for a previously-untested combination: operations
+    enabled + `tmdb_facts` supplied (so `media_item` is loaded before the
+    artifact loop) with the refusal on the LAST kind the loop touches
+    (background, for a movie) -- unlike
+    `test_a_non_first_kind_refusing_still_badges_the_earlier_kind` above,
+    which never supplies `tmdb_facts`.
+
+    A re-review flagged this combination as a hypothesized second victim of
+    the containment's `session.rollback()`: since `rollback()` expires the
+    entire identity map, and no LATER `render_artifact` call follows a
+    last-kind refusal to revive `media_item` as a side effect of its own
+    `_upsert_media_item` select, the badge stage's
+    `select(ItemFacts).where(ItemFacts.item_id == media_item.id)` was
+    predicted to read `media_item.id` on an expired instance outside
+    greenlet context -- a MissingGreenlet.
+
+    Investigated directly (instrumented `pipeline.py` around the refusal
+    handler and ran this exact scenario): `media_item` IS expired
+    immediately after `rollback()`, but the handler's OWN recovery call --
+    `media_item_for_kind = await _upsert_media_item(session, item)`, needed
+    regardless to build the refused kind's own `Render` row -- selects the
+    SAME primary key already sitting in the identity map. SQLAlchemy
+    repopulates an expired identity-mapped instance's attributes from any
+    query that returns its row, so this call revives `media_item` as an
+    incidental side effect, the same way `render_artifact`'s internal
+    `_upsert_media_item` call revives it for a non-last refusal. Confirmed
+    with `sqlalchemy.inspect(media_item).expired`: True right before that
+    call, False right after, same object identity. So this test is
+    currently GREEN on unmodified `pipeline.py` (no code change needed) --
+    kept as coverage for a combination the review correctly identified as
+    untested, not as a bug-fix pin."""
+    good = GOLDEN / "source_textless.jpg"
+
+    async def handler(request):
+        if "background" in str(request.url):
+            return httpx.Response(200, content=b"not an image")
+        return httpx.Response(200, content=good.read_bytes())
+
+    item = _movie_item("88888", title="Corrupt Background With Facts")
+    provider = KindAwareProvider({
+        "poster": "https://image.tmdb.org/t/p/original/poster4.jpg",
+        "background": "https://image.tmdb.org/t/p/original/background4.jpg",
+    })
+
+    class FakeTMDBFacts:
+        async def movie(self, tmdb_id):
+            # audience_rating, not critic_rating: gather_facts always
+            # overwrites critic_rating from the separate IMDb-ratings lookup
+            # (`_critic_rating`), regardless of what the TMDb client returns.
+            return GatheredFacts(audience_rating=6.3, sources={"audience_rating": "tmdb"})
+
+    # write_to_plex off: FakePlexItem below doesn't implement the
+    # batchEdits/edit/saveEdits trio apply_facts would call; that write path
+    # is exercised elsewhere (test_pipeline_facts.py) and is not what this
+    # test is about.
+    config.operations.write_to_plex = False
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        renders = await process_item(
+            session, config, http, FakePlex(item), [provider],
+            RenderIntent(kind="movie", title="Corrupt Background With Facts", tmdb_id=4),
+            tmdb_facts=FakeTMDBFacts(), mdblist=NullMDBListClient(),
+        )
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    background = next(r for r in renders if r.art_kind == "background")
+    assert poster.status == "rendered"
+    assert background.status == "failed"
+    # Proves the badge stage ran to completion rather than dying on the
+    # MissingGreenlet this test targets.
+    assert poster.badge_fingerprint is not None
+
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.audience_rating == pytest.approx(6.3)
