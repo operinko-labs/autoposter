@@ -10,16 +10,12 @@ from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageFont
 
-from autoposter.badges.draw import (
-    composite,
-    draw_backdrop,
-    draw_text_centered,
-    new_layer,
-    paste_centered,
-)
-from autoposter.badges.spec import ASSETS, BADGES, IMAGES, canvas_for
+from autoposter.badges.draw import composite, draw_text_centered, new_layer
+from autoposter.badges.spec import ASSETS, IMAGES, canvas_for
+from autoposter.overlays.builtin import BUILTIN_OVERLAYS
+from autoposter.overlays.render import draw_overlay
 from autoposter.badges.values import (
     MediaInfo,
     audience_text,
@@ -35,8 +31,6 @@ from autoposter.plex.exif import PROVENANCE_TAG, format_provenance
 
 WEBP_QUALITY = 90
 EXIF_OVERLAY_TAG = 0x04BC
-# Kometa's ``addon_offset``: the gap between a badge's logo and its text.
-ADDON_OFFSET = 15
 
 @lru_cache(maxsize=1)
 def manifest_sha() -> str:
@@ -45,15 +39,17 @@ def manifest_sha() -> str:
     table: an import-time read turns a missing asset into a startup crash."""
     return hashlib.sha256((ASSETS / "MANIFEST.sha256").read_bytes()).hexdigest()
 
-# Badges whose value is an image stem rather than a string to draw.
-# ``compact`` is Kometa's audio_codec file default and what production uses --
-# see docs/research/kometa-overlays.md section 3.2. The ``standard`` variants
-# are taller two-line renders that our config never selects.
-IMAGE_BADGES = {
+# Where each image-valued badge's art lives, keyed by badge. The value is a
+# directory: the badge's own value names the file inside it. Kept here rather
+# than on the definition because the definition names ONE image and these
+# badges pick one of many at render time from the item's own media -- which is
+# a value question (badges/values.py), not a layout one.
+IMAGE_BADGE_DIRS = {
     "resolution": IMAGES / "resolution",
     "audio_codec": IMAGES / "audio_codec" / "compact",
 }
-# Badges that pair a logo above or beside their text.
+# Badges that pair a fixed logo with their text. The definition carries the
+# POSITION and the GAP (addon_position / addon_offset); this carries the file.
 BADGE_ICONS = {
     "critic": IMAGES / "rating" / "IMDb.png",
     "audience": IMAGES / "rating" / "TMDb.png",
@@ -126,21 +122,6 @@ def _load(path: Path) -> Image.Image:
     return Image.open(path).convert("RGBA")
 
 
-def _text_size(
-    layer: Image.Image, text: str, font: ImageFont.FreeTypeFont
-) -> tuple[int, int]:
-    """The ink extent of ``text``, measured with the anchor it is drawn with.
-
-    Kometa lays a badge's logo and text out as one group and centres the group
-    in the backdrop box, so the text's own size is needed before either is
-    placed.
-    """
-    left, top, right, bottom = ImageDraw.Draw(layer).textbbox(
-        (0, 0), text, font=font, anchor="lt"
-    )
-    return right - left, bottom - top
-
-
 def compose(
     base_path: Path, art_kind: str, inputs: BadgeInputs, fingerprint: str | None = None
 ) -> bytes:
@@ -157,37 +138,19 @@ def compose(
     for name, value in values.items():
         if name == "languages":
             continue
-        spec = BADGES[name]
+        definition = BUILTIN_OVERLAYS[name]
         layer = new_layer(canvas)
-        box = draw_backdrop(layer, spec, canvas)
 
-        if name in IMAGE_BADGES:
-            image_path = IMAGE_BADGES[name] / ("%s.png" % value)
+        if name in IMAGE_BADGE_DIRS:
+            image_path = IMAGE_BADGE_DIRS[name] / ("%s.png" % value)
             if not image_path.exists():
                 continue
-            paste_centered(layer, _load(image_path), box)
+            draw_overlay(layer, definition, canvas, image=_load(image_path))
         else:
+            font = ImageFont.truetype(definition.font, definition.font_size)
             icon_path = BADGE_ICONS.get(name)
-            font = ImageFont.truetype(str(spec.font), spec.font_size)
-            if icon_path is not None and icon_path.exists():
-                icon = _load(icon_path)
-                text_width, text_height = _text_size(layer, value, font)
-                if name == "commonsense":
-                    # Icon to the left of the text, 15px gap.
-                    total = icon.width + ADDON_OFFSET + text_width
-                    start = box[0] + (box[2] - box[0] - total) // 2
-                    icon_box = (start, box[1], start + icon.width, box[3])
-                    text_box = (icon_box[2] + ADDON_OFFSET, box[1], start + total, box[3])
-                else:
-                    # Rating logos sit above the number, 15px gap.
-                    total = icon.height + ADDON_OFFSET + text_height
-                    start = box[1] + (box[3] - box[1] - total) // 2
-                    icon_box = (box[0], start, box[2], start + icon.height)
-                    text_box = (box[0], icon_box[3] + ADDON_OFFSET, box[2], start + total)
-                paste_centered(layer, icon, icon_box)
-                draw_text_centered(layer, value, font, text_box)
-            else:
-                draw_text_centered(layer, value, font, box)
+            icon = _load(icon_path) if icon_path is not None and icon_path.exists() else None
+            draw_overlay(layer, definition, canvas, image=icon, text=value, font=font)
         composite(poster, layer)
 
     _draw_languages(poster, canvas, inputs)
@@ -207,19 +170,20 @@ def _draw_languages(poster: Image.Image, canvas: tuple[int, int], inputs: BadgeI
     Applied after every other badge because Kometa runs queue-based overlays
     last. No backdrop -- see the note in spec.py.
     """
-    spec = BADGES["languages"]
-    font = ImageFont.truetype(str(spec.font), spec.font_size)
+    definition = BUILTIN_OVERLAYS["languages"]
+    font = ImageFont.truetype(definition.font, definition.font_size)
     for index, (country, label) in enumerate(language_slots(inputs.media)):
         flag_path = IMAGES / "flag" / "round" / ("%s.png" % country)
         if not flag_path.exists():
             continue
         flag = _load(flag_path)
-        top = spec.v_offset + index * 61
+        top = definition.vertical_offset + index * 61
         layer = new_layer(canvas)
-        layer.paste(flag, (spec.h_offset, top), flag)
+        layer.paste(flag, (definition.horizontal_offset, top), flag)
         draw_text_centered(
             layer, label, font,
-            (spec.h_offset + flag.width + 14, top, spec.h_offset + flag.width + 90, top + flag.height),
+            (definition.horizontal_offset + flag.width + 14, top,
+             definition.horizontal_offset + flag.width + 90, top + flag.height),
         )
         composite(poster, layer)
 
