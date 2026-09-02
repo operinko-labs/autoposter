@@ -43,6 +43,7 @@ from autoposter.db.base import Base
 # other, on the pull request that adds it, or the suite goes red.
 DEEP_SUITES = frozenset(
     {
+        "test_api_action_center.py",
         "test_api_actions.py",
         "test_api_artwork.py",
         "test_api_artwork_modes.py",
