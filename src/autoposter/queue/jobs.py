@@ -142,10 +142,20 @@ _RECLAIM_SQL = text(
        -- this outer qualification against the row's *current* version when it
        -- unblocks -- the CTE was already materialized and does not re-run.
        -- `jobs.id = stale.id` alone survives that re-check no matter what
-       -- happened to the row meanwhile, so both the state and the staleness
-       -- conditions have to live here too, or a row already reclaimed and
-       -- re-claimed by a live worker (state='running' again, claimed_at
-       -- fresh) gets re-pended out from under it.
+       -- happened to the row meanwhile, so each restated predicate is closing
+       -- a distinct interleaving:
+       -- - claimed_at < cutoff fails the re-check when a live worker
+       --   re-claimed the row in the interim (fresh claimed_at), because
+       --   now() is transaction_timestamp() and stays pinned at the blocked
+       --   sweep's own transaction start -- without this predicate the fresh
+       --   claim gets wiped out from under the live worker.
+       -- - state = 'running' independently fails the re-check when the row
+       --   finished instead: complete() sets state = 'done' but deliberately
+       --   leaves claimed_at alone, so a job that ran past the threshold and
+       --   then completed still has a stale claimed_at -- without this
+       --   predicate a done job gets resurrected to pending.
+       -- Dropping either predicate reopens its own interleaving; neither is
+       -- redundant with the other.
        AND jobs.state = 'running'
        AND jobs.claimed_at < now() - make_interval(secs => :older_than_seconds)
     """

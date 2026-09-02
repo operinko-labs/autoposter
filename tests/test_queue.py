@@ -438,26 +438,45 @@ async def test_reclaim_stale_does_not_re_pend_a_row_already_reclaimed_and_re_cla
     )
     # session_a's transaction is now open, uncommitted, and holds the row lock.
 
+    b_pid: int | None = None
+
     async def second_reclaim():
+        nonlocal b_pid
         async with session_factory() as session_b:
+            b_pid = (await session_b.execute(text("SELECT pg_backend_pid()"))).scalar_one()
             return await reclaim_stale(session_b, older_than_seconds=900)
 
     task_b = asyncio.create_task(second_reclaim())
 
-    # Confirmation, not a guess: wait for session_b's UPDATE to actually be
-    # blocked on session_a's lock before releasing it.
-    async with session_factory() as poll:
-        async with asyncio.timeout(5):
-            while True:
-                blocked = (
-                    await poll.execute(text("SELECT 1 FROM pg_locks WHERE NOT granted"))
-                ).first()
-                if blocked:
-                    break
-                await asyncio.sleep(0.01)
+    try:
+        # Confirmation, not a guess: wait for session_b's UPDATE to actually
+        # be blocked on session_a's lock before releasing it. pg_locks is
+        # cluster-wide, so under xdist another worker's own ungranted lock
+        # could satisfy this poll early and make the test vacuously pass --
+        # scope it to session_b's own backend pid (the row-lock wait shows up
+        # as a transactionid lock, which carries no database column, so
+        # scoping by database would never match).
+        async with session_factory() as poll:
+            async with asyncio.timeout(5):
+                while b_pid is None:
+                    await asyncio.sleep(0.01)
+                while True:
+                    blocked = (
+                        await poll.execute(
+                            text("SELECT 1 FROM pg_locks WHERE NOT granted AND pid = :pid"),
+                            {"pid": b_pid},
+                        )
+                    ).first()
+                    if blocked:
+                        break
+                    await asyncio.sleep(0.01)
+    finally:
+        # If the timeout above fires, session_a must still be closed here --
+        # otherwise it keeps holding the row lock and the next test's
+        # TRUNCATE wedges behind it.
+        await session_a.commit()
+        await session_a.close()
 
-    await session_a.commit()
-    await session_a.close()
     reclaimed_by_b = await task_b
 
     assert reclaimed_by_b == 0, "the second reclaim touched the row despite the fresh claim"
