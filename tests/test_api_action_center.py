@@ -557,3 +557,157 @@ async def test_the_bulk_apply_over_an_empty_match_reports_complete(client, auth_
 
     assert body["status"] == "complete"
     assert body["enqueued"] == 0
+
+
+# --- the quality backfill ----------------------------------------------------
+#
+# 11a's "backfill job scoring the existing library". It cannot invent a
+# language: no column holds one on a pre-existing row, so the achieved rank of
+# an already-rendered asset is genuinely unrecoverable without re-selecting.
+# So the backfill re-selects, in operator-paced batches -- which is both the
+# backfill and a demonstration of the bulk path.
+
+
+async def test_the_backfill_status_reports_complete_on_an_empty_library(client, auth_headers):
+    """Completion is derived first, and by the POST's own rule -- `done >=
+    total` <=> nothing unscored is left <=> the trigger selects 0. Testing
+    "has it started" first would let an empty library read `not_started`
+    forever here while every POST answered `complete`: two endpoints
+    disagreeing about the one state a disabled button keys off."""
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body == {"status": "complete", "done": 0, "total": 0}
+
+
+async def test_the_backfill_status_counts_only_rows_that_can_be_scored(
+    client, auth_headers, session
+):
+    """A no_art row never reaches the write-back that stamps
+    quality_scored_at, so counting it in the population would make a backfill
+    that can never finish."""
+    from datetime import datetime, timezone
+
+    await _seed(session, rating_key="1", status="rendered", quality_scored_at=None)
+    await _seed(
+        session, rating_key="2", status="rendered",
+        quality_scored_at=datetime.now(timezone.utc),
+    )
+    await _seed(session, rating_key="3", status="no_art")
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body == {"status": "in_progress", "done": 1, "total": 2}
+
+
+async def test_the_backfill_clears_the_fingerprint_of_every_row_it_enqueues(
+    client, auth_headers, session
+):
+    """The crux, and the reason a plain enqueue is not enough. The pipeline's
+    unchanged-fingerprint short-circuit returns ABOVE the write-back, so a
+    re-processed row whose inputs have not changed reports "unchanged" and
+    scores nothing -- the backfill would run forever and finish never.
+    Clearing the fingerprint is what makes the next pass a real render, and it
+    is the same move /items/{id}/renders/{kind}/clear-override already makes
+    for the same reason."""
+    _, render = await _seed(
+        session, rating_key="1", status="rendered", quality_scored_at=None,
+        fingerprint="deadbeef" * 8,
+    )
+
+    body = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["status"] == "enqueued"
+    assert body["selected"] == 1
+    assert body["enqueued"] == 1
+    render_id = render.id  # read before expire_all -- see test_api_actions.py's precedent
+    session.expire_all()
+    reread = (await session.execute(select(Render).where(Render.id == render_id))).scalar_one()
+    assert reread.fingerprint is None
+
+
+async def test_the_backfill_leaves_an_already_scored_rows_fingerprint_alone(
+    client, auth_headers, session
+):
+    """The discriminating half: a backfill that cleared every fingerprint
+    would pass the test above and force a full re-render of the whole library
+    on the next pass."""
+    from datetime import datetime, timezone
+
+    _, scored = await _seed(
+        session, rating_key="1", status="rendered",
+        quality_scored_at=datetime.now(timezone.utc), fingerprint="cafebabe" * 8,
+    )
+    await _seed(session, rating_key="2", status="rendered", quality_scored_at=None)
+
+    await client.post("/api/actions/backfill", headers=auth_headers)
+
+    scored_id = scored.id  # read before expire_all -- see test_api_actions.py's precedent
+    session.expire_all()
+    reread = (await session.execute(select(Render).where(Render.id == scored_id))).scalar_one()
+    assert reread.fingerprint == "cafebabe" * 8
+
+
+async def test_the_backfill_queues_one_job_per_item_and_records_one_event(
+    client, auth_headers, session
+):
+    item = MediaItem(rating_key="1", library="Movies", kind="movie", title="Dune")
+    session.add(item)
+    await session.flush()
+    session.add_all([
+        Render(item_id=item.id, art_kind="poster", status="rendered", asset_path="/a.jpg"),
+        Render(item_id=item.id, art_kind="background", status="rendered", asset_path="/b.jpg"),
+    ])
+    await session.commit()
+
+    body = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["selected"] == 2
+    assert body["enqueued"] == 1
+    assert len((await session.execute(select(Job))).scalars().all()) == 1
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert [event.event_type for event in events] == ["action_center_quality_backfill"]
+
+
+async def test_the_backfill_honours_the_configured_batch_size(
+    app, client, auth_headers, session
+):
+    """One batch per press, not the whole library: the sweep's own reasoning --
+    the worker pool and every provider budget. The operator pressing again is
+    the pacing."""
+    for n in range(3):
+        await _seed(session, rating_key=str(n), status="rendered", fingerprint=f"{n}" * 64)
+
+    edited = load_config(EXAMPLE)
+    edited.scheduler.drift_batch_size = 1
+    app.state.config_holder.swap(edited)
+
+    body = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["selected"] == 1
+    cleared = (
+        await session.execute(select(Render).where(Render.fingerprint.is_(None)))
+    ).scalars().all()
+    assert len(cleared) == 1
+
+
+async def test_the_backfill_reports_completion_idempotently(client, auth_headers, session):
+    """`complete` is an answer, not an error: a 200 with real counts, so the
+    button can render it rather than styling it as a failure."""
+    from datetime import datetime, timezone
+
+    await _seed(
+        session, rating_key="1", status="rendered",
+        quality_scored_at=datetime.now(timezone.utc),
+    )
+
+    body = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["status"] == "complete"
+    assert body["selected"] == 0
+    assert body["enqueued"] == 0
+    assert (await session.execute(select(Job))).scalars().all() == []
+
+
+async def test_the_backfill_requires_a_session(client):
+    assert (await client.get("/api/actions/backfill")).status_code == 401
+    assert (await client.post("/api/actions/backfill")).status_code == 401

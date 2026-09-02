@@ -894,3 +894,38 @@ export interface BulkRerenderResponse {
   enqueued: number;
   detail: string;
 }
+
+/** `GET /api/actions/backfill` -- the quality backfill's standing progress.
+ *
+ * Measured over rows that CAN be scored (`status = 'rendered'`) rather than
+ * over every render row: an asset that produced no art never reaches the
+ * write-back that stamps the quality facts, so counting it would make a
+ * progress bar that stops short forever. Those rows already have their own
+ * flags.
+ *
+ * `complete` is derived server-side by the POST's own rule (`done >= total`),
+ * so an empty library reads `complete` on both endpoints rather than
+ * `not_started` here and `complete` there.
+ */
+export interface QualityBackfillStatus {
+  status: "not_started" | "in_progress" | "complete";
+  done: number;
+  total: number;
+}
+
+/** `POST /api/actions/backfill` -- one triggered batch's outcome.
+ *
+ * `complete` is an answer, not a failure: it arrives as a 200 with real
+ * counts. `selected` is how many unscored assets this batch took;
+ * `enqueued` is how many items it actually queued, which is smaller whenever
+ * one item carries several unscored assets or a pass for it was already
+ * pending.
+ */
+export interface QualityBackfillTrigger {
+  status: "enqueued" | "complete";
+  selected: number;
+  enqueued: number;
+  done: number;
+  total: number;
+  detail: string;
+}

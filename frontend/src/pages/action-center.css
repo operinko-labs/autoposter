@@ -164,3 +164,11 @@
 .action-replace {
   font-size: 13px;
 }
+
+/* The coverage panel. Above the bulk bar on purpose: "can this page even see
+ * everything yet" is the question that qualifies every count above it, and an
+ * operator who reads the chips without it will read an unscored library as a
+ * clean one. */
+.action-coverage {
+  margin-bottom: 20px;
+}

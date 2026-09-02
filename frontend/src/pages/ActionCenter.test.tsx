@@ -136,6 +136,9 @@ function stubFetch(overrides: Record<string, unknown> = {}) {
       return json({ dismissed: true, evidence: "a".repeat(64) });
     }
     if (path.startsWith("/api/actions/undismiss")) return json({ dismissed: false });
+    if (path.startsWith("/api/actions/backfill")) {
+      return json(overrides.backfill ?? { status: "in_progress", done: 120, total: 300 });
+    }
     if (path.startsWith("/api/actions")) return json(overrides.rows ?? ROWS);
     throw new Error(`the page requested an unexpected path: ${path}`);
   });
@@ -641,5 +644,39 @@ describe("ActionCenter", () => {
     expect(title.closest("table")?.parentElement).toHaveClass("table-scroll");
     const actions = screen.getAllByRole("button", { name: "Re-search" })[0].parentElement;
     expect(actions).toHaveClass("row-actions");
+  });
+
+  it("shows how much of the library has been scored", async () => {
+    stubFetch();
+
+    renderPage();
+
+    expect(await screen.findByText("120 of 300 assets scored")).toBeInTheDocument();
+  });
+
+  it("triggers one backfill batch and re-reads the progress", async () => {
+    const fetchMock = stubFetch();
+    renderPage();
+    await screen.findByText("120 of 300 assets scored");
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Score the next batch" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(before + 1));
+    expect(paths(fetchMock)[before]).toBe("/api/actions/backfill");
+    expect(initOf(fetchMock, before).method).toBe("POST");
+    // Re-read: the progress is the server's, and the batch it queued has not
+    // run yet, so the page must not compute a number of its own.
+    expect(paths(fetchMock).slice(before + 1)).toContain("/api/actions/backfill");
+  });
+
+  it("offers nothing to press once every asset is scored", async () => {
+    stubFetch({ backfill: { status: "complete", done: 300, total: 300 } });
+
+    renderPage();
+
+    expect(
+      await screen.findByRole("button", { name: "Score the next batch" }),
+    ).toBeDisabled();
   });
 });

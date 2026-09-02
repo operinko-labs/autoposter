@@ -32,6 +32,8 @@ import type {
   ActionsSummaryResponse,
   BulkRerenderResponse,
   ItemFiltersResponse,
+  QualityBackfillStatus,
+  QualityBackfillTrigger,
 } from "../api/types";
 import { formatTime } from "../format";
 // The pill and the row-error paragraph are dashboard.css's, exactly as
@@ -99,6 +101,10 @@ export function ActionCenter() {
   const [armed, setArmed] = useState(false);
   const [bulk, setBulk] = useState<BulkRerenderResponse | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+
+  const [coverage, setCoverage] = useState<QualityBackfillStatus | null>(null);
+  const [coverageDetail, setCoverageDetail] = useState<string | null>(null);
+  const [coverageBusy, setCoverageBusy] = useState(false);
 
   // `load` is awaited from an effect and again from every click handler, so a
   // response can land after the page has gone. A ref rather than a per-effect
@@ -173,6 +179,43 @@ export function ActionCenter() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /** The coverage panel reads its own endpoint, on its own effect.
+   *
+   * Not folded into `load()`: coverage does not depend on the filters, so
+   * re-reading it on every chip click would be a query per click for a number
+   * that cannot have changed. */
+  const loadCoverage = useCallback(async () => {
+    try {
+      const response = await apiFetch<QualityBackfillStatus>("/api/actions/backfill");
+      if (live.current) setCoverage(response);
+    } catch (caught) {
+      if (live.current) setError((caught as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCoverage();
+  }, [loadCoverage]);
+
+  async function runBackfill() {
+    setCoverageBusy(true);
+    setError(null);
+    try {
+      const response = await apiFetch<QualityBackfillTrigger>("/api/actions/backfill", {
+        method: "POST",
+      });
+      if (live.current) setCoverageDetail(response.detail);
+      // Re-read rather than trusting the trigger's own numbers: the batch it
+      // queued has not run yet, so the coverage it reported is the coverage
+      // BEFORE the work, and the page must not present it as after.
+      await loadCoverage();
+    } catch (caught) {
+      if (live.current) setError((caught as Error).message);
+    } finally {
+      if (live.current) setCoverageBusy(false);
+    }
+  }
 
   /** Every filter change resets the page and withdraws the bulk grant.
    *
@@ -363,6 +406,35 @@ export function ActionCenter() {
           <span className="page-error">Filters are unavailable: {filtersError}</span>
         )}
       </div>
+
+      {coverage !== null && (
+        <div className="panel action-coverage">
+          <div className="row-actions">
+            <span>
+              {coverage.done} of {coverage.total} assets scored
+            </span>
+            <button
+              type="button"
+              disabled={coverageBusy || coverage.status === "complete"}
+              onClick={() => void runBackfill()}
+            >
+              Score the next batch
+            </button>
+          </div>
+          <p className="muted action-caveat">
+            Four of the flags rest on facts written when an asset renders, so an
+            asset rendered before this page existed cannot show them yet. Scoring
+            a batch queues a genuine re-render for those assets — the only way to
+            recover which language the ladder achieved, which no column holds for
+            an older row. One batch per press.
+          </p>
+          {coverageDetail !== null && (
+            <p className="muted action-notice" role="status">
+              {coverageDetail}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="panel action-bulk">
         <div className="row-actions">

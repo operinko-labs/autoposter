@@ -513,3 +513,175 @@ async def bulk_rerender_action(
         "enqueued": enqueued,
         "detail": detail,
     }
+
+
+# --- the quality backfill ----------------------------------------------------
+#
+# Roadmap 11a's "backfill job scoring the existing library", in the
+# api/facts_backfill.py shape: one batch per press, an honest `status` always
+# returned as a 200, one events_log row per trigger, and a GET that answers
+# standing progress so the button renders correctly on page load.
+#
+# It differs from that precedent in two ways, both deliberate.
+#
+# It keeps NO cursor row. The facts backfill needs one because it stamps
+# `fetched_at` on everything it walks whether or not the walk filled anything,
+# so "already visited" is not derivable from the data. This population is
+# self-consuming: a row leaves it exactly when a render stamps
+# `quality_scored_at`, so "what is left" is a WHERE clause and a second table
+# would be a second source of truth to keep in step.
+#
+# And it does NOT park while TMDb's 429 window is open. The facts backfill
+# parks because a batch gathered with TMDb skipped stamps `fetched_at` anyway
+# and silently loses the columns it exists to fill. Nothing here stamps
+# anything: `quality_scored_at` is written by the render's own write-back, and
+# only when a render actually happened. A batch enqueued into a backoff window
+# is simply paced by the workers, which is what D4 says the queue is for.
+
+
+async def _backfill_progress(session) -> tuple[int, int]:
+    """``(done, total)`` over the rows this backfill can actually score.
+
+    Scoped to ``status = 'rendered'``. A ``no_art``, ``skipped`` or
+    ``truncated`` row returns from ``render_artifact`` long before the
+    write-back that stamps ``quality_scored_at``, so counting one here would
+    make a population the backfill can never finish -- a progress bar that
+    stops at 94% forever. Those rows are already named by their own flags.
+    """
+    total = (
+        await session.execute(
+            select(func.count()).select_from(Render).where(Render.status == "rendered")
+        )
+    ).scalar_one()
+    done = (
+        await session.execute(
+            select(func.count())
+            .select_from(Render)
+            .where(Render.status == "rendered", Render.quality_scored_at.isnot(None))
+        )
+    ).scalar_one()
+    return done, total
+
+
+@router.get("/actions/backfill")
+async def backfill_status(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """How much of the scorable population has been scored. Reads only."""
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        done, total = await _backfill_progress(session)
+
+    # Completion is derived FIRST, and by the POST's own rule: `done >= total`
+    # <=> no unscored rendered row is left <=> the trigger selects 0. Testing
+    # "has it started" first would let an empty library answer `not_started`
+    # here forever while every POST answered `complete` -- the two endpoints
+    # disagreeing about the one state a disabled button keys off.
+    if done >= total:
+        status = "complete"
+    elif done == 0:
+        status = "not_started"
+    else:
+        status = "in_progress"
+    return {"status": status, "done": done, "total": total}
+
+
+@router.post("/actions/backfill")
+async def backfill_trigger(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """One batch: clear, enqueue, report -- or report completion idempotently.
+
+    Clearing the fingerprint is the substance of this endpoint and is not
+    optional. An enqueue on its own would not score anything: the pipeline's
+    unchanged-fingerprint short-circuit returns ABOVE the write-back, so a
+    re-processed row whose inputs have not moved reports "unchanged" and
+    stamps nothing, and the backfill would run forever and finish never.
+    ``/items/{id}/renders/{kind}/clear-override`` already makes exactly this
+    move for exactly this reason.
+
+    That is also the honest cost, and the page says so: this is a real
+    re-render of every row it touches -- a provider selection against the 24h
+    cache, a composite, a publish and an upload. It is the only way to recover
+    an achieved language, which no column on a pre-existing row holds.
+
+    Always a 200 with a ``status`` field. ``complete`` is an expected answer
+    to an honest question, not an error for the client to style as a failure.
+    """
+    from autoposter.api.routes import _enqueue_reprocess
+
+    config = request.app.state.config_holder.current
+    batch_size = config.scheduler.drift_batch_size
+
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        batch = (
+            (
+                await session.execute(
+                    select(Render)
+                    .where(Render.status == "rendered", Render.quality_scored_at.is_(None))
+                    .order_by(Render.id)
+                    .limit(batch_size)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        item_ids = []
+        for render in batch:
+            render.fingerprint = None
+            if render.item_id not in item_ids:
+                item_ids.append(render.item_id)
+        if batch:
+            await session.commit()
+
+        items = (
+            (
+                (await session.execute(select(MediaItem).where(MediaItem.id.in_(item_ids))))
+                .scalars()
+                .all()
+            )
+            if item_ids
+            else []
+        )
+        enqueued = 0
+        for item in items:
+            if await _enqueue_reprocess(session, item) is not None:
+                enqueued += 1
+
+        done, total = await _backfill_progress(session)
+        if not batch:
+            detail = f"complete: all {total} rendered asset(s) have been scored"
+        else:
+            detail = (
+                f"queued {enqueued} item(s) covering {len(batch)} unscored asset(s); "
+                f"{done} of {total} scored so far"
+            )
+        # The ops rule: a write nobody can find afterwards is not an operator
+        # action, it is a mystery. One row per press, the completes included --
+        # an operator reading the table should see the walk.
+        session.add(
+            EventLog(
+                source="actions",
+                event_type="action_center_quality_backfill",
+                payload={
+                    "selected": len(batch),
+                    "items": len(item_ids),
+                    "enqueued": enqueued,
+                    "done": done,
+                    "total": total,
+                },
+                outcome="action center quality backfill: " + detail,
+            )
+        )
+        await session.commit()
+
+    return {
+        "status": "complete" if not batch else "enqueued",
+        "selected": len(batch),
+        "enqueued": enqueued,
+        "done": done,
+        "total": total,
+        "detail": detail,
+    }

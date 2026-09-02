@@ -427,6 +427,31 @@ def test_the_registry_lists_the_same_art_kinds_the_pipeline_renders():
     assert set(flags.ART_KINDS) == rendered
 
 
+def test_the_action_center_pages_art_kinds_match_the_pipelines():
+    """A third statement of the same set, in
+    frontend/src/pages/ActionCenter.tsx's own `ART_KINDS` constant -- the
+    filter dropdown's options. Hardcoded there rather than fetched, per that
+    file's own comment, so the agreement is pinned here rather than assumed,
+    exactly as the two tests above pin the backend's two statements.
+
+    Reads the source file as text and regexes out the string literals rather
+    than parsing TypeScript, so the pin survives reformatting.
+    """
+    import re
+
+    from autoposter.render.pipeline import ART_KINDS_FOR
+
+    frontend = (
+        Path(__file__).parent.parent / "frontend" / "src" / "pages" / "ActionCenter.tsx"
+    ).read_text(encoding="utf-8")
+    match = re.search(r'const ART_KINDS = \[([^\]]*)\];', frontend)
+    assert match is not None, "ActionCenter.tsx no longer declares a const ART_KINDS = [...]"
+    literals = set(re.findall(r'"([^"]*)"', match.group(1)))
+
+    rendered = {art_kind for kinds in ART_KINDS_FOR.values() for art_kind in kinds}
+    assert literals == rendered
+
+
 def test_every_flag_declares_a_label_a_description_and_a_detail(config):
     """The page renders all three; a flag that shipped with an empty label is
     a chip an operator cannot identify."""
