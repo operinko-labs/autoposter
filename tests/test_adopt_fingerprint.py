@@ -13,6 +13,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from conftest import decodable_png
 from plexapi.exceptions import NotFound as PlexNotFound
 
 from autoposter.adopt.walk import adopt_library
@@ -79,7 +80,9 @@ class _RecordingProvider:
 
 def _fake_http():
     async def handler(request):
-        return httpx.Response(200, content=b"fake-image-bytes")
+        # A decodable PNG, not a placeholder: ``pipeline._download`` decodes
+        # every body it keeps (see conftest.decodable_png).
+        return httpx.Response(200, content=decodable_png())
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -281,7 +284,7 @@ async def test_adopted_render_whose_text_changed_is_re_rendered_and_loses_adopte
     assert result.status == "rendered"
     assert result.detail is None
     assert result.adopted is False
-    assert target.read_bytes() == b"fake-image-bytes"
+    assert target.read_bytes() == decodable_png()
 
 
 async def test_a_render_that_was_never_adopted_is_unaffected(session, tmp_path, monkeypatch):

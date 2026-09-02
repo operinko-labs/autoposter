@@ -9,6 +9,7 @@ survives a pass that changes nothing, unlike `detail`, which is blanked.
 from pathlib import Path
 
 import httpx
+from conftest import decodable_png
 from sqlalchemy import select
 
 from autoposter.config.loader import load_config
@@ -69,7 +70,9 @@ class _Provider:
 
 def _fake_http():
     async def handler(request):
-        return httpx.Response(200, content=b"fake-image-bytes")
+        # A decodable PNG, not a placeholder: ``pipeline._download`` decodes
+        # every body it keeps (see conftest.decodable_png).
+        return httpx.Response(200, content=decodable_png())
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 

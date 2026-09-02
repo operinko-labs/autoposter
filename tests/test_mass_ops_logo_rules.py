@@ -236,7 +236,7 @@ async def test_a_with_text_candidate_suppresses_styling(session, tmp_path, monke
     async def fake_select(providers, order, request):
         return Selection(candidate=candidate(includes_text=True), is_fallback=False)
 
-    async def fake_download(http, url, destination):
+    async def fake_download(http, url, destination, *, stage):
         destination.write_bytes(b"x")
         return "sha"
 
@@ -278,7 +278,7 @@ async def test_a_silent_candidate_leaves_styling_alone(session, tmp_path, monkey
     async def fake_select(providers, order, request):
         return Selection(candidate=candidate(includes_text=None), is_fallback=False)
 
-    async def fake_download(http, url, destination):
+    async def fake_download(http, url, destination, *, stage):
         destination.write_bytes(b"x")
         return "sha"
 

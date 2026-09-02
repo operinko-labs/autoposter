@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -419,15 +420,161 @@ def adopted_fingerprint(
     )
 
 
-async def _download(http: httpx.AsyncClient, url: str, destination: Path) -> str:
-    """Fetch artwork to ``destination`` and return its SHA-256."""
+class SourceRefused(Exception):
+    """Downloaded artwork this service will not hand to ImageMagick.
+
+    A render job that raises this parks like any other failure. It carries no
+    ``served_detail``, so ``queue/worker._served_reason`` serves the bare class
+    name for ``job.last_error`` (roadmap row 209) while the full message --
+    which names the reason and the stage -- reaches the pod log through the
+    ``logger.warning(..., exc_info=True)`` on that handler's own except branch.
+    """
+
+
+# The render path's ceiling on one downloaded artwork body. Same value, and the
+# same reasoning, as ``api/candidates.PICK_MAX_BYTES``: far above any real
+# ``/original/`` poster or backdrop, low enough that a body which simply never
+# stops arriving is refused rather than written to the working directory. It is
+# a separate constant rather than an import because ``api/candidates`` imports
+# from this module -- the arrow cannot be drawn the other way.
+RENDER_MAX_BYTES = 50 * 1024 * 1024
+
+# How many leading bytes ``_looks_like_svg`` reads before giving up. Generous
+# enough for a UTF-8 BOM, leading whitespace, and an XML prolog ahead of the
+# root element, and tiny next to ``RENDER_MAX_BYTES``.
+_SVG_SNIFF_BYTES = 256
+
+# Pillow has no SVG decoder, and fanart.tv genuinely serves SVG clearlogos --
+# ``compositor.build_logo_argv`` has a ``-density 300`` branch for exactly
+# those, so refusing every SVG here would refuse artwork that renders
+# correctly today. What decides SVG-ness must be the bytes themselves, not a
+# suffix pulled from the provider's URL: a suffix is the provider's own claim,
+# forgeable by whatever answers that URL, and job 40478 -- the incident this
+# guard exists for -- was itself a clearlogo. So this is a content sniff, not
+# a filename check: whitespace/BOM-tolerant, and true only for a document that
+# actually opens with ``<?xml`` or ``<svg``.
+def _looks_like_svg(path: Path) -> bool:
+    with path.open("rb") as handle:
+        prefix = handle.read(_SVG_SNIFF_BYTES)
+    prefix = prefix.lstrip(b"\xef\xbb\xbf").lstrip(b" \t\r\n")
+    return prefix.startswith(b"<?xml") or prefix.startswith(b"<svg")
+
+
+# The pixel ceiling ``_validate_image`` refuses artwork above, checked from
+# the header *before* ``load()`` allocates a decode buffer. Comfortably covers
+# real artwork -- an 8K poster is 7680x4320 = 33,177,600px -- and sits well
+# under Pillow's own decompression-bomb thresholds at the installed default
+# (``Image.MAX_IMAGE_PIXELS`` = 89,478,485; the error only fires above double
+# that, 178,956,970px, and the band in between just warns and decodes in
+# full). Without this, that warn band is a ~537-716MB decode with no cap of
+# its own, and five workers (``queue/worker.run_workers``) can each be doing
+# one in the same process.
+_ARTWORK_MAX_PIXELS = 64_000_000
+
+
+def _validate_image(path: Path, stage: str) -> None:
+    """Decode ``path`` in full, or refuse it.
+
+    A full pixel decode (``load()``), not a header parse. The production
+    failure this exists for -- job 40478, the 'Inside Out 2' clearlogo -- is a
+    PNG whose header is valid and whose IDAT stream contradicts it;
+    ImageMagick's own report is ``IDAT: Too much image data``. ``magick
+    identify`` and Pillow's ``verify()`` read the header and pass such a file;
+    only a decode that walks the compressed stream fails it. Before the infra
+    layer's ``MAGICK_*`` caps that image cost ~6 GiB inside the compositor and
+    OOMKilled the pod; after them it surfaced as an opaque ``magick failed
+    (1)`` from ``compositor.run``. Either way the honest place to refuse it is
+    here, at the download, with a message that names what was wrong.
+
+    ``Image.MAX_IMAGE_PIXELS`` is left at Pillow's default and active -- it is
+    a module global and mutating it would silently retune ``api/candidates``
+    too -- but its default only raises above 178,956,970px; the
+    89,478,485-178,956,970px band just warns and decodes. ``_ARTWORK_MAX_PIXELS``
+    is this function's own, tighter ceiling for exactly that band, checked
+    from ``image.size`` before ``load()`` ever allocates a decode buffer.
+
+    **Nothing is evicted on a refusal, because nothing cached these bytes.**
+    ``providers/cache.py`` is a TTL cache of decoded *JSON* payloads keyed by
+    the metadata request (``providers/fetch.py``); image bodies never pass
+    through it, and ``_download`` streams from the provider's CDN on every
+    attempt. So a retry of a refused job re-fetches, and a source repaired
+    upstream renders on the next attempt with no cache to invalidate.
+    """
+    if _looks_like_svg(path):
+        return
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+            pixels = width * height
+            if pixels > _ARTWORK_MAX_PIXELS:
+                raise SourceRefused(
+                    f"{stage} is {width}x{height} ({pixels}px), over the "
+                    f"{_ARTWORK_MAX_PIXELS}px artwork ceiling"
+                )
+            image.load()
+    except (
+        UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError
+    ) as exc:
+        # `from None`, not `from exc`: the message already names the cause
+        # (`type(exc).__name__`), and chaining would hold the original
+        # exception -- and, through its traceback, this frame's partially
+        # decoded ``image`` -- reachable for as long as something logs or
+        # handles the ``SourceRefused``, which spans ``worker.run_once``'s
+        # ``session.rollback()`` and ``fail()`` (L3).
+        raise SourceRefused(
+            f"{stage} did not decode after download ({type(exc).__name__})"
+        ) from None
+
+
+async def _download(
+    http: httpx.AsyncClient, url: str, destination: Path, *, stage: str
+) -> str:
+    """Fetch artwork to ``destination`` and return its SHA-256.
+
+    Two guards stand between a provider's CDN and the first ``magick`` process,
+    because until they existed there were none: ``net/guard.store_body`` has
+    had a byte cap since 6d and this download -- the one the whole render path
+    uses -- had never grown one (``api/candidates._download_artwork``'s
+    docstring says so in as many words).
+
+    The cap is counted chunk by chunk rather than read off ``Content-Length``:
+    the header is the other end's claim, and a body that never stops arriving
+    sends none. A refusal of either kind removes the partial file before it
+    propagates, so no half-written source is left for a later step to find.
+    The check runs before each chunk is written or hashed, so nothing over the
+    cap ever reaches disk -- but ``aiter_bytes`` decodes compression with no
+    ``max_length`` of its own, so one already-decoded chunk can itself be
+    larger than a single read would suggest. The transient peak in memory is
+    therefore ``RENDER_MAX_BYTES`` plus that one chunk, not a hard
+    ``RENDER_MAX_BYTES`` ceiling.
+
+    ``store_body``'s third check, the Content-Type allowlist, is deliberately
+    NOT copied. A Content-Type is a claim and only a decoder settles it (that
+    module's own words); the decode below settles it strictly, so an allowlist
+    would add no safety and would newly refuse a CDN that answers
+    ``application/octet-stream`` over bytes that decode perfectly.
+
+    ``stage`` names what is being fetched, for the refusal message.
+    """
     digest = hashlib.sha256()
-    async with http.stream("GET", url, follow_redirects=True) as response:
-        response.raise_for_status()
-        with destination.open("wb") as handle:
-            async for chunk in response.aiter_bytes():
-                digest.update(chunk)
-                handle.write(chunk)
+    size = 0
+    try:
+        async with http.stream("GET", url, follow_redirects=True) as response:
+            response.raise_for_status()
+            with destination.open("wb") as handle:
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > RENDER_MAX_BYTES:
+                        raise SourceRefused(
+                            f"{stage} exceeded the {RENDER_MAX_BYTES}-byte "
+                            "download cap"
+                        )
+                    digest.update(chunk)
+                    handle.write(chunk)
+        await asyncio.to_thread(_validate_image, destination, stage)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
     return digest.hexdigest()
 
 
@@ -807,7 +954,9 @@ async def render_artifact(
                 return render
             candidate = selection.candidate
             chosen_candidate = candidate
-            base_sha = await _download(http, candidate.url, working)
+            base_sha = await _download(
+                http, candidate.url, working, stage=f"the {art_kind} source"
+            )
             source_url = candidate.url
             provider_name = candidate.provider
             textless = candidate.is_textless
@@ -857,7 +1006,9 @@ async def render_artifact(
                     logo_candidate = logo_selection.candidate
                     suffix = Path(httpx.URL(logo_candidate.url).path).suffix or ".png"
                     logo_path = Path(tmpdir) / f"logo{suffix}"
-                    logo_sha = await _download(http, logo_candidate.url, logo_path)
+                    logo_sha = await _download(
+                        http, logo_candidate.url, logo_path, stage="the clearlogo"
+                    )
                 elif not config.artwork.logo_text_fallback:
                     suppress_text = True
                 else:
