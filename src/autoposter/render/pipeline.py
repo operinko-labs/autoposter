@@ -1367,27 +1367,9 @@ async def apply_badges(
             resolved_images[definition.name] = path
         usable_definitions.append(definition)
 
-    # Keyword, and only when there is something to say: `test_badge_pipeline.py`
-    # substitutes `compose_badges` with a spy taking only the original four
-    # parameters (`path, kind, inputs, fingerprint=None`), and that file is
-    # out of scope for this task. Every fixture there configures no
-    # definitions, so this keeps every one of those calls exactly as it was;
-    # a deployment that DOES configure definitions gets them threaded
-    # through. The conditional itself is call-shape only, not a real
-    # behavioural fork -- `compose()` treats `None` and the argument's
-    # absence as the same thing (`definitions or []`, `resolved_images or
-    # {}`), so nothing downstream can tell an omitted keyword from an empty
-    # one. # T4: widen that spy's signature to `*args, **kwargs` (one lambda,
-    # one call site) and always pass both keywords, which deletes this
-    # branch.
-    extra: dict = {}
-    if usable_definitions:
-        extra["definitions"] = usable_definitions
-    if resolved_images:
-        extra["resolved_images"] = resolved_images
     data = await asyncio.to_thread(
         compose_badges, Path(render.asset_path), render.art_kind, inputs, fingerprint,
-        **extra,
+        definitions=usable_definitions, resolved_images=resolved_images,
     )
     render.badge_fingerprint = fingerprint
 

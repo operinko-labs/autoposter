@@ -190,8 +190,7 @@ async def test_the_video_format_badge_is_derived_from_the_media_file_path(
     real = pipeline.compose_badges
     monkeypatch.setattr(
         pipeline, "compose_badges",
-        lambda path, kind, inputs, fingerprint=None: seen.append(inputs)
-        or real(path, kind, inputs, fingerprint),
+        lambda *args, **kwargs: seen.append(args[2]) or real(*args, **kwargs),
     )
 
     item, render = await _render(session)

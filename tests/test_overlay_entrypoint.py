@@ -9,6 +9,7 @@ import hashlib
 import io
 from pathlib import Path
 
+import httpx
 import numpy as np
 from PIL import Image
 
@@ -161,6 +162,32 @@ def test_configuring_a_definition_changes_the_fingerprint():
     assert with_one != without
 
 
+def test_editing_a_definitions_field_moves_the_fingerprint():
+    """The middle case the add/remove pair above doesn't cover: a definition
+    that stays configured but has one of its own fields edited (here,
+    `back_color`) must still move the digest -- add-to-empty and
+    remove-to-empty can't tell an edit from a no-op, since both start or end
+    at the same empty list."""
+    def _stamp(back_color):
+        return OverlayDefinition(
+            name="text(HELLO)",
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="center", vertical_offset=0,
+            back_width=300, back_height=100,
+            back_color=back_color, back_radius=10, font_size=55,
+        )
+
+    before = _stamp("#FF0000FF")
+    after = _stamp("#00FF00FF")
+    before_fp = badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [before],
+    )
+    after_fp = badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [after],
+    )
+    assert before_fp != after_fp
+
+
 def test_removing_a_definition_reverts_the_fingerprint():
     stamp = OverlayDefinition(name="text(HELLO)")
     with_one = badge_fingerprint(
@@ -298,3 +325,53 @@ async def test_a_definition_whose_image_fails_to_resolve_does_not_stamp_an_empty
     await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
 
     assert _sha(plex_item.last_bytes) == _sha(baseline_plex.last_bytes)
+
+
+async def test_apply_badges_threads_http_through_to_a_url_sourced_definition(
+    session, config_with_badges, tmp_path, monkeypatch
+):
+    """Completeness gap the T3 review named: every proof of `http=` threading
+    elsewhere stops one level down, at `resolve_image_path` -- this is the
+    one at `apply_badges` level, through the real entry point, for a `url:`
+    source. Transport mocked and `guard.resolve_host` patched per
+    `tests/test_overlay_sources.py`'s own convention for its ladder tests.
+    """
+    monkeypatch.setattr(
+        "autoposter.net.guard.resolve_host", lambda h, p: ["93.184.216.34"]
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        buffer = io.BytesIO()
+        Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(buffer, format="PNG")
+        return httpx.Response(
+            200, content=buffer.getvalue(), headers={"content-type": "image/png"},
+        )
+
+    config_with_badges.overlays_root = tmp_path
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="mystamp", url="https://example.com/a.png",
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="center", vertical_offset=0,
+        )
+    ]
+    item, render = await _render(session, rating_key="url-sourced-item")
+    plex_item = _FakePlexItem()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await apply_badges(
+            session, config_with_badges, render, item, plex_item, _Facts(), http=http
+        )
+    assert len(calls) == 1, "the definition's url must actually be requested"
+    assert plex_item.uploads == 1
+
+    config_with_badges.badges.definitions = []
+    baseline_item, baseline_render = await _render(session, rating_key="url-baseline")
+    baseline_plex = _FakePlexItem()
+    await apply_badges(
+        session, config_with_badges, baseline_render, baseline_item, baseline_plex, _Facts()
+    )
+    assert _sha(plex_item.last_bytes) != _sha(baseline_plex.last_bytes), (
+        "the downloaded image must actually be drawn, not skipped"
+    )

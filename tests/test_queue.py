@@ -131,10 +131,20 @@ async def test_fail_clears_claim_metadata(session):
 
 
 async def _make_due_now(session, job_id: int) -> None:
-    """Reset a job to pending and due, using the database clock."""
+    """Reset a job to pending and due, using the database clock.
+
+    Backdated a few seconds rather than set to exactly ``now()``: this
+    machine's Docker clock steps ~2.7s backwards every ~27s (see the review
+    at `.superpowers/sdd/2026-09-03-overlay-engine/task-3-review.md`, Probe
+    7), and `claim()`'s `run_after <= now()` runs in a *later* transaction --
+    a step landing between this statement and that one otherwise makes the
+    row not-yet-due and drops the claim.
+    """
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     job.state = "pending"
-    job.run_after = (await session.execute(select(func.now()))).scalar_one()
+    job.run_after = (
+        await session.execute(select(func.now() - func.make_interval(0, 0, 0, 0, 0, 0, 5)))
+    ).scalar_one()
     await session.commit()
 
 
