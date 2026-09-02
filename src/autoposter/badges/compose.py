@@ -12,7 +12,7 @@ from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageFont
+from PIL import Image, ImageFilter, ImageFont
 
 from autoposter.badges.draw import composite, draw_text_centered, new_layer
 from autoposter.badges.spec import ASSETS, IMAGES, canvas_for
@@ -191,9 +191,25 @@ def compose(
     image source uses. A definition naming a font that fails to resolve
     (leaves ``fonts_root``, or does not exist) is skipped with a warning,
     not fatal to the rest of the item's badges.
+
+    ``definitions`` may also include one or more ``blur(NN)`` names (roadmap
+    row 50): the MAXIMUM NN across every one that survives suppression and
+    group resolution is applied ONCE, to the whole base canvas, before any
+    badge or overlay -- built-in or operator-defined -- is composited on
+    top.
     """
     canvas = canvas_for(art_kind)
     poster = Image.open(base_path).convert("RGB").resize(canvas, Image.Resampling.LANCZOS)
+
+    resolved_definitions = _resolve_definitions(definitions or [])
+    blur = _blur_amount(resolved_definitions)
+    if blur > 0:
+        # Roadmap row 50: one GaussianBlur on the whole base canvas, before
+        # any badge or overlay is composited -- Kometa's own per-item
+        # pre-pass semantics (recon p-overlay-b-recon.md), not a
+        # per-definition draw call. Badges therefore stay sharp on a
+        # blurred background.
+        poster = poster.filter(ImageFilter.GaussianBlur(blur))
 
     values = badge_values(art_kind, inputs)
     for name, value in values.items():
@@ -296,6 +312,15 @@ def _resolve_definitions(
     return result + list(winners.values())
 
 
+def _blur_amount(definitions: list[OverlayDefinition]) -> int:
+    """The per-item blur pre-pass amount: the MAXIMUM NN across every
+    blur(NN) definition in the already-resolved (suppressed, grouped) list --
+    not sum, not last-wins, not first-wins. 0 means "no blur configured",
+    the same case this phase must not perturb for any existing config
+    (roadmap row 50)."""
+    return max((d.blur_amount for d in definitions if d.blur_amount is not None), default=0)
+
+
 def _draw_definitions(
     poster: Image.Image,
     canvas: tuple[int, int],
@@ -309,6 +334,13 @@ def _draw_definitions(
         return
     values = _variable_values("", inputs)
     for definition in _resolve_definitions(definitions):
+        if definition.blur_amount is not None:
+            # The blur pre-pass already ran in compose(), before any badge
+            # was drawn. This definition carries no image, no text and no
+            # backdrop colour of its own -- routing it through draw_overlay
+            # would be a harmless no-op call that composites an empty
+            # transparent layer, correct by accident rather than by design.
+            continue
         literal = literal_of(definition.name)
         text = None
         if literal is not None:
