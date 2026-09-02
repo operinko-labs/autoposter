@@ -209,3 +209,16 @@ def test_the_deferred_queue_attribute_is_refused_by_name():
     the message must say so, matching the deferred-name-form refusals above."""
     with pytest.raises(ValidationError, match="roadmap row 97"):
         OverlayDefinition(name="example", queue="custom_queue_name")
+
+
+def test_the_text_attribute_is_refused_not_silently_accepted():
+    """T1's own note on this field: Kometa has no `text` attribute (probe
+    section 2.1) -- the rendered literal lives in `name` as `text(LITERAL)`,
+    which is what every builtin (`overlays/builtin.py`) and the operator draw
+    path (`badges/compose.py::_draw_definitions`) actually read. `text` is
+    this schema's own addition with no consumer anywhere in this codebase,
+    so it is refused rather than accepted-and-ignored -- the same treatment
+    as `queue` above, and the exact failure mode this module's own docstring
+    warns against."""
+    with pytest.raises(ValidationError, match="is not rendered"):
+        _d(text="hello")

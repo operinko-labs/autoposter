@@ -67,6 +67,33 @@ def _scaled(definition: OverlayDefinition, image: Image.Image) -> Image.Image:
     return image.resize((width, height), Image.Resampling.LANCZOS)
 
 
+def _aligned_content_box(
+    definition: OverlayDefinition,
+    start: tuple[int, int],
+    back_size: tuple[int, int],
+    content: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """Where the content sits inside the backdrop box, per `back_align`.
+
+    Probe section 3.4, transcribed literally including its asymmetry: only
+    `left/right/center/bottom` recompute the vertical position, and only
+    `top/bottom/center/right` recompute the horizontal one -- so `left`
+    centres vertically but stays flush against the box's own left edge
+    horizontally, and `top` mirrors that on the other axis. Not smoothed
+    over; it is what Kometa's own source does.
+    """
+    start_x, start_y = start
+    back_width, back_height = back_size
+    content_width, content_height = content
+    main_x, main_y = start_x, start_y
+    align = definition.back_align
+    if align in ("left", "right", "center", "bottom"):
+        main_y = start_y + (back_height - content_height) // (1 if align == "bottom" else 2)
+    if align in ("top", "bottom", "center", "right"):
+        main_x = start_x + (back_width - content_width) // (1 if align == "right" else 2)
+    return (main_x, main_y, main_x + content_width, main_y + content_height)
+
+
 def draw_overlay(
     layer: Image.Image,
     definition: OverlayDefinition,
@@ -105,12 +132,27 @@ def draw_overlay(
             width=definition.back_line_width or 1,
         )
 
+    # `back_align` is only legal, per the schema, when the operator also set
+    # `back_width` -- and none of the nine builtins sets either. Gated on
+    # `model_fields_set` rather than on the field's value (which defaults to
+    # "center" either way) so the untouched case takes the EXACT pre-existing
+    # path below, byte for byte: `paste_centered`/`draw_text_centered` centre
+    # on the box's own midpoint, which integer division can put a pixel away
+    # from the probe section 3.4 formula's result for an even back_width
+    # paired with odd content -- a real divergence (see the fix-round
+    # report), not a hypothetical one, and exactly what this gate exists to
+    # keep off every builtin's path.
+    content_box = box
+    if "back_align" in definition.model_fields_set:
+        start = (box[0] + definition.back_padding, box[1] + definition.back_padding)
+        content_box = _aligned_content_box(definition, start, (box_width, box_height), content)
+
     if image is not None and text is not None and font is not None:
-        _draw_addon_group(layer, definition, box, image, text, font, content)
+        _draw_addon_group(layer, definition, content_box, image, text, font, content)
     elif image is not None:
-        paste_centered(layer, image, box)
+        paste_centered(layer, image, content_box)
     elif text is not None and font is not None:
-        _draw_text_centered(layer, definition, text, font, box)
+        _draw_text_centered(layer, definition, text, font, content_box)
     return box
 
 

@@ -160,3 +160,163 @@ def test_scale_width_and_height_resize_the_image_before_it_is_drawn():
     # 40x40 centred on (15,15,320,120): x 147..187, y 47..87.
     assert layer.getpixel((167, 67))[3] == 255
     assert layer.getpixel((120, 67))[3] == 0
+
+
+def _color_bbox(layer: Image.Image, box: tuple[int, int, int, int], color: tuple[int, int, int, int]):
+    """The bounding box, in ``box``-local coordinates, of pixels matching
+    ``color`` exactly -- lets a test locate a solid-colour icon or a glyph's
+    fully-opaque interior without hand-computing font metrics."""
+    region = layer.crop(box)
+    mask = Image.new("L", region.size, 0)
+    mask.putdata([255 if px == color else 0 for px in region.getdata()])
+    return mask.getbbox()
+
+
+def test_back_width_and_height_default_to_shrink_wrap_the_content():
+    """Probe section 3.5: the `-1` sentinel (this schema's own default,
+    `schema.py`) sizes the backdrop to the overlay's own content rather than
+    to a fixed box -- the `backdrop`-name arm that stretches to the full
+    canvas is refused, not built (the plan's deferral table). None of the
+    nine builtins reaches this: every one states `back_width`/`back_height`
+    explicitly."""
+    layer = _layer()
+    icon = Image.new("RGBA", (40, 20), (255, 0, 0, 255))
+    box = draw_overlay(
+        layer,
+        OverlayDefinition(
+            name="a", horizontal_offset=15, horizontal_align="left",
+            vertical_offset=15, vertical_align="top",
+        ),
+        POSTER_CANVAS,
+        image=icon,
+    )
+    assert box == (15, 15, 55, 35)
+
+
+def test_addon_position_right_and_bottom_mirror_left_and_top():
+    """Probe section 1.1: `addon_position` right/bottom put the image AFTER
+    the text instead of before it -- the two arms of `_draw_addon_group`
+    that no builtin reaches (all nine use left or top). Located by isolating
+    each element's exact colour rather than hand-computing font metrics, so
+    the assertion doesn't depend on this environment's font rasterisation."""
+    layer = _layer()
+    icon = Image.new("RGBA", (60, 60), (255, 0, 0, 255))
+    font = ImageFont.truetype(str(INTER_MEDIUM), 55)
+    box = draw_overlay(
+        layer,
+        OverlayDefinition(
+            name="text(x)", horizontal_offset=15, horizontal_align="left",
+            vertical_offset=1125, vertical_align="top",
+            back_width=305, back_height=105, back_color="#00000099",
+            back_radius=30, addon_offset=15, addon_position="right",
+        ),
+        POSTER_CANVAS,
+        image=icon, text="17+", font=font,
+    )
+    icon_box = _color_bbox(layer, box, (255, 0, 0, 255))
+    text_box = _color_bbox(layer, box, (255, 255, 255, 255))
+    assert icon_box is not None and text_box is not None
+    assert icon_box[0] >= text_box[2], "the icon must sit to the right of the text"
+
+    layer = _layer()
+    icon = Image.new("RGBA", (60, 60), (0, 255, 0, 255))
+    box = draw_overlay(
+        layer,
+        OverlayDefinition(
+            name="text(y)", horizontal_offset=30, horizontal_align="right",
+            vertical_offset=-105, vertical_align="center",
+            back_width=160, back_height=160, back_padding=15,
+            back_color="#00000099", back_radius=30,
+            addon_offset=15, addon_position="bottom",
+        ),
+        POSTER_CANVAS,
+        image=icon, text="4.9", font=font,
+    )
+    icon_box = _color_bbox(layer, box, (0, 255, 0, 255))
+    text_box = _color_bbox(layer, box, (255, 255, 255, 255))
+    assert icon_box is not None and text_box is not None
+    assert icon_box[1] >= text_box[3], "the icon must sit below the text"
+
+
+def test_a_stroke_draws_an_outline_around_the_text():
+    """Probe section 1.1: `stroke_width`/`stroke_color`, reachable by any
+    operator definition though none of the nine builtins sets either.
+    `draw.py::draw_text_centered` has no stroke parameters and is never
+    modified by this phase (module docstring), so this branch is
+    `render.py`'s own extension -- unreachable from any builtin, but real."""
+    layer = _layer()
+    font = ImageFont.truetype(str(INTER_MEDIUM), 55)
+    box = draw_overlay(
+        layer,
+        OverlayDefinition(
+            name="text(x)", horizontal_offset=15, horizontal_align="left",
+            vertical_offset=15, vertical_align="top",
+            back_width=305, back_height=105,
+            font_color="#FFFFFF", stroke_width=4, stroke_color="#FF0000",
+        ),
+        POSTER_CANVAS,
+        text="A", font=font,
+    )
+    colors = {px for px in layer.crop(box).getdata() if px[3] > 0}
+    assert (255, 0, 0, 255) in colors, "the stroke colour must appear"
+    assert (255, 255, 255, 255) in colors, "the fill colour must still appear"
+
+
+def test_back_align_left_shifts_content_flush_against_the_backs_left_edge():
+    """Probe section 3.4, transcribed literally: `back_align: left` is in
+    the vertical-recompute list but not the horizontal one, so it centres
+    content vertically while leaving it flush against the backdrop's own
+    left edge horizontally -- the asymmetry is in Kometa's own source, not
+    smoothed over here. `back_align` is only legal (schema validator) when
+    `back_width` is also given, so both are set explicitly below."""
+    layer = _layer()
+    icon = Image.new("RGBA", (40, 40), (255, 0, 0, 255))
+    box = draw_overlay(
+        layer,
+        OverlayDefinition(
+            name="a", horizontal_offset=15, horizontal_align="left",
+            vertical_offset=15, vertical_align="top",
+            back_width=305, back_height=205, back_align="left",
+        ),
+        POSTER_CANVAS,
+        image=icon,
+    )
+    icon_box = _color_bbox(layer, box, (255, 0, 0, 255))
+    assert icon_box is not None
+    assert icon_box[0] == 0, "flush against the box's own left edge"
+    assert icon_box[1] == 82, "vertically centred: (205 - 40) // 2"
+
+
+def test_back_align_is_never_read_when_the_operator_did_not_set_it():
+    """None of the nine builtins sets `back_align` -- confirmed by
+    `overlays/builtin.py`, which passes no such keyword to any of its nine
+    `OverlayDefinition(...)` calls -- so parity requires `draw_overlay` to
+    never apply the section 3.4 formula for them. It doesn't: the formula
+    only runs when `back_align` is in `model_fields_set`, i.e. the operator
+    actually wrote it, and the untouched path below is the exact
+    `paste_centered`-based centring this file's other tests already pin.
+
+    The numbers here are deliberately chosen where the two would disagree if
+    the gate were ever removed -- an EVEN `back_width` (160, `critic`'s own
+    value) against an ODD-width icon (41px): `paste_centered`'s
+    centre-of-box math and the section 3.4 formula round differently for
+    that parity combination (see the fix-round report), so this assertion
+    would move by a pixel the day the gate stops being live, even though no
+    existing pin would say a word."""
+    layer = _layer()
+    icon = Image.new("RGBA", (41, 41), (255, 0, 0, 255))
+    box = draw_overlay(
+        layer,
+        OverlayDefinition(
+            name="a", horizontal_offset=15, horizontal_align="left",
+            vertical_offset=15, vertical_align="top",
+            back_width=160, back_height=160,
+        ),
+        POSTER_CANVAS,
+        image=icon,
+    )
+    icon_box = _color_bbox(layer, box, (255, 0, 0, 255))
+    assert icon_box is not None
+    # Absolute placement is (box centre 95) - (icon width 41 // 2 == 20) = 75;
+    # local to the box (which starts at x=15) that is 60.
+    assert icon_box[0] == 60

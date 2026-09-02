@@ -139,13 +139,14 @@ class OverlayDefinition(BaseModel):
 
     # Kometa itself has no `text` attribute (probe section 2.1): the literal
     # lives in the overlay's `name`, as `text(LITERAL)`, and
-    # `variables.literal_of` parses it out of `name`. This field is this
-    # schema's own addition and is not yet reconciled against that form --
-    # both are currently accepted with no validator relating them. T2, which
-    # builds the text renderer, must pick one as authoritative.
+    # `variables.literal_of` parses it out of `name` -- which is what the
+    # nine builtins do (`overlays/builtin.py`) and what `badges/compose.py`'s
+    # `_draw_definitions` (roadmap row 97's operator path) reads. This field
+    # is this schema's own addition, has no consumer, and is refused rather
+    # than accepted-and-ignored -- the same treatment as `queue` above.
     text: str | None = Field(
         default=None,
-        description="The literal this overlay draws, in which <<variable>> tokens are replaced by the item's own values.",
+        description="Not rendered by this engine. Write the <<variable>> literal in 'name' as 'text(LITERAL)' instead; present only so writing it is refused with a real message instead of silently doing nothing.",
     )
     font: str | None = Field(
         default=None,
@@ -211,6 +212,17 @@ class OverlayDefinition(BaseModel):
             raise ValueError(
                 "the 'queue' attribute is not supported by this service; "
                 "see roadmap row 97"
+            )
+
+        # This schema's own `text` field has no consumer: the rendered
+        # literal comes from `name` as `text(LITERAL)` (probe section 2.1),
+        # which is what every builtin and the operator draw path actually
+        # read. Refused rather than accepted-and-ignored, same reasoning as
+        # `queue` above.
+        if self.text is not None:
+            raise ValueError(
+                "the 'text' attribute is not rendered; write the "
+                "<<variable>> literal in 'name' as 'text(LITERAL)' instead"
             )
 
         if self.group and self.weight is None:
