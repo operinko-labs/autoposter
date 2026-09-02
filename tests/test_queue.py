@@ -7,6 +7,7 @@ from autoposter.db.models import Job
 from autoposter.queue.jobs import (
     DEFER_INTERVAL_SECONDS,
     MAX_ATTEMPTS,
+    RECLAIM_STAGGER_SECONDS,
     claim,
     complete,
     enqueue,
@@ -325,3 +326,38 @@ async def test_reclaim_stale_leaves_recent_claims_alone(session):
     await session.refresh(job)
     assert job.state == "running"
     assert job.claimed_by == "worker-a"
+
+
+async def test_reclaim_stale_staggers_run_after_across_reclaimed_jobs(session):
+    # Production incident: a periodic reclaim that set every reclaimed job's
+    # run_after to the same now() released 5 jobs into the worker pool at
+    # once -- the concurrent renders OOMKilled the pod within seconds. The
+    # jobs died together (same restart); restarting them together is what
+    # killed it, so reclaim must re-admit them one at a time instead.
+    job_ids = [await enqueue(session, "process_item", {"n": i}) for i in range(3)]
+    for job_id in job_ids:
+        await claim(session, "worker-a")
+    await session.execute(
+        text("UPDATE jobs SET claimed_at = now() - interval '20 minutes' WHERE id = ANY(:ids)"),
+        {"ids": job_ids},
+    )
+    await session.commit()
+
+    count = await reclaim_stale(session, older_than_seconds=900)
+    assert count == 3
+
+    rows = (
+        await session.execute(
+            select(Job.id, Job.run_after).where(Job.id.in_(job_ids)).order_by(Job.run_after)
+        )
+    ).all()
+    run_afters = [run_after for _id, run_after in rows]
+    # Strictly increasing, and each apart by exactly the stagger interval --
+    # all computed against the same server-side now() inside one UPDATE
+    # statement, so this is not subject to the dev clock's backwards steps.
+    for earlier, later in zip(run_afters, run_afters[1:]):
+        assert (later - earlier) == timedelta(seconds=RECLAIM_STAGGER_SECONDS)
+    # The very first reclaimed row still becomes immediately claimable, same
+    # as the unstaggered behaviour this replaces (ordinal 0 -> now() + 0).
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    assert run_afters[0] <= db_now

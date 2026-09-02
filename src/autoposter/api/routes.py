@@ -97,6 +97,7 @@ SCHEDULED_JOB_NAMES = frozenset({
     "arr_sync",
     "asset_cleanup",
     "plex_prune",
+    "stale_job_reclaim",
 })
 
 DEFAULT_EVENTS_LIMIT = 50
