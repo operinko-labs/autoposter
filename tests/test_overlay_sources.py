@@ -6,7 +6,6 @@ our `builtin`, resolving against the tree probe section 6 corrects to
 Kometa's OWN `defaults/overlays/images/` rather than the Default-Images repo.
 """
 import io
-from pathlib import Path
 
 import httpx
 import pytest
