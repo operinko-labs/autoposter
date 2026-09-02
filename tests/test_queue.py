@@ -235,6 +235,35 @@ async def test_reenqueuing_a_deferred_key_wakes_it_instead_of_duplicating(sessio
     # A woken deferred row starts fresh: fail() already reset attempts to 0
     # when it deferred, so waking must not touch it further.
     assert job.attempts == 0
+    # Nor should it keep serving the deferral message as a live error --
+    # api/jobs.py keys "waiting" purely off state, so a last_error surviving
+    # the wake would present a pending job as one that had already failed.
+    assert job.last_error is None
+
+
+async def test_reenqueuing_a_deferred_key_with_a_delay_honours_it(session):
+    # The wake must schedule the woken row exactly like a fresh insert would:
+    # a caller passing delay_seconds (the Radarr/Sonarr webhook's settle
+    # window, so the item isn't probed before Plex has scanned it) is relying
+    # on that delay surviving the wake. A wake that instead hardcodes
+    # run_after = now() runs the row immediately -- the highest-probability
+    # moment to hit ItemNotFound again, whereupon fail() re-defers it for
+    # DEFER_INTERVAL_SECONDS (6h), strictly worse than the bug this branch
+    # fixes.
+    job_id = await enqueue(session, "process_item", {"n": 1}, dedupe_key="k-wake-delay")
+    await claim(session, "worker-a")
+    await fail(session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
+
+    woken = await enqueue(
+        session, "process_item", {"n": 2}, dedupe_key="k-wake-delay", delay_seconds=30
+    )
+    assert woken == job_id
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "pending"
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    assert job.run_after > db_now + timedelta(seconds=5)
 
 
 async def test_reenqueuing_a_pending_key_still_debounces_with_no_wake(session):

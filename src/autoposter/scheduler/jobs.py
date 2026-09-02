@@ -228,6 +228,13 @@ async def _stamp_and_enqueue(session: AsyncSession, items) -> int:
             .values(facts_attempted_at=func.now())
         )
 
+    # Per-item enqueue() here does wake a deferred item rather than leaving it
+    # alone, but this runs on a 7-day cadence over at most drift_batch_size
+    # items, and the unconditional facts_attempted_at stamp above already
+    # pushed a woken-then-re-deferred item to the back of the sort order --
+    # worst case one wasted Plex lookup per deferred item per week.
+    # enqueue_batch() isn't a drop-in: it returns a rowcount not per-item ids,
+    # and drops delay_seconds entirely.
     enqueued = 0
     for item in items:
         intent = RenderIntent(

@@ -56,7 +56,8 @@ async def enqueue(
 
     When ``dedupe_key`` matches a job that is ``deferred`` instead, that row is
     woken rather than debounced: its state goes back to ``pending`` with
-    ``run_after`` reset to now, and its id is returned exactly as a fresh
+    ``run_after`` set to this call's own schedule -- honouring ``delay_seconds``
+    exactly as a fresh insert would -- and its id is returned exactly as a fresh
     insert's would be. A deferred job is waiting on Plex to catch up with a
     release it cannot see yet (see ``fail()``'s docstring), and a new event
     naming the same key -- above all the download webhook that finally lands
@@ -84,7 +85,12 @@ async def enqueue(
             # NOTHING for that row -- an existing *pending* row therefore
             # still debounces to a no-op with nothing returned, preserving
             # the contract above unchanged.
-            set_={"state": "pending", "run_after": func.now(), "updated_at": func.now()},
+            set_={
+                "state": "pending",
+                "run_after": stmt.excluded.run_after,
+                "updated_at": func.now(),
+                "last_error": None,
+            },
             where=(Job.__table__.c.state == "deferred"),
         )
     result = await session.execute(stmt.returning(Job.id))
