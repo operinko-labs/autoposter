@@ -30,6 +30,8 @@ remove:
    queue has. Re-searching a flagged poster re-renders that item's background
    too.
 """
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, case, delete, func, select
@@ -39,6 +41,8 @@ from autoposter.actions import flags
 from autoposter.api.auth import require_session
 from autoposter.db.models import ActionDismissal, EventLog, MediaItem, Render
 from autoposter.db.models import Session as SessionModel
+from autoposter.intake.arr import RenderIntent
+from autoposter.queue.jobs import enqueue_batch
 
 router = APIRouter()
 
@@ -82,6 +86,31 @@ def _dismissal_join():
         ActionDismissal.art_kind == Render.art_kind,
         ActionDismissal.evidence == flags.evidence_expression(),
     )
+
+
+def _reprocess_entries(items: list[MediaItem]) -> list[tuple[dict, str]]:
+    """Build ``enqueue_batch``'s ``(payload, dedupe_key)`` entries for a list
+    of items.
+
+    Field-for-field the same ``RenderIntent`` construction as routes.py's
+    ``_enqueue_reprocess``, so the single-item and batch enqueue paths cannot
+    disagree about what one item's job looks like.
+    """
+    entries = []
+    for item in items:
+        intent = RenderIntent(
+            kind=item.kind,
+            title=item.title,
+            tmdb_id=item.tmdb_id,
+            tvdb_id=item.tvdb_id,
+            imdb_id=item.imdb_id,
+            year=item.year,
+            season_number=item.season_number,
+            episode_number=item.episode_number,
+            rating_key=item.rating_key,
+        )
+        entries.append((asdict(intent), intent.dedupe_key))
+    return entries
 
 
 def _scope(library: str | None, art_kind: str | None, include_dismissed: bool) -> list:
@@ -420,9 +449,11 @@ async def bulk_rerender_action(
     One ``events_log`` row per applied press, the ops rule: a write nobody can
     find afterwards is not an operator action, it is a mystery. The dry run
     writes none, because it changed nothing.
-    """
-    from autoposter.api.routes import _enqueue_reprocess
 
+    The batch's own jobs are enqueued through ``enqueue_batch`` -- one set-based
+    INSERT rather than one committed ``enqueue()`` per item, which is what let a
+    500-item batch hold the request open for up to 500 sequential commits.
+    """
     config = request.app.state.config_holder.current
     conditions = [_flag_predicate(config, body.flag)]
     conditions.extend(_scope(body.library, body.art_kind, body.include_dismissed))
@@ -474,10 +505,7 @@ async def bulk_rerender_action(
             .all()
         ) if item_ids else []
 
-        enqueued = 0
-        for item in items:
-            if await _enqueue_reprocess(session, item) is not None:
-                enqueued += 1
+        enqueued = await enqueue_batch(session, "process_item", _reprocess_entries(items))
 
         status = "complete" if not item_ids else "enqueued"
         detail = (
@@ -607,9 +635,13 @@ async def backfill_trigger(
 
     Always a 200 with a ``status`` field. ``complete`` is an expected answer
     to an honest question, not an error for the client to style as a failure.
-    """
-    from autoposter.api.routes import _enqueue_reprocess
 
+    The fingerprint clear is no longer committed on its own ahead of the
+    enqueue: it stays a pending ORM change until ``enqueue_batch`` runs, whose
+    own INSERT ... autoflushes it in and whose own commit lands it -- so a
+    batch that fails partway clears no fingerprint rather than clearing a
+    batch's worth with nothing queued behind it.
+    """
     config = request.app.state.config_holder.current
     batch_size = config.scheduler.drift_batch_size
 
@@ -633,8 +665,6 @@ async def backfill_trigger(
             render.fingerprint = None
             if render.item_id not in item_ids:
                 item_ids.append(render.item_id)
-        if batch:
-            await session.commit()
 
         items = (
             (
@@ -645,10 +675,7 @@ async def backfill_trigger(
             if item_ids
             else []
         )
-        enqueued = 0
-        for item in items:
-            if await _enqueue_reprocess(session, item) is not None:
-                enqueued += 1
+        enqueued = await enqueue_batch(session, "process_item", _reprocess_entries(items))
 
         done, total = await _backfill_progress(session)
         if not batch:

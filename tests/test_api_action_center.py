@@ -9,6 +9,7 @@ identity, which is the risk that row names for itself.
 """
 from pathlib import Path
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
@@ -623,6 +624,38 @@ async def test_the_backfill_clears_the_fingerprint_of_every_row_it_enqueues(
     session.expire_all()
     reread = (await session.execute(select(Render).where(Render.id == render_id))).scalar_one()
     assert reread.fingerprint is None
+
+
+async def test_a_failed_batch_enqueue_leaves_no_fingerprint_cleared_and_no_jobs(
+    client, auth_headers, session, monkeypatch
+):
+    """The fingerprint clear used to commit on its own, ahead of the enqueue
+    loop -- so a failure partway through the old per-item loop could leave
+    fingerprints cleared with nothing queued behind them. Now the clear stays
+    a pending change until `enqueue_batch` runs, so the two share its one
+    commit: if the batch insert itself fails, the whole transaction rolls
+    back and nothing landed -- not the fingerprint, not a job, not an event."""
+    import autoposter.api.action_center as action_center_module
+
+    _, render = await _seed(
+        session, rating_key="1", status="rendered", quality_scored_at=None,
+        fingerprint="deadbeef" * 8,
+    )
+
+    async def explode(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(action_center_module, "enqueue_batch", explode)
+
+    with pytest.raises(RuntimeError):
+        await client.post("/api/actions/backfill", headers=auth_headers)
+
+    render_id = render.id  # read before expire_all -- see test_api_actions.py's precedent
+    session.expire_all()
+    reread = (await session.execute(select(Render).where(Render.id == render_id))).scalar_one()
+    assert reread.fingerprint == "deadbeef" * 8
+    assert (await session.execute(select(Job))).scalars().all() == []
+    assert (await session.execute(select(EventLog))).scalars().all() == []
 
 
 async def test_the_backfill_leaves_an_already_scored_rows_fingerprint_alone(
