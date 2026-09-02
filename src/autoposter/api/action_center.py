@@ -39,7 +39,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.actions import flags
 from autoposter.api.auth import require_session
-from autoposter.db.models import ActionDismissal, EventLog, MediaItem, Render
+from autoposter.db.models import ActionDismissal, EventLog, Job, MediaItem, Render
 from autoposter.db.models import Session as SessionModel
 from autoposter.intake.arr import RenderIntent
 from autoposter.queue.jobs import enqueue_batch
@@ -591,6 +591,84 @@ async def _backfill_progress(session) -> tuple[int, int]:
     return done, total
 
 
+async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
+    """The next ``batch_size`` unscored, rendered rows to score -- skipping
+    any row whose ITEM already has a pending or deferred ``process_item`` job.
+
+    Without this, pressing the button again while the previous batch is still
+    rendering re-selects the very rows that batch is working on: they are
+    still unscored, because their re-render has not landed yet. Those rows
+    then hit ``enqueue_batch``'s own dedupe -- which coalesces against
+    ``pending`` and ``deferred`` alike -- and are silently dropped, so the
+    press reports ``enqueued: 0`` while unrelated unscored rows sit untouched
+    elsewhere in the table -- a dead button.
+
+    The exclusion is at the ITEM level, not the row's: a batch enqueues one
+    job per ITEM (``_reprocess_entries``), keyed by
+    ``RenderIntent.dedupe_key``, while this selects per-render-row -- an item
+    with two unscored art kinds must have both rows skipped once either one
+    is in flight.
+
+    Anti-joined in the style ``arr/sync.py``'s ``enqueue_unknown_items`` uses
+    for its own discovery: the pending keys are fetched once as a plain
+    Python set, and each candidate row's item is tested against it, rather
+    than reproducing ``RenderIntent.dedupe_key``'s id-precedence chain as SQL.
+    Paged rather than one large ``LIMIT``, since the in-flight set can itself
+    be up to ``batch_size`` items and no fixed multiple over that is safe to
+    assume.
+    """
+    pending_keys = set(
+        (
+            await session.execute(
+                select(Job.dedupe_key).where(
+                    Job.kind == "process_item",
+                    Job.state.in_(("pending", "deferred")),
+                    Job.dedupe_key.isnot(None),
+                )
+            )
+        ).scalars()
+    )
+
+    selected: list[Render] = []
+    after_id = 0
+    while len(selected) < batch_size:
+        page = (
+            await session.execute(
+                select(Render, MediaItem)
+                .join(MediaItem, MediaItem.id == Render.item_id)
+                .where(
+                    Render.status == "rendered",
+                    Render.quality_scored_at.is_(None),
+                    Render.id > after_id,
+                )
+                .order_by(Render.id)
+                .limit(batch_size)
+            )
+        ).all()
+        if not page:
+            break
+        after_id = page[-1][0].id
+        for render, item in page:
+            if len(selected) >= batch_size:
+                break
+            intent = RenderIntent(
+                kind=item.kind,
+                title=item.title,
+                tmdb_id=item.tmdb_id,
+                tvdb_id=item.tvdb_id,
+                imdb_id=item.imdb_id,
+                year=item.year,
+                season_number=item.season_number,
+                episode_number=item.episode_number,
+                rating_key=item.rating_key,
+            )
+            if intent.dedupe_key in pending_keys:
+                continue
+            selected.append(render)
+
+    return selected
+
+
 @router.get("/actions/backfill")
 async def backfill_status(
     request: Request, _: SessionModel = Depends(require_session)
@@ -647,18 +725,7 @@ async def backfill_trigger(
 
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        batch = (
-            (
-                await session.execute(
-                    select(Render)
-                    .where(Render.status == "rendered", Render.quality_scored_at.is_(None))
-                    .order_by(Render.id)
-                    .limit(batch_size)
-                )
-            )
-            .scalars()
-            .all()
-        )
+        batch = await _select_backfill_batch(session, batch_size)
 
         item_ids = []
         for render in batch:

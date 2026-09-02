@@ -19,6 +19,7 @@ from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.db.models import ActionDismissal, EventLog, Job, MediaItem, Render
+from autoposter.intake.arr import RenderIntent
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -744,3 +745,93 @@ async def test_the_backfill_reports_completion_idempotently(client, auth_headers
 async def test_the_backfill_requires_a_session(client):
     assert (await client.get("/api/actions/backfill")).status_code == 401
     assert (await client.post("/api/actions/backfill")).status_code == 401
+
+
+# --- pressing again while a batch is still in flight -------------------------
+#
+# Production, mid-backfill at 7681/17264: a press while the previous batch was
+# still rendering re-selected the same unscored rows -- still unscored because
+# their re-render had not landed yet -- and `enqueue_batch`'s own pending
+# dedupe swallowed every one of them. The response read `enqueued: 0` with
+# thousands of eligible rows still sitting elsewhere in the table: a dead
+# button.
+
+
+async def test_the_second_press_selects_rows_outside_the_pending_batch(
+    app, client, auth_headers, session
+):
+    """The second press must not re-select item 0's still-unscored row -- its
+    job is pending -- and must find item 1 instead, so `enqueued` stays
+    honest rather than reporting 0 while item 1 is eligible."""
+    for n in range(2):
+        await _seed(session, rating_key=str(n), status="rendered")
+
+    edited = load_config(EXAMPLE)
+    edited.scheduler.drift_batch_size = 1
+    app.state.config_holder.swap(edited)
+
+    first = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+    assert first["enqueued"] == 1
+
+    second = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert second["selected"] == 1
+    assert second["enqueued"] == 1
+
+
+async def test_the_second_press_does_not_re_clear_a_pending_items_fingerprint(
+    app, client, auth_headers, session
+):
+    """The discriminating half: a fix that simply widened the batch without
+    excluding in-flight items would still touch item 0's row a second time."""
+    _, render0 = await _seed(session, rating_key="0", status="rendered", fingerprint="a" * 64)
+    await _seed(session, rating_key="1", status="rendered", fingerprint="b" * 64)
+
+    edited = load_config(EXAMPLE)
+    edited.scheduler.drift_batch_size = 1
+    app.state.config_holder.swap(edited)
+
+    await client.post("/api/actions/backfill", headers=auth_headers)  # item 0 goes pending
+
+    # item 0's render has not been re-rendered yet -- still unscored -- and
+    # something has left a fingerprint on it again. The second press must
+    # leave it alone: item 0 already has a pending job.
+    render0_id = render0.id
+    session.expire_all()
+    reread0 = (await session.execute(select(Render).where(Render.id == render0_id))).scalar_one()
+    reread0.fingerprint = "sentinel" * 8
+    await session.commit()
+
+    await client.post("/api/actions/backfill", headers=auth_headers)  # should select item 1 only
+
+    session.expire_all()
+    reread0 = (await session.execute(select(Render).where(Render.id == render0_id))).scalar_one()
+    assert reread0.fingerprint == "sentinel" * 8
+
+
+async def test_a_deferred_jobs_item_is_not_selected_either(app, client, auth_headers, session):
+    """`enqueue_batch` never wakes a deferred row (queue/jobs.py: "a scheduled
+    pass is not that kind of signal"), so selecting a row whose item's job is
+    merely deferred -- not pending -- clears its fingerprint for nothing: the
+    same dead-button bug, reproduced for the deferred case."""
+    item0, render0 = await _seed(
+        session, rating_key="0", status="rendered", fingerprint="a" * 64
+    )
+    await _seed(session, rating_key="1", status="rendered", fingerprint="b" * 64)
+
+    intent = RenderIntent(kind=item0.kind, title=item0.title)
+    session.add(Job(kind="process_item", dedupe_key=intent.dedupe_key, state="deferred"))
+    await session.commit()
+
+    edited = load_config(EXAMPLE)
+    edited.scheduler.drift_batch_size = 1
+    app.state.config_holder.swap(edited)
+
+    body = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["selected"] == 1
+    assert body["enqueued"] == 1
+    render0_id = render0.id
+    session.expire_all()
+    reread0 = (await session.execute(select(Render).where(Render.id == render0_id))).scalar_one()
+    assert reread0.fingerprint == "a" * 64
