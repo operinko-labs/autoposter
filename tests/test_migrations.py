@@ -213,3 +213,92 @@ async def test_migrations_apply_to_a_populated_renders_table():
             await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}_data"')
         finally:
             await maint.close()
+
+
+async def test_migration_collapses_duplicate_pending_and_deferred_dedupe_rows():
+    """The production incident this migration exists to fix: uq_jobs_pending_dedupe
+    used to cover only ``state = 'pending'``, so every webhook/sweep event for an
+    item stuck waiting on Plex minted another independent ``deferred`` row --
+    11 piled up for one show. Seeded here by raw INSERT (bypassing enqueue(),
+    which the fixed code no longer lets create duplicates) to reproduce exactly
+    the shape a deployed database carries at migration time: 3 duplicate rows
+    for one dedupe_key plus one unrelated pending row that must survive
+    untouched. Walks to the revision before the widened index, seeds, then
+    upgrades to head and checks exactly one survivor remains.
+    """
+    if not await _postgres_reachable():
+        _unreachable_postgres()
+
+    before_widen = "a9d4e70c3b15"
+
+    maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+    try:
+        await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}_dedupe"')
+        await maint.execute(f'CREATE DATABASE "{SCRATCH_DB_NAME}_dedupe"')
+    finally:
+        await maint.close()
+
+    url = SCRATCH_DB_URL.replace(SCRATCH_DB_NAME, SCRATCH_DB_NAME + "_dedupe")
+    env = dict(os.environ, AUTOPOSTER_DATABASE_URL=url)
+
+    def alembic(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        )
+
+    try:
+        step = alembic("upgrade", before_widen)
+        assert step.returncode == 0, step.stdout + step.stderr
+
+        conn = await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql"), timeout=5)
+        try:
+            oldest_id = await conn.fetchval(
+                "INSERT INTO jobs (kind, payload, dedupe_key, state, attempts, created_at) "
+                "VALUES ('process_item', '{}'::jsonb, 'movie:55645', 'deferred', 0, "
+                "now() - interval '2 days') RETURNING id"
+            )
+            await conn.execute(
+                "INSERT INTO jobs (kind, payload, dedupe_key, state, attempts, created_at) "
+                "VALUES ('process_item', '{}'::jsonb, 'movie:55645', 'deferred', 0, "
+                "now() - interval '1 day')"
+            )
+            await conn.execute(
+                "INSERT INTO jobs (kind, payload, dedupe_key, state, attempts, created_at) "
+                "VALUES ('process_item', '{}'::jsonb, 'movie:55645', 'deferred', 0, now())"
+            )
+            other_id = await conn.fetchval(
+                "INSERT INTO jobs (kind, payload, dedupe_key, state, attempts) "
+                "VALUES ('process_item', '{}'::jsonb, 'movie:99', 'pending', 0) RETURNING id"
+            )
+        finally:
+            await conn.close()
+
+        head = alembic("upgrade", "head")
+        assert head.returncode == 0, (
+            "migrating a jobs table with duplicate dedupe rows failed:\n"
+            + head.stdout + head.stderr
+        )
+
+        conn = await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql"), timeout=5)
+        try:
+            rows = await conn.fetch(
+                "SELECT id, state FROM jobs WHERE dedupe_key = 'movie:55645' ORDER BY id"
+            )
+            other_state = await conn.fetchval("SELECT state FROM jobs WHERE id = $1", other_id)
+        finally:
+            await conn.close()
+
+        survivors = [r for r in rows if r["state"] != "dismissed"]
+        assert len(survivors) == 1, f"expected exactly one survivor, got {[dict(r) for r in rows]}"
+        assert survivors[0]["id"] == oldest_id, "the oldest row must be the one kept"
+        assert survivors[0]["state"] == "deferred"
+        dismissed_count = sum(1 for r in rows if r["state"] == "dismissed")
+        assert dismissed_count == 2
+        assert other_state == "pending", "an unrelated dedupe_key's row must be untouched"
+    finally:
+        maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+        try:
+            await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}_dedupe"')
+        finally:
+            await maint.close()

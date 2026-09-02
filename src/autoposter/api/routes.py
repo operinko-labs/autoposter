@@ -606,9 +606,12 @@ async def retry_job(
 
     A parked job whose item has since been queued again by some other path
     (a webhook, the drift sweep) collides with uq_jobs_pending_dedupe, the
-    partial unique index that allows one pending job per dedupe key. There
-    is nothing to retry in that case -- the work is already queued -- so it
-    is a 409 saying so, not the IntegrityError a 500 would come from.
+    partial unique index that allows one pending-or-deferred job per dedupe
+    key -- deferred included, so this also fires when the item's re-queued
+    job is off waiting on Plex rather than pending outright. There is
+    nothing to retry in either case -- the work is already queued, running
+    or waiting -- so it is a 409 saying so, not the IntegrityError a 500
+    would come from.
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
