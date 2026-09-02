@@ -254,10 +254,10 @@ def _draw_languages(poster: Image.Image, canvas: tuple[int, int], inputs: BadgeI
 def _variable_values(art_kind: str, inputs: BadgeInputs) -> dict[str, object]:
     """The item values an operator's <<variable>> tokens can resolve against.
 
-    Deliberately only what this service already gathers. Probe section 2.2's
-    27 external rating sources are part of the GRAMMAR and are absent here on
-    purpose: fetching them is row 100's data half, and a definition naming one
-    is skipped rather than silently rendered wrong.
+    Deliberately only what this service already gathers. The data-source
+    probe's 29 external rating sources are part of the GRAMMAR and are absent
+    here on purpose: fetching them is row 100's data half, and a definition
+    naming one is skipped rather than silently rendered wrong.
     """
     media = inputs.media
     values: dict[str, object] = {

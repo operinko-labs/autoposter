@@ -146,13 +146,18 @@ def test_a_variable_with_no_value_raises_rather_than_rendering_a_hole():
         render_text("<<critic_rating>>", {})
 
 
-def test_the_rating_vocabulary_is_the_banked_twenty_seven():
-    """Probe section 2.2: 27 external rating sources. The NAMES are grammar and
-    ship here; the per-source API fetches are row 100's data half and do not."""
-    assert len(RATING_SOURCES) == 27
+def test_the_rating_vocabulary_is_the_banked_twenty_nine():
+    """Data-source probe section 2.1 / appendix 9.1: 29 external rating
+    sources, banked verbatim from `modules/overlay.py:19-49` at the pinned
+    tag. The NAMES are grammar and ship here; the per-source API fetches are
+    row 100's data half and do not."""
+    assert len(RATING_SOURCES) == 29
     assert "imdb_rating" in RATING_SOURCES
     assert "trakt_user_rating" in RATING_SOURCES
     assert "anidb_average_rating" in RATING_SOURCES
+    # The four plex_* ratings need no external call at all (probe section
+    # 2.3.6) -- the reconstruction this replaces omitted all four of them.
+    assert "plex_imdb_rating" in RATING_SOURCES
     # The three Plex-native ratings are float vars but NOT rating sources --
     # they read off the item rather than through an external call.
     for native in ("audience_rating", "critic_rating", "user_rating"):

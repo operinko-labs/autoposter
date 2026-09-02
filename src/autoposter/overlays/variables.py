@@ -7,7 +7,7 @@ that look like bugs -- `%` truncates because `int()` truncates, and
 `badges/values.py` already records that production output really does.
 
 This module is pure: it formats values it is HANDED. It never reads a Plex
-item and never calls a rating API. The 27 external rating-source names are
+item and never calls a rating API. The 29 external rating-source names are
 part of the grammar and appear in the vocabulary; fetching them is row 100's
 data half, which the probe's own section 7.2 leaves unprobed.
 """
@@ -16,24 +16,40 @@ from collections.abc import Mapping
 
 from num2words import num2words
 
-# Probe section 2.2 banks the COUNT (27) and the two endpoints
-# (anidb_average_rating, trakt_user_rating) but does not enumerate the list.
-# This 27-name tuple is PROVISIONALLY RECONSTRUCTED, not banked -- pending a
-# re-probe of modules/overlay.py:19-49 at the pinned tag (see F-2 in
-# .superpowers/sdd/2026-09-03-overlay-engine/task-1-review.md) before row 100
-# depends on any name here beyond the two the probe actually cites.
+# Banked verbatim in `.superpowers/sdd/p-overlay-datasources-probe.md`
+# appendix 9.1, from `modules/overlay.py:19-49` at the pinned tag
+# (`Kometa-Team/Kometa` @ `498b3af6e921fc5e857dd081061000c87482489d`). 29
+# entries, in the source's own order.
 RATING_SOURCES = (
-    "anidb_average_rating", "anidb_rating", "anidb_score",
-    "imdb_rating", "letterboxd_rating",
-    "mal_rating", "mdb_average_rating", "mdb_letterboxd_rating",
-    "mdb_metacritic_rating", "mdb_metacriticuser_rating", "mdb_myanimelist_rating",
-    "mdb_rating", "mdb_score", "mdb_tmdb_rating", "mdb_tomatoes_rating",
-    "mdb_tomatoesaudience_rating", "mdb_trakt_rating",
-    "omdb_metacritic_rating", "omdb_rating", "omdb_tomatoes_rating",
+    "anidb_average_rating",
+    "anidb_rating",
+    "anidb_score_rating",
+    "imdb_rating",
+    "floppy_rating",
+    "mal_rating",
+    "mdb_average_rating",
+    "mdb_imdb_rating",
+    "mdb_letterboxd_rating",
+    "mdb_metacritic_rating",
+    "mdb_metacriticuser_rating",
+    "mdb_myanimelist_rating",
+    "mdb_rating",
+    "mdb_tmdb_rating",
+    "mdb_tomatoes_rating",
+    "mdb_tomatoesaudience_rating",
+    "mdb_trakt_rating",
+    "omdb_rating",
+    "omdb_imdb_rating",
+    "omdb_metascore_rating",
+    "omdb_tomatoes_rating",
+    "plex_imdb_rating",
+    "plex_tmdb_rating",
+    "plex_tomatoes_rating",
+    "plex_tomatoesaudience_rating",
     "serializd_rating",
-    "tmdb_rating", "tvdb_rating",
-    "trakt_rating", "trakt_user_rating",
-    "anidb_temp_rating", "mal_score",
+    "tmdb_rating",
+    "trakt_rating",
+    "trakt_user_rating",
 )
 
 # Probe section 2.2. The three Plex-native ratings are float vars but not
