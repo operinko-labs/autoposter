@@ -17,7 +17,15 @@ class Selection:
     is_fallback: bool
 
 
-def _normalise(language: str | None) -> str | None:
+def normalise_language(language: str | None) -> str | None:
+    """The two-letter form of a provider's language tag.
+
+    TVDB reports ISO-639-2/T three-letter codes and the config speaks
+    two-letter ones, so ``eng`` and ``en`` are the same preference and must
+    compare equal. Public because render/pipeline.py stores the normalised
+    code as a quality fact: an ``eng`` sitting in that column would read as a
+    language miss against every ``en``-preferring order.
+    """
     if language is None:
         return None
     return _THREE_TO_TWO.get(language, language)
@@ -31,7 +39,7 @@ def language_rank(candidate: ArtCandidate, language_order: list[str]) -> int:
     """
     if candidate.is_textless and "xx" in language_order:
         return language_order.index("xx")
-    code = _normalise(candidate.language)
+    code = normalise_language(candidate.language)
     if code in language_order:
         return language_order.index(code)
     return UNRANKED

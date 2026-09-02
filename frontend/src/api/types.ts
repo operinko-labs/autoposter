@@ -807,3 +807,125 @@ export interface FactsBackfillTrigger {
   total: number;
   detail: string;
 }
+
+/** `GET /api/actions/summary` -- one entry per flag the server has, with its
+ * count under the current library/art-kind scope.
+ *
+ * The label and description come from the server's own registry
+ * (src/autoposter/actions/flags.py), not from a list here: a flag added there
+ * would silently be missing from a chip row this file enumerated.
+ *
+ * `default_on` false means the flag is offered but is not part of the queue's
+ * default population -- `unknown_provenance` is every row of a
+ * wholesale-adopted library, and a queue that opens showing ten thousand rows
+ * is not a queue. `instant` false means the flag cannot fire until a row
+ * re-renders, because the fact it rests on is written at the render
+ * write-back; the page says so on the chip.
+ */
+export interface ActionFlagSummary {
+  code: string;
+  label: string;
+  description: string;
+  default_on: boolean;
+  instant: boolean;
+  count: number;
+}
+
+export interface ActionsSummaryResponse {
+  /** How many rows the default population holds -- not the sum of the counts
+   * above, which double-count a row carrying two flags. */
+  total: number;
+  flags: ActionFlagSummary[];
+}
+
+/** One row of `GET /api/actions`: one chosen artwork asset, which is one
+ * `renders` row.
+ *
+ * `flags` and `details` are parallel arrays in the same order -- the server
+ * evaluates each flag's predicate and hands back the factual sentence behind
+ * it, so the page renders the server's own words rather than restating a fact
+ * it would have to keep in step.
+ *
+ * `evidence` is the SHA-256 the dismissal is keyed by. The page does not
+ * compute or compare it; it is here because it is what makes a dismissal stop
+ * holding when a fact moves, and a debugging operator should be able to see
+ * it.
+ */
+export interface ActionRow {
+  item_id: number;
+  art_kind: string;
+  title: string;
+  library: string;
+  kind: string;
+  status: string;
+  upload_status: string;
+  provider: string | null;
+  flags: string[];
+  details: string[];
+  dismissed: boolean;
+  evidence: string;
+  /** null means this row predates the quality taxonomy, so four of the flags
+   * cannot be evaluated for it until it re-renders. */
+  quality_scored_at: string | null;
+  updated_at: string;
+}
+
+export interface ActionsResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  items: ActionRow[];
+}
+
+/** `POST /api/actions/bulk/rerender` -- one batch's outcome, or a count of
+ * what one would be.
+ *
+ * All three statuses arrive as a 200 with real numbers: "dry run" changed
+ * nothing on purpose, and "complete" means nothing matches the filter. Only a
+ * non-2xx is an error. `matched` counts flagged ROWS across the whole filter,
+ * `items` counts the distinct items in THIS batch, and `enqueued` counts jobs
+ * actually created -- a batch the pending dedupe swallowed reports fewer than
+ * `items` rather than claiming work it did not queue.
+ */
+export interface BulkRerenderResponse {
+  status: "dry run" | "enqueued" | "complete";
+  matched: number;
+  items: number;
+  enqueued: number;
+  detail: string;
+}
+
+/** `GET /api/actions/backfill` -- the quality backfill's standing progress.
+ *
+ * Measured over rows that CAN be scored (`status = 'rendered'`) rather than
+ * over every render row: an asset that produced no art never reaches the
+ * write-back that stamps the quality facts, so counting it would make a
+ * progress bar that stops short forever. Those rows already have their own
+ * flags.
+ *
+ * `complete` is derived server-side by the POST's own rule (`done >= total`),
+ * so an empty library reads `complete` on both endpoints rather than
+ * `not_started` here and `complete` there.
+ */
+export interface QualityBackfillStatus {
+  status: "not_started" | "in_progress" | "complete";
+  done: number;
+  total: number;
+}
+
+/** `POST /api/actions/backfill` -- one triggered batch's outcome.
+ *
+ * `complete` is an answer, not a failure: it arrives as a 200 with real
+ * counts. `selected` is how many unscored assets this batch took;
+ * `enqueued` is how many items it actually queued, which is smaller whenever
+ * one item carries several unscored assets or a pass for it was already
+ * pending.
+ */
+export interface QualityBackfillTrigger {
+  status: "enqueued" | "complete";
+  selected: number;
+  enqueued: number;
+  done: number;
+  total: number;
+  detail: string;
+}

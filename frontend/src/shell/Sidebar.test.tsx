@@ -190,6 +190,23 @@ describe("Sidebar", () => {
     expect(link).toHaveAttribute("title", "Testing");
   });
 
+  it("reaches the Action Center", () => {
+    stubMatchMedia(false);
+
+    renderSidebar();
+
+    // The queue is only reachable from here; a route with no link into it is
+    // a page that ships and is never found.
+    const link = screen.getByRole("link", { name: "Action Center" });
+    expect(link).toHaveAttribute("href", "/actions");
+    expect(link).toHaveAttribute("title", "Action Center");
+
+    // Directly after Dashboard, per the NAV comment: "what needs me" is the
+    // question an operator asks immediately after "what is happening".
+    const dashboard = screen.getByRole("link", { name: "Dashboard" });
+    expect(dashboard.compareDocumentPosition(link)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it("reaches the id-mismatch view", () => {
     stubMatchMedia(false);
 

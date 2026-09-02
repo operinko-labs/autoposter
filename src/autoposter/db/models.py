@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -101,7 +102,15 @@ class Render(Base):
         String(24), default="pending", server_default="pending"
     )
     asset_path: Mapped[str] = mapped_column(Text)
-    # pending | rendered | truncated | no_art | failed
+    # pending | rendered | truncated | no_art | failed | skipped
+    #
+    # `skipped` was missing from this list while render/pipeline.py wrote it
+    # in four places (a disabled art kind, a skip-word title, an unnumbered
+    # item, online fetch disabled). No CHECK constraint governs the column in
+    # the model or in any migration, so nothing caught it, and the
+    # /items/filters dropdown was right only because it reads DISTINCT from
+    # the table. An Action Center flag registry written from this comment
+    # would have silently dropped a whole status.
     status: Mapped[str] = mapped_column(String(24), default="pending")
     detail: Mapped[str | None] = mapped_column(Text)
     rendered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -117,6 +126,72 @@ class Render(Base):
     adopted: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false")
     )
+
+    # --- Action Center quality facts (roadmap 11a) --------------------------
+    #
+    # Facts, never verdicts. Which language the ladder took, which provider,
+    # which fallbacks it made -- whether any of that is worth an operator's
+    # attention is a SQL predicate in actions/flags.py, evaluated against the
+    # config that is live when the queue is read. A stored `language_miss`
+    # boolean would be a lie the moment an operator re-pointed
+    # artwork.poster.language_order, and re-backfilling the library on every
+    # config save is worse than a predicate. 11a's own risk note is the
+    # naming law: factual ("selected language = en"), never judgemental.
+    #
+    # All nine are written at render/pipeline.py's write-back block, beside
+    # source_mode and for source_mode's own stated reason: the "unchanged"
+    # fingerprint short-circuit returns before that block, so a fact recorded
+    # there survives a pass that changes nothing -- unlike `detail`, which is
+    # unconditionally reset on every successful render.
+
+    # The candidate's own language tag, normalised to the two-letter form the
+    # config speaks (providers/ladder.py's normalise_language, so a TVDB
+    # "eng" does not read as a miss against every "en"-preferring order).
+    # NULL when the provider tagged it with nothing, which is what textless
+    # art looks like.
+    selected_language: Mapped[str | None] = mapped_column(String(16))
+    # Where that language sat in the order in force AT RENDER TIME, from
+    # ladder.language_rank; 99 is the ladder's UNRANKED. History, and
+    # deliberately not what the flag reads: it is the evidence a row shows an
+    # operator, while the judgement is recomputed live. NULL means no ladder
+    # ever ranked this row.
+    language_rank: Mapped[int | None] = mapped_column(SmallInteger)
+    # Where the winning provider sat in the RUNTIME ladder -- the list the
+    # pipeline was handed, not config.providers.order. app.py's
+    # _build_providers warns and drops a configured provider with no
+    # implementation, so a config-index rank can claim a position that never
+    # existed on this deployment. NULL for a manual override, which no ladder
+    # produced.
+    provider_rank: Mapped[int | None] = mapped_column(SmallInteger)
+    # The order preferred textless art, no provider had any, and the ladder
+    # took a text-bearing image rather than nothing. This is
+    # ladder.Selection.is_fallback, which was returned by the ladder from the
+    # day it was written and read by nobody until now.
+    textless_fallback: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    # A poster that wanted a clearlogo, found none on any provider, and drew
+    # its title text instead because artwork.logo_text_fallback allowed it.
+    logo_text_fallback: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    # The base image's pixel dimensions as the provider reported them.
+    # CAPTURED, ENFORCED NOWHERE: artwork.min_width/min_height stay inert and
+    # the resolution floor stays roadmap row 219's open decision. Capturing
+    # them now is what makes 219 a small later change instead of a re-backfill
+    # of the whole library -- which is 11a's own named risk.
+    base_width: Mapped[int | None] = mapped_column(SmallInteger)
+    base_height: Mapped[int | None] = mapped_column(SmallInteger)
+    # The point size the primary title block finally fitted at, from
+    # textfit.FitResult. NULL when no text was drawn -- a logo poster, a
+    # verbatim source, a suppressed title. Capture-only for the same reason as
+    # the dimensions: the near-miss fit metric is filed, not built.
+    text_point_size: Mapped[int | None] = mapped_column(SmallInteger)
+    # When the eight facts above were last written. NULL means "never scored
+    # under this taxonomy", which is every row that existed before this
+    # migration. It is what makes the coverage gap visible instead of letting
+    # an unscored row read as a clean one.
+    quality_scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Job(Base):
@@ -586,3 +661,45 @@ class FactsBackfillState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ActionDismissal(Base):
+    """One render row an operator told the Action Center to stop showing.
+
+    Keyed by ``evidence`` -- a SHA-256 over the fact columns the queue judges,
+    computed IN SQL (``actions/flags.evidence_expression``) so the queue's
+    join is a plain equality and paging and totals stay server-side. The
+    dismissal holds only while that hash still matches: a re-render that finds
+    Finnish where it found English moves the hash, the join stops matching,
+    and the row comes back on its own. That is roadmap 11b's "dismissal that
+    sticks until the underlying facts change" and its "dismissals need a
+    fingerprint-style identity so a re-render doesn't resurrect dismissed
+    rows" -- both, with no sweep and no invalidation job between them.
+
+    The unit is the render row, not the flag. The queue's Dismiss control is
+    per row, and hiding a row under one flag while it still showed under
+    another would be a button that visibly does nothing. ``flag`` records
+    which flag the operator was looking at, for the audit; it does not narrow
+    what the dismissal covers.
+
+    ``ON DELETE CASCADE`` like every other child of ``media_items``:
+    scheduler/prune.py hard-deletes item rows, and a dismissal must not
+    outlive the item it is about.
+    """
+
+    __tablename__ = "action_dismissals"
+    __table_args__ = (
+        UniqueConstraint("item_id", "art_kind", name="uq_action_dismissal_item_kind"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    item_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"), index=True
+    )
+    art_kind: Mapped[str] = mapped_column(String(24))
+    flag: Mapped[str | None] = mapped_column(String(32))
+    evidence: Mapped[str] = mapped_column(String(64))
+    dismissed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    note: Mapped[str | None] = mapped_column(Text)

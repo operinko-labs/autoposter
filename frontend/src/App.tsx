@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { SessionProvider, useSession } from "./auth/SessionContext";
+import { ActionCenter } from "./pages/ActionCenter";
 import { Collections } from "./pages/Collections";
 import { Dashboard } from "./pages/Dashboard";
 import { Failures } from "./pages/Failures";
@@ -23,6 +24,7 @@ function AuthenticatedApp() {
       <main className="app-main">
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/actions" element={<ActionCenter />} />
           <Route path="/library" element={<Library />} />
           <Route path="/items/:itemId" element={<ItemDetail />} />
           <Route path="/collections" element={<Collections />} />

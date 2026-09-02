@@ -1,0 +1,174 @@
+/* The Action Center. The shared page primitives (.page-header, .page-error,
+ * .empty, .table-scroll, .cell-time, .cell-wrap, .row-actions) come from
+ * shell/shell.css, .panel/.muted/.mono from theme.css, and .pill* from
+ * dashboard.css -- imported explicitly by the page, as Modes.tsx does. The
+ * pager is `.action-pager` rather than a second import of `.library-pager`:
+ * `App.tsx` imports every page's stylesheet statically, so `library.css` is
+ * in the bundle whenever this one is -- the point is ownership, not bundle
+ * presence. The rule below is copied from `.library-pager` rather than
+ * imported, so the two would need to drift on purpose, not by accident of a
+ * change made for Library's own reasons. */
+
+.action-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.action-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+/* A chip is a filter toggle that also carries its own count, so the header
+ * row answers "what is wrong" and "how much of it" at once. */
+.action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.action-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* A flag with no matches stays on screen rather than disappearing: a chip
+ * that vanishes when its count reaches zero takes with it the only evidence
+ * that the count IS zero, and the operator cannot tell "none" from "not
+ * offered". */
+.action-chip-zero {
+  opacity: 0.55;
+}
+
+.action-chip-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.action-chip.active .action-chip-count {
+  color: var(--accent);
+}
+
+.action-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.action-filters label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.action-filters select {
+  font-family: inherit;
+  font-size: 14px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+}
+
+.action-filters select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.action-toggle {
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 13px;
+}
+
+.action-bulk {
+  margin-bottom: 20px;
+}
+
+/* The sentence beside the confirm button, and the standing caveat under the
+ * bar. Both are always rendered rather than put behind a disclosure: an
+ * operator who has to open something to learn that a re-search may change
+ * nothing will learn it afterwards instead. */
+.action-confirm {
+  color: var(--warn);
+  font-size: 13px;
+}
+
+.action-caveat {
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+
+.action-bulk-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.action-notice {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+/* One flag and the fact behind it, stacked. A row can carry several, and
+ * putting the label and its evidence on one line made the reason column the
+ * widest thing on the page at every viewport. */
+.action-reason {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.action-reason:last-child {
+  margin-bottom: 0;
+}
+
+.action-flag {
+  display: block;
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.action-detail {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Replace is a link, not a button, because it navigates. Styled to sit level
+ * with the buttons beside it inside .row-actions rather than reading as body
+ * text that happens to be blue. */
+.action-replace {
+  font-size: 13px;
+}
+
+/* The coverage panel. Above the bulk bar on purpose: "can this page even see
+ * everything yet" is the question that qualifies every count above it, and an
+ * operator who reads the chips without it will read an unscored library as a
+ * clean one. */
+.action-coverage {
+  margin-bottom: 20px;
+}

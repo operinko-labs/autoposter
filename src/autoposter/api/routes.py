@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
+from autoposter.api.action_center import router as action_center_router
 from autoposter.api.artwork import router as artwork_router
 from autoposter.artwork_modes.backup import BackupMode
 from autoposter.artwork_modes.logo import LogoMode, LogoRevertMode
@@ -207,6 +208,15 @@ router.include_router(mismatches_router)
 # operator config that must not reach a log or a response, and the rules that
 # keep it out of both are the substance of it.
 router.include_router(version_router)
+
+# The Action Center (roadmap rows 11a/11b): the curation queue over the
+# artwork this service chose and rendered. Its own module because the queries
+# there are a different kind from every other listing here -- they select
+# predicates built from the LIVE config, once into the WHERE clause and again
+# as labelled booleans, so that "why is this row here" and "which rows are
+# here" are one definition. Folding that into this module would put a second,
+# subtler kind of query beside the plain column listings.
+router.include_router(action_center_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
@@ -419,7 +429,7 @@ async def item_filters(
     Python -- the items table runs to ~15,000 rows.
 
     "statuses" reports `Render.status` (pending|rendered|truncated|no_art|
-    failed), not `Render.upload_status`. That is what list_items()'s own
+    failed|skipped), not `Render.upload_status`. That is what list_items()'s own
     `status` query parameter already filters on, and what a user picking an
     item filter means by "status" -- whether the art rendered, not whether
     it made it to Plex.

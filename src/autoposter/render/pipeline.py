@@ -28,7 +28,7 @@ from autoposter.plex.artwork import upload_artwork
 from autoposter.plex.client import ResolvedItem
 from autoposter.plex.writer import apply_facts, exemption_reason
 from autoposter.providers import base as art
-from autoposter.providers.ladder import select_artwork
+from autoposter.providers.ladder import language_rank, normalise_language, select_artwork
 from autoposter.render import compositor, naming
 from autoposter.render.textfit import fit_point_size, prepare_text
 
@@ -518,6 +518,13 @@ class ComposeResult:
     output: Path
     truncated: bool
     detail: str | None = None
+    # The point size the PRIMARY title block finally fitted at (textfit's
+    # FitResult). Carried out because render_artifact records it as a quality
+    # fact and the value is otherwise computed inside the loop below and
+    # dropped. None when no title was drawn at all. Optional with a default so
+    # every other caller of compose_styled -- api/testing.py, api/manual.py,
+    # the artwork modes -- is untouched by its arrival.
+    point_size: int | None = None
 
 
 async def compose_styled(
@@ -583,6 +590,7 @@ async def compose_styled(
         blocks.append((settings.text, primary_text))
     if art_kind == "title_card":
         blocks.append((settings.episode_text, secondary_text))
+    primary_point_size: int | None = None
     for style, text in blocks:
         if style is None or not text:
             continue
@@ -591,6 +599,12 @@ async def compose_styled(
         fit = await asyncio.to_thread(
             fit_point_size, config.magick_binary, font_path, style, prepared
         )
+        # Identity against settings.text rather than the loop position: on a
+        # title card with draw_text off, the first block IS the episode text,
+        # and recording its size as the title's would be a fact about the
+        # wrong string.
+        if style is settings.text:
+            primary_point_size = fit.point_size
         if fit.truncated:
             # Posterizarr writes no file when text cannot fit at the minimum
             # point size. Emitting one here would produce artwork the current
@@ -611,7 +625,24 @@ async def compose_styled(
                 fit.point_size, prepared, config.artwork.output_quality,
             ),
         )
-    return ComposeResult(output=working, truncated=False)
+    return ComposeResult(output=working, truncated=False, point_size=primary_point_size)
+
+
+def _provider_rank(providers: list, provider_name: str | None) -> int | None:
+    """Where the winning provider sat in the ladder this pass actually walked.
+
+    Against the RUNTIME list, never ``config.providers.order``: app.py's
+    ``_build_providers`` warns and drops a configured provider that has no
+    implementation, so a config-index rank can claim a position that never
+    existed on this deployment. A name the runtime list does not hold -- the
+    ``"manual"`` a hand-placed override stamps -- has no ladder position at
+    all and records None, rather than a number that would read as a downgrade
+    of a choice no ladder made.
+    """
+    names = [getattr(provider, "name", None) for provider in providers]
+    if provider_name is None or provider_name not in names:
+        return None
+    return names.index(provider_name)
 
 
 async def render_artifact(
@@ -697,6 +728,17 @@ async def render_artifact(
         show_fallback = False
         local_source = False
         chosen_candidate = None
+        # Action Center quality facts (roadmap 11a). Each of these is already
+        # decided somewhere below and, until this phase, thrown away: the
+        # ladder returns is_fallback and nobody reads it, the logo branch
+        # materialises only its suppressed half, and the language order is an
+        # inline expression at the select_artwork call. They are bound here so
+        # the write-back at the end of this function can record them whichever
+        # branch ran.
+        selection_order: list[str] = []
+        textless_fallback = False
+        logo_text_fallback_taken = False
+        text_point_size: int | None = None
         if override is not None:
             base_sha = await asyncio.to_thread(_stage_override, override, working)
             source_url, provider_name, textless = str(override), "manual", None
@@ -713,9 +755,10 @@ async def render_artifact(
                 )
                 await session.commit()
                 return render
+            selection_order = language_order_for(config, item.library, art_kind)
             selection = await select_artwork(
                 providers,
-                language_order_for(config, item.library, art_kind),
+                selection_order,
                 art.ArtRequest(
                     art_kind=art_kind,
                     is_movie=item.kind == "movie",
@@ -739,9 +782,15 @@ async def render_artifact(
                 # episode numbers is the whole difference between this request
                 # and the season one above -- and makes it the same request the
                 # show's own poster render issues, down to the language order.
+                # The rank recorded below must be taken against the list this
+                # request was actually ranked by. The show-poster request uses
+                # the poster order, so re-binding it here is the difference
+                # between a true fact and one computed against a list that did
+                # not choose this image.
+                selection_order = language_order_for(config, item.library, "poster")
                 selection = await select_artwork(
                     providers,
-                    language_order_for(config, item.library, "poster"),
+                    selection_order,
                     art.ArtRequest(
                         art_kind=art.POSTER,
                         is_movie=item.kind == "movie",
@@ -762,6 +811,11 @@ async def render_artifact(
             source_url = candidate.url
             provider_name = candidate.provider
             textless = candidate.is_textless
+            # True exactly when the order preferred textless art, no provider
+            # had any, and the ladder took a text-bearing image rather than
+            # nothing. The ladder has returned this since it was written and
+            # nothing has ever read it.
+            textless_fallback = selection.is_fallback
 
         # Posterizarr parity: UseLogo/UseClearlogo composites a clearlogo in place
         # of the title text on posters. With LogoTextFallback false, a poster with
@@ -806,6 +860,13 @@ async def render_artifact(
                     logo_sha = await _download(http, logo_candidate.url, logo_path)
                 elif not config.artwork.logo_text_fallback:
                     suppress_text = True
+                else:
+                    # The other half of the same decision, which until now had
+                    # no variable at all: no logo on any provider AND
+                    # logo_text_fallback on, so this poster is wearing its
+                    # title text in a logo's place. That is the fact roadmap
+                    # 103 calls "logo-to-text fallback taken".
+                    logo_text_fallback_taken = True
 
         suppress_styling = (
             settings.skip_add_text_when_with_text and known_with_text(chosen_candidate)
@@ -851,6 +912,7 @@ async def render_artifact(
                 render.detail = styled.detail
                 await session.commit()
                 return render
+            text_point_size = styled.point_size
             await asyncio.to_thread(
                 _publish, styled.output, target, config.backup_root, config.assets_root
             )
@@ -858,6 +920,33 @@ async def render_artifact(
     render.provider = provider_name
     render.source_url = source_url
     render.textless = textless
+    # The Action Center's quality facts (roadmap 11a), here rather than
+    # anywhere earlier for source_mode's own stated reason two blocks below:
+    # the "unchanged" fingerprint short-circuit returns above this point, so a
+    # fact recorded here survives a pass that changes nothing, while anything
+    # written like `detail` would be blanked on the next visit.
+    #
+    # Facts only. Whether "en under an xx-preferring order" is worth an
+    # operator's attention is decided by a SQL predicate in actions/flags.py,
+    # against the config that is live when the queue is read -- never by a
+    # verdict frozen here, which would go stale the moment the order changed.
+    render.selected_language = (
+        normalise_language(chosen_candidate.language) if chosen_candidate is not None else None
+    )
+    render.language_rank = (
+        language_rank(chosen_candidate, selection_order)
+        if chosen_candidate is not None and selection_order
+        else None
+    )
+    render.provider_rank = _provider_rank(providers, provider_name)
+    render.textless_fallback = textless_fallback
+    render.logo_text_fallback = logo_text_fallback_taken
+    render.base_width = chosen_candidate.width if chosen_candidate is not None else None
+    render.base_height = chosen_candidate.height if chosen_candidate is not None else None
+    render.text_point_size = text_point_size
+    # Database clock, per the global constraint, exactly like rendered_at
+    # below: the app and database clocks drift.
+    render.quality_scored_at = func.now()
     render.base_sha256 = base_sha
     render.fingerprint = fingerprint
     render.status = "rendered"
