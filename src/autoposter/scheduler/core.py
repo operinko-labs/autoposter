@@ -78,10 +78,17 @@ async def claim_due(session: AsyncSession, job: Job) -> bool:
     stamped and committed immediately, and the row lock is released with that
     commit -- so a job whose *runtime* exceeds its own interval becomes due
     again while it is still running, and a second replica can start a
-    concurrent copy. Every job here runs on a 24-hour or 7-day cadence and
-    takes minutes at most, so the window does not exist in practice; a lease
-    (a heartbeat column plus a takeover-after-expiry rule) would be the fix
-    if a sub-hour cadence is ever added, and is deliberately not built now.
+    concurrent copy. Most jobs here run on a 24-hour or 7-day cadence and take
+    minutes at most, so the window does not exist in practice for them. The
+    one exception is ``stale_job_reclaim`` (``scheduler/jobs.py``), on a
+    5-minute cadence -- the window is still not a practical concern for it,
+    not because the cadence is long but because its body is a single
+    idempotent UPDATE that completes well within its own interval, and the
+    UPDATE itself is now safe to double-run (see the outer WHERE guard on
+    ``queue/jobs.py``'s reclaim statement). A lease (a heartbeat column plus a
+    takeover-after-expiry rule) would be the fix if a job that is *not*
+    idempotent, or that can run longer than its own cadence, is ever added,
+    and is deliberately not built now.
     """
     await session.execute(
         insert(ScheduledRun).values(name=job.name).on_conflict_do_nothing(

@@ -136,6 +136,18 @@ _RECLAIM_SQL = text(
            updated_at = now()
       FROM stale
      WHERE jobs.id = stale.id
+       -- Restated from the CTE, not redundant: under READ COMMITTED, a second
+       -- reclaim blocked on this row (a concurrent sweep, e.g. a new pod's
+       -- boot reclaim racing the outgoing pod's periodic tick) re-checks only
+       -- this outer qualification against the row's *current* version when it
+       -- unblocks -- the CTE was already materialized and does not re-run.
+       -- `jobs.id = stale.id` alone survives that re-check no matter what
+       -- happened to the row meanwhile, so both the state and the staleness
+       -- conditions have to live here too, or a row already reclaimed and
+       -- re-claimed by a live worker (state='running' again, claimed_at
+       -- fresh) gets re-pended out from under it.
+       AND jobs.state = 'running'
+       AND jobs.claimed_at < now() - make_interval(secs => :older_than_seconds)
     """
 )
 
@@ -156,7 +168,10 @@ async def reclaim_stale(session: AsyncSession, older_than_seconds: int = 900) ->
     ``RECLAIM_STAGGER_SECONDS``. So each reclaimed row's ``run_after`` is now() plus
     its ordinal (claim age, oldest first) times the stagger, not a flat now() --
     the first row is still immediately claimable, and the rest re-enter the pool
-    one at a time.
+    at a paced rate rather than all in the same instant. That bounds the
+    *admission* rate, not concurrency: with several workers and a render that
+    outlasts the stagger, reclaimed jobs still end up running side by side a
+    couple of minutes later -- see ``RECLAIM_STAGGER_SECONDS``.
     """
     result = await session.execute(
         _RECLAIM_SQL,
