@@ -580,7 +580,7 @@ async def test_the_backfill_status_reports_complete_on_an_empty_library(client, 
 
     assert body == {
         "status": "complete", "done": 0, "total": 0,
-        "queued_for_scoring": 0, "unscored_total": 0,
+        "queued_for_scoring": 0, "unscored_total": 0, "blocked": 0,
     }
 
 
@@ -603,8 +603,54 @@ async def test_the_backfill_status_counts_only_rows_that_can_be_scored(
 
     assert body == {
         "status": "in_progress", "done": 1, "total": 2,
-        "queued_for_scoring": 0, "unscored_total": 1,
+        "queued_for_scoring": 0, "unscored_total": 1, "blocked": 0,
     }
+
+
+async def test_the_backfill_status_splits_out_rows_blocked_by_a_parked_job(
+    client, auth_headers, session
+):
+    """Roadmap: the unscorable-floor investigation's fix 4. An unscored row
+    whose item's most recent `process_item` job is `parked` cannot be moved
+    by pressing this button -- only an operator acting on Failures can. It
+    must be reported separately as `blocked` and excluded from `total`, or
+    `done >= total` never holds while it sits there (the M2 cohort: a press
+    resets the cycle, so a parked item's row would otherwise be re-selected
+    and re-counted as ordinary progress forever)."""
+    from datetime import datetime, timezone
+
+    blocked_item, _ = await _seed(session, rating_key="1", status="rendered", quality_scored_at=None)
+    await _seed(session, rating_key="2", status="rendered", quality_scored_at=None)
+    await _seed(
+        session, rating_key="3", status="rendered",
+        quality_scored_at=datetime.now(timezone.utc),
+    )
+
+    intent = RenderIntent(kind=blocked_item.kind, title=blocked_item.title)
+    session.add(Job(kind="process_item", dedupe_key=intent.dedupe_key, state="parked"))
+    await session.commit()
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body == {
+        "status": "in_progress", "done": 1, "total": 2,
+        "queued_for_scoring": 0, "unscored_total": 1, "blocked": 1,
+    }
+
+
+async def test_a_pending_jobs_item_is_not_counted_as_blocked(client, auth_headers, session):
+    """`blocked` names `parked` specifically -- a `pending` job for the same
+    item is ordinary in-flight work (`queued_for_scoring`'s own territory),
+    not something only an operator can unstick."""
+    item, _ = await _seed(session, rating_key="1", status="rendered", quality_scored_at=None)
+    intent = RenderIntent(kind=item.kind, title=item.title)
+    session.add(Job(kind="process_item", dedupe_key=intent.dedupe_key, state="pending"))
+    await session.commit()
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["blocked"] == 0
+    assert body["total"] == 1
 
 
 async def test_the_backfill_status_reports_how_many_unscored_assets_are_already_queued(

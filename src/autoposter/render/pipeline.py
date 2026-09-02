@@ -1435,6 +1435,23 @@ async def process_item(
     """
     item = await plex.resolve(intent)
 
+    # The identity fork (roadmap: the ~411 unscorable floor investigation).
+    # `resolve()` treats `intent.rating_key` as a hint and is free to return a
+    # DIFFERENT key -- the live copy's, after a re-match or a library rebuild
+    # renumbers the item. When that happens, everything below this point
+    # (media_item upsert, the render rows) is keyed on the RESOLVED item, not
+    # the one the intent named, and the intent's original row is silently
+    # never touched. The served surfaces stay class-name-only as everywhere
+    # else in this queue; the pod log is the trusted sink, so this is a
+    # WARNING there and nowhere else -- but it turns a silent hole into a
+    # grep.
+    if intent.rating_key is not None and item.rating_key != intent.rating_key:
+        logger.warning(
+            "resolved rating key %s for %r differs from the intent's %s; "
+            "the intent's row will not be scored by this job",
+            item.rating_key, item.title, intent.rating_key,
+        )
+
     media_item = None
     plex_item = None
     if config.operations.enabled and tmdb_facts is not None:
@@ -1469,9 +1486,55 @@ async def process_item(
             )
 
     results = []
+    # Plain strings, not the ORM rows themselves: each iteration's commit
+    # below expires every object the session is tracking (SQLAlchemy's
+    # default), so a LATER iteration's commit would leave an EARLIER
+    # iteration's `render` a lazy load away from its own `.detail` -- safe
+    # only inside an awaited call, which the aggregate message below is not.
+    refused: list[tuple[str, str]] = []
     for art_kind in ART_KINDS_FOR[intent.kind]:
-        results.append(
-            await render_artifact(session, config, http, item, art_kind, providers)
+        try:
+            results.append(
+                await render_artifact(session, config, http, item, art_kind, providers)
+            )
+        except SourceRefused as exc:
+            # Unlike the metadata and badge blocks above, this loop used to
+            # have no containment at all: one kind's SourceRefused (a
+            # validation refusal -- job 40478's "Inside Out 2" clearlogo,
+            # e.g.) aborted every kind after it, costing the item its
+            # background over a bad poster source. Recorded and the loop
+            # continues instead.
+            #
+            # `render_artifact` already flushed (but, since it raised before
+            # its own commit, did not persist) the render-row upsert for this
+            # kind, so roll back before redoing that lookup in a clean
+            # transaction -- the same rollback-then-continue shape the
+            # metadata block above uses, and for the same reason.
+            await session.rollback()
+            logger.warning(
+                "%s refused for %s: %s", art_kind, item.rating_key, exc, exc_info=True,
+            )
+            media_item_for_kind = await _upsert_media_item(session, item)
+            missing = naming.missing_number(art_kind, item.season_number, item.episode_number)
+            target = "" if missing is not None else naming.asset_path(
+                config, item.library, item.root_folder, art_kind,
+                item.season_number, item.episode_number,
+            )
+            render = await _get_or_create_render(session, media_item_for_kind, art_kind, target)
+            render.status = "failed"
+            render.detail = str(exc)
+            await session.commit()
+            results.append(render)
+            refused.append((art_kind, str(exc)))
+
+    # A job whose EVERY kind refused must still fail so the operator sees it
+    # on Failures, rather than reading as an ordinary `done` with nothing
+    # rendered and nothing to show for it -- the one place this containment
+    # must not go all the way.
+    if refused and len(refused) == len(results):
+        raise SourceRefused(
+            f"every art kind refused for {item.rating_key!r}: "
+            + "; ".join(f"{kind}: {detail}" for kind, detail in refused)
         )
 
     if config.badges.enabled:

@@ -160,7 +160,14 @@ async def run_once(
         except Exception as exc:  # noqa: BLE001 - the queue is the error boundary
             logger.warning("job %s failed: %s", job_id, exc, exc_info=True)
             await session.rollback()
-            await fail(session, job_id, _served_reason(exc))
+            # Same threading as the ConnectionError/Timeout branch above:
+            # app.py's _handle_intent tags SourceRefused with max_attempts=1
+            # (a validation refusal is deterministic, so a retry re-fetches
+            # the same corrupt bytes), and this generic branch is where that
+            # exception actually lands -- SourceRefused is neither
+            # ItemNotFound nor a connectivity error.
+            max_attempts = getattr(exc, "max_attempts", MAX_ATTEMPTS)
+            await fail(session, job_id, _served_reason(exc), max_attempts)
         else:
             await complete(session, job_id)
     return True

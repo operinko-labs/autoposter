@@ -23,6 +23,7 @@ from autoposter.notify.dispatch import Notifier, NullNotifier
 from autoposter.providers.fanart import FanartClient
 from autoposter.providers.tmdb import TMDBClient
 from autoposter.queue.jobs import MAX_ATTEMPTS
+from autoposter.render.pipeline import SourceRefused
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -371,6 +372,29 @@ async def test_handle_intent_tags_plex_connection_errors_with_resolve_max_attemp
         )
 
     assert exc_info.value.max_attempts == config.plex.resolve_max_attempts
+
+
+async def test_handle_intent_tags_source_refused_with_max_attempts_one(monkeypatch):
+    # Roadmap: the unscorable-floor investigation's fix 3. A SourceRefused is
+    # a validation refusal (render/pipeline.py's own docstring) -- retrying
+    # re-downloads the exact same corrupt bytes, so the generic 5-attempt
+    # budget just burns four attempts for nothing. _handle_intent must tag it
+    # with max_attempts=1, the same threading the ConnectionError test above
+    # pins for resolve_max_attempts, so run_once parks it after one attempt.
+    config = load_config(EXAMPLE)
+
+    async def boom(*args, **kwargs):
+        raise SourceRefused("the poster source did not decode after download (OSError)")
+
+    monkeypatch.setattr("autoposter.app.process_item", boom)
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=1)
+    with pytest.raises(SourceRefused) as exc_info:
+        await _handle_intent(
+            None, intent, config_holder=ConfigHolder(config), http=None, plex=None, providers=[],
+        )
+
+    assert exc_info.value.max_attempts == 1
 
 
 async def test_missing_mdblist_key_warns_and_returns_a_stand_in(secrets, caplog):

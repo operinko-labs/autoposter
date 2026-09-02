@@ -567,20 +567,34 @@ async def bulk_rerender_action(
 # is simply paced by the workers, which is what D4 says the queue is for.
 
 
-async def _backfill_progress(session) -> tuple[int, int]:
-    """``(done, total)`` over the rows this backfill can actually score.
+async def _backfill_progress(session) -> tuple[int, int, int]:
+    """``(done, total, blocked)`` over the rows this backfill can actually score.
 
-    Scoped to ``status = 'rendered'``. A ``no_art``, ``skipped`` or
-    ``truncated`` row returns from ``render_artifact`` long before the
-    write-back that stamps ``quality_scored_at``, so counting one here would
-    make a population the backfill can never finish -- a progress bar that
-    stops at 94% forever. Those rows are already named by their own flags.
+    Scoped to ``status = 'rendered'``. A ``no_art``, ``skipped``,
+    ``truncated`` or (roadmap: the unscorable-floor fix) ``failed`` row
+    returns from ``render_artifact`` long before the write-back that stamps
+    ``quality_scored_at``, so counting one here would make a population the
+    backfill can never finish -- a progress bar that stops at 94% forever.
+    Those rows are already named by their own flags.
+
+    ``blocked`` is the further subset of the unscored population whose item
+    already has a ``parked`` ``process_item`` job: a press cannot score these
+    by re-rendering, because the job that would do it is sitting on Failures
+    waiting for an operator (fix it, retry it, dismiss it). They are excluded
+    from ``total`` for the same "the bar must reach 100%" reason the
+    render-status exclusions above are -- a row this button structurally
+    cannot move must not sit in its own denominator, or ``done >= total``
+    never holds while it does.
+
+    This is deliberately narrower than the investigation's own accounting
+    (the structurally-stale "twin" rows M1a names are the pruner's territory,
+    not this endpoint's -- see ``scheduler/prune.py``): a stale twin still
+    reads as an ordinary unscored row here, because the only cheap read
+    available -- ``media_items`` alone -- cannot tell one from a row that is
+    simply next in line, and the module that CAN tell needs a live Plex probe
+    (``PlexClient.exists_many``) this read-only progress read has no business
+    making per request.
     """
-    total = (
-        await session.execute(
-            select(func.count()).select_from(Render).where(Render.status == "rendered")
-        )
-    ).scalar_one()
     done = (
         await session.execute(
             select(func.count())
@@ -588,7 +602,50 @@ async def _backfill_progress(session) -> tuple[int, int]:
             .where(Render.status == "rendered", Render.quality_scored_at.isnot(None))
         )
     ).scalar_one()
-    return done, total
+
+    parked_keys = set(
+        (
+            await session.execute(
+                select(Job.dedupe_key).where(
+                    Job.kind == "process_item",
+                    Job.state == "parked",
+                    Job.dedupe_key.isnot(None),
+                )
+            )
+        ).scalars()
+    )
+
+    unscored_items = (
+        (
+            await session.execute(
+                select(MediaItem)
+                .join(Render, Render.item_id == MediaItem.id)
+                .where(Render.status == "rendered", Render.quality_scored_at.is_(None))
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    blocked = 0
+    if parked_keys:
+        for item in unscored_items:
+            intent = RenderIntent(
+                kind=item.kind,
+                title=item.title,
+                tmdb_id=item.tmdb_id,
+                tvdb_id=item.tvdb_id,
+                imdb_id=item.imdb_id,
+                year=item.year,
+                season_number=item.season_number,
+                episode_number=item.episode_number,
+                rating_key=item.rating_key,
+            )
+            if intent.dedupe_key in parked_keys:
+                blocked += 1
+
+    total = done + (len(unscored_items) - blocked)
+    return done, total, blocked
 
 
 async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
@@ -740,7 +797,7 @@ async def backfill_status(
     what is left is already queued for it. Reads only."""
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        done, total = await _backfill_progress(session)
+        done, total, blocked = await _backfill_progress(session)
         queued_for_scoring = await _queued_for_scoring(session)
 
     # Completion is derived FIRST, and by the POST's own rule: `done >= total`
@@ -760,6 +817,7 @@ async def backfill_status(
         "total": total,
         "queued_for_scoring": queued_for_scoring,
         "unscored_total": total - done,
+        "blocked": blocked,
     }
 
 
@@ -815,7 +873,7 @@ async def backfill_trigger(
         )
         enqueued = await enqueue_batch(session, "process_item", _reprocess_entries(items))
 
-        done, total = await _backfill_progress(session)
+        done, total, blocked = await _backfill_progress(session)
         unscored_total = total - done
         # AFTER the enqueue, not before: the operator pressing again while a
         # previous batch is still rendering (the live report this answers,
@@ -856,5 +914,6 @@ async def backfill_trigger(
         "total": total,
         "queued_for_scoring": queued_for_scoring,
         "unscored_total": unscored_total,
+        "blocked": blocked,
         "detail": detail,
     }
