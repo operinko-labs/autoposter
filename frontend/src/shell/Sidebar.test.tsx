@@ -190,6 +190,18 @@ describe("Sidebar", () => {
     expect(link).toHaveAttribute("title", "Testing");
   });
 
+  it("reaches the Action Center", () => {
+    stubMatchMedia(false);
+
+    renderSidebar();
+
+    // The queue is only reachable from here; a route with no link into it is
+    // a page that ships and is never found.
+    const link = screen.getByRole("link", { name: "Action Center" });
+    expect(link).toHaveAttribute("href", "/actions");
+    expect(link).toHaveAttribute("title", "Action Center");
+  });
+
   it("reaches the id-mismatch view", () => {
     stubMatchMedia(false);
 

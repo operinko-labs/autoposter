@@ -1,0 +1,505 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { setToken } from "../api/client";
+import { ActionCenter } from "./ActionCenter";
+
+const FILTERS = {
+  libraries: ["Movies", "Shows"],
+  kinds: ["movie", "show"],
+  statuses: ["rendered", "no_art"],
+};
+
+/** Shaped like `GET /api/actions/summary` answers, including the two flags the
+ * registry ships switched OFF by default (`skipped` and `unknown_provenance`
+ * -- src/autoposter/actions/flags.py). They are here because the page must
+ * render whatever the server's registry holds rather than a list of its own:
+ * `skipped` moved to default-off after this page's API landed, and no edit
+ * here was needed for it. */
+const SUMMARY = {
+  total: 2,
+  flags: [
+    {
+      code: "missing",
+      label: "No art found",
+      description: "No provider had artwork of this kind for this item.",
+      default_on: true,
+      instant: true,
+      count: 1,
+    },
+    {
+      code: "skipped",
+      label: "Skipped",
+      description: "The pipeline chose not to render this asset.",
+      default_on: false,
+      instant: true,
+      count: 3,
+    },
+    {
+      code: "language_miss",
+      label: "Not the preferred language",
+      description: "The language the ladder achieved is not this art kind's first choice.",
+      default_on: true,
+      instant: false,
+      count: 1,
+    },
+    {
+      code: "unknown_provenance",
+      label: "Adopted, provenance unknown",
+      description: "Artwork that was already on disk when this service took over.",
+      default_on: false,
+      instant: true,
+      count: 9,
+    },
+  ],
+};
+
+const ROWS = {
+  total: 2,
+  limit: 50,
+  offset: 0,
+  items: [
+    {
+      item_id: 7,
+      art_kind: "poster",
+      title: "Dune: Part Two",
+      library: "Movies",
+      kind: "movie",
+      status: "no_art",
+      upload_status: "pending",
+      provider: null,
+      flags: ["missing"],
+      details: ["no poster art on any provider"],
+      dismissed: false,
+      evidence: "a".repeat(64),
+      quality_scored_at: null,
+      updated_at: "2026-01-02T03:04:05Z",
+    },
+    {
+      item_id: 8,
+      art_kind: "background",
+      title: "Heat",
+      library: "Movies",
+      kind: "movie",
+      status: "rendered",
+      upload_status: "uploaded",
+      provider: "TVDB",
+      flags: ["language_miss"],
+      details: ["selected en; rank 1 in the order that rendered it"],
+      dismissed: false,
+      evidence: "b".repeat(64),
+      quality_scored_at: "2026-01-02T03:04:05Z",
+      updated_at: "2026-01-02T03:04:05Z",
+    },
+  ],
+};
+
+/** The dry run's own sentence, copied from the endpoint rather than invented:
+ * `matched` counts flagged ROWS across the whole filter, `items` counts the
+ * distinct items in THIS batch, and the two are separate numbers on purpose
+ * (src/autoposter/api/action_center.py). */
+const DRY_RUN = {
+  status: "dry run",
+  matched: 2,
+  items: 2,
+  enqueued: 0,
+  detail:
+    "2 flagged row(s) matched this filter; this batch covers 2 item(s) of it. Nothing was queued.",
+};
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** Answers whatever the page asks for, and throws on anything it should not
+ * ask for -- an unexpected path is a defect, not an empty table.
+ *
+ * A fresh `Response` per call rather than one shared object: a `Response` body
+ * can be read once, so a single stubbed instance would answer the first
+ * request and hand every later one an already-consumed stream. */
+function stubFetch(overrides: Record<string, unknown> = {}) {
+  const fetchMock = vi.fn(async (path: string, _init?: RequestInit) => {
+    if (path === "/api/items/filters") return json(FILTERS);
+    if (path.startsWith("/api/actions/summary")) return json(overrides.summary ?? SUMMARY);
+    if (path.startsWith("/api/actions/bulk/rerender")) {
+      return json(overrides.bulk ?? DRY_RUN);
+    }
+    if (path.startsWith("/api/actions/rerender")) {
+      return json(overrides.rerender ?? { queued: true, job_id: 12 });
+    }
+    if (path.startsWith("/api/actions/dismiss")) {
+      if (overrides.dismissRefusal !== undefined) return json(overrides.dismissRefusal, 422);
+      return json({ dismissed: true, evidence: "a".repeat(64) });
+    }
+    if (path.startsWith("/api/actions/undismiss")) return json({ dismissed: false });
+    if (path.startsWith("/api/actions")) return json(overrides.rows ?? ROWS);
+    throw new Error(`the page requested an unexpected path: ${path}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+type FetchMock = ReturnType<typeof stubFetch>;
+
+function renderPage() {
+  return render(
+    <MemoryRouter>
+      <ActionCenter />
+    </MemoryRouter>,
+  );
+}
+
+/** Every path this page fetched, in order. */
+function paths(fetchMock: FetchMock): string[] {
+  return fetchMock.mock.calls.map((call) => call[0]);
+}
+
+/** The `RequestInit` of one recorded call. Throws rather than returning
+ * undefined: a GET where the test expects a POST should read as "call 3 was
+ * made with no init", not as an equality failure against `undefined`. */
+function initOf(fetchMock: FetchMock, index: number): RequestInit {
+  const found = fetchMock.mock.calls[index]?.[1];
+  if (found === undefined) throw new Error(`call ${index} was made with no init`);
+  return found;
+}
+
+function bodyOf(fetchMock: FetchMock, index: number): Record<string, unknown> {
+  return JSON.parse(String(initOf(fetchMock, index).body)) as Record<string, unknown>;
+}
+
+beforeEach(() => {
+  setToken(null);
+});
+
+describe("ActionCenter", () => {
+  it("lists a flagged asset with its flag and the fact behind it", async () => {
+    stubFetch();
+
+    renderPage();
+
+    expect(await screen.findByText("Dune: Part Two")).toBeInTheDocument();
+    expect(screen.getByText("no poster art on any provider")).toBeInTheDocument();
+    expect(
+      screen.getByText("selected en; rank 1 in the order that rendered it"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders one count chip per flag the server knows about", async () => {
+    stubFetch();
+
+    renderPage();
+
+    const missing = await screen.findByRole("button", { name: /No art found/ });
+    expect(within(missing).getByText("1")).toBeInTheDocument();
+    // Off by default and still offered: the operator opts into the adopted
+    // population rather than being handed it.
+    expect(
+      within(screen.getByRole("button", { name: /Adopted, provenance unknown/ })).getByText("9"),
+    ).toBeInTheDocument();
+    // And the same for the flag that became default-off after the API landed:
+    // the chip row is the server's registry, so that move cost this page
+    // nothing.
+    expect(
+      within(screen.getByRole("button", { name: /Skipped/ })).getByText("3"),
+    ).toBeInTheDocument();
+  });
+
+  it("says which flags cannot fire until a row re-renders", async () => {
+    // The honest limitation, on the page and not only in the PR body: four
+    // flags need bookkeeping that only a re-render writes.
+    stubFetch();
+
+    renderPage();
+
+    const lazy = await screen.findByRole("button", { name: /Not the preferred language/ });
+    expect(lazy).toHaveAttribute("title", expect.stringContaining("re-render"));
+  });
+
+  it("filters the queue by the chip that was clicked", async () => {
+    const fetchMock = stubFetch();
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getByRole("button", { name: /No art found/ }));
+
+    await waitFor(() =>
+      expect(paths(fetchMock).some((path) => path.includes("flag=missing"))).toBe(true),
+    );
+  });
+
+  it("resets the offset when a filter changes", async () => {
+    // A search narrowing the queue to two rows, read at offset 50, answers
+    // with an empty list rather than an error -- which reads as "nothing is
+    // flagged" when the truth is the opposite.
+    // `total: 60` (rather than ROWS' own 2) so Next is genuinely enabled --
+    // the pager disables it once `offset + rows.length >= total`, and with
+    // only two rows total that would be true at offset 0 already.
+    const fetchMock = stubFetch({ rows: { ...ROWS, total: 60 } });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() =>
+      expect(paths(fetchMock).some((path) => path.includes("offset=50"))).toBe(true),
+    );
+
+    fireEvent.change(screen.getByLabelText("Library"), { target: { value: "Shows" } });
+
+    await waitFor(() => {
+      const last = paths(fetchMock).filter((path) => path.startsWith("/api/actions?")).at(-1);
+      expect(last).toContain("library=Shows");
+      expect(last).toContain("offset=0");
+    });
+  });
+
+  it("shows the pager range against the server's own total", async () => {
+    stubFetch();
+
+    renderPage();
+
+    expect(await screen.findByText("1–2 of 2")).toBeInTheDocument();
+  });
+
+  it("re-searches one row and re-reads the queue from the server", async () => {
+    const fetchMock = stubFetch();
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Re-search" })[0]);
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(before + 1));
+    const after = paths(fetchMock).slice(before);
+    expect(after[0]).toBe("/api/actions/rerender");
+    expect(initOf(fetchMock, before).method).toBe("POST");
+    expect(bodyOf(fetchMock, before)).toEqual({ item_id: 7 });
+    // Re-read rather than mutated locally: the server is the authority on
+    // what is still flagged, and a re-search may legitimately change nothing.
+    expect(after.some((path) => path.startsWith("/api/actions?"))).toBe(true);
+  });
+
+  it("reports a de-duplicated re-search without pretending it queued", async () => {
+    const fetchMock = stubFetch({ rerender: { queued: false, job_id: null } });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Re-search" })[0]);
+
+    expect(await screen.findByText(/already queued/i)).toBeInTheDocument();
+    expect(paths(fetchMock).filter((path) => path === "/api/actions/rerender")).toHaveLength(1);
+  });
+
+  it("dismisses a row through the dismiss endpoint and re-reads", async () => {
+    const fetchMock = stubFetch();
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(before + 1));
+    expect(paths(fetchMock)[before]).toBe("/api/actions/dismiss");
+    expect(bodyOf(fetchMock, before)).toEqual({
+      item_id: 7,
+      art_kind: "poster",
+      flag: "missing",
+    });
+  });
+
+  it("surfaces a refused dismissal in the server's own words", async () => {
+    // `DismissBody.flag` is validated against the registry, so a chip this
+    // page read from a summary served by an older build refuses as a 422 with
+    // a Pydantic list. `api/client.ts` flattens that to "request failed with
+    // 422", which tells the operator nothing; the sentence is in the detail.
+    stubFetch({
+      dismissRefusal: {
+        detail: [
+          {
+            loc: ["body", "flag"],
+            msg: "Value error, unknown flag 'missing'; this build has: skipped",
+          },
+        ],
+      },
+    });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+
+    expect(await screen.findByText(/unknown flag 'missing'/)).toBeInTheDocument();
+  });
+
+  it("restores a dismissed row through the undismiss endpoint", async () => {
+    const dismissed = {
+      ...ROWS,
+      total: 1,
+      items: [{ ...ROWS.items[0], dismissed: true }],
+    };
+    const fetchMock = stubFetch({ rows: dismissed });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    await waitFor(() => expect(paths(fetchMock)[before]).toBe("/api/actions/undismiss"));
+    expect(bodyOf(fetchMock, before)).toEqual({
+      item_id: 7,
+      art_kind: "poster",
+    });
+  });
+
+  it("links each row to the item page, where the picker lives", async () => {
+    // Replace is a deep link, not an inline picker: the picker is row 73's
+    // and lives on the item page. A second copy of it here would be a second
+    // thing to keep in step.
+    stubFetch();
+
+    renderPage();
+
+    expect(await screen.findByRole("link", { name: "Dune: Part Two" })).toHaveAttribute(
+      "href",
+      "/items/7",
+    );
+  });
+
+  it("counts a bulk re-search without queuing anything", async () => {
+    const fetchMock = stubFetch();
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Count what this would queue" }));
+
+    expect(await screen.findByText(/Nothing was queued/)).toBeInTheDocument();
+    expect(bodyOf(fetchMock, before).apply).toBe(false);
+  });
+
+  it("arms the bulk apply without posting anything", async () => {
+    // The mutation proof: arming is a state change and nothing else. A button
+    // that armed AND posted would pass every other test in this file.
+    const fetchMock = stubFetch();
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-search everything matching" }));
+
+    expect(await screen.findByRole("button", { name: "Yes, queue them" })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.length).toBe(before);
+  });
+
+  it("queues the batch once the arm is confirmed, then re-reads", async () => {
+    const fetchMock = stubFetch({
+      bulk: {
+        status: "enqueued",
+        matched: 2,
+        items: 2,
+        enqueued: 2,
+        detail:
+          "2 flagged row(s) matched this filter; this batch covered 2 item(s) of it, " +
+          "queued 2; a re-search may legitimately find the same art",
+      },
+    });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    fireEvent.click(screen.getByRole("button", { name: "Re-search everything matching" }));
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(await screen.findByRole("button", { name: "Yes, queue them" }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/covered 2 item\(s\) of it, queued 2/)).toBeInTheDocument(),
+    );
+    expect(bodyOf(fetchMock, before).apply).toBe(true);
+    expect(paths(fetchMock).slice(before).some((path) => path.startsWith("/api/actions?"))).toBe(
+      true,
+    );
+  });
+
+  it("reports a batch the dedupe swallowed as the nothing it queued", async () => {
+    // A second press while the first batch is still pending: the endpoint
+    // answers 200 with `enqueued` below `items`, because the work IS queued.
+    // The page renders those numbers rather than styling a successful answer
+    // as a failure -- and rather than claiming two jobs it did not create.
+    stubFetch({
+      bulk: {
+        status: "enqueued",
+        matched: 2,
+        items: 2,
+        enqueued: 0,
+        detail:
+          "2 flagged row(s) matched this filter; this batch covered 2 item(s) of it, " +
+          "queued 0; a re-search may legitimately find the same art",
+      },
+    });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    fireEvent.click(screen.getByRole("button", { name: "Re-search everything matching" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Yes, queue them" }));
+
+    const detail = await screen.findByText(/covered 2 item\(s\) of it, queued 0/);
+    expect(detail).toBeInTheDocument();
+    // Not the ok pill: nothing was added, and a green answer beside "queued 0"
+    // is the page contradicting the sentence next to it.
+    expect(within(detail.closest(".action-bulk-result") as HTMLElement)
+      .getByText("enqueued")).toHaveClass("pill-skipped");
+  });
+
+  it("disarms the bulk apply when a filter changes", async () => {
+    // The grant was for the request the filters described. Changing them
+    // changes the request, so the grant does not survive it.
+    stubFetch();
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    fireEvent.click(screen.getByRole("button", { name: "Re-search everything matching" }));
+    await screen.findByRole("button", { name: "Yes, queue them" });
+
+    fireEvent.change(screen.getByLabelText("Library"), { target: { value: "Shows" } });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Yes, queue them" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("renders an empty state when nothing is flagged", async () => {
+    stubFetch({ rows: { total: 0, limit: 50, offset: 0, items: [] } });
+
+    renderPage();
+
+    expect(await screen.findByText(/Nothing needs attention/)).toBeInTheDocument();
+  });
+
+  it("reports a failed load rather than rendering an empty queue", async () => {
+    const fetchMock = vi.fn(async (path: string) => {
+      if (path === "/api/items/filters") return json(FILTERS);
+      if (path.startsWith("/api/actions/summary")) return json(SUMMARY);
+      return json({ detail: "the database is unreachable" }, 503);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    expect(await screen.findByText("the database is unreachable")).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing needs attention/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the table scrollable and the row actions grouped", async () => {
+    // jsdom computes no layout, so what is assertable is that the hooks the
+    // shared CSS hangs off are on the right nodes. The widths themselves were
+    // checked in a browser, exactly as the Failures sweep did.
+    stubFetch();
+
+    renderPage();
+    const title = await screen.findByText("Dune: Part Two");
+
+    expect(title.closest("table")?.parentElement).toHaveClass("table-scroll");
+    const actions = screen.getAllByRole("button", { name: "Re-search" })[0].parentElement;
+    expect(actions).toHaveClass("row-actions");
+  });
+});
