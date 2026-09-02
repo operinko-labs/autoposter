@@ -37,9 +37,9 @@ import type {
 } from "../api/types";
 import { formatTime } from "../format";
 // The pill and the row-error paragraph are dashboard.css's, exactly as
-// Modes.tsx and Library.tsx borrow them. Imported explicitly rather than
-// relied on: which stylesheets are in the bundle depends on which pages the
-// router has loaded, and this page is reachable without the Dashboard.
+// Modes.tsx and Library.tsx borrow them. Imported explicitly so this file
+// names the stylesheets it depends on, rather than leaning on another
+// page's import (App.tsx bundles every page statically today).
 import "./dashboard.css";
 import "./action-center.css";
 
