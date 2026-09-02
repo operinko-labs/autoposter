@@ -193,6 +193,39 @@ def test_back_width_and_height_default_to_shrink_wrap_the_content():
     assert box == (15, 15, 55, 35)
 
 
+def test_the_backdrop_name_stretches_the_minus_one_sentinel_to_the_full_canvas():
+    """Probe section 3.5's other arm: for the special 'backdrop' name, an
+    unset back_width/back_height stretches to the FULL CANVAS instead of
+    shrinking to content -- the arm every other overlay name never reaches
+    (roadmap row 50)."""
+    layer = _layer()
+    box = draw_overlay(
+        layer,
+        OverlayDefinition(name="backdrop", back_color="#00000099"),
+        POSTER_CANVAS,
+    )
+    assert box == (0, 0, POSTER_CANVAS[0], POSTER_CANVAS[1])
+    assert layer.getpixel((10, 10))[3] == 153
+
+
+def test_the_backdrop_name_with_an_explicit_box_is_not_stretched():
+    """The stretch arm only fires on the -1 sentinel; an explicit
+    back_width/back_height on a 'backdrop'-named overlay is honoured exactly
+    like any other overlay's box."""
+    layer = _layer()
+    box = draw_overlay(
+        layer,
+        OverlayDefinition(
+            name="backdrop", back_color="#00000099",
+            horizontal_offset=0, horizontal_align="left",
+            vertical_offset=0, vertical_align="top",
+            back_width=200, back_height=100,
+        ),
+        POSTER_CANVAS,
+    )
+    assert box == (0, 0, 200, 100)
+
+
 def test_addon_position_right_and_bottom_mirror_left_and_top():
     """Probe section 1.1: `addon_position` right/bottom put the image AFTER
     the text instead of before it -- the two arms of `_draw_addon_group`

@@ -380,6 +380,26 @@ async def test_a_definition_whose_image_fails_to_resolve_does_not_stamp_an_empty
     assert _sha(plex_item.last_bytes) == _sha(baseline_plex.last_bytes)
 
 
+async def test_apply_badges_draws_a_backdrop_definition_through_the_real_entry_point(
+    session, config_with_badges
+):
+    """The entry-point law (Global Constraint 7): the backdrop sentinel's
+    full-canvas arm is exercised through the real apply_badges, not just
+    draw_overlay in isolation."""
+    config_with_badges.badges.definitions = []
+    item, render = await _render(session, rating_key="backdrop-entrypoint-item")
+    plex_item = _FakePlexItem()
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    baseline_bytes = plex_item.last_bytes
+
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(name="backdrop", back_color="#00000099"),
+    ]
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2
+    assert plex_item.last_bytes != baseline_bytes, "the full-canvas backdrop must actually be drawn"
+
+
 async def test_apply_badges_threads_http_through_to_a_url_sourced_definition(
     session, config_with_badges, tmp_path, monkeypatch
 ):
