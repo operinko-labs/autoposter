@@ -213,14 +213,48 @@ def test_only_one_image_source_may_be_named():
         _d(file="a.png", url="https://example.invalid/a.png")
 
 
-def test_the_deferred_special_names_are_refused_not_silently_accepted():
-    """`blur(NN)` and `backdrop` are banked (probe sections 1.1, 3.5) and
-    deliberately NOT built this phase. Accepting the name and ignoring its
-    semantics would be worse than refusing it."""
+def test_the_backdrop_name_is_no_longer_refused():
+    """Roadmap row 50: `backdrop` un-refused. Its whole point is a
+    full-canvas layer, so unlike every other overlay with a backdrop, it
+    needs no coordinates (probe section 1.1, overlay.py:325-330: offsets
+    default to 0 for this name rather than being required)."""
+    d = _d(name="backdrop", back_color="#00000099")
+    assert d.has_back is True
+    assert d.horizontal_offset is None
+
+
+def test_a_non_backdrop_overlay_with_a_backdrop_still_needs_coordinates():
+    """The exemption above is specific to the literal name 'backdrop', not
+    to every name that merely contains the word -- unchanged from before
+    this phase."""
     with pytest.raises(ValidationError):
-        _d(name="blur(50)")
+        _d(name="backdrop_ribbon", back_color="#00000099")
+
+
+def test_blur_nn_is_no_longer_refused_and_is_parsed_from_the_name():
+    """Roadmap row 50: `blur(NN)` un-refused. Parsed on demand via
+    `blur_amount` rather than stored as a separate field -- `badges/
+    compose.py`'s pre-pass reads it directly off the definition."""
+    assert _d(name="blur(30)").blur_amount == 30
+    assert _d(name="blur(100)").blur_amount == 100
+    assert _d().blur_amount is None
+
+
+def test_a_malformed_blur_nn_is_refused_not_silently_degraded_to_fifty():
+    """Adjudication A3: Kometa itself silently substitutes blur(50) on a
+    malformed blur(NN) name (probe section 1.1, overlay.py:223-231) -- the
+    one attribute-parse path in its whole class that degrades instead of
+    raising. This schema refuses instead, matching every other validator in
+    this file (its own docstring, lines 8-11) rather than letting a typo
+    silently change blur strength."""
     with pytest.raises(ValidationError):
-        _d(name="backdrop")
+        _d(name="blur(0)")
+    with pytest.raises(ValidationError):
+        _d(name="blur(101)")
+    with pytest.raises(ValidationError):
+        _d(name="blur(abc)")
+    with pytest.raises(ValidationError):
+        _d(name="blur")
 
 
 def test_the_deferred_queue_attribute_is_refused_by_name():
