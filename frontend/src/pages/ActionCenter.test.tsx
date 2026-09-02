@@ -256,6 +256,64 @@ describe("ActionCenter", () => {
     });
   });
 
+  it("keeps the later filter's rows on screen when the earlier request resolves last", async () => {
+    // Two chip clicks in quick succession start two concurrent `load()`
+    // runs. Without a latest-wins guard, whichever response lands LAST wins
+    // regardless of which request it answers -- so the stale, first-clicked
+    // filter's rows can overwrite the second click's rows on screen.
+    const missingRows = { ...ROWS, items: [ROWS.items[0]], total: 1 };
+    const languageRows = { ...ROWS, items: [ROWS.items[1]], total: 1 };
+
+    let resolveMissing!: (value: Response) => void;
+    let resolveLanguage!: (value: Response) => void;
+    const missingPromise = new Promise<Response>((resolve) => {
+      resolveMissing = resolve;
+    });
+    const languagePromise = new Promise<Response>((resolve) => {
+      resolveLanguage = resolve;
+    });
+
+    const fetchMock = vi.fn(async (path: string) => {
+      if (path === "/api/items/filters") return json(FILTERS);
+      if (path.startsWith("/api/actions/summary")) return json(SUMMARY);
+      if (path.includes("flag=missing")) return missingPromise;
+      if (path.includes("flag=language_miss")) return languagePromise;
+      if (path.startsWith("/api/actions")) return json(ROWS);
+      throw new Error(`the page requested an unexpected path: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    await screen.findByText("Heat");
+
+    fireEvent.click(screen.getByRole("button", { name: /No art found/ }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some((call) => (call[0] as string).includes("flag=missing")))
+        .toBe(true),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Not the preferred language/ }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some((call) => (call[0] as string).includes("flag=language_miss")),
+      ).toBe(true),
+    );
+
+    // The SECOND click's request resolves first...
+    resolveLanguage(json(languageRows));
+    await waitFor(() => expect(screen.queryByText("Dune: Part Two")).not.toBeInTheDocument());
+    expect(screen.getByText("Heat")).toBeInTheDocument();
+
+    // ...then the FIRST click's request resolves last. Its rows must not
+    // overwrite what the second, later click asked for.
+    resolveMissing(json(missingRows));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.getByText("Heat")).toBeInTheDocument();
+    expect(screen.queryByText("Dune: Part Two")).not.toBeInTheDocument();
+  });
+
   it("shows the pager range against the server's own total", async () => {
     stubFetch();
 
@@ -280,6 +338,9 @@ describe("ActionCenter", () => {
     // Re-read rather than mutated locally: the server is the authority on
     // what is still flagged, and a re-search may legitimately change nothing.
     expect(after.some((path) => path.startsWith("/api/actions?"))).toBe(true);
+    // The summary too -- a regression that re-fetched only the list would
+    // leave the chip counts and the "N assets need attention" header stale.
+    expect(after.some((path) => path.startsWith("/api/actions/summary"))).toBe(true);
   });
 
   it("reports a de-duplicated re-search without pretending it queued", async () => {
@@ -353,6 +414,52 @@ describe("ActionCenter", () => {
     });
   });
 
+  it("keeps a second row's buttons disabled through its own in-flight action", async () => {
+    // Row 7's dismiss finishing first must not re-enable row 8's buttons
+    // while row 8's own dismiss is still in flight -- a single shared busy
+    // key would do exactly that.
+    let resolveFirst!: (value: Response) => void;
+    let resolveSecond!: (value: Response) => void;
+    const firstPromise = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondPromise = new Promise<Response>((resolve) => {
+      resolveSecond = resolve;
+    });
+
+    const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === "/api/items/filters") return json(FILTERS);
+      if (path.startsWith("/api/actions/summary")) return json(SUMMARY);
+      if (path.startsWith("/api/actions/dismiss")) {
+        const body = JSON.parse(String(init?.body)) as { item_id: number };
+        return body.item_id === 7 ? firstPromise : secondPromise;
+      }
+      if (path.startsWith("/api/actions")) return json(ROWS);
+      throw new Error(`the page requested an unexpected path: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    const [dismissRow7, dismissRow8] = screen.getAllByRole("button", { name: "Dismiss" });
+    fireEvent.click(dismissRow7);
+    fireEvent.click(dismissRow8);
+    await waitFor(() => expect(dismissRow7).toBeDisabled());
+    expect(dismissRow8).toBeDisabled();
+
+    // Row 7's dismissal finishes first.
+    resolveFirst(json({ dismissed: true, evidence: "a".repeat(64) }));
+    await waitFor(() => expect(dismissRow7).not.toBeDisabled());
+
+    // Row 8's own dismissal is still in flight; its buttons must stay
+    // disabled regardless.
+    expect(dismissRow8).toBeDisabled();
+
+    resolveSecond(json({ dismissed: true, evidence: "b".repeat(64) }));
+    await waitFor(() => expect(dismissRow8).not.toBeDisabled());
+  });
+
   it("links each row to the item page, where the picker lives", async () => {
     // Replace is a deep link, not an inline picker: the picker is row 73's
     // and lives on the item page. A second copy of it here would be a second
@@ -416,9 +523,11 @@ describe("ActionCenter", () => {
       expect(screen.getByText(/covered 2 item\(s\) of it, queued 2/)).toBeInTheDocument(),
     );
     expect(bodyOf(fetchMock, before).apply).toBe(true);
-    expect(paths(fetchMock).slice(before).some((path) => path.startsWith("/api/actions?"))).toBe(
-      true,
-    );
+    const after = paths(fetchMock).slice(before);
+    expect(after.some((path) => path.startsWith("/api/actions?"))).toBe(true);
+    // The summary too -- a regression that re-fetched only the list would
+    // leave the chip counts and the "N assets need attention" header stale.
+    expect(after.some((path) => path.startsWith("/api/actions/summary"))).toBe(true);
   });
 
   it("reports a batch the dedupe swallowed as the nothing it queued", async () => {
@@ -449,6 +558,37 @@ describe("ActionCenter", () => {
     // is the page contradicting the sentence next to it.
     expect(within(detail.closest(".action-bulk-result") as HTMLElement)
       .getByText("enqueued")).toHaveClass("pill-skipped");
+  });
+
+  it("clears a stale bulk result when a later bulk action fails", async () => {
+    // A dry run's panel must not sit on screen, underneath the error, once a
+    // subsequent apply against the same filters fails.
+    let bulkCalls = 0;
+    const fetchMock = vi.fn(async (path: string) => {
+      if (path === "/api/items/filters") return json(FILTERS);
+      if (path.startsWith("/api/actions/summary")) return json(SUMMARY);
+      if (path.startsWith("/api/actions/bulk/rerender")) {
+        bulkCalls += 1;
+        if (bulkCalls === 1) return json(DRY_RUN);
+        return json({ detail: "the database is unreachable" }, 503);
+      }
+      if (path.startsWith("/api/actions")) return json(ROWS);
+      throw new Error(`the page requested an unexpected path: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getByRole("button", { name: "Count what this would queue" }));
+    await screen.findByText(/Nothing was queued/);
+    expect(screen.getByRole("status")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-search everything matching" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Yes, queue them" }));
+
+    expect(await screen.findByText("the database is unreachable")).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing was queued/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("disarms the bulk apply when a filter changes", async () => {

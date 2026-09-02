@@ -3,12 +3,11 @@
  * shell/shell.css, .panel/.muted/.mono from theme.css, and .pill* from
  * dashboard.css -- imported explicitly by the page, as Modes.tsx does. The
  * pager is `.action-pager` rather than a second import of `.library-pager`:
- * which stylesheets are in the bundle depends on which pages the router has
- * loaded (see the import comment above `ActionCenter.tsx`'s own imports),
- * and this page is reachable without the Dashboard or Library ever loading
- * `library.css`. The rule below is copied from `.library-pager` rather than
- * imported, so the two would need to drift on purpose, not by accident of
- * navigation order. */
+ * `App.tsx` imports every page's stylesheet statically, so `library.css` is
+ * in the bundle whenever this one is -- the point is ownership, not bundle
+ * presence. The rule below is copied from `.library-pager` rather than
+ * imported, so the two would need to drift on purpose, not by accident of a
+ * change made for Library's own reasons. */
 
 .action-pager {
   display: flex;

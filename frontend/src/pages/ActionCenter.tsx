@@ -90,7 +90,11 @@ export function ActionCenter() {
   const [page, setPage] = useState<ActionsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [busyKey, setBusyKey] = useState<string | null>(null);
+  // A set, not a single value: two rows can have an `act()` in flight at
+  // once (row 7's dismiss, then row 8's, inside one round trip), and a
+  // single key would let the first to finish clear the other row's busy
+  // state mid-flight.
+  const [busyKeys, setBusyKeys] = useState<ReadonlySet<string>>(() => new Set());
 
   const [armed, setArmed] = useState(false);
   const [bulk, setBulk] = useState<BulkRerenderResponse | null>(null);
@@ -107,6 +111,14 @@ export function ActionCenter() {
       live.current = false;
     };
   }, []);
+
+  // A per-effect `cancelled` local is not enough here, unlike Library.tsx's
+  // one fetch: `act()` and `runBulk()` also call `load()` outside the effect,
+  // so two runs can be in flight from two different filter clicks. A
+  // monotonic generation counter says which run is still the latest one --
+  // if an earlier run's response lands after a later run has already
+  // started, it is discarded rather than overwriting the newer filter's data.
+  const generation = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,11 +146,12 @@ export function ActionCenter() {
   }, [library, artKind, includeDismissed]);
 
   const load = useCallback(async () => {
+    const mine = ++generation.current;
     try {
       const summaryResponse = await apiFetch<ActionsSummaryResponse>(
         `/api/actions/summary?${scopeQuery().toString()}`,
       );
-      if (!live.current) return;
+      if (!live.current || mine !== generation.current) return;
       setSummary(summaryResponse);
 
       const query = scopeQuery();
@@ -148,11 +161,11 @@ export function ActionCenter() {
       // `?flag=`, and the endpoint takes a single code.
       if (flag !== "") query.set("flag", flag);
       const rows = await apiFetch<ActionsResponse>(`/api/actions?${query.toString()}`);
-      if (!live.current) return;
+      if (!live.current || mine !== generation.current) return;
       setPage(rows);
       setError(null);
     } catch (caught) {
-      if (!live.current) return;
+      if (!live.current || mine !== generation.current) return;
       setError(refusalMessage(caught));
     }
   }, [scopeQuery, offset, flag]);
@@ -180,7 +193,8 @@ export function ActionCenter() {
   }
 
   async function act(row: ActionRow, run: () => Promise<string | null>) {
-    setBusyKey(rowKey(row));
+    const key = rowKey(row);
+    setBusyKeys((prev) => new Set(prev).add(key));
     setError(null);
     setNotice(null);
     try {
@@ -193,7 +207,13 @@ export function ActionCenter() {
     } catch (caught) {
       if (live.current) setError(refusalMessage(caught));
     } finally {
-      if (live.current) setBusyKey(null);
+      if (live.current) {
+        setBusyKeys((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      }
     }
   }
 
@@ -254,7 +274,12 @@ export function ActionCenter() {
       if (live.current) setBulk(response);
       if (apply) await load();
     } catch (caught) {
-      if (live.current) setError(refusalMessage(caught));
+      if (live.current) {
+        setError(refusalMessage(caught));
+        // A prior run's result panel would otherwise sit under this error,
+        // directly beneath the button that just failed.
+        setBulk(null);
+      }
     } finally {
       if (live.current) setBulkBusy(false);
     }
@@ -441,7 +466,7 @@ export function ActionCenter() {
                       <div className="row-actions">
                         <button
                           type="button"
-                          disabled={busyKey === rowKey(row)}
+                          disabled={busyKeys.has(rowKey(row))}
                           onClick={() => void reSearch(row)}
                         >
                           Re-search
@@ -455,7 +480,7 @@ export function ActionCenter() {
                         {row.dismissed ? (
                           <button
                             type="button"
-                            disabled={busyKey === rowKey(row)}
+                            disabled={busyKeys.has(rowKey(row))}
                             onClick={() => void restore(row)}
                           >
                             Restore
@@ -463,7 +488,7 @@ export function ActionCenter() {
                         ) : (
                           <button
                             type="button"
-                            disabled={busyKey === rowKey(row)}
+                            disabled={busyKeys.has(rowKey(row))}
                             onClick={() => void dismiss(row)}
                           >
                             Dismiss

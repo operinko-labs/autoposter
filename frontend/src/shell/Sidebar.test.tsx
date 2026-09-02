@@ -200,6 +200,11 @@ describe("Sidebar", () => {
     const link = screen.getByRole("link", { name: "Action Center" });
     expect(link).toHaveAttribute("href", "/actions");
     expect(link).toHaveAttribute("title", "Action Center");
+
+    // Directly after Dashboard, per the NAV comment: "what needs me" is the
+    // question an operator asks immediately after "what is happening".
+    const dashboard = screen.getByRole("link", { name: "Dashboard" });
+    expect(dashboard.compareDocumentPosition(link)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   it("reaches the id-mismatch view", () => {
