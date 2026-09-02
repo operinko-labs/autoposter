@@ -6,12 +6,14 @@ single-row ``config_overrides`` table instead (``db/models.py``) and are merged
 over the file every time a ``Config`` is built. The file keeps owning the
 defaults; the database owns the deltas.
 """
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import get_args
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.loader import build_config, read_config_document
@@ -22,6 +24,19 @@ logger = logging.getLogger(__name__)
 
 # The single-document table's only row.
 OVERRIDES_ROW_ID = 1
+
+#: The advisory-lock key the write path takes when there is no row to lock yet.
+#:
+#: Pinned by value rather than derived at import, for the reason
+#: ``EMPTY_DOCUMENT_REVISION`` is: two pods running different keys would not
+#: serialise against each other, so a change to it must be a deliberate act
+#: with a red test in front of it. The value is the top 63 bits of
+#: ``sha256(b"autoposter.config_overrides.insert")`` -- an arbitrary number,
+#: but one derived from what it protects, so it cannot collide by accident
+#: with an advisory lock some other part of this database picks by hand.
+#: PostgreSQL's advisory locks share one cluster-wide namespace per database
+#: and nothing else in this codebase takes one.
+OVERRIDES_INSERT_LOCK_KEY = 4907594664404778877
 
 # Sections that left the config schema behind and are dropped out of a stored
 # overrides document instead of being refused with it.
@@ -44,6 +59,32 @@ OVERRIDES_ROW_ID = 1
 # longer produce it, the next save of the overrides document writes it out of
 # existence for good.
 MIGRATED_SECTIONS = ("version_check",)
+
+
+def document_revision(document: dict) -> str:
+    """A token identifying exactly this document's *content*.
+
+    Sent to every editor with its seed and sent back with its save, so the
+    write path can refuse a document composed against a store that has since
+    moved (the 2026-09-01 lost update). The alternative token -- the row's own
+    ``updated_at`` -- is wrong twice over. It moves on a no-op rewrite, so an
+    unchanged document would invalidate every open page for nothing; and this
+    project has a recorded deployment whose container clock steps ~2.7s
+    backwards every ~27s, which would make a timestamp token travel backwards.
+    A content hash has neither problem and has the right semantics besides:
+    two writers that independently produced the same document are not in
+    conflict, because there is nothing to lose.
+
+    Canonical dump -- sorted keys, no whitespace -- so the token depends on
+    what the document says and not on how it was serialised on the way in.
+    """
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+#: What a fresh deployment serves. A real token rather than null, so an editor
+#: seeding against an empty store carries the same shape as every other one.
+EMPTY_DOCUMENT_REVISION = document_revision({})
 
 
 def _reject_secrets(document: dict, path: str = "") -> None:
@@ -160,8 +201,12 @@ def document_paths(document: dict, path: str = "") -> list[str]:
     return paths
 
 
-def _without_migrated_sections(document: dict) -> dict:
+def without_migrated_sections(document: dict) -> dict:
     """``document`` minus any ``MIGRATED_SECTIONS`` key, warning once per key.
+
+    Public because the stored document is no longer its only source: a restored
+    snapshot is a raw row this function never ran over, and a snapshot taken
+    before a section left the schema still holds it (config/snapshots.py).
 
     Top-level only, and deliberately so: these are whole sections that left the
     schema, not individual settings, and a walk looking for the name at depth
@@ -184,7 +229,9 @@ def _without_migrated_sections(document: dict) -> dict:
     return {key: value for key, value in document.items() if key not in present}
 
 
-async def load_overrides_document(session: AsyncSession) -> dict:
+async def load_overrides_document(
+    session: AsyncSession, *, for_update: bool = False
+) -> dict:
     """The stored overrides document, or ``{}`` when there is no row.
 
     An empty document is the pre-edit state of every deployment, and merging
@@ -196,10 +243,49 @@ async def load_overrides_document(session: AsyncSession) -> dict:
     boot-time merge (``load_effective_config``) that would otherwise refuse to
     validate, and ``GET /api/config``'s ``overridden_paths``, which would
     otherwise mark a setting the editor no longer renders as overridden.
+
+    ``for_update`` takes a row lock, and only ``_persist_and_swap`` passes it:
+    a reader that locked would serialise ``GET /api/config`` behind every save
+    for no benefit.
+
+    When there is no row yet, ``SELECT ... FOR UPDATE`` has nothing to lock, so
+    the row lock alone left one hole: two *simultaneous* first-ever saves on a
+    fresh deployment both read ``{}``, both found ``EMPTY_DOCUMENT_REVISION``
+    current, and the loser's entire first save was replaced wholesale by the
+    winner's upsert -- after it had already been answered 200. That case is the
+    *least* bounded of all, not the most: ``_drop_refusal`` returns ``None``
+    the moment the stored document is empty ("nothing to destroy"), so the drop
+    cap short-circuits for both writers and bounds nothing.
+
+    So the no-row path takes a transaction-scoped advisory lock and reads
+    again. The second read is what does the work: the first writer's row is
+    committed by the time the second acquires the lock, so the second sees it,
+    its ``EMPTY_DOCUMENT_REVISION`` no longer matches, and it gets the same 409
+    every other stale writer gets. The row-present path is untouched -- the
+    lock is taken only on a store that has never been written.
+
+    Two properties this leans on, named because a future change to either would
+    reopen the hole silently. The re-read must see a row committed after this
+    transaction began, which is READ COMMITTED's per-statement snapshot
+    (``db/base.py`` sets no ``isolation_level``); under REPEATABLE READ it
+    would come back empty. And the lock must be released by the commit that
+    makes the row visible, which is what ``_xact_`` means -- a session-scoped
+    advisory lock would leak on the 409 path.
     """
-    row = await session.scalar(
-        select(ConfigOverride).where(ConfigOverride.id == OVERRIDES_ROW_ID)
-    )
+    statement = select(ConfigOverride).where(ConfigOverride.id == OVERRIDES_ROW_ID)
+    if for_update:
+        # The write path reads and compares and writes as one step. Without the
+        # lock, two overlapping transactions can both read the same document,
+        # both find their expected revision current, and both write -- which is
+        # the lost update this whole check exists to stop, just narrower.
+        statement = statement.with_for_update()
+    row = await session.scalar(statement)
+    if for_update and row is None:
+        # Nothing was locked, because there was nothing to lock. Serialise the
+        # first-ever save on the key instead, then look again: whoever gets
+        # here second is now looking at whoever got here first.
+        await session.execute(select(func.pg_advisory_xact_lock(OVERRIDES_INSERT_LOCK_KEY)))
+        row = await session.scalar(statement)
     if row is None or not row.document:
         return {}
     if not isinstance(row.document, dict):
@@ -213,7 +299,7 @@ async def load_overrides_document(session: AsyncSession) -> dict:
             "the config_overrides document must be a JSON object, not "
             f"{type(row.document).__name__}"
         )
-    return _without_migrated_sections(row.document)
+    return without_migrated_sections(row.document)
 
 
 async def load_effective_config(path: Path, session: AsyncSession) -> Config:

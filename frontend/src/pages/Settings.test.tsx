@@ -10,6 +10,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
+import { STALE_SAVE_NOTE } from "../api/overrides";
 import {
   IMPACT_CAVEAT,
   REDACTED_EDIT_NOTE,
@@ -196,6 +197,30 @@ describe("Settings configuration", () => {
     // The attribution is static and must survive an API failure -- it is a
     // licence condition, not a view of server data.
     expect(screen.getByAltText("TMDB")).toBeInTheDocument();
+  });
+
+  it("offers backup and previous versions on the settings page, not a new route", async () => {
+    // The panel does its own fetching, against a different endpoint than the
+    // page's config load -- routed per URL, and a fresh Response per call, so
+    // this actually exercises the panel against the snapshot list's real
+    // shape rather than a config body it happens to tolerate.
+    const snapshot = { id: 42, created_at: "2026-09-03T14:22:00+00:00", path_count: 3, reason: "save" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => {
+        const body = path === "/api/config/snapshots" ? [snapshot] : CONFIG;
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+    await renderSettings();
+
+    expect(
+      screen.getByRole("heading", { name: "Backup and previous versions" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/3 settings/)).toBeInTheDocument();
   });
 });
 
@@ -1319,5 +1344,113 @@ describe("Settings apply", () => {
       target: { value: "25" },
     });
     expect(within(pendingPanel()).queryByText(/~9 of 9 artwork renders/)).toBeNull();
+  });
+});
+
+describe("Settings stale-save recovery", () => {
+  const SEEDED = { ...EDITOR_CONFIG, overrides_revision: "rev-1" };
+
+  it("sends the revision it seeded from with every write and every preview", async () => {
+    // Clause 8 of the frontend's contract. Without it this page can still
+    // delete what CatalogPanel, GroupsPanel or a second tab just saved.
+    const fetchMock = stubEditor({
+      config: SEEDED,
+      responses: {
+        "/api/config/overrides": json({
+          version_before: "abc123",
+          version_after: "def456",
+          restart_required: [],
+          overrides_revision: "rev-2",
+        }),
+        "/api/config/preview": previewBody(null),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await click("Preview");
+    expect(callTo(fetchMock, "/api/config/preview").body).toEqual({
+      document: { workers: 9 },
+      expected_revision: "rev-1",
+    });
+
+    await save();
+    expect(callTo(fetchMock, "/api/config/overrides").body).toEqual({
+      document: { workers: 9 },
+      expected_revision: "rev-1",
+    });
+  });
+
+  it("tells the operator and re-seeds when the server refuses a stale save", async () => {
+    // The second GET serves the state another page wrote, which is what the
+    // page must end up showing -- not the operator's discarded edit.
+    const moved = {
+      ...EDITOR_CONFIG,
+      workers: 5,
+      badges: { enabled: false },
+      overridden_paths: ["badges.enabled"],
+      overrides_revision: "rev-9",
+    };
+    let served: unknown = SEEDED;
+    const fetchMock = vi.fn((_input: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") return Promise.resolve(json(served));
+      served = moved;
+      return Promise.resolve(
+        json(
+          {
+            message: "these settings changed somewhere else",
+            current_revision: "rev-9",
+            changed_paths: ["badges.enabled"],
+          },
+          409,
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await save();
+
+    // Said, not swallowed -- and said outside the pending panel, which the
+    // re-seed makes disappear.
+    expect(screen.getByText(STALE_SAVE_NOTE)).toBeInTheDocument();
+    // Re-seeded from the server, not from what was typed.
+    expect(screen.getByLabelText("workers")).toHaveValue(5);
+    // And NOT retried: exactly one write left this page.
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => (init?.method ?? "GET") !== "GET"),
+    ).toHaveLength(1);
+  });
+
+  it("carries the new revision into the next save after a successful one", async () => {
+    // Otherwise the page's second save is stale against its own first, and
+    // every page would 409 itself on the second click.
+    const after = { ...EDITOR_CONFIG, overrides_revision: "rev-2" };
+    let served: unknown = SEEDED;
+    const fetchMock = vi.fn((_input: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") return Promise.resolve(json(served));
+      served = after;
+      return Promise.resolve(
+        json({
+          version_before: "abc123",
+          version_after: "def456",
+          restart_required: [],
+          overrides_revision: "rev-2",
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+    await save();
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "11" } });
+    await save();
+
+    const writes = fetchMock.mock.calls.filter(
+      ([, init]) => (init?.method ?? "GET") !== "GET",
+    );
+    expect(JSON.parse(String(writes[1][1]?.body)).expected_revision).toBe("rev-2");
   });
 });

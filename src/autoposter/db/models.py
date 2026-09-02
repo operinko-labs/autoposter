@@ -459,6 +459,38 @@ class ConfigOverride(Base):
     )
 
 
+class ConfigOverrideSnapshot(Base):
+    """What the overrides document was, immediately before a write replaced it.
+
+    History for the one row this service lets an operator destroy from a web
+    page. Captured pre-write inside the writing transaction, so a snapshot
+    without its write -- or a write without its snapshot -- cannot exist.
+
+    In the database rather than on a mount, unlike ``metadata_backup``: that
+    module's payload is ~16,000 Plex records and belongs on a volume, while
+    this is one small JSON object that already lives here. Putting the
+    configuration's own recovery path behind a mount would make it depend on
+    exactly the thing an operator cannot check while the pod will not start.
+
+    ``path_count`` is stored rather than derived so the listing endpoint can
+    answer "3 settings, 14:22 today" without shipping twenty full config
+    documents to a page that only needs to label its rows.
+    """
+
+    __tablename__ = "config_override_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    path_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # save | apply | restore | import -- what the write that displaced this
+    # document was doing. Not nullable: every writer knows its own reason, and
+    # a nullable column would only ever record that somebody forgot.
+    reason: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 class Session(Base):
     """One logged-in Web UI session, keyed by the SHA-256 hash of its token.
 

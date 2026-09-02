@@ -18,6 +18,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
+import { STALE_SAVE_NOTE } from "../api/overrides";
 import { CatalogPanel } from "./CatalogPanel";
 
 /** The server always lists ten categories, in its own order -- `franchises` is
@@ -527,5 +528,78 @@ describe("the active summary", () => {
 
     expect(within(summary).getByText("1 active")).toBeInTheDocument();
     expect(within(summary).getByText(/unsaved/i)).toBeInTheDocument();
+  });
+});
+
+describe("CatalogPanel stale-save recovery", () => {
+  /** This file's "click a category row and save" idiom, matching the
+   * neighbouring saving tests -- there is no shared helper for it. */
+  async function toggleFirstKey(puts: RequestInit[]) {
+    fireEvent.click(screen.getByRole("checkbox", { name: /Cannes Film Festival/ }));
+    await save();
+    await waitFor(() => expect(puts).toHaveLength(1));
+  }
+
+  it("sends the revision it seeded from", async () => {
+    const { puts } = await renderPanel({
+      config: { ...config(), overrides_revision: "rev-1" },
+    });
+    await toggleFirstKey(puts);
+
+    expect(JSON.parse(String(puts[0].body)).expected_revision).toBe("rev-1");
+  });
+
+  it("tells the operator and re-reads when the server refuses a stale save", async () => {
+    const { fetchMock, puts } = await renderPanel({
+      config: { ...config(), overrides_revision: "rev-1" },
+      save: () =>
+        json(
+          {
+            message: "these settings changed somewhere else",
+            current_revision: "rev-9",
+            changed_paths: ["collections.separator_style"],
+          },
+          409,
+        ),
+    });
+    await toggleFirstKey(puts);
+
+    await screen.findByText(STALE_SAVE_NOTE);
+    expect(puts).toHaveLength(1);
+    // Re-read, so the panel is showing the settings that actually hold.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([path]) => path === "/api/config"),
+      ).toHaveLength(2),
+    );
+  });
+
+  it("never says 'Saved' when the refused save's re-read also fails", async () => {
+    // The doubly-degraded path: a 409 saved nothing, and the re-read that
+    // would have told the truth about what IS stored failed too. Saying
+    // "Saved, but..." here would be the incident's own lie in miniature.
+    let configReads = 0;
+    const fetchMock = vi.fn(async (path: string) => {
+      if (path === "/api/collections/catalog") return json(catalog());
+      if (path === "/api/config") {
+        configReads += 1;
+        if (configReads > 1) return json({ detail: "the database is unreachable" }, 500);
+        return json({ ...config(), overrides_revision: "rev-1" });
+      }
+      if (path === "/api/config/overrides") {
+        return json({ message: "changed elsewhere", changed_paths: [] }, 409);
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<CatalogPanel />);
+    await screen.findByRole("tablist");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Cannes Film Festival/ }));
+    await save();
+
+    const note = await screen.findByText(/could not be re-read/);
+    expect(note).toHaveTextContent(/^Nothing was saved, and/);
+    expect(note).not.toHaveTextContent(/Saved, but/);
   });
 });

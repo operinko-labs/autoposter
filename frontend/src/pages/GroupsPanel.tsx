@@ -8,6 +8,9 @@ import {
   documentFromConfig,
   fieldErrors,
   hasPath,
+  revisionFromConfig,
+  saveBody,
+  STALE_SAVE_NOTE,
   withPath,
   withoutPath,
 } from "../api/overrides";
@@ -101,6 +104,10 @@ export function GroupsPanel() {
   // to the one path: a save here must not drop an override another page
   // stored.
   const [stored, setStored] = useState<OverridesDocument>({});
+  // The revision `stored` was seeded from, sent with every write so a save
+  // composed against a document another page has since moved is refused
+  // rather than silently overwriting it.
+  const [storedRevision, setStoredRevision] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   // Separate from `saveError` on purpose: a re-read that fails after the
@@ -146,6 +153,7 @@ export function GroupsPanel() {
       setSavedStyle(catalog.separator_style);
       setStyle(catalog.separator_style);
       setStored(documentFromConfig(config));
+      setStoredRevision(revisionFromConfig(config));
     },
     [],
   );
@@ -224,16 +232,23 @@ export function GroupsPanel() {
     setReloadError(null);
     setResult(null);
     let saved = false;
+    let stale = false;
     try {
       const response = await apiFetch<ConfigSaveResponse>("/api/config/overrides", {
         method: "PUT",
-        body: JSON.stringify({ document }),
+        body: saveBody(document, storedRevision),
       });
       if (live.current) setResult(response);
       saved = true;
     } catch (caught) {
       if (live.current) {
-        if (caught instanceof ApiError && caught.status === 422) {
+        if (caught instanceof ApiError && caught.status === 409) {
+          // Not retried: re-read, and say what happened. `stale` makes the
+          // re-read below run even though nothing was saved -- the panel is
+          // showing a document that is no longer true.
+          setSaveError(STALE_SAVE_NOTE);
+          stale = true;
+        } else if (caught instanceof ApiError && caught.status === 422) {
           setErrors(fieldErrors(caught.detail));
           setSaveError("The server rejected this order.");
         } else {
@@ -245,13 +260,18 @@ export function GroupsPanel() {
     // are the config's answer to what was just written. Outside the save's
     // own try on purpose -- the store already succeeded, so a failure here
     // means the panel is stale, not that nothing was saved.
-    if (saved) {
+    if (saved || stale) {
       try {
         await reload();
       } catch (caught) {
         if (live.current) {
           setReloadError(
-            `Saved, but the panel could not be re-read (${(caught as Error).message}). ` +
+            // Branching rather than one sentence: this block runs for a save
+            // that happened AND for a 409 that saved nothing, and telling an
+            // operator "Saved, but..." about a write the server refused is the
+            // one thing this whole phase exists to stop.
+            `${saved ? "Saved, but" : "Nothing was saved, and"} the panel ` +
+              `could not be re-read (${(caught as Error).message}). ` +
               "What is shown may be stale — reload the page.",
           );
         }
@@ -423,10 +443,15 @@ export function GroupsPanel() {
         </ul>
       )}
 
+      {/* Outside the `result` gate, not inside it: a refused save never sets
+          `result`, so a re-read failure reported in there would be invisible
+          on exactly the path where the panel is most misleading -- showing
+          settings it failed to refresh, under a note promising it did. */}
+      {reloadError !== null && <p className="groups-stale">{reloadError}</p>}
+
       {result !== null && (
         <div className="groups-saved" role="status">
           <p>{`Saved. Config ${result.version_before} → ${result.version_after}.`}</p>
-          {reloadError !== null && <p className="groups-stale">{reloadError}</p>}
           {result.restart_required.length > 0 && (
             <p className="muted">
               {`Needs a restart: ${result.restart_required.join(", ")}.`}

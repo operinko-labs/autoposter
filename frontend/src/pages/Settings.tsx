@@ -11,6 +11,9 @@ import {
   isPlainObject,
   keepContract,
   readPath,
+  revisionFromConfig,
+  saveBody,
+  STALE_SAVE_NOTE,
   withPath,
   withoutPath,
 } from "../api/overrides";
@@ -22,6 +25,7 @@ import type {
   OverridesDocument,
 } from "../api/types";
 import { ProviderAttribution } from "../ProviderAttribution";
+import { ConfigSafetyPanel } from "./ConfigSafetyPanel";
 import "./settings.css";
 
 /** The attribution block and its required wording live with the component now
@@ -94,6 +98,9 @@ const PROVENANCE_KEYS = [
   "field_descriptions",
   "computed_paths",
   "live_paths",
+  // The eighth: the seed's own content hash. Rendering it would offer an
+  // editable "Overrides revision" row the API forbids as an unknown key.
+  "overrides_revision",
 ];
 
 /** The reason a restart is needed for `path`, or undefined if it is live.
@@ -567,12 +574,21 @@ export function Settings() {
   >(null);
   const [preview, setPreview] = useState<ConfigPreviewResponse | null>(null);
   const [busy, setBusy] = useState<Action | null>(null);
+  // The revision of the document `savedDocument` was seeded from. Sent with
+  // every write so the server can refuse one composed against a document that
+  // has since moved -- the whole of clause 8.
+  const [storedRevision, setStoredRevision] = useState<string | null>(null);
+  // Deliberately NOT `saveError`: that one lives inside the pending panel,
+  // and a stale save is followed by a re-seed that makes the pending panel
+  // disappear. The operator would be told nothing at all.
+  const [staleNote, setStaleNote] = useState<string | null>(null);
 
   const adopt = useCallback((response: ConfigResponse) => {
     const stored = documentFromConfig(response);
     setConfig(response);
     setSavedDocument(stored);
     setPendingDocument(stored);
+    setStoredRevision(revisionFromConfig(response));
   }, []);
 
   useEffect(() => {
@@ -651,12 +667,13 @@ export function Settings() {
     setBusy(action);
     setErrors({});
     setSaveError(null);
+    setStaleNote(null);
     // A fresh preview answers a question about the document as it stands now;
     // a "Saved..." panel from an earlier commit sitting beside it would read
     // as though that save already accounted for what the preview is about to
     // show.
     setResult(null);
-    const body = JSON.stringify({ document: pendingDocument });
+    const body = saveBody(pendingDocument, storedRevision);
     try {
       if (action === "preview") {
         setPreview(
@@ -685,7 +702,16 @@ export function Settings() {
       // is a fact about what it stored, not about what was typed here.
       adopt(await apiFetch<ConfigResponse>("/api/config"));
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 422) {
+      if (caught instanceof ApiError && caught.status === 409) {
+        // Never a retry. Re-seed from the server and hand the operator back a
+        // page that tells the truth, with their edit discarded and said so.
+        setStaleNote(STALE_SAVE_NOTE);
+        try {
+          adopt(await apiFetch<ConfigResponse>("/api/config"));
+        } catch (reread) {
+          setSaveError((reread as Error).message);
+        }
+      } else if (caught instanceof ApiError && caught.status === 422) {
         setErrors(fieldErrors(caught.detail));
         setSaveError("The server rejected these settings.");
       } else {
@@ -718,6 +744,7 @@ export function Settings() {
           here.
         </p>
         {config === null && <p className="muted">Loading…</p>}
+        {staleNote !== null && <p className="page-error">{staleNote}</p>}
         {result !== null && (
           <>
             <p className="config-saved">
@@ -749,6 +776,15 @@ export function Settings() {
           </>
         )}
       </section>
+
+      {config !== null && (
+        <ConfigSafetyPanel
+          revision={storedRevision}
+          onChanged={async () => {
+            adopt(await apiFetch<ConfigResponse>("/api/config"));
+          }}
+        />
+      )}
 
       {dirty && (
         <section className="panel config-pending">

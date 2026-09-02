@@ -642,6 +642,15 @@ export interface ConfigSaveResponse {
   version_after: string;
   restart_required: string[];
   inert?: string[];
+  /** The revision of the document this write stored.
+   *
+   * Served for a future consumer and for cross-checking; no page reads it
+   * today. All four re-seed from the follow-up `GET /api/config` instead,
+   * which is the same token by construction (the backend pins that the two
+   * agree) and also refreshes everything else the page renders. A page that
+   * wanted to skip that round trip could take the revision from here.
+   * Optional so a response from before the field existed still parses. */
+  overrides_revision?: string;
 }
 
 /** The rows a candidate config would invalidate, as
@@ -669,6 +678,31 @@ export interface ConfigImpact {
  * not "zero items", it is "the question does not apply". */
 export interface ConfigPreviewResponse extends ConfigSaveResponse {
   impact: ConfigImpact | null;
+}
+
+/** One row of GET /api/config/snapshots -- metadata only. The documents are
+ * not in the listing on purpose: the list needs to label its rows, and one of
+ * those documents holds the notification URL. */
+export interface ConfigSnapshot {
+  id: number;
+  created_at: string;
+  path_count: number;
+  reason: string;
+}
+
+/** GET /api/config/snapshots/{id}. `document` is redacted exactly as
+ * `GET /api/config` redacts the live one. */
+export interface ConfigSnapshotDetail extends ConfigSnapshot {
+  document: OverridesDocument;
+}
+
+/** GET /api/config/overrides/export. `document` is UNREDACTED -- a redacted
+ * backup would write the bare notification host back over the real URL on the
+ * next import. The download copy tells the operator so. */
+export interface ConfigExport {
+  autoposter_overrides: number;
+  exported_at: string;
+  document: OverridesDocument;
 }
 
 /** POST /api/config/apply: the PUT's own response plus what it enqueued.

@@ -5,10 +5,11 @@ import os
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
@@ -53,11 +54,14 @@ from autoposter.config.loader import build_config, read_config_document
 from autoposter.config.overrides import (
     OVERRIDES_ROW_ID,
     document_paths,
+    document_revision,
     load_overrides_document,
     merge_overrides,
     unknown_key_paths,
+    without_migrated_sections,
 )
 from autoposter.config.schema import Config
+from autoposter.config.snapshots import capture_snapshot, list_snapshots, load_snapshot
 from autoposter.db.models import (
     ConfigOverride,
     EventLog,
@@ -1306,7 +1310,7 @@ async def get_config(
     ``_REDACTORS``; the full URL stays in the config file the operator
     already owns.
 
-    Carries seven things the editor needs beyond the values themselves.
+    Carries eight things the editor needs beyond the values themselves.
     ``overridden_paths`` is the provenance: which of these values come from
     the database overrides rather than the mounted YAML, so the UI can mark
     them and offer "revert to base". ``frozen_paths`` maps each restart-only
@@ -1335,6 +1339,12 @@ async def get_config(
     (``config/live.LIVE_EXCEPTIONS``) -- without it the editor flags
     ``plex.resolve_max_attempts`` as needing a restart while ``frozen_reason``
     here correctly says it does not.
+    ``overrides_revision`` is the eighth and the newest: a content hash of the
+    stored overrides document, which every editor carries away with its seed
+    and sends back with its save. It is what lets the write path tell a save
+    composed against *this* document apart from one composed against a document
+    that has since moved -- the difference between a save and a silent deletion
+    of everything another page added in between.
     """
     config = request.app.state.config
     secrets = request.app.state.secrets
@@ -1356,6 +1366,11 @@ async def get_config(
                 detail="config overrides row is corrupt (not a JSON object); fix or delete it",
             ) from exc
     body["overridden_paths"] = sorted(document_paths(document))
+    # Computed from the same document `overridden_paths` came from: one extra
+    # hash, no extra query, and it arrives with the seed -- which is exactly
+    # the invariant a stale-write check needs, because a page that seeded from
+    # this response holds this token for what it seeded from.
+    body["overrides_revision"] = document_revision(document)
     body["frozen_paths"] = dict(FROZEN_SECTIONS)
     body["redacted_paths"] = list(REDACTED_PATHS)
     body["keep_sentinel"] = KEEP_SENTINEL
@@ -1363,6 +1378,13 @@ async def get_config(
     body["computed_paths"] = list(COMPUTED_PATHS)
     body["live_paths"] = sorted(LIVE_EXCEPTIONS)
     return body
+
+
+# A normal edit drops 0 or 1 override; the 2026-09-01 incident dropped 17. A
+# module constant rather than a setting on purpose: a destructiveness cap an
+# operator can raise from the same page the destructive write comes from is
+# not a cap, and this phase is deliberately disjoint from config/schema.py.
+OVERRIDE_DROP_CAP = 3
 
 
 class OverridesBody(BaseModel):
@@ -1373,9 +1395,46 @@ class OverridesBody(BaseModel):
     absent from it. A patch shape would need an out-of-band way to say
     "delete", and the obvious candidate -- sending ``null`` -- already means
     something else (see ``_validated_generation``).
+
+    The envelope forbids extras and the *document* does not, and the asymmetry
+    is deliberate. Forbidding here turns one specific catastrophe into an error
+    message: a body of ``{"artwork": ..., "scheduler": ...}`` -- the document
+    sent bare, which is what a hand-written fetch produces -- used to match
+    zero declared fields under pydantic's default ``extra="ignore"``, bind
+    ``document`` to its ``{}`` default, and wipe every stored override with a
+    200 (the 2026-09-01 incident). Inside the document, ``unknown_key_paths``
+    gives a far better error than pydantic could, at full depth and with the
+    dotted path an operator can act on, so nothing is gained by forbidding
+    twice.
+
+    ``confirm`` authorises a destructive write -- one that empties the store or
+    drops more than ``OVERRIDE_DROP_CAP`` paths. A flag rather than a second
+    endpoint, for the reason ``DeleteRequest.confirm`` gives in
+    ``api/collections_builders.py``: what is being confirmed is *this*
+    document against *this* store, which a separate endpoint could not name.
+    ``POST /api/config/preview`` accepts it and ignores it, so all three arms
+    keep taking one body shape.
+
+    ``document`` has no default. It did once, and a body carrying only
+    ``confirm`` bound it to ``{}`` -- the confirm was truthy, so
+    ``_drop_refusal`` never ran, and the result was a 200 that emptied the
+    store with no ``document`` key in sight. Requiring the field costs no
+    caller anything real (every one of them always sends it) and closes that
+    hole for free.
+
+    ``expected_revision`` is the token that came with the seed this document
+    was composed from (``GET /api/config``'s ``overrides_revision``). When it
+    is present and no longer current, the write is refused with a 409 rather
+    than overwriting whatever arrived in between. When it is absent the write
+    proceeds, so a scripted client is not broken by this upgrade; the four
+    pages are held to sending it by their own tests, not by this model.
     """
 
-    document: dict = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid")
+
+    document: dict
+    expected_revision: str | None = None
+    confirm: bool = False
 
 
 def _error(path: str, message: str) -> dict:
@@ -1552,13 +1611,69 @@ async def _validated_generation(request: Request, document: dict) -> tuple[dict,
         ) from exc
 
 
-async def _persist_and_swap(request: Request, document: dict, after: Config) -> dict:
+def _drop_refusal(stored: dict, document: dict) -> str | None:
+    """Why this write is too destructive to do unasked, or None.
+
+    Counted in ``document_paths`` units -- exactly what ``GET /api/config``
+    reports as ``overridden_paths`` -- so the operator, the API and this
+    sentence all count the same things.
+    """
+    before = set(document_paths(stored))
+    if not before:
+        # Nothing to destroy. A fresh deployment's first save lands here and
+        # must not be asked to confirm anything.
+        return None
+    if not document:
+        return (
+            f"this would clear all {len(before)} stored overrides; "
+            "send confirm: true to do it deliberately"
+        )
+    dropped = sorted(before - set(document_paths(document)))
+    if len(dropped) <= OVERRIDE_DROP_CAP:
+        return None
+    return (
+        f"this would drop {len(dropped)} stored overrides "
+        f"({', '.join(dropped)}); send confirm: true to do it deliberately"
+    )
+
+
+async def _persist_and_swap(
+    request: Request,
+    document: dict,
+    after: Config,
+    *,
+    expected_revision: str | None = None,
+    confirm: bool = False,
+    reason: str = "save",
+) -> dict:
     """Store the document, swap the running generation, log the event.
 
     Only ever called with an ``after`` that ``_validated_generation`` already
     built, so by the time anything is written the config is known to be whole.
     ``swap_config`` is three assignments and a dict refresh with no I/O, so it
     cannot fail after the row is committed either.
+
+    This is also where every *write-only* guard lives, and none of them live in
+    ``_validated_generation``. That function promises "nothing here persists,
+    swaps or enqueues anything" and ``POST /api/config/preview`` routes through
+    it -- a preview must never be refused for being destructive, because
+    answering "what would this do" is the whole of its job. Guards that fire on
+    a write belong on the write path, which ``put_config_overrides`` and
+    ``apply_config_overrides`` both funnel through, so one insertion covers
+    both.
+
+    The stored document is read here, in the same session as the upsert, rather
+    than in an earlier one: a separate read would be a TOCTOU window inside the
+    fix for a TOCTOU bug.
+
+    The revision compare goes here, under the row lock, for the same reason and
+    one more: a check in ``_validated_generation`` would 409 a preview, and a
+    check in a separate earlier session would be a TOCTOU window inside the fix
+    for a TOCTOU bug. ``SELECT ... FOR UPDATE`` is what makes read-compare-write
+    one step; the unconditional upsert it replaced was not.
+
+    The pre-write snapshot goes in the same block for the same reason the guards
+    do -- it is part of the write, not a step beside it.
 
     Crash-consistent by construction: if the process dies between the commit
     and ``swap_config``, requests keep being served by the old generation until
@@ -1571,6 +1686,37 @@ async def _persist_and_swap(request: Request, document: dict, after: Config) -> 
     """
     before = request.app.state.config
     async with request.app.state.session_factory() as session:
+        stored = await load_overrides_document(session, for_update=True)
+        if expected_revision is not None:
+            current = document_revision(stored)
+            if expected_revision != current:
+                # Loudly, and without a suggestion to retry: a client that
+                # retried would re-apply an edit onto a document its operator
+                # has not seen, which is a quieter version of the bug this
+                # check exists to stop.
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": (
+                            "these settings changed somewhere else while this "
+                            "page was open; nothing was saved"
+                        ),
+                        "current_revision": current,
+                        "changed_paths": sorted(_changed_paths(stored, document)),
+                    },
+                )
+        if not confirm:
+            refusal = _drop_refusal(stored, document)
+            if refusal is not None:
+                raise HTTPException(
+                    status_code=422, detail=[_error("document", refusal)]
+                )
+
+        # Pre-write, in this session and this transaction. Same transaction is
+        # the whole point: a snapshot that commits without its write, or a
+        # write that commits without its snapshot, is worse than neither.
+        await capture_snapshot(session, stored, reason)
+
         stmt = insert(ConfigOverride).values(id=OVERRIDES_ROW_ID, document=document)
         stmt = stmt.on_conflict_do_update(
             index_elements=["id"], set_={"document": document, "updated_at": func.now()}
@@ -1580,11 +1726,20 @@ async def _persist_and_swap(request: Request, document: dict, after: Config) -> 
             EventLog(
                 source="config",
                 event_type="overrides_updated",
-                # Versions, never the document. The overrides carry no secrets
-                # (merge_overrides refuses a `secrets` key outright), but an
-                # audit row is read casually and copied into tickets, and the
-                # settings an operator changes are not this table's business.
-                payload={"version_before": before.version, "version_after": after.version},
+                # Versions and counts, never the document. The overrides carry
+                # no secrets (merge_overrides refuses a `secrets` key
+                # outright), but an audit row is read casually and copied into
+                # tickets, and *which* settings an operator changed are not
+                # this table's business. How many there were before and after
+                # is: the 2026-09-01 wipe would have read `12 -> 0` here
+                # instead of costing an investigation.
+                payload={
+                    "version_before": before.version,
+                    "version_after": after.version,
+                    "paths_before": len(document_paths(stored)),
+                    "paths_after": len(document_paths(document)),
+                    "reason": reason,
+                },
                 outcome=f"version {before.version} -> {after.version}",
             )
         )
@@ -1598,6 +1753,7 @@ async def _persist_and_swap(request: Request, document: dict, after: Config) -> 
         "version_after": after.version,
         "restart_required": restart_required,
         "inert": inert,
+        "overrides_revision": document_revision(document),
     }
 
 
@@ -1614,9 +1770,20 @@ async def put_config_overrides(
 
     An invalid document changes nothing at all -- no row, no swap, no event --
     and comes back as a 422 listing ``{path, message}`` per problem.
+
+    A destructive save -- one that empties a non-empty store, or drops more
+    than ``OVERRIDE_DROP_CAP`` of its paths -- is refused with a 422 naming the
+    paths, and needs ``confirm: true``. A body that is not the ``{"document":
+    ...}`` envelope is refused by the model before this runs.
     """
     document, after = await _validated_generation(request, body.document)
-    return await _persist_and_swap(request, document, after)
+    return await _persist_and_swap(
+        request,
+        document,
+        after,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+    )
 
 
 @router.post("/config/preview")
@@ -1633,9 +1800,15 @@ async def preview_config_overrides(
     is an approximation (config/impact.py) and reporting its noise for a
     scheduler tweak would be worse than reporting nothing. When it is not
     null, it is an over-estimate by construction -- render it with a "~".
+
+    Migrated sections are stripped first, for the same reason
+    ``import_config_overrides`` strips them: a pre-migration backup previewed
+    here must validate the same way importing it would, or the panel's
+    "Import these settings" button never appears for the file the strip
+    exists to accept.
     """
     before = request.app.state.config
-    _, after = await _validated_generation(request, body.document)
+    _, after = await _validated_generation(request, without_migrated_sections(body.document))
     impact = None
     if _render_affecting(before, after):
         async with request.app.state.session_factory() as session:
@@ -1663,10 +1836,23 @@ async def apply_config_overrides(
 
     An edit that cannot change a rendered image queues nothing, for the reason
     the preview reports null impact for it.
+
+    A destructive save -- one that empties a non-empty store, or drops more
+    than ``OVERRIDE_DROP_CAP`` of its paths -- is refused with a 422 naming the
+    paths, and needs ``confirm: true``, exactly as ``PUT /api/config/overrides``
+    is. A body that is not the ``{"document": ...}`` envelope is refused by the
+    model before this runs.
     """
     document, after = await _validated_generation(request, body.document)
     before = request.app.state.config
-    saved = await _persist_and_swap(request, document, after)
+    saved = await _persist_and_swap(
+        request,
+        document,
+        after,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+        reason="apply",
+    )
 
     entries: list[tuple[dict, str]] = []
     if _render_affecting(before, after):
@@ -1679,3 +1865,237 @@ async def apply_config_overrides(
     else:
         queued = 0
     return {**saved, "queued": queued, "skipped": len(entries) - queued}
+
+
+class SnapshotRestoreBody(BaseModel):
+    """Restore one previous overrides document. ``confirm`` for a big drop.
+
+    Restore is a save, not a bypass: it re-validates against the config on
+    file, snapshots the current document first (so the restore is itself
+    undoable), and respects the same drop cap and the same revision check a PUT
+    does. Its body is therefore the save body minus the document, which the
+    snapshot id supplies.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: str | None = None
+    confirm: bool = False
+
+
+def _redacted_document(document: dict) -> dict:
+    """A snapshot as it may be served: the same redaction ``GET /api/config``
+    applies, applied to the same paths.
+
+    A stored snapshot holds ``notifications.url`` in full -- it has to, or a
+    restore could not put the push token back. Serving that raw from a new
+    endpoint would hand out the exact value the config endpoint is careful to
+    withhold.
+    """
+    shown = deepcopy(document)
+    for path, redact in _REDACTORS.items():
+        value = _read_path(shown, path)
+        if isinstance(value, str) and value:
+            _set_path(shown, path, redact(value))
+    return shown
+
+
+@router.get("/config/snapshots")
+async def get_config_snapshots(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> list[dict]:
+    """Every kept previous overrides document, newest first, metadata only.
+
+    Enough to label a row -- how many settings it held, when it was displaced
+    and by what -- and no documents: see ``list_snapshots``.
+    """
+    async with request.app.state.session_factory() as session:
+        return await list_snapshots(session)
+
+
+@router.get("/config/snapshots/{snapshot_id}")
+async def get_config_snapshot(
+    snapshot_id: int, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """One previous overrides document, redacted the way the live one is."""
+    async with request.app.state.session_factory() as session:
+        try:
+            document = await load_snapshot(session, snapshot_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=404, detail=f"no config snapshot {snapshot_id}"
+            ) from None
+        rows = {row["id"]: row for row in await list_snapshots(session)}
+    meta = rows.get(snapshot_id, {})
+    return {
+        "id": snapshot_id,
+        "created_at": meta.get("created_at"),
+        "path_count": meta.get("path_count"),
+        "reason": meta.get("reason"),
+        "document": _redacted_document(document),
+    }
+
+
+@router.post("/config/snapshots/{snapshot_id}/restore")
+async def restore_config_snapshot(
+    snapshot_id: int,
+    body: SnapshotRestoreBody,
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Put a previous overrides document back, as a save.
+
+    Not a bypass and not a second write path: the stored (unredacted) document
+    goes through ``_validated_generation`` and ``_persist_and_swap`` exactly as
+    a PUT's would, so it is re-validated against the config file as it stands
+    *now* -- the mounted YAML may have moved under this snapshot since it was
+    taken, and a snapshot from before a schema change must fail loudly here
+    rather than brick the pod at the next boot.
+
+    ``without_migrated_sections`` runs first, and it is not optional. A whole
+    section that left the schema is stripped from the *stored* document on
+    every read, but a raw snapshot row still holds it -- so without this the
+    one recovery path would 422 on exactly the old snapshots recovery exists
+    for.
+    """
+    async with request.app.state.session_factory() as session:
+        try:
+            snapshot = await load_snapshot(session, snapshot_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=404, detail=f"no config snapshot {snapshot_id}"
+            ) from None
+
+    document, after = await _validated_generation(
+        request, without_migrated_sections(snapshot)
+    )
+    return await _persist_and_swap(
+        request,
+        document,
+        after,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+        reason="restore",
+    )
+
+
+#: The export envelope's format discriminator. Bumped only when the shape of
+#: `document` changes in a way an older reader would misread -- not when a
+#: config field is added, which the document already absorbs by construction.
+OVERRIDES_EXPORT_FORMAT = 1
+
+
+class ConfigImportBody(BaseModel):
+    """An exported overrides file, on its way back in.
+
+    The same envelope ``GET /api/config/overrides/export`` writes, so the two
+    are one format rather than two that agree by habit. ``autoposter_overrides``
+    is required and is the point of the envelope: without a discriminator,
+    somebody would eventually import a whole ``GET /api/config`` dump, which
+    would freeze today's file values as permanent overrides -- the exact hazard
+    ``documentFromConfig``'s docstring warns about, arriving through a button.
+
+    ``exported_at`` is carried so a hand-inspected file round-trips unchanged;
+    nothing reads it.
+
+    ``document`` has no default, for the same reason ``OverridesBody.document``
+    no longer does: a body carrying only ``autoposter_overrides`` and
+    ``confirm`` used to bind ``document`` to its ``{}`` default, and with
+    ``confirm`` truthy the drop refusal never ran -- a 200 that emptied the
+    store with no ``document`` key in sight. Requiring the field costs no
+    caller anything real and closes that hole for free.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    autoposter_overrides: int
+    document: dict
+    exported_at: str | None = None
+    expected_revision: str | None = None
+    confirm: bool = False
+
+
+@router.get("/config/overrides/export")
+async def export_config_overrides(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """The stored overrides document, in a thin envelope, for safekeeping.
+
+    ``document`` is deliberately the same key name and the same shape ``PUT
+    /api/config/overrides`` takes, so an exported file's ``document`` value
+    pastes straight into a PUT body and back.
+
+    **Unredacted, deliberately, and this is a trade rather than an oversight.**
+    ``GET /api/config`` reduces ``notifications.url`` to its host because that
+    response is for a page; this response is a backup, and a backup that
+    redacts is broken -- re-importing one would write the bare host over the
+    real URL and destroy the push token it embeds. So the file holds the
+    notification URL, the UI's download button says so in plain words, and the
+    operator decides where the file goes. ``secrets`` is absent by
+    construction: ``merge_overrides`` refuses the key outright, so there is no
+    API token in it either way.
+
+    (The alternative considered and rejected: exporting with the keep sentinel
+    at every redacted path. That round-trips correctly on the *same*
+    deployment and is useless as a transfer to a different one, which is most
+    of what a backup is for.)
+    """
+    async with request.app.state.session_factory() as session:
+        try:
+            document = await load_overrides_document(session)
+        except ValueError as exc:
+            # A hand-edited config_overrides row whose document is not a JSON
+            # object -- see load_overrides_document's docstring. An operator
+            # needs to know what to fix, not a traceback.
+            raise HTTPException(
+                status_code=500,
+                detail="config overrides row is corrupt (not a JSON object); fix or delete it",
+            ) from exc
+    return {
+        "autoposter_overrides": OVERRIDES_EXPORT_FORMAT,
+        "exported_at": datetime.now(UTC).isoformat(),
+        "document": document,
+    }
+
+
+@router.post("/config/overrides/import")
+async def import_config_overrides(
+    body: ConfigImportBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Restore an exported overrides file. A save with a file picker in front.
+
+    No import-only code path exists on purpose. The document goes through
+    ``_validated_generation`` and ``_persist_and_swap`` exactly as a PUT's
+    would: the same five refusal gates, the same pre-write snapshot, the same
+    drop cap, the same revision check. An import is the highest-risk *drop* in
+    this service -- one stale export can drop dozens of paths at once -- which
+    is precisely the reason to route it through the guards rather than around
+    them.
+
+    Migrated sections are stripped first, for the reason
+    ``restore_config_snapshot`` gives: a file exported before a section left the
+    schema is exactly the file somebody reaches for a year later.
+    """
+    if body.autoposter_overrides != OVERRIDES_EXPORT_FORMAT:
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                _error(
+                    "autoposter_overrides",
+                    f"unsupported export format {body.autoposter_overrides}; "
+                    f"this service writes and reads {OVERRIDES_EXPORT_FORMAT}",
+                )
+            ],
+        )
+
+    document, after = await _validated_generation(
+        request, without_migrated_sections(body.document)
+    )
+    return await _persist_and_swap(
+        request,
+        document,
+        after,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+        reason="import",
+    )

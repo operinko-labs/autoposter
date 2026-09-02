@@ -165,3 +165,42 @@ export function fieldErrors(detail: unknown): Record<string, string> {
   }
   return errors;
 }
+
+/** The revision the server served with this seed, or null when it served none.
+ *
+ * Null rather than a throw for a response that predates the field: an older
+ * deployment's `GET /api/config` is a perfectly usable seed, and a page that
+ * refused to save against one would be a worse failure than the one this
+ * guards. `saveBody` then omits the key and the endpoint proceeds. */
+export function revisionFromConfig(config: ConfigResponse): string | null {
+  const revision = config.overrides_revision;
+  return typeof revision === "string" && revision !== "" ? revision : null;
+}
+
+/** The body every writing page sends, built in exactly one place.
+ *
+ * The four pages that write this document each seed the WHOLE of it at mount
+ * and PUT the whole result, so each of them can silently delete what the other
+ * three saved. The seed's revision is what makes that a 409 instead. Built
+ * here rather than per page for the reason this file exists at all: the page
+ * that copied the first one badly is the page that would leave the key off and
+ * put its operator straight back in the 2026-09-01 incident. */
+export function saveBody(
+  document: OverridesDocument,
+  revision: string | null,
+): string {
+  return JSON.stringify(
+    revision === null ? { document } : { document, expected_revision: revision },
+  );
+}
+
+/** What the operator is told when the server refuses a stale save.
+ *
+ * Three facts and no instruction to retry: what happened, that nothing was
+ * stored, and that the page in front of them is now showing the real settings.
+ * An automatic retry would re-apply their edit onto a document they have never
+ * seen, which is the same lost update wearing a friendlier face. */
+export const STALE_SAVE_NOTE =
+  "These settings were changed somewhere else while this page was open, so " +
+  "nothing was saved. The page now shows the current settings — make your " +
+  "change again.";
