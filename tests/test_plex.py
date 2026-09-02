@@ -4,7 +4,11 @@ import pytest
 from plexapi.exceptions import BadRequest as PlexBadRequest
 from plexapi.exceptions import NotFound as PlexNotFound
 
+from sqlalchemy import select
+
+from autoposter.arr.sync import enqueue_unknown_items
 from autoposter.config.loader import load_config
+from autoposter.db.models import Job
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ItemNotFound, PlexClient, parse_guids
 from autoposter.render.pipeline import title_text_for
@@ -881,6 +885,43 @@ async def test_a_malformed_rating_key_falls_back_instead_of_raising():
 
     assert item.rating_key == "557"
     assert shows.getguid_calls == ["tvdb://371980"]
+
+
+async def test_a_discovery_enqueued_item_resolves_by_rating_key_when_the_crosswalk_cannot(
+    session,
+):
+    """Bamse-class regression, end to end through the real discovery enqueue.
+
+    Production case: a show discovered off Plex whose stored tmdb/tvdb ids --
+    read straight off the item itself -- the Plex agent crosswalk (``getGuid``)
+    could not resolve back to any item. Reported ``ItemNotFound`` forever, one
+    duplicate deferred job per sweep. The queued rating key must resolve the
+    item directly, without depending on the crosswalk at all.
+    """
+    show = FakeShow(
+        "999", "Bamse", 1980, None, ["tmdb://55645", "tvdb://358385"],
+        library_section_title="Shows",
+    )
+    show.locations = ["/mnt/Media/Shows/Bamse (1980)"]
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+
+    def _crosswalk_always_misses(guid):
+        shows.getguid_calls.append(guid)
+        raise PlexNotFound(f"Guid '{guid}' is not found in the library")
+
+    shows.getGuid = _crosswalk_always_misses
+
+    enqueued = await enqueue_unknown_items(session, [show], "show")
+    assert enqueued == 1
+    job = (await session.execute(select(Job))).scalars().one()
+    intent = RenderIntent(**job.payload)
+
+    server = FakeServer([shows], items_by_key={999: show})
+    client = PlexClient(server=server, excluded_libraries=[])
+    item = await client.resolve(intent)
+
+    assert item.rating_key == "999"
+    assert item.title == "Bamse"
 
 
 # --- list_items: the section walk the id-mismatch view reads -----------------
