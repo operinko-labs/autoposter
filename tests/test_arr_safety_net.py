@@ -89,6 +89,21 @@ async def test_the_returned_count_matches_the_number_of_rows_still_missing(sessi
     assert len(await _pending_jobs(session)) == 2
 
 
+async def test_the_enqueued_payload_carries_the_items_rating_key(session):
+    """Bamse-class regression: the resolver tries ``rating_key`` before any
+    agent-crosswalk (``getGuid``) lookup, but only if discovery puts one in
+    the payload. Without it, an item whose guids the crosswalk cannot
+    resolve -- even guids read straight off the item itself -- stays
+    unresolvable forever. See test_plex.py for the resolution-side pin.
+    """
+    items = [FakeItem("40", "Bamse", ["tmdb://55645", "tvdb://358385"])]
+    count = await enqueue_unknown_items(session, items, "show")
+
+    assert count == 1
+    jobs = await _pending_jobs(session)
+    assert jobs[0].payload["rating_key"] == "40"
+
+
 async def test_an_empty_section_enqueues_nothing(session):
     count = await enqueue_unknown_items(session, [], "movie")
 

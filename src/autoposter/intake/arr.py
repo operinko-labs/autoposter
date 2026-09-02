@@ -29,9 +29,10 @@ class RenderIntent:
     """One item whose artwork may need rebuilding.
 
     ``rating_key`` is the item's Plex identity, and is set only by the paths
-    that build an intent from a ``media_items`` row we already resolved once
-    (the full pass and reprocess in ``api/routes.py``). The webhook paths below
-    leave it None: Sonarr and Radarr know nothing about Plex.
+    that already know it: the full pass and reprocess in ``api/routes.py``
+    (from a ``media_items`` row we already resolved once), and discovery in
+    ``arr/sync.py`` (from the Plex item it just listed). The webhook paths
+    below leave it None: Sonarr and Radarr know nothing about Plex.
     """
 
     kind: str  # movie | show | season | episode

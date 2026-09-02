@@ -367,6 +367,7 @@ async def enqueue_unknown_items(
             tvdb_id=as_int(guids.get("tvdb")),
             imdb_id=guids.get("imdb"),
             year=getattr(item, "year", None),
+            rating_key=str(item.ratingKey),
         )
         job_id = await enqueue(
             session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key,
