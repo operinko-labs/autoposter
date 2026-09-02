@@ -1486,11 +1486,14 @@ async def process_item(
             )
 
     results = []
-    # Plain strings, not the ORM rows themselves: each iteration's commit
-    # below expires every object the session is tracking (SQLAlchemy's
-    # default), so a LATER iteration's commit would leave an EARLIER
-    # iteration's `render` a lazy load away from its own `.detail` -- safe
-    # only inside an awaited call, which the aggregate message below is not.
+    # Plain strings, not the ORM rows themselves: the refusal handler's
+    # `rollback()` below expires every object the session is tracking
+    # (SQLAlchemy's `dirty_only=False` default, independent of
+    # `expire_on_commit` -- which this app sets False, so an ordinary commit
+    # expires nothing here). So a LATER iteration's refusal would leave an
+    # EARLIER iteration's `render` a lazy load away from its own `.detail` --
+    # safe only inside an awaited call, which the aggregate message below is
+    # not.
     refused: list[tuple[str, str]] = []
     for art_kind in ART_KINDS_FOR[intent.kind]:
         try:
@@ -1540,6 +1543,18 @@ async def process_item(
     if config.badges.enabled:
         fetch_item = plex.fetch_item  # outside the try; see the block above
         try:
+            if refused:
+                # A refusal's rollback() above (see the comment on `results`)
+                # expired every `Render` already sitting in `results`, not
+                # just the refused kind's own row. Left alone, the loop
+                # below's first read of an earlier survivor's `.art_kind` is
+                # a plain attribute access outside an awaited call -- a
+                # MissingGreenlet under asyncio -- which this block's own
+                # `except` swallows, silently costing the WHOLE item its
+                # badges rather than just the refused kind's. Refresh every
+                # survivor before touching any of them.
+                for render in results:
+                    await session.refresh(render)
             if media_item is None:
                 media_item = await _upsert_media_item(session, item)
             if plex_item is None:

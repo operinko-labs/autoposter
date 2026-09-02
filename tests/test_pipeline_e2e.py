@@ -289,6 +289,49 @@ async def test_a_refused_kind_does_not_abort_its_sibling(config, session):
     assert background.quality_scored_at is not None
 
 
+async def test_a_non_first_kind_refusing_still_badges_the_earlier_kind(config, session):
+    """The discriminating test roadmap review flags as M2: SQLAlchemy's
+    `rollback()` expires the ENTIRE identity map (`dirty_only=False`,
+    independent of `expire_on_commit`, which this app sets False) -- not just
+    the just-refused kind's own row. Refusing a NON-FIRST kind (poster
+    renders fine, background refuses) used to leave the poster's own
+    `Render` object -- already committed and sitting in `results` -- expired
+    when the badge loop later read `render.art_kind`, a plain attribute
+    access outside greenlet context: a MissingGreenlet, silently swallowed by
+    the badge stage's own `except Exception`. The whole item would silently
+    lose its badge upkeep, on every pass, because the refusal is
+    deterministic. `test_a_refused_kind_does_not_abort_its_sibling` above
+    refuses the FIRST kind (poster), where `results` is still empty at the
+    rollback -- it cannot reach this."""
+    good = GOLDEN / "source_textless.jpg"
+
+    async def handler(request):
+        if "background" in str(request.url):
+            return httpx.Response(200, content=b"not an image")
+        return httpx.Response(200, content=good.read_bytes())
+
+    item = _movie_item("77777", title="Corrupt Background")
+    provider = KindAwareProvider({
+        "poster": "https://image.tmdb.org/t/p/original/poster3.jpg",
+        "background": "https://image.tmdb.org/t/p/original/background3.jpg",
+    })
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        renders = await process_item(
+            session, config, http, FakePlex(item), [provider],
+            RenderIntent(kind="movie", title="Corrupt Background", tmdb_id=3),
+        )
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    background = next(r for r in renders if r.art_kind == "background")
+    assert poster.status == "rendered"
+    assert background.status == "failed"
+    # The example config badges (but does not upload); asserting no exception
+    # proves nothing, since the badge stage swallows its own failures -- this
+    # asserts the stage actually ran for the poster rather than dying on a
+    # MissingGreenlet before it got there.
+    assert poster.badge_fingerprint is not None
+
+
 async def test_every_kind_refusing_still_fails_the_job(config, session):
     """If NO kind produced anything, the job must still fail so the operator
     sees it on Failures -- the one place per-kind containment must not go all

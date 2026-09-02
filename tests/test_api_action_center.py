@@ -653,6 +653,64 @@ async def test_a_pending_jobs_item_is_not_counted_as_blocked(client, auth_header
     assert body["total"] == 1
 
 
+async def test_a_pending_job_newer_than_a_stale_parked_one_counts_as_queued_not_blocked(
+    client, auth_headers, session
+):
+    """Roadmap: the unscorable-floor investigation's M3. `uq_jobs_pending_dedupe`
+    only forbids two live pending/deferred rows for the same key -- it does
+    NOT forbid a stale `parked` row sitting alongside a fresher `pending` one,
+    which is exactly what a press against a previously-parked item produces.
+    `blocked`'s old "has ANY parked job" reading counted this row as blocked
+    AND `_queued_for_scoring` counted it as queued at the same time, so
+    `unscored_total` (which subtracts `blocked`) could read smaller than
+    `queued_for_scoring` -- ActionCenter.tsx's "N of M unscored asset(s)
+    queued for scoring" printing N > M. The fix reads the item's MOST RECENT
+    job: pending outranks the older parked row, so this is ordinary in-flight
+    work, not something only an operator can unstick."""
+    item, _ = await _seed(session, rating_key="1", status="rendered", quality_scored_at=None)
+    intent = RenderIntent(kind=item.kind, title=item.title)
+    session.add(Job(kind="process_item", dedupe_key=intent.dedupe_key, state="parked"))
+    await session.commit()
+    session.add(Job(kind="process_item", dedupe_key=intent.dedupe_key, state="pending"))
+    await session.commit()
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["blocked"] == 0
+    assert body["queued_for_scoring"] == 1
+    assert body["unscored_total"] == 1
+    # The invariant `blocked`'s old semantics could break: what is reported
+    # as queued must never exceed what is reported as left to score.
+    assert body["queued_for_scoring"] <= body["unscored_total"]
+
+
+async def test_a_parked_blocked_item_is_not_reselected_by_a_press(
+    client, auth_headers, session
+):
+    """§6.3's third bullet: excluding currently-parked items from selection.
+    Before this fix, `_select_backfill_batch` excluded only `pending`/
+    `deferred` jobs, so pressing the button re-selected a row an operator has
+    not yet acted on -- silently resetting a failure that is sitting on
+    Failures waiting for them. The row's own fingerprint must survive the
+    press untouched, exactly like the ordinary already-scored case."""
+    item, render = await _seed(
+        session, rating_key="1", status="rendered", quality_scored_at=None,
+        fingerprint="deadbeef" * 8,
+    )
+    intent = RenderIntent(kind=item.kind, title=item.title)
+    session.add(Job(kind="process_item", dedupe_key=intent.dedupe_key, state="parked"))
+    await session.commit()
+
+    body = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["selected"] == 0
+    assert body["enqueued"] == 0
+    render_id = render.id  # read before expire_all -- see test_api_actions.py's precedent
+    session.expire_all()
+    reread = (await session.execute(select(Render).where(Render.id == render_id))).scalar_one()
+    assert reread.fingerprint == "deadbeef" * 8
+
+
 async def test_the_backfill_status_reports_how_many_unscored_assets_are_already_queued(
     client, auth_headers, session
 ):
