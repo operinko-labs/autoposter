@@ -110,15 +110,26 @@ def test_back_line_width_defaults_to_one_only_when_a_line_colour_is_set():
 
 
 def test_back_radius_defaults_to_kometas_zero_not_our_thirty():
-    """Probe section 1.1 gives the attribute default as 0. The 30 every badge
-    uses comes from Kometa's own templates.yml (probe section 5.5), which is a
-    defaults-FILE choice, not the attribute's default."""
+    """Probe section 1.1 cites back_radius's type (int, overlay.py:200) but
+    states no attribute default; 0 is this schema's own choice, distinct from
+    the 30 every badge uses, which comes from Kometa's own templates.yml
+    (probe section 5.5) -- a defaults-FILE choice, not the attribute's own
+    default."""
     assert _d().back_radius == 0
 
 
 def test_back_align_defaults_to_center():
     """Probe section 1.1, backdrop."""
     assert _d().back_align == "center"
+
+
+def test_back_align_requires_back_width_to_be_set():
+    """Probe section 1.1: back_align is only legal when back_width is also
+    set (overlay.py:210-211). Explicitly writing back_align without
+    back_width is refused; supplying both is fine."""
+    with pytest.raises(ValidationError):
+        _d(back_align="left")
+    assert _d(back_align="left", back_width=305).back_align == "left"
 
 
 def test_has_back_is_derived_from_the_two_colours():
@@ -156,7 +167,10 @@ def test_colours_resolve_to_rgba_and_an_invalid_one_is_refused():
 
 
 def test_font_defaults_match_kometas_attribute_defaults():
-    """Probe section 1.1, text-only: font_size 36, stroke_width 0."""
+    """Probe section 1.1, text-only: font_size defaults to 36 (the class
+    default at overlay.py:145), stroke_width to 0 (overlay.py:148). The probe
+    states no font_color default -- #FFFFFF here is this schema's own choice,
+    not a banked value."""
     d = _d()
     assert d.font_size == 36
     assert d.stroke_width == 0
@@ -189,7 +203,9 @@ def test_the_deferred_special_names_are_refused_not_silently_accepted():
 
 
 def test_the_deferred_queue_attribute_is_refused_by_name():
-    """Facts C1.5: the queue is filed forward, not built. An operator who
-    writes `queue:` must be told so, not have it dropped."""
-    with pytest.raises(ValidationError):
+    """Probe section 1.1, identity: `queue` is banked and deliberately not
+    built this phase. `extra=\"forbid\"` alone would raise a generic
+    "Extra inputs are not permitted" error that says nothing about deferral;
+    the message must say so, matching the deferred-name-form refusals above."""
+    with pytest.raises(ValidationError, match="roadmap row 97"):
         OverlayDefinition(name="example", queue="custom_queue_name")

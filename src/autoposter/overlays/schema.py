@@ -60,6 +60,10 @@ class OverlayDefinition(BaseModel):
         default_factory=list,
         description="Names of other overlays dropped from any item this overlay also matches.",
     )
+    queue: str | None = Field(
+        default=None,
+        description="Not supported by this service; see roadmap row 97. Present only so writing it is refused with a real message instead of a generic extra-inputs error.",
+    )
 
     horizontal_offset: int | str | None = Field(
         default=None,
@@ -133,6 +137,12 @@ class OverlayDefinition(BaseModel):
         description="An http or https address this overlay's PNG is downloaded from and cached by URL.",
     )
 
+    # Kometa itself has no `text` attribute (probe section 2.1): the literal
+    # lives in the overlay's `name`, as `text(LITERAL)`, and
+    # `variables.literal_of` parses it out of `name`. This field is this
+    # schema's own addition and is not yet reconciled against that form --
+    # both are currently accepted with no validator relating them. T2, which
+    # builds the text renderer, must pick one as authoritative.
     text: str | None = Field(
         default=None,
         description="The literal this overlay draws, in which <<variable>> tokens are replaced by the item's own values.",
@@ -194,6 +204,15 @@ class OverlayDefinition(BaseModel):
                 "see roadmap row 97"
             )
 
+        # Probe section 1.1: queue is banked and deliberately not built this
+        # phase -- refused with a real message rather than the generic
+        # extra-inputs error `extra="forbid"` alone would give an unlisted key.
+        if self.queue is not None:
+            raise ValueError(
+                "the 'queue' attribute is not supported by this service; "
+                "see roadmap row 97"
+            )
+
         if self.group and self.weight is None:
             raise ValueError("an overlay with a 'group' must also have a 'weight'")
 
@@ -228,6 +247,13 @@ class OverlayDefinition(BaseModel):
         # is set and no width was given.
         if self.back_line_color and self.back_line_width is None:
             object.__setattr__(self, "back_line_width", 1)
+
+        # Probe section 1.1: back_align is only legal when back_width is also
+        # set. Both fields have non-None defaults, so "set" is judged by
+        # `model_fields_set` (was the key actually written) rather than by
+        # comparing against a sentinel value.
+        if "back_align" in self.model_fields_set and "back_width" not in self.model_fields_set:
+            raise ValueError("'back_align' requires 'back_width' to also be set")
 
         named = [f for f in ("file", "builtin", "url") if getattr(self, f)]
         if len(named) > 1:

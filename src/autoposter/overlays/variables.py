@@ -16,7 +16,12 @@ from collections.abc import Mapping
 
 from num2words import num2words
 
-# Probe section 2.2: 27 names, one per external rating API Kometa integrates.
+# Probe section 2.2 banks the COUNT (27) and the two endpoints
+# (anidb_average_rating, trakt_user_rating) but does not enumerate the list.
+# This 27-name tuple is PROVISIONALLY RECONSTRUCTED, not banked -- pending a
+# re-probe of modules/overlay.py:19-49 at the pinned tag (see F-2 in
+# .superpowers/sdd/2026-09-03-overlay-engine/task-1-review.md) before row 100
+# depends on any name here beyond the two the probe actually cites.
 RATING_SOURCES = (
     "anidb_average_rating", "anidb_rating", "anidb_score",
     "imdb_rating", "letterboxd_rating",
@@ -157,11 +162,15 @@ def format_value(var: str, mod: str, value: object) -> str:
             # and badges/values.py records that production truncates.
             return str(int(number * 10))
         if mod == "#":
-            text = f"{number:g}"
+            text = str(number)
             return text[:-2] if text.endswith(".0") else text
         if mod == "/":
             return f"{number / 2:.1f}"
-        return f"{number:g}"
+        # Bare: the float's own repr, trailing .0 and all -- `#` is the one
+        # that strips it. `f"{number:g}"` would strip it here too, making the
+        # two modifiers indistinguishable (probe section 2.3's float row: the
+        # bare form is "/10 as given", `#` is "/10 minus trailing .0").
+        return str(number)
     if var in INT_VARS or var == "bitrate":
         number = int(value)
         if mod == "W":

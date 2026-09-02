@@ -66,8 +66,14 @@ def test_the_date_bracket_form_is_its_own_token():
         ("runtime", "M", 80, "20"),
         ("total_runtime", "H", 80, "1"),
         # Probe section 2.3, float row: /10 as given, x10 as int, /10 without a
-        # trailing .0, /2 to one decimal.
+        # trailing .0, /2 to one decimal. The bare form keeps the float's own
+        # repr (including a trailing .0); only `#` strips it -- this repo's own
+        # EPISODE oracle fixture (test_badge_parity.py) carries
+        # audience_rating=10.0, so the two rows below pin the exact case a T2
+        # text overlay would hit.
         ("audience_rating", "", 6.3, "6.3"),
+        ("audience_rating", "", 8.0, "8.0"),
+        ("audience_rating", "", 10.0, "10.0"),
         ("audience_rating", "%", 6.3, "63"),
         ("audience_rating", "#", 8.0, "8"),
         ("audience_rating", "#", 8.6, "8.6"),
