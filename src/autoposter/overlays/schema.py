@@ -10,14 +10,14 @@ banks and this phase deliberately does not build are listed in the plan's
 accepted-and-ignored: an operator who writes `queue:` has to be told it does
 nothing, because a silently dropped attribute looks exactly like a working one.
 """
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-# Probe section 1.1, special overlay-name forms. Both are banked, neither is
-# built this phase.
-DEFERRED_NAMES = ("backdrop",)
-DEFERRED_NAME_PREFIXES = ("blur",)
+# Probe section 1.1: `blur(NN)` requires 0 < NN <= 100, parsed from the name
+# itself, not a separate field (roadmap row 50).
+_BLUR_FORM = re.compile(r"^blur\((\d+)\)$")
 
 _COLOR_FIELDS = ("back_color", "back_line_color", "font_color", "stroke_color")
 
@@ -193,6 +193,18 @@ class OverlayDefinition(BaseModel):
         """
         return bool(self.back_color or self.back_line_color)
 
+    @property
+    def blur_amount(self) -> int | None:
+        """The NN in a `blur(NN)` overlay name, or None for any other name.
+
+        Roadmap row 50. Re-derived from `name` on every access rather than
+        cached at construction: `_validate` already proved a `blur`-prefixed
+        name parses, so this cannot diverge from what passed validation, and
+        a second stored copy is exactly what would drift.
+        """
+        match = _BLUR_FORM.match(self.name)
+        return int(match.group(1)) if match else None
+
     def rgba(self, field: str) -> tuple[int, int, int, int] | None:
         """One colour field as RGBA, or None when it was not set."""
         value = getattr(self, field)
@@ -205,12 +217,42 @@ class OverlayDefinition(BaseModel):
             raise ValueError("an overlay must have a non-blank 'name'")
         if "|" in name:
             raise ValueError("'|' is a reserved separator and cannot appear in an overlay name")
-        # Probe section 1.1, special name forms. Deferred, so refused loudly.
-        if name in DEFERRED_NAMES or name.startswith(DEFERRED_NAME_PREFIXES):
-            raise ValueError(
-                f"the {name!r} overlay form is not supported by this service; "
-                "see roadmap row 97"
-            )
+        # Every consumer (blur_amount's regex, render.py's `== "backdrop"`
+        # check) reads `self.name` raw, not this validator's local stripped
+        # copy -- so a padded `"blur(30) "` validated as a blur and then
+        # silently did nothing. One canonical form: the stored name IS the
+        # stripped name, same idiom as `back_line_width`'s default below.
+        object.__setattr__(self, "name", name)
+        # Probe section 1.1: `blur(NN)` requires 0 < NN <= 100. Kometa's own
+        # parser SILENTLY substitutes blur(50) on any parse failure rather
+        # than raising (overlay.py:223-231) -- the one attribute-parse path
+        # in the whole class that degrades instead of failing the run. This
+        # schema diverges on purpose: every other validator here refuses
+        # rather than accepts-and-ignores (this module's own docstring), and
+        # a typo silently changing blur strength from "faint" to "50" is
+        # exactly the silent-wrong-art class this project refuses to ship
+        # (roadmap row 50).
+        if name.startswith("blur"):
+            match = _BLUR_FORM.match(name)
+            if match is None or not (0 < int(match.group(1)) <= 100):
+                raise ValueError(
+                    f"{name!r} is not a valid blur(NN) overlay name; NN must "
+                    "satisfy 0 < NN <= 100"
+                )
+            # Probe section 1.1 (image source note, banked further in section
+            # 1.2): Kometa skips image-source resolution entirely for names
+            # starting with `blur` -- a blur(NN) definition never carries an
+            # image or backdrop of its own there, by construction. This
+            # schema enforces the same premise `badges/compose.py`'s draw-loop
+            # skip relies on, rather than accepting the attributes and
+            # dropping them silently.
+            if self.file or self.builtin or self.url or self.has_back:
+                raise ValueError(
+                    f"{name!r} is a blur overlay and draws nothing of its "
+                    "own; it cannot also carry an image source (file/"
+                    "builtin/url) or a backdrop colour (back_color/"
+                    "back_line_color)"
+                )
 
         # Probe section 1.1: queue is banked and deliberately not built this
         # phase -- refused with a real message rather than the generic
@@ -256,8 +298,12 @@ class OverlayDefinition(BaseModel):
                 except ValueError as exc:
                     raise ValueError(f"{field} {value!r} is not a valid colour") from exc
 
-        # Probe section 1.1: a backdrop with no coordinates is refused.
-        if self.has_back and self.horizontal_offset is None:
+        # Probe section 1.1: a backdrop with no coordinates is refused --
+        # except for the special "backdrop" name itself, whose offsets
+        # default to 0 rather than being required (overlay.py:325-330,
+        # roadmap row 50): its whole point is a FULL-CANVAS layer, which
+        # needs no position at all.
+        if self.has_back and self.horizontal_offset is None and name != "backdrop":
             raise ValueError(
                 "an overlay with a backdrop must also have coordinates"
             )

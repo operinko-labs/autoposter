@@ -32,7 +32,8 @@ def _content_size(
 
     Probe section 3.5: an un-set back_width/back_height shrinks to fit the
     overlay's own content. (The other arm of that sentinel -- stretching to
-    the canvas -- belongs to the `backdrop` name, which the schema refuses.)
+    the canvas -- belongs to the `backdrop` name, handled in `draw_overlay`
+    below, roadmap row 50.)
     """
     width = height = 0
     if image is not None:
@@ -113,8 +114,16 @@ def draw_overlay(
         image = _scaled(definition, image)
 
     content = _content_size(layer, definition, image, text, font)
-    box_width = definition.back_width if definition.back_width != -1 else content[0]
-    box_height = definition.back_height if definition.back_height != -1 else content[1]
+    if definition.name == "backdrop":
+        # Probe section 3.5's other arm: for the special "backdrop" name, an
+        # unset back_width/back_height stretches to the FULL CANVAS rather
+        # than shrinking to content (overlay.py:449-452) -- every other
+        # overlay uses the content-sized arm below.
+        box_width = definition.back_width if definition.back_width != -1 else canvas[0]
+        box_height = definition.back_height if definition.back_height != -1 else canvas[1]
+    else:
+        box_width = definition.back_width if definition.back_width != -1 else content[0]
+        box_height = definition.back_height if definition.back_height != -1 else content[1]
 
     box = backdrop_box(
         canvas, (box_width, box_height),

@@ -251,6 +251,59 @@ def test_removing_a_definition_reverts_the_fingerprint():
     assert reverted != with_one
 
 
+def test_blur_takes_the_maximum_across_every_matched_definition():
+    """The per-item pre-pass semantics (p-overlay-b-recon.md, a fresh fetch
+    of modules/overlays.py::run_overlays): max NN across every blur(NN)
+    match, not sum, not last-wins, not first-wins."""
+    low_only = _sha(compose(BASE, "poster", ALL_SOULS, definitions=[
+        OverlayDefinition(name="blur(10)"),
+    ]))
+    both = _sha(compose(BASE, "poster", ALL_SOULS, definitions=[
+        OverlayDefinition(name="blur(10)"), OverlayDefinition(name="blur(80)"),
+    ]))
+    high_only = _sha(compose(BASE, "poster", ALL_SOULS, definitions=[
+        OverlayDefinition(name="blur(80)"),
+    ]))
+    assert both != low_only, "the higher blur must win, not the first-listed one"
+    assert both == high_only, "two matches at (10, 80) must equal a single 80 alone"
+
+
+def test_blur_suppression_is_resolved_before_the_max_scan():
+    """Probe/recon: compile_overlays (suppress+group) runs before the
+    per-item blur scan -- a suppressed blur(NN) must not count toward the
+    max. Inherited from _resolve_definitions rather than new code; proven
+    falsifiable by deliberate mutation in this task's own report, not by a
+    RED-before-GREEN cycle."""
+    suppressor = OverlayDefinition(name="blur(10)", suppress_overlays=["blur(80)"])
+    suppressed = OverlayDefinition(name="blur(80)")
+    together = _sha(compose(BASE, "poster", ALL_SOULS, definitions=[suppressor, suppressed]))
+    low_only = _sha(compose(BASE, "poster", ALL_SOULS, definitions=[
+        OverlayDefinition(name="blur(10)"),
+    ]))
+    assert together == low_only, "the suppressed blur(80) must not raise the max to 80"
+
+
+async def test_apply_badges_draws_a_blur_definition_through_the_real_entry_point(
+    session, config_with_badges
+):
+    """The entry-point law (Global Constraint 7): the blur pre-pass is a NEW
+    top-level mechanism in compose(), not an extension of an existing
+    per-definition draw call -- it needs its own proof through the real
+    apply_badges, the same lesson Phase A's own review drew about
+    definitions never reaching compose() through anything but a direct
+    call."""
+    config_with_badges.badges.definitions = []
+    item, render = await _render(session, rating_key="blur-entrypoint-item")
+    plex_item = _FakePlexItem()
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    baseline_bytes = plex_item.last_bytes
+
+    config_with_badges.badges.definitions = [OverlayDefinition(name="blur(30)")]
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2
+    assert _sha(plex_item.last_bytes) != _sha(baseline_bytes), "the blur must actually be applied"
+
+
 # --- the real entry point: render.pipeline.apply_badges, not compose() ------
 #
 # Finding 2 (GC8): every proof above calls compose() directly. Nothing
@@ -378,6 +431,26 @@ async def test_a_definition_whose_image_fails_to_resolve_does_not_stamp_an_empty
     await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
 
     assert _sha(plex_item.last_bytes) == _sha(baseline_plex.last_bytes)
+
+
+async def test_apply_badges_draws_a_backdrop_definition_through_the_real_entry_point(
+    session, config_with_badges
+):
+    """The entry-point law (Global Constraint 7): the backdrop sentinel's
+    full-canvas arm is exercised through the real apply_badges, not just
+    draw_overlay in isolation."""
+    config_with_badges.badges.definitions = []
+    item, render = await _render(session, rating_key="backdrop-entrypoint-item")
+    plex_item = _FakePlexItem()
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    baseline_bytes = plex_item.last_bytes
+
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(name="backdrop", back_color="#00000099"),
+    ]
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2
+    assert _sha(plex_item.last_bytes) != _sha(baseline_bytes), "the full-canvas backdrop must actually be drawn"
 
 
 async def test_apply_badges_threads_http_through_to_a_url_sourced_definition(
