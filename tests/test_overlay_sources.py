@@ -60,6 +60,18 @@ async def test_a_file_source_cannot_escape_overlays_root(overlays_root):
         )
 
 
+async def test_a_file_source_naming_the_root_itself_is_refused(overlays_root):
+    """`_confined`'s only earlier escape hatch was `candidate != root`, so
+    `file: "."` (or any directory under the root) passed containment and
+    `.exists()`, returning a directory that `_load` then failed on deep
+    inside the compose thread instead of a clean refusal here."""
+    with pytest.raises(OverlaySourceError):
+        await resolve_image_path(
+            OverlayDefinition(name="o", file="."),
+            overlays_root=overlays_root, http=None, max_bytes=1000,
+        )
+
+
 async def test_a_builtin_source_resolves_against_the_bundled_tree(overlays_root):
     """Probe section 6: this tree is Kometa's own defaults/overlays/images/,
     NOT the Default-Images repo. `.png` is appended when missing (probe
@@ -210,3 +222,35 @@ async def test_a_downloaded_image_that_fails_to_decode_is_refused(overlays_root,
     assert not (overlays_root / ".cache").exists() or not list(
         (overlays_root / ".cache").iterdir()
     ), "a failed decode must not leave a corrupt file cached under its URL hash"
+
+
+async def test_a_transport_failure_leaves_no_partial_file_and_is_not_fatal_to_the_stage(
+    overlays_root, monkeypatch
+):
+    """MEDIUM 3: `guarded_download` does not wrap transport errors --
+    `http.stream(...)` raising `httpx.ConnectError` mid-request propagates
+    raw. `_download` short-circuits on `destination.exists()` *before* any
+    validation, so a partial file left at the permanent cache path would be
+    a permanent poisoned cache entry for every later run. It also has to
+    surface as `OverlaySourceError`: `apply_badges`'s per-definition loop
+    only catches that class, and an untranslated transport exception would
+    fail the whole badge stage for every item over one definition's flaky
+    CDN.
+    """
+    monkeypatch.setattr(
+        "autoposter.net.guard.resolve_host", lambda h, p: ["93.184.216.34"]
+    )
+
+    def handler(request):
+        raise httpx.ConnectError("connection refused")
+
+    definition = OverlayDefinition(name="o", url="https://example.com/flaky.png")
+    async with _client(handler) as http:
+        with pytest.raises(OverlaySourceError):
+            await resolve_image_path(
+                definition, overlays_root=overlays_root, http=http, max_bytes=1000
+            )
+    cache = overlays_root / ".cache"
+    assert not cache.exists() or not list(cache.iterdir()), (
+        "a transport failure must not leave a temp or partial file behind"
+    )

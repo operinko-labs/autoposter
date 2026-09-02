@@ -1326,7 +1326,8 @@ async def apply_badges(
     # from the *base we rendered*, so the gate has to track what went into that
     # base -- see badge_fingerprint's docstring.
     fingerprint = badge_fingerprint(
-        render.fingerprint or "", render.art_kind, values, manifest_sha()
+        render.fingerprint or "", render.art_kind, values, manifest_sha(),
+        config.badges.definitions,
     )
     if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
         return
@@ -1343,6 +1344,7 @@ async def apply_badges(
 
     definitions = config.badges.definitions
     resolved_images: dict[str, Path] = {}
+    usable_definitions = []
     for definition in definitions:
         try:
             path = await resolve_image_path(
@@ -1353,7 +1355,9 @@ async def apply_badges(
             )
         except OverlaySourceError as exc:
             # Class name and a fixed sentence: the message may carry an
-            # operator-typed path.
+            # operator-typed path. "skipping it" means the definition itself
+            # -- it must not reach compose() at all, or a `back_color` alone
+            # stamps a visible empty backdrop where the image should be.
             logger.warning(
                 "overlay %r has no usable image (%s); skipping it",
                 definition.name, type(exc).__name__,
@@ -1361,16 +1365,24 @@ async def apply_badges(
             continue
         if path is not None:
             resolved_images[definition.name] = path
+        usable_definitions.append(definition)
 
     # Keyword, and only when there is something to say: `test_badge_pipeline.py`
     # substitutes `compose_badges` with a spy taking only the original four
     # parameters (`path, kind, inputs, fingerprint=None`), and that file is
     # out of scope for this task. Every fixture there configures no
     # definitions, so this keeps every one of those calls exactly as it was;
-    # a deployment that DOES configure definitions gets them threaded through.
+    # a deployment that DOES configure definitions gets them threaded
+    # through. The conditional itself is call-shape only, not a real
+    # behavioural fork -- `compose()` treats `None` and the argument's
+    # absence as the same thing (`definitions or []`, `resolved_images or
+    # {}`), so nothing downstream can tell an omitted keyword from an empty
+    # one. # T4: widen that spy's signature to `*args, **kwargs` (one lambda,
+    # one call site) and always pass both keywords, which deletes this
+    # branch.
     extra: dict = {}
-    if definitions:
-        extra["definitions"] = definitions
+    if usable_definitions:
+        extra["definitions"] = usable_definitions
     if resolved_images:
         extra["resolved_images"] = resolved_images
     data = await asyncio.to_thread(

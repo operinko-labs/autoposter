@@ -6,6 +6,7 @@ quality 90 with the overlay EXIF marker.
 """
 import hashlib
 import io
+import json
 import logging
 from functools import lru_cache
 from dataclasses import dataclass
@@ -104,8 +105,27 @@ def badge_values(art_kind: str, inputs: BadgeInputs) -> dict[str, str]:
     return result
 
 
+def _definitions_digest(definitions: list[OverlayDefinition]) -> str:
+    """A stable digest of the definitions list's own content.
+
+    ``model_dump(mode="json")`` plus ``sort_keys=True`` rather than
+    ``repr()``: a definition's field order is a class-declaration detail, not
+    part of what an operator configured, so the digest must not depend on it.
+    The list's own ORDER is kept significant, though, and definitions are
+    joined in the order given rather than sorted -- unlike each definition's
+    fields, list order changes which member of a group wins ties (draw
+    order), which is operator-visible.
+    """
+    parts = [json.dumps(d.model_dump(mode="json"), sort_keys=True) for d in definitions]
+    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
+
+
 def badge_fingerprint(
-    base_fingerprint: str, art_kind: str, values: dict[str, str], asset_manifest_sha: str
+    base_fingerprint: str,
+    art_kind: str,
+    values: dict[str, str],
+    asset_manifest_sha: str,
+    definitions: list[OverlayDefinition] | None = None,
 ) -> str:
     """Hash everything that affects the badged image.
 
@@ -117,9 +137,22 @@ def badge_fingerprint(
 
     Deliberately separate from the base ``fingerprint``: a rating changing must
     re-badge and re-upload without re-fetching or re-compositing the base.
+
+    ``definitions`` folds the operator's own overlays (roadmap row 97) into
+    the gate: an operator who adds, edits or removes one must re-badge every
+    already-uploaded item, or the change never reaches Plex. Hashed only when
+    the list is non-empty -- an empty or absent list leaves ``parts``
+    completely untouched, so the gate-off fingerprint for every item that
+    configures no overlays stays byte-identical to what this function
+    produced before ``definitions`` existed. This repo already paid for the
+    alternative once (the mass-ops additive-keys re-fingerprint that
+    invalidated ~18k rows in one run); the fix is the same one: don't
+    perturb the hash for the case that has nothing to say.
     """
     parts = [base_fingerprint, art_kind, asset_manifest_sha]
     parts += ["%s=%s" % (k, values[k]) for k in sorted(values)]
+    if definitions:
+        parts.append(_definitions_digest(definitions))
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 

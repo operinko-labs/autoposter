@@ -18,7 +18,11 @@ primitive, not a convenience.
 """
 import asyncio
 import hashlib
+import os
+import uuid
 from pathlib import Path
+
+import httpx
 
 from autoposter.net.guard import FetchRefused, guarded_download
 from autoposter.overlays.assets import IMAGES
@@ -28,12 +32,6 @@ from autoposter.overlays.schema import OverlayDefinition
 # downloaded overlay image and rejects anything else. Carried verbatim into
 # net/guard.py's allowlist parameter.
 OVERLAY_CONTENT_TYPES = frozenset({"image/png"})
-
-# render/pipeline.py::_validate_image's own ceiling (#131), duplicated rather
-# than imported: pipeline.py imports this module (Task 3 Step 12), so
-# importing back would be a cycle. See `_validate_downloaded_image` for why
-# the check itself is duplicated too.
-_MAX_PIXELS = 64_000_000
 
 
 class OverlaySourceError(Exception):
@@ -46,10 +44,17 @@ class OverlaySourceError(Exception):
 
 
 def _confined(root: Path, value: str, name: str) -> Path:
-    """A path beneath `root`, or a refusal."""
+    """A path strictly beneath `root`, or a refusal.
+
+    `root` itself is refused too, not just an escape from it: the only
+    earlier exception was `candidate != root`, so `file: "."` (or any
+    directory under the root) passed containment and `.exists()`, handing
+    back a directory that `_load` then failed on deep inside the compose
+    thread instead of a clean refusal here.
+    """
     candidate = (root / value).resolve()
     root = root.resolve()
-    if root not in candidate.parents and candidate != root:
+    if root not in candidate.parents:
         raise OverlaySourceError(
             f"overlay {name!r}: the configured path leaves its root directory"
         )
@@ -59,39 +64,28 @@ def _confined(root: Path, value: str, name: str) -> Path:
 def _validate_downloaded_image(path: Path, name: str) -> None:
     """Full-decode a downloaded overlay image before it is trusted.
 
-    render/pipeline.py::_validate_image added this same protection (#131) for
-    provider artwork after job 40478 -- a PNG whose header is valid and whose
-    IDAT stream contradicts it, which only a full pixel decode catches; a
-    Content-Type check (net/guard.py's allowlist, above) does not. The plan
-    predates #131 and its ladder steps did not carry this over; it is wired
-    in here because a corrupt overlay image never reaches magick at all --
-    badges/compose.py's `_load` hands it straight to Pillow -- so the same
+    Reuses render/pipeline.py's own `_validate_image` (#131) -- the same
+    protection added for provider artwork after job 40478 (a PNG whose header
+    is valid and whose IDAT stream contradicts it, which only a full pixel
+    decode catches) -- rather than keeping a second copy that can drift from
+    it. A corrupt overlay image never reaches magick at all
+    (`badges/compose.py`'s `_load` hands it straight to Pillow), so the same
     hole #131 closed for provider artwork is open here until this runs.
 
-    Lazy PIL import for the same reason `overlays/schema.py::_as_rgba` gives:
-    this module is on `render/pipeline.py`'s import path, which already pulls
-    Pillow at module scope, but paying for the import only when a url source
-    is actually downloaded keeps that a property of this function rather than
-    an assumption a future caller could break.
+    Call-time import, the same trick `overlays/schema.py::_as_rgba` uses for
+    Pillow: `render/pipeline.py` imports this module at its own top level
+    (Task 3 Step 12), so a module-level import back here would be the real
+    cycle. A call-time one is not -- by the time this function actually
+    runs both modules have already finished loading, which is the same
+    reasoning `api/candidates.py:47` already relies on to import
+    `_validate_image` from `render.pipeline` directly.
     """
-    from PIL import Image, UnidentifiedImageError
+    from autoposter.render.pipeline import SourceRefused, _validate_image
 
     try:
-        with Image.open(path) as image:
-            width, height = image.size
-            pixels = width * height
-            if pixels > _MAX_PIXELS:
-                raise OverlaySourceError(
-                    f"overlay {name!r}: downloaded image is {width}x{height} "
-                    f"({pixels}px), over the {_MAX_PIXELS}px ceiling"
-                )
-            image.load()
-    except (
-        UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError
-    ) as exc:
-        raise OverlaySourceError(
-            f"overlay {name!r}: downloaded image did not decode ({type(exc).__name__})"
-        ) from None
+        _validate_image(path, f"overlay {name!r}")
+    except SourceRefused as exc:
+        raise OverlaySourceError(str(exc)) from None
 
 
 async def resolve_image_path(
@@ -145,6 +139,16 @@ async def _download(
     IS the URL, so a changed URL is a new file and an unchanged one is never
     re-fetched. An operator who replaces the image behind a stable URL clears
     `<overlays_root>/.cache/`.
+
+    Downloaded to a uniquely-named temp file under `.cache/` and moved into
+    place with `os.replace` only once it has passed both the guard and the
+    decode below -- `os.replace` is atomic, so a concurrent worker resolving
+    the same URL (`workers: 5`) can never observe a partially written file at
+    the permanent cache path, which `destination.exists()` above treats as a
+    permanent hit. `except BaseException` mirrors
+    `render/pipeline.py::_download`'s own precedent for the same download
+    shape: a mid-stream `ConnectError`, a timeout or the task being
+    cancelled must not leave the temp file behind either.
     """
     cache = overlays_root / ".cache"
     cache.mkdir(parents=True, exist_ok=True)
@@ -153,23 +157,38 @@ async def _download(
     )
     if destination.exists():
         return destination
+    tmp = cache / f"{destination.name}.tmp-{uuid.uuid4().hex}"
     try:
-        await guarded_download(
-            http, definition.url, destination,
-            max_bytes=max_bytes, content_types=OVERLAY_CONTENT_TYPES,
-        )
-    except FetchRefused as exc:
-        destination.unlink(missing_ok=True)
-        raise OverlaySourceError(
-            f"overlay {definition.name!r}: image download refused ({exc})"
-        ) from exc
-    try:
+        try:
+            await guarded_download(
+                http, definition.url, tmp,
+                max_bytes=max_bytes, content_types=OVERLAY_CONTENT_TYPES,
+            )
+        except FetchRefused as exc:
+            raise OverlaySourceError(
+                f"overlay {definition.name!r}: image download refused ({exc})"
+            ) from exc
+        except httpx.HTTPError as exc:
+            # A transport failure -- a dead host, a timeout, a reset
+            # mid-stream -- is not `FetchRefused` (that class is guard.py's
+            # own deliberate refusals) and would otherwise escape this
+            # function as a bare httpx exception. `apply_badges`'s
+            # per-definition loop only catches `OverlaySourceError`, so an
+            # untranslated transport error would fail the whole badge stage
+            # for every item, over one definition's flaky CDN. Translated
+            # here, in the module that already holds the "never name the
+            # URL/host" rule this message follows.
+            raise OverlaySourceError(
+                f"overlay {definition.name!r}: image download failed "
+                f"({type(exc).__name__})"
+            ) from exc
         # render/pipeline.py's own decode (`_validate_image`) is dispatched
         # the same way, off the event loop: a full pixel decode is blocking
         # CPU work, and this coroutine has awaited callers (apply_badges's
         # per-definition loop) that must not stall on it.
-        await asyncio.to_thread(_validate_downloaded_image, destination, definition.name)
-    except OverlaySourceError:
-        destination.unlink(missing_ok=True)
+        await asyncio.to_thread(_validate_downloaded_image, tmp, definition.name)
+        os.replace(tmp, destination)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
         raise
     return destination
