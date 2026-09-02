@@ -6,6 +6,7 @@ from autoposter.config.loader import load_config
 from autoposter.render.compositor import (
     BACKGROUND_SIZE,
     POSTER_SIZE,
+    STAMP_MAX_GEOMETRY,
     build_base_argv,
     build_logo_argv,
     build_stamp_argv,
@@ -25,11 +26,34 @@ def test_canvas_sizes_are_fixed():
     assert BACKGROUND_SIZE == "3840x2160"
 
 
-def test_stamp_writes_the_posterizarr_comment():
+def test_stamp_writes_the_posterizarr_comment_and_bounds_the_source():
     argv = build_stamp_argv("magick", "/tmp/x.jpg")
     assert argv == [
-        "magick", "/tmp/x.jpg", "-set", "comment", "created with posterizarr", "/tmp/x.jpg"
+        "magick", "/tmp/x.jpg",
+        "-resize", "3840x3000>",
+        "-set", "comment", "created with posterizarr",
+        "/tmp/x.jpg",
     ]
+
+
+def test_the_stamp_bound_contains_every_canvas():
+    """The bound is only safe because no canvas is outside it.
+
+    A canvas taller or wider than ``STAMP_MAX_GEOMETRY`` would mean the stamp
+    shrinking a source the very next step needs at full size, so this is
+    asserted against the canvas constants rather than trusted to a comment.
+    """
+    limit_w, limit_h = (int(n) for n in STAMP_MAX_GEOMETRY.split("x"))
+    for canvas in (POSTER_SIZE, BACKGROUND_SIZE):
+        width, height = (int(n) for n in canvas.split("x"))
+        assert width <= limit_w
+        assert height <= limit_h
+
+
+def test_the_stamp_bound_only_shrinks():
+    """``>`` is what keeps a normal-sized source byte-identical."""
+    argv = build_stamp_argv("magick", "/tmp/x.jpg")
+    assert argv[argv.index("-resize") + 1].endswith(">")
 
 
 def test_base_argv_cover_fits_then_composites_the_overlay():

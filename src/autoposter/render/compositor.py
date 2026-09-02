@@ -6,14 +6,42 @@ from autoposter.render.textfit import escape_caption_text
 POSTER_SIZE = "2000x3000"
 BACKGROUND_SIZE = "3840x2160"
 
+# The smallest box containing every canvas above (widest width x tallest
+# height). The stamp is the FIRST magick call on a freshly downloaded source
+# and, until this bound existed, decoded and re-encoded it at whatever
+# resolution the provider served -- at Q16-HDRI's 16 bytes per RGBA pixel, held
+# twice, a 10000x10000 source is 3.2 GB in one process, and the pipeline runs
+# five of them concurrently. That is the demand side of the production OOM
+# (.superpowers/sdd/p-oom-investigation.md).
+#
+# Enforced with ImageMagick's ``>`` flag -- "resize only if larger than this" --
+# so a source already inside the box is not resized at all and the stamp writes
+# byte-identical output to what it wrote before the bound existed. That is what
+# keeps tests/test_golden.py's byte-exact production parity true.
+#
+# Sources above the box lose resolution the later cover-fit could in principle
+# have cropped from (an aspect-mismatched giant is scaled to fit rather than to
+# cover), which is deliberate: that is precisely the shape this bounds.
+STAMP_MAX_GEOMETRY = "3840x3000"
+
 # Provenance marker. Posterizarr writes this exact string and later greps for it
 # to decide whether artwork has already been processed. Keep it byte-identical.
 PROVENANCE_COMMENT = "created with posterizarr"
 
 
 def build_stamp_argv(magick: str, image: str) -> list[str]:
-    """Stamp the provenance comment. Always the first operation on an asset."""
-    return [magick, image, "-set", "comment", PROVENANCE_COMMENT, image]
+    """Stamp the provenance comment. Always the first operation on an asset.
+
+    Also the point at which the source's resolution is bounded -- see
+    ``STAMP_MAX_GEOMETRY``. This diverges from the captured Posterizarr command
+    on purpose; ``tests/test_production_parity.py`` pins the divergence.
+    """
+    return [
+        magick, image,
+        "-resize", f"{STAMP_MAX_GEOMETRY}>",
+        "-set", "comment", PROVENANCE_COMMENT,
+        image,
+    ]
 
 
 def build_base_argv(

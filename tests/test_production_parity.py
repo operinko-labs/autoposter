@@ -57,9 +57,27 @@ def config():
     return load_config(EXAMPLE)
 
 
-def test_provenance_stamp_matches_production(config):
+def test_provenance_stamp_matches_production_plus_the_resolution_bound(config):
+    """The captured command, plus one deliberate addition.
+
+    Posterizarr's own stamp is ``magick <img> -set comment <c> <img>`` and
+    nothing else, which is what this pinned until the production OOM
+    (``.superpowers/sdd/p-oom-investigation.md``): the stamp is the first
+    magick call on a freshly downloaded source and decoded it at whatever
+    resolution the provider served, at 16 bytes per pixel under Q16-HDRI,
+    across five concurrent workers.
+
+    ``-resize 3840x3000>`` is therefore a knowing divergence rather than a
+    drift. The ``>`` makes it a no-op for every source already inside the box
+    -- which is every real poster and backdrop, and the golden fixture -- so
+    ``tests/test_golden.py``'s byte-exact parity against the production asset
+    still holds. Only a source larger than any canvas is touched at all.
+    """
     assert compositor.build_stamp_argv(config.magick_binary, TC_IMAGE) == [
-        "magick", TC_IMAGE, "-set", "comment", "created with posterizarr", TC_IMAGE,
+        "magick", TC_IMAGE,
+        "-resize", "3840x3000>",
+        "-set", "comment", "created with posterizarr",
+        TC_IMAGE,
     ]
 
 
