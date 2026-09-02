@@ -759,6 +759,32 @@ async def test_a_malformed_claimed_url_is_422_not_500(
     assert "[" not in response.text
 
 
+async def test_a_poison_shape_logo_is_refused_not_written_through(
+    client, auth_headers, session, manual_root, transport
+):
+    """The picked-logo path's own guard, not the transcode's.
+
+    A picked logo is written through untouched (no ``_prepare_jpeg`` decode),
+    so this endpoint's only defence against the 'Inside Out 2' poison shape --
+    a PNG whose header parses cleanly and whose IDAT stream contradicts it --
+    is ``_verify_image``. Pillow's ``Image.verify()`` is proven (by this same
+    branch's own fixture, ``tests/test_render_input_guard.py``) to pass this
+    exact shape; only a full decode via ``load()`` catches it. Refused here
+    means it never reaches ``logo.png`` on the manual mount, from which
+    ``_stage_override`` would hand it to the compositor untouched on the next
+    render.
+    """
+    from test_render_input_guard import corrupt_png
+
+    transport._response_for = _ok(corrupt_png())
+    item_id = await _item(session)
+
+    response = await _pick(client, item_id, "logo", auth_headers, url=OFFERED_LOGO_URL)
+
+    assert response.status_code == 502
+    assert list(manual_root.rglob("*")) == []
+
+
 async def test_a_truncated_jpeg_is_502_not_written_through(
     client, auth_headers, session, manual_root, transport
 ):

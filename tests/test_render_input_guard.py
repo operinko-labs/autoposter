@@ -24,7 +24,7 @@ of this existed.
 
 import hashlib
 import io
-import os
+import random
 import shutil
 import struct
 import subprocess
@@ -112,9 +112,13 @@ def corrupt_png() -> bytes:
     Noise pixels rather than a flat colour, so the IDAT stream is genuinely
     longer than the shrunken header claims -- a solid image compresses to a few
     hundred bytes and would decode into the smaller frame without complaint.
+
+    Seeded rather than ``os.urandom``, so a red run is byte-reproducible.
     """
     buffer = io.BytesIO()
-    noise = Image.frombytes("RGB", (256, 256), os.urandom(256 * 256 * 3))
+    noise = Image.frombytes(
+        "RGB", (256, 256), random.Random(0).randbytes(256 * 256 * 3)
+    )
     noise.save(buffer, format="PNG")
     healthy = bytearray(buffer.getvalue())
 
@@ -244,11 +248,12 @@ def test_the_corrupt_fixture_is_exactly_what_a_header_check_misses(tmp_path):
     a fixture ``magick`` composited happily would prove there was nothing to
     refuse. Both halves are pinned here, on a real binary.
     """
+    config = load_config(EXAMPLE)
     source = tmp_path / "bad.png"
     source.write_bytes(corrupt_png())
 
     identified = subprocess.run(
-        ["magick", "identify", str(source)], capture_output=True, text=True
+        [config.magick_binary, "identify", str(source)], capture_output=True, text=True
     )
     assert identified.returncode == 0, "a header parse was expected to accept this file"
 
@@ -260,7 +265,7 @@ def test_the_corrupt_fixture_is_exactly_what_a_header_check_misses(tmp_path):
             image.load()
 
     with pytest.raises(RuntimeError, match="magick failed"):
-        compositor.run(compositor.build_stamp_argv("magick", str(source)))
+        compositor.run(compositor.build_stamp_argv(config.magick_binary, str(source)))
 
 
 # --- the byte cap ------------------------------------------------------------
@@ -312,6 +317,79 @@ async def test_a_body_inside_the_cap_is_kept(tmp_path):
     assert digest == hashlib.sha256(body).hexdigest()
 
 
+# --- the pixel ceiling (M1) ---------------------------------------------------
+
+
+def _oversized_declared_png(width: int, height: int) -> bytes:
+    """A PNG whose IHDR declares ``width``x``height`` over a tiny real image.
+
+    Same technique as ``corrupt_png``: ``Image.open`` reads only the header
+    lazily, and ``_validate_image``'s pixel ceiling is checked from that
+    header *before* ``.load()`` ever decodes a pixel -- so this fixture never
+    needs to actually contain that many pixels to prove the ceiling refuses
+    them. Rewriting a 4x4 PNG's IHDR keeps this cheap regardless of how large
+    a ceiling it needs to exceed.
+    """
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), (1, 2, 3)).save(buffer, format="PNG")
+    raw = bytearray(buffer.getvalue())
+    ihdr = raw.index(b"IHDR")
+    struct.pack_into(">II", raw, ihdr + 4, width, height)
+    crc = zlib.crc32(bytes(raw[ihdr:ihdr + 4 + 13])) & 0xFFFFFFFF
+    struct.pack_into(">I", raw, ihdr + 4 + 13, crc)
+    return bytes(raw)
+
+
+def test_a_source_declaring_more_than_the_pixel_ceiling_is_refused(tmp_path):
+    """The declared ceiling refuses before ``.load()`` is ever reached: this
+    fixture's declared size (100,000,000px) does not match its real 4x4
+    content, so a refusal that fell through to the decode would raise for the
+    wrong reason (a row-stride mismatch) rather than naming the pixel count.
+    """
+    source = tmp_path / "huge.png"
+    source.write_bytes(_oversized_declared_png(10_000, 10_000))
+
+    with pytest.raises(SourceRefused) as caught:
+        pipeline_module._validate_image(source, "the poster source")
+
+    assert "10000x10000" in str(caught.value)
+    assert str(pipeline_module._ARTWORK_MAX_PIXELS) in str(caught.value)
+
+
+def test_the_pixel_ceiling_is_checked_before_load(tmp_path, monkeypatch):
+    """``image.size`` is header-derived and read before ``.load()`` allocates a
+    decode buffer -- the whole point of checking it here rather than after.
+    Pinned by making ``.load()`` itself fail the test if it is ever called.
+
+    The fixture is built (which itself calls ``.load()`` internally, via
+    ``Image.save``) before the patch is installed, so only the call inside
+    ``_validate_image`` is under test.
+    """
+    source = tmp_path / "huge.png"
+    source.write_bytes(_oversized_declared_png(10_000, 10_000))
+
+    def explode(self):
+        raise AssertionError("load() must not run above the pixel ceiling")
+
+    monkeypatch.setattr(Image.Image, "load", explode)
+
+    with pytest.raises(SourceRefused):
+        pipeline_module._validate_image(source, "the poster source")
+
+
+def test_a_source_comfortably_under_the_pixel_ceiling_is_accepted(tmp_path):
+    """The other half: a real, decodable image well under the ceiling -- large
+    next to any real poster, tiny in bytes because a solid colour compresses
+    to almost nothing -- must not be refused by it.
+    """
+    source = tmp_path / "big.png"
+    buffer = io.BytesIO()
+    Image.new("RGB", (4000, 4000), (10, 20, 30)).save(buffer, format="PNG")
+    source.write_bytes(buffer.getvalue())
+
+    pipeline_module._validate_image(source, "the poster source")  # must not raise
+
+
 # --- the deliberate hole ------------------------------------------------------
 
 
@@ -339,6 +417,34 @@ async def test_an_svg_clearlogo_is_not_refused(session, tmp_path, monkeypatch):
 
     assert render.status == "rendered"
     assert any("-density" in call for call in calls)
+
+
+async def test_a_corrupt_body_at_an_svg_url_is_still_refused(
+    session, tmp_path, monkeypatch
+):
+    """SVG-ness is decided by the bytes, not by a substring of the provider's
+    URL (H1). Job 40478, the incident this whole guard exists for, was a
+    clearlogo -- so any body a provider serves at a URL ending ``.svg`` must
+    still be decoded and refused if it is not an SVG document, rather than
+    skipping validation on the strength of a filename the provider chose.
+    """
+    config = _config(tmp_path)
+    calls = _stub_out_imagemagick(monkeypatch)
+    healthy = decodable_png()
+    broken = corrupt_png()
+
+    async def handler(request):
+        return httpx.Response(200, content=broken if "logo" in str(request.url) else healthy)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(SourceRefused) as caught:
+            await render_artifact(
+                session, config, http, _item(), "poster",
+                [_Provider(logo_url="https://img/logo.svg")],
+            )
+
+    assert "clearlogo" in str(caught.value)
+    assert calls == []
 
 
 # --- the fingerprint law ------------------------------------------------------

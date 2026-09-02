@@ -44,8 +44,8 @@ from autoposter.plex.client import ResolvedItem
 from autoposter.providers import base as art
 from autoposter.providers.ladder import rank_key
 from autoposter.render.pipeline import (
-    ART_KINDS_FOR, LOGO_OVERRIDE_SUFFIXES, art_config_for, logo_override_path,
-    manual_override_target,
+    ART_KINDS_FOR, LOGO_OVERRIDE_SUFFIXES, SourceRefused, _validate_image,
+    art_config_for, logo_override_path, manual_override_target,
 )
 
 logger = logging.getLogger(__name__)
@@ -327,12 +327,25 @@ def _verify_image(source: Path) -> None:
     JPEG cannot carry -- so a Content-Type of ``image/png`` over a body that is
     nothing of the sort would otherwise land on the mount as ``logo.png`` and
     be handed to the compositor on the next poster render.
+
+    Delegates to ``render/pipeline._validate_image`` -- the same full pixel
+    decode the render path uses -- rather than ``Image.verify()``. This
+    branch's own pinned measurement (``tests/test_render_input_guard.py``)
+    proves ``verify()`` is a header parse that the 'Inside Out 2' poison shape
+    sails through; a picked logo lands on the manual mount and is staged
+    straight into ``build_logo_argv`` on the next render (``_stage_override``,
+    unvalidated), so ``verify()`` here was a second, live entrance for the
+    exact defect the provider lane closes.
+
+    The refusal is re-worded rather than passed through verbatim: this
+    endpoint's own callers (``api/manual.py``) already promise an
+    ``"undecodable image"`` detail for exactly this failure, and that promise
+    predates this change.
     """
     try:
-        with Image.open(source) as image:
-            image.verify()
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
-        raise DownloadRefused(f"undecodable image ({type(exc).__name__})") from exc
+        _validate_image(source, "the picked logo")
+    except SourceRefused as exc:
+        raise DownloadRefused(f"undecodable image ({exc})") from None
 
 
 def _clear_stale_logo_overrides(config, item: ResolvedItem, kept_suffix: str) -> None:
