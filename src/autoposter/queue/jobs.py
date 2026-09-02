@@ -35,6 +35,11 @@ _CLAIM_SQL = text(
 )
 
 
+# Mirrors uq_jobs_pending_dedupe's predicate (db/models.py) exactly -- the ON
+# CONFLICT clauses below only fire against rows this partial index covers.
+_DEDUPE_INDEX_WHERE = text("state IN ('pending', 'deferred')")
+
+
 async def enqueue(
     session: AsyncSession,
     kind: str,
@@ -48,6 +53,22 @@ async def enqueue(
     and ``None`` is returned — that is the debounce for webhook bursts. A burst of
     events therefore produces a single pass whose delay is measured from the first
     event, which bounds latency instead of postponing work indefinitely.
+
+    When ``dedupe_key`` matches a job that is ``deferred`` instead, that row is
+    woken rather than debounced: its state goes back to ``pending`` with
+    ``run_after`` set to this call's own schedule -- honouring ``delay_seconds``
+    exactly as a fresh insert would -- and its id is returned exactly as a fresh
+    insert's would be. A deferred job is waiting on Plex to catch up with a
+    release it cannot see yet (see ``fail()``'s docstring), and a new event
+    naming the same key -- above all the download webhook that finally lands
+    -- is a targeted signal that the wait may be over. Leaving it deferred
+    would make that webhook wait out the rest of a up-to-``DEFER_INTERVAL_SECONDS``
+    horizon instead of processing promptly, which is the whole point of the
+    event arriving at all. ``attempts`` is left untouched by the wake: ``fail()``
+    already reset it to 0 the moment the row went deferred, so it already carries
+    a full retry budget. ``enqueue_batch()`` makes the opposite choice against
+    the same predicate -- see its docstring for why a sweep is not this kind of
+    signal.
     """
     # run_after is computed by Postgres, not by this process. claim() compares it
     # against the database's now(), and an app clock that drifts from the database
@@ -57,8 +78,20 @@ async def enqueue(
         kind=kind, payload=payload, dedupe_key=dedupe_key, run_after=run_after
     )
     if dedupe_key is not None:
-        stmt = stmt.on_conflict_do_nothing(
-            index_elements=["dedupe_key"], index_where=text("state = 'pending'")
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["dedupe_key"],
+            index_where=_DEDUPE_INDEX_WHERE,
+            # Postgres treats a DO UPDATE whose WHERE fails to match as DO
+            # NOTHING for that row -- an existing *pending* row therefore
+            # still debounces to a no-op with nothing returned, preserving
+            # the contract above unchanged.
+            set_={
+                "state": "pending",
+                "run_after": stmt.excluded.run_after,
+                "updated_at": func.now(),
+                "last_error": None,
+            },
+            where=(Job.__table__.c.state == "deferred"),
         )
     result = await session.execute(stmt.returning(Job.id))
     job_id = result.scalar_one_or_none()
@@ -77,11 +110,21 @@ async def enqueue_batch(
 ) -> int:
     """Add many jobs in a few set-based statements; return how many were inserted.
 
-    Same coalescing contract as ``enqueue()`` -- the ON CONFLICT clause below
-    must mirror the one there, so an entry whose ``dedupe_key`` already has a
-    pending job inserts nothing and is simply not counted. Duplicate keys
-    *within* ``entries`` collapse the same way: ON CONFLICT DO NOTHING skips a
-    row that conflicts with one inserted earlier in the same statement.
+    Coalescing target matches ``enqueue()``'s widened index (an entry whose
+    ``dedupe_key`` already has a pending *or* deferred job inserts nothing and
+    is simply not counted), but the outcome for a deferred collision is
+    deliberately the opposite of ``enqueue()``'s: DO NOTHING, not a wake.
+    This backs the full-pass and quality-backfill sweeps, not a targeted
+    event -- a scheduled pass is not fresh evidence that any one item's Plex
+    situation changed, it is the same "might need reprocessing" guess
+    repeated on a timer, and a deferred row already *is* exactly that guess,
+    still waiting on its own horizon. Waking every deferred row on every pass
+    would just have each retry once and likely re-defer (ItemNotFound is
+    still ItemNotFound) -- harmless churn, bounded by one attempt per pass,
+    but it buys nothing over leaving the row for its own horizon or a real
+    event to wake it. Duplicate keys *within* ``entries`` collapse the same
+    way: ON CONFLICT DO NOTHING skips a row that conflicts with one inserted
+    earlier in the same statement.
 
     Set-based on purpose: this backs the full-pass trigger, and one awaited
     ``enqueue()`` (a commit each) per item would hold the calling request open
@@ -94,7 +137,7 @@ async def enqueue_batch(
         stmt = insert(Job).values(
             [{"kind": kind, "payload": payload, "dedupe_key": key} for payload, key in batch]
         ).on_conflict_do_nothing(
-            index_elements=["dedupe_key"], index_where=text("state = 'pending'")
+            index_elements=["dedupe_key"], index_where=_DEDUPE_INDEX_WHERE
         )
         result = await session.execute(stmt)
         inserted += result.rowcount
@@ -206,6 +249,17 @@ async def release(session: AsyncSession, job_id: int) -> None:
     await session.commit()
 
 
+# uq_jobs_pending_dedupe now covers 'pending' and 'deferred' both, so
+# enqueue()/enqueue_batch() can no longer produce two *simultaneously live*
+# rows for the same key -- a fresh event either wakes the existing deferred
+# row (enqueue()) or is coalesced away (enqueue_batch()). This sweep is not
+# dead code even so: 'running' is not covered by the partial index at all, so
+# a second, independent row can still be inserted for a key whose first job
+# is mid-attempt. If that second row itself later defers while the first is
+# still in flight, and the first then completes, the second is exactly the
+# stranded row this sweep exists to retire (see test_queue.py's
+# test_complete_dismisses_a_deferred_sibling_created_while_the_first_ran).
+#
 # Matches on dedupe_key alone, so this sweep inherits RenderIntent.dedupe_key's
 # precision exactly (intake/arr.py) -- including its title-fallback: two
 # same-kind, same-title items with no external id at all (a remake, a
@@ -229,14 +283,17 @@ _DISMISS_DEFERRED_SIBLINGS_SQL = text(
 async def complete(session: AsyncSession, job_id: int) -> None:
     """Mark a job done, and retire any deferred row still waiting on the same item.
 
-    The second half is the dedupe index's blind spot. ``uq_jobs_pending_dedupe``
-    coalesces *pending* rows only, so an item whose first job is deferred --
-    added to Radarr before release, say -- gets a second, independent job the
-    day the download webhook fires. That one succeeds; the deferred sibling is
-    then waiting for something that has already happened. It would resolve on
-    its own next look and redo finished work, which is harmless but not free,
-    and until then it reads as outstanding on the Jobs page. Dismissed, not
-    deleted, matching every other disposal in this project.
+    The second half handles what the widened dedupe index cannot: 'running'
+    rows fall outside uq_jobs_pending_dedupe's partial predicate, so an event
+    arriving for a key while its job is already running still inserts an
+    independent second row rather than waking the first. If that second row
+    then defers on its own before the first (still in flight) completes, the
+    deferred row is left waiting for something that has already happened. It
+    would resolve on its own next look and redo finished work, which is
+    harmless but not free, and until then it reads as outstanding on the Jobs
+    page. Dismissed, not deleted, matching every other disposal in this
+    project. See ``_DISMISS_DEFERRED_SIBLINGS_SQL``'s comment above for why
+    this is narrower than it once was but not gone.
     """
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     job.state = "done"

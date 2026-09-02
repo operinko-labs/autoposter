@@ -168,6 +168,31 @@ async def test_retrying_a_job_whose_item_is_already_queued_is_409_not_500(
     assert row.state == "parked"
 
 
+async def test_retrying_a_job_whose_item_is_deferred_is_also_409(
+    client, auth_headers, session
+):
+    """uq_jobs_pending_dedupe now also covers ``deferred`` rows, so retrying a
+    parked job collides the same way when the item's other job is off waiting
+    on Plex rather than pending outright."""
+    dedupe_key = "movie:tmdb:604"
+    session.add_all([
+        _parked_job(dedupe_key=dedupe_key),
+        Job(kind="process_item", payload={}, state="deferred", dedupe_key=dedupe_key),
+    ])
+    await session.commit()
+    parked_id = (
+        await session.execute(select(Job.id).where(Job.state == "parked"))
+    ).scalar_one()
+
+    response = await client.post(f"/api/jobs/{parked_id}/retry", headers=auth_headers)
+    assert response.status_code == 409
+    assert "already queued" in response.json()["detail"]
+
+    session.expire_all()  # read the row back from the database, not the map
+    row = (await session.execute(select(Job).where(Job.id == parked_id))).scalar_one()
+    assert row.state == "parked"
+
+
 async def test_retrying_an_unknown_job_is_404(client, auth_headers):
     response = await client.post("/api/jobs/999999/retry", headers=auth_headers)
     assert response.status_code == 404

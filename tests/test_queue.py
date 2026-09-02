@@ -11,6 +11,7 @@ from autoposter.queue.jobs import (
     claim,
     complete,
     enqueue,
+    enqueue_batch,
     fail,
     reclaim_stale,
 )
@@ -210,33 +211,121 @@ async def test_a_cancelled_job_is_dismissed_rather_than_deferred(session):
     assert state == "dismissed"
 
 
-async def test_completing_a_job_dismisses_the_deferred_row_for_the_same_item(session):
-    # The Download webhook eventually queues a fresh job for the item whose
-    # earlier add is still deferred. Once that one succeeds the wait has no
-    # subject left, so it is dismissed rather than left to resolve, run and
-    # redo finished work six hours later.
-    waiting = await enqueue(session, "process_item", {}, dedupe_key="k-deferred")
+async def test_reenqueuing_a_deferred_key_wakes_it_instead_of_duplicating(session):
+    # The production incident this guards: uq_jobs_pending_dedupe used to
+    # cover 'pending' only, so every webhook/sweep event for an item still
+    # waiting on Plex minted another independent deferred row -- 11 of them
+    # piled up for one show. The widened index now covers 'deferred' too, and
+    # enqueue() wakes the existing row on conflict instead of failing to
+    # insert a duplicate.
+    job_id = await enqueue(session, "process_item", {"n": 1}, dedupe_key="k-wake")
     await claim(session, "worker-a")
-    await fail(session, waiting, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
+    await fail(session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
 
-    # The partial unique index covers pending rows only, so the deferred
-    # sibling does not block the new job.
-    fresh = await enqueue(session, "process_item", {}, dedupe_key="k-deferred")
-    assert fresh is not None
-    other = await enqueue(session, "process_item", {}, dedupe_key="k-other")
+    woken = await enqueue(session, "process_item", {"n": 2}, dedupe_key="k-wake")
+
+    rows = (await session.execute(select(Job).where(Job.dedupe_key == "k-wake"))).scalars().all()
+    assert len(rows) == 1, "a second row was inserted instead of waking the deferred one"
+    assert woken == job_id
+
+    job = rows[0]
+    assert job.state == "pending"
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    assert job.run_after <= db_now
+    # A woken deferred row starts fresh: fail() already reset attempts to 0
+    # when it deferred, so waking must not touch it further.
+    assert job.attempts == 0
+    # Nor should it keep serving the deferral message as a live error --
+    # api/jobs.py keys "waiting" purely off state, so a last_error surviving
+    # the wake would present a pending job as one that had already failed.
+    assert job.last_error is None
+
+
+async def test_reenqueuing_a_deferred_key_with_a_delay_honours_it(session):
+    # The wake must schedule the woken row exactly like a fresh insert would:
+    # a caller passing delay_seconds (the Radarr/Sonarr webhook's settle
+    # window, so the item isn't probed before Plex has scanned it) is relying
+    # on that delay surviving the wake. A wake that instead hardcodes
+    # run_after = now() runs the row immediately -- the highest-probability
+    # moment to hit ItemNotFound again, whereupon fail() re-defers it for
+    # DEFER_INTERVAL_SECONDS (6h), strictly worse than the bug this branch
+    # fixes.
+    job_id = await enqueue(session, "process_item", {"n": 1}, dedupe_key="k-wake-delay")
     await claim(session, "worker-a")
-    await fail(session, other, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
+    await fail(session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
 
-    await complete(session, fresh)
+    woken = await enqueue(
+        session, "process_item", {"n": 2}, dedupe_key="k-wake-delay", delay_seconds=30
+    )
+    assert woken == job_id
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "pending"
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    assert job.run_after > db_now + timedelta(seconds=5)
+
+
+async def test_reenqueuing_a_pending_key_still_debounces_with_no_wake(session):
+    # The pre-existing pending-debounce contract must survive the widened
+    # index untouched: a duplicate event for an already-pending job returns
+    # None and leaves the row alone, it does not "wake" anything.
+    job_id = await enqueue(session, "process_item", {}, dedupe_key="k-pending")
+    job_before = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    run_after_before = job_before.run_after
+
+    second = await enqueue(session, "process_item", {}, dedupe_key="k-pending", delay_seconds=999)
+
+    assert second is None
+    job_after = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job_after)
+    assert job_after.state == "pending"
+    assert job_after.run_after == run_after_before
+
+
+async def test_enqueue_batch_skips_a_deferred_key_rather_than_waking_it(session):
+    # enqueue_batch backs the full-pass/backfill sweep, not a targeted event,
+    # so it makes the opposite choice from enqueue(): a deferred row is left
+    # alone (ON CONFLICT DO NOTHING), not woken.
+    job_id = await enqueue(session, "process_item", {}, dedupe_key="k-batch")
+    await claim(session, "worker-a")
+    await fail(session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
+
+    inserted = await enqueue_batch(session, "process_item", [({"n": 2}, "k-batch")])
+
+    assert inserted == 0
+    rows = (await session.execute(select(Job).where(Job.dedupe_key == "k-batch"))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].id == job_id
+    assert rows[0].state == "deferred", "batch must not wake a deferred row"
+
+
+async def test_complete_dismisses_a_deferred_sibling_created_while_the_first_ran(session):
+    # The widened index makes it impossible for enqueue()/enqueue_batch() to
+    # ever create a second live (pending or deferred) row for a key that
+    # already has one -- except through the one gap the index cannot see:
+    # a row in 'running' state is not covered by the partial index at all, so
+    # a fresh event for the same key during that window still inserts an
+    # independent row. If that second row later defers on its own and the
+    # first later completes, the second is stranded exactly as
+    # complete()'s sibling-dismissal sweep was written to handle.
+    first = await enqueue(session, "process_item", {}, dedupe_key="k-race")
+    await claim(session, "worker-a")  # first -> running, no longer index-covered
+
+    second = await enqueue(session, "process_item", {}, dedupe_key="k-race")
+    assert second is not None, "a fresh row must still be insertable while the first is running"
+
+    await claim(session, "worker-b")
+    await fail(session, second, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
+
+    await complete(session, first)
 
     rows = {
         job.id: job.state
         for job in (await session.execute(select(Job))).scalars().all()
     }
-    assert rows[waiting] == "dismissed"
-    assert rows[fresh] == "done"
-    # Another item's wait is not this item's business.
-    assert rows[other] == "deferred"
+    assert rows[first] == "done"
+    assert rows[second] == "dismissed"
 
 
 async def test_complete_marks_done(session):

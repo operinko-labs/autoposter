@@ -199,17 +199,21 @@ class Job(Base):
 
     __tablename__ = "jobs"
     __table_args__ = (
-        # Coalescing: at most one *pending* job per dedupe key. Running, deferred,
-        # done, failed and parked rows are excluded, so an event arriving after work
-        # has started still queues a fresh pass. Deferred is excluded on purpose:
-        # an item whose add-time job is still waiting on Plex must not swallow the
-        # download webhook that finally makes it resolvable. ``complete()`` retires
-        # the stranded deferred sibling once the fresh job succeeds.
+        # Coalescing: at most one *pending or deferred* job per dedupe key.
+        # Running, done, failed and parked rows are excluded, so an event
+        # arriving after work has started still queues a fresh pass. Deferred
+        # is INCLUDED on purpose (production incident: excluding it let every
+        # webhook/sweep event for an item stuck waiting on Plex mint another
+        # independent deferred row, unboundedly) -- an item whose add-time job
+        # is already waiting must not get a second, parallel wait. Instead
+        # queue/jobs.py's enqueue() wakes the existing deferred row when a
+        # fresh event names the same key, which is what makes the download
+        # webhook still resolve it promptly rather than swallowing the event.
         Index(
             "uq_jobs_pending_dedupe",
             "dedupe_key",
             unique=True,
-            postgresql_where=text("state = 'pending'"),
+            postgresql_where=text("state IN ('pending', 'deferred')"),
         ),
         Index("ix_jobs_claimable", "state", "run_after"),
     )
