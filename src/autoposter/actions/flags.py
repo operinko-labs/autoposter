@@ -259,9 +259,11 @@ _REGISTRY: tuple[Flag, ...] = (
         description=(
             "The pipeline declined to render this artifact -- the art kind is "
             "disabled, the title matched a skip word, the item cannot be named, "
-            "or online fetch is off and there is no local asset."
+            "or online fetch is off and there is no local asset. Off by default: "
+            "a deliberately disabled art kind would otherwise flood the queue "
+            "with every row of that kind."
         ),
-        default_on=True,
+        default_on=False,
         instant=True,
         predicate=_skipped,
         detail=_skipped_detail,

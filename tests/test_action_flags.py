@@ -442,3 +442,7 @@ def test_every_flag_declares_a_label_a_description_and_a_detail(config):
         assert callable(flag.detail)
     assert flags.FLAGS["unknown_provenance"].default_on is False
     assert flags.FLAGS["unscored"].default_on is False
+    # A deliberately disabled art kind writes `status = 'skipped'` to every one
+    # of its rows -- the same flood argument that keeps `unknown_provenance`
+    # off by default.
+    assert flags.FLAGS["skipped"].default_on is False

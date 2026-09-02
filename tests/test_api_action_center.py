@@ -335,6 +335,37 @@ async def test_dismissing_twice_updates_the_evidence_rather_than_erroring(
     assert len(rows) == 1
 
 
+async def test_dismissing_with_an_unknown_flag_is_a_422(client, auth_headers, session):
+    """The registry check on the body mirrors the GET's 400 in content -- it
+    names the codes this build has -- but answers 422, the pydantic-validated
+    body's own refusal style, rather than the query-param endpoint's 400."""
+    item, _ = await _seed(session, rating_key="1", status="no_art")
+
+    response = await client.post(
+        "/api/actions/dismiss",
+        headers=auth_headers,
+        json={"item_id": item.id, "art_kind": "poster", "flag": "lanugage_miss"},
+    )
+
+    assert response.status_code == 422
+    assert "language_miss" in response.text
+
+
+async def test_dismissing_with_an_overlong_flag_is_a_422_not_a_500(client, auth_headers, session):
+    """`flag` lands in a `String(32)` column; an unbounded field would let a
+    33-character value reach the database and come back a 500 instead of a
+    validation error."""
+    item, _ = await _seed(session, rating_key="1", status="no_art")
+
+    response = await client.post(
+        "/api/actions/dismiss",
+        headers=auth_headers,
+        json={"item_id": item.id, "art_kind": "poster", "flag": "x" * 33},
+    )
+
+    assert response.status_code == 422
+
+
 async def test_dismissing_a_render_that_does_not_exist_is_a_404(client, auth_headers, session):
     item, _ = await _seed(session, rating_key="1", status="no_art")
 
@@ -467,6 +498,54 @@ async def test_the_bulk_apply_honours_the_flag_filter(client, auth_headers, sess
 
     assert body["matched"] == 1
     assert body["enqueued"] == 1
+
+
+async def test_the_bulk_apply_reports_fewer_enqueued_than_items_when_one_is_already_pending(
+    client, auth_headers, session
+):
+    """The operator's SECOND press: a re-search already queued one of the two
+    flagged items, so its pending job dedupes the bulk press's attempt on that
+    item. `enqueued` counts only jobs actually created, per the docstring's own
+    contract (`action_center.py:405-407`) -- it must read `1`, not `2`, or the
+    response would claim work it did not queue."""
+    first, _ = await _seed(session, rating_key="1", status="no_art")
+    second, _ = await _seed(session, rating_key="2", status="no_art")
+
+    pending = await client.post(
+        "/api/actions/rerender", headers=auth_headers, json={"item_id": first.id}
+    )
+    assert pending.json()["queued"] is True
+
+    body = (
+        await client.post(
+            "/api/actions/bulk/rerender", headers=auth_headers, json={"apply": True}
+        )
+    ).json()
+
+    assert body["matched"] == 2
+    assert body["items"] == 2
+    assert body["enqueued"] == 1
+    jobs = (await session.execute(select(Job))).scalars().all()
+    # The one job the single-item press already queued, plus exactly one more.
+    assert len(jobs) == 2
+
+
+async def test_the_bulk_apply_refuses_an_unknown_flag(client, auth_headers, session):
+    """The bulk endpoint calls the same `_flag_predicate` as the GET, so an
+    unknown code is refused rather than falling through to the default
+    population -- worse here than on the GET, because `apply: true` writes
+    jobs."""
+    await _seed(session, rating_key="1", status="no_art")
+
+    response = await client.post(
+        "/api/actions/bulk/rerender",
+        headers=auth_headers,
+        json={"apply": True, "flag": "lanugage_miss"},
+    )
+
+    assert response.status_code == 400
+    assert "language_miss" in response.json()["detail"]
+    assert (await session.execute(select(Job))).scalars().all() == []
 
 
 async def test_the_bulk_apply_over_an_empty_match_reports_complete(client, auth_headers):

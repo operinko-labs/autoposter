@@ -31,7 +31,7 @@ remove:
    too.
 """
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, case, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 
@@ -257,8 +257,20 @@ class DismissBody(BaseModel):
     art_kind: str
     #: Which chip the operator was looking at. Recorded for the audit; it does
     #: not narrow what the dismissal covers -- see ActionDismissal's docstring.
-    flag: str | None = None
+    #: Bounded like `note`, and checked against the registry: the column is
+    #: `String(32)` (db/models.py), and a chip that does not exist is not a
+    #: fact worth storing.
+    flag: str | None = Field(default=None, max_length=32)
     note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("flag")
+    @classmethod
+    def _must_be_a_known_flag(cls, value: str | None) -> str | None:
+        if value is not None and value not in flags.FLAGS:
+            raise ValueError(
+                f"unknown flag {value!r}; this build has: " + ", ".join(flags.FLAGS)
+            )
+        return value
 
 
 @router.post("/actions/dismiss")
@@ -451,8 +463,8 @@ async def bulk_rerender_action(
                 "items": len(item_ids),
                 "enqueued": 0,
                 "detail": (
-                    f"{matched} flagged row(s) across {len(item_ids)} item(s) in this "
-                    "batch. Nothing was queued."
+                    f"{matched} flagged row(s) matched this filter; this batch covers "
+                    f"{len(item_ids)} item(s) of it. Nothing was queued."
                 ),
             }
 
@@ -472,8 +484,9 @@ async def bulk_rerender_action(
             "complete: nothing matches this filter"
             if not item_ids
             else (
-                f"queued {enqueued} of {len(item_ids)} item(s) carrying {matched} "
-                "flagged row(s); a re-search may legitimately find the same art"
+                f"{matched} flagged row(s) matched this filter; this batch covered "
+                f"{len(item_ids)} item(s) of it, queued {enqueued}; a re-search may "
+                "legitimately find the same art"
             )
         )
         session.add(
