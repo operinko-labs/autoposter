@@ -82,12 +82,19 @@ class OverlayDefinition(BaseModel):
         description="Which vertical edge vertical_offset is measured from; center measures from the centreline.",
     )
 
+    # `gt=0`: a negative value raises inside Pillow's own resize, and 0 was
+    # silently reinterpreted by `overlays/render.py::_scaled`'s `or` fallback
+    # as "native size" -- the one value this schema was otherwise scrupulous
+    # about refusing rather than quietly ignoring. The probe's scale section
+    # (`.superpowers/sdd/p-overlay-grammar-probe.md` #55-57) banks only the
+    # parsing delegate, not a numeric range, so no upper bound is invented
+    # here either.
     scale_width: int | None = Field(
-        default=None,
+        default=None, gt=0,
         description="Resize this overlay's image to this width in pixels before it is drawn.",
     )
     scale_height: int | None = Field(
-        default=None,
+        default=None, gt=0,
         description="Resize this overlay's image to this height in pixels before it is drawn.",
     )
 

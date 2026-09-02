@@ -32,10 +32,11 @@ def _tiny_png() -> bytes:
     Deviation from the brief: its own fixture (a PNG signature followed by
     64 zero bytes) has no valid IHDR chunk and never decoded -- it only
     passed because the brief's ladder predates render/pipeline.py's #131
-    full-decode validation (see `resolve_image_path`'s new
-    `_validate_downloaded_image` step). A real image is needed here so this
-    test still proves what it says it proves: a cache hit that skips the
-    second request, not a decode refusal that happens to also skip it.
+    full-decode validation (see `resolve_image_path`'s
+    `_validate_overlay_image` step, now run on every rung -- M1). A real
+    image is needed here so this test still proves what it says it proves: a
+    cache hit that skips the second request, not a decode refusal that
+    happens to also skip it.
     """
     buffer = io.BytesIO()
     Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(buffer, format="PNG")
@@ -43,12 +44,28 @@ def _tiny_png() -> bytes:
 
 
 async def test_a_file_source_resolves_under_overlays_root(overlays_root):
-    (overlays_root / "mine.png").write_bytes(b"x")
+    """M1: `file:` now full-decode validates like the `url:` rung, so this
+    needs a genuinely decodable image -- see `_tiny_png`'s own docstring for
+    why `b"x"` used to pass here."""
+    (overlays_root / "mine.png").write_bytes(_tiny_png())
     path = await resolve_image_path(
         OverlayDefinition(name="o", file="mine.png"),
         overlays_root=overlays_root, http=None, max_bytes=1000,
     )
     assert path == overlays_root / "mine.png"
+
+
+async def test_a_file_source_that_is_not_a_decodable_image_is_refused(overlays_root):
+    """M1: the `file:` rung used to hand a path straight to `compose.py`'s
+    `_load` undecoded -- a truncated upload, a saved HTML error page, a
+    `.png` that is really something else -- raising deep inside the compose
+    worker thread instead of a clean per-definition refusal here."""
+    (overlays_root / "mine.png").write_bytes(b"x")
+    with pytest.raises(OverlaySourceError):
+        await resolve_image_path(
+            OverlayDefinition(name="o", file="mine.png"),
+            overlays_root=overlays_root, http=None, max_bytes=1000,
+        )
 
 
 async def test_a_file_source_cannot_escape_overlays_root(overlays_root):
@@ -96,6 +113,25 @@ async def test_a_missing_builtin_is_an_error_not_a_silent_skip(overlays_root):
     with pytest.raises(OverlaySourceError):
         await resolve_image_path(
             OverlayDefinition(name="o", builtin="no-such-stamp"),
+            overlays_root=overlays_root, http=None, max_bytes=1000,
+        )
+
+
+async def test_a_builtin_source_that_is_not_a_decodable_image_is_refused(
+    overlays_root, monkeypatch, tmp_path
+):
+    """M1: the `builtin:` rung had the same gap as `file:` -- no decode check
+    before the path reaches compose.py's `_load`. The bundled tree is source,
+    not a fixture, so the tree itself is monkeypatched to a scratch directory
+    carrying an undecodable stub, the same shape `_confined`'s own tests use
+    for `IMAGES`."""
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "Broken.png").write_bytes(b"x")
+    monkeypatch.setattr("autoposter.overlays.sources.IMAGES", bundled)
+    with pytest.raises(OverlaySourceError):
+        await resolve_image_path(
+            OverlayDefinition(name="o", builtin="Broken"),
             overlays_root=overlays_root, http=None, max_bytes=1000,
         )
 
@@ -176,8 +212,10 @@ async def test_a_url_pointing_at_a_private_address_is_never_requested(overlays_r
 
 
 async def test_no_source_falls_back_to_the_name_keyed_file(overlays_root):
-    """Probe section 1.2 step 6."""
-    (overlays_root / "mystamp.png").write_bytes(b"x")
+    """Probe section 1.2 step 6. M1: the fallback rung is now decode-validated
+    too, so this needs a real image the same way the `file:` rung's own test
+    does."""
+    (overlays_root / "mystamp.png").write_bytes(_tiny_png())
     path = await resolve_image_path(
         OverlayDefinition(name="mystamp"),
         overlays_root=overlays_root, http=None, max_bytes=1000,

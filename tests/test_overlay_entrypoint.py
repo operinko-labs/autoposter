@@ -16,6 +16,7 @@ from PIL import Image
 from autoposter.badges.compose import badge_fingerprint, compose
 from autoposter.config.schema import BadgesConfig
 from autoposter.db.models import MediaItem, Render
+from autoposter.overlays.assets import FONTS
 from autoposter.overlays.schema import OverlayDefinition
 from autoposter.render.pipeline import apply_badges
 # Bare module import, not `tests.test_overlay_engine_golden`: this repo has no
@@ -125,6 +126,58 @@ def test_suppression_is_resolved_before_group_weight():
     together = compose(BASE, "poster", ALL_SOULS, definitions=[suppressor, suppressed])
     # B has the higher weight; without suppression it would win. It is dropped.
     assert _sha(together) == _sha(alone)
+
+
+# --- H1: `font:` is confined beneath `fonts_root`, the same discipline
+# overlays/sources.py's `file:` image source uses; a resolution failure
+# warns-and-skips just that definition rather than crashing compose() for the
+# whole item. Every test above (and every other test in this file) pre-builds
+# no font either -- but none of them sets `definition.font` at all, which is
+# exactly why H1 had zero coverage. None of the tests below pre-build an
+# ImageFont object either: that is what let the bug hide.
+
+
+def _text_stamp(**over):
+    base = dict(
+        name="text(HELLO)",
+        horizontal_align="center", horizontal_offset=0,
+        vertical_align="center", vertical_offset=0,
+        back_width=300, back_height=100, back_color="#FF0000FF", back_radius=10,
+    )
+    base.update(over)
+    return OverlayDefinition(**base)
+
+
+def test_a_font_beneath_fonts_root_resolves_and_draws():
+    """The happy path: the documented spelling -- a bare filename -- resolves
+    against `fonts_root`, not the process cwd."""
+    stamp = _text_stamp(font="Inter-Bold.ttf")
+    data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp], fonts_root=FONTS)
+    assert _sha(data) != POSTER_PIXELS_SHA
+
+
+def test_the_documented_font_spelling_no_longer_resolves_against_cwd():
+    """H1's core bug, reproduced through the real compose(): before the fix,
+    `ImageFont.truetype(definition.font, ...)` took the raw string, which
+    resolves against the process cwd -- not `fonts_root` -- so a bare
+    filename (the field's own documented spelling) always raised OSError
+    from deep inside compose(), past `apply_badges`'s per-definition net,
+    into `pipeline.py`'s blanket per-item handler. After the fix, a font
+    that does not exist beneath `fonts_root` warns-and-skips just this
+    definition; the rest of the item is unaffected and the output is
+    byte-identical to the no-definitions baseline."""
+    stamp = _text_stamp(font="does-not-exist.ttf")
+    data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp], fonts_root=FONTS)
+    assert _sha(data) == POSTER_PIXELS_SHA
+
+
+def test_a_font_path_that_leaves_fonts_root_is_refused_not_crashed():
+    """Same confinement discipline as the `file:` image source: `root` itself
+    is refused and a traversal out of it is blocked, not just an unconfined
+    read allowed through."""
+    stamp = _text_stamp(font="../../../etc/passwd")
+    data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp], fonts_root=FONTS)
+    assert _sha(data) == POSTER_PIXELS_SHA
 
 
 # --- badge_fingerprint must cover `definitions` (Finding 1), without moving

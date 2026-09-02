@@ -61,16 +61,43 @@ def _confined(root: Path, value: str, name: str) -> Path:
     return candidate
 
 
-def _validate_downloaded_image(path: Path, name: str) -> None:
-    """Full-decode a downloaded overlay image before it is trusted.
+def resolve_font_path(fonts_root: Path, value: str, name: str) -> Path:
+    """A definition's `font:` value, confined beneath `fonts_root`.
+
+    The field's own description promises "a path beneath fonts_root" -- the
+    same rung this schema's `file:` image source uses, so this reuses the
+    same `_confined` (root itself refused, not just an escape from it) rather
+    than trusting the string raw. `badges/compose.py::_draw_definitions` was
+    passing the raw string straight to `ImageFont.truetype`, which resolves
+    against the process cwd, not `fonts_root` -- guaranteed to fail for the
+    documented spelling, and the one path in this module that skipped
+    `_confined` entirely (H1).
+    """
+    path = _confined(fonts_root, value, name)
+    if not path.exists():
+        raise OverlaySourceError(f"overlay {name!r}: the configured font does not exist")
+    return path
+
+
+def _validate_overlay_image(path: Path, name: str) -> None:
+    """Full-decode an overlay image before it is trusted, whatever rung it
+    came from.
+
+    Originally only the `url:` rung's own downloaded bytes (hence the name
+    this had before M1); `file:`, `builtin:` and the name-keyed fallback
+    handed their paths to `badges/compose.py`'s `_load` -- straight into
+    Pillow, since overlay images never go through magick -- fully undecoded.
+    A file under `overlays_root` that is not a decodable image (a truncated
+    upload, a saved HTML error page, a `.png` that is really a `.webp`)
+    raised `UnidentifiedImageError` deep inside the compose worker thread
+    instead of a clean per-definition refusal here. Renamed and called from
+    every rung in `resolve_image_path` below.
 
     Reuses render/pipeline.py's own `_validate_image` (#131) -- the same
     protection added for provider artwork after job 40478 (a PNG whose header
     is valid and whose IDAT stream contradicts it, which only a full pixel
     decode catches) -- rather than keeping a second copy that can drift from
-    it. A corrupt overlay image never reaches magick at all
-    (`badges/compose.py`'s `_load` hands it straight to Pillow), so the same
-    hole #131 closed for provider artwork is open here until this runs.
+    it.
 
     Call-time import, the same trick `overlays/schema.py::_as_rgba` uses for
     Pillow: `render/pipeline.py` imports this module at its own top level
@@ -106,6 +133,7 @@ async def resolve_image_path(
         path = _confined(overlays_root, definition.file, name)
         if not path.exists():
             raise OverlaySourceError(f"overlay {name!r}: the configured file does not exist")
+        await asyncio.to_thread(_validate_overlay_image, path, name)
         return path
 
     if definition.builtin:
@@ -119,6 +147,7 @@ async def resolve_image_path(
             raise OverlaySourceError(
                 f"overlay {name!r}: no bundled overlay image by that name"
             )
+        await asyncio.to_thread(_validate_overlay_image, path, name)
         return path
 
     if definition.url:
@@ -127,7 +156,10 @@ async def resolve_image_path(
     # Probe section 1.2 step 6: the operator's own folder, keyed by the
     # overlay's own name.
     fallback = _confined(overlays_root, f"{name}.png", name)
-    return fallback if fallback.exists() else None
+    if not fallback.exists():
+        return None
+    await asyncio.to_thread(_validate_overlay_image, fallback, name)
+    return fallback
 
 
 async def _download(
@@ -186,7 +218,7 @@ async def _download(
         # the same way, off the event loop: a full pixel decode is blocking
         # CPU work, and this coroutine has awaited callers (apply_badges's
         # per-definition loop) that must not stall on it.
-        await asyncio.to_thread(_validate_downloaded_image, tmp, definition.name)
+        await asyncio.to_thread(_validate_overlay_image, tmp, definition.name)
         os.replace(tmp, destination)
     except BaseException:
         tmp.unlink(missing_ok=True)

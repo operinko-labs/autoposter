@@ -19,6 +19,7 @@ from autoposter.badges.spec import ASSETS, IMAGES, canvas_for
 from autoposter.overlays.builtin import BUILTIN_OVERLAYS
 from autoposter.overlays.render import draw_overlay
 from autoposter.overlays.schema import OverlayDefinition
+from autoposter.overlays.sources import OverlaySourceError, resolve_font_path
 from autoposter.overlays.variables import UnresolvedVariable, literal_of, render_text
 from autoposter.badges.values import (
     MediaInfo,
@@ -167,6 +168,7 @@ def compose(
     fingerprint: str | None = None,
     definitions: list[OverlayDefinition] | None = None,
     resolved_images: dict[str, Path] | None = None,
+    fonts_root: Path | None = None,
 ) -> bytes:
     """Badge the base artwork and return encoded WebP bytes.
 
@@ -183,6 +185,12 @@ def compose(
     for it. Resolution is async and this function is not: the caller does the
     I/O (``overlays.sources.resolve_image_path``) and hands the results in,
     which also keeps ``compose`` a pure function of its arguments.
+
+    ``fonts_root`` is the root a definition's ``font:`` value is confined
+    beneath (H1) -- the same discipline ``overlays.sources``'s ``file:``
+    image source uses. A definition naming a font that fails to resolve
+    (leaves ``fonts_root``, or does not exist) is skipped with a warning,
+    not fatal to the rest of the item's badges.
     """
     canvas = canvas_for(art_kind)
     poster = Image.open(base_path).convert("RGB").resize(canvas, Image.Resampling.LANCZOS)
@@ -208,7 +216,7 @@ def compose(
 
     _draw_languages(poster, canvas, inputs)
 
-    _draw_definitions(poster, canvas, inputs, definitions or [], resolved_images or {})
+    _draw_definitions(poster, canvas, inputs, definitions or [], resolved_images or {}, fonts_root)
 
     exif = Image.Exif()
     exif[EXIF_OVERLAY_TAG] = "overlay"
@@ -294,6 +302,7 @@ def _draw_definitions(
     inputs: BadgeInputs,
     definitions: list[OverlayDefinition],
     resolved_images: dict[str, Path],
+    fonts_root: Path | None,
 ) -> None:
     """Draw the operator's own overlays, after every built-in one."""
     if not definitions:
@@ -314,9 +323,31 @@ def _draw_definitions(
                 continue
         image_path = resolved_images.get(definition.name)
         image = _load(image_path) if image_path is not None else None
+
+        font_path = None
+        if text is not None and definition.font:
+            # H1: `font:` is confined beneath `fonts_root`, the same
+            # discipline `overlays.sources`'s `file:` image source uses, and
+            # a resolution failure skips just THIS definition rather than
+            # escaping compose() for `pipeline.py`'s blanket per-item handler.
+            if fonts_root is None:
+                logger.warning(
+                    "overlay %r has no usable font (no fonts_root configured); skipping it",
+                    definition.name,
+                )
+                continue
+            try:
+                font_path = resolve_font_path(fonts_root, definition.font, definition.name)
+            except OverlaySourceError as exc:
+                logger.warning(
+                    "overlay %r has no usable font (%s); skipping it",
+                    definition.name, type(exc).__name__,
+                )
+                continue
+
         font = (
-            ImageFont.truetype(definition.font, definition.font_size)
-            if text is not None and definition.font
+            ImageFont.truetype(str(font_path), definition.font_size)
+            if font_path is not None
             else ImageFont.load_default(definition.font_size)
             if text is not None
             else None

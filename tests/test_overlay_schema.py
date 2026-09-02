@@ -184,6 +184,27 @@ def test_addon_defaults_match_kometas():
     assert d.addon_position == "left"
 
 
+def test_scale_width_and_height_must_be_positive():
+    """M2: neither carried a bound, unlike every other integer on this model
+    (`weight`, `back_line_width`, `back_radius`, `back_padding`, `font_size`,
+    `stroke_width`). A negative value raises inside `Image.resize`; 0 was
+    silently reinterpreted as 'native size' by `overlays/render.py::_scaled`'s
+    `or` fallback -- the one value this schema was otherwise scrupulous about
+    refusing rather than quietly ignoring. The probe's scale section
+    (`.superpowers/sdd/p-overlay-grammar-probe.md` #55-57) banks only the
+    parsing delegate, not a numeric range, so this stays a permissive
+    positive-only floor rather than inventing a ceiling."""
+    assert _d(scale_width=100, scale_height=50).scale_width == 100
+    with pytest.raises(ValidationError):
+        _d(scale_width=0)
+    with pytest.raises(ValidationError):
+        _d(scale_width=-5)
+    with pytest.raises(ValidationError):
+        _d(scale_height=0)
+    with pytest.raises(ValidationError):
+        _d(scale_height=-5)
+
+
 def test_only_one_image_source_may_be_named():
     """Kometa's ladder (probe section 1.2) silently picks a winner when two are
     set. We refuse instead: an operator who set both meant one of them, and a

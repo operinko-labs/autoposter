@@ -1370,6 +1370,7 @@ async def apply_badges(
     data = await asyncio.to_thread(
         compose_badges, Path(render.asset_path), render.art_kind, inputs, fingerprint,
         definitions=usable_definitions, resolved_images=resolved_images,
+        fonts_root=config.fonts_root,
     )
     render.badge_fingerprint = fingerprint
 
