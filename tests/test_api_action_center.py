@@ -578,7 +578,10 @@ async def test_the_backfill_status_reports_complete_on_an_empty_library(client, 
     disagreeing about the one state a disabled button keys off."""
     body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
 
-    assert body == {"status": "complete", "done": 0, "total": 0}
+    assert body == {
+        "status": "complete", "done": 0, "total": 0,
+        "queued_for_scoring": 0, "unscored_total": 0,
+    }
 
 
 async def test_the_backfill_status_counts_only_rows_that_can_be_scored(
@@ -598,7 +601,69 @@ async def test_the_backfill_status_counts_only_rows_that_can_be_scored(
 
     body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
 
-    assert body == {"status": "in_progress", "done": 1, "total": 2}
+    assert body == {
+        "status": "in_progress", "done": 1, "total": 2,
+        "queued_for_scoring": 0, "unscored_total": 1,
+    }
+
+
+async def test_the_backfill_status_reports_how_many_unscored_assets_are_already_queued(
+    client, auth_headers, session
+):
+    """`queued_for_scoring` counts, in ASSET units, how many of the still-
+    unscored rendered rows already have an in-flight `process_item` job for
+    their item -- `pending`, `running` or `deferred` alike, because a
+    deferred job is still claimed for scoring, merely waiting on Plex
+    visibility (queue/jobs.py's own reading of `deferred`). A third unscored
+    row with no in-flight job at all must not be counted."""
+    item0, _ = await _seed(session, rating_key="0", status="rendered", quality_scored_at=None)
+    item1, _ = await _seed(session, rating_key="1", status="rendered", quality_scored_at=None)
+    await _seed(session, rating_key="2", status="rendered", quality_scored_at=None)
+
+    intent0 = RenderIntent(kind=item0.kind, title=item0.title)
+    intent1 = RenderIntent(kind=item1.kind, title=item1.title)
+    session.add_all([
+        Job(kind="process_item", dedupe_key=intent0.dedupe_key, state="pending"),
+        Job(kind="process_item", dedupe_key=intent1.dedupe_key, state="running"),
+    ])
+    await session.commit()
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["queued_for_scoring"] == 2
+    assert body["unscored_total"] == 3
+
+
+async def test_a_deferred_jobs_asset_counts_as_queued_for_scoring(client, auth_headers, session):
+    """`deferred` is a wait, not an absence -- the same reading
+    `_select_backfill_batch` already gives it when deciding what NOT to
+    re-select."""
+    item, _ = await _seed(session, rating_key="0", status="rendered", quality_scored_at=None)
+    intent = RenderIntent(kind=item.kind, title=item.title)
+    session.add(Job(kind="process_item", dedupe_key=intent.dedupe_key, state="deferred"))
+    await session.commit()
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["queued_for_scoring"] == 1
+
+
+async def test_a_done_or_dismissed_job_does_not_count_as_queued_for_scoring(
+    client, auth_headers, session
+):
+    """A `done` job is not in flight any more -- if its render is still
+    unscored, that render genuinely has nothing queued for it."""
+    item, _ = await _seed(session, rating_key="0", status="rendered", quality_scored_at=None)
+    intent = RenderIntent(kind=item.kind, title=item.title)
+    session.add_all([
+        Job(kind="process_item", dedupe_key=intent.dedupe_key, state="done"),
+        Job(kind="process_item", dedupe_key=intent.dedupe_key, state="dismissed"),
+    ])
+    await session.commit()
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["queued_for_scoring"] == 0
 
 
 async def test_the_backfill_clears_the_fingerprint_of_every_row_it_enqueues(
@@ -777,6 +842,32 @@ async def test_the_second_press_selects_rows_outside_the_pending_batch(
 
     assert second["selected"] == 1
     assert second["enqueued"] == 1
+
+
+async def test_the_post_enqueue_queued_for_scoring_grows_cumulatively_across_presses(
+    app, client, auth_headers, session
+):
+    """The operator mid-run at 8214/17264 (the live report this fixes) cannot
+    see the queue's actual depth from one batch's own numbers. Each press's
+    `queued_for_scoring` must read AFTER that press's own enqueue and must
+    grow by the batch as further presses land on top of what is already in
+    flight -- not restate one press's own batch size."""
+    for n in range(3):
+        await _seed(session, rating_key=str(n), status="rendered")
+
+    edited = load_config(EXAMPLE)
+    edited.scheduler.drift_batch_size = 1
+    app.state.config_holder.swap(edited)
+
+    first = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+    assert first["queued_for_scoring"] == 1
+    assert first["unscored_total"] == 3
+    assert "1 of 3 unscored now queued for scoring" in first["detail"]
+
+    second = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+    assert second["queued_for_scoring"] == 2
+    assert second["unscored_total"] == 3
+    assert "2 of 3 unscored now queued for scoring" in second["detail"]
 
 
 async def test_the_second_press_does_not_re_clear_a_pending_items_fingerprint(

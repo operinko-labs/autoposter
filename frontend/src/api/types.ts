@@ -906,11 +906,20 @@ export interface BulkRerenderResponse {
  * `complete` is derived server-side by the POST's own rule (`done >= total`),
  * so an empty library reads `complete` on both endpoints rather than
  * `not_started` here and `complete` there.
+ *
+ * `unscored_total` is `total - done`, the population a press can still draw
+ * from. `queued_for_scoring` is how many of THAT population already have an
+ * in-flight `process_item` job for their item -- pending, running or
+ * deferred alike -- so an operator pacing a live run (the report that added
+ * this pair: mid-run at 8214/17264, with no way to see the queue's actual
+ * depth) can see how much is already claimed before pressing again.
  */
 export interface QualityBackfillStatus {
   status: "not_started" | "in_progress" | "complete";
   done: number;
   total: number;
+  queued_for_scoring: number;
+  unscored_total: number;
 }
 
 /** `POST /api/actions/backfill` -- one triggered batch's outcome.
@@ -920,6 +929,13 @@ export interface QualityBackfillStatus {
  * `enqueued` is how many items it actually queued, which is smaller whenever
  * one item carries several unscored assets or a pass for it was already
  * pending.
+ *
+ * `queued_for_scoring` and `unscored_total` are read AFTER this press's own
+ * enqueue, so they answer "what does the queue hold now", not what it held
+ * before this batch -- and they are cumulative across presses, not this
+ * batch's own size: a second press's `queued_for_scoring` covers this
+ * batch's assets on top of whatever a still-in-flight earlier batch left
+ * queued.
  */
 export interface QualityBackfillTrigger {
   status: "enqueued" | "complete";
@@ -927,5 +943,7 @@ export interface QualityBackfillTrigger {
   enqueued: number;
   done: number;
   total: number;
+  queued_for_scoring: number;
+  unscored_total: number;
   detail: string;
 }

@@ -137,7 +137,12 @@ function stubFetch(overrides: Record<string, unknown> = {}) {
     }
     if (path.startsWith("/api/actions/undismiss")) return json({ dismissed: false });
     if (path.startsWith("/api/actions/backfill")) {
-      return json(overrides.backfill ?? { status: "in_progress", done: 120, total: 300 });
+      return json(
+        overrides.backfill ?? {
+          status: "in_progress", done: 120, total: 300,
+          queued_for_scoring: 30, unscored_total: 180,
+        },
+      );
     }
     if (path.startsWith("/api/actions")) return json(overrides.rows ?? ROWS);
     throw new Error(`the page requested an unexpected path: ${path}`);
@@ -671,12 +676,49 @@ describe("ActionCenter", () => {
   });
 
   it("offers nothing to press once every asset is scored", async () => {
-    stubFetch({ backfill: { status: "complete", done: 300, total: 300 } });
+    stubFetch({
+      backfill: {
+        status: "complete", done: 300, total: 300,
+        queued_for_scoring: 0, unscored_total: 0,
+      },
+    });
 
     renderPage();
 
     expect(
       await screen.findByRole("button", { name: "Score the next batch" }),
     ).toBeDisabled();
+  });
+
+  it("shows how much of the unscored population is already queued for scoring", async () => {
+    stubFetch();
+
+    renderPage();
+
+    expect(
+      await screen.findByText("30 of 180 unscored asset(s) queued for scoring"),
+    ).toBeInTheDocument();
+  });
+
+  it("reports the post-press queued-for-scoring depth in the batch feedback", async () => {
+    // A live operator mid-run, pressing the button, cannot see the queue's
+    // actual depth from `enqueued` alone -- the fix this pins. The POST's own
+    // `detail` carries the depth after this press's enqueue, and the page
+    // must show it, not compute or restate a number of its own.
+    stubFetch({
+      backfill: {
+        status: "enqueued", selected: 500, enqueued: 500, done: 8214, total: 17264,
+        queued_for_scoring: 620, unscored_total: 9050,
+        detail: "queued 500 more; 620 of 9050 unscored now queued for scoring",
+      },
+    });
+    renderPage();
+    await screen.findByText("620 of 9050 unscored asset(s) queued for scoring");
+
+    fireEvent.click(screen.getByRole("button", { name: "Score the next batch" }));
+
+    expect(
+      await screen.findByText("queued 500 more; 620 of 9050 unscored now queued for scoring"),
+    ).toBeInTheDocument();
   });
 });
