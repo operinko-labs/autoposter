@@ -6,6 +6,7 @@ quality 90 with the overlay EXIF marker.
 """
 import hashlib
 import io
+import logging
 from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,8 @@ from autoposter.badges.draw import composite, draw_text_centered, new_layer
 from autoposter.badges.spec import ASSETS, IMAGES, canvas_for
 from autoposter.overlays.builtin import BUILTIN_OVERLAYS
 from autoposter.overlays.render import draw_overlay
+from autoposter.overlays.schema import OverlayDefinition
+from autoposter.overlays.variables import UnresolvedVariable, literal_of, render_text
 from autoposter.badges.values import (
     MediaInfo,
     audience_text,
@@ -28,6 +31,8 @@ from autoposter.badges.values import (
     runtime_text,
 )
 from autoposter.plex.exif import PROVENANCE_TAG, format_provenance
+
+logger = logging.getLogger(__name__)
 
 WEBP_QUALITY = 90
 EXIF_OVERLAY_TAG = 0x04BC
@@ -123,13 +128,28 @@ def _load(path: Path) -> Image.Image:
 
 
 def compose(
-    base_path: Path, art_kind: str, inputs: BadgeInputs, fingerprint: str | None = None
+    base_path: Path,
+    art_kind: str,
+    inputs: BadgeInputs,
+    fingerprint: str | None = None,
+    definitions: list[OverlayDefinition] | None = None,
+    resolved_images: dict[str, Path] | None = None,
 ) -> bytes:
     """Badge the base artwork and return encoded WebP bytes.
 
     ``fingerprint``, when given, is stamped alongside the overlay marker as
     the image's provenance -- see ``autoposter.plex.exif`` -- so a later read
     of what Plex is serving can tell whether it is still ours and current.
+
+    ``definitions`` are operator-defined overlays (roadmap row 97), drawn
+    after every built-in badge and after the language stack. ``None`` and
+    ``[]`` are the same thing and are byte-identical to the pre-row-97
+    output.
+
+    ``resolved_images`` maps a definition's name to an image already fetched
+    for it. Resolution is async and this function is not: the caller does the
+    I/O (``overlays.sources.resolve_image_path``) and hands the results in,
+    which also keeps ``compose`` a pure function of its arguments.
     """
     canvas = canvas_for(art_kind)
     poster = Image.open(base_path).convert("RGB").resize(canvas, Image.Resampling.LANCZOS)
@@ -154,6 +174,8 @@ def compose(
         composite(poster, layer)
 
     _draw_languages(poster, canvas, inputs)
+
+    _draw_definitions(poster, canvas, inputs, definitions or [], resolved_images or {})
 
     exif = Image.Exif()
     exif[EXIF_OVERLAY_TAG] = "overlay"
@@ -185,6 +207,89 @@ def _draw_languages(poster: Image.Image, canvas: tuple[int, int], inputs: BadgeI
             (definition.horizontal_offset + flag.width + 14, top,
              definition.horizontal_offset + flag.width + 90, top + flag.height),
         )
+        composite(poster, layer)
+
+
+def _variable_values(art_kind: str, inputs: BadgeInputs) -> dict[str, object]:
+    """The item values an operator's <<variable>> tokens can resolve against.
+
+    Deliberately only what this service already gathers. Probe section 2.2's
+    27 external rating sources are part of the GRAMMAR and are absent here on
+    purpose: fetching them is row 100's data half, and a definition naming one
+    is skipped rather than silently rendered wrong.
+    """
+    media = inputs.media
+    values: dict[str, object] = {
+        "content_rating": inputs.content_rating,
+        "critic_rating": inputs.critic_rating,
+        "audience_rating": inputs.audience_rating,
+        "season_number": media.season_number,
+        "episode_number": media.episode_number,
+    }
+    if media.duration_ms:
+        values["runtime"] = media.duration_ms // 60000
+        values["total_runtime"] = values["runtime"]
+    return {k: v for k, v in values.items() if v is not None}
+
+
+def _resolve_definitions(
+    definitions: list[OverlayDefinition],
+) -> list[OverlayDefinition]:
+    """Apply suppression, then group weight. Probe section 4.1's order.
+
+    Suppression runs FIRST: if A names B in suppress_overlays and both match,
+    B is dropped outright and group weight never arbitrates that pair.
+    """
+    suppressed = {n for d in definitions for n in d.suppress_overlays}
+    surviving = [d for d in definitions if d.name not in suppressed]
+
+    winners: dict[str, OverlayDefinition] = {}
+    result: list[OverlayDefinition] = []
+    for definition in surviving:
+        if not definition.group:
+            result.append(definition)
+            continue
+        current = winners.get(definition.group)
+        if current is None or definition.weight > current.weight:
+            winners[definition.group] = definition
+    return result + list(winners.values())
+
+
+def _draw_definitions(
+    poster: Image.Image,
+    canvas: tuple[int, int],
+    inputs: BadgeInputs,
+    definitions: list[OverlayDefinition],
+    resolved_images: dict[str, Path],
+) -> None:
+    """Draw the operator's own overlays, after every built-in one."""
+    if not definitions:
+        return
+    values = _variable_values("", inputs)
+    for definition in _resolve_definitions(definitions):
+        literal = literal_of(definition.name)
+        text = None
+        if literal is not None:
+            try:
+                text = render_text(literal, values)
+            except UnresolvedVariable as exc:
+                # Probe section 2.4: a per-item skip with a warning, never a
+                # run abort.
+                logger.warning(
+                    "overlay %r skipped: no value for <<%s>>", definition.name, exc
+                )
+                continue
+        image_path = resolved_images.get(definition.name)
+        image = _load(image_path) if image_path is not None else None
+        font = (
+            ImageFont.truetype(definition.font, definition.font_size)
+            if text is not None and definition.font
+            else ImageFont.load_default(definition.font_size)
+            if text is not None
+            else None
+        )
+        layer = new_layer(canvas)
+        draw_overlay(layer, definition, canvas, image=image, text=text, font=font)
         composite(poster, layer)
 
 

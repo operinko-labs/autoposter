@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from autoposter.overlays.schema import OverlayDefinition
+
 _LANG_RE = re.compile(r"^[a-z]{2}$")
 
 _SECRET_ENV = {
@@ -915,6 +917,24 @@ class BadgesConfig(BaseModel):
             "provenance out of the artwork Plex is already serving and skip the "
             "upload when it is already that exact image. Best-effort: any failure "
             "falls through to a normal upload."
+        ),
+    )
+    # Roadmap row 97. Operator-defined overlays, drawn after the nine built-in
+    # badges. Empty by default, which is byte-identical to no feature at all
+    # (tests/test_overlay_entrypoint.py pins that against a recorded hash).
+    definitions: list[OverlayDefinition] = Field(
+        default_factory=list,
+        description=(
+            "Operator-defined overlays composited on top of the built-in "
+            "badges, each naming its own image or text, position, backdrop "
+            "and optional group."
+        ),
+    )
+    definition_image_max_bytes: int = Field(
+        default=5 * 1024 * 1024, gt=0,
+        description=(
+            "Largest image an overlay definition's url source may download; "
+            "a larger body is refused mid-stream."
         ),
     )
 
@@ -2408,7 +2428,12 @@ class Config(BaseModel):
         description="Where the fonts referenced by text styles are read from.",
     )
     overlays_root: Path = Field(
-        description="Where the overlay images referenced by overlay_file are read from.",
+        description=(
+            "Where the overlay images referenced by overlay_file are read "
+            "from; also the mount badges.definitions' file and name-keyed "
+            "sources resolve under, and where a definition's url source is "
+            "cached, in a .cache/ subdirectory."
+        ),
     )
     library_folders: bool = Field(
         default=True,
