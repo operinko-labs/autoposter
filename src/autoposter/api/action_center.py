@@ -669,14 +669,79 @@ async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
     return selected
 
 
+async def _queued_for_scoring(session) -> int:
+    """How many of the still-unscored rendered rows already have an
+    in-flight ``process_item`` job for their item -- ``pending``, ``running``
+    or ``deferred`` alike. ``deferred`` counts: it is a wait, not an absence
+    -- the row is still claimed for scoring, merely paced by the same worker
+    that would otherwise re-select it, exactly the reading
+    ``_select_backfill_batch`` already gives it.
+
+    Reported in ASSET units, matching ``done``/``total`` above: an item with
+    two unscored art kinds and one in-flight job counts both rows, because
+    both rows are equally covered by that one job.
+
+    The same Python-side dedupe-key-membership test ``_select_backfill_batch``
+    uses, rather than reproducing ``RenderIntent.dedupe_key``'s id-precedence
+    chain as SQL -- a full scan of the unscored population every call, with no
+    LIMIT. This page has no interval poll: the GET fires once on mount and
+    once after every press, both human-paced like the POST's own equivalent
+    scan, so the cost lands where an operator's own pacing already bounds it.
+    """
+    pending_keys = set(
+        (
+            await session.execute(
+                select(Job.dedupe_key).where(
+                    Job.kind == "process_item",
+                    Job.state.in_(("pending", "running", "deferred")),
+                    Job.dedupe_key.isnot(None),
+                )
+            )
+        ).scalars()
+    )
+    if not pending_keys:
+        return 0
+
+    unscored_items = (
+        (
+            await session.execute(
+                select(MediaItem)
+                .join(Render, Render.item_id == MediaItem.id)
+                .where(Render.status == "rendered", Render.quality_scored_at.is_(None))
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    queued = 0
+    for item in unscored_items:
+        intent = RenderIntent(
+            kind=item.kind,
+            title=item.title,
+            tmdb_id=item.tmdb_id,
+            tvdb_id=item.tvdb_id,
+            imdb_id=item.imdb_id,
+            year=item.year,
+            season_number=item.season_number,
+            episode_number=item.episode_number,
+            rating_key=item.rating_key,
+        )
+        if intent.dedupe_key in pending_keys:
+            queued += 1
+    return queued
+
+
 @router.get("/actions/backfill")
 async def backfill_status(
     request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
-    """How much of the scorable population has been scored. Reads only."""
+    """How much of the scorable population has been scored, and how much of
+    what is left is already queued for it. Reads only."""
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         done, total = await _backfill_progress(session)
+        queued_for_scoring = await _queued_for_scoring(session)
 
     # Completion is derived FIRST, and by the POST's own rule: `done >= total`
     # <=> no unscored rendered row is left <=> the trigger selects 0. Testing
@@ -689,7 +754,13 @@ async def backfill_status(
         status = "not_started"
     else:
         status = "in_progress"
-    return {"status": status, "done": done, "total": total}
+    return {
+        "status": status,
+        "done": done,
+        "total": total,
+        "queued_for_scoring": queued_for_scoring,
+        "unscored_total": total - done,
+    }
 
 
 @router.post("/actions/backfill")
@@ -745,12 +816,18 @@ async def backfill_trigger(
         enqueued = await enqueue_batch(session, "process_item", _reprocess_entries(items))
 
         done, total = await _backfill_progress(session)
+        unscored_total = total - done
+        # AFTER the enqueue, not before: the operator pressing again while a
+        # previous batch is still rendering (the live report this answers,
+        # mid-run at 8214/17264) needs the depth this press just left behind,
+        # not the depth it found.
+        queued_for_scoring = await _queued_for_scoring(session)
         if not batch:
             detail = f"complete: all {total} rendered asset(s) have been scored"
         else:
             detail = (
-                f"queued {enqueued} item(s) covering {len(batch)} unscored asset(s); "
-                f"{done} of {total} scored so far"
+                f"queued {enqueued} more; {queued_for_scoring} of {unscored_total} "
+                "unscored now queued for scoring"
             )
         # The ops rule: a write nobody can find afterwards is not an operator
         # action, it is a mystery. One row per press, the completes included --
@@ -777,5 +854,7 @@ async def backfill_trigger(
         "enqueued": enqueued,
         "done": done,
         "total": total,
+        "queued_for_scoring": queued_for_scoring,
+        "unscored_total": unscored_total,
         "detail": detail,
     }
