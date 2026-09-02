@@ -41,6 +41,9 @@ dependencies = [
     # (`language-data` became the optional `[data]` extra, which nothing here
     # needs -- the tag reduction is parsing, not lookup).
     "langcodes>=3.5",
+    # The W/WU/WL modifiers in the <<variable>> grammar (probe section 2.3)
+    # spell an integer out as words. Pure python, no C extension.
+    "num2words>=0.5",
 ]
 
 [project.optional-dependencies]

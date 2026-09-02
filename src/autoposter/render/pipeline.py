@@ -25,6 +25,7 @@ from autoposter.db.models import ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
+from autoposter.overlays.sources import OverlaySourceError, resolve_image_path
 from autoposter.plex.artwork import upload_artwork
 from autoposter.plex.client import ResolvedItem
 from autoposter.plex.writer import apply_facts, exemption_reason
@@ -1269,7 +1270,9 @@ async def _already_in_plex(config, probe, plex_item, render, fingerprint) -> boo
     return recorded is not None and recorded == fingerprint
 
 
-async def apply_badges(session, config, render, item, plex_item, facts, probe=None) -> None:
+async def apply_badges(
+    session, config, render, item, plex_item, facts, probe=None, *, http=None
+) -> None:
     """Badge one rendered artifact and upload it, if anything changed.
 
     The fingerprint gate is the point of this whole stage: an unchanged item
@@ -1282,6 +1285,15 @@ async def apply_badges(session, config, render, item, plex_item, facts, probe=No
     returning the fingerprint recorded in its current artwork. Optional so
     every caller that only cares about composing (including every test
     predating this) keeps working unchanged.
+
+    ``http`` is the client roadmap row 97's operator-defined overlays resolve
+    their ``url:`` sources through (``overlays.sources.resolve_image_path``).
+    Keyword-only with a ``None`` default: ``tests/test_badge_pipeline.py``
+    calls this function positionally at ~30 sites, and this keeps every one
+    of them working. With no client, a definition naming a ``url:`` source
+    simply cannot resolve one -- ``resolve_image_path`` raises
+    ``OverlaySourceError``, which the loop below already turns into a
+    skip-with-a-warning.
     """
     if not config.badges.enabled:
         return
@@ -1314,7 +1326,8 @@ async def apply_badges(session, config, render, item, plex_item, facts, probe=No
     # from the *base we rendered*, so the gate has to track what went into that
     # base -- see badge_fingerprint's docstring.
     fingerprint = badge_fingerprint(
-        render.fingerprint or "", render.art_kind, values, manifest_sha()
+        render.fingerprint or "", render.art_kind, values, manifest_sha(),
+        config.badges.definitions,
     )
     if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
         return
@@ -1329,8 +1342,35 @@ async def apply_badges(session, config, render, item, plex_item, facts, probe=No
         await session.commit()
         return
 
+    definitions = config.badges.definitions
+    resolved_images: dict[str, Path] = {}
+    usable_definitions = []
+    for definition in definitions:
+        try:
+            path = await resolve_image_path(
+                definition,
+                overlays_root=config.overlays_root,
+                http=http,
+                max_bytes=config.badges.definition_image_max_bytes,
+            )
+        except OverlaySourceError as exc:
+            # Class name and a fixed sentence: the message may carry an
+            # operator-typed path. "skipping it" means the definition itself
+            # -- it must not reach compose() at all, or a `back_color` alone
+            # stamps a visible empty backdrop where the image should be.
+            logger.warning(
+                "overlay %r has no usable image (%s); skipping it",
+                definition.name, type(exc).__name__,
+            )
+            continue
+        if path is not None:
+            resolved_images[definition.name] = path
+        usable_definitions.append(definition)
+
     data = await asyncio.to_thread(
-        compose_badges, Path(render.asset_path), render.art_kind, inputs, fingerprint
+        compose_badges, Path(render.asset_path), render.art_kind, inputs, fingerprint,
+        definitions=usable_definitions, resolved_images=resolved_images,
+        fonts_root=config.fonts_root,
     )
     render.badge_fingerprint = fingerprint
 
@@ -1454,7 +1494,7 @@ async def process_item(
             for render in results:
                 await apply_badges(
                     session, config, render, media_item, plex_item, facts,
-                    probe=artwork_probe,
+                    probe=artwork_probe, http=http,
                 )
         except Exception:
             # Same containment as the metadata-operations block above: the

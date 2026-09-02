@@ -79,6 +79,35 @@ badges:
   lock_artwork: true # lock the Plex field after upload so the agent cannot reclaim it
   apply_overlay_label: false # add the literal Plex label "Overlay", as the previous tool did
   adopt_from_plex: true # skip the upload when Plex is already serving this exact badged image
+  # Roadmap row 97. Operator-defined overlays, drawn on top of the nine
+  # built-in badges. Empty means no change at all.
+  #
+  # Each entry takes the attributes Kometa's own `overlay:` block does:
+  # name, group/weight, suppress_overlays, horizontal_/vertical_offset and
+  # _align, scale_width/scale_height, back_color/back_line_color/
+  # back_line_width/back_radius/back_padding/back_align/back_width/
+  # back_height, one image source (file, builtin or url), and for a
+  # `text(...)` name the font, font_size, font_color, stroke_width,
+  # stroke_color, addon_offset and addon_position.
+  #
+  # `file:` is a path under overlays_root. `builtin:` is a path in this
+  # service's bundled overlay-stamp tree (no .png needed). `url:` is
+  # downloaded once and cached under overlays_root/.cache/ by URL.
+  #
+  # definitions:
+  #   - name: "text(4K)"
+  #     horizontal_align: right
+  #     horizontal_offset: 15
+  #     vertical_align: top
+  #     vertical_offset: 15
+  #     back_width: 200
+  #     back_height: 105
+  #     back_color: "#00000099"
+  #     back_radius: 30
+  #     font_size: 55
+  definitions: []
+  # Largest image a definition's `url:` source may download, in bytes.
+  definition_image_max_bytes: 5242880
 
 collections:
   enabled: true # reconcile the Common Sense age-bucket collections
