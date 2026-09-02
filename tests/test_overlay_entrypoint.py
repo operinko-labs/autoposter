@@ -301,7 +301,7 @@ async def test_apply_badges_draws_a_blur_definition_through_the_real_entry_point
     config_with_badges.badges.definitions = [OverlayDefinition(name="blur(30)")]
     await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
     assert plex_item.uploads == 2
-    assert plex_item.last_bytes != baseline_bytes, "the blur must actually be applied"
+    assert _sha(plex_item.last_bytes) != _sha(baseline_bytes), "the blur must actually be applied"
 
 
 # --- the real entry point: render.pipeline.apply_badges, not compose() ------
@@ -450,7 +450,7 @@ async def test_apply_badges_draws_a_backdrop_definition_through_the_real_entry_p
     ]
     await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
     assert plex_item.uploads == 2
-    assert plex_item.last_bytes != baseline_bytes, "the full-canvas backdrop must actually be drawn"
+    assert _sha(plex_item.last_bytes) != _sha(baseline_bytes), "the full-canvas backdrop must actually be drawn"
 
 
 async def test_apply_badges_threads_http_through_to_a_url_sourced_definition(

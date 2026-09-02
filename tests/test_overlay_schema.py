@@ -257,6 +257,38 @@ def test_a_malformed_blur_nn_is_refused_not_silently_degraded_to_fifty():
         _d(name="blur")
 
 
+def test_a_padded_blur_name_is_canonicalised_not_silently_inert():
+    """F2: `_validate` used to compare the stripped name against `_BLUR_FORM`
+    but store `self.name` raw, so `blur_amount` (which reads `self.name`
+    directly) and `render.py`'s `== "backdrop"` check saw the padding and
+    diverged from what validation just proved. One canonical form: the
+    stored name IS the stripped name."""
+    assert _d(name="blur(30) ").name == "blur(30)"
+    assert _d(name="blur(30) ").blur_amount == 30
+    assert _d(name=" backdrop", back_color="#00000099").name == "backdrop"
+
+
+def test_a_blur_definition_cannot_also_carry_an_image_or_backdrop():
+    """F3: Kometa skips image-source resolution entirely for `blur*` names
+    (probe section 1.1, image source note -- banked further in section 1.2,
+    `overlay.py:218-219`), so a blur(NN) definition never carries an image or
+    backdrop there. This schema now enforces the same premise
+    `badges/compose.py`'s draw-loop skip relies on, refusing loudly instead
+    of silently dropping the attribute."""
+    with pytest.raises(ValidationError):
+        _d(name="blur(30)", file="stamp.png")
+    with pytest.raises(ValidationError):
+        _d(name="blur(30)", builtin="ribbon")
+    with pytest.raises(ValidationError):
+        _d(name="blur(30)", url="https://example.invalid/a.png")
+    with pytest.raises(ValidationError):
+        _d(
+            name="blur(30)", file="stamp.png",
+            horizontal_offset=0, vertical_offset=0,
+            back_color="#FF0000FF",
+        )
+
+
 def test_the_deferred_queue_attribute_is_refused_by_name():
     """Probe section 1.1, identity: `queue` is banked and deliberately not
     built this phase. `extra=\"forbid\"` alone would raise a generic

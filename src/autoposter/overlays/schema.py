@@ -217,6 +217,12 @@ class OverlayDefinition(BaseModel):
             raise ValueError("an overlay must have a non-blank 'name'")
         if "|" in name:
             raise ValueError("'|' is a reserved separator and cannot appear in an overlay name")
+        # Every consumer (blur_amount's regex, render.py's `== "backdrop"`
+        # check) reads `self.name` raw, not this validator's local stripped
+        # copy -- so a padded `"blur(30) "` validated as a blur and then
+        # silently did nothing. One canonical form: the stored name IS the
+        # stripped name, same idiom as `back_line_width`'s default below.
+        object.__setattr__(self, "name", name)
         # Probe section 1.1: `blur(NN)` requires 0 < NN <= 100. Kometa's own
         # parser SILENTLY substitutes blur(50) on any parse failure rather
         # than raising (overlay.py:223-231) -- the one attribute-parse path
@@ -232,6 +238,20 @@ class OverlayDefinition(BaseModel):
                 raise ValueError(
                     f"{name!r} is not a valid blur(NN) overlay name; NN must "
                     "satisfy 0 < NN <= 100"
+                )
+            # Probe section 1.1 (image source note, banked further in section
+            # 1.2): Kometa skips image-source resolution entirely for names
+            # starting with `blur` -- a blur(NN) definition never carries an
+            # image or backdrop of its own there, by construction. This
+            # schema enforces the same premise `badges/compose.py`'s draw-loop
+            # skip relies on, rather than accepting the attributes and
+            # dropping them silently.
+            if self.file or self.builtin or self.url or self.has_back:
+                raise ValueError(
+                    f"{name!r} is a blur overlay and draws nothing of its "
+                    "own; it cannot also carry an image source (file/"
+                    "builtin/url) or a backdrop colour (back_color/"
+                    "back_line_color)"
                 )
 
         # Probe section 1.1: queue is banked and deliberately not built this
