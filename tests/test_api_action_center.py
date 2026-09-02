@@ -19,6 +19,7 @@ from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.db.models import ActionDismissal, EventLog, Job, MediaItem, Render
+from autoposter.intake.arr import RenderIntent
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -806,3 +807,31 @@ async def test_the_second_press_does_not_re_clear_a_pending_items_fingerprint(
     session.expire_all()
     reread0 = (await session.execute(select(Render).where(Render.id == render0_id))).scalar_one()
     assert reread0.fingerprint == "sentinel" * 8
+
+
+async def test_a_deferred_jobs_item_is_not_selected_either(app, client, auth_headers, session):
+    """`enqueue_batch` never wakes a deferred row (queue/jobs.py: "a scheduled
+    pass is not that kind of signal"), so selecting a row whose item's job is
+    merely deferred -- not pending -- clears its fingerprint for nothing: the
+    same dead-button bug, reproduced for the deferred case."""
+    item0, render0 = await _seed(
+        session, rating_key="0", status="rendered", fingerprint="a" * 64
+    )
+    await _seed(session, rating_key="1", status="rendered", fingerprint="b" * 64)
+
+    intent = RenderIntent(kind=item0.kind, title=item0.title)
+    session.add(Job(kind="process_item", dedupe_key=intent.dedupe_key, state="deferred"))
+    await session.commit()
+
+    edited = load_config(EXAMPLE)
+    edited.scheduler.drift_batch_size = 1
+    app.state.config_holder.swap(edited)
+
+    body = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body["selected"] == 1
+    assert body["enqueued"] == 1
+    render0_id = render0.id
+    session.expire_all()
+    reread0 = (await session.execute(select(Render).where(Render.id == render0_id))).scalar_one()
+    assert reread0.fingerprint == "a" * 64

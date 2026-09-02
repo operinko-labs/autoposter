@@ -593,14 +593,15 @@ async def _backfill_progress(session) -> tuple[int, int]:
 
 async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
     """The next ``batch_size`` unscored, rendered rows to score -- skipping
-    any row whose ITEM already has a pending ``process_item`` job.
+    any row whose ITEM already has a pending or deferred ``process_item`` job.
 
     Without this, pressing the button again while the previous batch is still
     rendering re-selects the very rows that batch is working on: they are
     still unscored, because their re-render has not landed yet. Those rows
-    then hit ``enqueue_batch``'s own pending-dedupe and are silently dropped,
-    so the press reports ``enqueued: 0`` while unrelated unscored rows sit
-    untouched elsewhere in the table -- a dead button.
+    then hit ``enqueue_batch``'s own dedupe -- which coalesces against
+    ``pending`` and ``deferred`` alike -- and are silently dropped, so the
+    press reports ``enqueued: 0`` while unrelated unscored rows sit untouched
+    elsewhere in the table -- a dead button.
 
     The exclusion is at the ITEM level, not the row's: a batch enqueues one
     job per ITEM (``_reprocess_entries``), keyed by
@@ -621,7 +622,7 @@ async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
             await session.execute(
                 select(Job.dedupe_key).where(
                     Job.kind == "process_item",
-                    Job.state == "pending",
+                    Job.state.in_(("pending", "deferred")),
                     Job.dedupe_key.isnot(None),
                 )
             )
