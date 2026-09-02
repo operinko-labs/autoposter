@@ -112,16 +112,52 @@ async def claim(session: AsyncSession, worker_id: str) -> Job | None:
     return (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
 
 
+# The gap between one reclaimed job's run_after and the next. Production
+# incident: a periodic reclaim that set every reclaimed job's run_after to
+# the same now() released 5 stuck jobs into the worker pool simultaneously,
+# and the concurrent renders OOMKilled the pod within seconds. The jobs died
+# together (the same restart orphaned all of them), so restarting them
+# together is exactly what killed it -- see reclaim_stale()'s docstring.
+RECLAIM_STAGGER_SECONDS = 30
+
 _RECLAIM_SQL = text(
     """
+    WITH stale AS (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY claimed_at, id) - 1 AS ordinal
+          FROM jobs
+         WHERE state = 'running'
+           AND claimed_at < now() - make_interval(secs => :older_than_seconds)
+    )
     UPDATE jobs
        SET state = 'pending',
            claimed_by = NULL,
            claimed_at = NULL,
-           run_after = now(),
+           run_after = now() + make_interval(secs => stale.ordinal * :stagger_seconds),
            updated_at = now()
-     WHERE state = 'running'
-       AND claimed_at < now() - make_interval(secs => :older_than_seconds)
+      FROM stale
+     WHERE jobs.id = stale.id
+       -- Restated from the CTE, not redundant: under READ COMMITTED, a second
+       -- reclaim blocked on this row (a concurrent sweep, e.g. a new pod's
+       -- boot reclaim racing the outgoing pod's periodic tick) re-checks only
+       -- this outer qualification against the row's *current* version when it
+       -- unblocks -- the CTE was already materialized and does not re-run.
+       -- `jobs.id = stale.id` alone survives that re-check no matter what
+       -- happened to the row meanwhile, so each restated predicate is closing
+       -- a distinct interleaving:
+       -- - claimed_at < cutoff fails the re-check when a live worker
+       --   re-claimed the row in the interim (fresh claimed_at), because
+       --   now() is transaction_timestamp() and stays pinned at the blocked
+       --   sweep's own transaction start -- without this predicate the fresh
+       --   claim gets wiped out from under the live worker.
+       -- - state = 'running' independently fails the re-check when the row
+       --   finished instead: complete() sets state = 'done' but deliberately
+       --   leaves claimed_at alone, so a job that ran past the threshold and
+       --   then completed still has a stale claimed_at -- without this
+       --   predicate a done job gets resurrected to pending.
+       -- Dropping either predicate reopens its own interleaving; neither is
+       -- redundant with the other.
+       AND jobs.state = 'running'
+       AND jobs.claimed_at < now() - make_interval(secs => :older_than_seconds)
     """
 )
 
@@ -135,10 +171,22 @@ async def reclaim_stale(session: AsyncSession, older_than_seconds: int = 900) ->
 
     A reclaimed job is one whose worker died mid-job, so its old ``run_after``
     describes a schedule that no longer means anything — the work is overdue, not
-    pending a future slot. Resetting ``run_after`` to now() makes the job
-    immediately claimable regardless of what it was originally scheduled for.
+    pending a future slot. But "overdue" does not mean "all at once": jobs
+    reclaimed together died together (the same crashed process, or the same pod
+    restart), and readmitting a whole batch to the worker pool in the same instant
+    reproduces whatever conditions killed them the first time -- see
+    ``RECLAIM_STAGGER_SECONDS``. So each reclaimed row's ``run_after`` is now() plus
+    its ordinal (claim age, oldest first) times the stagger, not a flat now() --
+    the first row is still immediately claimable, and the rest re-enter the pool
+    at a paced rate rather than all in the same instant. That bounds the
+    *admission* rate, not concurrency: with several workers and a render that
+    outlasts the stagger, reclaimed jobs still end up running side by side a
+    couple of minutes later -- see ``RECLAIM_STAGGER_SECONDS``.
     """
-    result = await session.execute(_RECLAIM_SQL, {"older_than_seconds": older_than_seconds})
+    result = await session.execute(
+        _RECLAIM_SQL,
+        {"older_than_seconds": older_than_seconds, "stagger_seconds": RECLAIM_STAGGER_SECONDS},
+    )
     await session.commit()
     return result.rowcount
 

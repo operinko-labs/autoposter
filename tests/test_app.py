@@ -570,6 +570,44 @@ async def test_the_lifespan_fills_the_dict_the_broadcaster_holds_rather_than_reb
         )
 
 
+async def test_stale_job_reclaim_is_registered_even_with_the_scheduler_disabled(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """``scheduler.enabled`` is the master switch for the five *optional*
+    maintenance passes (app.py's comment above ``scheduler_jobs = [...]``),
+    not for queue correctness -- ``stale_job_reclaim`` is registered ahead of
+    the ``if config.scheduler.enabled:`` gate specifically so disabling those
+    passes cannot also disable the sweep that closes the incident this branch
+    fixes. Nothing pinned that until now: every other assertion over
+    ``scheduler_jobs``/``scheduler_intervals`` in this file and
+    ``test_api_dashboard.py``/``test_config_live.py`` runs with the scheduler
+    on, so a change that moved the registration line inside the ``if`` would
+    pass the whole suite while silently reintroducing the incident on every
+    scheduler-off deployment.
+
+    Turned off through a stored override rather than a mutation on the
+    ``Config`` object handed to ``create_app``: under ``run_background`` the
+    lifespan boots on the effective config it loads itself (this file plus
+    the database overrides), so an in-memory mutation of the argument never
+    reaches it -- see ``create_app``'s docstring.
+    """
+    config = load_config(EXAMPLE)
+    assert config.scheduler.enabled is True, "precondition: EXAMPLE ships the master switch on"
+    await _store_override(session, {"scheduler": {"enabled": False}})
+
+    app = _background_app(config, session_factory, secrets)
+
+    async with app.router.lifespan_context(app):
+        assert app.state.config.scheduler.enabled is False, (
+            "precondition: the override did not reach the effective config"
+        )
+        assert "stale_job_reclaim" in app.state.scheduler_intervals
+        assert any(job.name == "stale_job_reclaim" for job in app.state.scheduler_jobs)
+        # The five optional passes really are off -- otherwise this would not
+        # be exercising the branch it claims to.
+        assert "plex_prune" not in app.state.scheduler_intervals
+
+
 async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_processes(
     session_factory, secrets, stubbed_background_services, monkeypatch
 ):

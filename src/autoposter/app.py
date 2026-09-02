@@ -53,6 +53,7 @@ from autoposter.scheduler.jobs import (
     make_credits_job,
     make_drift_job,
     make_maintenance_job,
+    make_stale_reclaim_job,
 )
 from autoposter.scheduler.prune import make_prune_job
 
@@ -296,7 +297,15 @@ def create_app(
         # every caller runs it through asyncio.to_thread.
         server_factory = functools.partial(PlexServer, config.plex.url, secrets.plex_token)
         app.state.plex_server_factory = server_factory
-        scheduler_jobs = []
+        # Registered unconditionally, unlike everything below: scheduler.enabled
+        # is the master switch for the five optional maintenance passes
+        # (config/schema.py's SchedulerConfig docstring), not for queue
+        # correctness. This job closes the gap the boot-time reclaim_stale()
+        # call above cannot -- a claim going stale while the process stays up,
+        # or a second restart's boot reclaim missing what the first restart
+        # just orphaned -- and disabling the maintenance passes must not also
+        # disable that.
+        scheduler_jobs = [make_stale_reclaim_job()]
         if config.scheduler.enabled:
             if config.collections.enabled:
                 scheduler_jobs.append(make_collections_job(

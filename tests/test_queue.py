@@ -7,6 +7,7 @@ from autoposter.db.models import Job
 from autoposter.queue.jobs import (
     DEFER_INTERVAL_SECONDS,
     MAX_ATTEMPTS,
+    RECLAIM_STAGGER_SECONDS,
     claim,
     complete,
     enqueue,
@@ -325,3 +326,163 @@ async def test_reclaim_stale_leaves_recent_claims_alone(session):
     await session.refresh(job)
     assert job.state == "running"
     assert job.claimed_by == "worker-a"
+
+
+async def test_reclaim_stale_staggers_run_after_across_reclaimed_jobs(session):
+    # Production incident: a periodic reclaim that set every reclaimed job's
+    # run_after to the same now() released 5 jobs into the worker pool at
+    # once -- the concurrent renders OOMKilled the pod within seconds. The
+    # jobs died together (same restart); restarting them together is what
+    # killed it, so reclaim must re-admit them one at a time instead.
+    job_ids = [await enqueue(session, "process_item", {"n": i}) for i in range(3)]
+    for job_id in job_ids:
+        await claim(session, "worker-a")
+    await session.execute(
+        text("UPDATE jobs SET claimed_at = now() - interval '20 minutes' WHERE id = ANY(:ids)"),
+        {"ids": job_ids},
+    )
+    await session.commit()
+
+    count = await reclaim_stale(session, older_than_seconds=900)
+    assert count == 3
+
+    rows = (
+        await session.execute(
+            select(Job.id, Job.run_after).where(Job.id.in_(job_ids)).order_by(Job.run_after)
+        )
+    ).all()
+    run_afters = [run_after for _id, run_after in rows]
+    # Strictly increasing, and each apart by exactly the stagger interval --
+    # all computed against the same server-side now() inside one UPDATE
+    # statement, so this is not subject to the dev clock's backwards steps.
+    for earlier, later in zip(run_afters, run_afters[1:]):
+        assert (later - earlier) == timedelta(seconds=RECLAIM_STAGGER_SECONDS)
+    # The very first reclaimed row still becomes immediately claimable, same
+    # as the unstaggered behaviour this replaces (ordinal 0 -> now() + 0).
+    db_now = (await session.execute(select(func.now()))).scalar_one()
+    assert run_afters[0] <= db_now
+
+
+async def test_reclaim_stale_preserves_cancel_requested(session):
+    # Cancel is only honoured when an attempt ends (fail()) -- reclaim_stale
+    # itself must never touch cancel_requested, or a cancelled-but-stuck job
+    # would lose its cancel flag on the very sweep meant to unstick it, and
+    # Cancel would hang forever again. Adding `cancel_requested = false` to
+    # the reclaim SQL is a natural-looking "a reclaimed job starts fresh"
+    # edit that would pass every other test in the suite.
+    job_id = await enqueue(session, "process_item", {})
+    await claim(session, "worker-a")
+    await session.execute(
+        text(
+            "UPDATE jobs SET claimed_at = now() - interval '20 minutes',"
+            " cancel_requested = true WHERE id = :id"
+        ),
+        {"id": job_id},
+    )
+    await session.commit()
+
+    count = await reclaim_stale(session, older_than_seconds=900)
+    assert count == 1
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "pending"
+    assert job.cancel_requested is True
+
+
+async def test_reclaim_stale_does_not_re_pend_a_row_already_reclaimed_and_re_claimed(
+    session_factory,
+):
+    """M1 regression, reproduced without a timing race.
+
+    Before the fix, the reclaim UPDATE's outer WHERE was qualified only by
+    `jobs.id = stale.id` -- the `state = 'running'` and staleness checks lived
+    in the ``stale`` CTE, which Postgres materializes once per statement and
+    does not re-run. Under READ COMMITTED, a second reclaim blocked on this
+    row (a concurrent sweep -- e.g. a new pod's boot reclaim racing the
+    outgoing pod's periodic tick) re-checks only the outer qualification
+    against the row's *current* version when it unblocks. `jobs.id =
+    stale.id` alone survives no matter what happened to the row meanwhile, so
+    a row already reclaimed and then re-claimed by a live worker got re-pended
+    out from under it, wiping the live claim.
+
+    Reproduced deterministically with two real sessions rather than a timing
+    race: session A holds an uncommitted transaction that leaves the row
+    exactly as "reclaimed, then re-claimed fresh" would -- state stays
+    'running' throughout; only claimed_by/claimed_at change. Session B's
+    reclaim starts concurrently; its CTE snapshot is taken before A's change
+    is visible (still sees the row as stale, so it is included), and its
+    UPDATE then blocks on A's lock. Only once B is confirmed blocked (polling
+    pg_locks, not a sleep) do we commit A -- so B's post-unblock re-check runs
+    against the fresh claim for certain, not on a guess about timing.
+    """
+    async with session_factory() as setup:
+        job_id = await enqueue(setup, "process_item", {})
+        await setup.execute(
+            text(
+                "UPDATE jobs SET state = 'running', claimed_by = 'worker-stale',"
+                " claimed_at = now() - interval '20 minutes' WHERE id = :id"
+            ),
+            {"id": job_id},
+        )
+        await setup.commit()
+
+    session_a = session_factory()
+    await session_a.execute(text("SELECT 1"))  # warm the connection before it matters
+    await session_a.execute(
+        text(
+            "UPDATE jobs SET claimed_by = 'worker-fresh', claimed_at = now()"
+            " WHERE id = :id"
+        ),
+        {"id": job_id},
+    )
+    # session_a's transaction is now open, uncommitted, and holds the row lock.
+
+    b_pid: int | None = None
+
+    async def second_reclaim():
+        nonlocal b_pid
+        async with session_factory() as session_b:
+            b_pid = (await session_b.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+            return await reclaim_stale(session_b, older_than_seconds=900)
+
+    task_b = asyncio.create_task(second_reclaim())
+
+    try:
+        # Confirmation, not a guess: wait for session_b's UPDATE to actually
+        # be blocked on session_a's lock before releasing it. pg_locks is
+        # cluster-wide, so under xdist another worker's own ungranted lock
+        # could satisfy this poll early and make the test vacuously pass --
+        # scope it to session_b's own backend pid (the row-lock wait shows up
+        # as a transactionid lock, which carries no database column, so
+        # scoping by database would never match).
+        async with session_factory() as poll:
+            async with asyncio.timeout(5):
+                while b_pid is None:
+                    await asyncio.sleep(0.01)
+                while True:
+                    blocked = (
+                        await poll.execute(
+                            text("SELECT 1 FROM pg_locks WHERE NOT granted AND pid = :pid"),
+                            {"pid": b_pid},
+                        )
+                    ).first()
+                    if blocked:
+                        break
+                    await asyncio.sleep(0.01)
+    finally:
+        # If the timeout above fires, session_a must still be closed here --
+        # otherwise it keeps holding the row lock and the next test's
+        # TRUNCATE wedges behind it.
+        await session_a.commit()
+        await session_a.close()
+
+    reclaimed_by_b = await task_b
+
+    assert reclaimed_by_b == 0, "the second reclaim touched the row despite the fresh claim"
+
+    async with session_factory() as check:
+        row = (await check.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    assert row.state == "running", "the reclaimed-and-re-claimed row was re-pended"
+    assert row.claimed_by == "worker-fresh"
+    assert row.claimed_at is not None

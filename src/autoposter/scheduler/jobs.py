@@ -38,10 +38,51 @@ from autoposter.config.holder import ConfigHolder
 from autoposter.config.schema import RadarrConfig, Secrets, SonarrConfig
 from autoposter.db.models import FactsBackfillState, ItemFacts, MediaItem, Render
 from autoposter.intake.arr import RenderIntent
-from autoposter.queue.jobs import enqueue
+from autoposter.queue.jobs import enqueue, reclaim_stale
 from autoposter.scheduler.core import Job
 
 logger = logging.getLogger(__name__)
+
+# How often the stale-claim reclaim sweep runs. Not read off the config holder
+# like the other jobs in this module -- this is a queue-correctness sweep, not
+# a tunable maintenance pass, so it gets a plain constant rather than a new
+# scheduler.* setting.
+STALE_RECLAIM_INTERVAL_SECONDS = 5 * 60
+
+
+def make_stale_reclaim_job() -> Job:
+    """Build the scheduled stale-claim reclaim sweep.
+
+    ``reclaim_stale`` (``queue/jobs.py``) is also called once at app startup --
+    that boot-time call is kept as-is and is what catches a claim orphaned by
+    THIS process's own restart. This periodic sweep is for everything a boot
+    reclaim structurally cannot catch: a claim that goes stale while the
+    process is already up and running (its owner died without the pod
+    restarting), and the incident this job was added for -- two restarts
+    minutes apart, where the second boot's reclaim skipped jobs the first
+    restart had just orphaned because their claims were still younger than
+    the 900s threshold. Without a periodic sweep, nothing ever revisits a
+    ``running`` row again after that.
+
+    Takes no config: the 900s threshold stays a hard-coded argument to
+    ``reclaim_stale`` (not read from here), preserving the property its own
+    docstring documents -- a replica genuinely still working a job is never
+    stolen from. This job's own cadence is ``STALE_RECLAIM_INTERVAL_SECONDS``,
+    a module constant rather than a holder setting, for the same reason: this
+    is queue correctness, not an operator-tunable maintenance pass.
+    """
+
+    async def run(session: AsyncSession) -> str:
+        reclaimed = await reclaim_stale(session)
+        if reclaimed:
+            logger.info("reclaimed %d stale job(s)", reclaimed)
+        return f"reclaimed {reclaimed} stale job(s)" if reclaimed else "nothing to reclaim"
+
+    return Job(
+        name="stale_job_reclaim",
+        interval_seconds=STALE_RECLAIM_INTERVAL_SECONDS,
+        run=run,
+    )
 
 
 def make_collections_job(
