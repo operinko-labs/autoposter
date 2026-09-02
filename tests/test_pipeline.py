@@ -4,6 +4,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from conftest import decodable_png
 from sqlalchemy import select
 
 from autoposter.config.loader import load_config
@@ -464,7 +465,11 @@ class _LogoAwareProvider:
 
 def _fake_http():
     async def handler(request):
-        return httpx.Response(200, content=b"fake-image-bytes")
+        # A real, decodable PNG rather than a placeholder byte string:
+        # ``pipeline._download`` now decodes every body it keeps, so a fake
+        # that served non-image bytes would exercise the refusal path in every
+        # test on this page rather than the behaviour each one is about.
+        return httpx.Response(200, content=decodable_png())
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 

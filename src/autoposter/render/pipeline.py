@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -419,15 +420,115 @@ def adopted_fingerprint(
     )
 
 
-async def _download(http: httpx.AsyncClient, url: str, destination: Path) -> str:
-    """Fetch artwork to ``destination`` and return its SHA-256."""
+class SourceRefused(Exception):
+    """Downloaded artwork this service will not hand to ImageMagick.
+
+    A render job that raises this parks like any other failure. It carries no
+    ``served_detail``, so ``queue/worker._served_reason`` serves the bare class
+    name for ``job.last_error`` (roadmap row 209) while the full message --
+    which names the reason and the stage -- reaches the pod log through the
+    ``logger.warning(..., exc_info=True)`` on that handler's own except branch.
+    """
+
+
+# The render path's ceiling on one downloaded artwork body. Same value, and the
+# same reasoning, as ``api/candidates.PICK_MAX_BYTES``: far above any real
+# ``/original/`` poster or backdrop, low enough that a body which simply never
+# stops arriving is refused rather than written to the working directory. It is
+# a separate constant rather than an import because ``api/candidates`` imports
+# from this module -- the arrow cannot be drawn the other way.
+RENDER_MAX_BYTES = 50 * 1024 * 1024
+
+# Suffixes ``_validate_image`` passes through undecoded. Pillow reads every
+# raster format the ladder delivers (JPEG, PNG, WebP) and has no SVG decoder at
+# all, and fanart.tv genuinely serves SVG clearlogos --
+# ``compositor.build_logo_argv`` has a ``-density 300`` branch for exactly
+# those. Refusing them here would refuse artwork that renders correctly today.
+_UNVALIDATED_SUFFIXES = frozenset({".svg"})
+
+
+def _validate_image(path: Path, stage: str) -> None:
+    """Decode ``path`` in full, or refuse it.
+
+    A full pixel decode (``load()``), not a header parse. The production
+    failure this exists for -- job 40478, the 'Inside Out 2' clearlogo -- is a
+    PNG whose header is valid and whose IDAT stream contradicts it;
+    ImageMagick's own report is ``IDAT: Too much image data``. ``magick
+    identify`` and Pillow's ``verify()`` read the header and pass such a file;
+    only a decode that walks the compressed stream fails it. Before the infra
+    layer's ``MAGICK_*`` caps that image cost ~6 GiB inside the compositor and
+    OOMKilled the pod; after them it surfaced as an opaque ``magick failed
+    (1)`` from ``compositor.run``. Either way the honest place to refuse it is
+    here, at the download, with a message that names what was wrong.
+
+    ``Image.MAX_IMAGE_PIXELS`` is left at Pillow's default and active, so a
+    decompression bomb raises rather than decodes -- the guard
+    ``api/candidates`` has always had on the operator-facing pick endpoints and
+    the render path never did.
+
+    **Nothing is evicted on a refusal, because nothing cached these bytes.**
+    ``providers/cache.py`` is a TTL cache of decoded *JSON* payloads keyed by
+    the metadata request (``providers/fetch.py``); image bodies never pass
+    through it, and ``_download`` streams from the provider's CDN on every
+    attempt. So a retry of a refused job re-fetches, and a source repaired
+    upstream renders on the next attempt with no cache to invalidate.
+    """
+    if path.suffix.lower() in _UNVALIDATED_SUFFIXES:
+        return
+    try:
+        with Image.open(path) as image:
+            image.load()
+    except (
+        UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError
+    ) as exc:
+        raise SourceRefused(
+            f"{stage} did not decode after download ({type(exc).__name__})"
+        ) from exc
+
+
+async def _download(
+    http: httpx.AsyncClient, url: str, destination: Path, *, stage: str
+) -> str:
+    """Fetch artwork to ``destination`` and return its SHA-256.
+
+    Two guards stand between a provider's CDN and the first ``magick`` process,
+    because until they existed there were none: ``net/guard.store_body`` has
+    had a byte cap since 6d and this download -- the one the whole render path
+    uses -- had never grown one (``api/candidates._download_artwork``'s
+    docstring says so in as many words).
+
+    The cap is counted chunk by chunk rather than read off ``Content-Length``:
+    the header is the other end's claim, and a body that never stops arriving
+    sends none. A refusal of either kind removes the partial file before it
+    propagates, so no half-written source is left for a later step to find.
+
+    ``store_body``'s third check, the Content-Type allowlist, is deliberately
+    NOT copied. A Content-Type is a claim and only a decoder settles it (that
+    module's own words); the decode below settles it strictly, so an allowlist
+    would add no safety and would newly refuse a CDN that answers
+    ``application/octet-stream`` over bytes that decode perfectly.
+
+    ``stage`` names what is being fetched, for the refusal message.
+    """
     digest = hashlib.sha256()
-    async with http.stream("GET", url, follow_redirects=True) as response:
-        response.raise_for_status()
-        with destination.open("wb") as handle:
-            async for chunk in response.aiter_bytes():
-                digest.update(chunk)
-                handle.write(chunk)
+    size = 0
+    try:
+        async with http.stream("GET", url, follow_redirects=True) as response:
+            response.raise_for_status()
+            with destination.open("wb") as handle:
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > RENDER_MAX_BYTES:
+                        raise SourceRefused(
+                            f"{stage} exceeded the {RENDER_MAX_BYTES}-byte "
+                            "download cap"
+                        )
+                    digest.update(chunk)
+                    handle.write(chunk)
+        await asyncio.to_thread(_validate_image, destination, stage)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
     return digest.hexdigest()
 
 
@@ -807,7 +908,9 @@ async def render_artifact(
                 return render
             candidate = selection.candidate
             chosen_candidate = candidate
-            base_sha = await _download(http, candidate.url, working)
+            base_sha = await _download(
+                http, candidate.url, working, stage=f"the {art_kind} source"
+            )
             source_url = candidate.url
             provider_name = candidate.provider
             textless = candidate.is_textless
@@ -857,7 +960,9 @@ async def render_artifact(
                     logo_candidate = logo_selection.candidate
                     suffix = Path(httpx.URL(logo_candidate.url).path).suffix or ".png"
                     logo_path = Path(tmpdir) / f"logo{suffix}"
-                    logo_sha = await _download(http, logo_candidate.url, logo_path)
+                    logo_sha = await _download(
+                        http, logo_candidate.url, logo_path, stage="the clearlogo"
+                    )
                 elif not config.artwork.logo_text_fallback:
                     suppress_text = True
                 else:

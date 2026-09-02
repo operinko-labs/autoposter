@@ -1,3 +1,4 @@
+import io
 import os
 import shutil
 import subprocess
@@ -274,6 +275,22 @@ def no_outbound_network(monkeypatch):
         )
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
+
+
+def decodable_png(size: tuple[int, int] = (8, 12)) -> bytes:
+    """A small, genuinely decodable PNG for a fake artwork response.
+
+    ``render/pipeline._download`` decodes every body it keeps, so a mock
+    transport that answered with a placeholder byte string would send every
+    render test down the refusal path instead of the behaviour it is about.
+    Shared from here so the several suites that fake a provider CDN cannot
+    drift about what "an image" is.
+    """
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", size, "red").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 # Per-process on purpose: each worker process runs its own first-test drop_all,
