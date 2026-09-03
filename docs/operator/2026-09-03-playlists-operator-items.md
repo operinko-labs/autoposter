@@ -59,14 +59,17 @@ dry-run/report pass before any per-user write.
 
 ## 3. Not an ask, a disclosure: what 98a will and will not touch
 
-- Nothing is written to Plex until `playlists.apply_to_plex` is switched on.
-  With it off, a pass reports what it would do.
+- A pass writes nothing to Plex until `playlists.apply_to_plex` is switched
+  on. With it off, a pass reports what it would do. The one write outside the
+  pass is the explicit `POST /api/playlists/ops/delete` with `confirm: true`,
+  which deletes a single playlist we own on request, exactly as the
+  collections delete does, whatever the two switches say.
 - A playlist this service did not create is never modified and never deleted,
   whatever its title. Ownership is a `managed_playlists` row naming the
   playlist's rating key, and there is no adoption path — deliberately, because
   a Kometa-made playlist carries no marker to adopt from.
-- No playlist is ever deleted unless `playlists.delete_unconfigured` is
+- The pass deletes no playlist unless `playlists.delete_unconfigured` is
   switched on, and even then never more than `playlists.max_deletes` in one
   pass: past that the sweep refuses entirely and reports the numbers.
 - Nothing in 98a writes to any account but the admin's. Per-user sync is 98c
-  and is fenced on section 2 above.
+  (section 2 above).
