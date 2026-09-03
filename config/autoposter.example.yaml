@@ -79,6 +79,22 @@ badges:
   lock_artwork: true # lock the Plex field after upload so the agent cannot reclaim it
   apply_overlay_label: false # add the literal Plex label "Overlay", as the previous tool did
   adopt_from_plex: true # skip the upload when Plex is already serving this exact badged image
+  # Roadmap row 100. Opt-in bundles of this service's own transcription of
+  # Kometa's overlay families -- naming one draws its whole set, before
+  # definitions: below (so those can suppress a family member). Empty means
+  # no change at all. Available: direct_play, content_rating_au,
+  # content_rating_de, content_rating_nz, content_rating_uk,
+  # content_rating_us_movie, content_rating_us_show. An unknown or repeated
+  # name is refused at load, naming what is available.
+  #
+  # Enabling a family re-badges every item it already matches, once: the
+  # first condition: this config ever carries -- from a family or from
+  # definitions: below -- moves every already-badged item's fingerprint a
+  # single time, then the config is stable again.
+  #
+  # families:
+  #   - direct_play
+  families: []
   # Roadmap row 97. Operator-defined overlays, drawn on top of the nine
   # built-in badges. Empty means no change at all.
   #
@@ -88,11 +104,19 @@ badges:
   # back_line_width/back_radius/back_padding/back_align/back_width/
   # back_height, one image source (file, builtin or url), and for a
   # `text(...)` name the font, font_size, font_color, stroke_width,
-  # stroke_color, addon_offset and addon_position.
+  # stroke_color, addon_offset and addon_position -- plus `condition:`.
   #
   # `file:` is a path under overlays_root. `builtin:` is a path in this
   # service's bundled overlay-stamp tree (no .png needed). `url:` is
   # downloaded once and cached under overlays_root/.cache/ by URL.
+  #
+  # `condition:` restricts a definition to matching items, in the same
+  # attribute/operator/value grammar collections' own `filters:` block uses
+  # -- but a narrower vocabulary: only content_rating and resolution, what
+  # this service can read off an already-badged item. A definition with no
+  # condition draws on every badged item. An unknown attribute, an operator
+  # the attribute does not carry, or a collections-only attribute this
+  # narrowing does not reach is refused at load, naming what is allowed.
   #
   # definitions:
   #   - name: "text(4K)"
@@ -105,6 +129,8 @@ badges:
   #     back_color: "#00000099"
   #     back_radius: 30
   #     font_size: 55
+  #     condition:
+  #       resolution.regex: "(?i)2160|4k"
   definitions: []
   # Largest image a definition's `url:` source may download, in bytes.
   definition_image_max_bytes: 5242880
