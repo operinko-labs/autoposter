@@ -39,9 +39,12 @@ function stubMatchMedia(narrow: boolean) {
   };
 }
 
-/** This jsdom build exposes no `window.localStorage` at all -- which the
- * component tolerates, and which would make every persistence assertion
- * vacuous -- so the test brings its own. `unstubGlobals` removes it again. */
+/** The test brings its own `window.localStorage`, and every test gets a fresh
+ * one from `beforeEach`. Vitest 4's jsdom exposed no storage at all (a write
+ * from a toggle was a no-op); vitest 5's exposes jsdom's own, which lives as
+ * long as the file's window -- so an "Expand sidebar" click in one test was
+ * the stored choice the next test's mount restored. `unstubGlobals` removes
+ * the stub again after each test. */
 function stubStorage(): Storage {
   const data = new Map<string, string>();
   const store: Storage = {
@@ -92,6 +95,7 @@ function stubVersion(
 }
 
 beforeEach(() => {
+  stubStorage();
   stubPendingVersion();
 });
 
