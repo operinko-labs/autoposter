@@ -1338,7 +1338,11 @@ async def apply_badges(
     # above already reloaded the item for `.media`, and the view's own
     # accessors read `plex_item` the same reload-free way `filter_values.py`
     # does for everything else.
-    definitions = config.badges.definitions
+    # `all_definitions()`, not `.definitions`: a named family's definitions
+    # are drawn too, and they must be in the list the fingerprint hashes as
+    # well as in the list that gets selected over -- enabling a family has to
+    # re-badge exactly like adding a definition by hand does.
+    definitions = config.badges.all_definitions()
     view = OverlayItemView(media, facts=facts, plex_item=plex_item)
     matched_definitions, outcomes = select_overlay_definitions(definitions, view)
 
