@@ -1074,6 +1074,34 @@ async def test_the_regionals_read_plexs_certification_not_item_facts_common_sens
     )
 
 
+class _FakePlexItemMultiVersion(_FakePlexItem):
+    """Two `<Media>` entries -- what `versions.gt: 1` selects on."""
+
+    def __init__(self):
+        super().__init__()
+        self.media = self.media + [type("M", (), {
+            "parts": [type("P", (), {"file": None})()],
+            "videoResolution": "4k", "audioCodec": "eac3", "audioChannels": 6,
+        })()]
+
+
+async def test_versions_fires_on_a_multi_version_item_and_is_silent_on_a_single_one(
+    session, config_with_badges
+):
+    config_with_badges.badges.families = []
+    base_single = await _badged(session, config_with_badges, _FakePlexItem(), "v-base-1")
+    base_multi = await _badged(
+        session, config_with_badges, _FakePlexItemMultiVersion(), "v-base-2"
+    )
+
+    config_with_badges.badges.families = ["versions"]
+    silent = await _badged(session, config_with_badges, _FakePlexItem(), "v-1")
+    fires = await _badged(session, config_with_badges, _FakePlexItemMultiVersion(), "v-2")
+
+    assert _sha(silent) == _sha(base_single), "a single version must draw the gate-off pixels"
+    assert _sha(fires) != _sha(base_multi), "a multi-version item must actually draw the badge"
+
+
 async def test_enabling_a_family_re_badges_an_already_uploaded_item(
     session, config_with_badges
 ):
