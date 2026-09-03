@@ -476,7 +476,7 @@ async def test_the_wired_artwork_probe_reads_provenance_for_one_plex_item(monkey
 
 
 async def test_handle_intent_passes_plex_generated_base_through_to_process_item():
-    """The plex-preview rung (roadmap row 239) is only useful if it is
+    """The plex-preview rung (roadmap row 240) is only useful if it is
     actually wired: app.py builds the partial, _handle_intent has to carry
     it through to process_item exactly like artwork_probe does."""
     seen = {}
