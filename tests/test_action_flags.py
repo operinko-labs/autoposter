@@ -137,6 +137,20 @@ async def test_show_fallback_fires_on_the_source_mode_row_two_seven_shipped(sess
     assert healthy.id not in fired
 
 
+async def test_plex_generated_fires_on_the_source_mode_row_and_is_silent_on_a_rendered_one(
+    session, config
+):
+    """The plex-preview fallback (roadmap row 239) gets the same operator
+    surface row 132's show_fallback already has."""
+    flagged = await _seed(session, art_kind="title_card", source_mode="plex_generated")
+    healthy = await _seed(session, art_kind="title_card", source_mode="generate")
+
+    fired = await _fires_on(session, config, "plex_generated")
+
+    assert flagged.id in fired
+    assert healthy.id not in fired
+
+
 async def test_upload_failed_fires_independently_of_the_render_status(session, config):
     """`upload_status` is orthogonal to `status`: a row can be rendered
     perfectly and never have reached Plex."""
@@ -485,8 +499,8 @@ def test_every_flag_declares_a_label_a_description_and_a_detail(config):
     a chip an operator cannot identify."""
     assert set(flags.FLAGS) == {
         "missing", "skipped", "truncated", "render_failed", "show_fallback",
-        "upload_failed", "unknown_provenance", "language_miss", "provider_downgrade",
-        "textless_miss", "logo_fallback", "unscored",
+        "plex_generated", "upload_failed", "unknown_provenance", "language_miss",
+        "provider_downgrade", "textless_miss", "logo_fallback", "unscored",
     }
     for code, flag in flags.FLAGS.items():
         assert flag.code == code
