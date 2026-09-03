@@ -776,11 +776,19 @@ async def _rekey_by_identity(
         ) != "40P01":
             raise
         await session.rollback()
-        logger.warning(
-            "re-key of %s to %s lost a race; the winner's row holds the key "
-            "and this pass will upsert onto it",
-            old_key, item.rating_key, exc_info=True,
-        )
+        if isinstance(exc, IntegrityError):
+            logger.warning(
+                "re-key of %s to %s lost a race; the winner's row holds the "
+                "key and this pass will upsert onto it",
+                old_key, item.rating_key, exc_info=True,
+            )
+        else:
+            logger.warning(
+                "re-key of %s to %s lost a race to a deadlock; nothing took "
+                "the key, and this pass mints a fresh twin for the next "
+                "merge to eat",
+                old_key, item.rating_key, exc_info=True,
+            )
         return None
 
     logger.info(

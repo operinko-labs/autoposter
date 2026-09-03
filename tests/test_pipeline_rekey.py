@@ -531,6 +531,11 @@ async def test_a_lost_race_degrades_to_the_ordinary_upsert(
     assert await _audits(session) == [], (
         "a rolled-back re-key must leave no audit row"
     )
+    # L3: this is the IntegrityError arm -- the winner's row really does
+    # hold the key, unlike the deadlock arm below, so the log text must say
+    # so and must not claim a fresh twin was minted.
+    assert "the winner's row holds the key" in caplog.text
+    assert "fresh twin" not in caplog.text
 
 
 async def test_a_deadlock_degrades_to_the_ordinary_upsert(
@@ -596,6 +601,12 @@ async def test_a_deadlock_degrades_to_the_ordinary_upsert(
     assert await _audits(session) == [], (
         "a rolled-back re-key must leave no audit row"
     )
+    # L3: this is the deadlock arm -- a deadlock victim's rollback implies
+    # nothing about the key having been taken, unlike the IntegrityError arm
+    # above, so the log text must say a fresh twin is minted this pass, not
+    # that the winner's row holds the key.
+    assert "nothing took the key" in caplog.text
+    assert "fresh twin" in caplog.text
 
 
 async def test_a_non_deadlock_dbapi_error_still_fails_the_job(

@@ -525,7 +525,9 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
     to the values the scan read; a pair where EITHER row changed is skipped
     with no write at all. The survivor side is not redundant: the window this
     guard closes is the whole of ``verify_survivors``'s live Plex walk
-    (minutes, not milliseconds, at the pass's own 500-pair cap), and a worker
+    (minutes, not milliseconds, at the scale ``max_merges`` lets through --
+    that cap REFUSES an over-cap pass outright, it does not batch a large one
+    into runs of 500), and a worker
     that lands on the survivor's live key during it re-upserts ``media_items``
     -- which always runs before that same worker can go on to write a
     ``renders`` row -- so checking the survivor's stamp here catches the
@@ -848,20 +850,24 @@ def implausible_merge_count(pairs: int, total: int, config) -> str | None:
     """
     if pairs and pairs > config.max_merges:
         return (
-            f"refused: {pairs} of {total} media_items row(s) look like twin "
-            f"pairs, more than the safety cap of {config.max_merges}; this "
-            "usually means two libraries now share a name, an import "
-            "duplicated external ids, or a restore doubled the table -- "
-            "change nothing"
+            f"refused: {pairs} pair(s) ({2 * pairs} of {total} media_items "
+            f"row(s)) look like twins, more than the safety cap of "
+            f"{config.max_merges}; this usually means two libraries now "
+            "share a name, an import duplicated external ids, or a restore "
+            "doubled the table -- change nothing"
         )
-    share = pairs / total if total else 0.0
+    # A pair occupies TWO rows, so the share this compares against
+    # config/autoposter.example.yaml's "share of the library" is rows, not
+    # pairs -- pairs / total would need roughly double the real duplication
+    # before the 0.25 default ever fired.
+    share = (2 * pairs) / total if total else 0.0
     if total >= SHARE_CHECK_MIN_ITEMS and share > config.max_merge_share:
         return (
-            f"refused: {pairs} of {total} media_items row(s) look like twin "
-            f"pairs ({share:.0%}), more than the safety cap of "
-            f"{config.max_merge_share:.0%}; this usually means two libraries "
-            "now share a name, an import duplicated external ids, or a "
-            "restore doubled the table -- change nothing"
+            f"refused: {pairs} pair(s) ({2 * pairs} of {total} media_items "
+            f"row(s), {share:.0%}) look like twins, more than the safety cap "
+            f"of {config.max_merge_share:.0%}; this usually means two "
+            "libraries now share a name, an import duplicated external ids, "
+            "or a restore doubled the table -- change nothing"
         )
     return None
 
@@ -928,12 +934,21 @@ def make_merge_job(
             moved = sum(len(plan.dismissals_repoint) for plan in scan.plans)
             dropped = sum(len(plan.dismissals_drop) for plan in scan.plans)
             children = sum(plan.children for plan in scan.plans)
+            facts = sum(plan.facts_repoint for plan in scan.plans)
+            logos = sum(plan.logo_carried for plan in scan.plans)
+            parents = sum(
+                plan.pair.stale.parent_id is not None
+                and plan.pair.survivor.parent_id is None
+                for plan in scan.plans
+            )
             return (
                 f"dry run: {len(scan.plans)} of {scan.total} media_items row(s) "
                 f"would be merged into their twin; {repoint} render(s) would "
                 f"repoint and {drop} would be dropped; {moved} dismissal(s) "
                 f"would move and {dropped} would be dropped; {children} child "
-                f"row(s) would repoint before the delete"
+                f"row(s) would repoint before the delete; {facts} item_facts "
+                f"row(s) would repoint and {logos} logo marker(s) would carry; "
+                f"{parents} survivor parent link(s) would carry"
                 + _tail(scan)
             )
 
@@ -943,22 +958,37 @@ def make_merge_job(
                 "verified before its twin is deleted; change nothing"
             )
 
-        try:
-            # The factory is inside the try because it connects: a refused
-            # connection, a rejected token or a plexapi BadRequest all raise
-            # here, and every one of those messages carries the server address.
-            plex = await asyncio.to_thread(plex_factory)
-            probe = await verify_survivors(plex, scan.plans)
-        except Exception as exc:
-            # The class name only, never str(exc) and never a URL: this string
-            # is stored in scheduled_runs.last_detail, which the dashboard
-            # renders. The full traceback goes to the log.
-            logger.warning("plex_merge: verifying survivors failed", exc_info=True)
-            raise MergeRefused(
-                f"refused: verifying the surviving rows failed "
-                f"({type(exc).__name__}), so no row's death can be trusted; "
-                "change nothing"
-            ) from None
+        # The scan above issued six SELECTs (including a full media_items
+        # read) and left the session idle-in-transaction otherwise, across
+        # the whole of the probe walk below -- minutes, not milliseconds, at
+        # this branch's own scale, pinning a pooled connection and the vacuum
+        # horizon for nothing: MergePlan is frozen dataclasses and merge()
+        # re-locks and re-reads both rows anyway.
+        await session.rollback()
+
+        if not scan.plans:
+            # No plans, no probe -- and no reason to connect. After the first
+            # applied pass this is every week's steady state, so building the
+            # client here would mean a connect (and a possible refusal) on a
+            # pass with nothing to do.
+            probe = ProbeResult([], 0, 0, 0)
+        else:
+            try:
+                # The factory is inside the try because it connects: a refused
+                # connection, a rejected token or a plexapi BadRequest all raise
+                # here, and every one of those messages carries the server address.
+                plex = await asyncio.to_thread(plex_factory)
+                probe = await verify_survivors(plex, scan.plans)
+            except Exception as exc:
+                # The class name only, never str(exc) and never a URL: this string
+                # is stored in scheduled_runs.last_detail, which the dashboard
+                # renders. The full traceback goes to the log.
+                logger.warning("plex_merge: verifying survivors failed", exc_info=True)
+                raise MergeRefused(
+                    f"refused: verifying the surviving rows failed "
+                    f"({type(exc).__name__}), so no row's death can be trusted; "
+                    "change nothing"
+                ) from None
 
         outcome = await merge(session, probe.accepted)
         # BOTH keys (A6): a parked payload can name the dead key, because it

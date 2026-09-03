@@ -318,7 +318,7 @@ merge:
   # each survivor against Plex before deleting its twin.
   apply: false # dry run by default: report which pairs would merge, delete nothing
   max_merges: 500 # refuse the pass if more than this many twin pairs are found
-  max_merge_share: 0.25 # ...or more than this share of the library; that means the identity predicate is matching something it should not
+  max_merge_share: 0.25 # ...or if the rows in those pairs (two per pair) are more than this share of the library; that means the identity predicate is matching something it should not
 
 # Roadmap row 36 -- Plex's own housekeeping, run on scheduler.maintenance_days.
 # All three off: empty_trash especially, because Plex's auto-empty-trash is off

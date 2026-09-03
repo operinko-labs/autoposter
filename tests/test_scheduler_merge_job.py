@@ -30,6 +30,7 @@ from autoposter.db.models import (
 )
 from autoposter.plex.client import ResolvedItem
 from autoposter.render.pipeline import _upsert_media_item
+from autoposter.scheduler import merge as merge_module
 from autoposter.scheduler.merge import (
     MERGE_EVENT,
     MERGE_SOURCE,
@@ -603,6 +604,22 @@ def test_an_implausible_share_refuses_on_a_library_too_small_for_the_cap():
     assert implausible_merge_count(2, 3, config) is None
 
 
+def test_the_share_cap_counts_rows_not_pairs():
+    """L4: a pair occupies TWO rows, so the share this cap compares against
+    config/autoposter.example.yaml's "share of the library" is rows, not
+    pairs -- pairs / total would silently need double the real duplication
+    before the 0.25 default ever fired."""
+    config = SimpleNamespace(max_merges=500, max_merge_share=0.25)
+
+    # 2 pairs = 4 rows of 20 total = exactly a 20% share of rows: must not
+    # refuse yet under the rows reading.
+    assert implausible_merge_count(2, 20, config) is None
+    # 3 pairs = 6 rows of 20 total = a 30% share of rows: over the cap.
+    refusal = implausible_merge_count(3, 20, config)
+    assert refusal is not None
+    assert "3" in refusal and "6" in refusal and "20" in refusal
+
+
 async def test_the_job_is_named_and_paced_off_the_holder():
     holder = ConfigHolder(_config())
     job = make_merge_job(holder, lambda: FakePlex(), lambda: True)
@@ -629,10 +646,38 @@ async def test_an_empty_media_items_table_refuses(session):
     assert "refus" in summary.lower() and "empty" in summary.lower()
 
 
+async def test_an_empty_scan_never_builds_a_plex_client(session):
+    """L7: after the first applied pass, an empty scan (a non-empty table
+    with no twin pairs) is every week's steady state. Building the client
+    anyway means a connect -- and a possible refusal -- on a pass with
+    nothing to do."""
+    await _item(session, "1")  # no twin: an empty plan list, non-empty table
+
+    def exploding_factory():
+        raise AssertionError(
+            "no Plex client may be built when the scan found no plans"
+        )
+
+    job = make_merge_job(ConfigHolder(_config(apply=True)), exploding_factory,
+                         lambda: True)
+
+    summary = await job.run(session)
+
+    assert summary.startswith("merged 0 of 1")
+
+
 async def test_the_dry_run_needs_no_plex_and_writes_nothing(session):
     """A5's whole point: the report is readable during an outage, so the
-    operator can size the population before deciding anything."""
+    operator can size the population before deciding anything. L2: the dry
+    run is the surface the runbook tells the operator to read before flipping
+    ``apply``, so it must preview the same categories -- facts, logo marker,
+    survivor parent link -- the applied summary later reports."""
+    parent = await _item(session, "9", tmdb_id=999999)
     stale, survivor = await _pair(session)
+    stale.parent_id = parent.id
+    stale.logo_upload_key = "upload://abc"
+    session.add(ItemFacts(item_id=stale.id))
+    await session.commit()
     await _render(session, stale.id, "poster")
     stale_id = stale.id
 
@@ -644,6 +689,9 @@ async def test_the_dry_run_needs_no_plex_and_writes_nothing(session):
 
     assert summary.startswith("dry run:")
     assert "1 render(s) would repoint" in summary
+    assert "1 item_facts row(s) would repoint" in summary
+    assert "1 logo marker(s) would carry" in summary
+    assert "1 survivor parent link(s) would carry" in summary
     session.expire_all()
     assert (
         await session.execute(select(MediaItem).where(MediaItem.id == stale_id))
@@ -680,6 +728,31 @@ async def test_an_unhealthy_plex_refuses_the_applied_pass(session):
     assert "refus" in summary.lower() and "unhealthy" in summary.lower()
     session.expire_all()
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 2
+
+
+async def test_the_session_is_not_idle_in_transaction_when_the_probe_runs(
+    session, monkeypatch
+):
+    """M1: the scan's six SELECTs (including a full media_items read) open a
+    transaction, and the probe below is a live Plex walk of minutes at this
+    branch's own scale -- idle-in-transaction for that whole window pins a
+    pooled connection and the vacuum horizon. One ``rollback()`` between the
+    scan and the probe closes it; ``MergePlan`` is frozen dataclasses and
+    ``merge()`` re-locks and re-reads both rows anyway, so nothing is lost."""
+    await _pair(session)
+    real_verify_survivors = merge_module.verify_survivors
+    seen = {}
+
+    async def spy(plex, plans):
+        seen["in_transaction"] = session.in_transaction()
+        return await real_verify_survivors(plex, plans)
+
+    monkeypatch.setattr(merge_module, "verify_survivors", spy)
+
+    job = _job(_config(apply=True), FakePlex(live={"2"}))
+    await job.run(session)
+
+    assert seen == {"in_transaction": False}
 
 
 async def test_a_probe_failure_raises_and_names_only_the_exception_class(session):
