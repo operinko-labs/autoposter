@@ -292,6 +292,96 @@ async def test_item_detail_404s_for_an_unknown_id(client, auth_headers):
     assert response.status_code == 404
 
 
+async def test_item_detail_names_the_show_for_an_episode(client, auth_headers, session):
+    """An episode's parent_id points at its SEASON row, not the show directly
+    (see render/pipeline.py's _upsert_media_item and adopt/walk.py's
+    _resolved_episode) -- the endpoint has to climb two levels to reach the
+    show. Without the show's name the page has nothing to tell apart the
+    dozens of "Episode 26"s a real library holds."""
+    session.add(_item("rk-show", "Firefly", library="TV Shows", kind="show"))
+    await session.flush()
+    show_id = (await session.execute(select(MediaItem))).scalars().one().id
+    season = MediaItem(
+        rating_key="rk-season", library="TV Shows", kind="season",
+        title="Season 1", parent_id=show_id, season_number=1,
+    )
+    session.add(season)
+    await session.flush()
+    season_id = (
+        await session.execute(select(MediaItem).where(MediaItem.rating_key == "rk-season"))
+    ).scalar_one().id
+    episode = MediaItem(
+        rating_key="rk-episode", library="TV Shows", kind="episode",
+        title="Episode 26", parent_id=season_id, season_number=1, episode_number=26,
+    )
+    session.add(episode)
+    await session.commit()
+    episode_id = (
+        await session.execute(select(MediaItem).where(MediaItem.rating_key == "rk-episode"))
+    ).scalar_one().id
+
+    response = await client.get(f"/api/items/{episode_id}", headers=auth_headers)
+    body = response.json()
+    assert body["season_number"] == 1
+    assert body["episode_number"] == 26
+    assert body["parent"] == {"id": show_id, "title": "Firefly"}
+
+
+async def test_item_detail_names_the_show_for_a_season(client, auth_headers, session):
+    """A season's parent_id points directly at the show."""
+    session.add(_item("rk-show", "Firefly", library="TV Shows", kind="show"))
+    await session.flush()
+    show_id = (await session.execute(select(MediaItem))).scalars().one().id
+    season = MediaItem(
+        rating_key="rk-season", library="TV Shows", kind="season",
+        title="Season 1", parent_id=show_id, season_number=1,
+    )
+    session.add(season)
+    await session.commit()
+    season_id = (
+        await session.execute(select(MediaItem).where(MediaItem.rating_key == "rk-season"))
+    ).scalar_one().id
+
+    response = await client.get(f"/api/items/{season_id}", headers=auth_headers)
+    body = response.json()
+    assert body["parent"] == {"id": show_id, "title": "Firefly"}
+
+
+async def test_item_detail_degrades_honestly_when_the_parent_is_unresolved(
+    client, auth_headers, session
+):
+    """The upsert leaves parent_id NULL when the parent has not been processed
+    yet (render/pipeline.py's _upsert_media_item). The endpoint must not
+    invent a show name for that case -- it reports no parent, same as an item
+    that has none."""
+    session.add(
+        MediaItem(
+            rating_key="rk-episode", library="TV Shows", kind="episode",
+            title="Episode 26", parent_id=None, season_number=1, episode_number=26,
+        )
+    )
+    await session.commit()
+    episode_id = (await session.execute(select(MediaItem))).scalars().one().id
+
+    response = await client.get(f"/api/items/{episode_id}", headers=auth_headers)
+    body = response.json()
+    assert body["parent"] is None
+    assert body["season_number"] == 1
+    assert body["episode_number"] == 26
+
+
+async def test_item_detail_movie_has_no_parent(client, auth_headers, session):
+    session.add(_item("rk1", "A"))
+    await session.commit()
+    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+
+    response = await client.get(f"/api/items/{item_id}", headers=auth_headers)
+    body = response.json()
+    assert body["parent"] is None
+    assert body["season_number"] is None
+    assert body["episode_number"] is None
+
+
 # --- /api/collections ---
 
 

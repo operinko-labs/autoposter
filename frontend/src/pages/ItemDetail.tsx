@@ -25,6 +25,20 @@ function ratioFor(artKind: string): "poster" | "wide" {
   return artKind === "poster" || artKind === "season_poster" ? "poster" : "wide";
 }
 
+/** "S02E26" -- mirrors the project's own zero-padded convention
+ * (src/autoposter/badges/values.py's episode_text). Null unless both numbers
+ * are present, which for a well-formed episode row always holds; a missing
+ * one degrades to no code rather than a half-built string. */
+function seasonEpisodeCode(seasonNumber: number | null, episodeNumber: number | null): string | null {
+  if (seasonNumber === null || episodeNumber === null) return null;
+  return `S${String(seasonNumber).padStart(2, "0")}E${String(episodeNumber).padStart(2, "0")}`;
+}
+
+/** "S02" -- the season-page analogue of seasonEpisodeCode. */
+function seasonCode(seasonNumber: number | null): string | null {
+  return seasonNumber === null ? null : `S${String(seasonNumber).padStart(2, "0")}`;
+}
+
 /** A fingerprint is a 64-character hex digest. Shown whole it pushes every
  * other column off a laptop screen, and no one reads one -- they compare two.
  * A prefix is enough to compare by eye, and the full value is on the title. */
@@ -827,17 +841,50 @@ export function ItemDetail() {
       ? [artKindFor(item.kind)]
       : item.renders.map((render) => render.art_kind).sort();
 
+  // Named after the show it belongs to when one is known -- an episode or
+  // season titled on its own ("Episode 26", "Season 2") is indistinguishable
+  // from every other item Plex gives that same title. `item.parent` is null
+  // both for a movie/show (which has none) and for a season/episode whose
+  // parent hasn't been resolved yet (routes.py's item_detail degrades
+  // honestly rather than inventing a name), so both fall back to the plain
+  // title unchanged.
+  const parentCode =
+    item.parent === null
+      ? null
+      : item.kind === "episode"
+        ? seasonEpisodeCode(item.season_number, item.episode_number)
+        : item.kind === "season"
+          ? seasonCode(item.season_number)
+          : null;
+
   return (
     <>
       <div className="page-header">
-        <h1>{item.title}</h1>
+        <h1>
+          {item.parent === null ? (
+            item.title
+          ) : (
+            <>
+              <Link to={`/items/${item.parent.id}`}>{item.parent.title}</Link>
+              {" — "}
+              {parentCode !== null && `${parentCode} · `}
+              {item.title}
+            </>
+          )}
+        </h1>
         <button type="button" className="primary" disabled={busy} onClick={() => void reprocess()}>
           Re-run
         </button>
       </div>
 
       <p className="item-meta muted">
-        <Link to="/library">Library</Link> · {item.library} · {item.kind} ·{" "}
+        <Link to="/library">Library</Link> · {item.library} ·{" "}
+        {item.parent !== null && (
+          <>
+            <Link to={`/items/${item.parent.id}`}>{item.parent.title}</Link> ·{" "}
+          </>
+        )}
+        {item.kind} ·{" "}
         <span className="mono">rating key {item.rating_key ?? "—"}</span>
       </p>
 
