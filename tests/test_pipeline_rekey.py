@@ -26,6 +26,7 @@ from pathlib import Path
 import httpx
 from conftest import decodable_png
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from autoposter.config.loader import load_config
 from autoposter.db.models import EventLog, MediaItem, Render
@@ -528,6 +529,104 @@ async def test_a_lost_race_degrades_to_the_ordinary_upsert(
     assert await _audits(session) == [], (
         "a rolled-back re-key must leave no audit row"
     )
+
+
+async def test_a_deadlock_degrades_to_the_ordinary_upsert(
+    session, session_factory, tmp_path, monkeypatch, caplog
+):
+    """A lock cycle across two identity re-keys raises ``OperationalError``
+    (Postgres ``DeadlockDetected``), not ``IntegrityError`` -- the same
+    rollback-then-continue that saves a lost race on the unique constraint
+    must also save this, or the job fails instead of degrading to the twin
+    path.
+
+    ``flush`` -- not ``commit`` -- is monkeypatched to fail exactly once, on
+    the re-key's own flush, and the fake never calls the real flush: the real
+    ``stale.rating_key = item.rating_key`` mutation must never reach the
+    database, because an actually-flushed, still-uncommitted UPDATE to the
+    same unique column would make the winner row landed below BLOCK on that
+    open transaction instead of failing -- a real lock wait, not the
+    exception this pins. The winner lands under the resolved key from a
+    second session so the fallthrough's ordinary upsert has a genuine row to
+    land on, the same shape ``test_a_lost_race_degrades_to_the_ordinary_upsert``
+    pins for the unique-constraint race.
+    """
+    stale = await _row(session, "1")
+    stale_id = stale.id
+    real_flush = session.flush
+    calls = {"n": 0}
+
+    async def flush_or_deadlock():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            async with session_factory() as other:
+                other.add(MediaItem(
+                    rating_key="2", library="Movies", kind="movie",
+                    title="Winner", tmdb_id=693134, imdb_id="tt15239678",
+                ))
+                await other.commit()
+            raise OperationalError(
+                "UPDATE media_items SET rating_key = %s", ("2",),
+                Exception("deadlock detected"),
+            )
+        await real_flush()
+
+    monkeypatch.setattr(session, "flush", flush_or_deadlock)
+    seen = _row_level_render_artifact(monkeypatch)
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
+                          rating_key="1")
+
+    with caplog.at_level(logging.WARNING):
+        results = await pipeline.process_item(
+            session, _config(tmp_path), None, _FakePlex(_resolved("2")), [], intent,
+        )
+
+    assert len(results) == 2, "the job must complete, not fail, on a deadlock"
+    session.expire_all()
+    assert {row.rating_key for row in await _items(session)} == {"1", "2"}, (
+        "the loser must not have duplicated the key"
+    )
+    assert stale_id not in {item_id for item_id, _ in seen}, (
+        "the pass must have upserted onto the winner's row"
+    )
+    assert await _audits(session) == [], (
+        "a rolled-back re-key must leave no audit row"
+    )
+
+
+async def test_the_ambiguous_path_releases_its_locks_before_returning(
+    session, session_factory
+):
+    """The ambiguous branch used to return ``None`` holding ``FOR UPDATE`` on
+    both candidate rows for the rest of the render window -- the provider
+    fetch, the image download, the ImageMagick compose -- blocking any
+    concurrent upsert or prune on either row for that whole time. It must
+    roll back before returning.
+
+    Calling ``_rekey_by_identity`` directly, rather than through
+    ``process_item``, is deliberate: ``process_item`` commits again later in
+    its own ordinary upsert, which would release the lock as a side effect
+    and hide the defect this pins.
+    """
+    await _row(session, "1")
+    await _row(session, "3")
+    resolved = _resolved("2")
+
+    result = await pipeline._rekey_by_identity(session, resolved)
+
+    assert result is None
+    async with session_factory() as other:
+        rows = (
+            await other.execute(
+                select(MediaItem)
+                .where(MediaItem.rating_key.in_(["1", "3"]))
+                .with_for_update(nowait=True)
+            )
+        ).scalars().all()
+        assert len(rows) == 2, (
+            "a second session could not lock the candidate rows -- the "
+            "ambiguous path is still holding them"
+        )
 
 
 # --- the end-to-end claim, through the genuine render_artifact -------------

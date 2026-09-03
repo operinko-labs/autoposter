@@ -10,7 +10,7 @@ import httpx
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.badges.compose import (
@@ -723,6 +723,14 @@ async def _rekey_by_identity(
                 "(%s in %r); the twin merge owns this pair",
                 item.rating_key, len(candidates), item.kind, item.library,
             )
+        # The candidate query above takes FOR UPDATE. Left open, this
+        # transaction would hold that lock across the rest of process_item's
+        # render -- the provider fetch, the image download, the ImageMagick
+        # compose -- blocking any concurrent upsert or prune on either row
+        # for that whole window. Rolling back releases it immediately; there
+        # is nothing pending in this transaction to lose (the candidate
+        # query is read-only).
+        await session.rollback()
         return None
 
     stale = candidates[0]
@@ -755,7 +763,12 @@ async def _rekey_by_identity(
             outcome=f"re-keyed {old_key} -> {item.rating_key} on an identity match",
         ))
         await session.commit()
-    except IntegrityError:
+    except (IntegrityError, OperationalError):
+        # IntegrityError is the unique-constraint race (two workers resolve
+        # the same identity at once). OperationalError also belongs here: a
+        # lock cycle across two concurrent re-keys surfaces as Postgres
+        # DeadlockDetected, which SQLAlchemy raises as OperationalError, not
+        # IntegrityError -- and a lost race must never fail a job either way.
         await session.rollback()
         logger.warning(
             "re-key of %s to %s lost a race; the winner's row holds the key "
