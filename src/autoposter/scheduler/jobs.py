@@ -246,6 +246,15 @@ async def _stamp_and_enqueue(session: AsyncSession, items) -> int:
             year=item.year,
             season_number=item.season_number,
             episode_number=item.episode_number,
+            # The row's own Plex identity, like every other row-derived intent
+            # in the tree. Without it this sweep was one of the two SILENT
+            # twin producers: no key means no rating-key hint, so every drift
+            # job took the GUID walk, resolved the live key and upserted a
+            # second row -- and the pipeline's fork warning never fired,
+            # because it only fires when the intent carried a key to disagree
+            # with. The pipeline's identity re-key closes the hole either way;
+            # carrying the key also makes the fork visible in the log.
+            rating_key=item.rating_key,
         )
         job_id = await enqueue(
             session,
