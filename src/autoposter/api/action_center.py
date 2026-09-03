@@ -637,14 +637,19 @@ async def _backfill_state(session) -> tuple[int, int, int, int]:
     in-flight key at all, every unscored row is ordinary progress and the
     population is a plain ``COUNT(*)`` -- no ORM materialisation.
 
-    This is deliberately narrower than the investigation's own accounting
-    (the structurally-stale "twin" rows M1a names are the pruner's territory,
-    not this endpoint's -- see ``scheduler/prune.py``): a stale twin still
-    reads as an ordinary unscored row here, because the only cheap read
-    available -- ``media_items`` alone -- cannot tell one from a row that is
-    simply next in line, and the module that CAN tell needs a live Plex probe
-    (``PlexClient.exists_many``) this read-only progress read has no business
-    making per request.
+    This is deliberately narrower than the investigation's own accounting: a
+    stale twin still reads as an ordinary unscored row here, because the only
+    cheap read available -- ``media_items`` alone -- cannot tell one from a
+    row that is simply next in line.
+
+    The twins are the TWIN-MERGE job's territory (``scheduler/merge.py``), not
+    the pruner's. That attribution was wrong when it was written: the prune's
+    "gone" test is identity EXISTENCE, and a re-keyed item exists -- via the
+    same GUID walk that forked it -- so ``plex_prune`` correctly reports zero
+    against a library full of twins and could not be made to own them without
+    changing what "gone" means. The merge job's own scan CAN tell, and its
+    summary reports the count. That is the right surface for it, one click
+    away, rather than a fourth number on this panel.
     """
     done = (
         await session.execute(
