@@ -26,6 +26,11 @@ from autoposter.overlays.schema import OverlayDefinition
 # overlay's OWN NAME, `Direct-Play`, which is why the definition's `builtin:`
 # and `name` are the same string. `resolution.regex` is Kometa's own
 # selection, and `tag` carries `.regex` in this service's operator set too.
+# `back_radius=30` is NOT in `direct_play.yml` itself -- it inherits from the
+# un-vendored `templates.yml` (`external_templates: default: templates`),
+# grammar probe section 5.5's `standard` template default. All six regional
+# files set it explicitly to the same 30, so this is that same value,
+# transcribed from the probe rather than from a vendored file.
 DIRECT_PLAY: list[OverlayDefinition] = [
     OverlayDefinition(
         name="Direct-Play",
@@ -220,6 +225,19 @@ CONTENT_RATING_US_SHOW: list[OverlayDefinition] = [
 # by the uk* file count (16) only reconciling at 2 files per bucket across
 # EIGHT buckets. Task 2's report names this divergence from the plan's own
 # recon; this module transcribes the real file, not the recon's count.
+#
+# These eight buckets are NOT disjoint: `uk_12` and `uk_12a` share six
+# aliases ("PG-13 - Teens 13 or older", no/9, no/09, no/10, no/11, no/12),
+# and that alias also appears in `uk_15` -- so a single item can match three
+# UK definitions at once, all drawn at the same coordinates. This is
+# upstream's overlap (Kometa's `content_rating_uk.yml` ships the same
+# overlapping alias lists and sets no `group:` either), not a transcription
+# error, and not new in `12a` -- `uk_12`/`uk_15` already shared one alias at
+# seven buckets; `12a` widens the overlap to six. It is transcribed
+# faithfully rather than resolved, so arbitration between stacked UK
+# overlays on a matching item falls to `suppress_overlays`/`group`/`weight`
+# on the operator's own definitions -- this module sets none of those, and
+# an operator hitting a stack should add a `suppress_overlays` entry.
 CONTENT_RATING_UK: list[OverlayDefinition] = [
     OverlayDefinition(
         name="uk_u",

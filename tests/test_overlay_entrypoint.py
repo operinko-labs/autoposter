@@ -823,14 +823,15 @@ async def test_direct_play_fires_on_a_4k_item_and_is_silent_on_a_1080_one(
     session, config_with_badges
 ):
     config_with_badges.badges.families = []
-    baseline = await _badged(session, config_with_badges, _FakePlexItem(), "dp-base")
+    base_1080 = await _badged(session, config_with_badges, _FakePlexItem(), "dp-base-1080")
+    base_4k = await _badged(session, config_with_badges, _FakePlexItem4k(), "dp-base-4k")
 
     config_with_badges.badges.families = ["direct_play"]
     silent = await _badged(session, config_with_badges, _FakePlexItem(), "dp-1080")
     fires = await _badged(session, config_with_badges, _FakePlexItem4k(), "dp-4k")
 
-    assert _sha(silent) == _sha(baseline), "1080p must draw the gate-off pixels"
-    assert _sha(fires) != _sha(baseline), "4k must actually draw Direct-Play"
+    assert _sha(silent) == _sha(base_1080), "1080p must draw the gate-off pixels"
+    assert _sha(fires) != _sha(base_4k), "4k must actually draw Direct-Play"
 
 
 async def test_a_regional_fires_on_its_bucket_and_is_silent_off_it(
