@@ -302,3 +302,103 @@ async def test_migration_collapses_duplicate_pending_and_deferred_dedupe_rows():
             await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}_dedupe"')
         finally:
             await maint.close()
+
+
+async def test_migration_collapses_duplicate_parked_dedupe_rows():
+    """The Failures-page incident this migration exists to fix: before #138
+    stopped re-selecting blocked items, every backfill press for one already
+    -parked item minted a fresh job that failed and parked alongside the
+    previous parked rows -- 12 piled up for one movie, all "Inside Out 2".
+    uq_jobs_pending_dedupe never covered ``parked`` (only pending/deferred),
+    so nothing stopped the pile from growing; fail()'s park arm now sweeps
+    live going forward (see test_queue.py's
+    test_fail_parking_dismisses_a_parked_sibling_sharing_the_dedupe_key), but
+    the historical pile needs a one-time collapse. Unlike the pending/
+    deferred collapse above (which keeps the *oldest* row), this keeps the
+    *newest* (highest id) -- it carries the freshest failure reason, and
+    Retry always acts on whichever row is left. Seeded here by raw INSERT: 3
+    duplicate parked rows for one dedupe_key plus one unrelated parked row
+    that must survive untouched. Walks to the revision before this
+    migration, seeds, then upgrades to head and checks exactly one survivor
+    remains.
+    """
+    if not await _postgres_reachable():
+        _unreachable_postgres()
+
+    before_collapse = "f3aec27ebea8"
+
+    maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+    try:
+        await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}_parked"')
+        await maint.execute(f'CREATE DATABASE "{SCRATCH_DB_NAME}_parked"')
+    finally:
+        await maint.close()
+
+    url = SCRATCH_DB_URL.replace(SCRATCH_DB_NAME, SCRATCH_DB_NAME + "_parked")
+    env = dict(os.environ, AUTOPOSTER_DATABASE_URL=url)
+
+    def alembic(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        )
+
+    try:
+        step = alembic("upgrade", before_collapse)
+        assert step.returncode == 0, step.stdout + step.stderr
+
+        conn = await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql"), timeout=5)
+        try:
+            await conn.execute(
+                "INSERT INTO jobs (kind, payload, dedupe_key, state, attempts, last_error) "
+                "VALUES ('process_item', '{}'::jsonb, 'movie:tmdb:1000', 'parked', 5, "
+                "'first press')"
+            )
+            await conn.execute(
+                "INSERT INTO jobs (kind, payload, dedupe_key, state, attempts, last_error) "
+                "VALUES ('process_item', '{}'::jsonb, 'movie:tmdb:1000', 'parked', 5, "
+                "'second press')"
+            )
+            newest_id = await conn.fetchval(
+                "INSERT INTO jobs (kind, payload, dedupe_key, state, attempts, last_error) "
+                "VALUES ('process_item', '{}'::jsonb, 'movie:tmdb:1000', 'parked', 5, "
+                "'newest press') RETURNING id"
+            )
+            other_id = await conn.fetchval(
+                "INSERT INTO jobs (kind, payload, dedupe_key, state, attempts) "
+                "VALUES ('process_item', '{}'::jsonb, 'movie:tmdb:2000', 'parked', 5) "
+                "RETURNING id"
+            )
+        finally:
+            await conn.close()
+
+        head = alembic("upgrade", "head")
+        assert head.returncode == 0, (
+            "migrating a jobs table with duplicate parked rows failed:\n"
+            + head.stdout + head.stderr
+        )
+
+        conn = await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql"), timeout=5)
+        try:
+            rows = await conn.fetch(
+                "SELECT id, state, last_error FROM jobs WHERE dedupe_key = 'movie:tmdb:1000' "
+                "ORDER BY id"
+            )
+            other_state = await conn.fetchval("SELECT state FROM jobs WHERE id = $1", other_id)
+        finally:
+            await conn.close()
+
+        survivors = [r for r in rows if r["state"] != "dismissed"]
+        assert len(survivors) == 1, f"expected exactly one survivor, got {[dict(r) for r in rows]}"
+        assert survivors[0]["id"] == newest_id, "the newest row must be the one kept"
+        assert survivors[0]["state"] == "parked"
+        assert survivors[0]["last_error"] == "newest press"
+        dismissed_count = sum(1 for r in rows if r["state"] == "dismissed")
+        assert dismissed_count == 2
+        assert other_state == "parked", "an unrelated dedupe_key's row must be untouched"
+    finally:
+        maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+        try:
+            await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}_parked"')
+        finally:
+            await maint.close()

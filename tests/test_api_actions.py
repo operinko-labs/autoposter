@@ -11,6 +11,7 @@ from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.db.models import Job, MediaItem
+from autoposter.queue.jobs import fail
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -288,6 +289,35 @@ async def test_retrying_a_job_whose_item_is_deferred_is_also_409(
 async def test_retrying_an_unknown_job_is_404(client, auth_headers):
     response = await client.post("/api/jobs/999999/retry", headers=auth_headers)
     assert response.status_code == 404
+
+
+async def test_retry_then_repark_reuses_the_same_row(client, auth_headers, session):
+    """retry_job flips the existing parked row back to pending rather than
+    inserting a new one. Confirmed here, not just read from the source: retry
+    it, then fail it back to parked (fail()'s own park-sibling sweep would
+    dismiss a second row for this dedupe_key if one existed), and check
+    exactly one row for the key remains -- the same id, carrying the fresh
+    reason."""
+    dedupe_key = "movie:tmdb:900"
+    session.add(_parked_job(dedupe_key=dedupe_key, attempts=5))
+    await session.commit()
+    job_id = (await session.execute(select(Job.id))).scalar_one()
+
+    response = await client.post(f"/api/jobs/{job_id}/retry", headers=auth_headers)
+    assert response.status_code == 200
+
+    session.expire_all()
+    # max_attempts=0: retry() reset attempts to 0, and this asserts the park
+    # arm fires without depending on a separate claim() call to bump it.
+    state = await fail(session, job_id, "boom again", max_attempts=0)
+    assert state == "parked"
+
+    rows = (
+        await session.execute(select(Job).where(Job.dedupe_key == dedupe_key))
+    ).scalars().all()
+    assert len(rows) == 1, "retry-then-repark must not duplicate the row"
+    assert rows[0].id == job_id
+    assert rows[0].last_error == "boom again"
 
 
 async def test_retrying_a_job_that_is_not_parked_is_404_not_500(client, auth_headers, session):
