@@ -19,10 +19,15 @@ from autoposter.badges.compose import (
     badge_values,
     compose as compose_badges,
 )
-from autoposter.badges.values import media_info_from_plex, video_format_text
+from autoposter.badges.values import (
+    media_info_from_plex,
+    plex_native_ratings,
+    video_format_text,
+)
 from autoposter.config.schema import Config
 from autoposter.db.models import ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
+from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
 from autoposter.overlays.selection import OverlayItemView
@@ -1284,7 +1289,7 @@ async def _already_in_plex(config, probe, plex_item, render, fingerprint) -> boo
 
 
 async def apply_badges(
-    session, config, render, item, plex_item, facts, probe=None, *, http=None
+    session, config, render, item, plex_item, facts, probe=None, *, http=None, mdblist=None
 ) -> None:
     """Badge one rendered artifact and upload it, if anything changed.
 
@@ -1307,6 +1312,12 @@ async def apply_badges(
     simply cannot resolve one -- ``resolve_image_path`` raises
     ``OverlaySourceError``, which the loop below already turns into a
     skip-with-a-warning.
+
+    ``mdblist`` is roadmap row 100 sub-phase C2a's rating source, optional
+    with a ``None`` default for the same reason ``http`` is: every existing
+    caller keeps working unchanged. With no client, the eleven ``mdb_*``
+    tokens simply do not resolve -- ``UnresolvedVariable`` is caught per
+    definition, same as any other unresolved token.
     """
     if not config.badges.enabled:
         return
@@ -1327,12 +1338,42 @@ async def apply_badges(
     # carry `.media`, so that is not a rare path. On the event loop it stalls
     # the liveness probe and every other worker.
     media = await asyncio.to_thread(media_info_from_plex, plex_item)
+    critic_rating = getattr(facts, "critic_rating", None)
+    audience_rating = getattr(facts, "audience_rating", None)
+    ratings: dict[str, float | None] = dict(plex_native_ratings(plex_item))
+    # The imdb_rating/tmdb_rating aliases (roadmap row 100, sub-phase C2a):
+    # this service's IMDb/TMDb facts ARE Kometa's imdb_rating/tmdb_rating
+    # rating-source values (probe bucket (a)) -- no new fetch, just making
+    # the <<imdb_rating>>/<<tmdb_rating>> SPELLINGS resolve too, alongside
+    # the pre-existing <<critic_rating>>/<<audience_rating>> ones.
+    if critic_rating is not None:
+        ratings["imdb_rating"] = critic_rating
+    if audience_rating is not None:
+        ratings["tmdb_rating"] = audience_rating
+    # MDBList's eleven mdb_* ratings, per-pass, never persisted (adjudication
+    # A7). `item.kind in ("movie", "show")` mirrors `facts/gather.py::
+    # gather_facts`'s own gate for `mdblist.content_rating` exactly -- season
+    # and episode badges do not carry mdb_* ratings in this slice. A
+    # transient MDBList failure must degrade this one set of values, not the
+    # whole badge stage: same two `except` clauses `gather_facts` already
+    # uses for the same client.
+    if mdblist is not None and item.kind in ("movie", "show"):
+        try:
+            ratings.update(await mdblist.ratings(
+                tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id,
+                is_movie=item.kind == "movie",
+            ))
+        except MDBListLimitReached:
+            logger.warning("mdblist daily limit reached; skipping mdb_* overlay ratings")
+        except httpx.HTTPError as exc:
+            logger.warning("mdblist request failed; skipping mdb_* overlay ratings: %s", exc)
     inputs = BadgeInputs(
         media=media,
-        critic_rating=getattr(facts, "critic_rating", None),
-        audience_rating=getattr(facts, "audience_rating", None),
+        critic_rating=critic_rating,
+        audience_rating=audience_rating,
         content_rating=getattr(facts, "content_rating", None),
         video_format=video_format_text(media),
+        ratings=ratings,
     )
     values = badge_values(render.art_kind, inputs)
 
@@ -1366,7 +1407,7 @@ async def apply_badges(
     # apply to.
     fingerprint = badge_fingerprint(
         render.fingerprint or "", render.art_kind, values, manifest_sha(),
-        definitions, outcomes,
+        definitions, outcomes, ratings=ratings,
     )
     if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
         return
@@ -1610,7 +1651,7 @@ async def process_item(
             for render in results:
                 await apply_badges(
                     session, config, render, media_item, plex_item, facts,
-                    probe=artwork_probe, http=http,
+                    probe=artwork_probe, http=http, mdblist=mdblist,
                 )
         except Exception:
             # Same containment as the metadata-operations block above: the

@@ -125,6 +125,7 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "trash",
         "duplicate",
         "unmatched",
+        "versions",
     ]
 
 
@@ -171,7 +172,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     assert {k: len(v) for k, v in by_type.items()} == {
         "tag": 13,
         "str": 3,
-        "int": 3,
+        "int": 4,
         "float": 3,
         "date": 3,
         "duration": 1,
@@ -190,6 +191,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "plays",
         "last_played",
         "user_rating",
+        "versions",
     ]
     assert by_source["tier2-batched"] == [
         "genre",
@@ -281,7 +283,31 @@ def test_item_kinds_are_movie_show_or_both():
         "unplayed", "writer",
     ]
     assert show_only == ["network"]
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 20
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 21
+
+
+def test_versions_is_filterable_with_the_int_operators():
+    """Dialect 1 of A14's both-dialect pin: `versions.gt` in a `filters:`
+    block, the way the versions overlay family (T2) will select on it."""
+    assert evaluate(parse_filters({"versions.gt": 1}), _view("versions", 2)) is True
+    assert evaluate(parse_filters({"versions.gt": 1}), _view("versions", 1)) is False
+    assert evaluate(parse_filters({"versions.gt": 1}), _view("versions", None)) is False
+
+
+def test_versions_is_not_searchable_and_the_refusal_says_where_it_lives():
+    """Dialect 2 of A14's both-dialect pin: `versions` is filterable but has
+    no Plex search field, so a `plex_search:` use of it is the FIRST REAL
+    (non-synthetic) row to reach `_split_key`'s `searching and not
+    attribute.searchable` branch -- written and proven with a synthetic row
+    since search-tails-1
+    (`test_a_search_refuses_a_filter_only_attribute_naming_the_other_block`
+    above); reachable for real now."""
+    with pytest.raises(ValueError) as error:
+        parse_filters({"versions.gt": 1}, searching=True)
+    message = str(error.value)
+    assert "versions" in message
+    assert "no search field" in message
+    assert "filters:" in message
 
 
 def test_every_operator_maps_onto_plexapis_own_operator_table():
@@ -358,7 +384,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 24, ("movie",): 8, ("show",): 1,
+        ("movie", "show"): 24, ("movie",): 8, ("show",): 1, (): 1,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -366,38 +392,27 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     assert BY_NAME["duration"].search_kinds == ("movie",)
 
 
-def test_every_row_is_searchable_and_twentyfive_are_filterable():
-    """The set arithmetic, pinned so it cannot rot silently.
-
-    Kometa's search vocabulary is 55 non-music attributes and its filter
-    vocabulary is 70 names; this table covers 33 of the first and 25 of the
-    second. The module docstring carries the full derivation. Phase 10a added
-    ``decade`` (search-only, so searchable and not filterable) and ``country``
-    (in Kometa's 26-name overlap, so both). Phase B added the four people rows
-    and ``user_rating``, all of which are in both vocabularies -- ``actor``,
-    ``director``, ``writer`` and ``producer`` are Kometa FILTERS as well as
-    searches (builder.py:278-350) and ``user_rating`` is one of its
-    ``number_filters`` -- so the searchable-minus-filterable set is unchanged
-    and both counts moved by five.
-
-    Search-tails-1 added ``title`` and ``edition`` (both vocabularies, so both
-    counts moved by two) and the five media booleans (search-only, so only the
-    searchable count moved by five -- they join unplayed/progress/decade in
-    the difference set).
-    """
+def test_every_row_but_versions_is_searchable_and_twentysix_are_filterable():
+    """C2a's `versions` row (adjudication A14) is the table's first
+    filterable-but-not-searchable row: it has no Plex search field at all
+    (Kometa's own `versions` filter has none -- the search-side spelling is
+    the separate, unfilterable `duplicate` row). Every other row remains
+    both, unchanged."""
     from autoposter.collections.filters import (
         FILTERABLE_ATTRIBUTES,
         FILTER_ATTRIBUTES,
         SEARCHABLE_ATTRIBUTES,
     )
 
-    assert all(row.searchable for row in FILTER_ATTRIBUTES)
+    assert all(row.searchable for row in FILTER_ATTRIBUTES if row.name != "versions")
+    assert BY_NAME["versions"].searchable is False
     assert len(SEARCHABLE_ATTRIBUTES) == 33
-    assert len(FILTERABLE_ATTRIBUTES) == 25
+    assert len(FILTERABLE_ATTRIBUTES) == 26
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
         "unplayed", "progress", "decade",
         "hdr", "dovi", "trash", "duplicate", "unmatched",
     }
+    assert set(FILTERABLE_ATTRIBUTES) - set(SEARCHABLE_ATTRIBUTES) == {"versions"}
 
 
 def test_the_show_search_field_rescoping_is_transcribed():

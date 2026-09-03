@@ -4,8 +4,15 @@ from pathlib import Path
 
 from PIL import Image
 
-from autoposter.badges.compose import BadgeInputs, badge_fingerprint, badge_values, compose
+from autoposter.badges.compose import (
+    BadgeInputs,
+    _variable_values,
+    badge_fingerprint,
+    badge_values,
+    compose,
+)
 from autoposter.badges.values import MediaInfo
+from autoposter.overlays.schema import OverlayDefinition
 
 ORACLE = Path("tests/fixtures/oracle")
 
@@ -85,3 +92,83 @@ def test_compose_stamps_the_overlay_exif_marker():
     images; anything consuming our output should see the same marker."""
     data = compose(ORACLE / "All_Souls_base_no_overlay.jpg", "poster", _inputs())
     assert Image.open(io.BytesIO(data)).getexif().get(0x04BC) == "overlay"
+
+
+def test_variable_values_merges_ratings_in():
+    inputs = _inputs(ratings={"mdb_average_rating": 6.5, "plex_imdb_rating": 7.7})
+    values = _variable_values("", inputs)
+    assert values["mdb_average_rating"] == 6.5
+    assert values["plex_imdb_rating"] == 7.7
+
+
+def test_variable_values_drops_a_none_valued_rating():
+    inputs = _inputs(ratings={"mdb_rating": None, "user_rating": 8.0})
+    values = _variable_values("", inputs)
+    assert "mdb_rating" not in values
+    assert values["user_rating"] == 8.0
+
+
+def test_an_empty_ratings_dict_changes_nothing():
+    """Global Constraint 6: the default is an empty dict, and an empty dict
+    merged in is the pre-C2a output exactly."""
+    with_default = _variable_values("", _inputs())
+    with_empty = _variable_values("", _inputs(ratings={}))
+    assert with_default == with_empty
+
+
+def test_unchanged_rating_values_do_not_move_the_fingerprint():
+    """MEDIUM finding, preflight review, ruled for correctness: `ratings`
+    folds each definition's USED rating-token VALUE into the fingerprint too
+    -- guarded the same way `outcomes` is (Global Constraint 6). The same
+    resolved values passed twice must produce the same digest."""
+    stamp = OverlayDefinition(name="text(<<mdb_rating>>)")
+    ratings = {"mdb_rating": 6.5}
+    a = badge_fingerprint("abc", "poster", {"critic": "8.6"}, "m", [stamp], ratings=ratings)
+    b = badge_fingerprint("abc", "poster", {"critic": "8.6"}, "m", [stamp], ratings=dict(ratings))
+    assert a == b
+
+
+def test_a_changed_rating_value_used_by_a_definition_moves_the_fingerprint():
+    """The staleness gap this closes: a definition that NAMES a rating token
+    must re-badge when that token's resolved value moves, even though the
+    config (`definitions`) itself did not change at all -- otherwise an
+    already-uploaded item's rating text goes stale forever."""
+    stamp = OverlayDefinition(name="text(<<mdb_rating>>)")
+    before = badge_fingerprint(
+        "abc", "poster", {"critic": "8.6"}, "m", [stamp], ratings={"mdb_rating": 6.5},
+    )
+    after = badge_fingerprint(
+        "abc", "poster", {"critic": "8.6"}, "m", [stamp], ratings={"mdb_rating": 7.0},
+    )
+    assert before != after
+
+
+def test_a_none_valued_rating_produces_the_same_digest_as_an_absent_one():
+    """L-1, fix round 1: the digest guard keyed on key PRESENCE (`var in
+    ratings`), not on the value being resolved, even though the docstring
+    claims 'no (currently-resolved) rating token'. A token whose value is
+    `None` -- present because a client is configured, but this item's own
+    value did not resolve -- contributed `=None` to the digest, moving the
+    fingerprint on toggling the client on even though `_variable_values`
+    strips the `None` and the definition draws nothing different. Absent and
+    None-valued must produce the SAME digest."""
+    stamp = OverlayDefinition(name="text(<<mdb_rating>>)")
+    absent = badge_fingerprint("abc", "poster", {"critic": "8.6"}, "m", [stamp], ratings={})
+    none_valued = badge_fingerprint(
+        "abc", "poster", {"critic": "8.6"}, "m", [stamp], ratings={"mdb_rating": None},
+    )
+    assert absent == none_valued
+
+
+def test_a_definition_naming_no_rating_token_is_byte_identical_regardless_of_ratings():
+    """The non-empty guard, the storm pin's own discipline extended: a
+    config whose definitions name no rating token -- every config predating
+    this phase included -- must not move at all, no matter what `ratings`
+    carries."""
+    stamp = OverlayDefinition(name="text(HELLO)")
+    without_ratings = badge_fingerprint("abc", "poster", {"critic": "8.6"}, "m", [stamp])
+    with_ratings = badge_fingerprint(
+        "abc", "poster", {"critic": "8.6"}, "m", [stamp],
+        ratings={"mdb_rating": 6.5, "user_rating": 8.0},
+    )
+    assert without_ratings == with_ratings

@@ -175,14 +175,15 @@ def test_the_runtime_batched_field_map_matches_the_batched_rows():
         assert hasattr(ItemTags((), (), (), (), ()), field), field
 
 
-def test_the_twelve_shipped_families_are_named():
+def test_the_thirteen_shipped_families_are_named():
     """Spelled out rather than derived, so that the set of attributes an
     operator can actually filter on is reviewable in one line -- and so that
     Task 2's probe verdicts cannot drift silently into or out of tier 1.
 
-    The last three are phase B's: probe (d) walked both section listings and
-    found ``viewCount``/``lastViewedAt``/``userRating`` present-when-set, which
-    is the verdict ``unprobed`` was waiting for."""
+    The last three of the first twelve are phase B's: probe (d) walked both
+    section listings and found ``viewCount``/``lastViewedAt``/``userRating``
+    present-when-set, which is the verdict ``unprobed`` was waiting for.
+    ``versions`` is sub-phase C2a's (adjudication A14)."""
     assert SHIPPED_ATTRIBUTES == (
         "year",
         "resolution",
@@ -196,6 +197,7 @@ def test_the_twelve_shipped_families_are_named():
         "plays",
         "last_played",
         "user_rating",
+        "versions",
     )
     assert BATCHED_ATTRIBUTES == (
         "genre",
@@ -296,6 +298,22 @@ def test_a_show_reads_its_own_listing_values_and_has_no_resolution():
     assert view.get("content_rating") == "TV-MA"
     assert view.get("duration") == 60
     assert view.get("resolution") is None
+
+
+def test_versions_reads_the_media_count():
+    """The same `resolution` fixture (`test_resolution_reads_every_version_
+    of_a_multi_version_movie` above), counted rather than valued."""
+    xml = MOVIE_XML.replace(
+        '<Media id="9" videoResolution="1080" width="1920"><Part id="1" file="/m.mkv"/></Media>',
+        '<Media id="9" videoResolution="1080"><Part id="1" file="/a.mkv"/></Media>'
+        '<Media id="10" videoResolution="4k"><Part id="2" file="/b.mkv"/></Media>',
+    )
+    assert PlexItemView(a_movie(xml)).get("versions") == 2
+    assert PlexItemView(a_movie()).get("versions") == 1
+
+
+def test_versions_is_missing_not_zero_for_an_item_with_no_media():
+    assert PlexItemView(a_show()).get("versions") is None
 
 
 # --- the missing-value rule ---------------------------------------------------

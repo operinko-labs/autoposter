@@ -819,6 +819,185 @@ async def _badged(session, config, plex_item, rating_key, facts=None):
     return plex_item.last_bytes
 
 
+class _FakePlexItemWithRatings(_FakePlexItem):
+    """Carries `.userRating` and a `.ratings` collection -- the plex_* four,
+    read by `badges.values.plex_native_ratings`."""
+
+    def __init__(self, user_rating=8.0):
+        super().__init__()
+        self.userRating = user_rating
+        self.ratings = [
+            type("R", (), {"image": "imdb://image.rating", "value": 7.7})(),
+            type("R", (), {"image": "themoviedb://image.rating", "value": 8.4})(),
+        ]
+
+
+class _RaisingMDBList:
+    """A stand-in `mdblist` client that always raises, to prove `apply_badges`
+    degrades rather than propagating."""
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    async def ratings(self, tmdb_id=None, tvdb_id=None, is_movie=True):
+        raise self._exc
+
+
+class _RecordingMDBList:
+    def __init__(self, values):
+        self._values = values
+        self.calls = []
+
+    async def ratings(self, tmdb_id=None, tvdb_id=None, is_movie=True):
+        self.calls.append((tmdb_id, tvdb_id, is_movie))
+        return self._values
+
+
+async def test_imdb_and_tmdb_rating_tokens_resolve_from_the_existing_facts(
+    session, config_with_badges
+):
+    """The alias half of C2a: no new fetch -- item_facts.critic_rating IS
+    imdb_rating and item_facts.audience_rating IS tmdb_rating (probe bucket
+    (a)), and now the <<imdb_rating>>/<<tmdb_rating>> SPELLINGS resolve too,
+    not only <<critic_rating>>/<<audience_rating>>.
+
+    HIGH finding, preflight review: this item's own gate-off baseline (no
+    definitions at all) vs the same item with the alias definition
+    configured -- the pixel-hash-vs-baseline pattern
+    `test_plex_native_ratings_resolve_through_the_real_entry_point` below
+    already uses, not `Path(render.asset_path).exists()` (that path is a
+    committed fixture `apply_badges` never writes to; it exists before this
+    test runs and would keep existing whether or not the tokens ever
+    resolved). If the aliases did NOT resolve, `UnresolvedVariable` would be
+    caught and skipped per definition (probe section 2.4), and `fires` would
+    come back pixel-identical to `baseline` -- that is what must actually
+    fail at RED."""
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = []
+    baseline = await _badged(
+        session, config_with_badges, _FakePlexItem(), "ratings-aliases-base"
+    )
+
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="text(<<imdb_rating>> / <<tmdb_rating>>)",
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="top", vertical_offset=0,
+        ),
+    ]
+    fires = await _badged(session, config_with_badges, _FakePlexItem(), "ratings-aliases")
+
+    assert _sha(fires) != _sha(baseline), "the imdb_rating/tmdb_rating aliases must actually draw"
+
+
+async def test_plex_native_ratings_resolve_through_the_real_entry_point(
+    session, config_with_badges
+):
+    """The plex_* four and user_rating, end to end: fires differently on an
+    item that carries them vs one that does not, proving the values actually
+    reach the fingerprint (and therefore the render), not just that
+    apply_badges runs without error."""
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(name="text(<<plex_imdb_rating>>)"),
+    ]
+    unrated = await _badged(session, config_with_badges, _FakePlexItem(), "pnr-unrated")
+    rated = await _badged(
+        session, config_with_badges, _FakePlexItemWithRatings(), "pnr-rated"
+    )
+    assert _sha(unrated) != _sha(rated)
+
+
+async def test_mdblist_ratings_reach_the_variable_map(session, config_with_badges):
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(name="text(<<mdb_average_rating>>)"),
+    ]
+    item, render = await _render(session, rating_key="mdb-fires")
+    plex_item = _FakePlexItem()
+    mdblist = _RecordingMDBList({"mdb_average_rating": 6.5})
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _Facts(), mdblist=mdblist
+    )
+    assert mdblist.calls == [(item.tmdb_id, item.tvdb_id, item.kind == "movie")]
+
+
+async def test_mdblist_quota_exhaustion_degrades_ratings_only_not_the_whole_badge_stage(
+    session, config_with_badges
+):
+    from autoposter.facts.mdblist import MDBListLimitReached
+
+    item, render = await _render(session, rating_key="mdb-limit")
+    plex_item = _FakePlexItem()
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _Facts(),
+        mdblist=_RaisingMDBList(MDBListLimitReached("API Limit Reached!")),
+    )
+    assert render.badge_fingerprint is not None  # the badge stage completed
+
+
+async def test_mdblist_transport_failure_degrades_ratings_only(session, config_with_badges):
+    import httpx as httpx_module
+
+    item, render = await _render(session, rating_key="mdb-httperror")
+    plex_item = _FakePlexItem()
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _Facts(),
+        mdblist=_RaisingMDBList(httpx_module.ConnectError("boom")),
+    )
+    assert render.badge_fingerprint is not None
+
+
+async def test_no_mdblist_client_is_a_no_op_not_an_error(session, config_with_badges):
+    """`mdblist=None` is what every test predating this phase passes -- the
+    same shape `http=None` already has."""
+    item, render = await _render(session, rating_key="mdb-none")
+    await apply_badges(session, config_with_badges, render, item, _FakePlexItem(), _Facts())
+    assert render.badge_fingerprint is not None
+
+
+async def test_a_used_rating_value_changing_moves_the_fingerprint_through_the_real_entry_point(
+    session, config_with_badges
+):
+    """M-1, fix round 1: the three digest pins in test_badge_compose.py call
+    `badge_fingerprint` directly -- nothing pinned the WIRING at
+    `pipeline.py:1398` (`ratings=ratings`), which is the single argument that
+    actually closes the staleness gap. Deleting it leaves the whole suite
+    green. Two `apply_badges` calls on the SAME render, only the resolved
+    rating VALUE a definition actually names changing between them (same
+    config, same item, same everything else), must move
+    `render.badge_fingerprint`; a third pass with the value unchanged must
+    keep it, the storm guard extended to this path."""
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(name="text(<<mdb_average_rating>>)"),
+    ]
+    item, render = await _render(session, rating_key="mdb-value-moves")
+    plex_item = _FakePlexItem()
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _Facts(),
+        mdblist=_RecordingMDBList({"mdb_average_rating": 6.5}),
+    )
+    first_fingerprint = render.badge_fingerprint
+    assert first_fingerprint is not None
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _Facts(),
+        mdblist=_RecordingMDBList({"mdb_average_rating": 7.0}),
+    )
+    second_fingerprint = render.badge_fingerprint
+    assert second_fingerprint != first_fingerprint, "a changed rating value must re-badge"
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _Facts(),
+        mdblist=_RecordingMDBList({"mdb_average_rating": 7.0}),
+    )
+    assert render.badge_fingerprint == second_fingerprint, (
+        "an unchanged rating value must not re-badge"
+    )
+
+
 async def test_direct_play_fires_on_a_4k_item_and_is_silent_on_a_1080_one(
     session, config_with_badges
 ):
@@ -893,6 +1072,34 @@ async def test_the_regionals_read_plexs_certification_not_item_facts_common_sens
     assert _sha(divergent) != _sha(as_common_sense), (
         "reading item_facts.content_rating would have drawn the g badge"
     )
+
+
+class _FakePlexItemMultiVersion(_FakePlexItem):
+    """Two `<Media>` entries -- what `versions.gt: 1` selects on."""
+
+    def __init__(self):
+        super().__init__()
+        self.media = self.media + [type("M", (), {
+            "parts": [type("P", (), {"file": None})()],
+            "videoResolution": "4k", "audioCodec": "eac3", "audioChannels": 6,
+        })()]
+
+
+async def test_versions_fires_on_a_multi_version_item_and_is_silent_on_a_single_one(
+    session, config_with_badges
+):
+    config_with_badges.badges.families = []
+    base_single = await _badged(session, config_with_badges, _FakePlexItem(), "v-base-1")
+    base_multi = await _badged(
+        session, config_with_badges, _FakePlexItemMultiVersion(), "v-base-2"
+    )
+
+    config_with_badges.badges.families = ["versions"]
+    silent = await _badged(session, config_with_badges, _FakePlexItem(), "v-1")
+    fires = await _badged(session, config_with_badges, _FakePlexItemMultiVersion(), "v-2")
+
+    assert _sha(silent) == _sha(base_single), "a single version must draw the gate-off pixels"
+    assert _sha(fires) != _sha(base_multi), "a multi-version item must actually draw the badge"
 
 
 async def test_enabling_a_family_re_badges_an_already_uploaded_item(

@@ -160,6 +160,53 @@ def media_info_from_plex(item) -> MediaInfo:
     )
 
 
+def plex_native_ratings(item) -> dict[str, float | None]:
+    """The overlay grammar's `user_rating` plus the four `plex_*` sources --
+    the one rating family needing no external call at all (probe section
+    2.3.6, transcribed verbatim below, including the `rottentomatoes://`
+    URL-suffix discrimination -- ripe/rotten is the critic score, anything
+    else is the audience one).
+
+    Reads through `object.__getattribute__`, not a plain `getattr`: `item` is
+    very likely the same PARTIAL plexapi object `apply_badges` uploads to,
+    and a plain read of an unset attribute (an unrated item's `.userRating`,
+    or one with no MDBList-sourced Plex ratings) trips
+    `PlexPartialObject.__getattribute__`'s reload branch -- one synchronous
+    blocking `requests` GET, inline, on the event loop. Same discipline
+    `collections/filter_values.py::_listing_value` and
+    `overlays/selection.py::OverlayItemView.get` already use; duplicated
+    (three lines) rather than imported, because `badges/` has no other
+    dependency on `collections/` and this is the only thing that would
+    create one.
+    """
+
+    def read(name):
+        try:
+            return object.__getattribute__(item, name)
+        except AttributeError:
+            return None
+
+    result: dict[str, float | None] = {
+        "user_rating": read("userRating"),
+        "plex_imdb_rating": None,
+        "plex_tmdb_rating": None,
+        "plex_tomatoes_rating": None,
+        "plex_tomatoesaudience_rating": None,
+    }
+    for rating in read("ratings") or ():
+        image = getattr(rating, "image", "") or ""
+        if image.startswith("imdb://"):
+            result["plex_imdb_rating"] = rating.value
+        elif image.startswith("themoviedb://"):
+            result["plex_tmdb_rating"] = rating.value
+        elif image.startswith("rottentomatoes://"):
+            if image.endswith("ripe") or image.endswith("rotten"):
+                result["plex_tomatoes_rating"] = rating.value
+            else:
+                result["plex_tomatoesaudience_rating"] = rating.value
+    return result
+
+
 # Kometa reads HDR10+ off the file path, not off Plex's stream metadata --
 # `resolution.yml` gates the `plus` and `dvhdrplus` variants on
 # `filepath.regex: (?i)\bhdr10(\+|p(lus)?\b)`. It has to: Plex's video stream

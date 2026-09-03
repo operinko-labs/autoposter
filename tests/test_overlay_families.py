@@ -1,9 +1,8 @@
-"""The shipped overlay families (roadmap row 100, sub-phase C1).
+"""The shipped overlay families (roadmap row 100, sub-phases C1 and C2a).
 
-Two families ship here: `direct_play` (one definition) and the six
-content-rating regionals. `versions` is fenced by adjudication A14 -- its
-selection needs a `versions` row in `collections/filters.py`, which this
-phase may not edit.
+Three families ship: `direct_play` (one definition), the six
+content-rating regionals, and `versions` -- adjudication A14 ruled the
+`versions` row in `collections/filters.py` it needed, so C2a shipped it too.
 
 Every number in `families.py` is transcribed from the pinned Kometa tree
 (v2.4.8, the image digest `assets/badges/PROVENANCE.md` records). These tests
@@ -46,7 +45,7 @@ def test_the_builtin_manifest_did_not_grow_when_the_family_art_landed():
 def test_the_family_art_has_its_own_manifest_and_it_is_accurate():
     """Not just present -- correct. Every listed checksum is recomputed."""
     lines = OVERLAY_MANIFEST.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == CR_COUNT + 1  # + Direct-Play.png
+    assert len(lines) == CR_COUNT + 2  # + Direct-Play.png + versions.png
     for line in lines:
         digest, _, relative = line.partition("  ")
         path = ASSETS / relative
@@ -203,12 +202,21 @@ def test_the_six_regions_ship_and_no_more():
     ]
 
 
-def test_versions_is_not_shipped_and_the_reason_is_recorded():
-    """Adjudication A14: the family needs a `versions` row in
-    `collections/filters.py`, which this phase may not edit. Pinned so that
-    shipping it later is a deliberate act with a ruling behind it, not a
-    quiet fill-in."""
-    assert "versions" not in FAMILIES
+def test_versions_is_shipped_now_that_adjudication_a14_is_ruled():
+    """Adjudication A14 (raised by C1's plan, ruled by C2a's T1): the
+    `versions` row in `collections/filters.py` now exists, so the family
+    that was fenced can ship. One definition: `versions.gt: 1` -- more than
+    one `<Media>` entry, the same threshold Kometa's `duplicate` smart
+    search meant, expressed on the new filterable int attribute instead
+    (`duplicate` itself stays search-only and unusable in a `condition:`
+    block; see the L-4 fix)."""
+    definitions = FAMILIES["versions"]
+    assert len(definitions) == 1
+    definition = definitions[0]
+    assert definition.name == "versions"
+    assert definition.builtin == "versions"
+    assert definition.condition == {"versions.gt": 1}
+    assert (definition.back_width, definition.back_height) == (105, 105)
 
 
 # --- the operator surface: `badges.families` -------------------------------

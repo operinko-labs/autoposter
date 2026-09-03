@@ -1,18 +1,14 @@
-"""The shipped overlay families (roadmap row 100, sub-phase C1).
+"""The shipped overlay families (roadmap row 100, sub-phases C1 and C2a).
 
 Flat `OverlayDefinition` lists, not templates. Kometa expresses each family
 as a templated YAML file whose `<<key>>` resolver this service does not
 implement (and does not need: the recon's cut emits flat definitions), so
 every number here is the RESOLVED value, transcribed from the pinned
-v2.4.8 tree -- the same image digest `assets/badges/PROVENANCE.md` records,
-copied out in this phase's Task 2 Step 1.
+v2.4.8 tree -- the same image digest `assets/badges/PROVENANCE.md` records.
 
-Two families ship. `versions` does not: its selection is Plex's `duplicate`
-smart-search field, whose row in `collections/filters.py` is `search-only`
-and `filterable=False`, and there is no `versions` row at all (it is one of
-the 44 filter names with no Plex search field, named in that module's own
-comment). Shipping it needs a new table row, which is an adjudication rather
-than an edit -- see the C1 plan's "Adjudication A14".
+Three families ship: `direct_play`, the six content-rating regionals (C1),
+and `versions` (C2a, adjudication A14 ruled -- the `collections/filters.py`
+row it needed now exists).
 
 Each family is opt-in through `config.badges.families`, and a family that is
 not named costs nothing: no definition, no fingerprint movement, no asset
@@ -648,6 +644,46 @@ CONTENT_RATING_NZ: list[OverlayDefinition] = [
     ),
 ]
 
+# Probe section 4.8: a single static badge, 105x105. Selection is Plex's
+# `duplicate`/`episode_duplicate` smart search upstream; this service selects
+# on the NEW `versions` int filter attribute instead (adjudication A14),
+# because `duplicate` itself is search-only and unfilterable, so an overlay
+# `condition:` block cannot name it at all. `versions.gt: 1` means "more than
+# one `<Media>` entry" -- the same threshold. Position is the non-episode
+# default (`horizontal_offset: 15`, `vertical_offset: 335`); the
+# episode-specific position (235/270) is the one positioning conditional in
+# the whole row-100 set that branches on `builder_level`, and this module
+# ships flat, resolved definitions rather than a template engine (the same
+# simplification C1 already made for every other family), so only the
+# non-episode position is reproduced.
+#
+# `horizontal_align="right"`, not the `"left"` every other row-100 family
+# uses: the vendored `versions.yml`'s own `external_templates.
+# template_variables.default` sets `horizontal_align: right` outright (and
+# its `conditionals.horizontal_align` block resolves to the same `right` in
+# both its listed conditions, so there is no path to `left` in this file at
+# all) -- confirmed by direct read of the vendored file in Task 2 Step 1, a
+# deviation from Task 2's own draft that this module transcribes rather than
+# repeats. `horizontal_offset=15` still holds either way: the vendored
+# `conditionals.horizontal_offset` maps BOTH `left` and `right` to `15`.
+# `back_color="#00000099"` is explicit in the same vendored file (not
+# inherited); `back_radius` is NOT set anywhere in `versions.yml`, so it
+# inherits from the un-vendored `templates.yml` (`external_templates:
+# default: templates`), grammar probe section 5.5's `standard` template
+# default -- the same reasoning `DIRECT_PLAY`'s own comment gives for the
+# identical situation.
+VERSIONS: list[OverlayDefinition] = [
+    OverlayDefinition(
+        name="versions",
+        builtin="versions",
+        condition={"versions.gt": 1},
+        horizontal_align="right", horizontal_offset=15,
+        vertical_align="bottom", vertical_offset=335,
+        back_width=105, back_height=105,
+        back_color="#00000099", back_radius=30,
+    ),
+]
+
 FAMILIES: dict[str, list[OverlayDefinition]] = {
     "direct_play": DIRECT_PLAY,
     "content_rating_au": CONTENT_RATING_AU,
@@ -656,6 +692,7 @@ FAMILIES: dict[str, list[OverlayDefinition]] = {
     "content_rating_uk": CONTENT_RATING_UK,
     "content_rating_us_movie": CONTENT_RATING_US_MOVIE,
     "content_rating_us_show": CONTENT_RATING_US_SHOW,
+    "versions": VERSIONS,
 }
 
 __all__ = ["FAMILIES"]

@@ -24,11 +24,12 @@ floating tag, so this set is reproducible.
 | `/fonts/Inter-Medium.ttf` | `fonts/Inter-Medium.ttf` | 1 | video_format, runtimes, commonsense, episode_info — all 55pt |
 | `/defaults/overlays/images/cr` | `images/cr` | 98 | the six content-rating regional overlay families |
 | `/defaults/overlays/images/Direct-Play.png` | `images/Direct-Play.png` | 1 | the direct_play overlay family |
+| `/defaults/overlays/images/versions.png` | `images/versions.png` | 1 | the versions overlay family |
 
 Deliberately **not** taken: `edition/`, `network/`, `ribbon/`, `streaming/`, `studio/` — the
 overlay families this deployment does not yet enable (roadmap row 100, sub-phases C2 and C3).
-`cr/` and `Direct-Play.png` WERE deliberately not taken until the overlay era's sub-phase C1
-shipped the families that draw them.
+`cr/`, `Direct-Play.png` and `versions.png` WERE deliberately not taken until the overlay era's
+sub-phases C1 and C2a shipped the families that draw them.
 
 **To reproduce this copy**
 
@@ -67,8 +68,9 @@ flag PNG and defaults to `key` when absent (so `de` uses `de.png`, but `en` uses
 `badges/compose.py::manifest_sha()` folds its hash into every item's
 `badge_fingerprint` so that replacing any of them re-badges the library.
 
-The overlay-family art (`images/cr/`, `images/Direct-Play.png`) is checksummed
-separately and is **not** in that hash. Adding it there would have moved
+The overlay-family art (`images/cr/`, `images/Direct-Play.png`,
+`images/versions.png`) is checksummed separately and is **not** in that hash.
+Adding it there would have moved
 `manifest_sha()` and re-fingerprinted every already-badged item in a library
 that enables no family at all — a ~16,000-item re-render for a file nothing
 draws. The trade is stated rather than hidden: replacing one of these PNGs
@@ -77,4 +79,4 @@ without editing the config moves no fingerprint, which is the same residual
 
 Regenerate with, from `assets/badges/`:
 
-    find images/cr images/Direct-Play.png -type f | LC_ALL=C sort | xargs sha256sum > OVERLAY-MANIFEST.sha256
+    find images/cr images/Direct-Play.png images/versions.png -type f | LC_ALL=C sort | xargs sha256sum > OVERLAY-MANIFEST.sha256

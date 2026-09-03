@@ -1,0 +1,23 @@
+{
+  "title": "All Souls",
+  "year": 2023,
+  "imdbid": "tt14316486",
+  "tmdbid": 940143,
+  "type": "movie",
+  "certification": "R",
+  "commonsense": 1,
+  "age_rating": 17,
+  "score": 55,
+  "average": 58,
+  "ratings": [
+    {"source": "imdb", "value": 4.9, "score": 49, "votes": 981},
+    {"source": "tmdb", "value": 6.3, "score": 63, "votes": 41},
+    {"source": "trakt", "value": 72, "score": 72, "votes": 120},
+    {"source": "letterboxd", "value": 3.1, "score": 62, "votes": 88},
+    {"source": "tomatoes", "value": 67, "score": 67, "votes": 44},
+    {"source": "tomatoesaudience", "value": 71, "score": 71, "votes": 210},
+    {"source": "metacritic", "value": 58, "score": 58, "votes": 22},
+    {"source": "metacriticuser", "value": 6.8, "score": 68, "votes": 30},
+    {"source": "myanimelist", "value": null, "score": null, "votes": 0}
+  ]
+}

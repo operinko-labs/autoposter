@@ -9,7 +9,7 @@ import io
 import json
 import logging
 from functools import lru_cache
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PIL import Image, ImageFilter, ImageFont
@@ -20,7 +20,7 @@ from autoposter.overlays.builtin import BUILTIN_OVERLAYS
 from autoposter.overlays.render import draw_overlay
 from autoposter.overlays.schema import OverlayDefinition
 from autoposter.overlays.sources import OverlaySourceError, resolve_font_path
-from autoposter.overlays.variables import UnresolvedVariable, literal_of, render_text
+from autoposter.overlays.variables import UnresolvedVariable, literal_of, render_text, tokens_in
 from autoposter.badges.values import (
     MediaInfo,
     audience_text,
@@ -73,6 +73,14 @@ class BadgeInputs:
     audience_rating: float | None = None
     content_rating: str | None = None
     video_format: str | None = None
+    # Roadmap row 100, sub-phase C2a: the eleven mdb_*, four plex_*, and
+    # user_rating overlay rating sources, keyed by their <<variable>> name
+    # (`overlays/variables.py::RATING_SOURCES`/`PLEX_NATIVE_RATINGS`). This
+    # dataclass does not know imdb_rating/tmdb_rating are aliases of
+    # critic_rating/audience_rating above -- it carries whatever the caller
+    # resolved. Default is an empty dict: no field at all, for a caller that
+    # sets nothing (Global Constraint 6).
+    ratings: dict[str, float | None] = field(default_factory=dict)
 
 
 def badge_values(art_kind: str, inputs: BadgeInputs) -> dict[str, str]:
@@ -155,6 +163,42 @@ def _outcomes_digest(outcomes: list[tuple[str, bool]]) -> str:
     return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
 
 
+def _rating_values_digest(
+    definitions: list[OverlayDefinition], ratings: dict[str, float | None]
+) -> str | None:
+    """A stable digest of the RESOLVED rating values each definition's own
+    `<<variable>>` literal actually names (roadmap row 100, sub-phase C2a).
+
+    `badge_fingerprint`'s `values` argument never carries `inputs.ratings` --
+    it is consumed only by `_variable_values`, for `<<variable>>` TEXT
+    resolution (Global Constraint 6) -- so without this, a later pass where
+    an item's real MDBList/Plex rating changes would never move the
+    fingerprint at all, leaving stale rating text on already-uploaded
+    artwork indefinitely. This closes that gap the same way
+    `_outcomes_digest` closes the parallel one for CONDITION evaluation:
+    guarded so a definition naming no (currently-resolved) rating token
+    contributes nothing, and the digest for one that does moves IFF a
+    referenced value itself moves.
+
+    Returns `None`, not an empty string, when no definition ends up naming
+    any resolved rating token -- so the caller's own guard (matching
+    `definitions`/`outcomes`) leaves an unrelated or rating-free config's
+    fingerprint completely untouched.
+    """
+    parts = []
+    for d in definitions:
+        literal = literal_of(d.name)
+        if literal is None:
+            continue
+        for var, _mod in tokens_in(literal):
+            value = ratings.get(var)
+            if value is not None:
+                parts.append("%s:%s=%s" % (d.name, var, value))
+    if not parts:
+        return None
+    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
+
+
 def badge_fingerprint(
     base_fingerprint: str,
     art_kind: str,
@@ -162,6 +206,7 @@ def badge_fingerprint(
     asset_manifest_sha: str,
     definitions: list[OverlayDefinition] | None = None,
     outcomes: list[tuple[str, bool]] | None = None,
+    ratings: dict[str, float | None] | None = None,
 ) -> str:
     """Hash everything that affects the badged image.
 
@@ -202,6 +247,14 @@ def badge_fingerprint(
     earlier draft. That is no Plex request (this view's own law) but it is
     not free, and it is the first work added to the unchanged-item path
     since row 97.
+
+    ``ratings`` folds in the RESOLVED VALUE of every rating token a
+    definition's own ``<<variable>>`` literal actually names (roadmap row
+    100, sub-phase C2a) -- guarded the same way ``outcomes`` is: a
+    definition naming no rating token contributes nothing, and a later pass
+    where an item's real MDBList/Plex rating changes moves the digest only
+    for the definition(s) that actually reference it, closing the staleness
+    gap a config-only digest would otherwise leave open.
     """
     parts = [base_fingerprint, art_kind, asset_manifest_sha]
     parts += ["%s=%s" % (k, values[k]) for k in sorted(values)]
@@ -209,6 +262,10 @@ def badge_fingerprint(
         parts.append(_definitions_digest(definitions))
     if outcomes:
         parts.append(_outcomes_digest(outcomes))
+    if definitions and ratings:
+        rating_digest = _rating_values_digest(definitions, ratings)
+        if rating_digest is not None:
+            parts.append(rating_digest)
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -325,10 +382,15 @@ def _draw_languages(poster: Image.Image, canvas: tuple[int, int], inputs: BadgeI
 def _variable_values(art_kind: str, inputs: BadgeInputs) -> dict[str, object]:
     """The item values an operator's <<variable>> tokens can resolve against.
 
-    Deliberately only what this service already gathers. The data-source
-    probe's 29 external rating sources are part of the GRAMMAR and are absent
-    here on purpose: fetching them is row 100's data half, and a definition
-    naming one is skipped rather than silently rendered wrong.
+    Roadmap row 100, sub-phase C2a: seventeen of the data-source probe's 29
+    external rating sources now resolve here -- the eleven mdb_*, the four
+    plex_*, and the imdb_rating/tmdb_rating aliases, all carried
+    in `inputs.ratings` and merged in below. The remaining twelve (four
+    omdb_*, three anidb_*, mal_rating, two trakt_*, serializd_rating,
+    floppy_rating) each need a new external integration this service does not
+    have (probe bucket (c), fenced pending an operator decision --
+    adjudication A2) and are still absent on purpose: a definition naming one
+    is skipped rather than silently rendered wrong.
     """
     media = inputs.media
     values: dict[str, object] = {
@@ -337,6 +399,7 @@ def _variable_values(art_kind: str, inputs: BadgeInputs) -> dict[str, object]:
         "audience_rating": inputs.audience_rating,
         "season_number": media.season_number,
         "episode_number": media.episode_number,
+        **inputs.ratings,
     }
     if media.duration_ms:
         values["runtime"] = media.duration_ms // 60000

@@ -63,6 +63,114 @@ def parse_content_rating(payload: dict) -> str | None:
     return str(age)
 
 
+# The `ratings[]` entry's `source` value, and which sub-field to read, for
+# each MDBList-sourced overlay rating this service exposes. Probe section
+# 2.3.3 (`.superpowers/sdd/p-overlay-datasources-probe.md`) names Kometa's own
+# attribute per field and its transform; the RAW HTTP JSON shape below
+# (`ratings: [{source, value, score, votes}, ...]` plus two top-level
+# scalars) is THIS CLIENT's own, not something the probe -- a Kometa-source-
+# only document -- ever fetched, so the value-vs-score sourcing here is this
+# module's own reasoning, not a transcribed fact:
+#   - the three "none"-transform fields (imdb_rating, metacriticuser_rating,
+#     myanimelist_rating) read the array entry's `value` -- these sources'
+#     NATIVE scale is already 0-10 (IMDb; Metacritic's own 0-10 USER score,
+#     distinct from its 0-100 Metascore; MyAnimeList), so no rescale applies;
+#   - letterboxd reads `value` too (its native scale is 0-5 stars) and
+#     doubles it, per the probe;
+#   - the remaining five array-sourced fields (metacritic, trakt, tomatoes,
+#     tomatoesaudience, tmdb) read the array entry's `score` -- MDBList's own
+#     0-100 cross-source normalisation -- and divide by 10; their native
+#     scales are NOT uniformly 0-10 (Rotten Tomatoes and Metacritic's
+#     Metascore are 0-100, Trakt is 0-100), so the normalised field is the
+#     one that produces a sane 0-10 number for all five with one rule;
+#   - the two TOP-LEVEL scalars (`average`, `score`) are MDBList's own
+#     composite fields and both divide by 10, per the probe's `mdb_average_
+#     rating`/`mdb_rating` rows.
+_ARRAY_VALUE_FIELDS = {
+    "mdb_imdb_rating": "imdb",
+    "mdb_metacriticuser_rating": "metacriticuser",
+    "mdb_myanimelist_rating": "myanimelist",
+}
+_ARRAY_VALUE_DOUBLED_FIELDS = {"mdb_letterboxd_rating": "letterboxd"}
+_ARRAY_SCORE_FIELDS = {
+    "mdb_metacritic_rating": "metacritic",
+    "mdb_trakt_rating": "trakt",
+    "mdb_tomatoes_rating": "tomatoes",
+    "mdb_tomatoesaudience_rating": "tomatoesaudience",
+    "mdb_tmdb_rating": "tmdb",
+}
+
+
+def parse_ratings(payload: dict) -> dict[str, float | None]:
+    """The eleven `mdb_*` overlay rating sources (`overlays/variables.py::
+    RATING_SOURCES`), per probe section 2.3.3's per-field rescaling table --
+    transcribed exactly, letterboxd's `*2` included. See the module comment
+    above for the value-vs-score sourcing this client's own shape requires
+    that the probe does not cover.
+
+    `MDBListClient.content_rating` already fetches this same response for the
+    Common Sense age rating; this is a second, independent parse of it -- no
+    new HTTP call. Always returns all eleven keys; an unresolved field is
+    `None`, never a missing key, so a caller can `dict.update` it in without
+    a stale value surviving from a previous pass.
+    """
+    by_source = {
+        entry.get("source"): entry
+        for entry in payload.get("ratings") or []
+        if isinstance(entry, dict)
+    }
+
+    def coerce(field: str, raw: object) -> float | None:
+        # A present-but-non-numeric value (a stray string MDBList might emit
+        # for an errored source) must degrade to None for THIS key alone --
+        # never raise. `parse_ratings` has no item context of its own, so the
+        # warning names the field; the caller (Concern E) still degrades the
+        # whole `ratings()` call on a transport failure, but a malformed
+        # value inside an otherwise-good response must not take the other
+        # ten keys down with it.
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            logger.warning("mdblist: non-numeric %s value %r; treating as absent", field, raw)
+            return None
+        # Post-coercion, matching the probe's own rule for every field this
+        # feeds ("X / 10 if X else None"): a coerced 0.0 degrades to None the
+        # same way a raw falsy value already does above -- otherwise a source
+        # that emits its zero as the string "0" (truthy on `raw`) would
+        # survive as a legitimate rating where a numeric 0 would not.
+        return value if value else None
+
+    def array_value(field: str, *, doubled: bool = False) -> float | None:
+        source = _ARRAY_VALUE_DOUBLED_FIELDS[field] if doubled else _ARRAY_VALUE_FIELDS[field]
+        raw = (by_source.get(source) or {}).get("value")
+        if not raw:
+            return None
+        value = coerce(field, raw)
+        return value * 2 if (doubled and value is not None) else value
+
+    def array_score(field: str) -> float | None:
+        raw = (by_source.get(_ARRAY_SCORE_FIELDS[field]) or {}).get("score")
+        if not raw:
+            return None
+        value = coerce(field, raw)
+        return value / 10 if value is not None else None
+
+    result: dict[str, float | None] = {}
+    for field in _ARRAY_VALUE_FIELDS:
+        result[field] = array_value(field)
+    for field in _ARRAY_VALUE_DOUBLED_FIELDS:
+        result[field] = array_value(field, doubled=True)
+    for field in _ARRAY_SCORE_FIELDS:
+        result[field] = array_score(field)
+    average = payload.get("average")
+    average_value = coerce("mdb_average_rating", average) if average else None
+    result["mdb_average_rating"] = average_value / 10 if average_value is not None else None
+    composite = payload.get("score")
+    composite_value = coerce("mdb_rating", composite) if composite else None
+    result["mdb_rating"] = composite_value / 10 if composite_value is not None else None
+    return result
+
+
 def parse_list_items(payload: object, subject: str) -> list[tuple[str, dict]]:
     """MDBList's list items as ``(mediatype, entry)`` pairs, in list order.
 
@@ -182,6 +290,14 @@ class NullMDBListClient:
     ) -> str | None:
         return None
 
+    async def ratings(
+        self,
+        tmdb_id: int | None = None,
+        tvdb_id: int | None = None,
+        is_movie: bool = True,
+    ) -> dict[str, float | None]:
+        return parse_ratings({})
+
 
 class MDBListClient:
     """Reads Common Sense age ratings.
@@ -241,6 +357,48 @@ class MDBListClient:
             logger.warning("mdblist error for %s %s: %s", provider, identifier, error)
             return None
         return parse_content_rating(payload)
+
+    async def ratings(
+        self,
+        tmdb_id: int | None = None,
+        tvdb_id: int | None = None,
+        is_movie: bool = True,
+    ) -> dict[str, float | None]:
+        """The eleven `mdb_*` overlay rating sources for one item.
+
+        Hits the exact same URL and params `content_rating` does, so within
+        this response's cache TTL calling both on one item costs one HTTP
+        request, not two (`build_cache_key` keys on URL+params, apikey
+        stripped).
+        """
+        identifier = tmdb_id if is_movie else tvdb_id
+        empty = parse_ratings({})
+        if identifier is None:
+            return empty
+        provider = "tmdb" if is_movie else "tvdb"
+        media_type = "movie" if is_movie else "show"
+        url = f"{BASE_URL}/{provider}/{media_type}/{identifier}/"
+        params = {"apikey": self._apikey}
+        payload = await fetch_json(
+            method="GET",
+            url=url,
+            params=params,
+            request=lambda: self._client.get(
+                url, params=params, headers={"User-Agent": "autoposter"}
+            ),
+            cache=self._cache,
+            ttl_seconds=self._cache_ttl_seconds,
+            cacheable=_not_a_limit_body,
+        )
+        if payload is None:
+            return empty
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if error in _LIMIT_ERRORS:
+            raise MDBListLimitReached(error)
+        if error:
+            logger.warning("mdblist error for %s %s: %s", provider, identifier, error)
+            return empty
+        return parse_ratings(payload)
 
     async def list_items(
         self, reference: str, *, sort: str | None = None, order: str | None = None
