@@ -307,7 +307,14 @@ def create_app(
         # disable that.
         scheduler_jobs = [make_stale_reclaim_job()]
         if config.scheduler.enabled:
-            if config.collections.enabled:
+            # The playlists pass (roadmap row 98a) rides this job, and it is
+            # gated on its OWN switch inside the job body -- so the job has to
+            # exist whenever EITHER half is wanted. Registering on
+            # collections.enabled alone would make playlists.enabled a setting
+            # that reads as configured and silently is not, which is the failure
+            # this phase's refusal table exists to prevent, one level up from
+            # the config.
+            if config.collections.enabled or config.playlists.enabled:
                 scheduler_jobs.append(make_collections_job(
                     holder, server_factory, http, summaries=app.state.tmdb_facts,
                     secrets=secrets, cache=cache, notifier=notifier,

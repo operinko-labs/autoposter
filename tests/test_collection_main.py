@@ -336,6 +336,12 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, mdblist_apikey=""):
     async def fake_load_effective_config(path, session):
         return SimpleNamespace(
             collections=SimpleNamespace(enabled=True),
+            # `main()` now guards on both switches, and runs the playlists
+            # half when this one is on. Off here for the reason charts and
+            # awards are off in the job's own suite: this test is about what
+            # `main()` does with the summary, and turning it on would drag a
+            # second pass and a second set of fakes into it.
+            playlists=SimpleNamespace(enabled=False),
             plex=SimpleNamespace(url="http://plex.invalid"),
             # The CLI builds its own cache-fronted TMDB facts client, for the
             # ``tmdb_summary:`` definitions a pass may carry -- so the stub

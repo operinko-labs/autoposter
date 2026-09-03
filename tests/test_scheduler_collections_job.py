@@ -122,10 +122,15 @@ class FakeLibrary:
 
 class FakeServer:
     """A ``PlexServer`` stand-in with just enough surface for
-    ``reconcile_libraries``: ``server.library.section(name)``."""
+    ``reconcile_libraries``: ``server.library.section(name)`` -- plus the
+    server-level ``playlists()`` the sibling pass calls first, so a config
+    that turns that half on meets a fake rather than an ``AttributeError``."""
 
     def __init__(self, sections):
         self.library = FakeLibrary(sections)
+
+    def playlists(self, **kw):
+        return []
 
 
 class BreaksOnSecondLibrary:
@@ -186,6 +191,11 @@ def _config(libraries=("Movies", "TV Shows"), enabled=True, apply_to_plex=True):
             # tests/test_builder_knobs.py.
             delete_unconfigured=False, max_deletes=5,
         ),
+        # The sibling half, off: this file is about the collections half of
+        # the job, and `run` reads this switch before either half can be
+        # skipped. `enabled` is the only attribute it reads while the half is
+        # off, so it is the only one a stand-in owes.
+        playlists=SimpleNamespace(enabled=False),
         scheduler=SimpleNamespace(collections_hours=24),
     )
 

@@ -686,3 +686,100 @@ async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_process
         "closures a Config instance rather than the holder, so nothing a "
         "worker does can ever pick up a swap"
     )
+
+
+async def test_the_collections_job_is_registered_for_playlists_alone(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """Roadmap row 98a. The playlists pass rides the ``collections_reconcile``
+    job, so ``playlists.enabled: true`` with ``collections.enabled: false`` has
+    to still REGISTER that job -- otherwise the setting reads as configured, the
+    job body's own two-switch handling never runs, and the pass silently never
+    happens.
+
+    Driven through the real lifespan, not through ``make_collections_job``. The
+    registration is a line in ``app.py`` that no monkeypatch of
+    ``scheduler.jobs`` can reach, and the standing lesson on this branch is two
+    same-branch defects where the helper tests passed and the wired path
+    differed. The job is only BUILT here, never run: ``server_factory`` is a
+    ``functools.partial`` that nothing calls, and the background services the
+    fixture stubs are what would otherwise touch the network.
+
+    The switches are expressed as a STORED OVERRIDE, not as a mutation on the
+    ``Config`` handed to ``create_app``: under ``run_background`` the lifespan's
+    first statement re-reads ``app.state.config_path`` and merges the database
+    overrides over it, so an in-memory mutation of the argument never reaches
+    the job-set registration -- the same reason
+    ``test_the_lifespan_hands_the_notifier_to_the_scheduler`` and
+    ``test_stale_job_reclaim_is_registered_even_with_the_scheduler_disabled``
+    do it this way. It is load-bearing here rather than merely idiomatic:
+    ``EXAMPLE`` ships ``collections.enabled: true``, so a mutated ``Config``
+    would leave the lifespan booting with collections ON and this test would go
+    GREEN against the unfixed ``app.py`` -- pinning nothing, which is exactly
+    the failure mode it exists to close.
+    """
+    config = load_config(EXAMPLE)
+    assert config.collections.enabled is True, (
+        "precondition: EXAMPLE ships collections on -- turning it off in the "
+        "override below is what makes this test discriminating"
+    )
+    await _store_override(
+        session,
+        {"collections": {"enabled": False}, "playlists": {"enabled": True}},
+    )
+
+    app = _background_app(config, session_factory, secrets)
+
+    async with app.router.lifespan_context(app):
+        assert app.state.config.collections.enabled is False, (
+            "precondition: the override did not reach the effective config"
+        )
+        assert app.state.config.playlists.enabled is True, (
+            "precondition: the override did not reach the effective config"
+        )
+        names = {job.name for job in app.state.scheduler_jobs}
+
+    assert "collections_reconcile" in names, (
+        "playlists.enabled is on and the job that carries the playlists pass "
+        "was not registered, so the pass can never run in this deployment"
+    )
+    assert "playlists_reconcile" not in names, (
+        "the playlists pass rides the collections job; a second scheduled job "
+        "would need SCHEDULED_JOB_NAMES and the agreement guard in "
+        "tests/test_api_scheduled_runs.py to move with it"
+    )
+
+
+async def test_the_collections_job_is_not_registered_when_both_are_off(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """The other direction, so the assertion above is not vacuous: with both
+    switches off the job is absent, which is what makes registering it on
+    either one a decision rather than an accident.
+
+    A stored override for the same reason as above -- and here ``EXAMPLE``
+    ships BOTH switches on (``collections.enabled: true`` at :139,
+    ``playlists.enabled: true`` in the block Step 10 adds), so a mutated
+    ``Config`` would leave the job registered and this test could never pass.
+    """
+    config = load_config(EXAMPLE)
+    await _store_override(
+        session,
+        {"collections": {"enabled": False}, "playlists": {"enabled": False}},
+    )
+
+    app = _background_app(config, session_factory, secrets)
+
+    async with app.router.lifespan_context(app):
+        assert app.state.config.collections.enabled is False, (
+            "precondition: the override did not reach the effective config"
+        )
+        assert app.state.config.playlists.enabled is False, (
+            "precondition: the override did not reach the effective config"
+        )
+        names = {job.name for job in app.state.scheduler_jobs}
+        # The scheduler's optional passes really are on, so this is the two
+        # switches deciding the job's absence and not the master switch.
+        assert "plex_prune" in names
+
+    assert "collections_reconcile" not in names

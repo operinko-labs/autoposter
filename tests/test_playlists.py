@@ -914,3 +914,159 @@ async def test_the_sweep_does_not_run_against_a_filtered_subset(
 
     assert orphan.deleted is False
     assert not any("Gone" in a for a in run.actions)
+
+
+# --- the wiring: the pass runs where the collections pass runs ---------------
+
+
+async def test_the_scheduled_job_runs_the_playlists_half_after_the_collections_half(
+    session_factory, config_factory, monkeypatch
+):
+    """The sibling relationship, asserted at the seam that has it. Ordering
+    matters: the playlists pass reads the same libraries the collections pass
+    just walked, and a failure in either must not stop the other from being
+    attempted."""
+    from autoposter.config.holder import ConfigHolder
+    from autoposter.scheduler import jobs as jobs_module
+
+    from autoposter.collections.playlists import PlaylistRun
+
+    calls: list[str] = []
+
+    async def fake_libraries(session, server, config, http, **kwargs):
+        from autoposter.collections.service import ReconcileResult
+
+        calls.append("collections")
+        return ReconcileResult()
+
+    async def fake_playlists(session, server, config, http=None, **kwargs):
+        calls.append("playlists")
+        return PlaylistRun()
+
+    monkeypatch.setattr(jobs_module, "reconcile_libraries", fake_libraries)
+    monkeypatch.setattr(jobs_module, "reconcile_playlists", fake_playlists)
+
+    config = config_factory()
+    job = jobs_module.make_collections_job(
+        ConfigHolder(config), lambda: object(), http=None,
+    )
+    async with session_factory() as session:
+        summary = await job.run(session)
+
+    assert calls == ["collections", "playlists"]
+    assert "playlists: 0 action(s)" in summary
+
+
+async def test_playlists_still_run_when_collections_are_switched_off(
+    session_factory, config_factory, monkeypatch
+):
+    """Two switches, two answers, INSIDE the job body.
+
+    Skipping the playlists half because ``collections.enabled`` is off would be
+    a setting that reads as configured and silently is not -- the exact failure
+    this codebase's refusal tables exist to prevent.
+
+    This test proves only the body. Whether the job EXISTS at all in that
+    configuration is decided one level up, in ``app.py``, and monkeypatching
+    ``jobs_module`` cannot see it -- which is precisely the standing lesson
+    (two same-branch defects where the helper tests passed and the wired path
+    differed). ``tests/test_app.py``'s
+    ``test_the_collections_job_is_registered_for_playlists_alone`` is the
+    other half, and it drives the real lifespan."""
+    from autoposter.config.holder import ConfigHolder
+    from autoposter.scheduler import jobs as jobs_module
+
+    calls: list[str] = []
+
+    async def fake_libraries(session, server, config, http, **kwargs):
+        calls.append("collections")
+        raise AssertionError("the collections half must not run")
+
+    async def fake_playlists(session, server, config, http=None, **kwargs):
+        from autoposter.collections.playlists import PlaylistRun
+
+        calls.append("playlists")
+        return PlaylistRun()
+
+    monkeypatch.setattr(jobs_module, "reconcile_libraries", fake_libraries)
+    monkeypatch.setattr(jobs_module, "reconcile_playlists", fake_playlists)
+
+    config = config_factory()
+    config.collections.enabled = False
+    job = jobs_module.make_collections_job(
+        ConfigHolder(config), lambda: object(), http=None,
+    )
+    async with session_factory() as session:
+        summary = await job.run(session)
+
+    assert calls == ["playlists"]
+    assert "collections disabled" in summary
+
+
+async def test_both_switched_off_is_one_honest_skip(
+    session_factory, config_factory, monkeypatch
+):
+    from autoposter.config.holder import ConfigHolder
+    from autoposter.scheduler import jobs as jobs_module
+
+    async def refuse(*args, **kwargs):
+        raise AssertionError("nothing should run")
+
+    monkeypatch.setattr(jobs_module, "reconcile_libraries", refuse)
+    monkeypatch.setattr(jobs_module, "reconcile_playlists", refuse)
+
+    config = config_factory()
+    config.collections.enabled = False
+    config.playlists.enabled = False
+    job = jobs_module.make_collections_job(
+        ConfigHolder(config), lambda: object(), http=None,
+    )
+    async with session_factory() as session:
+        summary = await job.run(session)
+
+    assert summary == "skipped: collections and playlists disabled"
+
+
+def test_the_job_set_did_not_grow_a_new_scheduled_job():
+    """The playlists pass rides the existing ``collections_reconcile`` job. If
+    that ever changes, ``SCHEDULED_JOB_NAMES`` and the agreement guard in
+    ``tests/test_api_scheduled_runs.py`` both have to move with it -- and this
+    is the test that says so out loud."""
+    from autoposter.api.routes import SCHEDULED_JOB_NAMES
+
+    assert "playlists_reconcile" not in SCHEDULED_JOB_NAMES
+    assert "collections_reconcile" in SCHEDULED_JOB_NAMES
+
+
+def test_playlists_enabled_is_frozen_and_nothing_else_about_playlists_is():
+    """``playlists.enabled`` is read once, at startup, and the editor says so.
+
+    After this phase ``app.py`` registers the ``collections_reconcile`` job when
+    ``collections.enabled or playlists.enabled``, which means turning
+    ``playlists.enabled`` on inside a process that registered no job does not
+    reach it -- a swap cannot rebuild the job set (``config/live.py``'s
+    ``swap_config`` says so in as many words). That is a real restart
+    requirement, so it belongs in ``FROZEN_SECTIONS`` beside its twin
+    ``collections.enabled``, and its reason has to name the registration rather
+    than shrug.
+
+    Everything ELSE about playlists is live: the definitions, the scope,
+    ``apply_to_plex``, ``delete_unconfigured``, ``max_deletes`` are all read off
+    the holder per pass. A broader ``playlists`` prefix would be a restart
+    requirement that does not exist, and ``frozen_reason``'s longest-prefix rule
+    means it would swallow all five."""
+    from autoposter.config.live import FROZEN_SECTIONS, frozen_reason
+
+    assert [path for path in FROZEN_SECTIONS if path.startswith("playlists")] == [
+        "playlists.enabled"
+    ]
+    assert "registered" in FROZEN_SECTIONS["playlists.enabled"]
+    assert frozen_reason("playlists.enabled")
+    for live in (
+        "playlists.definitions", "playlists.libraries", "playlists.apply_to_plex",
+        "playlists.delete_unconfigured", "playlists.max_deletes",
+    ):
+        assert frozen_reason(live) is None, (
+            "%s is not read once at startup, so telling an operator a restart "
+            "is needed would be a false claim" % live
+        )

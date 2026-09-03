@@ -81,6 +81,10 @@ FROZEN_SECTIONS: dict[str, str] = {
         "whether the collections job is registered is decided once at "
         "startup; the rest of this section is live"
     ),
+    "playlists.enabled": (
+        "whether the collections job -- which carries the playlists pass -- is "
+        "registered is decided once at startup; the rest of this section is live"
+    ),
     "arr_sync.enabled": (
         "whether the Radarr/Sonarr job is registered is decided once at "
         "startup; the rest of this section, cadence included, is live"
