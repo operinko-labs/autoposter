@@ -242,7 +242,7 @@ def create_app(
             base_url=config.plex.url,
             headers={"X-Plex-Token": secrets.plex_token},
         )
-        # The plex-preview fallback (roadmap row 239): when no provider has
+        # The plex-preview fallback (roadmap row 240): when no provider has
         # a title_card, ask Plex for the frame it derived from the media
         # file itself (posters(), the media://-prefixed entry -- never our
         # own upload:// or an agent guess, see
