@@ -212,6 +212,18 @@ def _resolutions(item: object) -> tuple[str, ...] | None:
     return found or None
 
 
+def _versions(item: object) -> int | None:
+    """How many `<Media>` versions this item carries -- Kometa's `versions`
+    filter. The same reload-free listing read `_resolutions` uses, counted
+    rather than valued. Answers None (missing), not 0, for an item with no
+    `<Media>` at all -- exactly as `_resolutions` does; `filters._is_missing`
+    treats both the same regardless of the attribute's type."""
+    media = _listing_value(item, "media")
+    if not media:
+        return None
+    return len(media)
+
+
 def _passthrough(attrib: str):
     """The accessor for a row that is just a listing attrib under another name."""
     return lambda item: _listing_value(item, attrib)
@@ -220,6 +232,7 @@ def _passthrough(attrib: str):
 _ACCESSORS = {name: _passthrough(attrib) for name, attrib in _LISTING_ATTRIBS.items()}
 _ACCESSORS["duration"] = _duration_minutes
 _ACCESSORS["resolution"] = _resolutions
+_ACCESSORS["versions"] = _versions
 
 # Derived from the table, not restated: a row whose source tier the probe moved
 # changes these, and ``tests/test_collection_filter_values.py`` fails until the
