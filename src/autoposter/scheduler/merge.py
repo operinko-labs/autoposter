@@ -160,6 +160,13 @@ class MergeScan:
     while ``resolve()`` reports the show's, so those rows have no twin this
     predicate can see), and the second is a pair where neither row was ever
     scored -- a different defect, which this job must not claim credit for.
+
+    ``fossils`` is a third such bucket and the only one that NAMES its rows.
+    A row whose ``kind`` and ``library`` disagree about the Plex namespace is
+    refused by every component and can never score, so the only remedy is a
+    hand repair, and an operator cannot start one from a count. It is held
+    out of the pairing entirely (``find_mergeable``), so this job never
+    merges or deletes one.
     """
 
     plans: list[MergePlan]
@@ -167,6 +174,7 @@ class MergeScan:
     unelectable: int
     no_identity_match: int
     neither_scored: int
+    fossils: list[MergeRow]
     total: int
 
 
@@ -219,6 +227,75 @@ def intent_for_row(row: MergeRow) -> RenderIntent:
         episode_number=row.episode_number,
         rating_key=row.rating_key,
     )
+
+
+def _family(kind: str) -> str:
+    """The Plex section type a row's ``kind`` implies.
+
+    ``_search_sync``'s own split, verbatim (``plex/client.py:467``, and
+    ``_key_resolves_sync`` at ``:661``): a movie kind can only be answered by
+    a movie section; show, season and episode all resolve through a show one.
+    """
+    return "movie" if kind == "movie" else "show"
+
+
+def _fossil_rows(rows: list[MergeRow]) -> list[MergeRow]:
+    """Rows whose ``kind`` and ``library`` disagree about the Plex namespace.
+
+    Before ``1e32efc`` (2026-08-24) the GUID fallback walked every section
+    with no type filter and no post-match type check, so a show-kind intent
+    carrying a TMDB integer that collides across the movie and TV namespaces
+    could be answered by the Movies library. ``resolve()`` stamps ``kind``
+    from the INTENT (``plex/client.py:727``) and takes ``library``,
+    ``title``, ``root_folder`` and the ids from whatever Plex handed back, so
+    the row written contradicts itself. Every guard refuses such a row today,
+    which is exactly why it is stuck: it can never score, and while it was
+    still being processed ``is_movie = kind == "movie"`` selected the wrong
+    provider namespace -- which is how another title's artwork was uploaded
+    onto a real Plex item and another title's year and studio written over
+    its metadata. The minting path is closed. This makes the survivors
+    visible so one can never hide again.
+
+    **The section type is not available here, and that is not an oversight.**
+    The only reader of a section's type is ``PlexClient._sections``
+    (``plex/client.py:316-328``): private, returning plexapi objects that must
+    not cross the thread boundary, and in a module this change does not touch.
+    Calling it would also put a Plex request inside a scan that is probe-free
+    on purpose -- the dry run is the one report an operator can always read
+    during an outage (``find_mergeable``'s docstring), and this bucket has to
+    appear in it. Config cannot answer either: ``PlexConfig`` carries
+    ``excluded_libraries`` and no library-to-type map, and
+    ``Config._playlist_libraries_must_be_configured`` says so in as many words
+    -- "this document holds library NAMES and nothing that says what type a
+    name is" (``config/schema.py``).
+
+    So the rule is read off the DATA, never guessed from a library's title. A
+    Plex section has exactly one type, so every row genuinely resolved out of
+    one ``library`` carries one family; where both families appear under one
+    library name, the rows in the STRICT MINORITY are the fossils. Three limits,
+    all stated in ``deploy/README.md`` beside the SQL form of this function:
+    an exact tie names nobody, because with no section type to appeal to there
+    is no honest way to say which side is wrong; a library whose rows are ALL
+    fossils is invisible by construction; and a library where fossils OUTNUMBER
+    the real rows names the real rows instead. The bucket is report-only —
+    never a merge input, never a delete — so a misnaming costs the operator a
+    look, not a row; the operator's own item view settles which side is wrong.
+
+    Rows arrive in ``id`` order and the result preserves it, so the summary
+    string is deterministic and reads no clock.
+    """
+    tally: dict[str, dict[str, int]] = {}
+    for row in rows:
+        counts = tally.setdefault(row.library, {"movie": 0, "show": 0})
+        counts[_family(row.kind)] += 1
+
+    fossils = []
+    for row in rows:
+        family = _family(row.kind)
+        other = "show" if family == "movie" else "movie"
+        if tally[row.library][other] > tally[row.library][family]:
+            fossils.append(row)
+    return fossils
 
 
 def _identity_tokens(row: MergeRow) -> list[tuple[str, object]]:
@@ -390,13 +467,23 @@ async def find_mergeable(session: AsyncSession) -> MergeScan:
     """
     rows = await _all_rows(session)
     if not rows:
-        return MergeScan([], 0, 0, 0, 0, 0)
+        return MergeScan([], 0, 0, 0, 0, [], 0)
+
+    # Held out of the pairing rather than left to fall outside every cluster
+    # scope by luck. Two fossils of one item in one library share a
+    # ``(kind, library, season, episode)`` scope AND their ids, so the
+    # union-find WOULD pair them -- and merging two self-contradicting rows
+    # destroys the evidence the hand repair needs. Nothing below this line
+    # can reach them: not the election, not the probe, not the delete.
+    fossils = _fossil_rows(rows)
+    fossil_ids = {row.id for row in fossils}
+    pairable = [row for row in rows if row.id not in fossil_ids]
 
     pairs: list[MergePair] = []
     ambiguous = 0
     unelectable = 0
     clustered_ids: set[int] = set()
-    for cluster in _identity_clusters(rows):
+    for cluster in _identity_clusters(pairable):
         clustered_ids.update(row.id for row in cluster)
         if len(cluster) != 2:
             ambiguous += 1
@@ -417,8 +504,12 @@ async def find_mergeable(session: AsyncSession) -> MergeScan:
     unscored = select(Render.item_id).where(
         Render.status == "rendered", Render.quality_scored_at.is_(None)
     )
-    if clustered_ids:
-        unscored = unscored.where(Render.item_id.notin_(clustered_ids))
+    # Fossils are excluded here too, so every row lands in exactly ONE
+    # bucket. A fossil has no identity twin either -- counting it in both
+    # would send an operator chasing one row through two different remedies.
+    excluded = clustered_ids | fossil_ids
+    if excluded:
+        unscored = unscored.where(Render.item_id.notin_(excluded))
     no_identity_match = len(set((await session.execute(unscored)).scalars()))
 
     paired_ids = [row.id for pair in pairs for row in (pair.stale, pair.survivor)]
@@ -445,6 +536,7 @@ async def find_mergeable(session: AsyncSession) -> MergeScan:
         unelectable=unelectable,
         no_identity_match=no_identity_match,
         neither_scored=neither_scored,
+        fossils=fossils,
         total=len(rows),
     )
 
@@ -872,6 +964,14 @@ def implausible_merge_count(pairs: int, total: int, config) -> str | None:
     return None
 
 
+# How many fossil rows one summary names before it starts counting instead.
+# The whole string is stored in scheduled_runs.last_detail (Text) and rendered
+# on the dashboard; listing a pathological population row by row would make
+# that page unreadable, and the count is what sends an operator to the query
+# in deploy/README.md.
+_FOSSIL_NAMES_MAX = 20
+
+
 def _tail(scan: MergeScan) -> str:
     """The sentences both summaries end with: what this pass did NOT do."""
     parts = []
@@ -891,6 +991,21 @@ def _tail(scan: MergeScan) -> str:
             "unelectable, left alone -- neither resolves itself; an operator "
             "must fix the identity in Plex or dismiss the row, or this job "
             "reports them again next pass"
+        )
+    if scan.fossils:
+        named = " | ".join(
+            f"id={row.id}, key={row.rating_key}, title={row.title!r}"
+            for row in scan.fossils[:_FOSSIL_NAMES_MAX]
+        )
+        remainder = len(scan.fossils) - _FOSSIL_NAMES_MAX
+        # Rows are joined with " | " and never "; ": the operator parses this
+        # summary by its semicolons, and a list separator that matched them
+        # would split one sentence into many.
+        parts.append(
+            f"{len(scan.fossils)} row(s) whose kind and library disagree "
+            "(fossils), never merged or deleted by this job and repairable "
+            f"only by hand -- see deploy/README.md: {named}"
+            + (f" | and {remainder} more" if remainder > 0 else "")
         )
     return ("; " + "; ".join(parts)) if parts else ""
 
