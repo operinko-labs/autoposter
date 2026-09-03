@@ -17,7 +17,7 @@ class `collections/filters.py`'s module docstring rules out.
 """
 import pytest
 
-from autoposter.badges.values import MediaInfo, media_info_from_plex
+from autoposter.badges.values import media_info_from_plex
 from autoposter.collections.filter_values import PlexItemView
 from autoposter.overlays.selection import (
     OVERLAY_ATTRIBUTES,

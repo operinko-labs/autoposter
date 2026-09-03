@@ -614,3 +614,154 @@ async def test_apply_badges_threads_http_through_to_a_url_sourced_definition(
     assert _sha(plex_item.last_bytes) != _sha(baseline_plex.last_bytes), (
         "the downloaded image must actually be drawn, not skipped"
     )
+
+
+# --- the seam through the REAL entry point: gate-off / gate-on-but-unmatched
+# / gate-on-and-matched. Global Constraint 6. `_sha` is a PIXEL hash, not a
+# file hash: a differently-configured item legitimately stamps different EXIF
+# provenance, and what must be identical is what got DRAWN. --------------
+
+
+class _FakePlexItem4k(_FakePlexItem):
+    """The same fake, one attribute moved. `videoResolution` is what
+    `direct_play` selects on."""
+
+    def __init__(self):
+        super().__init__()
+        self.media[0].videoResolution = "4k"
+        self.contentRating = "PG-13"
+
+
+async def test_a_definition_whose_condition_fails_draws_exactly_the_gate_off_pixels(
+    session, config_with_badges, tmp_path
+):
+    """The middle arm of the three-way law, and the one that did not exist
+    before this phase: gate ON, condition NOT satisfied, and the drawn pixels
+    must equal the no-definitions baseline exactly."""
+    stamp = tmp_path / "stamp.png"
+    Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(stamp, format="PNG")
+    config_with_badges.overlays_root = tmp_path
+
+    config_with_badges.badges.definitions = []
+    base_item, base_render = await _render(session, rating_key="cond-baseline")
+    base_plex = _FakePlexItem()
+    await apply_badges(session, config_with_badges, base_render, base_item, base_plex, _Facts())
+
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="mystamp", file="stamp.png",
+            condition={"resolution.regex": "(?i)2160|4k"},
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="center", vertical_offset=0,
+        )
+    ]
+    item, render = await _render(session, rating_key="cond-unmatched")
+    plex_item = _FakePlexItem()  # 1080 -- does not satisfy the condition
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+
+    assert _sha(plex_item.last_bytes) == _sha(base_plex.last_bytes)
+
+
+async def test_a_definition_whose_condition_holds_is_actually_drawn(
+    session, config_with_badges, tmp_path
+):
+    """The third arm. Same config, an item that DOES satisfy it."""
+    stamp = tmp_path / "stamp.png"
+    Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(stamp, format="PNG")
+    config_with_badges.overlays_root = tmp_path
+
+    config_with_badges.badges.definitions = []
+    base_item, base_render = await _render(session, rating_key="cond-baseline-4k")
+    base_plex = _FakePlexItem4k()
+    await apply_badges(session, config_with_badges, base_render, base_item, base_plex, _Facts())
+
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="mystamp", file="stamp.png",
+            condition={"resolution.regex": "(?i)2160|4k"},
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="center", vertical_offset=0,
+        )
+    ]
+    item, render = await _render(session, rating_key="cond-matched")
+    plex_item = _FakePlexItem4k()
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+
+    assert _sha(plex_item.last_bytes) != _sha(base_plex.last_bytes)
+
+
+async def test_an_item_whose_match_outcome_changes_re_badges(
+    session, config_with_badges, tmp_path
+):
+    """A4 through the real entry point, which is where it matters: the same
+    render row, the same config, one item attribute moved -- and moved on an
+    attribute `badge_values` never reads, so nothing but the match OUTCOME
+    could be what moves the fingerprint. `contentRating` is read by the
+    overlay view (it is what the six regionals select on) but by no badge:
+    `BadgeInputs.content_rating` comes from `facts`, not from `plex_item`
+    (`pipeline.py:1321`) -- unlike `videoResolution`, which also drives
+    `resolution_image` and would move the fingerprint through `values` on
+    its own, discriminating nothing. Without the outcome in the fingerprint,
+    `apply_badges`'s gate sees an unchanged digest and
+    `upload_status == 'uploaded'` and returns early -- the item keeps the
+    wrong badge forever."""
+    stamp = tmp_path / "stamp.png"
+    Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(stamp, format="PNG")
+    config_with_badges.overlays_root = tmp_path
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="mystamp", file="stamp.png",
+            condition={"content_rating": "PG-13"},
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="center", vertical_offset=0,
+        )
+    ]
+
+    item, render = await _render(session, rating_key="outcome-moves")
+    plex_item = _FakePlexItem()  # no contentRating: does not match
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 1
+    unmatched_fingerprint = render.badge_fingerprint
+
+    plex_item.contentRating = "PG-13"  # the item changed
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2, "a changed match outcome must re-badge"
+    assert render.badge_fingerprint != unmatched_fingerprint
+
+
+async def test_an_unmatched_definition_never_resolves_its_image(
+    session, config_with_badges, tmp_path, monkeypatch
+):
+    """Global Constraint 7. Selection runs BEFORE the per-definition
+    resolution loop, so an overlay this item does not match costs no stat, no
+    download and no decode. Proven with a `url:` source, where the I/O is
+    observable: zero requests must be made."""
+    monkeypatch.setattr(
+        "autoposter.net.guard.resolve_host", lambda h, p: ["93.184.216.34"]
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        buffer = io.BytesIO()
+        Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(buffer, format="PNG")
+        return httpx.Response(
+            200, content=buffer.getvalue(), headers={"content-type": "image/png"},
+        )
+
+    config_with_badges.overlays_root = tmp_path
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="mystamp", url="https://example.com/a.png",
+            condition={"resolution.regex": "(?i)2160|4k"},
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="center", vertical_offset=0,
+        )
+    ]
+    item, render = await _render(session, rating_key="unmatched-url")
+    plex_item = _FakePlexItem()  # 1080
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await apply_badges(
+            session, config_with_badges, render, item, plex_item, _Facts(), http=http
+        )
+    assert calls == [], "an unmatched definition must not resolve its image"
