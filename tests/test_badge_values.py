@@ -12,6 +12,7 @@ from autoposter.badges.values import (
     commonsense_text,
     critic_text,
     episode_text,
+    plex_native_ratings,
     runtime_text,
     video_format_text,
 )
@@ -127,3 +128,73 @@ def test_video_format_prefers_the_higher_weighted_overlay():
     info = MediaInfo(None, None, None, None, (), frozenset(), None, None,
                      "/m/Dune (2021)/Dune.2021.BluRay.REMUX.2160p.mkv")
     assert video_format_text(info) == "REMUX"
+
+
+class _Rating:
+    def __init__(self, image, value):
+        self.image = image
+        self.value = value
+
+
+class _RatedItem:
+    def __init__(self, user_rating=None, ratings=()):
+        if user_rating is not None:
+            self.userRating = user_rating
+        self.ratings = ratings
+
+
+def test_plex_native_ratings_reads_all_four_by_image_prefix():
+    """Probe section 2.3.6, transcribed verbatim: the rottentomatoes://
+    discrimination is by URL SUFFIX (ripe/rotten = critic, anything else =
+    audience), not by a separate field."""
+    item = _RatedItem(
+        user_rating=8.0,
+        ratings=(
+            _Rating("imdb://image.rating", 7.7),
+            _Rating("themoviedb://image.rating", 8.4),
+            _Rating("rottentomatoes://image.rating.ripe", 9.0),
+            _Rating("rottentomatoes://image.rating.upright", 8.8),
+        ),
+    )
+    assert plex_native_ratings(item) == {
+        "user_rating": 8.0,
+        "plex_imdb_rating": 7.7,
+        "plex_tmdb_rating": 8.4,
+        "plex_tomatoes_rating": 9.0,
+        "plex_tomatoesaudience_rating": 8.8,
+    }
+
+
+def test_plex_native_ratings_reads_the_rotten_suffix_as_critic_too():
+    item = _RatedItem(ratings=(_Rating("rottentomatoes://image.rating.rotten", 3.0),))
+    assert plex_native_ratings(item)["plex_tomatoes_rating"] == 3.0
+
+
+def test_plex_native_ratings_is_total_over_an_unrated_item():
+    item = _RatedItem()
+    assert plex_native_ratings(item) == {
+        "user_rating": None,
+        "plex_imdb_rating": None,
+        "plex_tmdb_rating": None,
+        "plex_tomatoes_rating": None,
+        "plex_tomatoesaudience_rating": None,
+    }
+
+
+def test_plex_native_ratings_does_not_trigger_a_partial_object_reload():
+    """The reload hazard C1's T1 review flagged (finding C3) for
+    OverlayItemView applies identically here: `item` may be the same PARTIAL
+    plexapi object apply_badges uploads to, and a plain `getattr` on an
+    UNSET attribute trips PlexPartialObject.__getattribute__'s reload
+    branch -- one blocking `requests` GET, inline. A fake with no `reload`
+    method proves the accessor never calls it."""
+    class _PartialNoReload:
+        ratings = ()
+
+    assert plex_native_ratings(_PartialNoReload()) == {
+        "user_rating": None,
+        "plex_imdb_rating": None,
+        "plex_tmdb_rating": None,
+        "plex_tomatoes_rating": None,
+        "plex_tomatoesaudience_rating": None,
+    }
