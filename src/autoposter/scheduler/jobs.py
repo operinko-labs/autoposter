@@ -29,6 +29,7 @@ from autoposter.arr.sync import (
     sync_section,
 )
 from autoposter.collections.credits import scan_credits
+from autoposter.collections.playlists import PlaylistsPassFailed, reconcile_playlists
 from autoposter.collections.service import (
     CollectionsPassFailed,
     build_source_clients,
@@ -129,12 +130,32 @@ def make_collections_job(
 
     ``notifier`` is the process's notifier, forwarded to the pass for row 19's
     per-collection webhooks. Absent, the pass sends nothing.
+
+    The playlists half (roadmap row 98a) runs after the collections half, in
+    this job rather than in one of its own: it needs the same server, the same
+    clients and the same config generation, and a second job would be a second
+    cadence for two passes an operator thinks of as one. It is a SIBLING of
+    ``reconcile_libraries`` and not a step inside it -- a playlist belongs to no
+    library, so it cannot be committed under one -- and it carries its own
+    per-definition commit boundary. The two switches are honoured
+    independently: ``collections.enabled`` off with ``playlists.enabled`` on
+    runs the playlists half alone, because skipping it would be a setting that
+    reads as configured and silently is not. That independence only means
+    anything because ``app.py`` registers this job on
+    ``collections.enabled or playlists.enabled`` -- the paragraph above about
+    ``collections.enabled`` being frozen now applies to ``playlists.enabled``
+    too, and both are in ``FROZEN_SECTIONS`` for the one reason: whether this
+    job exists is decided when the job set is built.
     """
+    summaries_client = summaries
 
     async def run(session: AsyncSession) -> str:
         config = holder.current
-        if not config.collections.enabled:
-            return "skipped: collections disabled"
+        collections_on = config.collections.enabled
+        playlists_on = config.playlists.enabled
+        if not collections_on and not playlists_on:
+            return "skipped: collections and playlists disabled"
+
         server = await asyncio.to_thread(server_factory)
         # Which pass this is, for definitions gated to every Nth run. Derived
         # from the clock rather than counted in the database: it needs no
@@ -147,19 +168,56 @@ def make_collections_job(
             build_source_clients(config, secrets, http, cache)
             if secrets is not None else None
         )
-        result = await reconcile_libraries(
-            session, server, config, http, run_index=run_index, summaries=summaries,
-            sources=sources, cache=cache, notifier=notifier,
-        )
+
+        lines: list[str] = []
+        collections_detail: str | None = None
+        playlists_detail: str | None = None
+
+        if collections_on:
+            result = await reconcile_libraries(
+                session, server, config, http, run_index=run_index,
+                summaries=summaries_client, sources=sources, cache=cache,
+                notifier=notifier,
+            )
+            lines.append(result.summary)
+            if result.failed:
+                collections_detail = result.detail
+        else:
+            lines.append("collections disabled")
+
+        if playlists_on:
+            # Below the collections half and outside its result handling: the
+            # playlists pass commits per definition, so a collections failure
+            # has already been contained and committed by the time this runs,
+            # and a playlists failure must not un-record it.
+            playlists = await reconcile_playlists(
+                session, server, config, http, run_index=run_index,
+                sources=sources, cache=cache,
+            )
+            lines.append(playlists.summary)
+            if playlists.failed:
+                playlists_detail = playlists.detail
+
+        summary = "; ".join(lines)
         # Raised, not returned, because ``last_status`` is decided by whether
-        # this coroutine raised (scheduler/core.py). Returning the summary of a
-        # pass where every source was dead recorded the run as ``ok`` and left
-        # the failure visible only in the log -- roadmap row 115. Raised HERE,
-        # after the reconcile: every library that succeeded has already
-        # committed, so nothing is rolled back by this.
-        if result.failed:
-            raise CollectionsPassFailed(result.detail)
-        return result.summary
+        # this coroutine raised (scheduler/core.py). Raised HERE, after both
+        # halves: everything that succeeded has already committed, so nothing is
+        # rolled back by this.
+        #
+        # Which class is raised is decided by which half broke, so the name in
+        # the log and in scheduled_runs.last_status points at the right
+        # subsystem: ``PlaylistsPassFailed`` only when the playlists half is the
+        # ONLY thing that failed, and ``CollectionsPassFailed`` otherwise --
+        # including when both did, because a collections failure is the larger
+        # fact and the detail below carries both.
+        details = [d for d in (collections_detail, playlists_detail) if d]
+        if details:
+            error = (
+                PlaylistsPassFailed if collections_detail is None
+                else CollectionsPassFailed
+            )
+            raise error("; ".join(details))
+        return summary
 
     return Job(
         name="collections_reconcile",

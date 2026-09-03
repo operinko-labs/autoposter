@@ -485,6 +485,71 @@ class ManagedCollection(Base):
     )
 
 
+class ManagedPlaylist(Base):
+    """A playlist this service owns.
+
+    ``ManagedCollection`` above is half of an ownership test -- the other half
+    is a Plex label on the collection, and ``engine._sweep``'s docstring
+    explains why neither alone is enough: "the row alone can name a collection
+    somebody else recreated under that title, and the label alone is a
+    collection an operator labelled by hand."
+
+    A playlist has no second half. plexapi's ``Playlist`` is not a
+    ``LabelMixin`` and carries no label surface at all (pinned in
+    ``tests/test_plexapi_playlist_contract.py``), so this row has to carry
+    Plex's own identity for the object instead: **a playlist is ours if and
+    only if ``plex_rating_key`` names a playlist currently on the server.**
+    That predicate is what makes the two hard cases come out right -- a
+    same-title playlist somebody else created is not ours, because its rating
+    key is not this one; and one of ours that an operator RENAMED still is,
+    because a rename does not move the rating key. ``plex_rating_key`` is
+    therefore NOT NULL, unlike the collection column of the same name.
+
+    There is no ``library``: a playlist belongs to none. ``libraries`` records
+    the definition's SCOPE, for the report and for ``GET /api/playlists``, and
+    is not part of any key.
+
+    ``kind`` is absent too, deliberately. Its four collection values all name
+    ways a collection can come to exist that a playlist has none of -- there is
+    no smart playlist here, no separator, and no operator-blank endpoint
+    (``createPlaylist`` refuses an empty item list).
+    """
+
+    __tablename__ = "managed_playlists"
+    __table_args__ = (
+        UniqueConstraint("title", name="uq_managed_playlist_title"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(255))
+    # Plex casts a playlist's ratingKey to an int; this stores the str() of it,
+    # which is what every comparison in collections/playlists.py goes through.
+    plex_rating_key: Mapped[str] = mapped_column(String(32), index=True)
+    # Hash of the desired state -- the ordered member rating keys, the summary
+    # and the sync mode -- so an unchanged pass writes nothing. Computed by
+    # lists._members_hash, shared with the collections side rather than
+    # reimplemented.
+    definition_hash: Mapped[str] = mapped_column(String(64))
+    # The definition's library scope when this row was last written, in the
+    # order it names them. Recorded for the report; never a key.
+    libraries: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    # What the last reconcile pass saw. NULL means no pass has stamped this row
+    # yet -- true for a row created by a dry run's own bookkeeping and for one
+    # written before a pass ever completed.
+    member_count: Mapped[int | None] = mapped_column(Integer)
+    last_added: Mapped[int | None] = mapped_column(Integer)
+    last_removed: Mapped[int | None] = mapped_column(Integer)
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ImdbMissRefreshState(Base):
     """Rate-limit state for the miss-triggered refresh (see ``facts/imdb.py``).
 

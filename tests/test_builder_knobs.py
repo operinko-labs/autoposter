@@ -1254,6 +1254,11 @@ async def test_a_dead_award_source_does_not_orphan_the_year_collections_it_built
 def _service_config(libraries=("Movies",), **overrides):
     config = _config(libraries=list(libraries), **overrides)
     config.scheduler = SimpleNamespace(collections_hours=24)
+    # The sibling half, off: this file is about the collections half of the
+    # job (roadmap row 98a's playlists pass is exercised in
+    # tests/test_playlists.py), and `run` reads this switch before either
+    # half can be skipped.
+    config.playlists = SimpleNamespace(enabled=False)
     return config
 
 

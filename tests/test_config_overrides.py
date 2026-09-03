@@ -314,17 +314,27 @@ def test_a_reader_holding_the_holder_sees_the_new_generation():
 async def test_collections_cli_reads_the_overrides(session, monkeypatch, caplog):
     """Flipping ``collections.enabled`` off in the overrides stops the CLI
     before it ever reaches Plex; with the file alone the example config has it
-    enabled and this would connect."""
+    enabled and this would connect.
+
+    ``playlists.enabled`` is flipped off in the same override: roadmap row
+    98a's sibling pass runs from the same CLI guard, EXAMPLE ships
+    ``playlists.enabled: true``, and a playlists half left on would still
+    reach Plex and defeat this test's whole point -- see
+    ``collections/__main__.py``'s ``if not config.collections.enabled and not
+    config.playlists.enabled``.
+    """
     for name, value in SECRET_ENV.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(collections_main, "CONFIG_PATH", EXAMPLE)
     monkeypatch.setattr(collections_main, "PlexServer", _refuse_to_connect)
     assert load_config(EXAMPLE).collections.enabled is True
 
-    await _store(session, {"collections": {"enabled": False}})
+    await _store(
+        session, {"collections": {"enabled": False}, "playlists": {"enabled": False}}
+    )
     with caplog.at_level(logging.INFO, logger=collections_main.__name__):
         await collections_main.main()
-    assert "collections are disabled in config" in caplog.text
+    assert "collections and playlists are disabled in config" in caplog.text
 
 
 async def test_adopt_cli_reads_the_overrides(session, monkeypatch, caplog):
