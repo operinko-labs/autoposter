@@ -24,11 +24,12 @@ floating tag, so this set is reproducible.
 | `/fonts/Inter-Medium.ttf` | `fonts/Inter-Medium.ttf` | 1 | video_format, runtimes, commonsense, episode_info — all 55pt |
 | `/defaults/overlays/images/cr` | `images/cr` | 98 | the six content-rating regional overlay families |
 | `/defaults/overlays/images/Direct-Play.png` | `images/Direct-Play.png` | 1 | the direct_play overlay family |
+| `/defaults/overlays/images/versions.png` | `images/versions.png` | 1 | the versions overlay family |
 
 Deliberately **not** taken: `edition/`, `network/`, `ribbon/`, `streaming/`, `studio/` — the
 overlay families this deployment does not yet enable (roadmap row 100, sub-phases C2 and C3).
-`cr/` and `Direct-Play.png` WERE deliberately not taken until the overlay era's sub-phase C1
-shipped the families that draw them.
+`cr/`, `Direct-Play.png` and `versions.png` WERE deliberately not taken until the overlay era's
+sub-phases C1 and C2a shipped the families that draw them.
 
 **To reproduce this copy**
 
