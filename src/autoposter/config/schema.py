@@ -2075,6 +2075,329 @@ def _libraries_overlap(
     )
 
 
+# Every ``CollectionDefinition`` field a playlist cannot apply, mapped to why.
+# Kometa expresses the same refusal as an allowlist checked at parse time
+# (``playlist_attributes``, modules/builder.py:656-679, enforced at :1569 with
+# "attribute not compatible with playlists"); this is that list turned inside
+# out and moved to config load, with the reason attached to each entry.
+#
+# It has to be an EXPLICIT refusal rather than "the field is simply not on the
+# model". Nothing in this file sets ``model_config``, so pydantic's default
+# applies and an unknown key is SILENTLY DROPPED -- which is precisely why
+# ``Config._version_check_moved_to_an_env_var`` exists and why
+# ``tests/test_example_config_matches_schema.py`` was written. A ``sort_title:``
+# copied across from a collection definition would otherwise load clean, apply
+# nothing, and read as configured forever.
+_REFUSED_PLAYLIST_FIELDS: dict[str, str] = {
+    "sort": (
+        "a playlist's order is its builder's own output order; Plex has no "
+        "per-playlist sort setting to write"
+    ),
+    "sort_title": "Plex sorts playlists by title alone; there is no sort title to set",
+    "collection_mode": (
+        "the display mode is a property of a collection's shelf, and a playlist "
+        "has no shelf"
+    ),
+    "labels": (
+        "plexapi's Playlist is not a LabelMixin -- a playlist cannot carry a Plex "
+        "label at all (pinned in tests/test_plexapi_playlist_contract.py)"
+    ),
+    "label_sync": (
+        "a playlist cannot carry a Plex label, so there is no label set to make "
+        "authoritative"
+    ),
+    "item_label": (
+        "member labelling belongs to collections (roadmap row 69); a playlist's "
+        "members are not owned by it"
+    ),
+    "visible_library": "hub visibility is a collection setting; playlists are never promoted to hubs",
+    "visible_home": "hub visibility is a collection setting; playlists are never promoted to hubs",
+    "visible_shared": "hub visibility is a collection setting; playlists are never promoted to hubs",
+    "hub_priority": "hub ordering is a collection setting; playlists are never promoted to hubs",
+    "sync_to_mdb_list": (
+        "the MDBList push (roadmap row 31) is a collection feature and is not "
+        "offered for playlists"
+    ),
+    "radarr_restrict": "the Radarr/Sonarr member overrides (roadmap row 89) are collection-only",
+    "sonarr_restrict": "the Radarr/Sonarr member overrides (roadmap row 89) are collection-only",
+    "item_radarr_tag": "the Radarr/Sonarr member overrides (roadmap row 89) are collection-only",
+    "item_sonarr_tag": "the Radarr/Sonarr member overrides (roadmap row 89) are collection-only",
+    "tmdb_summary": (
+        "a playlist's summary is written verbatim; there is no TMDB overview for "
+        "a playlist to borrow"
+    ),
+    "changes_webhook": (
+        "the per-collection changes webhook (roadmap row 19) is not wired for "
+        "playlists"
+    ),
+    "filters": (
+        "the post-builder filter stage runs inside the collections engine "
+        "(engine._run_one, with its tier-2 prefetch); giving playlists a second "
+        "copy of it is deliberately out of 98a's scope and is filed in roadmap "
+        "row 98's ledger"
+    ),
+}
+
+
+class PlaylistDefinition(BaseModel):
+    """One operator-configured playlist: a builder plus how to apply it.
+
+    ``CollectionDefinition``'s shape with everything a Plex playlist has
+    nowhere to put taken away -- see ``_REFUSED_PLAYLIST_FIELDS`` for the list
+    and for why each one is refused BY NAME rather than ignored.
+
+    Two fields are kept that a reader coming from Kometa might not expect.
+    ``builder_level`` is how this service says "the members are episodes"
+    (roadmap row 143): Kometa flattens a Show or Season into its episodes
+    silently, and this codebase already has an explicit way to ask for the same
+    thing, so the definition says what it means and the resolution is against
+    an index of that level. ``sync_mode: append`` keeps its collection meaning
+    -- add only, never remove, never reorder.
+    """
+
+    title: str = Field(description="The playlist's title in Plex.")
+    builder: str = Field(
+        description="Which registered collection builder produces this playlist's members.",
+    )
+    params: dict = Field(
+        default_factory=dict,
+        description="The parameters this playlist's builder takes; each builder defines its own shape.",
+    )
+    # None = every library in the section's scope. An explicit list narrows it
+    # AND fixes the search order: the libraries are walked in the order written
+    # and the first one that owns an id claims it (see
+    # collections/resolve.py::resolve_external_across for why they are never
+    # merged into one index).
+    libraries: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which libraries this playlist's members are resolved from, searched "
+            "in the order given, first match winning. None (the default) means "
+            "every library in the playlists section's own scope."
+        ),
+    )
+    summary: str | None = Field(
+        default=None,
+        description="The playlist's Plex summary, written verbatim. The only metadata a playlist takes.",
+    )
+    sync_mode: Literal["sync", "append"] = Field(
+        default="sync",
+        description=(
+            "'sync' (the default) makes the playlist exactly the builder's "
+            "output, in that order; 'append' only ever adds members, never "
+            "removes them and never reorders what is already there."
+        ),
+    )
+    builder_level: Literal["item", "season", "episode"] = Field(
+        default="item",
+        description=(
+            "Whether this playlist's members are the libraries' own items, "
+            "their seasons, or their episodes."
+        ),
+    )
+    limit: int | None = Field(
+        default=None, ge=1,
+        description="A cap on the playlist's member count, applied after resolution.",
+    )
+    schedule: ScheduleGate | None = Field(
+        default=None,
+        description=(
+            "Gates which reconcile passes this playlist is allowed to run on; "
+            "unset means every pass."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_collection_only_fields(cls, data):
+        """A collection-only key is an error, not a dropped key.
+
+        ``mode="before"`` because by ``mode="after"`` pydantic has already
+        discarded it -- the same reason ``Config._version_check_moved_to_an_env_var``
+        is written that way. Guarded on ``isinstance(data, dict)`` so a
+        ``model_copy``/``model_validate`` over an already-built instance (which
+        the live-config swap and the tests both do) passes straight through.
+        """
+        if not isinstance(data, dict):
+            return data
+        for name, why in _REFUSED_PLAYLIST_FIELDS.items():
+            if name in data:
+                raise ValueError(
+                    f"{name!r} does not apply to a playlist: {why}. Remove it "
+                    "from this playlist definition"
+                )
+        return data
+
+    @field_validator("builder")
+    @classmethod
+    def _must_be_a_registered_builder(cls, v: str) -> str:
+        # Imported at validation time, not module scope, for the cycle
+        # CollectionDefinition's own copy of this validator documents.
+        from autoposter.collections.builders import REGISTRY
+
+        if v not in REGISTRY:
+            raise ValueError(
+                f"unknown collection builder {v!r}: known builders are "
+                + ", ".join(sorted(REGISTRY))
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _needs_a_plain_list_builder(self) -> "PlaylistDefinition":
+        """A playlist is one object with one ordered membership.
+
+        The engine dispatches on exactly these two markers
+        (``getattr(builder, "smart", False)`` and ``hasattr(builder,
+        "expand")``, ``collections/engine.py``), so they are what this refuses
+        on. Both would otherwise load clean and build nothing: a smart builder
+        has no ids to hand over at all, and an expanding one hands back whole
+        definitions for a family of collections that a single playlist has no
+        way to become.
+        """
+        from autoposter.collections.builders import REGISTRY
+
+        builder = REGISTRY.get(self.builder)
+        if getattr(builder, "smart", False):
+            raise ValueError(
+                f"{self.builder!r} is a smart builder and cannot feed a "
+                "playlist: Plex evaluates a smart collection's membership "
+                "itself, so there is no ordered list to give one. Point "
+                f"{self.title!r} at a list builder"
+            )
+        if hasattr(builder, "expand"):
+            raise ValueError(
+                f"{self.builder!r} expands into a FAMILY of collections, and a "
+                "playlist is a single object with a single ordered membership. "
+                f"Point {self.title!r} at a builder that produces one list"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _params_must_satisfy_the_builders_own_model(self) -> "PlaylistDefinition":
+        """The same check ``CollectionDefinition`` makes, for the same reason:
+        a mis-spelled param caught at the moment of the edit rather than
+        mid-pass, where the engine contains it as a dead source and the only
+        symptom is one playlist quietly not being built.
+
+        No expanding-builder exemption here -- an expanding builder is refused
+        outright above, so a placeholder's params can never reach this.
+        """
+        from autoposter.collections.builders import REGISTRY
+
+        model = getattr(REGISTRY.get(self.builder), "params_model", None)
+        if model is None:
+            return self
+        try:
+            model.model_validate(self.params)
+        except ValidationError as error:
+            details = "; ".join(
+                "%s: %s" % (
+                    ".".join(str(part) for part in item["loc"]) or "params", item["msg"]
+                )
+                for item in error.errors()
+            )
+            raise ValueError(
+                f"{self.title!r} does not configure the {self.builder!r} builder "
+                f"correctly -- {details}"
+            ) from error
+        return self
+
+    @model_validator(mode="after")
+    def _libraries_must_not_be_blank(self) -> "PlaylistDefinition":
+        """Kometa's own rule, and its reasoning holds here unchanged
+        (modules/builder.py:710-718): an OMITTED ``libraries`` means every
+        configured library, but a PRESENT and empty one is an operator who
+        wrote something that selects nothing at all.
+        """
+        if self.libraries is not None and not self.libraries:
+            raise ValueError(
+                f"playlist {self.title!r} names no library at all: remove "
+                "'libraries' to use every configured library, or name the ones "
+                "its members should be resolved from"
+            )
+        return self
+
+
+class PlaylistsConfig(BaseModel):
+    """Every playlist this service builds and owns in Plex.
+
+    The collections section's posture, with one thing genuinely different.
+    Collections are owned by a Plex LABEL plus a ``managed_collections`` row;
+    a playlist has no labels (plexapi's ``Playlist`` is not a ``LabelMixin``),
+    so a playlist is ours if and only if a ``managed_playlists`` row's
+    ``plex_rating_key`` names a playlist currently on the server. There is
+    consequently no ``ownership_label``, no ``adopt``/``adopt_from`` and no
+    ``protect_labels`` here: a playlist this service holds no row for is simply
+    never touched, which is what protection would have bought anyway.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether this service builds and manages any playlists at all.",
+    )
+    # Dry run by default, the same posture as collections.apply_to_plex,
+    # operations.write_to_plex and badges.upload_to_plex.
+    apply_to_plex: bool = Field(
+        default=False,
+        description="Actually write playlist changes to Plex; off only reports what reconciliation would do.",
+    )
+    # None rather than a second copy of ["Movies", "TV Shows"]: two lists to
+    # keep in step is two chances to disagree, and Kometa's own default for a
+    # playlist's scope is "every library this run processed".
+    libraries: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which Plex libraries a playlist's members may be resolved from, "
+            "searched in the order given. None (the default) means every library "
+            "in collections.libraries."
+        ),
+    )
+    definitions: list[PlaylistDefinition] = Field(
+        default_factory=list,
+        description="Operator-configured playlists, each built by one registered list builder.",
+    )
+    # The only setting here that authorises a delete, and off means REPORTED --
+    # the posture collections.delete_unconfigured takes, for the same reasons.
+    delete_unconfigured: bool = Field(
+        default=False,
+        description="Delete a playlist this service owns once no definition builds it any more, instead of only reporting it as orphaned.",
+    )
+    max_deletes: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "The most playlists one delete sweep may remove. Past this the sweep "
+            "refuses entirely and reports the numbers instead; 0 means the sweep "
+            "is opted in but deletes nothing."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _titles_must_not_collide(self) -> "PlaylistsConfig":
+        """No two definitions may build the same playlist title.
+
+        Simpler than the collections analogue and stricter for a reason: a
+        collection is identified by ``(library, title)``, so two definitions
+        aimed at different libraries may share a title. A playlist belongs to no
+        library, so ``title`` alone is its identity -- it is
+        ``managed_playlists``' unique key and the row the members hash is stored
+        on. Two definitions sharing one would overwrite each other on every pass
+        and the hash would flap between them forever.
+        """
+        seen: dict[str, PlaylistDefinition] = {}
+        for definition in self.definitions:
+            other = seen.get(definition.title)
+            if other is not None:
+                raise ValueError(
+                    f"two playlist definitions both build {definition.title!r} "
+                    f"(builders {other.builder!r} and {definition.builder!r}): a "
+                    "playlist belongs to no library, so its title alone "
+                    "identifies it and one would overwrite the other on every pass"
+                )
+            seen[definition.title] = definition
+        return self
+
+
 class CleanupConfig(BaseModel):
     """Periodic sweep for orphaned asset directories. Moves to backup_root, never deletes."""
 
@@ -2573,6 +2896,14 @@ class Config(BaseModel):
             "protection, poster and delete-sweep rules they share."
         ),
     )
+    playlists: PlaylistsConfig = Field(
+        default_factory=PlaylistsConfig,
+        description=(
+            "Every playlist this service builds and owns in Plex: the operator's "
+            "definitions, the libraries their members are resolved from, and the "
+            "ownership and delete-sweep rules they share."
+        ),
+    )
     cleanup: CleanupConfig = Field(
         default_factory=CleanupConfig,
         description="Periodic sweep for orphaned asset directories; moves them to backup_root, never deletes.",
@@ -2655,3 +2986,44 @@ class Config(BaseModel):
                 '"The sidebar\'s update check") and remove this block'
             )
         return data
+
+    @model_validator(mode="after")
+    def _playlist_libraries_must_be_configured(self) -> "Config":
+        """Every library a playlist scopes itself to is one this config knows.
+
+        Cross-section, so it cannot live on ``PlaylistsConfig``: the default
+        scope IS ``collections.libraries``, and a model validator has no way to
+        reach a sibling section.
+
+        This is the half of the media-type question config load can answer. The
+        other half -- that a named section is a Movie or Show library and not a
+        Music or Photo one, which plexapi refuses to mix in a playlist -- is not
+        answerable here at all: this document holds library NAMES and nothing
+        that says what type a name is. That refusal belongs to
+        ``collections/playlists.py``, which resolves the section and checks its
+        type BEFORE the builder runs and before any Plex write.
+        """
+        configured = self.playlists.libraries
+        if configured is None:
+            configured = self.collections.libraries
+        else:
+            unknown = [name for name in configured if name not in self.collections.libraries]
+            if unknown:
+                raise ValueError(
+                    "playlists.libraries names %s, which is not one of "
+                    "collections.libraries (%s)"
+                    % (", ".join(repr(n) for n in unknown),
+                       ", ".join(repr(n) for n in self.collections.libraries))
+                )
+        known = set(configured)
+        for definition in self.playlists.definitions:
+            unknown = [name for name in definition.libraries or [] if name not in known]
+            if unknown:
+                raise ValueError(
+                    "playlist %r is scoped to %s, which is not in the playlists "
+                    "section's library scope (%s)"
+                    % (definition.title,
+                       ", ".join(repr(n) for n in unknown),
+                       ", ".join(repr(n) for n in sorted(known)))
+                )
+        return self
