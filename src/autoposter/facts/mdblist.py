@@ -129,10 +129,16 @@ def parse_ratings(payload: dict) -> dict[str, float | None]:
         # value inside an otherwise-good response must not take the other
         # ten keys down with it.
         try:
-            return float(raw)
+            value = float(raw)
         except (TypeError, ValueError):
             logger.warning("mdblist: non-numeric %s value %r; treating as absent", field, raw)
             return None
+        # Post-coercion, matching the probe's own rule for every field this
+        # feeds ("X / 10 if X else None"): a coerced 0.0 degrades to None the
+        # same way a raw falsy value already does above -- otherwise a source
+        # that emits its zero as the string "0" (truthy on `raw`) would
+        # survive as a legitimate rating where a numeric 0 would not.
+        return value if value else None
 
     def array_value(field: str, *, doubled: bool = False) -> float | None:
         source = _ARRAY_VALUE_DOUBLED_FIELDS[field] if doubled else _ARRAY_VALUE_FIELDS[field]

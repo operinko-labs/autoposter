@@ -956,6 +956,48 @@ async def test_no_mdblist_client_is_a_no_op_not_an_error(session, config_with_ba
     assert render.badge_fingerprint is not None
 
 
+async def test_a_used_rating_value_changing_moves_the_fingerprint_through_the_real_entry_point(
+    session, config_with_badges
+):
+    """M-1, fix round 1: the three digest pins in test_badge_compose.py call
+    `badge_fingerprint` directly -- nothing pinned the WIRING at
+    `pipeline.py:1398` (`ratings=ratings`), which is the single argument that
+    actually closes the staleness gap. Deleting it leaves the whole suite
+    green. Two `apply_badges` calls on the SAME render, only the resolved
+    rating VALUE a definition actually names changing between them (same
+    config, same item, same everything else), must move
+    `render.badge_fingerprint`; a third pass with the value unchanged must
+    keep it, the storm guard extended to this path."""
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(name="text(<<mdb_average_rating>>)"),
+    ]
+    item, render = await _render(session, rating_key="mdb-value-moves")
+    plex_item = _FakePlexItem()
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _Facts(),
+        mdblist=_RecordingMDBList({"mdb_average_rating": 6.5}),
+    )
+    first_fingerprint = render.badge_fingerprint
+    assert first_fingerprint is not None
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _Facts(),
+        mdblist=_RecordingMDBList({"mdb_average_rating": 7.0}),
+    )
+    second_fingerprint = render.badge_fingerprint
+    assert second_fingerprint != first_fingerprint, "a changed rating value must re-badge"
+
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _Facts(),
+        mdblist=_RecordingMDBList({"mdb_average_rating": 7.0}),
+    )
+    assert render.badge_fingerprint == second_fingerprint, (
+        "an unchanged rating value must not re-badge"
+    )
+
+
 async def test_direct_play_fires_on_a_4k_item_and_is_silent_on_a_1080_one(
     session, config_with_badges
 ):

@@ -191,8 +191,9 @@ def _rating_values_digest(
         if literal is None:
             continue
         for var, _mod in tokens_in(literal):
-            if var in ratings:
-                parts.append("%s:%s=%s" % (d.name, var, ratings[var]))
+            value = ratings.get(var)
+            if value is not None:
+                parts.append("%s:%s=%s" % (d.name, var, value))
     if not parts:
         return None
     return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()

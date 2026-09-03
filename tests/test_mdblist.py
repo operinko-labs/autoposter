@@ -92,6 +92,23 @@ def test_parse_ratings_treats_a_falsy_source_value_as_none_not_zero():
     assert parse_ratings(payload)["mdb_imdb_rating"] is None
 
 
+def test_parse_ratings_treats_a_string_zero_the_same_as_a_numeric_zero():
+    """L-4, fix round 1: the falsy gate ran on the RAW value, before
+    coercion -- a numeric `0` is caught by `if not raw`, but the string
+    `"0"` is truthy on `raw` and survived coercion to a legitimate-looking
+    `0.0`. The probe's own rule (`X / 10 if X else None`) has to apply to
+    the coerced value, not the raw one, or a source that happens to emit its
+    zero as a string escapes the same rule a numeric zero does not."""
+    payload = load("mdblist_full_ratings.json")
+    payload = payload | {
+        "ratings": [
+            e | {"value": "0", "score": "0"} if e["source"] == "imdb" else e
+            for e in payload["ratings"]
+        ]
+    }
+    assert parse_ratings(payload)["mdb_imdb_rating"] is None
+
+
 def test_parse_ratings_is_total_over_a_payload_with_no_ratings_array():
     assert parse_ratings({}) == {
         "mdb_average_rating": None,

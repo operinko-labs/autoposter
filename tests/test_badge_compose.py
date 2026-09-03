@@ -143,6 +143,23 @@ def test_a_changed_rating_value_used_by_a_definition_moves_the_fingerprint():
     assert before != after
 
 
+def test_a_none_valued_rating_produces_the_same_digest_as_an_absent_one():
+    """L-1, fix round 1: the digest guard keyed on key PRESENCE (`var in
+    ratings`), not on the value being resolved, even though the docstring
+    claims 'no (currently-resolved) rating token'. A token whose value is
+    `None` -- present because a client is configured, but this item's own
+    value did not resolve -- contributed `=None` to the digest, moving the
+    fingerprint on toggling the client on even though `_variable_values`
+    strips the `None` and the definition draws nothing different. Absent and
+    None-valued must produce the SAME digest."""
+    stamp = OverlayDefinition(name="text(<<mdb_rating>>)")
+    absent = badge_fingerprint("abc", "poster", {"critic": "8.6"}, "m", [stamp], ratings={})
+    none_valued = badge_fingerprint(
+        "abc", "poster", {"critic": "8.6"}, "m", [stamp], ratings={"mdb_rating": None},
+    )
+    assert absent == none_valued
+
+
 def test_a_definition_naming_no_rating_token_is_byte_identical_regardless_of_ratings():
     """The non-empty guard, the storm pin's own discipline extended: a
     config whose definitions name no rating token -- every config predating
