@@ -27,7 +27,17 @@ this view is built, `render/pipeline.py::apply_badges` has already called
 collections table's per-attribute source tiers and `kinds` restrictions are
 LISTING constraints, and they do not bind here (the recon's adjudication
 A3b): a show simply has no `media`, which the tag missing-value rule already
-answers correctly, rather than needing a `kinds` column to forbid it.
+answers correctly, rather than needing a `kinds` column to forbid it. **T1
+review finding L-2, met here (sub-phase C2a):** that "do not bind" claim is
+about the `kinds` COLUMN specifically -- `resolution`'s `kinds=("movie",)` is
+the one restriction this view has ever genuinely relaxed, because
+`parse_filters` never consults `kinds` at all (verified by reading the whole
+parse path). It says nothing about which attributes have an ACCESSOR:
+`audio_language`, `duplicate` and `network` have none on this view and are
+refused by `OVERLAY_ATTRIBUTES` membership, a wholly different mechanism, and
+stay refused regardless of `kinds`. `versions` is the first attribute
+genuinely newly unlocked since C1 -- a real `filters.py` row, a real
+accessor, both dialects proven.
 `plex_item` is still very likely PARTIAL, though -- the badge path never
 copies it -- so this view's own accessors read it the same load-bearing way
 `filter_values.py`'s do (`object.__getattribute__`, imported directly rather
@@ -44,7 +54,7 @@ family that is off.
 import json
 from functools import lru_cache
 
-from autoposter.collections.filter_values import _listing_value, _resolutions
+from autoposter.collections.filter_values import _listing_value, _resolutions, _versions
 from autoposter.collections.filters import (
     FilterGroup,
     evaluate,
@@ -62,7 +72,7 @@ __all__ = [
 ]
 
 # The attributes this view supplies, in `collections/filters.py`'s own
-# spelling -- the key `evaluate` reads. Sub-phase C1's two:
+# spelling -- the key `evaluate` reads.
 #
 # - `content_rating`: PLEX's certification string (adjudication A5), which is
 #   what the six content-rating regionals match. Deliberately NOT
@@ -72,10 +82,15 @@ __all__ = [
 #   `content_rating` row in `collections/filters.py` says exactly this.
 # - `resolution`: every version's `videoResolution`, which is what
 #   `direct_play` regexes.
+# - `versions` (sub-phase C2a): how many `<Media>` versions the item
+#   carries -- adjudication A14's row, shared verbatim with
+#   `filter_values.PlexItemView` via the same `_versions` function object,
+#   so Global Constraint 9's agreement is structural rather than merely
+#   tested.
 #
 # Later slices append; each addition owes a source note here and an agreement
 # pin against `filter_values.PlexItemView` if that view supplies it too.
-OVERLAY_ATTRIBUTES: tuple[str, ...] = ("content_rating", "resolution")
+OVERLAY_ATTRIBUTES: tuple[str, ...] = ("content_rating", "resolution", "versions")
 
 
 class AttributeNotOnItem(LookupError):
@@ -129,10 +144,15 @@ class OverlayItemView:
             return _listing_value(self._plex_item, "contentRating") or None
         if attribute == "resolution":
             return _resolutions(self._plex_item)
+        if attribute == "versions":
+            return _versions(self._plex_item)
         raise AttributeNotOnItem(
             f"{attribute!r} is not an attribute an overlay condition can "
             "read on this service. Available: " + ", ".join(OVERLAY_ATTRIBUTES)
         )
+
+
+_SEARCH_ONLY_MARKER = "Move it into the plex_search builder's"
 
 
 def parse_condition(raw: object, *, field: str = "condition") -> FilterGroup:
@@ -151,10 +171,33 @@ def parse_condition(raw: object, *, field: str = "condition") -> FilterGroup:
        filter but that `OverlayItemView` cannot supply. That refusal has to
        be ours, because `filters.py` has no idea what this view reads.
 
+    A third, narrower case rides inside layer 1 (T1 review finding L-4, met
+    here): a SEARCH-ONLY attribute (`duplicate`, `unplayed`, ...) is refused
+    by `filters.py` with "Move it into the plex_search builder's `params`" --
+    correct advice for a COLLECTION, meaningless for an overlay `condition:`
+    block, which has no plex_search builder to move anything into. The
+    attribute is unavailable to an overlay either way; only the remedy
+    sentence is wrong-audience, and `filters.py` may not be edited to fix it
+    (Global Constraint 2), so the reword happens here, by catching that one
+    specific message rather than re-implementing the check.
+
     `field` is the dotted path the refusal names, so an operator with twenty
     definitions can find the one that is wrong.
     """
-    group = parse_filters(raw, field=field)
+    try:
+        group = parse_filters(raw, field=field)
+    except ValueError as exc:
+        message = str(exc)
+        if _SEARCH_ONLY_MARKER in message:
+            name = message.split("'")[1] if "'" in message else "?"
+            raise ValueError(
+                f"{field}: {name!r} is a Plex smart-search-only attribute "
+                "(Kometa has no `filters:` equivalent for it either), and an "
+                "overlay condition cannot use it at all -- there is no "
+                "builder for it to be moved into here. Available: "
+                + ", ".join(OVERLAY_ATTRIBUTES)
+            ) from None
+        raise
     for predicate in predicates(group):
         if predicate.attribute.name not in OVERLAY_ATTRIBUTES:
             raise ValueError(

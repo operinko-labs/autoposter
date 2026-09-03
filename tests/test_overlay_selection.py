@@ -9,7 +9,11 @@ called `reload()` and walked `part.streams`, and `facts` and `plex_item` are
 handed in directly. So the four attributes the collections table defers or
 scopes for that reason (`audio_language`, `resolution`'s movie-only kind,
 `duplicate`, `network`) do not bind here -- the recon's own table, adjudication
-A3b answered by construction rather than by relaxing a column.
+A3b answered by construction rather than by relaxing a column. That is a
+`kinds`-column fact only, not an accessor one (T1 review finding L-2):
+`audio_language`, `duplicate` and `network` still have no accessor on this
+view and are refused the same way they always were. `versions` (sub-phase
+C2a) is the first attribute this view has genuinely gained since C1.
 
 What DOES bind, and is pinned below: wherever the two views both answer, they
 must answer identically. A disagreement would be the same-name-different-filter
@@ -76,7 +80,7 @@ def _view(item, facts=None):
 
 
 def test_the_vocabulary_is_exactly_what_this_slice_supplies():
-    assert OVERLAY_ATTRIBUTES == ("content_rating", "resolution")
+    assert OVERLAY_ATTRIBUTES == ("content_rating", "resolution", "versions")
 
 
 def test_content_rating_comes_from_plex_not_from_item_facts():
@@ -126,6 +130,48 @@ def test_the_two_views_agree_on_resolution_including_a_multi_version_item():
     for resolutions in (("1080",), ("4k", "1080"), ()):
         item = _Item(resolutions=resolutions)
         assert _view(item).get("resolution") == PlexItemView(item).get("resolution")
+
+
+def test_versions_answers_the_media_count():
+    item = _Item(resolutions=("4k", "1080"))
+    assert _view(item).get("versions") == 2
+
+
+def test_an_item_with_no_media_has_no_versions():
+    item = _Item()
+    item.media = []
+    assert _view(item).get("versions") is None
+
+
+def test_the_two_views_agree_on_versions():
+    """Global Constraint 9 -- structural here, not just tested: both views
+    import the SAME `_versions` function object from `filter_values`, the
+    same way `resolution` already does."""
+    for resolutions in (("1080",), ("4k", "1080"), ()):
+        item = _Item(resolutions=resolutions)
+        assert _view(item).get("versions") == PlexItemView(item).get("versions")
+
+
+def test_a_condition_can_now_name_versions():
+    group = parse_condition({"versions.gt": 1})
+    [written] = predicates_of(group)
+    assert written.attribute.name == "versions"
+    assert written.operator == "gt"
+
+
+def test_a_search_only_attribute_is_refused_with_an_overlay_appropriate_message():
+    """L-4, met here: filters.py's own message for a search-only attribute
+    (`duplicate` -- still search-only after this phase; only `versions` is
+    new) tells a COLLECTION operator to 'move it into the plex_search
+    builder's params'. An overlay `condition:` has no plex_search builder to
+    move it into, so `parse_condition` re-words the remedy rather than
+    repeating Kometa's advice verbatim; the attribute is refused either way."""
+    with pytest.raises(ValueError) as caught:
+        parse_condition({"duplicate": True})
+    message = str(caught.value)
+    assert "duplicate" in message
+    assert "plex_search builder" not in message
+    assert "condition" in message
 
 
 # --- the parse half: one narrowing in front of collections/filters.py -------
