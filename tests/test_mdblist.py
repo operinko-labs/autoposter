@@ -374,3 +374,53 @@ async def test_null_client_always_returns_none_without_a_request():
     assert await client.content_rating(tmdb_id=1, is_movie=True) is None
     assert await client.content_rating(tvdb_id=2, is_movie=False) is None
     assert await client.content_rating() is None
+
+
+async def test_ratings_reuses_the_content_rating_endpoint_and_cache(session):
+    """Roadmap row 100 C2a: 'the ratings array already arrives in a response
+    the client already fetches' -- proved by counting transport calls, not
+    asserted."""
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json=load("mdblist_full_ratings.json"))
+
+    factory = session_factory_for(session)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        cache = ProviderCache(factory)
+        client = MDBListClient("KEY", http, cache=cache)
+        await client.content_rating(tmdb_id=940143, is_movie=True)
+        result = await client.ratings(tmdb_id=940143, is_movie=True)
+
+    assert len(calls) == 1, "the second read must be served from the cache"
+    assert result["mdb_imdb_rating"] == 4.9
+
+
+async def test_ratings_with_no_identifier_makes_no_request_and_answers_all_none():
+    def handler(request):
+        raise AssertionError("should not have been called")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await MDBListClient("KEY", http).ratings(is_movie=True)
+
+    assert result == {k: None for k in result}
+    assert len(result) == 11
+
+
+async def test_ratings_quota_exhaustion_raises_the_same_error_content_rating_does():
+    from autoposter.facts.mdblist import MDBListLimitReached
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"error": "API Limit Reached!"})
+        )
+    ) as http:
+        with pytest.raises(MDBListLimitReached):
+            await MDBListClient("KEY", http).ratings(tmdb_id=1, is_movie=True)
+
+
+async def test_null_client_ratings_answers_all_none_and_makes_no_request():
+    result = await NullMDBListClient().ratings(tmdb_id=1, is_movie=True)
+    assert result == {k: None for k in result}
+    assert len(result) == 11

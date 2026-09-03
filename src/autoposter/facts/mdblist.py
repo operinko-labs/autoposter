@@ -284,6 +284,14 @@ class NullMDBListClient:
     ) -> str | None:
         return None
 
+    async def ratings(
+        self,
+        tmdb_id: int | None = None,
+        tvdb_id: int | None = None,
+        is_movie: bool = True,
+    ) -> dict[str, float | None]:
+        return parse_ratings({})
+
 
 class MDBListClient:
     """Reads Common Sense age ratings.
@@ -343,6 +351,48 @@ class MDBListClient:
             logger.warning("mdblist error for %s %s: %s", provider, identifier, error)
             return None
         return parse_content_rating(payload)
+
+    async def ratings(
+        self,
+        tmdb_id: int | None = None,
+        tvdb_id: int | None = None,
+        is_movie: bool = True,
+    ) -> dict[str, float | None]:
+        """The eleven `mdb_*` overlay rating sources for one item.
+
+        Hits the exact same URL and params `content_rating` does, so within
+        this response's cache TTL calling both on one item costs one HTTP
+        request, not two (`build_cache_key` keys on URL+params, apikey
+        stripped).
+        """
+        identifier = tmdb_id if is_movie else tvdb_id
+        empty = parse_ratings({})
+        if identifier is None:
+            return empty
+        provider = "tmdb" if is_movie else "tvdb"
+        media_type = "movie" if is_movie else "show"
+        url = f"{BASE_URL}/{provider}/{media_type}/{identifier}/"
+        params = {"apikey": self._apikey}
+        payload = await fetch_json(
+            method="GET",
+            url=url,
+            params=params,
+            request=lambda: self._client.get(
+                url, params=params, headers={"User-Agent": "autoposter"}
+            ),
+            cache=self._cache,
+            ttl_seconds=self._cache_ttl_seconds,
+            cacheable=_not_a_limit_body,
+        )
+        if payload is None:
+            return empty
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if error in _LIMIT_ERRORS:
+            raise MDBListLimitReached(error)
+        if error:
+            logger.warning("mdblist error for %s %s: %s", provider, identifier, error)
+            return empty
+        return parse_ratings(payload)
 
     async def list_items(
         self, reference: str, *, sort: str | None = None, order: str | None = None
