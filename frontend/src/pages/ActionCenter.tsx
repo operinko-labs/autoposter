@@ -417,6 +417,11 @@ export function ActionCenter() {
               {coverage.queued_for_scoring} of {coverage.unscored_total} unscored asset(s)
               queued for scoring
             </span>
+            {coverage.blocked > 0 && (
+              <span>
+                {coverage.blocked} blocked — see <Link to="/failures">Failures</Link>
+              </span>
+            )}
             <button
               type="button"
               disabled={coverageBusy || coverage.status === "complete"}

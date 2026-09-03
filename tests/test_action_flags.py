@@ -97,6 +97,34 @@ async def test_truncated_fires_on_a_truncated_row_and_is_silent_on_a_rendered_on
     assert healthy.id not in fired
 
 
+async def test_render_failed_fires_on_a_failed_row_and_is_silent_on_a_rendered_one(
+    session, config
+):
+    """Roadmap: the unscorable-floor investigation's H1. A per-kind
+    containment refusal (render/pipeline.py's `SourceRefused` handler) writes
+    `status='failed'` and the reason in `detail`, but nothing read that status
+    before this flag -- a partially-refused asset vanished from every count
+    and every list. `render_failed` is the fix: default-on, since a
+    current-art-missing defect is a true signal rather than noise."""
+    flagged = await _seed(session, status="failed", detail="poster refused: decode error")
+    healthy = await _seed(session, status="rendered")
+
+    fired = await _fires_on(session, config, "render_failed")
+
+    assert flagged.id in fired
+    assert healthy.id not in fired
+
+
+async def test_render_failed_detail_serves_the_stored_refusal_reason(session, config):
+    """The row's own `detail` -- the refusal string `render/pipeline.py`
+    stamps -- is what the queue's factual sentence must serve. That string is
+    class-name-only (a stage label and an exception class name, per the
+    review's own check): no URL, no token, safe on a served column."""
+    render = await _seed(session, status="failed", detail="poster refused: SourceRefused")
+
+    assert flags.detail_for("render_failed", render) == "poster refused: SourceRefused"
+
+
 async def test_show_fallback_fires_on_the_source_mode_row_two_seven_shipped(session, config):
     """Row 132 shipped `source_mode = 'show_fallback'` and gave it no operator
     surface. This is where already-persisted behaviour finally gets a name."""
@@ -456,8 +484,8 @@ def test_every_flag_declares_a_label_a_description_and_a_detail(config):
     """The page renders all three; a flag that shipped with an empty label is
     a chip an operator cannot identify."""
     assert set(flags.FLAGS) == {
-        "missing", "skipped", "truncated", "show_fallback", "upload_failed",
-        "unknown_provenance", "language_miss", "provider_downgrade",
+        "missing", "skipped", "truncated", "render_failed", "show_fallback",
+        "upload_failed", "unknown_provenance", "language_miss", "provider_downgrade",
         "textless_miss", "logo_fallback", "unscored",
     }
     for code, flag in flags.FLAGS.items():
@@ -467,6 +495,10 @@ def test_every_flag_declares_a_label_a_description_and_a_detail(config):
         assert callable(flag.detail)
     assert flags.FLAGS["unknown_provenance"].default_on is False
     assert flags.FLAGS["unscored"].default_on is False
+    # A current-art-missing defect is a true signal, not noise -- the flood
+    # argument that keeps `skipped`/`unknown_provenance` off by default does
+    # not apply to a row a rerender can actually fix.
+    assert flags.FLAGS["render_failed"].default_on is True
     # A deliberately disabled art kind writes `status = 'skipped'` to every one
     # of its rows -- the same flood argument that keeps `unknown_provenance`
     # off by default.

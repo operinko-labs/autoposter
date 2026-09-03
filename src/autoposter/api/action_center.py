@@ -567,20 +567,85 @@ async def bulk_rerender_action(
 # is simply paced by the workers, which is what D4 says the queue is for.
 
 
-async def _backfill_progress(session) -> tuple[int, int]:
-    """``(done, total)`` over the rows this backfill can actually score.
+async def _parked_by_latest_job(session) -> set[str]:
+    """Dedupe keys whose MOST RECENT ``process_item`` job is ``parked``.
 
-    Scoped to ``status = 'rendered'``. A ``no_art``, ``skipped`` or
-    ``truncated`` row returns from ``render_artifact`` long before the
-    write-back that stamps ``quality_scored_at``, so counting one here would
-    make a population the backfill can never finish -- a progress bar that
-    stops at 94% forever. Those rows are already named by their own flags.
+    A stale ``parked`` row and a fresher ``pending``/``done`` row for the same
+    key can coexist: ``uq_jobs_pending_dedupe`` only forbids two live
+    pending/deferred rows for one key, not a parked row alongside a later one
+    -- which is exactly what a press against a previously-parked item
+    produces. Membership in the parked *state* alone over-counts (roadmap:
+    the unscorable-floor investigation's M3); this asks for the state of the
+    highest ``id`` per key instead. ``DISTINCT ON`` (Postgres) picks that row
+    server-side rather than pulling every job row into Python.
     """
-    total = (
+    rows = (
         await session.execute(
-            select(func.count()).select_from(Render).where(Render.status == "rendered")
+            select(Job.dedupe_key, Job.state)
+            .distinct(Job.dedupe_key)
+            .where(Job.kind == "process_item", Job.dedupe_key.isnot(None))
+            .order_by(Job.dedupe_key, Job.id.desc())
         )
-    ).scalar_one()
+    ).all()
+    return {dedupe_key for dedupe_key, state in rows if state == "parked"}
+
+
+def _dedupe_key_for(item: MediaItem) -> str:
+    return RenderIntent(
+        kind=item.kind,
+        title=item.title,
+        tmdb_id=item.tmdb_id,
+        tvdb_id=item.tvdb_id,
+        imdb_id=item.imdb_id,
+        year=item.year,
+        season_number=item.season_number,
+        episode_number=item.episode_number,
+        rating_key=item.rating_key,
+    ).dedupe_key
+
+
+async def _backfill_state(session) -> tuple[int, int, int, int]:
+    """``(done, total, blocked, queued_for_scoring)`` over the rows this
+    backfill can actually score, in one shared pass.
+
+    Scoped to ``status = 'rendered'``. A ``no_art``, ``skipped``,
+    ``truncated`` or ``failed`` row returns from ``render_artifact`` long
+    before the write-back that stamps ``quality_scored_at``, so counting one
+    here would make a population the backfill can never finish -- a progress
+    bar that stops at 94% forever. Those rows are already named by their own
+    flags.
+
+    ``blocked`` is the further subset of the unscored population whose item's
+    MOST RECENT ``process_item`` job is ``parked`` (see
+    ``_parked_by_latest_job``): a press cannot score these by re-rendering,
+    because the job that would do it is sitting on Failures waiting for an
+    operator (fix it, retry it, dismiss it). They are excluded from ``total``
+    for the same "the bar must reach 100%" reason the render-status
+    exclusions above are -- a row this button structurally cannot move must
+    not sit in its own denominator, or ``done >= total`` never holds while it
+    does.
+
+    ``queued_for_scoring`` is the further subset whose item has an in-flight
+    ``pending``/``running``/``deferred`` job -- still unscored, but already
+    claimed by a job a press did not just mint. A key cannot be both: an item
+    whose latest job is ``pending`` is not in ``blocked`` at all (a fresher
+    job outranks an older parked one), so the two counts partition the
+    unscored population rather than overlapping it.
+
+    Both splits need the same item-by-item dedupe-key walk, so it runs ONCE,
+    and only when there is something to check against: with no parked and no
+    in-flight key at all, every unscored row is ordinary progress and the
+    population is a plain ``COUNT(*)`` -- no ORM materialisation.
+
+    This is deliberately narrower than the investigation's own accounting
+    (the structurally-stale "twin" rows M1a names are the pruner's territory,
+    not this endpoint's -- see ``scheduler/prune.py``): a stale twin still
+    reads as an ordinary unscored row here, because the only cheap read
+    available -- ``media_items`` alone -- cannot tell one from a row that is
+    simply next in line, and the module that CAN tell needs a live Plex probe
+    (``PlexClient.exists_many``) this read-only progress read has no business
+    making per request.
+    """
     done = (
         await session.execute(
             select(func.count())
@@ -588,34 +653,87 @@ async def _backfill_progress(session) -> tuple[int, int]:
             .where(Render.status == "rendered", Render.quality_scored_at.isnot(None))
         )
     ).scalar_one()
-    return done, total
+
+    parked_keys = await _parked_by_latest_job(session)
+    pending_keys = set(
+        (
+            await session.execute(
+                select(Job.dedupe_key).where(
+                    Job.kind == "process_item",
+                    Job.state.in_(("pending", "running", "deferred")),
+                    Job.dedupe_key.isnot(None),
+                )
+            )
+        ).scalars()
+    )
+
+    blocked = 0
+    queued = 0
+    if parked_keys or pending_keys:
+        unscored_items = (
+            (
+                await session.execute(
+                    select(MediaItem)
+                    .join(Render, Render.item_id == MediaItem.id)
+                    .where(Render.status == "rendered", Render.quality_scored_at.is_(None))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for item in unscored_items:
+            key = _dedupe_key_for(item)
+            if key in parked_keys:
+                blocked += 1
+            elif key in pending_keys:
+                queued += 1
+        unscored_count = len(unscored_items)
+    else:
+        unscored_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(Render)
+                .where(Render.status == "rendered", Render.quality_scored_at.is_(None))
+            )
+        ).scalar_one()
+
+    total = done + (unscored_count - blocked)
+    return done, total, blocked, queued
 
 
 async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
     """The next ``batch_size`` unscored, rendered rows to score -- skipping
-    any row whose ITEM already has a pending or deferred ``process_item`` job.
+    any row whose ITEM already has a pending or deferred ``process_item`` job,
+    or whose most recent ``process_item`` job is ``parked``.
 
-    Without this, pressing the button again while the previous batch is still
-    rendering re-selects the very rows that batch is working on: they are
-    still unscored, because their re-render has not landed yet. Those rows
-    then hit ``enqueue_batch``'s own dedupe -- which coalesces against
-    ``pending`` and ``deferred`` alike -- and are silently dropped, so the
-    press reports ``enqueued: 0`` while unrelated unscored rows sit untouched
-    elsewhere in the table -- a dead button.
+    Without the in-flight exclusion, pressing the button again while the
+    previous batch is still rendering re-selects the very rows that batch is
+    working on: they are still unscored, because their re-render has not
+    landed yet. Those rows then hit ``enqueue_batch``'s own dedupe -- which
+    coalesces against ``pending`` and ``deferred`` alike -- and are silently
+    dropped, so the press reports ``enqueued: 0`` while unrelated unscored
+    rows sit untouched elsewhere in the table -- a dead button.
+
+    Without the parked exclusion (roadmap: the unscorable-floor
+    investigation's M3, its third bullet), a press silently resets a failure
+    an operator has not yet seen: the item's job is sitting on Failures
+    waiting for them, and re-selecting its row here mints a fresh job that
+    starts the attempt cycle over. The Failures page's own retry/dismiss is
+    the intended path back, not another press of this button.
 
     The exclusion is at the ITEM level, not the row's: a batch enqueues one
     job per ITEM (``_reprocess_entries``), keyed by
     ``RenderIntent.dedupe_key``, while this selects per-render-row -- an item
     with two unscored art kinds must have both rows skipped once either one
-    is in flight.
+    is in flight or blocked.
 
     Anti-joined in the style ``arr/sync.py``'s ``enqueue_unknown_items`` uses
-    for its own discovery: the pending keys are fetched once as a plain
-    Python set, and each candidate row's item is tested against it, rather
-    than reproducing ``RenderIntent.dedupe_key``'s id-precedence chain as SQL.
-    Paged rather than one large ``LIMIT``, since the in-flight set can itself
-    be up to ``batch_size`` items and no fixed multiple over that is safe to
-    assume.
+    for its own discovery: the pending and parked keys are fetched once each
+    as plain Python sets, and each candidate row's item is tested against
+    them, rather than reproducing ``RenderIntent.dedupe_key``'s
+    id-precedence chain as SQL. Paged rather than one large ``LIMIT``, since
+    the in-flight set can itself be up to ``batch_size`` items and no fixed
+    multiple over that is safe to assume.
     """
     pending_keys = set(
         (
@@ -628,6 +746,7 @@ async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
             )
         ).scalars()
     )
+    parked_keys = await _parked_by_latest_job(session)
 
     selected: list[Render] = []
     after_id = 0
@@ -651,85 +770,12 @@ async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
         for render, item in page:
             if len(selected) >= batch_size:
                 break
-            intent = RenderIntent(
-                kind=item.kind,
-                title=item.title,
-                tmdb_id=item.tmdb_id,
-                tvdb_id=item.tvdb_id,
-                imdb_id=item.imdb_id,
-                year=item.year,
-                season_number=item.season_number,
-                episode_number=item.episode_number,
-                rating_key=item.rating_key,
-            )
-            if intent.dedupe_key in pending_keys:
+            key = _dedupe_key_for(item)
+            if key in pending_keys or key in parked_keys:
                 continue
             selected.append(render)
 
     return selected
-
-
-async def _queued_for_scoring(session) -> int:
-    """How many of the still-unscored rendered rows already have an
-    in-flight ``process_item`` job for their item -- ``pending``, ``running``
-    or ``deferred`` alike. ``deferred`` counts: it is a wait, not an absence
-    -- the row is still claimed for scoring, merely paced by the same worker
-    that would otherwise re-select it, exactly the reading
-    ``_select_backfill_batch`` already gives it.
-
-    Reported in ASSET units, matching ``done``/``total`` above: an item with
-    two unscored art kinds and one in-flight job counts both rows, because
-    both rows are equally covered by that one job.
-
-    The same Python-side dedupe-key-membership test ``_select_backfill_batch``
-    uses, rather than reproducing ``RenderIntent.dedupe_key``'s id-precedence
-    chain as SQL -- a full scan of the unscored population every call, with no
-    LIMIT. This page has no interval poll: the GET fires once on mount and
-    once after every press, both human-paced like the POST's own equivalent
-    scan, so the cost lands where an operator's own pacing already bounds it.
-    """
-    pending_keys = set(
-        (
-            await session.execute(
-                select(Job.dedupe_key).where(
-                    Job.kind == "process_item",
-                    Job.state.in_(("pending", "running", "deferred")),
-                    Job.dedupe_key.isnot(None),
-                )
-            )
-        ).scalars()
-    )
-    if not pending_keys:
-        return 0
-
-    unscored_items = (
-        (
-            await session.execute(
-                select(MediaItem)
-                .join(Render, Render.item_id == MediaItem.id)
-                .where(Render.status == "rendered", Render.quality_scored_at.is_(None))
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    queued = 0
-    for item in unscored_items:
-        intent = RenderIntent(
-            kind=item.kind,
-            title=item.title,
-            tmdb_id=item.tmdb_id,
-            tvdb_id=item.tvdb_id,
-            imdb_id=item.imdb_id,
-            year=item.year,
-            season_number=item.season_number,
-            episode_number=item.episode_number,
-            rating_key=item.rating_key,
-        )
-        if intent.dedupe_key in pending_keys:
-            queued += 1
-    return queued
 
 
 @router.get("/actions/backfill")
@@ -740,8 +786,7 @@ async def backfill_status(
     what is left is already queued for it. Reads only."""
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        done, total = await _backfill_progress(session)
-        queued_for_scoring = await _queued_for_scoring(session)
+        done, total, blocked, queued_for_scoring = await _backfill_state(session)
 
     # Completion is derived FIRST, and by the POST's own rule: `done >= total`
     # <=> no unscored rendered row is left <=> the trigger selects 0. Testing
@@ -760,6 +805,7 @@ async def backfill_status(
         "total": total,
         "queued_for_scoring": queued_for_scoring,
         "unscored_total": total - done,
+        "blocked": blocked,
     }
 
 
@@ -815,13 +861,12 @@ async def backfill_trigger(
         )
         enqueued = await enqueue_batch(session, "process_item", _reprocess_entries(items))
 
-        done, total = await _backfill_progress(session)
-        unscored_total = total - done
         # AFTER the enqueue, not before: the operator pressing again while a
         # previous batch is still rendering (the live report this answers,
         # mid-run at 8214/17264) needs the depth this press just left behind,
         # not the depth it found.
-        queued_for_scoring = await _queued_for_scoring(session)
+        done, total, blocked, queued_for_scoring = await _backfill_state(session)
+        unscored_total = total - done
         if not batch:
             detail = f"complete: all {total} rendered asset(s) have been scored"
         else:
@@ -856,5 +901,6 @@ async def backfill_trigger(
         "total": total,
         "queued_for_scoring": queued_for_scoring,
         "unscored_total": unscored_total,
+        "blocked": blocked,
         "detail": detail,
     }

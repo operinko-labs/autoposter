@@ -5,11 +5,13 @@ import pytest
 from sqlalchemy import select
 
 from autoposter.config.loader import load_config
-from autoposter.db.models import Render
+from autoposter.db.models import ItemFacts, Render
+from autoposter.facts.mdblist import NullMDBListClient
+from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
-from autoposter.render.pipeline import process_item
+from autoposter.render.pipeline import SourceRefused, process_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 GOLDEN = Path(__file__).parent / "fixtures" / "golden"
@@ -56,6 +58,24 @@ class FakeProvider:
 
     async def fetch(self, request):
         return [ArtCandidate("TMDB", self._url, None, 2000, 3000, 5.0)]
+
+
+class KindAwareProvider:
+    """A provider whose candidate URL depends on the art kind being fetched
+    -- FakeProvider above always answers the same URL regardless of kind, and
+    the per-kind containment tests need one source that decodes and one that
+    does not, in the same call to process_item."""
+
+    name = "TMDB"
+
+    def __init__(self, urls: dict[str, str]):
+        self._urls = urls
+
+    async def fetch(self, request):
+        url = self._urls.get(request.art_kind)
+        if url is None:
+            return []
+        return [ArtCandidate("TMDB", url, None, 2000, 3000, 5.0)]
 
 
 @pytest.fixture
@@ -151,3 +171,265 @@ async def test_no_art_records_the_reason_without_writing(config, session):
     assert not (config.assets_root / "Movies" / "Obscure (1970)" / "poster.jpg").exists()
     rows = (await session.execute(select(Render))).scalars().all()
     assert {r.status for r in rows} == {"no_art"}
+
+
+def _movie_item(rating_key, title="Identity Fork Movie", tmdb_id=1):
+    return ResolvedItem(
+        rating_key=rating_key, library="Movies", kind="movie", title=title,
+        year=2024, season_number=None, episode_number=None,
+        root_folder=f"{title} (2024)",
+        file_path=f"/mnt/Media/Movies/{title} (2024)/x.mkv",
+        art_url=None, tmdb_id=tmdb_id, tvdb_id=None, imdb_id=None,
+    )
+
+
+async def test_identity_fork_logs_when_resolve_returns_a_different_key(config, session, caplog):
+    """render/pipeline.py, right after `plex.resolve` (roadmap: the
+    unscorable-floor investigation, mechanism M1a): resolve() treats
+    `intent.rating_key` as a hint and is free to return a DIFFERENT key --
+    the live copy's, after a re-match or a library rebuild renumbers the item
+    -- silently, until now. The served surfaces stay class-name-only
+    everywhere in this queue; this is a WARNING in the pod log only, naming
+    both keys and the title, so a silent 390-row hole becomes a grep."""
+    source = GOLDEN / "source_textless.jpg"
+
+    async def handler(request):
+        return httpx.Response(200, content=source.read_bytes())
+
+    item = _movie_item("12345")
+    # The intent's hint (a stale key resolve() refused) differs from what
+    # `item` -- what resolve() actually returned -- carries.
+    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1, rating_key="99999")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with caplog.at_level("WARNING", logger="autoposter.render.pipeline"):
+            await process_item(
+                session, config, http, FakePlex(item), [FakeProvider("https://x/y.jpg")], intent,
+            )
+
+    forks = [r for r in caplog.records if "differs from the intent's" in r.message]
+    assert len(forks) == 1
+    assert "12345" in forks[0].message
+    assert "99999" in forks[0].message
+    assert "Identity Fork Movie" in forks[0].message
+
+
+async def test_no_identity_fork_log_when_the_resolved_key_matches(config, session, caplog):
+    source = GOLDEN / "source_textless.jpg"
+
+    async def handler(request):
+        return httpx.Response(200, content=source.read_bytes())
+
+    item = _movie_item("12345")
+    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1, rating_key="12345")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with caplog.at_level("WARNING", logger="autoposter.render.pipeline"):
+            await process_item(
+                session, config, http, FakePlex(item), [FakeProvider("https://x/y.jpg")], intent,
+            )
+
+    assert not any("differs from the intent's" in r.message for r in caplog.records)
+
+
+async def test_no_identity_fork_log_when_the_intent_carries_no_hint(config, session, caplog):
+    """A fresh item this queue has never resolved before carries no
+    `rating_key` hint at all -- nothing to compare against, so nothing to
+    warn about."""
+    source = GOLDEN / "source_textless.jpg"
+
+    async def handler(request):
+        return httpx.Response(200, content=source.read_bytes())
+
+    item = _movie_item("12345")
+    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with caplog.at_level("WARNING", logger="autoposter.render.pipeline"):
+            await process_item(
+                session, config, http, FakePlex(item), [FakeProvider("https://x/y.jpg")], intent,
+            )
+
+    assert not any("differs from the intent's" in r.message for r in caplog.records)
+
+
+async def test_a_refused_kind_does_not_abort_its_sibling(config, session):
+    """render/pipeline.py's per-kind containment (roadmap: the
+    unscorable-floor investigation, mechanism M2): a source that raises
+    SourceRefused (job 40478's "Inside Out 2" clearlogo incident, or here a
+    poster source that will not decode) used to abort the whole artifact
+    loop, costing the item its background too. It must not: the background
+    still renders and scores, and the poster's own row records the refusal
+    -- `status="failed"`, the reason in `detail` -- instead of being left at
+    whatever it was before the press, unscored forever."""
+    good = GOLDEN / "source_textless.jpg"
+
+    async def handler(request):
+        if "poster" in str(request.url):
+            return httpx.Response(200, content=b"not an image")
+        return httpx.Response(200, content=good.read_bytes())
+
+    item = _movie_item("55555", title="Corrupt Poster")
+    provider = KindAwareProvider({
+        "poster": "https://image.tmdb.org/t/p/original/poster.jpg",
+        "background": "https://image.tmdb.org/t/p/original/background.jpg",
+    })
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        renders = await process_item(
+            session, config, http, FakePlex(item), [provider],
+            RenderIntent(kind="movie", title="Corrupt Poster", tmdb_id=1),
+        )
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    background = next(r for r in renders if r.art_kind == "background")
+    assert poster.status == "failed"
+    assert "did not decode" in poster.detail
+    assert background.status == "rendered"
+    # `quality_scored_at` is a SQL `now()`, so the poster's later commit
+    # leaves it expired on this instance -- reading it would be a lazy load
+    # (a MissingGreenlet under asyncio, not a query). The refresh is what
+    # makes the database's own stamp readable here (test_pipeline_quality.py
+    # establishes this precedent).
+    await session.refresh(background)
+    assert background.quality_scored_at is not None
+
+
+async def test_a_non_first_kind_refusing_still_badges_the_earlier_kind(config, session):
+    """The discriminating test roadmap review flags as M2: SQLAlchemy's
+    `rollback()` expires the ENTIRE identity map (`dirty_only=False`,
+    independent of `expire_on_commit`, which this app sets False) -- not just
+    the just-refused kind's own row. Refusing a NON-FIRST kind (poster
+    renders fine, background refuses) used to leave the poster's own
+    `Render` object -- already committed and sitting in `results` -- expired
+    when the badge loop later read `render.art_kind`, a plain attribute
+    access outside greenlet context: a MissingGreenlet, silently swallowed by
+    the badge stage's own `except Exception`. The whole item would silently
+    lose its badge upkeep, on every pass, because the refusal is
+    deterministic. `test_a_refused_kind_does_not_abort_its_sibling` above
+    refuses the FIRST kind (poster), where `results` is still empty at the
+    rollback -- it cannot reach this."""
+    good = GOLDEN / "source_textless.jpg"
+
+    async def handler(request):
+        if "background" in str(request.url):
+            return httpx.Response(200, content=b"not an image")
+        return httpx.Response(200, content=good.read_bytes())
+
+    item = _movie_item("77777", title="Corrupt Background")
+    provider = KindAwareProvider({
+        "poster": "https://image.tmdb.org/t/p/original/poster3.jpg",
+        "background": "https://image.tmdb.org/t/p/original/background3.jpg",
+    })
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        renders = await process_item(
+            session, config, http, FakePlex(item), [provider],
+            RenderIntent(kind="movie", title="Corrupt Background", tmdb_id=3),
+        )
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    background = next(r for r in renders if r.art_kind == "background")
+    assert poster.status == "rendered"
+    assert background.status == "failed"
+    # The example config badges (but does not upload); asserting no exception
+    # proves nothing, since the badge stage swallows its own failures -- this
+    # asserts the stage actually ran for the poster rather than dying on a
+    # MissingGreenlet before it got there.
+    assert poster.badge_fingerprint is not None
+
+
+async def test_every_kind_refusing_still_fails_the_job(config, session):
+    """If NO kind produced anything, the job must still fail so the operator
+    sees it on Failures -- the one place per-kind containment must not go all
+    the way, or a total refusal reads as an ordinary `done` with nothing
+    rendered and nothing to show for it."""
+    async def handler(request):
+        return httpx.Response(200, content=b"not an image")
+
+    item = _movie_item("66666", title="All Corrupt")
+    provider = KindAwareProvider({
+        "poster": "https://image.tmdb.org/t/p/original/poster2.jpg",
+        "background": "https://image.tmdb.org/t/p/original/background2.jpg",
+    })
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(SourceRefused):
+            await process_item(
+                session, config, http, FakePlex(item), [provider],
+                RenderIntent(kind="movie", title="All Corrupt", tmdb_id=2),
+            )
+
+    rows = (await session.execute(select(Render))).scalars().all()
+    assert {r.status for r in rows} == {"failed"}
+
+
+async def test_a_last_kind_refusing_with_facts_enabled_still_writes_facts(config, session):
+    """Regression coverage for a previously-untested combination: operations
+    enabled + `tmdb_facts` supplied (so `media_item` is loaded before the
+    artifact loop) with the refusal on the LAST kind the loop touches
+    (background, for a movie) -- unlike
+    `test_a_non_first_kind_refusing_still_badges_the_earlier_kind` above,
+    which never supplies `tmdb_facts`.
+
+    A re-review flagged this combination as a hypothesized second victim of
+    the containment's `session.rollback()`: since `rollback()` expires the
+    entire identity map, and no LATER `render_artifact` call follows a
+    last-kind refusal to revive `media_item` as a side effect of its own
+    `_upsert_media_item` select, the badge stage's
+    `select(ItemFacts).where(ItemFacts.item_id == media_item.id)` was
+    predicted to read `media_item.id` on an expired instance outside
+    greenlet context -- a MissingGreenlet.
+
+    Investigated directly (instrumented `pipeline.py` around the refusal
+    handler and ran this exact scenario): `media_item` IS expired
+    immediately after `rollback()`, but the handler's OWN recovery call --
+    `media_item_for_kind = await _upsert_media_item(session, item)`, needed
+    regardless to build the refused kind's own `Render` row -- selects the
+    SAME primary key already sitting in the identity map. SQLAlchemy
+    repopulates an expired identity-mapped instance's attributes from any
+    query that returns its row, so this call revives `media_item` as an
+    incidental side effect, the same way `render_artifact`'s internal
+    `_upsert_media_item` call revives it for a non-last refusal. Confirmed
+    with `sqlalchemy.inspect(media_item).expired`: True right before that
+    call, False right after, same object identity. So this test is
+    currently GREEN on unmodified `pipeline.py` (no code change needed) --
+    kept as coverage for a combination the review correctly identified as
+    untested, not as a bug-fix pin."""
+    good = GOLDEN / "source_textless.jpg"
+
+    async def handler(request):
+        if "background" in str(request.url):
+            return httpx.Response(200, content=b"not an image")
+        return httpx.Response(200, content=good.read_bytes())
+
+    item = _movie_item("88888", title="Corrupt Background With Facts")
+    provider = KindAwareProvider({
+        "poster": "https://image.tmdb.org/t/p/original/poster4.jpg",
+        "background": "https://image.tmdb.org/t/p/original/background4.jpg",
+    })
+
+    class FakeTMDBFacts:
+        async def movie(self, tmdb_id):
+            # audience_rating, not critic_rating: gather_facts always
+            # overwrites critic_rating from the separate IMDb-ratings lookup
+            # (`_critic_rating`), regardless of what the TMDb client returns.
+            return GatheredFacts(audience_rating=6.3, sources={"audience_rating": "tmdb"})
+
+    # write_to_plex off: FakePlexItem below doesn't implement the
+    # batchEdits/edit/saveEdits trio apply_facts would call; that write path
+    # is exercised elsewhere (test_pipeline_facts.py) and is not what this
+    # test is about.
+    config.operations.write_to_plex = False
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        renders = await process_item(
+            session, config, http, FakePlex(item), [provider],
+            RenderIntent(kind="movie", title="Corrupt Background With Facts", tmdb_id=4),
+            tmdb_facts=FakeTMDBFacts(), mdblist=NullMDBListClient(),
+        )
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    background = next(r for r in renders if r.art_kind == "background")
+    assert poster.status == "rendered"
+    assert background.status == "failed"
+    # Proves the badge stage ran to completion rather than dying on the
+    # MissingGreenlet this test targets.
+    assert poster.badge_fingerprint is not None
+
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.audience_rating == pytest.approx(6.3)

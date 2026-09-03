@@ -140,7 +140,7 @@ function stubFetch(overrides: Record<string, unknown> = {}) {
       return json(
         overrides.backfill ?? {
           status: "in_progress", done: 120, total: 300,
-          queued_for_scoring: 30, unscored_total: 180,
+          queued_for_scoring: 30, unscored_total: 180, blocked: 0,
         },
       );
     }
@@ -698,6 +698,35 @@ describe("ActionCenter", () => {
     expect(
       await screen.findByText("30 of 180 unscored asset(s) queued for scoring"),
     ).toBeInTheDocument();
+  });
+
+  it("shows the blocked count with a link to Failures when it is non-zero", async () => {
+    // Roadmap: the unscorable-floor investigation's fix 4. `blocked` names
+    // rows a press cannot move -- only an operator acting on Failures can --
+    // so the panel must say so, and point there, whenever it is non-zero.
+    stubFetch({
+      backfill: {
+        status: "in_progress", done: 120, total: 300,
+        queued_for_scoring: 30, unscored_total: 180, blocked: 7,
+      },
+    });
+
+    renderPage();
+
+    const notice = await screen.findByText(/7 blocked/);
+    expect(notice).toBeInTheDocument();
+    expect(within(notice).getByRole("link", { name: "Failures" })).toHaveAttribute(
+      "href", "/failures",
+    );
+  });
+
+  it("shows no blocked line when nothing is blocked", async () => {
+    stubFetch();
+
+    renderPage();
+
+    await screen.findByText("120 of 300 assets scored");
+    expect(screen.queryByText(/blocked/)).not.toBeInTheDocument();
   });
 
   it("reports the post-press queued-for-scoring depth in the batch feedback", async () => {

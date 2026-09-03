@@ -44,7 +44,7 @@ from autoposter.providers.tmdb import TMDBClient
 from autoposter.providers.tvdb import TVDBClient
 from autoposter.queue.jobs import reclaim_stale
 from autoposter.queue.worker import run_workers
-from autoposter.render.pipeline import process_item
+from autoposter.render.pipeline import SourceRefused, process_item
 from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.jobs import (
     make_arr_sync_job,
@@ -606,4 +606,17 @@ async def _handle_intent(
         # deferred on an unbounded horizon (queue/worker.py, queue/jobs.py's
         # fail()). A budget threaded onto it would be read by nothing.
         exc.max_attempts = config.plex.resolve_max_attempts
+        raise
+    except SourceRefused as exc:
+        # A validation refusal (render/pipeline.py's own docstring) is
+        # deterministic: retrying re-downloads the exact same corrupt bytes,
+        # so the generic 5-attempt budget just burns four attempts on a
+        # source that cannot change between them. Parked on the first
+        # attempt instead -- the PlexPathMismatch precedent (queue/worker.py:
+        # "it needs a human") -- threaded through the exception itself like
+        # resolve_max_attempts above, so run_once's own signature stays
+        # untouched. A retry from Failures still re-runs this job in full: if
+        # the source is fixed upstream by then, the next attempt renders
+        # normally.
+        exc.max_attempts = 1
         raise

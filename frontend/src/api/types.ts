@@ -913,6 +913,14 @@ export interface BulkRerenderResponse {
  * deferred alike -- so an operator pacing a live run (the report that added
  * this pair: mid-run at 8214/17264, with no way to see the queue's actual
  * depth) can see how much is already claimed before pressing again.
+ *
+ * `blocked` is the further subset of the unscored population whose item
+ * already has a `parked` `process_item` job -- a press cannot score these by
+ * re-rendering; only an operator acting on the Failures page (fix the
+ * source, retry, dismiss) can. It is excluded from `total`/`unscored_total`
+ * for the reason `total` already excludes `no_art`/`skipped`/`truncated`/
+ * `failed` rows: a row this button structurally cannot move must not sit in
+ * its own denominator.
  */
 export interface QualityBackfillStatus {
   status: "not_started" | "in_progress" | "complete";
@@ -920,6 +928,7 @@ export interface QualityBackfillStatus {
   total: number;
   queued_for_scoring: number;
   unscored_total: number;
+  blocked: number;
 }
 
 /** `POST /api/actions/backfill` -- one triggered batch's outcome.
@@ -945,5 +954,6 @@ export interface QualityBackfillTrigger {
   total: number;
   queued_for_scoring: number;
   unscored_total: number;
+  blocked: number;
   detail: string;
 }

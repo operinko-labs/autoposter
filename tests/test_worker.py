@@ -325,6 +325,75 @@ async def test_plex_connection_error_survives_more_attempts_than_a_generic_failu
     assert job.state == "pending"
 
 
+async def test_source_refused_parks_on_the_first_attempt(session):
+    # Roadmap: the unscorable-floor investigation's fix 3. SourceRefused
+    # (render/pipeline.py) is a validation refusal -- retrying re-downloads
+    # the exact same corrupt bytes -- so app.py's _handle_intent tags it with
+    # max_attempts=1 (see test_app.py's own pin of that tagging). This is the
+    # other half: run_once's GENERIC except branch is where a SourceRefused
+    # actually lands (it is neither ItemNotFound nor a connectivity error),
+    # and it must honour that tag instead of defaulting to MAX_ATTEMPTS like
+    # an ordinary failure.
+    from autoposter.render.pipeline import SourceRefused
+
+    async def handler(session_, intent):
+        exc = SourceRefused("the poster source did not decode after download (OSError)")
+        exc.max_attempts = 1
+        raise exc
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=40)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await run_once(session, "worker-1", _only_process_item(handler))
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "parked"
+    assert job.attempts == 1
+    # Served class-name-only: SourceRefused carries no served_detail (its own
+    # docstring), so the full reason reaches only the pod log, never this row.
+    assert job.last_error == "SourceRefused"
+
+
+async def test_retry_after_a_source_refused_park_succeeds_once_the_source_is_fixed(session):
+    # The other half of fix 3's requirement: an operator retry from Failures
+    # (api/routes.py's retry_job, whose reset this mirrors) must still work
+    # on a SourceRefused park -- if the upstream source is fixed by the next
+    # attempt, the job completes normally rather than being stuck parked.
+    from autoposter.render.pipeline import SourceRefused
+
+    calls = {"n": 0}
+
+    async def handler(session_, intent):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            exc = SourceRefused("the poster source did not decode after download (OSError)")
+            exc.max_attempts = 1
+            raise exc
+        # Second attempt: the source is fixed upstream. Nothing raises.
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=41)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await run_once(session, "worker-1", _only_process_item(handler))
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    assert job.state == "parked"
+
+    # retry_job's own reset (api/routes.py), reproduced here rather than
+    # through the HTTP layer -- this file has no app/client fixture, and
+    # test_api_actions.py already pins the endpoint's own mechanics.
+    job.state = "pending"
+    job.attempts = 0
+    job.claimed_by = None
+    job.claimed_at = None
+    job.run_after = func.now()
+    await session.commit()
+
+    assert await run_once(session, "worker-1", _only_process_item(handler)) is True
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "done"
+    assert calls["n"] == 2
+
+
 async def test_db_error_in_handler_reschedules_instead_of_stranding_at_running(session, caplog):
     # Finding 3: a handler that fails with a database error (not a plain Python
     # exception) leaves the session in a failed transaction. fail() issues a

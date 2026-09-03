@@ -98,6 +98,10 @@ def _truncated(config: Config) -> ColumnElement[bool]:
     return Render.status == "truncated"
 
 
+def _render_failed(config: Config) -> ColumnElement[bool]:
+    return Render.status == "failed"
+
+
 def _show_fallback(config: Config) -> ColumnElement[bool]:
     return Render.source_mode == "show_fallback"
 
@@ -230,6 +234,10 @@ def _upload_detail(render: Render) -> str:
     return f"render {render.status}, upload {render.upload_status}"
 
 
+def _render_failed_detail(render: Render) -> str:
+    return render.detail or "the source was refused"
+
+
 def _language_detail(render: Render) -> str:
     language = render.selected_language or "untagged"
     if render.language_rank == UNRANKED:
@@ -279,6 +287,20 @@ _REGISTRY: tuple[Flag, ...] = (
         instant=True,
         predicate=_truncated,
         detail=_truncated_detail,
+    ),
+    Flag(
+        code="render_failed",
+        label="Render refused",
+        description=(
+            "The last render attempt refused this artifact's source and wrote no "
+            "file; the stored reason is in the detail below. On by default: the "
+            "asset has no current art, which is a true defect, not noise -- a "
+            "rerender retries the same source and recovers once it is fixed."
+        ),
+        default_on=True,
+        instant=True,
+        predicate=_render_failed,
+        detail=_render_failed_detail,
     ),
     Flag(
         code="show_fallback",
