@@ -1030,3 +1030,73 @@ async def test_a_deferred_jobs_item_is_not_selected_either(app, client, auth_hea
     session.expire_all()
     reread0 = (await session.execute(select(Render).where(Render.id == render0_id))).scalar_one()
     assert reread0.fingerprint == "a" * 64
+
+
+# --- excluded libraries ------------------------------------------------------
+
+
+async def test_a_row_in_an_excluded_library_is_neither_listed_nor_counted_nor_queued(
+    client, auth_headers, session
+):
+    """`plex.excluded_libraries` stops NEW work, but it never reached the
+    database: a row discovered BEFORE its library was excluded stays in
+    `media_items` forever. `PlexClient._sections` drops the section, `resolve()`
+    raises `ItemNotFound`, and `queue/worker.py` DEFERS the job on an unbounded
+    horizon rather than parking it -- so the row is never scored and never
+    reads as `blocked` either. It just sits in the queue, in the chip counts
+    and in the backfill's denominator, and every press mints another job that
+    defers.
+
+    The example config this app fixture loads excludes `Photos`, so the seeded
+    Photos row is the stale population and the Movies row is the real one.
+    """
+    await _seed(session, rating_key="1", library="Movies")
+    await _seed(session, rating_key="2", library="Photos")
+
+    listing = (
+        await client.get("/api/actions?flag=unscored", headers=auth_headers)
+    ).json()
+    assert [row["library"] for row in listing["items"]] == ["Movies"]
+    assert listing["total"] == 1
+
+    summary = (await client.get("/api/actions/summary", headers=auth_headers)).json()
+    assert {f["code"]: f["count"] for f in summary["flags"]}["unscored"] == 1
+
+    status = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+    assert (status["total"], status["done"], status["unscored_total"]) == (1, 0, 1)
+
+    press = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+    assert press["selected"] == 1
+    queued = {
+        job.payload["rating_key"]
+        for job in (await session.execute(select(Job))).scalars()
+    }
+    assert queued == {"1"}
+
+
+async def test_an_empty_excluded_list_narrows_nothing(
+    client, auth_headers, session, app
+):
+    """The empty-list branch is `literal(True)`, not `NOT IN ()`: an empty
+    configuration means the predicate has nothing to say, not that every row
+    fails it. The example config excludes two libraries, so this has to be
+    said explicitly -- the holder is swapped exactly as the settings editor
+    swaps it.
+
+    This one is GREEN before the fix, and that is deliberate: today nothing
+    narrows the population at all, so an empty exclusion list trivially
+    narrows nothing. It is a behaviour pin, not a RED-first pin. What it
+    guards is the branch AFTER the fix -- it fails the moment
+    `excluded_library_predicate` returns `literal(False)` for the empty case
+    (the shape `NOT IN ()` degenerates to, and the shape the `_provider_miss`
+    precedent above exists to avoid), or drops the empty-case branch
+    altogether. The RED gate in the next step therefore does not count it.
+    """
+    edited = load_config(EXAMPLE)
+    edited.plex.excluded_libraries = []
+    app.state.config_holder.swap(edited)
+    await _seed(session, rating_key="2", library="Photos")
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert (body["total"], body["unscored_total"]) == (1, 1)
