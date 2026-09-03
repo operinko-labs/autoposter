@@ -555,7 +555,8 @@ def make_arr_sync_job(
                 ))
 
             enqueued = await enqueue_unknown_items(
-                session, items, plex_kind, batch_size=config.arr_sync.batch_size
+                session, items, plex_kind, section.title,
+                batch_size=config.arr_sync.batch_size,
             )
             parts.append(f"{section.title}: enqueued {enqueued} unknown item(s)")
 

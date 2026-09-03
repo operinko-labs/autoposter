@@ -911,7 +911,7 @@ async def test_a_discovery_enqueued_item_resolves_by_rating_key_when_the_crosswa
 
     shows.getGuid = _crosswalk_always_misses
 
-    enqueued = await enqueue_unknown_items(session, [show], "show")
+    enqueued = await enqueue_unknown_items(session, [show], "show", "Shows")
     assert enqueued == 1
     job = (await session.execute(select(Job))).scalars().one()
     intent = RenderIntent(**job.payload)

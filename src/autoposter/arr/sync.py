@@ -319,7 +319,7 @@ async def sync_section(
 
 
 async def _stale_rows_by_key(
-    session: AsyncSession, kind: str, guids_by_key: dict[str, dict]
+    session: AsyncSession, kind: str, library: str, guids_by_key: dict[str, dict]
 ) -> dict[str, MediaItem]:
     """For each unknown Plex key, the ONE row already carrying its identity.
 
@@ -327,13 +327,15 @@ async def _stale_rows_by_key(
     ``enqueue_unknown_items`` is a single query by design and this must not
     undo that.
 
-    Deliberately NARROWER than the pipeline's own re-key predicate, which also
-    demands the same library. All this decides is WHICH intent to enqueue; the
-    pipeline re-checks the full predicate when the job runs, so a wrong guess
-    here costs exactly what today's code costs -- a job that forks and creates
-    a twin -- and can never cause a wrong re-key. The season/episode columns
-    are pinned NULL because this sweep only ever walks movie and show
-    sections.
+    Exactly as wide as the pipeline's own re-key predicate
+    (``render.pipeline._identity_candidates``): same ``kind``, same
+    ``library``, and a non-empty external-id intersection. Library-blind was
+    tried and overturned (C6): a wrong guess does not cost what today's
+    (pre-phase) code costs -- it enqueues the OTHER library's row's intent
+    and the discovered item is never enqueued at all, forever, which is a
+    real regression against the 4K/HD dual-library population this phase
+    treats as first-class. The season/episode columns are pinned NULL
+    because this sweep only ever walks movie and show sections.
 
     Exactly one match or nothing: two rows carrying one identity is the
     ``plex_merge`` job's pair, and enqueuing either one's key would pick a
@@ -356,6 +358,7 @@ async def _stale_rows_by_key(
         await session.execute(
             select(MediaItem)
             .where(MediaItem.kind == kind)
+            .where(MediaItem.library == library)
             .where(MediaItem.season_number.is_(None))
             .where(MediaItem.episode_number.is_(None))
             .where(or_(*clauses))
@@ -390,7 +393,7 @@ async def _stale_rows_by_key(
 
 
 async def enqueue_unknown_items(
-    session: AsyncSession, items: list, kind: str, batch_size: int = 500
+    session: AsyncSession, items: list, kind: str, library: str, batch_size: int = 500
 ) -> int:
     """Enqueue every Plex item in ``items`` this service has never recorded.
 
@@ -401,6 +404,10 @@ async def enqueue_unknown_items(
     database every item is unknown, and enqueuing the whole library at once
     would swamp the worker pool and every provider. Successive runs work
     through the rest.
+
+    ``library`` is the Plex section title being swept -- it scopes the stale-
+    row guess below to that library, matching the pipeline's own re-key
+    predicate.
 
     The comparison against ``media_items`` is one query -- an anti-join over
     every rating key in the section -- not one query per item. Dedupe is left
@@ -430,7 +437,7 @@ async def enqueue_unknown_items(
         for item in items
         if str(item.ratingKey) not in known
     }
-    stale_by_key = await _stale_rows_by_key(session, kind, guids_by_key)
+    stale_by_key = await _stale_rows_by_key(session, kind, library, guids_by_key)
 
     enqueued = 0
     for item in items:

@@ -33,7 +33,7 @@ async def test_an_item_with_a_media_items_row_is_not_enqueued(session):
     await session.commit()
 
     items = [FakeItem("1", "Dune", ["tmdb://438631"])]
-    count = await enqueue_unknown_items(session, items, "movie")
+    count = await enqueue_unknown_items(session, items, "movie", "Movies")
 
     assert count == 0
     assert await _pending_jobs(session) == []
@@ -41,7 +41,7 @@ async def test_an_item_with_a_media_items_row_is_not_enqueued(session):
 
 async def test_an_item_with_no_media_items_row_is_enqueued(session):
     items = [FakeItem("2", "Severance", ["tvdb://371980"])]
-    count = await enqueue_unknown_items(session, items, "show")
+    count = await enqueue_unknown_items(session, items, "show", "Shows")
 
     assert count == 1
     jobs = await _pending_jobs(session)
@@ -57,7 +57,7 @@ async def test_batch_size_caps_how_many_are_enqueued(session):
         FakeItem("11", "B", ["tmdb://11"]),
         FakeItem("12", "C", ["tmdb://12"]),
     ]
-    count = await enqueue_unknown_items(session, items, "movie", batch_size=2)
+    count = await enqueue_unknown_items(session, items, "movie", "Movies", batch_size=2)
 
     assert count == 2
     assert len(await _pending_jobs(session)) == 2
@@ -66,8 +66,8 @@ async def test_batch_size_caps_how_many_are_enqueued(session):
 async def test_running_twice_does_not_double_enqueue(session):
     items = [FakeItem("20", "Only", ["tmdb://20"])]
 
-    first = await enqueue_unknown_items(session, items, "movie")
-    second = await enqueue_unknown_items(session, items, "movie")
+    first = await enqueue_unknown_items(session, items, "movie", "Movies")
+    second = await enqueue_unknown_items(session, items, "movie", "Movies")
 
     assert first == 1
     assert second == 0
@@ -83,7 +83,7 @@ async def test_the_returned_count_matches_the_number_of_rows_still_missing(sessi
         FakeItem("31", "Unknown One", ["tmdb://31"]),
         FakeItem("32", "Unknown Two", ["tmdb://32"]),
     ]
-    count = await enqueue_unknown_items(session, items, "movie")
+    count = await enqueue_unknown_items(session, items, "movie", "Movies")
 
     assert count == 2
     assert len(await _pending_jobs(session)) == 2
@@ -97,7 +97,7 @@ async def test_the_enqueued_payload_carries_the_items_rating_key(session):
     unresolvable forever. See test_plex.py for the resolution-side pin.
     """
     items = [FakeItem("40", "Bamse", ["tmdb://55645", "tvdb://358385"])]
-    count = await enqueue_unknown_items(session, items, "show")
+    count = await enqueue_unknown_items(session, items, "show", "Shows")
 
     assert count == 1
     jobs = await _pending_jobs(session)
@@ -105,7 +105,7 @@ async def test_the_enqueued_payload_carries_the_items_rating_key(session):
 
 
 async def test_an_empty_section_enqueues_nothing(session):
-    count = await enqueue_unknown_items(session, [], "movie")
+    count = await enqueue_unknown_items(session, [], "movie", "Movies")
 
     assert count == 0
     assert await _pending_jobs(session) == []
@@ -143,7 +143,7 @@ async def test_an_identity_already_stored_under_another_key_is_enqueued_from_tha
     await session.commit()
 
     items = [FakeItem("901", "Dune", ["tmdb://438631"])]
-    count = await enqueue_unknown_items(session, items, "movie")
+    count = await enqueue_unknown_items(session, items, "movie", "Movies")
 
     assert count == 1
     jobs = await _pending_jobs(session)
@@ -165,9 +165,40 @@ async def test_two_rows_for_one_identity_fall_back_to_the_live_key(session):
     await session.commit()
 
     items = [FakeItem("901", "Dune", ["tmdb://438631"])]
-    count = await enqueue_unknown_items(session, items, "movie")
+    count = await enqueue_unknown_items(session, items, "movie", "Movies")
 
     assert count == 1
     jobs = await _pending_jobs(session)
     assert jobs[0].payload["rating_key"] == "901"
+    assert jobs[0].payload["title"] == "Dune"
+
+
+async def test_a_stale_row_in_a_different_library_is_not_the_guess(session):
+    """The 4K/HD dual-library population this phase treats as first-class:
+    the same external ids can legitimately carry two rows, one per library
+    (``test_a_cross_library_match_is_not_a_re_key`` in
+    ``tests/test_pipeline_rekey.py`` pins the pipeline's own half of this).
+    A library-blind guess here matched the OTHER library's row and enqueued
+    ITS intent -- so the discovered item was never enqueued at all, forever,
+    and the wrong item was redundantly re-rendered on every sweep instead.
+
+    Per the C6 re-ruling, the guess predicate must be exactly as wide as the
+    pipeline's own re-key predicate -- kind + library + coordinates + id
+    intersection -- so it takes the library being swept, not just the kind.
+    """
+    session.add(MediaItem(
+        rating_key="900", library="Movies", kind="movie", title="Old Title",
+        tmdb_id=438631, year=2021,
+    ))
+    await session.commit()
+
+    items = [FakeItem("901", "Dune", ["tmdb://438631"])]
+    count = await enqueue_unknown_items(session, items, "movie", "Movies 4K")
+
+    assert count == 1
+    jobs = await _pending_jobs(session)
+    assert jobs[0].payload["rating_key"] == "901", (
+        "the guess crossed into another library and enqueued that row's "
+        "intent instead of the discovered item's own"
+    )
     assert jobs[0].payload["title"] == "Dune"
