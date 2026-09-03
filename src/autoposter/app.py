@@ -55,6 +55,7 @@ from autoposter.scheduler.jobs import (
     make_maintenance_job,
     make_stale_reclaim_job,
 )
+from autoposter.scheduler.merge import make_merge_job
 from autoposter.scheduler.prune import make_prune_job
 
 logger = logging.getLogger(__name__)
@@ -332,6 +333,24 @@ def create_app(
             # moment the pass starts, and for THIS job it means refuse, not
             # wait.
             scheduler_jobs.append(make_prune_job(
+                holder,
+                lambda: PlexClient(
+                    server_factory(), holder.current.plex.excluded_libraries
+                ),
+                lambda: health.healthy,
+            ))
+            # The twin merge takes the same PlexClient the prune does, and for
+            # the same reason: it asks whether a stored rating key is still
+            # the item's own key, which is a section-constrained question that
+            # honours the library exclusions. Built inside the factory so the
+            # connect and the client construction both happen on the thread
+            # the job offloads to, and read off the holder so an edited
+            # exclusion list reaches it on its next run.
+            #
+            # `health.healthy` gates only this job's APPLY, not its scan: the
+            # dry run asks Plex nothing at all, so an outage must not cost the
+            # operator the report (see make_merge_job's docstring).
+            scheduler_jobs.append(make_merge_job(
                 holder,
                 lambda: PlexClient(
                     server_factory(), holder.current.plex.excluded_libraries

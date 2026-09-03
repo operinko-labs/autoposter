@@ -575,6 +575,9 @@ async def test_the_lifespan_fills_the_dict_the_broadcaster_holds_rather_than_reb
         assert "plex_prune" in app.state.scheduler_intervals, (
             "the boot registration in app.py did not append the prune job"
         )
+        assert "plex_merge" in app.state.scheduler_intervals, (
+            "the boot registration in app.py did not append the twin-merge job"
+        )
         assert held is app.state.scheduler_intervals, (
             "the lifespan rebound app.state.scheduler_intervals rather than "
             f"filling it in place; it still holds {held!r}"
@@ -630,6 +633,7 @@ async def test_stale_job_reclaim_is_registered_even_with_the_scheduler_disabled(
         # The five optional passes really are off -- otherwise this would not
         # be exercising the branch it claims to.
         assert "plex_prune" not in app.state.scheduler_intervals
+        assert "plex_merge" not in app.state.scheduler_intervals
 
 
 async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_processes(

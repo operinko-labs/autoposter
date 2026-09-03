@@ -142,12 +142,25 @@ async def test_the_prune_job_can_be_triggered_by_hand(client, auth_headers, sess
     assert row.last_started_at is None
 
 
+async def test_the_twin_merge_can_be_run_from_the_dashboard(client, auth_headers, session):
+    """``plex_merge`` must be in ``SCHEDULED_JOB_NAMES`` or this is a 404 and
+    the operator's only way to read a dry-run report is to wait a week."""
+    response = await client.post(
+        "/api/scheduled-runs/plex_merge/run", headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    row = (await session.execute(select(ScheduledRun))).scalars().one()
+    assert row.name == "plex_merge"
+    assert row.last_started_at is None
+
+
 def test_the_run_now_allowlist_agrees_with_the_job_factories():
     """Roadmap row 107. ``SCHEDULED_JOB_NAMES`` is spelled out in api/routes.py
     rather than imported from the factories (importing them would pull plexapi
     and the arr/http machinery into the route module), so the two lists can
     drift -- and a job missing from the allowlist silently cannot be
-    hand-triggered. This reads the ``Job(name=...)`` literals out of both
+    hand-triggered. This reads the ``Job(name=...)`` literals out of all three
     scheduler modules' source and demands exact agreement, both directions:
     a job the allowlist misses AND a stale allowlist name with no job both
     fail here.
@@ -159,11 +172,13 @@ def test_the_run_now_allowlist_agrees_with_the_job_factories():
     double quotes would read that job's absence as agreement.
     """
     import autoposter.scheduler.jobs as jobs_module
+    import autoposter.scheduler.merge as merge_module
     import autoposter.scheduler.prune as prune_module
     from autoposter.api.routes import SCHEDULED_JOB_NAMES
 
     source = (
         Path(jobs_module.__file__).read_text(encoding="utf-8")
+        + Path(merge_module.__file__).read_text(encoding="utf-8")
         + Path(prune_module.__file__).read_text(encoding="utf-8")
     )
     declared = set(re.findall(r'\bname=["\']([a-z0-9_]+)["\']', source))
