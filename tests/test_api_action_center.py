@@ -1100,3 +1100,151 @@ async def test_an_empty_excluded_list_narrows_nothing(
     body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
 
     assert (body["total"], body["unscored_total"]) == (1, 1)
+
+
+# --- dismissed rows and the header's own numbers -----------------------------
+
+
+async def test_a_dismissed_unscored_row_leaves_the_headers_counts_and_its_queue_split(
+    client, auth_headers, session
+):
+    """A dismissal is the operator saying "leave this one", and the header has
+    to read it the way the chip always has.
+
+    `_scope` hides a dismissed row from the listing and from every chip count;
+    `_backfill_state` queried `renders` and `jobs` with no `ActionDismissal`
+    join at all, so the same row stayed inside `unscored_total` and still
+    counted as `queued_for_scoring`. Production, 2026-09-04: a header reading
+    "0 of 2 unscored asset(s) queued for scoring" above a "Not yet scored"
+    chip reading 0, with an empty listing under it -- one table, two
+    populations.
+
+    The contract, stated: dismissing an unscored row MEANS stop counting it as
+    unscored. Not a narrower view of the same queue -- the operator has said
+    this asset is not work, and a denominator that disagrees is a progress bar
+    that never reaches 100%. It is not permanent silence either:
+    `evidence_expression()` hashes `quality_scored_at IS NOT NULL` among the
+    row's facts, so the day this row is scored or re-rendered the dismissal
+    stops matching and the row returns to the header and the chip together.
+
+    This one takes the ORM-WALK branch of `_backfill_state` -- the deferred
+    job is what makes `pending_keys` non-empty -- which is the branch that
+    computes `blocked` and `queued_for_scoring`. A deferred job is also the
+    production shape: the item cannot be resolved, so its job defers on an
+    unbounded horizon rather than parking.
+    """
+    await _seed(session, rating_key="1", status="rendered", quality_scored_at=None)
+    dismissed, _ = await _seed(
+        session, rating_key="2", status="rendered", quality_scored_at=None
+    )
+    await client.post(
+        "/api/actions/dismiss",
+        headers=auth_headers,
+        json={"item_id": dismissed.id, "art_kind": "poster", "flag": "unscored"},
+    )
+    intent = RenderIntent(kind=dismissed.kind, title=dismissed.title)
+    session.add(Job(kind="process_item", dedupe_key=intent.dedupe_key, state="deferred"))
+    await session.commit()
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body == {
+        "status": "not_started", "done": 0, "total": 1,
+        "queued_for_scoring": 0, "unscored_total": 1, "blocked": 0,
+    }
+
+    # The header and the chip, on one seed, in one test: the panel's number
+    # and the chip's number are the same population or the page contradicts
+    # itself in front of the operator.
+    summary = (await client.get("/api/actions/summary", headers=auth_headers)).json()
+    chip = {f["code"]: f["count"] for f in summary["flags"]}["unscored"]
+    assert body["unscored_total"] == chip == 1
+
+
+async def test_a_dismissed_unscored_row_is_never_selected_by_the_backfill(
+    client, auth_headers, session
+):
+    """The other branch, the other query, and the numerator.
+
+    With no job anywhere, `_backfill_state` takes its cheap `COUNT(*)` path
+    rather than the ORM walk, and `_select_backfill_batch`'s own paged select
+    is what decides what a press enqueues -- neither of which `_scope` has
+    ever touched. The in-flight and parked exclusions cannot stand in for the
+    dismissal here: this row has NO job, so nothing else would skip it, and a
+    press would clear the fingerprint of an asset the operator explicitly set
+    aside and mint a job for it.
+
+    `done` is in the same population for the same reason. A dismissed row that
+    HAS been scored must leave the numerator as well as the denominator, or
+    "N of M assets scored" is a ratio over two different populations.
+    """
+    from datetime import datetime, timezone
+
+    await _seed(session, rating_key="1", status="rendered", quality_scored_at=None)
+    hidden, _ = await _seed(
+        session, rating_key="2", status="rendered", quality_scored_at=None
+    )
+    hidden_scored, _ = await _seed(
+        session, rating_key="3", status="rendered",
+        quality_scored_at=datetime.now(timezone.utc),
+    )
+    await _seed(
+        session, rating_key="4", status="rendered",
+        quality_scored_at=datetime.now(timezone.utc),
+    )
+    for item, flag in ((hidden, "unscored"), (hidden_scored, None)):
+        await client.post(
+            "/api/actions/dismiss",
+            headers=auth_headers,
+            json={"item_id": item.id, "art_kind": "poster", "flag": flag},
+        )
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body == {
+        "status": "in_progress", "done": 1, "total": 2,
+        "queued_for_scoring": 0, "unscored_total": 1, "blocked": 0,
+    }
+    summary = (await client.get("/api/actions/summary", headers=auth_headers)).json()
+    chip = {f["code"]: f["count"] for f in summary["flags"]}["unscored"]
+    assert body["unscored_total"] == chip == 1
+
+    press = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert press["selected"] == 1
+    queued = {
+        job.payload["rating_key"]
+        for job in (await session.execute(select(Job))).scalars()
+    }
+    assert queued == {"1"}
+
+
+async def test_an_undismissed_unscored_row_is_still_counted_by_the_header_and_the_chip(
+    client, auth_headers, session
+):
+    """The control, and the guard on the join's SHAPE.
+
+    GREEN before the fix, deliberately: nothing in `_backfill_state` consults
+    `action_dismissals` at all today, so an undismissed row is trivially still
+    counted. It is a behaviour pin, not a RED-first pin (Global Constraint 13
+    names it), and what it guards is the join AFTER the fix -- an INNER join
+    to `action_dismissals` instead of a LEFT OUTER one drops every row that
+    was never dismissed, which is nearly the whole library, and every number
+    on this panel would read 0 while the chip read the truth. The RED gate in
+    the next step therefore does not count it.
+    """
+    await _seed(session, rating_key="1", status="rendered", quality_scored_at=None)
+
+    body = (await client.get("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert body == {
+        "status": "not_started", "done": 0, "total": 1,
+        "queued_for_scoring": 0, "unscored_total": 1, "blocked": 0,
+    }
+    summary = (await client.get("/api/actions/summary", headers=auth_headers)).json()
+    chip = {f["code"]: f["count"] for f in summary["flags"]}["unscored"]
+    assert body["unscored_total"] == chip == 1
+
+    press = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
+
+    assert press["selected"] == 1
