@@ -23,10 +23,12 @@ key.
 import logging
 from pathlib import Path
 
+import asyncpg.exceptions
 import httpx
+import pytest
 from conftest import decodable_png
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 
 from autoposter.config.loader import load_config
 from autoposter.db.models import EventLog, MediaItem, Render
@@ -534,8 +536,10 @@ async def test_a_lost_race_degrades_to_the_ordinary_upsert(
 async def test_a_deadlock_degrades_to_the_ordinary_upsert(
     session, session_factory, tmp_path, monkeypatch, caplog
 ):
-    """A lock cycle across two identity re-keys raises ``OperationalError``
-    (Postgres ``DeadlockDetected``), not ``IntegrityError`` -- the same
+    """A lock cycle across two identity re-keys raises, under asyncpg, a
+    plain ``sqlalchemy.exc.DBAPIError`` whose ``orig`` carries sqlstate
+    ``40P01`` (Postgres ``DeadlockDetected``) -- never ``OperationalError``,
+    which the asyncpg dialect defines but raises nowhere. The same
     rollback-then-continue that saves a lost race on the unique constraint
     must also save this, or the job fails instead of degrading to the twin
     path.
@@ -565,9 +569,9 @@ async def test_a_deadlock_degrades_to_the_ordinary_upsert(
                     title="Winner", tmdb_id=693134, imdb_id="tt15239678",
                 ))
                 await other.commit()
-            raise OperationalError(
+            raise DBAPIError(
                 "UPDATE media_items SET rating_key = %s", ("2",),
-                Exception("deadlock detected"),
+                asyncpg.exceptions.DeadlockDetectedError("deadlock detected"),
             )
         await real_flush()
 
@@ -592,6 +596,45 @@ async def test_a_deadlock_degrades_to_the_ordinary_upsert(
     assert await _audits(session) == [], (
         "a rolled-back re-key must leave no audit row"
     )
+
+
+async def test_a_non_deadlock_dbapi_error_still_fails_the_job(
+    session, tmp_path, monkeypatch
+):
+    """A ``DBAPIError`` whose ``orig`` carries a sqlstate other than
+    ``40P01`` -- a dropped connection, not a lock cycle -- must propagate.
+    Silently swallowing it would fall through to the ordinary upsert and
+    INSERT a twin instead of failing the job loudly.
+
+    ``flush`` is monkeypatched the same way as the deadlock pin, but with
+    ``ConnectionFailureError`` (sqlstate ``08006``) as ``orig``, and the real
+    flush is never reached at all -- the job must fail before it would ever
+    matter.
+    """
+    stale = await _row(session, "1")
+
+    async def flush_connection_failure():
+        raise DBAPIError(
+            "UPDATE media_items SET rating_key = %s", ("2",),
+            asyncpg.exceptions.ConnectionFailureError("connection failure"),
+        )
+
+    monkeypatch.setattr(session, "flush", flush_connection_failure)
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
+                          rating_key="1")
+
+    with pytest.raises(DBAPIError):
+        await pipeline.process_item(
+            session, _config(tmp_path), None, _FakePlex(_resolved("2")), [], intent,
+        )
+
+    await session.rollback()
+    session.expire_all()
+    items = await _items(session)
+    assert {row.rating_key for row in items} == {"1"}, (
+        "no twin must be created when the job fails"
+    )
+    assert items[0].id == stale.id
 
 
 async def test_the_ambiguous_path_releases_its_locks_before_returning(

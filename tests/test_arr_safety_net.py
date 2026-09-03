@@ -5,6 +5,7 @@ this service has never recorded a ``media_items`` row for. Uses the real
 session fixture and the real ``enqueue`` (not a fake queue), per the phase
 constraints: the whole point is exercising the real dedupe behaviour.
 """
+import pytest
 from sqlalchemy import select
 
 from autoposter.arr.sync import enqueue_unknown_items
@@ -173,7 +174,16 @@ async def test_two_rows_for_one_identity_fall_back_to_the_live_key(session):
     assert jobs[0].payload["title"] == "Dune"
 
 
-async def test_a_stale_row_in_a_different_library_is_not_the_guess(session):
+@pytest.mark.parametrize(
+    "stale_library, sweep_library",
+    [
+        ("Movies", "Movies 4K"),
+        ("Movies 4K", "Movies"),
+    ],
+)
+async def test_a_stale_row_in_a_different_library_is_not_the_guess(
+    session, stale_library, sweep_library
+):
     """The 4K/HD dual-library population this phase treats as first-class:
     the same external ids can legitimately carry two rows, one per library
     (``test_a_cross_library_match_is_not_a_re_key`` in
@@ -185,15 +195,19 @@ async def test_a_stale_row_in_a_different_library_is_not_the_guess(session):
     Per the C6 re-ruling, the guess predicate must be exactly as wide as the
     pipeline's own re-key predicate -- kind + library + coordinates + id
     intersection -- so it takes the library being swept, not just the kind.
+    Run both ways round: the stale row in "Movies" while sweeping "Movies 4K"
+    must still enqueue the 4K item's own intent, and the reverse must still
+    enqueue the Movies item's own intent -- neither library's guess may
+    cross into the other's.
     """
     session.add(MediaItem(
-        rating_key="900", library="Movies", kind="movie", title="Old Title",
+        rating_key="900", library=stale_library, kind="movie", title="Old Title",
         tmdb_id=438631, year=2021,
     ))
     await session.commit()
 
     items = [FakeItem("901", "Dune", ["tmdb://438631"])]
-    count = await enqueue_unknown_items(session, items, "movie", "Movies 4K")
+    count = await enqueue_unknown_items(session, items, "movie", sweep_library)
 
     assert count == 1
     jobs = await _pending_jobs(session)

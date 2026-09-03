@@ -10,7 +10,7 @@ import httpx
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.badges.compose import (
@@ -729,7 +729,8 @@ async def _rekey_by_identity(
         # compose -- blocking any concurrent upsert or prune on either row
         # for that whole window. Rolling back releases it immediately; there
         # is nothing pending in this transaction to lose (the candidate
-        # query is read-only).
+        # query is read-only). This also fires on the zero-candidate path
+        # (an ordinary new item), which is the common case.
         await session.rollback()
         return None
 
@@ -763,12 +764,17 @@ async def _rekey_by_identity(
             outcome=f"re-keyed {old_key} -> {item.rating_key} on an identity match",
         ))
         await session.commit()
-    except (IntegrityError, OperationalError):
+    except (IntegrityError, DBAPIError) as exc:
         # IntegrityError is the unique-constraint race (two workers resolve
-        # the same identity at once). OperationalError also belongs here: a
-        # lock cycle across two concurrent re-keys surfaces as Postgres
-        # DeadlockDetected, which SQLAlchemy raises as OperationalError, not
-        # IntegrityError -- and a lost race must never fail a job either way.
+        # the same identity at once). DBAPIError also belongs here, but only
+        # when it carries sqlstate 40P01 -- under asyncpg, a lock cycle
+        # across two concurrent re-keys surfaces as a plain DBAPIError, not
+        # OperationalError, with that sqlstate stamped onto ``exc.orig``.
+        # Anything else (e.g. a dropped connection) must still fail the job.
+        if not isinstance(exc, IntegrityError) and getattr(
+            exc.orig, "sqlstate", None
+        ) != "40P01":
+            raise
         await session.rollback()
         logger.warning(
             "re-key of %s to %s lost a race; the winner's row holds the key "
