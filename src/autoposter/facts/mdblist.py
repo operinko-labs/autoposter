@@ -63,6 +63,108 @@ def parse_content_rating(payload: dict) -> str | None:
     return str(age)
 
 
+# The `ratings[]` entry's `source` value, and which sub-field to read, for
+# each MDBList-sourced overlay rating this service exposes. Probe section
+# 2.3.3 (`.superpowers/sdd/p-overlay-datasources-probe.md`) names Kometa's own
+# attribute per field and its transform; the RAW HTTP JSON shape below
+# (`ratings: [{source, value, score, votes}, ...]` plus two top-level
+# scalars) is THIS CLIENT's own, not something the probe -- a Kometa-source-
+# only document -- ever fetched, so the value-vs-score sourcing here is this
+# module's own reasoning, not a transcribed fact:
+#   - the three "none"-transform fields (imdb_rating, metacriticuser_rating,
+#     myanimelist_rating) read the array entry's `value` -- these sources'
+#     NATIVE scale is already 0-10 (IMDb; Metacritic's own 0-10 USER score,
+#     distinct from its 0-100 Metascore; MyAnimeList), so no rescale applies;
+#   - letterboxd reads `value` too (its native scale is 0-5 stars) and
+#     doubles it, per the probe;
+#   - the remaining five array-sourced fields (metacritic, trakt, tomatoes,
+#     tomatoesaudience, tmdb) read the array entry's `score` -- MDBList's own
+#     0-100 cross-source normalisation -- and divide by 10; their native
+#     scales are NOT uniformly 0-10 (Rotten Tomatoes and Metacritic's
+#     Metascore are 0-100, Trakt is 0-100), so the normalised field is the
+#     one that produces a sane 0-10 number for all five with one rule;
+#   - the two TOP-LEVEL scalars (`average`, `score`) are MDBList's own
+#     composite fields and both divide by 10, per the probe's `mdb_average_
+#     rating`/`mdb_rating` rows.
+_ARRAY_VALUE_FIELDS = {
+    "mdb_imdb_rating": "imdb",
+    "mdb_metacriticuser_rating": "metacriticuser",
+    "mdb_myanimelist_rating": "myanimelist",
+}
+_ARRAY_VALUE_DOUBLED_FIELDS = {"mdb_letterboxd_rating": "letterboxd"}
+_ARRAY_SCORE_FIELDS = {
+    "mdb_metacritic_rating": "metacritic",
+    "mdb_trakt_rating": "trakt",
+    "mdb_tomatoes_rating": "tomatoes",
+    "mdb_tomatoesaudience_rating": "tomatoesaudience",
+    "mdb_tmdb_rating": "tmdb",
+}
+
+
+def parse_ratings(payload: dict) -> dict[str, float | None]:
+    """The eleven `mdb_*` overlay rating sources (`overlays/variables.py::
+    RATING_SOURCES`), per probe section 2.3.3's per-field rescaling table --
+    transcribed exactly, letterboxd's `*2` included. See the module comment
+    above for the value-vs-score sourcing this client's own shape requires
+    that the probe does not cover.
+
+    `MDBListClient.content_rating` already fetches this same response for the
+    Common Sense age rating; this is a second, independent parse of it -- no
+    new HTTP call. Always returns all eleven keys; an unresolved field is
+    `None`, never a missing key, so a caller can `dict.update` it in without
+    a stale value surviving from a previous pass.
+    """
+    by_source = {
+        entry.get("source"): entry
+        for entry in payload.get("ratings") or []
+        if isinstance(entry, dict)
+    }
+
+    def coerce(field: str, raw: object) -> float | None:
+        # A present-but-non-numeric value (a stray string MDBList might emit
+        # for an errored source) must degrade to None for THIS key alone --
+        # never raise. `parse_ratings` has no item context of its own, so the
+        # warning names the field; the caller (Concern E) still degrades the
+        # whole `ratings()` call on a transport failure, but a malformed
+        # value inside an otherwise-good response must not take the other
+        # ten keys down with it.
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            logger.warning("mdblist: non-numeric %s value %r; treating as absent", field, raw)
+            return None
+
+    def array_value(field: str, *, doubled: bool = False) -> float | None:
+        source = _ARRAY_VALUE_DOUBLED_FIELDS[field] if doubled else _ARRAY_VALUE_FIELDS[field]
+        raw = (by_source.get(source) or {}).get("value")
+        if not raw:
+            return None
+        value = coerce(field, raw)
+        return value * 2 if (doubled and value is not None) else value
+
+    def array_score(field: str) -> float | None:
+        raw = (by_source.get(_ARRAY_SCORE_FIELDS[field]) or {}).get("score")
+        if not raw:
+            return None
+        value = coerce(field, raw)
+        return value / 10 if value is not None else None
+
+    result: dict[str, float | None] = {}
+    for field in _ARRAY_VALUE_FIELDS:
+        result[field] = array_value(field)
+    for field in _ARRAY_VALUE_DOUBLED_FIELDS:
+        result[field] = array_value(field, doubled=True)
+    for field in _ARRAY_SCORE_FIELDS:
+        result[field] = array_score(field)
+    average = payload.get("average")
+    average_value = coerce("mdb_average_rating", average) if average else None
+    result["mdb_average_rating"] = average_value / 10 if average_value is not None else None
+    composite = payload.get("score")
+    composite_value = coerce("mdb_rating", composite) if composite else None
+    result["mdb_rating"] = composite_value / 10 if composite_value is not None else None
+    return result
+
+
 def parse_list_items(payload: object, subject: str) -> list[tuple[str, dict]]:
     """MDBList's list items as ``(mediatype, entry)`` pairs, in list order.
 

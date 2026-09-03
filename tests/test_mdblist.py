@@ -14,6 +14,7 @@ from autoposter.facts.mdblist import (
     NullMDBListClient,
     parse_content_rating,
     parse_list_items,
+    parse_ratings,
 )
 from autoposter.providers.cache import ProviderCache
 
@@ -54,6 +55,81 @@ def test_age_rating_zero_is_not_treated_as_absent():
 def test_string_age_rating_is_accepted():
     payload = load("mdblist_movie.json") | {"age_rating": "13"}
     assert parse_content_rating(payload) == "13"
+
+
+def test_parse_ratings_applies_the_probes_per_field_rescaling():
+    """Probe section 2.3.3's table, field by field. `letterboxd` is the *2
+    outlier (a 5-point scale to Kometa's 10-point one); `imdb`,
+    `metacriticuser` and `myanimelist` are untransformed because their native
+    scale is already 0-10; everything else reads MDBList's own 0-100 `score`
+    and divides by 10."""
+    payload = load("mdblist_full_ratings.json")
+    assert parse_ratings(payload) == {
+        "mdb_average_rating": 5.8,
+        "mdb_imdb_rating": 4.9,
+        "mdb_letterboxd_rating": 6.2,
+        "mdb_metacritic_rating": 5.8,
+        "mdb_metacriticuser_rating": 6.8,
+        "mdb_myanimelist_rating": None,
+        "mdb_rating": 5.5,
+        "mdb_tmdb_rating": 6.3,
+        "mdb_tomatoes_rating": 6.7,
+        "mdb_tomatoesaudience_rating": 7.1,
+        "mdb_trakt_rating": 7.2,
+    }
+
+
+def test_parse_ratings_treats_a_falsy_source_value_as_none_not_zero():
+    """Probe section 2.3.3: every branch in the pinned Kometa source is
+    `X / 10 if X else None` -- a legitimate 0 is not a legitimate rating."""
+    payload = load("mdblist_full_ratings.json")
+    payload = payload | {
+        "ratings": [
+            e | {"value": 0, "score": 0} if e["source"] == "imdb" else e
+            for e in payload["ratings"]
+        ]
+    }
+    assert parse_ratings(payload)["mdb_imdb_rating"] is None
+
+
+def test_parse_ratings_is_total_over_a_payload_with_no_ratings_array():
+    assert parse_ratings({}) == {
+        "mdb_average_rating": None,
+        "mdb_imdb_rating": None,
+        "mdb_letterboxd_rating": None,
+        "mdb_metacritic_rating": None,
+        "mdb_metacriticuser_rating": None,
+        "mdb_myanimelist_rating": None,
+        "mdb_rating": None,
+        "mdb_tmdb_rating": None,
+        "mdb_tomatoes_rating": None,
+        "mdb_tomatoesaudience_rating": None,
+        "mdb_trakt_rating": None,
+    }
+
+
+def test_parse_ratings_degrades_a_malformed_entry_to_none_and_warns(caplog):
+    """MEDIUM finding, preflight review: a present-but-non-numeric field (a
+    stray string MDBList might emit for an errored source) must degrade that
+    ONE key to `None`, never raise `ValueError` out of `parse_ratings` -- the
+    same 'missing/unknown degrades, never errors' discipline the falsy-value
+    branch above already has, extended to the malformed-value case. A raised
+    `ValueError` here would fail the WHOLE badge stage for the item (only
+    `MDBListLimitReached`/`httpx.HTTPError` are caught around the call site,
+    Concern E) -- exactly the gap this pins shut."""
+    payload = load("mdblist_full_ratings.json")
+    payload = payload | {
+        "ratings": [
+            e | {"value": "not-a-number", "score": "also-not-a-number"}
+            if e["source"] == "imdb" else e
+            for e in payload["ratings"]
+        ],
+    }
+    with caplog.at_level("WARNING"):
+        result = parse_ratings(payload)
+    assert result["mdb_imdb_rating"] is None, "the malformed source alone degrades"
+    assert result["mdb_tmdb_rating"] == 6.3, "an unrelated source must not be taken down with it"
+    assert len(caplog.records) == 1, "one warning for the one malformed source"
 
 
 async def test_movies_are_looked_up_by_tmdb_id():
