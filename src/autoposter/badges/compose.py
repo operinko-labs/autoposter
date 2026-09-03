@@ -116,9 +116,28 @@ def _definitions_digest(definitions: list[OverlayDefinition]) -> str:
     joined in the order given rather than sorted -- unlike each definition's
     fields, list order changes which member of a group wins ties (draw
     order), which is operator-visible.
+
+    **LAW: every field added to ``OverlayDefinition`` after this comment is
+    excluded from the dump here, by name, for as long as it sits at its own
+    unset default.** ``model_dump`` carries no blanket ``exclude_none`` --
+    that would also swallow a field an operator deliberately set back to
+    ``None`` over a non-``None`` default, which this digest DOES need to
+    notice. So each additive field earns one explicit line instead: popped
+    when the dump's value for it equals the field's unset default, left in
+    otherwise. Skipping this for ``condition`` (overlay era sub-phase C1)
+    would have moved this digest for every definition that never touches the
+    field at all -- see this function's call site's Step for the measured
+    before/after hashes. Every future additive ``OverlayDefinition`` field
+    owes the same one-line exclusion, or existing digests move on schema
+    growth alone.
     """
-    parts = [json.dumps(d.model_dump(mode="json"), sort_keys=True) for d in definitions]
-    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
+    dumps = []
+    for d in definitions:
+        dump = d.model_dump(mode="json")
+        if dump.get("condition") is None:
+            dump.pop("condition", None)
+        dumps.append(json.dumps(dump, sort_keys=True))
+    return hashlib.sha256("\x1e".join(dumps).encode("utf-8")).hexdigest()
 
 
 def badge_fingerprint(

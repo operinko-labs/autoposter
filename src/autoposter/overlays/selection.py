@@ -133,3 +133,106 @@ class OverlayItemView:
             f"{attribute!r} is not an attribute an overlay condition can "
             "read on this service. Available: " + ", ".join(OVERLAY_ATTRIBUTES)
         )
+
+
+def parse_condition(raw: object, *, field: str = "condition") -> FilterGroup:
+    """Parse one definition's `condition:` block, or refuse naming the key.
+
+    Two layers, in this order, because the messages are different and both
+    are useful:
+
+    1. `collections.filters.parse_filters` -- the shared grammar. It refuses
+       an attribute no filter vocabulary has, an operator the attribute's
+       type does not carry, an empty block, a `.and` suffix, a plex_search-
+       only modifier, and a value that will not coerce. Those refusals are
+       already written, already tested and already cite Kometa; none of them
+       is re-implemented here.
+    2. the overlay NARROWING -- an attribute that is a legitimate collections
+       filter but that `OverlayItemView` cannot supply. That refusal has to
+       be ours, because `filters.py` has no idea what this view reads.
+
+    `field` is the dotted path the refusal names, so an operator with twenty
+    definitions can find the one that is wrong.
+    """
+    group = parse_filters(raw, field=field)
+    for predicate in predicates(group):
+        if predicate.attribute.name not in OVERLAY_ATTRIBUTES:
+            raise ValueError(
+                f"{predicate.field}: {predicate.attribute.name!r} is a filter "
+                "attribute this service can evaluate for a COLLECTION but not "
+                "for an overlay -- an overlay condition is answered from what "
+                "the badge pass already holds for the item, and there is no "
+                "accessor for it there. An overlay condition can name: "
+                + ", ".join(OVERLAY_ATTRIBUTES)
+            )
+    return group
+
+
+@lru_cache(maxsize=512)
+def _compiled(payload: str) -> FilterGroup:
+    """Parse once per distinct condition, not once per item.
+
+    Keyed on the condition's canonical JSON rather than on the definition,
+    so two definitions writing the same condition share one tree and a
+    reordered mapping is the same key. Bounded: an operator with more than
+    512 distinct conditions pays a re-parse for the tail, which is a small
+    cost with a hard ceiling instead of an unbounded one.
+
+    Calls `parse_condition` with its default `field="condition"` -- a
+    refusal raised THROUGH this cache (rather than at config load, where
+    `OverlayDefinition._validate` already calls `parse_condition` with the
+    same default and would have caught it first) therefore always names the
+    literal field `"condition"`, never a per-overlay dotted path. Reaching
+    this refusal at all means a condition got past load-time validation,
+    which should not happen; it is not the path `parse_condition`'s `field`
+    parameter is documented for.
+    """
+    return parse_condition(json.loads(payload))
+
+
+def compiled_condition(definition) -> FilterGroup | None:
+    """This definition's parsed condition, or None when it has none.
+
+    `definition` is an `overlays.schema.OverlayDefinition`; typed loosely so
+    this module does not import the schema that imports it back at validation
+    time.
+    """
+    if definition.condition is None:
+        return None
+    return _compiled(json.dumps(definition.condition, sort_keys=True))
+
+
+def select(definitions, view) -> tuple[list, list[tuple[str, bool]]]:
+    """Which definitions apply to this item, and the outcomes to fingerprint.
+
+    Returns `(matched, outcomes)`:
+
+    - `matched` is the subset handed on to image resolution and `compose` --
+      in configured order, so suppression and group/weight resolution
+      downstream see exactly what an operator wrote, minus what this item
+      does not match. A definition with no condition is in it always, which
+      is the pre-seam behaviour preserved exactly.
+    - `outcomes` is `(name, matched)` for every definition that CARRIES a
+      condition, and nothing else. That asymmetry is the whole storm guard:
+      a config of unconditioned definitions produces an EMPTY outcomes list,
+      which `badge_fingerprint` folds in under a non-empty guard, so every
+      already-badged item under an existing row-97 config keeps its digest to
+      the bit. It is the same shape, and the same reasoning, as the
+      `if definitions:` guard that already sits beside it.
+
+    Order is configured order, not sorted: definition order already decides
+    group tie-breaks and draw order, and keying on the name alone would
+    collide for two definitions sharing one.
+    """
+    matched: list = []
+    outcomes: list[tuple[str, bool]] = []
+    for definition in definitions:
+        condition = compiled_condition(definition)
+        if condition is None:
+            matched.append(definition)
+            continue
+        passed = evaluate(condition, view)
+        outcomes.append((definition.name, passed))
+        if passed:
+            matched.append(definition)
+    return matched, outcomes

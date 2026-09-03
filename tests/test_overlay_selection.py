@@ -23,6 +23,9 @@ from autoposter.overlays.selection import (
     OVERLAY_ATTRIBUTES,
     AttributeNotOnItem,
     OverlayItemView,
+    compiled_condition,
+    parse_condition,
+    select,
 )
 from autoposter.overlays.schema import OverlayDefinition
 
@@ -123,3 +126,101 @@ def test_the_two_views_agree_on_resolution_including_a_multi_version_item():
     for resolutions in (("1080",), ("4k", "1080"), ()):
         item = _Item(resolutions=resolutions)
         assert _view(item).get("resolution") == PlexItemView(item).get("resolution")
+
+
+# --- the parse half: one narrowing in front of collections/filters.py -------
+
+
+def test_a_condition_parses_through_the_shared_grammar():
+    group = parse_condition({"resolution.regex": "(?i)2160|4k"})
+    written = list(predicates_of(group))
+    assert len(written) == 1
+    assert written[0].attribute.name == "resolution"
+    assert written[0].operator == "regex"
+
+
+def predicates_of(group):
+    from autoposter.collections.filters import predicates as _predicates
+
+    return _predicates(group)
+
+
+def test_an_attribute_outside_the_overlay_vocabulary_is_refused_at_parse():
+    """Global Constraint 10. `genre` is a perfectly good COLLECTIONS filter
+    attribute; this view cannot supply it, so an operator gets told, at load,
+    rather than silently getting a family that matches nothing."""
+    with pytest.raises(ValueError) as caught:
+        parse_condition({"genre": "Horror"})
+    message = str(caught.value)
+    assert "genre" in message
+    assert "content_rating" in message and "resolution" in message
+
+
+def test_an_attribute_no_filter_vocabulary_has_is_refused_by_the_shared_parser():
+    """The refusal comes from `collections/filters.py` unchanged -- proof the
+    narrowing sits IN FRONT of the shared parser rather than replacing it."""
+    with pytest.raises(ValueError) as caught:
+        parse_condition({"nonsense": "x"})
+    assert "unknown filter attribute" in str(caught.value)
+
+
+def test_an_operator_the_type_does_not_carry_is_refused():
+    """`content_rating` is a `tag`; `tag` takes eq/not/regex and nothing else."""
+    with pytest.raises(ValueError) as caught:
+        parse_condition({"content_rating.contains": "PG"})
+    assert "content_rating" in str(caught.value)
+
+
+def test_an_empty_condition_is_refused_rather_than_matching_everything():
+    with pytest.raises(ValueError):
+        parse_condition({})
+
+
+def test_compiled_conditions_are_cached_by_value_not_by_definition_identity():
+    """Two definitions writing the same condition compile once. The cache key
+    is the condition's canonical JSON, so it cannot be fooled by key order."""
+    a = OverlayDefinition(name="a", condition={"content_rating": "PG", "resolution": "4k"})
+    b = OverlayDefinition(name="b", condition={"resolution": "4k", "content_rating": "PG"})
+    assert compiled_condition(a) is compiled_condition(b)
+
+
+def test_a_definition_with_no_condition_compiles_to_none():
+    assert compiled_condition(OverlayDefinition(name="a")) is None
+
+
+# --- select(): the matched subset AND the outcomes the fingerprint folds ----
+
+
+def test_an_unconditioned_definition_matches_every_item_and_reports_no_outcome():
+    """The pre-seam behaviour, preserved exactly: a definition with no
+    condition draws on every badged item. It contributes NO outcome, which is
+    what keeps an existing row-97 config's fingerprint from moving."""
+    plain = OverlayDefinition(name="plain")
+    matched, outcomes = select([plain], _view(_Item()))
+    assert matched == [plain]
+    assert outcomes == []
+
+
+def test_a_matching_condition_selects_the_definition_and_records_a_true():
+    fires = OverlayDefinition(name="dp", condition={"resolution.regex": "(?i)2160|4k"})
+    matched, outcomes = select([fires], _view(_Item(resolutions=("4k",))))
+    assert matched == [fires]
+    assert outcomes == [("dp", True)]
+
+
+def test_a_failing_condition_drops_the_definition_and_records_a_false():
+    fires = OverlayDefinition(name="dp", condition={"resolution.regex": "(?i)2160|4k"})
+    matched, outcomes = select([fires], _view(_Item(resolutions=("1080",))))
+    assert matched == []
+    assert outcomes == [("dp", False)]
+
+
+def test_outcomes_keep_the_configured_order_not_a_sorted_one():
+    """Definition ORDER is already significant to `_definitions_digest`
+    (it decides which member of a group wins a tie), so the outcomes list
+    carries the same order rather than a sorted one -- and two definitions
+    sharing a name cannot collide the way a dict keyed on name would."""
+    first = OverlayDefinition(name="z", condition={"resolution": "4k"})
+    second = OverlayDefinition(name="a", condition={"resolution": "1080"})
+    _, outcomes = select([first, second], _view(_Item(resolutions=("1080",))))
+    assert outcomes == [("z", False), ("a", True)]
