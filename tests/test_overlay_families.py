@@ -1,9 +1,8 @@
-"""The shipped overlay families (roadmap row 100, sub-phase C1).
+"""The shipped overlay families (roadmap row 100, sub-phases C1 and C2a).
 
-Two families ship here: `direct_play` (one definition) and the six
-content-rating regionals. `versions` is fenced by adjudication A14 -- its
-selection needs a `versions` row in `collections/filters.py`, which this
-phase may not edit.
+Three families ship: `direct_play` (one definition), the six
+content-rating regionals, and `versions` -- adjudication A14 ruled the
+`versions` row in `collections/filters.py` it needed, so C2a shipped it too.
 
 Every number in `families.py` is transcribed from the pinned Kometa tree
 (v2.4.8, the image digest `assets/badges/PROVENANCE.md` records). These tests
