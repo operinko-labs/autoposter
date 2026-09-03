@@ -1266,6 +1266,22 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         search_field="unmatched", show_search_field="show.unmatched",
         search_kinds=_BOTH, filterable=False,
     ),
+    FilterAttribute(
+        "versions", "int", _BOTH, "listing",
+        "How many `<Media>` versions the item carries -- Kometa's `versions` "
+        "filter counts media items (one of the 44 filter names with no Plex "
+        "search field; the SEARCH-side spelling is the separate `duplicate` "
+        "row above, movie-only and unfilterable). `listing`: the section "
+        "listing carries `<Media>` in full and un-truncated (9a's probe "
+        "measured the per-item histogram {1: 1905, 2: 46, 3: 4}, recorded on "
+        "the `resolution` row above), which is the same read that row "
+        "already relies on. Adjudication A14: raised by C1's plan (the "
+        "`versions` overlay family cannot select on `duplicate`, which is "
+        "search-only), ruled here by sub-phase C2a -- the one row this "
+        "sub-phase's own Global Constraint 2 permits, additive-only.",
+        search_field=None, show_search_field=None,
+        search_kinds=(), filterable=True,
+    ),
 )
 
 BY_NAME: dict[str, FilterAttribute] = {row.name: row for row in FILTER_ATTRIBUTES}
