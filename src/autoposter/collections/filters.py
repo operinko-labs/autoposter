@@ -108,7 +108,7 @@ Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
   search names have no filter (``unplayed``, ``progress``, ``hdr``,
   ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
 
-This table covers **33** of the 55 search names and **25** of the 70 filter
+This table covers **33** of the 55 search names and **26** of the 70 filter
 names. Both halves of the residue are real work, and they are different work:
 the 45 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
 ``plays``, ``last_played``, 10a's ``country``, phase B's four people rows and
@@ -561,17 +561,19 @@ _BOTH = ("movie", "show")
 
 # --- THE TABLE ---------------------------------------------------------------
 #
-# Thirty-three rows: 9a's fifteen in the order the roadmap names them
+# Thirty-four rows: 9a's fifteen in the order the roadmap names them
 # (roadmap.md:538-551), then 9b's four, 10a's two, phase B's five and
 # search-tails-1's seven appended rather than interleaved so the first
-# fifteen still read against the roadmap line they came from. Column totals
-# are asserted in tests/test_collection_filters.py as the transcription's
-# checksum:
+# fifteen still read against the roadmap line they came from, plus C2a's
+# ``versions`` (A14) appended last. Column totals are asserted in
+# tests/test_collection_filters.py as the transcription's checksum:
 # 13 tag / 3 str / 3 int / 3 float / 3 date / 1 duration / 7 bool;
 # 12 listing / 5 tier2-batched / 1 tier2-deferred / 7 unprobed / 8 search-only;
-# 20 both-kinds / 12 movie-only / 1 show-only for ``kinds``, and
-# 24 / 8 / 1 for ``search_kinds``, which is a different split and that is the
-# point of the second column.
+# 21 both-kinds / 12 movie-only / 1 show-only for ``kinds``, and
+# 24 / 8 / 1 / 1 for ``search_kinds`` (the fourth bucket, ``()``, is
+# ``versions``'s own: filterable but not searchable, so it lands in neither
+# kind), which is a different split and that is the point of the second
+# column.
 #
 # Phase B appended FIVE: the four PEOPLE rows, which move the ``tag`` and
 # ``unprobed`` totals by four together -- ``actor`` on both kinds, and
@@ -1789,12 +1791,13 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
     # 44 of its filter names have no Plex search field, and 29 of its search
     # names have no filter.
     #
-    # The FIRST of the two branches is unreachable with today's thirty-three rows:
-    # every one of them is searchable, because the fifteen 9a shipped all have
-    # Plex search fields. It is written now, and tested with a synthetic row,
-    # because the first filter-only attribute (``aspect``, ``height``,
-    # ``versions``, ``summary``, ... -- 44 of them, roadmap row 96's residue)
-    # will arrive under a table row and must not arrive under a bare KeyError.
+    # The FIRST of the two branches is reachable now, for real: ``versions``
+    # (C2a, A14) is filterable but has no Plex search field, the first of the
+    # 44 filter-only attributes (``aspect``, ``height``, ``summary``, ... --
+    # roadmap row 96's residue) to arrive under a table row rather than a bare
+    # KeyError. It was written and tested with a synthetic row since
+    # search-tails-1, before any real row reached it; ``versions`` is now that
+    # real row.
     if searching and not attribute.searchable:
         raise ValueError(
             f"{field}: {name!r} is a client-side filter attribute but Plex has "
