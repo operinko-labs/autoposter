@@ -131,7 +131,7 @@ def _row_level_render_artifact(monkeypatch):
     """
     seen: list[tuple[int, str]] = []
 
-    async def fake(session, config, http, item, art_kind, providers):
+    async def fake(session, config, http, item, art_kind, providers, **_kwargs):
         media_item = await pipeline._upsert_media_item(session, item)
         target = pipeline.naming.asset_path(
             config, item.library, item.root_folder, art_kind,

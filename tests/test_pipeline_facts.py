@@ -178,7 +178,7 @@ async def test_metadata_failure_does_not_block_artwork(session, monkeypatch, cap
 
     rendered = []
 
-    async def fake_render_artifact(session, config, http, item, art_kind, providers):
+    async def fake_render_artifact(session, config, http, item, art_kind, providers, **_kwargs):
         rendered.append(art_kind)
         return object()
 
@@ -210,7 +210,7 @@ async def test_metadata_db_error_still_lets_artwork_use_the_session(session, mon
             # (test_worker.py): leaves the session mid-failed-transaction.
             await session.execute(text("SELECT 1/0"))
 
-    async def fake_render_artifact(session_, config, http, item, art_kind, providers):
+    async def fake_render_artifact(session_, config, http, item, art_kind, providers, **_kwargs):
         # Proves the session is usable again: a PendingRollbackError here
         # would mean the rollback in process_item's except block is missing.
         await session_.execute(select(1))
@@ -266,7 +266,7 @@ async def test_metadata_runs_before_the_artifact_loop(session, monkeypatch):
         async def content_rating(self, **kwargs):
             return None
 
-    async def fake_render_artifact(session, config, http, item, art_kind, providers):
+    async def fake_render_artifact(session, config, http, item, art_kind, providers, **_kwargs):
         order.append(f"artifact:{art_kind}")
         return object()
 
@@ -291,7 +291,7 @@ async def test_a_plex_without_fetch_item_is_not_swallowed(session, monkeypatch):
         async def resolve(self, intent):
             return resolved()
 
-    async def fake_render_artifact(session, config, http, item, art_kind, providers):
+    async def fake_render_artifact(session, config, http, item, art_kind, providers, **_kwargs):
         return object()
 
     monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
@@ -303,3 +303,170 @@ async def test_a_plex_without_fetch_item_is_not_swallowed(session, monkeypatch):
             session, config, None, PlexWithoutFetchItem(), [],
             RenderIntent(kind="movie", title="X", tmdb_id=1),
         )
+
+
+async def test_title_card_self_feed_is_refused_through_process_item(session, tmp_path):
+    """Finding #1's regression test, run through process_item -- the real
+    entry point. An episode whose thumb is already our own badged output
+    still resolves the media:// frame, never the upload:// entry Plex is
+    currently showing."""
+    import functools
+
+    import httpx
+    from conftest import GOLDEN, decodable_png
+
+    from autoposter.render.pipeline import fetch_plex_generated_base
+
+    class _FakeEntry:
+        def __init__(self, rating_key, key):
+            self.ratingKey = rating_key
+            self.key = key
+
+    class _FakePlexItem:
+        def posters(self):
+            return [
+                _FakeEntry("upload://abc123", "/library/metadata/900/file?url=upload..."),
+                _FakeEntry(
+                    "media://5/x.bundle/Contents/Thumbnails/thumb1.jpg",
+                    "/library/metadata/900/file?url=media%3A%2F%2F5%2Fx.bundle...",
+                ),
+            ]
+
+    class _FakePlex:
+        async def resolve(self, intent):
+            return ResolvedItem(
+                rating_key="900", library="Severance (2022)", kind="episode",
+                title="Chapter One", year=2022, season_number=1, episode_number=1,
+                root_folder="Severance (2022)", file_path="/mnt/Media/x.mkv",
+                art_url=None, tmdb_id=1, tvdb_id=None, imdb_id=None,
+            )
+
+        async def fetch_item(self, rating_key):
+            return _FakePlexItem()
+
+    class _NoArtProvider:
+        name = "TMDB"
+
+        async def fetch(self, request):
+            return []
+
+    async def handler(request):
+        assert "upload" not in str(request.url)
+        return httpx.Response(200, content=decodable_png())
+
+    config = load_config(EXAMPLE)
+    config.badges.enabled = False
+    # This test lets render_artifact run for real, all the way through
+    # ImageMagick compositing (the gated-features law: the real entry
+    # point, not a stubbed render_artifact) -- the EXAMPLE config's own
+    # roots (/assets, /app/assets/overlays, ...) do not exist in the test
+    # environment, so it needs the same fixture-backed roots
+    # test_pipeline_e2e.py's own ``config`` fixture points at.
+    config.assets_root = tmp_path / "assets"
+    config.manual_assets_root = tmp_path / "manual"
+    config.fonts_root = GOLDEN
+    config.overlays_root = GOLDEN
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        plex_generated_base = functools.partial(
+            fetch_plex_generated_base, http, _FakePlex(),
+            base_url="http://plex.local", headers={"X-Plex-Token": "tok"},
+        )
+        results = await pipeline.process_item(
+            session, config, http, _FakePlex(), [_NoArtProvider()],
+            RenderIntent(kind="episode", title="Chapter One", season_number=1, episode_number=1),
+            plex_generated_base=plex_generated_base,
+        )
+
+    title_card = next(r for r in results if r.art_kind == "title_card")
+    assert title_card.status == "rendered"
+    assert title_card.source_mode == "plex_generated"
+    assert title_card.source_url == "plex://900/title_card"
+
+
+async def test_title_card_refusal_is_contained_and_carries_no_token(session, caplog):
+    """A Plex body that does not decode raises SourceRefused inside
+    fetch_plex_generated_base -> render_artifact, uncaught there. An
+    episode's only art kind is title_card (ART_KINDS_FOR["episode"]), so
+    process_item's per-kind containment catches it, records the render row
+    `failed`, and then -- every kind having refused -- re-raises SourceRefused
+    itself, exactly as `test_every_kind_refusing_still_fails_the_job`
+    (tests/test_pipeline_e2e.py) proves for a movie's two kinds both
+    refusing. The token must appear nowhere: not in the raised exception, not
+    in any log record, and not in the committed render row's detail."""
+    import functools
+
+    import httpx
+
+    from autoposter.db.models import Render
+    from autoposter.render.pipeline import SourceRefused, fetch_plex_generated_base
+
+    class _FakeEntry:
+        def __init__(self, rating_key, key):
+            self.ratingKey = rating_key
+            self.key = key
+
+    class _FakePlexItem:
+        def posters(self):
+            return [
+                _FakeEntry(
+                    "media://5/x.bundle/Contents/Thumbnails/thumb1.jpg",
+                    "/library/metadata/900/file?url=media%3A%2F%2F5%2Fx.bundle...",
+                ),
+            ]
+
+    class _FakePlex:
+        async def resolve(self, intent):
+            return ResolvedItem(
+                rating_key="900", library="Severance (2022)", kind="episode",
+                title="Chapter One", year=2022, season_number=1, episode_number=1,
+                root_folder="Severance (2022)", file_path="/mnt/Media/x.mkv",
+                art_url=None, tmdb_id=1, tvdb_id=None, imdb_id=None,
+            )
+
+        async def fetch_item(self, rating_key):
+            return _FakePlexItem()
+
+    class _NoArtProvider:
+        name = "TMDB"
+
+        async def fetch(self, request):
+            return []
+
+    async def bad_handler(request):
+        return httpx.Response(200, content=b"not an image")
+
+    config = load_config(EXAMPLE)
+    config.badges.enabled = False
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(bad_handler)) as http:
+        plex_generated_base = functools.partial(
+            fetch_plex_generated_base, http, _FakePlex(),
+            base_url="http://plex.local", headers={"X-Plex-Token": "tok"},
+        )
+        with caplog.at_level("WARNING"):
+            with pytest.raises(SourceRefused) as excinfo:
+                await pipeline.process_item(
+                    session, config, http, _FakePlex(), [_NoArtProvider()],
+                    RenderIntent(kind="episode", title="Chapter One", season_number=1, episode_number=1),
+                    plex_generated_base=plex_generated_base,
+                )
+
+    raised_message = str(excinfo.value)
+    assert "tok" not in raised_message
+    assert "X-Plex-Token" not in raised_message
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "tok" not in log_text
+    assert "X-Plex-Token" not in log_text
+
+    # render_artifact's per-kind row is committed before process_item's
+    # aggregate raise (pipeline.py's containment commits render.status =
+    # "failed" first, then re-raises once every kind has refused), so it is
+    # still there to read back on a fresh query.
+    rows = (await session.execute(select(Render))).scalars().all()
+    title_card = next(r for r in rows if r.art_kind == "title_card")
+    assert title_card.status == "failed"
+    assert "the title_card source did not decode after download" in (title_card.detail or "")
+    assert "tok" not in (title_card.detail or "")
+    assert "X-Plex-Token" not in (title_card.detail or "")

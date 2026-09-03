@@ -34,7 +34,7 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.overlays.selection import OverlayItemView
 from autoposter.overlays.selection import select as select_overlay_definitions
 from autoposter.overlays.sources import OverlaySourceError, resolve_image_path
-from autoposter.plex.artwork import upload_artwork
+from autoposter.plex.artwork import generated_title_card_url, upload_artwork
 from autoposter.plex.client import ResolvedItem
 from autoposter.plex.writer import apply_facts, exemption_reason
 from autoposter.providers import base as art
@@ -547,7 +547,8 @@ def _validate_image(path: Path, stage: str) -> None:
 
 
 async def _download(
-    http: httpx.AsyncClient, url: str, destination: Path, *, stage: str
+    http: httpx.AsyncClient, url: str, destination: Path, *, stage: str,
+    headers: dict[str, str] | None = None, follow_redirects: bool = True,
 ) -> str:
     """Fetch artwork to ``destination`` and return its SHA-256.
 
@@ -575,11 +576,21 @@ async def _download(
     ``application/octet-stream`` over bytes that decode perfectly.
 
     ``stage`` names what is being fetched, for the refusal message.
+
+    ``headers`` and ``follow_redirects`` are both keyword-only and default to
+    the values every existing call site already gets (no headers, redirects
+    followed), so nothing already calling this changes. The plex-preview
+    fallback (roadmap row 239) is the first caller to pass either: an
+    ``X-Plex-Token`` header, and ``follow_redirects=False`` (adjudication A5)
+    because a custom auth header is not one httpx strips on a cross-origin
+    redirect, and PMS never needs to redirect an image blob anyway.
     """
     digest = hashlib.sha256()
     size = 0
     try:
-        async with http.stream("GET", url, follow_redirects=True) as response:
+        async with http.stream(
+            "GET", url, follow_redirects=follow_redirects, headers=headers
+        ) as response:
             response.raise_for_status()
             with destination.open("wb") as handle:
                 async for chunk in response.aiter_bytes():
@@ -596,6 +607,42 @@ async def _download(
         destination.unlink(missing_ok=True)
         raise
     return digest.hexdigest()
+
+
+async def fetch_plex_generated_base(
+    http: httpx.AsyncClient, plex, rating_key: str, destination: Path,
+    *, base_url: str, headers: dict[str, str], stage: str,
+) -> str | None:
+    """Download Plex's own generated title-card frame, or answer ``None``.
+
+    The plex-preview fallback (roadmap row 239): lazily fetches the plexapi
+    item for ``rating_key`` (adjudication A2 -- only an episode whose
+    provider ladder came back empty ever reaches this, so this is not a
+    second fetch for every item ``process_item`` already handles), lists its
+    posters, and downloads the ``media://``-prefixed entry
+    (``generated_title_card_url``) -- never an ``upload://`` entry, which is
+    our own previous output locked onto the same field (the self-feed loop
+    C1.2 refutes). ``None`` when the listing has no such entry, the caller's
+    cue to fall through to the existing ``no_art`` outcome.
+
+    Goes through ``_download``, not a bare GET, so the fetch gets #131's
+    full-decode validation and the byte cap for free.
+    ``follow_redirects=False`` (adjudication A5): ``X-Plex-Token`` is a
+    custom header httpx will not strip on a cross-origin redirect, and PMS
+    never needs one for an image blob anyway.
+
+    Built as a ``functools.partial`` at app.py's composition time, with
+    ``http``, ``plex``, ``base_url`` and the token header baked in --
+    ``render_artifact`` calls the result with only ``rating_key`` and
+    ``destination``, so the token is never in scope there at all.
+    """
+    plex_item = await plex.fetch_item(rating_key)
+    url = await generated_title_card_url(plex_item, base_url)
+    if url is None:
+        return None
+    return await _download(
+        http, url, destination, stage=stage, headers=headers, follow_redirects=False,
+    )
 
 
 # The events_log identity of a re-key, for the reason scheduler/prune.py's
@@ -1019,8 +1066,20 @@ async def render_artifact(
     item: ResolvedItem,
     art_kind: str,
     providers: list,
+    *,
+    plex_generated_base=None,
 ) -> Render:
-    """Build one artifact. Idempotent: safe to run repeatedly for the same item."""
+    """Build one artifact. Idempotent: safe to run repeatedly for the same item.
+
+    ``plex_generated_base`` is the plex-preview fallback's own hook (roadmap
+    row 239): an async callable ``(rating_key, destination, *, stage) -> str
+    | None`` -- ``fetch_plex_generated_base`` bound at app.py's composition
+    time via ``functools.partial`` with ``http``, ``plex``, ``base_url`` and
+    the ``X-Plex-Token`` header baked in, so this function never sees the
+    token. ``None`` (every existing call site, every existing test) means the
+    rung simply never runs and ``title_card`` behaves exactly as it does on
+    main.
+    """
     settings = art_config_for(config, art_kind)
     media_item = await _upsert_media_item(session, item)
     # The adoption walk's guard (naming.missing_number): year-grouped specials
@@ -1093,6 +1152,7 @@ async def render_artifact(
         # mount cannot stall the event loop.
         override = await asyncio.to_thread(manual_override_path, config, item, art_kind)
         show_fallback = False
+        plex_generated = False
         local_source = False
         chosen_candidate = None
         # Action Center quality facts (roadmap 11a). Each of these is already
@@ -1167,24 +1227,61 @@ async def render_artifact(
                     ),
                 )
                 show_fallback = selection.candidate is not None
-            if selection.candidate is None:
+            # The plex-preview fallback (roadmap row 239), title_card's own
+            # twin of the season_poster rung just above -- and the same seam:
+            # after the ladder, before the no_art record. Unreachable when
+            # online_fetch_disabled() already returned above (adjudication
+            # A4): row 47 scopes itself to "no provider requests", and this
+            # reads Plex's own server rather than a provider, but the rung
+            # sits after that gate anyway rather than being carved out of it,
+            # so a deployment running with fetch disabled sees no change from
+            # main. Named here rather than restructuring that early return.
+            # ``plex_generated`` itself is initialised above, alongside
+            # ``show_fallback``, so the write-back below can read it even on
+            # the manual-override branch (which never reaches this block at
+            # all) without an UnboundLocalError.
+            if (
+                selection.candidate is None
+                and art_kind == "title_card"
+                and plex_generated_base is not None
+            ):
+                plex_base_sha = await plex_generated_base(
+                    item.rating_key, working, stage="the title_card source",
+                )
+                plex_generated = plex_base_sha is not None
+            if selection.candidate is None and not plex_generated:
                 render.status = "no_art"
                 render.detail = f"no {art_kind} art on any provider"
                 await session.commit()
                 return render
-            candidate = selection.candidate
-            chosen_candidate = candidate
-            base_sha = await _download(
-                http, candidate.url, working, stage=f"the {art_kind} source"
-            )
-            source_url = candidate.url
-            provider_name = candidate.provider
-            textless = candidate.is_textless
-            # True exactly when the order preferred textless art, no provider
-            # had any, and the ladder took a text-bearing image rather than
-            # nothing. The ladder has returned this since it was written and
-            # nothing has ever read it.
-            textless_fallback = selection.is_fallback
+            if plex_generated:
+                # The synthetic, STABLE key -- never the live Plex thumb URL,
+                # which carries a cache-busting epoch our own uploadPoster/
+                # lockPoster bumps on every pass (the epoch-URL refutation,
+                # C1.3). Storing and hashing this same string (the write-back
+                # below reuses this variable) is what keeps a bumped epoch
+                # from moving the fingerprint while regenerated bytes still
+                # do, through base_sha alone -- and what keeps
+                # config/impact.py's recompute honest, since it reads this
+                # same stored column back.
+                base_sha = plex_base_sha
+                source_url = f"plex://{item.rating_key}/title_card"
+                provider_name = "plex"
+                textless = None
+            else:
+                candidate = selection.candidate
+                chosen_candidate = candidate
+                base_sha = await _download(
+                    http, candidate.url, working, stage=f"the {art_kind} source"
+                )
+                source_url = candidate.url
+                provider_name = candidate.provider
+                textless = candidate.is_textless
+                # True exactly when the order preferred textless art, no
+                # provider had any, and the ladder took a text-bearing image
+                # rather than nothing. The ladder has returned this since it
+                # was written and nothing has ever read it.
+                textless_fallback = selection.is_fallback
 
         # Posterizarr parity: UseLogo/UseClearlogo composites a clearlogo in place
         # of the title text on posters. With LogoTextFallback false, a poster with
@@ -1324,6 +1421,8 @@ async def render_artifact(
     render.detail = (
         "no season_poster art on any provider; styled the show's poster instead"
         if show_fallback
+        else "no title_card art on any provider; used Plex's generated frame instead"
+        if plex_generated
         else None
     )
     # Provenance the "unchanged" short-circuit above cannot blank out, unlike
@@ -1334,6 +1433,12 @@ async def render_artifact(
     if show_fallback:
         render.source_mode = "show_fallback"
     elif render.source_mode == "show_fallback":
+        render.source_mode = "generate"
+    # The plex-preview fallback's own twin of the block above -- row 239,
+    # cleared the same symmetric way row 132 clears show_fallback.
+    if plex_generated:
+        render.source_mode = "plex_generated"
+    elif render.source_mode == "plex_generated":
         render.source_mode = "generate"
     # A real render just happened, so the adoption no longer describes reality:
     # this row now has a source URL and a fingerprint that covers it.
@@ -1689,6 +1794,7 @@ async def process_item(
     mdblist=None,
     artwork_probe=None,
     imdb_parental=None,
+    plex_generated_base=None,
 ) -> list[Render]:
     """Resolve one intent and build every artifact it implies.
 
@@ -1712,6 +1818,9 @@ async def process_item(
     A failure anywhere in this step is caught and logged rather than
     propagated — a ratings-provider hiccup must not cost the item its
     poster and background, which the artifact loop below still owes it.
+
+    ``plex_generated_base`` is passed straight to ``render_artifact``; see
+    its own docstring for what it does and why it is optional.
     """
     item = await plex.resolve(intent)
 
@@ -1792,7 +1901,10 @@ async def process_item(
     for art_kind in ART_KINDS_FOR[intent.kind]:
         try:
             results.append(
-                await render_artifact(session, config, http, item, art_kind, providers)
+                await render_artifact(
+                    session, config, http, item, art_kind, providers,
+                    plex_generated_base=plex_generated_base,
+                )
             )
         except SourceRefused as exc:
             # Unlike the metadata and badge blocks above, this loop used to

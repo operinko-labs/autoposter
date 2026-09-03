@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import hashlib
 from pathlib import Path
 
@@ -474,6 +475,141 @@ def _fake_http():
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+async def test_download_forwards_headers_and_follow_redirects(tmp_path):
+    seen = {}
+
+    async def handler(request):
+        seen["headers"] = dict(request.headers)
+        return httpx.Response(200, content=decodable_png())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        destination = tmp_path / "base.jpg"
+        sha = await pipeline_module._download(
+            http, "https://plex.local/x.jpg", destination, stage="the title_card source",
+            headers={"X-Plex-Token": "tok"}, follow_redirects=False,
+        )
+
+    assert sha
+    assert seen["headers"]["x-plex-token"] == "tok"
+
+
+async def test_download_headers_default_to_none_and_redirects_default_to_true(tmp_path):
+    """Every pre-existing call site passes neither kwarg -- this pins that the
+    defaults reproduce today's behaviour exactly."""
+    import inspect
+
+    signature = inspect.signature(pipeline_module._download)
+    assert signature.parameters["headers"].default is None
+    assert signature.parameters["follow_redirects"].default is True
+
+
+class _FakeGeneratedEntry:
+    def __init__(self, rating_key, key):
+        self.ratingKey = rating_key
+        self.key = key
+
+
+class _FakeGeneratedPlexItem:
+    """A plex_item stand-in whose posters() answers a fixed listing -- the
+    shape the live probe recorded (upload:// entries plus one media://)."""
+
+    def __init__(self, listing):
+        self._listing = listing
+
+    def posters(self):
+        return self._listing
+
+
+class _FakePlexForGenerated:
+    def __init__(self, plex_item, expected_rating_key="900"):
+        self._plex_item = plex_item
+        self._expected_rating_key = expected_rating_key
+
+    async def fetch_item(self, rating_key):
+        assert rating_key == self._expected_rating_key
+        return self._plex_item
+
+
+GENERATED_LISTING_NO_SELF_FEED = [
+    _FakeGeneratedEntry("metadata://posters/x", "/library/metadata/900/file?url=metadata..."),
+    _FakeGeneratedEntry(
+        "media://5/x.bundle/Contents/Thumbnails/thumb1.jpg",
+        "/library/metadata/900/file?url=media%3A%2F%2F5%2Fx.bundle...",
+    ),
+]
+
+GENERATED_LISTING_WITH_SELF_FEED = [
+    _FakeGeneratedEntry("upload://abc123", "/library/metadata/900/file?url=upload..."),
+    _FakeGeneratedEntry(
+        "media://5/x.bundle/Contents/Thumbnails/thumb1.jpg",
+        "/library/metadata/900/file?url=media%3A%2F%2F5%2Fx.bundle...",
+    ),
+]
+
+
+async def test_fetch_plex_generated_base_downloads_the_media_entry(tmp_path):
+    plex_item = _FakeGeneratedPlexItem(GENERATED_LISTING_NO_SELF_FEED)
+    plex = _FakePlexForGenerated(plex_item)
+    seen = {}
+
+    async def handler(request):
+        seen["headers"] = dict(request.headers)
+        seen["url"] = str(request.url)
+        return httpx.Response(200, content=decodable_png())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        destination = tmp_path / "base.jpg"
+        sha = await pipeline_module.fetch_plex_generated_base(
+            http, plex, "900", destination,
+            base_url="http://plex.local", headers={"X-Plex-Token": "tok"},
+            stage="the title_card source",
+        )
+
+    assert sha
+    assert destination.exists()
+    assert seen["headers"]["x-plex-token"] == "tok"
+    assert "media" in seen["url"] or "thumb1" in seen["url"]
+
+
+async def test_fetch_plex_generated_base_ignores_our_own_upload(tmp_path):
+    """The self-feed pin: a listing with an upload:// entry (ours) selected
+    ahead of the media:// entry still resolves the media:// frame."""
+    plex_item = _FakeGeneratedPlexItem(GENERATED_LISTING_WITH_SELF_FEED)
+    plex = _FakePlexForGenerated(plex_item)
+
+    async def handler(request):
+        assert "upload" not in str(request.url)
+        return httpx.Response(200, content=decodable_png())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        sha = await pipeline_module.fetch_plex_generated_base(
+            http, plex, "900", tmp_path / "base.jpg",
+            base_url="http://plex.local", headers={"X-Plex-Token": "tok"},
+            stage="the title_card source",
+        )
+
+    assert sha
+
+
+async def test_fetch_plex_generated_base_is_none_without_a_media_entry(tmp_path):
+    plex_item = _FakeGeneratedPlexItem([
+        _FakeGeneratedEntry("upload://abc123", "/library/metadata/900/file?url=upload..."),
+    ])
+    plex = _FakePlexForGenerated(plex_item)
+
+    async def unreachable(request):
+        raise AssertionError("no media:// entry -- _download must not be called")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(unreachable)) as http:
+        sha = await pipeline_module.fetch_plex_generated_base(
+            http, plex, "900", tmp_path / "base.jpg",
+            base_url="http://plex.local", headers={"X-Plex-Token": "tok"},
+            stage="the title_card source",
+        )
+
+    assert sha is None
+
+
 def _stub_out_imagemagick(monkeypatch):
     """Record every argv passed to compositor.run, without invoking ImageMagick.
 
@@ -863,6 +999,170 @@ async def test_season_art_appearing_later_re_renders_and_clears_the_fallback(
     assert second.detail != "unchanged"
     assert second.source_url == SEASON_URL
     assert second.source_mode == "generate"
+
+
+TITLE_CARD_URL = "https://img/title-card.jpg"
+
+
+class _TitleCardAwareProvider:
+    """Serves a title_card candidate only when configured to."""
+
+    name = "TMDB"
+
+    def __init__(self, *, has_art: bool):
+        self._has_art = has_art
+        self.requests = []
+
+    async def fetch(self, request):
+        self.requests.append(request)
+        if request.art_kind == "title_card" and self._has_art:
+            return [ArtCandidate("TMDB", TITLE_CARD_URL, None, 1920, 1080, 5.0)]
+        return []
+
+
+def _episode_item():
+    return item(kind="episode", title="Chapter One", season=1, episode=1, root="Severance (2022)")
+
+
+def _plex_generated_base_for(http, listing, rating_key="1"):
+    plex_item = _FakeGeneratedPlexItem(listing)
+    plex = _FakePlexForGenerated(plex_item, expected_rating_key=rating_key)
+    return functools.partial(
+        pipeline_module.fetch_plex_generated_base, http, plex,
+        base_url="http://plex.local", headers={"X-Plex-Token": "tok"},
+    )
+
+
+async def test_title_card_gate_off_when_a_provider_has_art(session, tmp_path, monkeypatch):
+    """The gate-off pin: a provider offering a title card is untouched, and
+    the Plex rung is never even asked."""
+    config = _logo_test_config(tmp_path)
+    _stub_out_imagemagick(monkeypatch)
+    provider = _TitleCardAwareProvider(has_art=True)
+
+    async def unreachable(*args, **kwargs):
+        raise AssertionError("the Plex rung must not run when a provider has art")
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, _episode_item(), "title_card", [provider],
+            plex_generated_base=unreachable,
+        )
+
+    assert render.status == "rendered"
+    assert render.source_url == TITLE_CARD_URL
+    assert render.source_mode == "generate"
+
+
+async def test_title_card_falls_back_to_plexs_generated_frame(session, tmp_path, monkeypatch):
+    """No provider has a title card; Plex's own derived frame (the media://
+    entry, never the agent guess -- C5) becomes the base."""
+    config = _logo_test_config(tmp_path)
+    _stub_out_imagemagick(monkeypatch)
+    provider = _TitleCardAwareProvider(has_art=False)
+    resolved = _episode_item()
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, resolved, "title_card", [provider],
+            plex_generated_base=_plex_generated_base_for(http, GENERATED_LISTING_NO_SELF_FEED),
+        )
+
+    assert render.status == "rendered"
+    assert render.source_url == f"plex://{resolved.rating_key}/title_card"
+    assert render.source_mode == "plex_generated"
+    assert render.provider == "plex"
+    assert render.provider_rank is None
+    assert render.selected_language is None
+    assert "Plex's generated frame" in (render.detail or "")
+
+
+async def test_title_card_stays_no_art_when_plex_has_no_generated_frame(
+    session, tmp_path, monkeypatch
+):
+    config = _logo_test_config(tmp_path)
+    _stub_out_imagemagick(monkeypatch)
+    provider = _TitleCardAwareProvider(has_art=False)
+    listing_without_generated = [
+        _FakeGeneratedEntry("upload://abc123", "/library/metadata/1/file?url=upload..."),
+        _FakeGeneratedEntry("com.plexapp.agents.themoviedb://1", "https://image.tmdb.org/x.jpg"),
+    ]
+
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, _episode_item(), "title_card", [provider],
+            plex_generated_base=_plex_generated_base_for(http, listing_without_generated),
+        )
+
+    assert render.status == "no_art"
+    assert render.detail == "no title_card art on any provider"
+    assert render.source_mode == "generate"
+    assert not Path(config.assets_root).exists()
+
+
+async def test_title_card_art_appearing_later_re_renders_and_clears_the_fallback(
+    session, tmp_path, monkeypatch
+):
+    config = _logo_test_config(tmp_path)
+    _stub_out_imagemagick(monkeypatch)
+    resolved = _episode_item()
+
+    async with _fake_http() as http:
+        first = await render_artifact(
+            session, config, http, resolved, "title_card",
+            [_TitleCardAwareProvider(has_art=False)],
+            plex_generated_base=_plex_generated_base_for(http, GENERATED_LISTING_NO_SELF_FEED),
+        )
+        fallback_fingerprint = first.fingerprint
+        assert first.source_mode == "plex_generated"
+
+        second = await render_artifact(
+            session, config, http, resolved, "title_card",
+            [_TitleCardAwareProvider(has_art=True)],
+            plex_generated_base=_plex_generated_base_for(http, GENERATED_LISTING_NO_SELF_FEED),
+        )
+
+    assert second.fingerprint != fallback_fingerprint
+    assert second.source_url == TITLE_CARD_URL
+    assert second.source_mode == "generate"
+
+
+async def test_title_card_fingerprint_is_stable_across_a_bumped_plex_thumb_epoch(
+    session, tmp_path, monkeypatch
+):
+    """The stability pin (C1.3): the key Plex serves the frame from can
+    change (our own lockPoster bumps its epoch every pass) without moving the
+    fingerprint -- only the BYTES (base_sha256) decide re-render, because
+    source_url is the stable synthetic key, never the live URL."""
+    config = _logo_test_config(tmp_path)
+    _stub_out_imagemagick(monkeypatch)
+    resolved = _episode_item()
+    provider = _TitleCardAwareProvider(has_art=False)
+    listing_epoch_1 = [
+        _FakeGeneratedEntry(
+            "media://5/x.bundle/Contents/Thumbnails/thumb1.jpg",
+            "/library/metadata/1/file?url=media%3A%2F%2F5%2Fx.bundle...&epoch=1",
+        ),
+    ]
+    listing_epoch_2 = [
+        _FakeGeneratedEntry(
+            "media://5/x.bundle/Contents/Thumbnails/thumb1.jpg",
+            "/library/metadata/1/file?url=media%3A%2F%2F5%2Fx.bundle...&epoch=2",
+        ),
+    ]
+
+    async with _fake_http() as http:
+        first = await render_artifact(
+            session, config, http, resolved, "title_card", [provider],
+            plex_generated_base=_plex_generated_base_for(http, listing_epoch_1),
+        )
+        second = await render_artifact(
+            session, config, http, resolved, "title_card", [provider],
+            plex_generated_base=_plex_generated_base_for(http, listing_epoch_2),
+        )
+
+    assert second.fingerprint == first.fingerprint
+    assert second.detail == "unchanged"
 
 
 def test_library_language_overrides_are_per_library_and_per_art_kind():
