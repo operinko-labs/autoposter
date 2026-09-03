@@ -1139,6 +1139,99 @@ and that both queries include `library` in the join because the job's identity
 predicate does — a 4K copy and an HD copy of one film in two libraries are two
 items and are never merged.
 
+### Rows whose `kind` and `library` disagree (fossils)
+
+Both `plex_merge` summaries — the dry run and the applied pass — end with a
+sentence like:
+
+```
+; 2 row(s) whose kind and library disagree (fossils), never merged or deleted
+by this job and repairable only by hand -- see deploy/README.md:
+id=4471, key=158303, title='Jaws: The Revenge' | id=9052, key=159735,
+title="Street Fighter: Assassin's Fist The Movie"
+```
+
+**What such a row is.** Before 2026-08-24 the resolver's GUID fallback walked
+every library with no type filter, so a show-kind intent carrying a TMDb
+integer that means one thing among movies and another among TV shows could be
+answered by the *Movies* library. The resolver stamps `kind` from the intent
+and takes the key, the library, the folder and the ids from the item Plex
+returned, so the row it wrote contradicts itself — `kind = 'show'` over a
+movie's key in a movie library. Every guard refuses it today, so it can never
+score. Worse, while it was still being processed the provider namespace was
+chosen by `kind`: **the wrong title's artwork was rendered and uploaded onto
+the real Plex item, and the wrong title's year and studio were written over
+its metadata.** The minting path was closed by the same 2026-08-24 change; the
+job reports what it left behind. There is no automatic repair.
+
+**Finding them yourself.** Pure SQL, no Plex, safe on a live database. This is
+the job's own rule in SQL: a Plex section has exactly one type, so every row
+genuinely resolved out of one library carries one kind-family, and where both
+families appear under one library name the strict minority is the fossil.
+
+```sql
+WITH families AS (
+  SELECT id, rating_key, kind, library, title, year,
+         tmdb_id, tvdb_id, imdb_id, root_folder,
+         CASE WHEN kind = 'movie' THEN 'movie' ELSE 'show' END AS family
+    FROM media_items
+), tally AS (
+  SELECT library, family, count(*) AS n
+    FROM families GROUP BY library, family
+)
+SELECT f.*
+  FROM families f
+  JOIN tally mine       ON mine.library  = f.library AND mine.family  = f.family
+  LEFT JOIN tally other ON other.library = f.library AND other.family <> f.family
+ WHERE coalesce(other.n, 0) > mine.n
+ ORDER BY f.id;
+```
+
+Three limits, shared by the query and the job, and none is a bug: an exact
+tie between the two families under one library name names **nobody** (with no
+section type to appeal to there is no honest way to say which side is wrong);
+a library whose rows are *all* fossils is invisible by construction; and a
+library where fossils *outnumber* the real rows names the real rows instead.
+The bucket is report-only — the job never merges or deletes anything it
+names — so a misnaming costs you a look, not a row. If you suspect any of the
+three, name the library and its true type yourself —
+`WHERE kind <> 'movie' AND library = 'Movies'` — rather than trusting the
+majority rule.
+
+**The repair, in this order.** Production held exactly two such rows and both
+were repaired by hand. `renders`, `item_facts` and `item_credits` each key on
+`media_items.id` through their own `item_id` column, so every row is addressed
+by the `id` the summary and the query print. Correct `kind` FIRST — every
+later step reads it:
+
+```sql
+-- 1. the row itself: kind from the live Plex item at this rating key, and
+--    NULL any id that came from the other namespace's match.
+UPDATE media_items SET kind = 'movie', tvdb_id = NULL WHERE id = <id>;
+
+-- 2. everything gathered or rendered under the wrong namespace.
+DELETE FROM renders      WHERE item_id = <id>;
+DELETE FROM item_facts   WHERE item_id = <id>;
+DELETE FROM item_credits WHERE item_id = <id>;
+```
+
+Deleting the `renders` rows is what makes the next pass re-render: a stale
+fingerprint is exactly what would make the pipeline skip the item and decide
+Plex is already serving the right image.
+
+**Then the Plex side, which no SQL reaches.** The poisoned year and studio
+were written onto the real Plex item and Plex has them locked, so the next
+pass will not overwrite them: **unlock the year and studio fields on that item
+and refresh its metadata**, then let a pass re-apply the facts. And the
+artwork that was uploaded is an `upload://` poster in that item's poster
+listing — deleting the `renders` row does not remove it. **The stray
+`upload://` poster stays until the artwork-cleanup row lands**; select the
+correct poster on the item so the stray one is no longer the served image.
+
+**Verify.** Re-run the query: the row is gone from it. Re-run `plex_merge`
+with `merge.apply: false`: the fossil sentence no longer names it, and the row
+is now eligible to be scored like any other.
+
 The IMDb dataset refresh (`operations.imdb_refresh_hours`) deliberately does
 **not** run on this scheduler — it keeps its own separate background loop.
 Its trigger is remote dataset staleness plus a miss-triggered cooldown path
