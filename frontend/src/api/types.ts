@@ -541,12 +541,27 @@ export interface ItemFacts {
 
 /** GET /api/items/{id}. `facts` is null for an item nothing has been collected
  * for yet, which is an ordinary state, not an error. */
+/** The show an episode or season belongs to. Null when the item has no
+ * parent (a movie or a show itself) or the parent has not been processed
+ * yet -- the backend's upsert leaves `parent_id` null in that case rather
+ * than inventing a name (src/autoposter/render/pipeline.py's
+ * `_upsert_media_item`), and the response degrades the same honest way. */
+export interface ItemParent {
+  id: number;
+  title: string;
+}
+
 export interface ItemDetailResponse {
   id: number;
   title: string;
   library: string;
   kind: string;
   rating_key: string | null;
+  /** From the item's own row. Null for a movie or show; a season carries
+   * only `season_number`, an episode carries both. */
+  season_number: number | null;
+  episode_number: number | null;
+  parent: ItemParent | null;
   facts: ItemFacts | null;
   renders: ItemRender[];
 }

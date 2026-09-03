@@ -475,12 +475,42 @@ async def item_detail(
             .all()
         )
 
+        show = None
+        if item.kind in ("season", "episode") and item.parent_id is not None:
+            parent = (
+                await session.execute(select(MediaItem).where(MediaItem.id == item.parent_id))
+            ).scalar_one_or_none()
+            if parent is not None and parent.kind == "show":
+                # A season's parent IS the show.
+                show = parent
+            elif (
+                parent is not None
+                and parent.kind == "season"
+                and parent.parent_id is not None
+            ):
+                # An episode's parent_id points at its SEASON row (see
+                # render/pipeline.py's _upsert_media_item and
+                # adopt/walk.py's _resolved_episode), not the show directly --
+                # one more hop is needed to reach it.
+                show = (
+                    await session.execute(
+                        select(MediaItem).where(MediaItem.id == parent.parent_id)
+                    )
+                ).scalar_one_or_none()
+
     return {
         "id": item.id,
         "title": item.title,
         "library": item.library,
         "kind": item.kind,
         "rating_key": item.rating_key,
+        "season_number": item.season_number,
+        "episode_number": item.episode_number,
+        # The show an episode or season belongs to, or null when the item has
+        # no parent (a movie/show) or the parent hasn't been processed yet --
+        # _upsert_media_item leaves parent_id null in that case rather than
+        # inventing one, and this degrades the same honest way.
+        "parent": None if show is None else {"id": show.id, "title": show.title},
         "facts": None
         if facts is None
         else {

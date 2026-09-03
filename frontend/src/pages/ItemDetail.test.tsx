@@ -27,6 +27,9 @@ const MOVIE = {
   library: "Movies",
   kind: "movie",
   rating_key: "101",
+  season_number: null,
+  episode_number: null,
+  parent: null,
   facts: {
     critic_rating: 8.4,
     audience_rating: 7.2,
@@ -93,6 +96,39 @@ const EPISODE = {
   library: "TV Shows",
   kind: "episode",
   rating_key: "909",
+  season_number: null,
+  episode_number: null,
+  parent: null,
+  facts: null,
+  renders: [],
+};
+
+/** The same episode, but with the show the API resolves for it -- an
+ * episode's parent_id points at its season row, whose own parent_id points
+ * at the show (src/autoposter/api/routes.py's item_detail), so the response
+ * carries the show two hops up as `parent`, plus this row's own
+ * season/episode numbers. */
+const EPISODE_WITH_PARENT = {
+  ...EPISODE,
+  id: 154245,
+  title: "Episode 26",
+  rating_key: "154245",
+  season_number: 2,
+  episode_number: 26,
+  parent: { id: 42, title: "Firefly" },
+};
+
+/** A season, analogous to EPISODE_WITH_PARENT: its parent_id points straight
+ * at the show. */
+const SEASON_WITH_PARENT = {
+  id: 88,
+  title: "Season 2",
+  library: "TV Shows",
+  kind: "season",
+  rating_key: "8080",
+  season_number: 2,
+  episode_number: null,
+  parent: { id: 42, title: "Firefly" },
   facts: null,
   renders: [],
 };
@@ -799,6 +835,104 @@ describe("ItemDetail", () => {
 
     await act(async () => {});
     window.history.pushState({}, "", "/");
+  });
+});
+
+/** The show a season or episode belongs to, named in the header and the
+ * breadcrumb -- the operator report this fixes: an episode page titled only
+ * "Episode 26" with no show anywhere, indistinguishable from every other
+ * "Episode 26" in the library.
+ */
+describe("ItemDetail parentage", () => {
+  it("names the show in an episode's header, S/E numbers included, linked to the show's own item view", async () => {
+    stubFetch({
+      "/api/items/154245": () => json(EPISODE_WITH_PARENT),
+      "/api/items/154245/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/154245/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
+    });
+
+    await renderItem(154245);
+
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading.textContent).toContain("Firefly");
+    expect(heading.textContent).toContain("S02E26");
+    expect(heading.textContent).toContain("Episode 26");
+    const showLink = within(heading).getByRole("link", { name: "Firefly" });
+    expect(showLink).toHaveAttribute("href", "/items/42");
+  });
+
+  it("gains the show segment in the breadcrumb, linked to the show's own item view", async () => {
+    stubFetch({
+      "/api/items/154245": () => json(EPISODE_WITH_PARENT),
+      "/api/items/154245/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/154245/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
+    });
+
+    await renderItem(154245);
+
+    const breadcrumb = document.querySelector(".item-meta") as HTMLElement;
+    expect(breadcrumb.textContent).toContain("TV Shows");
+    expect(breadcrumb.textContent).toContain("Firefly");
+    expect(breadcrumb.textContent).toContain("episode");
+    expect(breadcrumb.textContent).toContain("rating key 154245");
+    const showLink = within(breadcrumb).getByRole("link", { name: "Firefly" });
+    expect(showLink).toHaveAttribute("href", "/items/42");
+  });
+
+  it("names the show in a season's header and breadcrumb, analogous to an episode", async () => {
+    stubFetch({
+      "/api/items/88": () => json(SEASON_WITH_PARENT),
+      "/api/items/88/artwork/season_poster": () => imageBytes("season-poster-bytes"),
+      "/api/items/88/artwork/season_poster/live": () => imageBytes("live-season-poster-bytes"),
+    });
+
+    await renderItem(88);
+
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading.textContent).toContain("Firefly");
+    expect(heading.textContent).toContain("Season 2");
+    expect(within(heading).getByRole("link", { name: "Firefly" })).toHaveAttribute(
+      "href",
+      "/items/42",
+    );
+
+    const breadcrumb = document.querySelector(".item-meta") as HTMLElement;
+    expect(within(breadcrumb).getByRole("link", { name: "Firefly" })).toHaveAttribute(
+      "href",
+      "/items/42",
+    );
+  });
+
+  it("degrades to today's plain title when the parent is unresolved -- no invented show name", async () => {
+    // EPISODE carries `parent: null`, matching an item whose upsert never
+    // got a chance to fill parent_id (render/pipeline.py's
+    // _upsert_media_item leaves it null rather than inventing one).
+    stubFetch({
+      "/api/items/9": () => json(EPISODE),
+      "/api/items/9/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/9/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
+    });
+
+    await renderItem(9);
+
+    const heading = screen.getByRole("heading", { level: 1, name: "Fly" });
+    expect(heading).toBeInTheDocument();
+    expect(within(heading).queryByRole("link")).toBeNull();
+
+    const breadcrumb = document.querySelector(".item-meta") as HTMLElement;
+    expect(within(breadcrumb).queryAllByRole("link")).toHaveLength(1); // "Library" only
+  });
+
+  it("leaves a movie's header and breadcrumb unchanged -- a movie has no parent", async () => {
+    stubFetch(movieRoutes());
+
+    await renderItem();
+
+    const heading = screen.getByRole("heading", { level: 1, name: "Ghostbusters" });
+    expect(within(heading).queryByRole("link")).toBeNull();
+
+    const breadcrumb = document.querySelector(".item-meta") as HTMLElement;
+    expect(within(breadcrumb).queryAllByRole("link")).toHaveLength(1); // "Library" only
   });
 });
 
