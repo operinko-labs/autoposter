@@ -152,6 +152,11 @@ function stubFetch(options: StubOptions = {}) {
     if (path === "/api/collections/definitions") {
       return json({ libraries: ["Movies"], definitions: [] });
     }
+    // The playlists panel mounted on this page fetches its own listing; its
+    // behaviour is covered in PlaylistsPanel.test.tsx.
+    if (path === "/api/playlists/definitions") {
+      return json({ libraries: ["Movies"], definitions: [], preset_conflicts: [] });
+    }
     // The facts-backfill panel mounted on this page fetches its own standing
     // progress; its behaviour is covered in FactsBackfillPanel.test.tsx.
     if (path === "/api/facts/backfill") {
@@ -862,6 +867,24 @@ describe("Collections", () => {
 
     render(<Collections />);
 
-    expect(await screen.findByText("Create from a list URL")).toBeInTheDocument();
+    // Scoped to this panel's own section: the playlists panel mounted below
+    // it shares the same "Create from a list URL" form heading, so the plain
+    // text is no longer unique on this page.
+    const heading = await screen.findByRole("heading", { name: "Custom collections" });
+    expect(
+      within(heading.closest("section")!).getByText("Create from a list URL"),
+    ).toBeInTheDocument();
+  });
+
+  it("mounts the playlists panel", async () => {
+    stubFetch();
+
+    render(<Collections />);
+
+    // The panel's own behaviour is PlaylistsPanel.test.tsx's; what belongs
+    // here is that the page mounts it at all.
+    expect(
+      await screen.findByRole("heading", { name: "Playlists" }),
+    ).toBeInTheDocument();
   });
 });
