@@ -668,6 +668,24 @@ async def fetch_plex_generated_base(
 REKEY_SOURCE = "rekey"
 REKEY_EVENT = "media_item_rekeyed"
 
+# The events_log identity of a FORK STOP, filed under REKEY_SOURCE beside the
+# re-key's own row rather than under a source of its own: both are the same
+# identity story, and an operator asking "what happened to this row's key"
+# should grep one source. Its own event_type, because the two rows say
+# opposite things -- one records a key that moved, the other a job that
+# declined to touch a key that did not.
+FORK_EVENT = "process_item_fork_stopped"
+
+# The no-op outcome's name. A job that stops here COMPLETES -- queue/worker's
+# `else: await complete(...)` -- so it is never retried, never deferred and
+# never parked. `complete()` does write `job.last_error` (the SERVED column,
+# api/jobs.py), but writes it None (queue/jobs.py:327): NOTHING IS SERVED,
+# which is stricter than the class-name-only rule row 213 sets for the paths
+# that do serve something. _served_reason is never even reached -- it is
+# called only from the fail() branches. The pod log's WARNING and this audit
+# row are the whole record.
+FORK_OUTCOME = "fork_stopped"
+
 
 def _identity_clauses(item: ResolvedItem) -> list:
     """The external-id half of the identity predicate, as OR-able clauses.
@@ -842,14 +860,15 @@ async def _rekey_by_identity(
         if isinstance(exc, IntegrityError):
             logger.warning(
                 "re-key of %s to %s lost a race; the winner's row holds the "
-                "key and this pass will upsert onto it",
+                "key, so this pass stops rather than upsert onto it",
                 old_key, item.rating_key, exc_info=True,
             )
         else:
             logger.warning(
                 "re-key of %s to %s lost a race to a deadlock; nothing took "
-                "the key, and this pass mints a fresh twin for the next "
-                "merge to eat",
+                "the key in THIS transaction -- the rollback says no more "
+                "than that -- so this pass falls through and mints a fresh "
+                "twin unless another worker landed the key first",
                 old_key, item.rating_key, exc_info=True,
             )
         return None
@@ -1939,20 +1958,27 @@ async def process_item(
 
     ``plex_generated_base`` is passed straight to ``render_artifact``; see
     its own docstring for what it does and why it is optional.
+
+    Answers ``[]`` -- a completed no-op job -- when the intent carried a
+    rating key, the resolved key differs, and a ``media_items`` row already
+    exists under the resolved key that the identity re-key did not put there.
+    A resolved key with no row at all is NOT a stop: that job falls through to
+    the ordinary upsert exactly as before, which is what still mints a newly
+    discovered item. See the fork stop below.
     """
     item = await plex.resolve(intent)
 
     # The identity fork (roadmap: the ~411 unscorable floor investigation).
     # `resolve()` treats `intent.rating_key` as a hint and is free to return a
     # DIFFERENT key -- the live copy's, after a re-match or a library rebuild
-    # renumbers the item. When that happens, everything below this point
-    # (media_item upsert, the render rows) is keyed on the RESOLVED item, not
-    # the one the intent named, and the intent's original row is silently
-    # never touched. The served surfaces stay class-name-only as everywhere
-    # else in this queue; the pod log is the trusted sink, so this is a
-    # WARNING there and nowhere else -- but it turns a silent hole into a
+    # renumbers the item. Everything below this point (media_item upsert, the
+    # render rows, the Plex field writes) is keyed on the RESOLVED item, not
+    # the one the intent named. The served surfaces stay class-name-only as
+    # everywhere else in this queue; the pod log is the trusted sink, so this
+    # is a WARNING there and nowhere else -- but it turns a silent hole into a
     # grep.
-    if intent.rating_key is not None and item.rating_key != intent.rating_key:
+    forked = intent.rating_key is not None and item.rating_key != intent.rating_key
+    if forked:
         logger.warning(
             "resolved rating key %s for %r differs from the intent's %s; "
             "the intent's row will not be scored by this job",
@@ -1968,10 +1994,71 @@ async def process_item(
     # It must run BEFORE the first _upsert_media_item below, because that is
     # the call that would otherwise insert the twin (and render_artifact, the
     # refusal path and the badge path all upsert again after it).
+    rekeyed_from = await _rekey_by_identity(session, item)
+
+    # The fork stop. It fires on exactly one condition: a row ALREADY HOLDS
+    # the resolved key and it is not this intent's row. Then the resolved item
+    # is somebody else's -- it has its own media_items row and its own visits,
+    # and this job was never asked about it. Carrying on rendered it, uploaded
+    # it, and -- because the unchanged-check compares against the intent's row
+    # -- wrote Plex fields to it on every single pass ("plex: wrote 2 field(s)
+    # to movie 'Boss Level'", every run, forever).
     #
-    # The return value is deliberately unused: the durable record of a re-key
-    # is its events_log row, not a local.
-    await _rekey_by_identity(session, item)
+    # Two filters, cheapest first, and the order is the whole design:
+    #
+    # 1. `rekeyed_from != intent.rating_key`. A re-key that MOVED this
+    #    intent's row onto the resolved key is the success this phase exists
+    #    for: the row under that key is ours, and the job goes on. Checking it
+    #    first also means the hot path -- an unforked item, or a successful
+    #    re-key -- never issues the query below at all.
+    # 2. A row exists under `item.rating_key`. This is the part that cannot be
+    #    inferred from the re-key's return value, because _rekey_by_identity
+    #    answers None on FIVE different refusals and only two of them mean a
+    #    row is there (the key was already taken; an IntegrityError race the
+    #    winner committed). On the other three -- zero identity candidates, an
+    #    ambiguous pair, a 40P01 deadlock -- the resolved key is EMPTY, there
+    #    is no twin, and stopping would delete a job's whole purpose: the
+    #    ordinary upsert below is what mints that row, and it is what arr
+    #    discovery relies on. The twin merge reconciles rows; it never creates
+    #    them, so a stop there would wait for something that never comes.
+    #
+    # One indexed read on the rating_key unique constraint, and an honest one:
+    # four of the five refusal arms roll back before returning (:797, :841),
+    # ending the transaction, and the taken-key arm has issued nothing but
+    # this same select -- so whatever it sees is committed truth.
+    #
+    # This changes nothing about the refusal itself (`p-rekey-facts.md` C1:
+    # cross-library or id-disjoint is not a re-key, and the pair stays the
+    # twin merge's work), and nothing about the row-less fall-through C1.1
+    # calls "the twin path as today" -- only about a pair that already exists.
+    # Returning an empty list COMPLETES the job (queue/worker.py's
+    # `else: complete(...)`), so it is never retried, deferred or parked; a
+    # job that cannot do anything useful must not look like a failure an
+    # operator has to clear.
+    if forked and rekeyed_from != intent.rating_key:
+        resolved_row_id = (
+            await session.execute(
+                select(MediaItem.id).where(MediaItem.rating_key == item.rating_key)
+            )
+        ).scalar_one_or_none()
+        if resolved_row_id is not None:
+            session.add(EventLog(
+                source=REKEY_SOURCE,
+                event_type=FORK_EVENT,
+                payload={
+                    "intent_rating_key": intent.rating_key,
+                    "resolved_rating_key": item.rating_key,
+                    "kind": item.kind,
+                    "library": item.library,
+                    "title": item.title,
+                },
+                outcome=FORK_OUTCOME,
+            ))
+            # A commit, not a flush: _rekey_by_identity's refusal paths roll
+            # back (releasing their FOR UPDATE), and this row must survive
+            # whatever the caller does next.
+            await session.commit()
+            return []
 
     media_item = None
     plex_item = None
