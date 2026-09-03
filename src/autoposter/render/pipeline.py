@@ -1075,6 +1075,104 @@ def _provider_rank(providers: list, provider_name: str | None) -> int | None:
     return names.index(provider_name)
 
 
+# How many clearlogo candidates one poster may try before it renders without
+# one. Every attempt past the first is a download this pass did not previously
+# make, and a title whose whole logo set is corrupt would otherwise walk a
+# provider's entire catalogue on every visit. Three is two more chances than
+# the pipeline had before the 'Inside Out 2' bomb and still a bounded cost per
+# item. Counted per ATTEMPT, not per download: a candidate dropped on its
+# reported size spends one too, which is what keeps a run of oversized
+# candidates bounded as well.
+_MAX_LOGO_ATTEMPTS = 3
+
+
+async def _pick_logo(
+    http: httpx.AsyncClient,
+    config: Config,
+    item: ResolvedItem,
+    providers: list,
+    tmpdir: Path,
+) -> tuple[Path | None, str, int]:
+    """The clearlogo for this poster: ``(path, sha256, candidates skipped)``.
+
+    Two guards, both from the 'Inside Out 2' clearlogo (a 32000x18839 PNG,
+    602,848,000px, which ``ladder.rank_key`` ranked FIRST because it sorts on
+    ``-pixels``):
+
+    * A candidate whose provider-REPORTED ``width * height`` is over
+      ``_ARTWORK_MAX_PIXELS`` is skipped without being downloaded -- the same
+      ceiling ``_validate_image`` would refuse it at, read from the same
+      metadata the ladder ranked it by, so the check costs nothing and needs
+      no new provider field. A candidate reporting no dimensions at all (TMDB
+      omits them on some entries; Fanart's ``_int_or_none`` answers None for a
+      non-numeric) is downloaded exactly as before: unknown is not "too big",
+      and the full decode still settles it.
+    * A candidate that IS downloaded and then refused is skipped and the
+      ladder is asked again with that URL excluded (``select_artwork``'s
+      ``exclude_urls``).
+
+    ``(None, "", n)`` when nothing usable was found -- the caller falls
+    through to the EXISTING no-logo path, so the poster is rendered without a
+    logo rather than refused. The refusal outcome stays for the BASE image
+    alone: a missing logo is a styling difference, a missing base image is no
+    artwork at all.
+
+    The re-ask is usually free: ``providers/cache.py`` is a TTL cache of the
+    decoded JSON payload keyed by the metadata request (``providers/fetch.py``
+    consults it before issuing anything), so a second walk within the TTL is a
+    database read rather than a network hit -- but ONLY when
+    ``providers.cache_ttl_seconds > 0``, because ``app.py:173`` builds no cache
+    at all when it is zero. With caching off, each attempt past the first is a
+    real outbound listing request per provider, which is the other half of why
+    ``_MAX_LOGO_ATTEMPTS`` is small. Image bodies are never cached either way,
+    which is also why a refused candidate is re-fetched rather than remembered
+    across passes.
+    """
+    tried: set[str] = set()
+    skipped = 0
+    for _ in range(_MAX_LOGO_ATTEMPTS):
+        selection = await select_artwork(
+            providers,
+            config.artwork.logo_language_order,
+            art.ArtRequest(
+                art_kind=art.LOGO,
+                is_movie=item.kind == "movie",
+                tmdb_id=item.tmdb_id,
+                tvdb_id=item.tvdb_id,
+                imdb_id=item.imdb_id,
+                season_number=item.season_number,
+                episode_number=item.episode_number,
+                prefer_clearart=config.artwork.use_clearart,
+            ),
+            exclude_urls=tried,
+        )
+        candidate = selection.candidate
+        if candidate is None:
+            break
+        tried.add(candidate.url)
+        # `or 0` on both halves: an unreported dimension must read as "not
+        # over the ceiling", never as a zero-sized image to reject.
+        if (candidate.width or 0) * (candidate.height or 0) > _ARTWORK_MAX_PIXELS:
+            skipped += 1
+            continue
+        suffix = Path(httpx.URL(candidate.url).path).suffix or ".png"
+        logo_path = tmpdir / f"logo{suffix}"
+        try:
+            logo_sha = await _download(
+                http, candidate.url, logo_path, stage="the clearlogo"
+            )
+        except SourceRefused as exc:
+            skipped += 1
+            # No URL: `exc` already names the stage and what was wrong with
+            # the bytes (dimensions, or the decode exception's class name),
+            # and a provider URL in a log line is the one thing row 209 keeps
+            # out of them. `_download` has already removed the partial file.
+            logger.warning("clearlogo candidate refused for %s: %s", item.rating_key, exc)
+            continue
+        return logo_path, logo_sha, skipped
+    return None, "", skipped
+
+
 async def render_artifact(
     session: AsyncSession,
     config: Config,
@@ -1327,36 +1425,34 @@ async def render_artifact(
                 logo_path = Path(tmpdir) / f"logo{picked_logo.suffix}"
                 logo_sha = await asyncio.to_thread(_stage_override, picked_logo, logo_path)
             elif not online_fetch_disabled(config, art_kind):
-                logo_selection = await select_artwork(
-                    providers,
-                    config.artwork.logo_language_order,
-                    art.ArtRequest(
-                        art_kind=art.LOGO,
-                        is_movie=item.kind == "movie",
-                        tmdb_id=item.tmdb_id,
-                        tvdb_id=item.tvdb_id,
-                        imdb_id=item.imdb_id,
-                        season_number=item.season_number,
-                        episode_number=item.episode_number,
-                        prefer_clearart=config.artwork.use_clearart,
-                    ),
+                logo_path, logo_sha, skipped_logos = await _pick_logo(
+                    http, config, item, providers, Path(tmpdir),
                 )
-                if logo_selection.candidate is not None:
-                    logo_candidate = logo_selection.candidate
-                    suffix = Path(httpx.URL(logo_candidate.url).path).suffix or ".png"
-                    logo_path = Path(tmpdir) / f"logo{suffix}"
-                    logo_sha = await _download(
-                        http, logo_candidate.url, logo_path, stage="the clearlogo"
-                    )
-                elif not config.artwork.logo_text_fallback:
-                    suppress_text = True
-                else:
-                    # The other half of the same decision, which until now had
-                    # no variable at all: no logo on any provider AND
-                    # logo_text_fallback on, so this poster is wearing its
-                    # title text in a logo's place. That is the fact roadmap
-                    # 103 calls "logo-to-text fallback taken".
-                    logo_text_fallback_taken = True
+                if logo_path is None:
+                    if skipped_logos:
+                        # The aggregate line, once per poster: the pod log is
+                        # the trusted sink for the item's own identity, and
+                        # `_pick_logo` has already logged each refusal. No
+                        # URL here either.
+                        logger.warning(
+                            "no usable clearlogo for %s %r: skipped %d candidate(s) "
+                            "over the %dpx ceiling or refused after download; "
+                            "rendering the poster without one",
+                            item.rating_key, item.title, skipped_logos,
+                            _ARTWORK_MAX_PIXELS,
+                        )
+                    if not config.artwork.logo_text_fallback:
+                        suppress_text = True
+                    else:
+                        # The other half of the same decision, which until now
+                        # had no variable at all: no logo on any provider AND
+                        # logo_text_fallback on, so this poster is wearing its
+                        # title text in a logo's place. That is the fact
+                        # roadmap 103 calls "logo-to-text fallback taken".
+                        # Reached identically whether the ladder had nothing
+                        # or everything it had was unusable -- a poster with
+                        # no logo is a poster with no logo.
+                        logo_text_fallback_taken = True
 
         suppress_styling = (
             settings.skip_add_text_when_with_text and known_with_text(chosen_candidate)
