@@ -22,6 +22,7 @@ from pathlib import Path
 import httpx
 from plexapi.server import PlexServer
 
+from autoposter.collections.playlists import reconcile_playlists
 from autoposter.collections.service import build_source_clients, reconcile_libraries
 from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Secrets
@@ -50,11 +51,12 @@ async def main() -> None:
     # is the same work in a different order.
     engine = make_engine(secrets.database_url)
     session_factory = make_session_factory(engine)
+    failed = False
     try:
         async with session_factory() as session:
             config = await load_effective_config(CONFIG_PATH, session)
-            if not config.collections.enabled:
-                logger.info("collections are disabled in config")
+            if not config.collections.enabled and not config.playlists.enabled:
+                logger.info("collections and playlists are disabled in config")
                 return
 
             server = PlexServer(config.plex.url, secrets.plex_token)
@@ -76,18 +78,34 @@ async def main() -> None:
                 # and a definition backed by MDBList or Radarr must work from
                 # the CLI exactly as it does from the scheduled pass.
                 sources = build_source_clients(config, secrets, http, cache)
-                result = await reconcile_libraries(
-                    session, server, config, http, summaries=summaries,
-                    sources=sources, cache=cache,
-                )
-            logger.info(result.summary)
+                if config.collections.enabled:
+                    result = await reconcile_libraries(
+                        session, server, config, http, summaries=summaries,
+                        sources=sources, cache=cache,
+                    )
+                    logger.info(result.summary)
+                    failed = result.failed
+                else:
+                    logger.info("collections are disabled in config")
+                    failed = False
+                # The sibling pass, run here for the reason the scheduled job
+                # runs it: a playlist belongs to no library, so it cannot live
+                # inside reconcile_libraries' per-library loop, and both callers
+                # of that loop have to call this one too or the CLI would
+                # silently reconcile half the config.
+                if config.playlists.enabled:
+                    playlists = await reconcile_playlists(
+                        session, server, config, http, sources=sources, cache=cache,
+                    )
+                    logger.info(playlists.summary)
+                    failed = failed or playlists.failed
     finally:
         await engine.dispose()
 
-    # reconcile_libraries contains a failing library rather than raising, so
-    # without this the process exits 0 after a library failed and a cron
-    # wrapper watching the exit code never sees it.
-    if result.failed:
+    # Neither pass raises on a contained failure, so without this the process
+    # exits 0 after a library or a playlist failed and a cron wrapper watching
+    # the exit code never sees it.
+    if failed:
         raise SystemExit(1)
 
 

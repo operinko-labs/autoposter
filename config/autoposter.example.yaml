@@ -295,6 +295,28 @@ collections:
   #       builder_level: episode
   definitions: []
 
+playlists:
+  enabled: true # build and manage playlists at all
+  apply_to_plex: false # dry run by default: report the actions, change nothing
+  # libraries: [Movies] # narrow which libraries members resolve from, searched in this order, first match winning; omitted means collections.libraries
+  delete_unconfigured: false # delete playlists we own once no definition builds them; the only setting here that deletes anything
+  max_deletes: 5 # past this many orphans one sweep refuses entirely and reports the numbers
+  # A playlist is ours if and only if a managed_playlists row's rating key
+  # names a playlist currently on the server -- there is no ownership label,
+  # because a Plex playlist cannot carry one. A playlist this service did not
+  # create is never modified and never deleted, whatever its title.
+  #
+  #   - title: Marvel Cinematic Universe
+  #     builder: imdb_list # any registered list builder; smart and family builders are refused by name
+  #     params:
+  #       list: ls539646485 # `list`, the name the IMDb URL uses -- not `list_id`
+  #     libraries: [Movies, TV Shows] # searched in this order; an id both own resolves to the first
+  #     summary: The films, in release order.
+  #     sync_mode: sync # or `append`: only ever adds, never removes, never reorders
+  #     builder_level: item # or `season`/`episode` -- Show libraries only
+  #     limit: 50 # cap applied after resolution
+  definitions: []
+
 cleanup:
   apply: false # dry run by default: report what would move, change nothing
   max_orphans: 500 # refuse the pass if more than this many directories look orphaned

@@ -864,3 +864,109 @@ async def test_intent_for_row_carries_the_rows_stored_key_and_ids(session):
     assert intent.kind == "movie"
     assert intent.tmdb_id == 693134
     assert intent.title == "Dune: Part Two"
+
+
+# --- rows whose kind and library disagree (fossils) -------------------------
+
+
+async def test_a_fossil_row_is_named_in_the_dry_run_and_the_pair_still_merges(
+    session,
+):
+    """Before 1e32efc (2026-08-24) the GUID fallback could answer a show-kind
+    intent with a colliding-id MOVIE, and ``resolve()`` stamped ``kind`` from
+    the intent over the movie's key, library and folder. Such a row is refused
+    by every component and can never score, so the only remedy is a hand
+    repair -- which needs the row's id, key and title. It must also not be
+    counted a second time as "no identity twin": one row, one bucket."""
+    fossil = await _item(
+        session, "158303", kind="show", title="Jaws: The Revenge",
+        tmdb_id=580, year=1987,
+    )
+    await _render(session, fossil.id, "poster")
+    stale, survivor = await _pair(session)
+    await _render(session, stale.id, "poster")
+    await _render(session, survivor.id, "poster", scored=True)
+    fossil_id = fossil.id
+
+    def exploding_factory():
+        raise AssertionError("the fossil bucket must not need a Plex client")
+
+    job = make_merge_job(ConfigHolder(_config()), exploding_factory, lambda: False)
+    summary = await job.run(session)
+
+    assert summary.startswith("dry run: 1 of 3 media_items row(s)")
+    assert "1 row(s) whose kind and library disagree (fossils)" in summary
+    assert f"id={fossil_id}, key=158303, title='Jaws: The Revenge'" in summary
+    assert "no identity twin" not in summary
+
+
+async def test_the_applied_summary_carries_the_bucket_and_never_deletes_a_fossil(
+    session,
+):
+    """The applied pass reports the same bucket, and the fossil survives it:
+    it is held out of the pairing, so no probe asks about it and no delete can
+    reach it."""
+    fossil = await _item(
+        session, "159735", kind="show",
+        title="Street Fighter: Assassin's Fist The Movie",
+        tmdb_id=253626, year=2014,
+    )
+    stale, survivor = await _pair(session)
+    await _render(session, stale.id, "poster")
+    fossil_id = fossil.id
+    survivor_id = survivor.id
+
+    job = _job(_config(apply=True), FakePlex(live={"2"}))
+    summary = await job.run(session)
+
+    assert summary.startswith("merged 1 of 3")
+    assert "1 row(s) whose kind and library disagree (fossils)" in summary
+    assert f"id={fossil_id}, key=159735" in summary
+    session.expire_all()
+    assert sorted(
+        row.id for row in (await session.execute(select(MediaItem))).scalars()
+    ) == sorted([fossil_id, survivor_id])
+
+
+async def test_a_table_whose_libraries_all_agree_names_no_fossil(session):
+    """The false-positive guard. A show library legitimately holds show,
+    season AND episode rows -- all three are the same family -- and a movie
+    library holds movie rows. Nothing here disagrees with anything."""
+    await _item(session, "1", kind="movie", library="Movies", tmdb_id=1)
+    await _item(session, "2", kind="movie", library="Movies", tmdb_id=2)
+    await _item(session, "10", kind="show", library="TV Shows",
+                tmdb_id=None, tvdb_id=10)
+    await _item(session, "11", kind="season", library="TV Shows",
+                tmdb_id=None, tvdb_id=10, season_number=1)
+    await _item(session, "12", kind="episode", library="TV Shows",
+                tmdb_id=None, tvdb_id=10, season_number=1, episode_number=1)
+
+    def exploding_factory():
+        raise AssertionError("the dry run must not build a Plex client")
+
+    job = make_merge_job(ConfigHolder(_config()), exploding_factory, lambda: False)
+    summary = await job.run(session)
+
+    assert "fossil" not in summary
+    assert (await find_mergeable(session)).fossils == []
+
+
+async def test_the_named_fossils_are_capped_and_the_remainder_is_counted(session):
+    """The summary is stored whole in ``scheduled_runs.last_detail`` and
+    rendered on the dashboard. A pathological population is counted, not
+    listed row by row."""
+    for index in range(22):
+        await _item(session, str(100 + index), tmdb_id=1000 + index)
+    for index in range(21):
+        await _item(session, str(200 + index), kind="show",
+                    title=f"Fossil {index}", tmdb_id=2000 + index)
+
+    def exploding_factory():
+        raise AssertionError("the dry run must not build a Plex client")
+
+    job = make_merge_job(ConfigHolder(_config()), exploding_factory, lambda: False)
+    summary = await job.run(session)
+
+    assert "21 row(s) whose kind and library disagree (fossils)" in summary
+    assert summary.count("id=") == 20
+    assert "and 1 more" in summary

@@ -114,6 +114,52 @@ def resolve_external(index: OwnedIndex, ids: list[ExternalId]) -> ResolvedList:
     preview shows. An id in a namespace the index does not carry resolves to
     nothing and is counted like any other miss -- an unknown namespace is a
     definition that will never match, not a crash mid-run.
+
+    The one-library case of ``resolve_external_across`` below, and written as a
+    delegate rather than a second implementation: the dedup rule, the ordering
+    rule and the unresolved count are one behaviour, and two copies of them
+    would be two chances to drift.
+    """
+    return resolve_external_across([index], ids)
+
+
+def resolve_external_across(
+    indexes: list[OwnedIndex], ids: list[ExternalId]
+) -> ResolvedList:
+    """The owned items for these ids, searched across several libraries IN ORDER.
+
+    The playlists pass's resolver (roadmap row 98). A playlist spans libraries,
+    and the obvious implementation -- merge the per-library indexes into one
+    dict -- is exactly the merge ``build_owned_index`` above already refuses one
+    level down: "a tvdb series id and a tvdb episode id are different id spaces,
+    and merging them would let a series id resolve to an episode." The same
+    holds across libraries. A Movie library's ``tmdb://123`` and a Show
+    library's ``tmdb://123`` are different id spaces sharing one key, and a
+    merged dict would let a film id resolve to a series -- a full, plausible,
+    wrong membership, which is the one outcome every rule in this module exists
+    to prevent.
+
+    So the indexes stay separate and are WALKED, in the order the definition
+    names its libraries, first match winning. Kometa arrives at the same shape
+    from the other direction: it keeps ``movie_map`` and ``show_map`` apart and
+    checks both (``modules/builder.py:3919-3934``).
+
+    **The tie-break is the library order and nothing else.** An id both
+    libraries own resolves to the one named first, which is why
+    ``PlaylistDefinition.libraries`` is documented as ordered rather than as a
+    set. Everything else is ``resolve_external``'s contract, unchanged.
+
+    **The limit that follows from that, stated rather than discovered:**
+    deduplication is by Plex ITEM (``_identity`` is ``str(item.ratingKey)``),
+    so "each item once" is not "each title once". A film held in both a 4K and
+    an HD section is two items with two rating keys; if the source list names
+    one guid only the 4K section owns and another only the HD section owns,
+    **both copies enter the playlist**. That is intended. A Plex item is a Plex
+    item, Kometa's cross-library resolution has the same shape, and the
+    alternative -- collapsing on title -- would have to guess which copy the
+    operator meant, which is exactly the kind of guess the "unowned ids are
+    dropped, never guessed" rule above exists to refuse. An operator who wants
+    one copy names one library.
     """
     items: list[object] = []
     seen_ids: set[ExternalId] = set()
@@ -124,7 +170,11 @@ def resolve_external(index: OwnedIndex, ids: list[ExternalId]) -> ResolvedList:
             continue
         seen_ids.add(external)
         namespace, value = external
-        item = index.get(namespace, {}).get(value)
+        item = None
+        for index in indexes:
+            item = index.get(namespace, {}).get(value)
+            if item is not None:
+                break
         if item is None:
             unresolved += 1
             continue

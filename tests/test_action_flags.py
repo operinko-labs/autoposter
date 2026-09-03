@@ -140,7 +140,7 @@ async def test_show_fallback_fires_on_the_source_mode_row_two_seven_shipped(sess
 async def test_plex_generated_fires_on_the_source_mode_row_and_is_silent_on_a_rendered_one(
     session, config
 ):
-    """The plex-preview fallback (roadmap row 240) gets the same operator
+    """The plex-preview fallback (roadmap row 241) gets the same operator
     surface row 132's show_fallback already has."""
     flagged = await _seed(session, art_kind="title_card", source_mode="plex_generated")
     healthy = await _seed(session, art_kind="title_card", source_mode="generate")

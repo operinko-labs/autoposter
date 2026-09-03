@@ -580,7 +580,7 @@ async def _download(
     ``headers`` and ``follow_redirects`` are both keyword-only and default to
     the values every existing call site already gets (no headers, redirects
     followed), so nothing already calling this changes. The plex-preview
-    fallback (roadmap row 240) is the first caller to pass either: an
+    fallback (roadmap row 241) is the first caller to pass either: an
     ``X-Plex-Token`` header, and ``follow_redirects=False`` (adjudication A5)
     because a custom auth header is not one httpx strips on a cross-origin
     redirect, and PMS never needs to redirect an image blob anyway.
@@ -615,7 +615,7 @@ async def fetch_plex_generated_base(
 ) -> str | None:
     """Download Plex's own generated title-card frame, or answer ``None``.
 
-    The plex-preview fallback (roadmap row 240): lazily fetches the plexapi
+    The plex-preview fallback (roadmap row 241): lazily fetches the plexapi
     item for ``rating_key`` (adjudication A2 -- only an episode whose
     provider ladder came back empty ever reaches this, so this is not a
     second fetch for every item ``process_item`` already handles), lists its
@@ -1088,7 +1088,7 @@ async def render_artifact(
     """Build one artifact. Idempotent: safe to run repeatedly for the same item.
 
     ``plex_generated_base`` is the plex-preview fallback's own hook (roadmap
-    row 240): an async callable ``(rating_key, destination, *, stage) -> str
+    row 241): an async callable ``(rating_key, destination, *, stage) -> str
     | None`` -- ``fetch_plex_generated_base`` bound at app.py's composition
     time via ``functools.partial`` with ``http``, ``plex``, ``base_url`` and
     the ``X-Plex-Token`` header baked in, so this function never sees the
@@ -1243,7 +1243,7 @@ async def render_artifact(
                     ),
                 )
                 show_fallback = selection.candidate is not None
-            # The plex-preview fallback (roadmap row 240), title_card's own
+            # The plex-preview fallback (roadmap row 241), title_card's own
             # twin of the season_poster rung just above -- and the same seam:
             # after the ladder, before the no_art record. Unreachable when
             # online_fetch_disabled() already returned above (adjudication
@@ -1456,7 +1456,7 @@ async def render_artifact(
         render.source_mode = "show_fallback"
     elif render.source_mode == "show_fallback":
         render.source_mode = "generate"
-    # The plex-preview fallback's own twin of the block above -- row 240,
+    # The plex-preview fallback's own twin of the block above -- row 241,
     # cleared the same symmetric way row 132 clears show_fallback.
     if plex_generated:
         render.source_mode = "plex_generated"
