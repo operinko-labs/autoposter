@@ -15,7 +15,7 @@ import {
   withPath,
   withoutPath,
 } from "../api/overrides";
-import { DefinitionEditor } from "./DefinitionEditor";
+import { COLLECTION_DEFINITIONS, DefinitionEditor } from "./DefinitionEditor";
 import type {
   ConfigPreviewResponse,
   ConfigResponse,
@@ -534,6 +534,7 @@ export function CustomCollectionsPanel() {
           libraries={listing.libraries}
           descriptions={descriptions}
           busy={busy !== null}
+          kind={COLLECTION_DEFINITIONS}
           onSave={(entry) =>
             void put(documentForEdit(stored, editing, entry), "editing")
           }
