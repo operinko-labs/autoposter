@@ -408,9 +408,9 @@ async def test_the_survivors_own_parent_link_is_carried_when_it_has_none(session
     its show."""
     show = await _item(session, "500", kind="show", library="TV Shows",
                         title="A Show", tmdb_id=None, tvdb_id=99)
-    stale = await _item(session, "501", kind="season", library="TV Shows",
-                         title="A Show", tmdb_id=None, tvdb_id=88,
-                         season_number=1, parent_id=show.id)
+    _stale = await _item(session, "501", kind="season", library="TV Shows",
+                          title="A Show", tmdb_id=None, tvdb_id=88,
+                          season_number=1, parent_id=show.id)
     survivor = await _item(session, "502", kind="season", library="TV Shows",
                             title="A Show", tmdb_id=None, tvdb_id=88,
                             season_number=1, parent_id=None)
