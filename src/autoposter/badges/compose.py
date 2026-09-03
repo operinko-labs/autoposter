@@ -140,12 +140,28 @@ def _definitions_digest(definitions: list[OverlayDefinition]) -> str:
     return hashlib.sha256("\x1e".join(dumps).encode("utf-8")).hexdigest()
 
 
+def _outcomes_digest(outcomes: list[tuple[str, bool]]) -> str:
+    """A stable digest of one item's per-definition match outcomes.
+
+    `outcomes` is `(overlay name, matched)` in CONFIGURED order, produced by
+    `overlays/selection.py::select`, and it carries only definitions that
+    actually have a `condition:`. Joined in the order given rather than
+    sorted, for the same reason `_definitions_digest` keeps list order: order
+    is operator-visible (it decides group tie-breaks and draw order), and a
+    dict keyed on the name alone would collide for two definitions sharing
+    one.
+    """
+    parts = ["%s=%d" % (name, 1 if matched else 0) for name, matched in outcomes]
+    return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
+
+
 def badge_fingerprint(
     base_fingerprint: str,
     art_kind: str,
     values: dict[str, str],
     asset_manifest_sha: str,
     definitions: list[OverlayDefinition] | None = None,
+    outcomes: list[tuple[str, bool]] | None = None,
 ) -> str:
     """Hash everything that affects the badged image.
 
@@ -168,11 +184,31 @@ def badge_fingerprint(
     alternative once (the mass-ops additive-keys re-fingerprint that
     invalidated ~18k rows in one run); the fix is the same one: don't
     perturb the hash for the case that has nothing to say.
+
+    ``outcomes`` folds in this ITEM's own match results (adjudication A4,
+    overlay era sub-phase C1). Without it the gate is config-only, so an item
+    whose resolution or aspect changed keeps its old badge forever -- the
+    config did not move, and the fingerprint could not tell. It is guarded
+    exactly the way ``definitions`` is, and the guard is what makes the
+    extension safe: ``overlays/selection.py::select`` reports an outcome only
+    for a definition that CARRIES a condition, so an empty or absent list
+    leaves ``parts`` untouched and every already-badged item under an empty
+    or unconditioned config keeps its digest to the bit. The cost is real and
+    is disclosed rather than hidden: filter evaluation now runs BEFORE the
+    fingerprint gate, so an unchanged item pays one ``json.dumps`` of the
+    condition (``overlays/selection.py::compiled_condition``, run BEFORE its
+    cache lookup) plus a ``FilterGroup`` tree walk, per conditioned
+    definition -- not the single dict read this docstring described in an
+    earlier draft. That is no Plex request (this view's own law) but it is
+    not free, and it is the first work added to the unchanged-item path
+    since row 97.
     """
     parts = [base_fingerprint, art_kind, asset_manifest_sha]
     parts += ["%s=%s" % (k, values[k]) for k in sorted(values)]
     if definitions:
         parts.append(_definitions_digest(definitions))
+    if outcomes:
+        parts.append(_outcomes_digest(outcomes))
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 

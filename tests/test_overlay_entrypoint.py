@@ -251,6 +251,119 @@ def test_removing_a_definition_reverts_the_fingerprint():
     assert reverted != with_one
 
 
+# --- A4: the fingerprint must cover the per-item MATCH OUTCOME, and the
+# storm pin must EXTEND rather than weaken. Three properties, three pins:
+# the empty case stays byte-identical (the literal above, untouched); an
+# unchanged item with unchanged matches keeps its digest, and specifically
+# keeps the digest the PRE-SEAM five-argument call produced; and an item
+# whose matched set moved re-renders. ------------------------------------
+
+# Captured on the freshly cut branch BEFORE `outcomes` existed (T1 Step 3),
+# by calling badge_fingerprint with exactly five arguments. Pinned as a
+# literal rather than re-derived, for the same reason the gate-off literal
+# above is: a re-derivation passes even when the formula and the pin move
+# together.
+PRE_SEAM_ONE_DEFINITION_FINGERPRINT = "973b2cf3010950d3980be8644f92f1ad5243936691ce100f89eb44bdf94f0923"
+
+
+def test_a_config_of_unconditioned_definitions_does_not_move_the_fingerprint():
+    """The storm guard, extended to the case this phase creates. An operator
+    who already configures row-97 definitions and writes no `condition:` on
+    any of them must see ZERO fingerprint movement -- `select` reports no
+    outcomes for an unconditioned definition, so the new digest part is never
+    appended."""
+    stamp = OverlayDefinition(name="text(HELLO)")
+    assert badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp],
+    ) == PRE_SEAM_ONE_DEFINITION_FINGERPRINT
+    assert badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp], [],
+    ) == PRE_SEAM_ONE_DEFINITION_FINGERPRINT
+
+
+def test_a_condition_carrying_definition_moves_the_fingerprint_from_the_pre_seam_value():
+    """The discriminating half of the same guard. `_definitions_digest`
+    excludes `condition` from a definition's dump only while it is unset
+    (None) -- a definition that DOES carry one must therefore differ from
+    the pre-seam literal. If it did not, the exclusion would be swallowing
+    more than the unset default, and an operator's own `condition:` edits
+    would stop moving the fingerprint too."""
+    conditioned = OverlayDefinition(
+        name="text(HELLO)", condition={"resolution": "4k"}
+    )
+    assert badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [conditioned],
+    ) != PRE_SEAM_ONE_DEFINITION_FINGERPRINT
+
+
+def test_an_empty_outcomes_list_is_indistinguishable_from_no_outcomes_at_all():
+    """Same guard, at the gate-off end: `outcomes=[]` and `outcomes=None`
+    must both leave `parts` untouched, so the pinned literal above stays
+    reachable from every call shape."""
+    assert badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6", "audience": "63%"}, "manifest-sha",
+        None, [],
+    ) == "576f88e58b3cf7af26d5058d63a46fa1eebfe89c63d7ce367d529a89ecf5a0bd"
+
+
+def test_an_unchanged_item_with_unchanged_matches_keeps_its_digest():
+    """A4's first half, tied to the real selection mechanism rather than to
+    two calls of `badge_fingerprint` with a hand-typed, byte-identical
+    `outcomes` literal -- that only proves hashlib is deterministic (it
+    cannot fail under any implementation of `_outcomes_digest`, and would
+    survive a bug where two evaluations of the SAME item disagree: a set
+    walked in insertion-unstable order, an `lru_cache` keyed on something
+    other than the condition's own content). `outcomes` is produced by
+    RUNNING `select()` against a real matching item, twice -- a genuinely
+    unchanged second pass over the first pass's own inputs -- not typed as a
+    literal."""
+    from autoposter.overlays.selection import OverlayItemView, select
+
+    stamp = OverlayDefinition(name="dp", condition={"resolution.regex": "(?i)2160|4k"})
+    plex_item = _FakePlexItem()
+    plex_item.media[0].videoResolution = "4k"
+    view = OverlayItemView(None, plex_item=plex_item)
+
+    _, first_outcomes = select([stamp], view)
+    _, second_outcomes = select([stamp], view)
+    first = badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp], first_outcomes,
+    )
+    second = badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp], second_outcomes,
+    )
+    assert first == second
+
+
+def test_a_changed_match_outcome_moves_the_digest():
+    """A4's second half, and the reason A4 was ruled yes: an item whose
+    resolution changed from 1080 to 4k keeps its old badge forever if the
+    fingerprint covers only the config, because the CONFIG did not move."""
+    stamp = OverlayDefinition(name="dp", condition={"resolution.regex": "(?i)2160|4k"})
+    before = badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp], [("dp", False)],
+    )
+    after = badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp], [("dp", True)],
+    )
+    assert before != after
+
+
+def test_the_outcome_digest_is_order_significant_and_name_carrying():
+    """Two definitions that swap outcomes are a different item state, and a
+    name is part of what an outcome means -- otherwise `[True, False]` and
+    `[False, True]` would collide."""
+    a = OverlayDefinition(name="a", condition={"resolution": "4k"})
+    b = OverlayDefinition(name="b", condition={"resolution": "1080"})
+    one = badge_fingerprint(
+        "base-fp", "poster", {}, "manifest-sha", [a, b], [("a", True), ("b", False)],
+    )
+    two = badge_fingerprint(
+        "base-fp", "poster", {}, "manifest-sha", [a, b], [("a", False), ("b", True)],
+    )
+    assert one != two
+
+
 def test_blur_takes_the_maximum_across_every_matched_definition():
     """The per-item pre-pass semantics (p-overlay-b-recon.md, a fresh fetch
     of modules/overlays.py::run_overlays): max NN across every blur(NN)
