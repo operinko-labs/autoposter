@@ -1,0 +1,916 @@
+"""The playlists pass, through its real entry point.
+
+Nothing here calls a helper. The house rule this file exists to satisfy is the
+standing one -- two same-branch defects where the helper tests passed and the
+wired path differed -- so every gated behaviour is exercised as
+``reconcile_playlists(...)`` with the real config object: gate off, gate on,
+and a second pass.
+
+The fakes stand in for plexapi classes this suite has never exercised before,
+which is why ``tests/test_plexapi_playlist_contract.py`` was written first.
+Every method on ``FakePlaylist`` is one that file pins on the real
+``Playlist``, with the same argument names and the same caching behaviour --
+in particular ``items()`` hands back the membership as it stands and
+``removeItems``/``moveItem`` are the only things that consult it.
+"""
+import pytest
+from sqlalchemy import select
+
+# ``REGISTRY`` only. ``register()`` is deliberately NOT imported -- the fixture
+# below writes the dict directly, for the reason the executing-agent note at the
+# end of this plan gives -- and ``ruff``'s F401 is on (`select = ["E4","E7","E9","F"]`
+# in pyproject.toml, and only tests/test_config_safety.py is per-file-ignored),
+# so an import kept "for symmetry" fails the `ruff check src tests` gate.
+from autoposter.collections.builders.base import BuilderResult, REGISTRY
+from autoposter.collections.playlists import reconcile_playlists
+from autoposter.config.schema import PlaylistsConfig
+from autoposter.db.models import ManagedPlaylist
+
+
+# --- the plexapi stand-ins ---------------------------------------------------
+
+
+class FakeGuid:
+    def __init__(self, value):
+        self.id = value
+
+
+class FakeItem:
+    def __init__(self, rating_key, guids=(), item_type="movie"):
+        self.ratingKey = rating_key
+        self.guids = [FakeGuid(g) for g in guids]
+        self.type = item_type
+        self.listType = "video"
+
+
+class FakeField:
+    """``plexapi.media.Field`` -- a name and whether Plex locked it.
+
+    The lock is the marker the summary write leaves and the summary CLEAR
+    reads: this service's every summary write locks the field, so an unlocked
+    summary was never ours. Pinned on the real class in
+    ``tests/test_plexapi_playlist_contract.py``
+    (``test_a_summary_can_be_cleared_and_unlocked_through_the_same_call``).
+    """
+
+    def __init__(self, name, locked=True):
+        self.name = name
+        self.locked = locked
+
+
+class FakePlaylist:
+    def __init__(self, rating_key, title, items=(), summary=None, summary_locked=True):
+        self.ratingKey = int(rating_key)
+        self.title = title
+        self.summary = summary
+        # Plex fills ``fields`` from the object's XML; a playlist carrying a
+        # summary this service wrote carries the lock with it. ``summary_locked``
+        # is how a test says "an operator typed this one by hand" -- an unlocked
+        # summary is never cleared.
+        self.fields = [FakeField("summary", summary_locked)] if summary else []
+        self.smart = False
+        self.playlistType = "video"
+        self._members = list(items)
+        self.reloads = 0
+        self.deleted = False
+        self.deletes_raise = False
+        self.moves = []
+        self.writes = []
+
+    def items(self, libtype=None):
+        return list(self._members)
+
+    def addItems(self, items):
+        self.writes.append(("add", [i.ratingKey for i in items]))
+        self._members.extend(items)
+        return self
+
+    def removeItems(self, items):
+        self.writes.append(("remove", [i.ratingKey for i in items]))
+        keys = {str(i.ratingKey) for i in items}
+        self._members = [i for i in self._members if str(i.ratingKey) not in keys]
+        return self
+
+    def moveItem(self, item, after=None):
+        self.moves.append((item.ratingKey, None if after is None else after.ratingKey))
+        self._members = [i for i in self._members if i is not item]
+        position = 0 if after is None else self._members.index(after) + 1
+        self._members.insert(position, item)
+        return self
+
+    def reload(self):
+        self.reloads += 1
+        return self
+
+    def editSummary(self, summary, locked=True):
+        # ``editField`` sends ``{'summary.value': value or '', 'summary.locked':
+        # 1 if locked else 0}`` -- so a clear is ``editSummary("", locked=False)``
+        # and it both empties the text and hands the field back to Plex.
+        self.writes.append(("summary", summary))
+        self.summary = summary or None
+        self.fields = [FakeField("summary", locked)] if summary else []
+        return self
+
+    def delete(self):
+        if self.deletes_raise:
+            raise RuntimeError("https://plex.example/playlists/1?X-Plex-Token=SECRET")
+        self.deleted = True
+
+
+class FakeSection:
+    def __init__(self, items, section_type="movie"):
+        self._items = list(items)
+        self.type = section_type
+
+    def all(self):
+        return list(self._items)
+
+    def search(self, libtype=None):
+        return list(self._items)
+
+
+class FakeLibrary:
+    def __init__(self, sections):
+        self._sections = sections
+        self.opened = []
+
+    def section(self, name):
+        self.opened.append(name)
+        return self._sections[name]
+
+
+class FakeServer:
+    def __init__(self, sections, playlists=()):
+        self.library = FakeLibrary(sections)
+        self._playlists = list(playlists)
+        self.created = []
+        self.listings = 0
+
+    def playlists(self, **kwargs):
+        self.listings += 1
+        return list(self._playlists)
+
+    def createPlaylist(self, title, items=None, **kwargs):
+        playlist = FakePlaylist(9000 + len(self.created), title, items or [])
+        self.created.append(playlist)
+        self._playlists.append(playlist)
+        return playlist
+
+
+# --- the builder the definitions point at ------------------------------------
+
+
+class _Ids:
+    """A registered builder whose output the test sets."""
+
+    type_name = "playlist_test_ids"
+    ids: list = []
+    raises = False
+
+    async def build(self, ctx):
+        if type(self).raises:
+            raise RuntimeError("https://provider.example/list?apikey=SECRET")
+        return BuilderResult(ids=list(type(self).ids))
+
+
+@pytest.fixture(autouse=True)
+def a_registered_builder():
+    builder = _Ids()
+    _Ids.ids = []
+    _Ids.raises = False
+    REGISTRY[builder.type_name] = builder
+    try:
+        yield builder
+    finally:
+        REGISTRY.pop(builder.type_name, None)
+
+
+# --- the fixtures the tests build on -----------------------------------------
+
+
+MOVIE_A = FakeItem("11", ["tmdb://1"])
+MOVIE_B = FakeItem("12", ["tmdb://2"])
+SHOW_A = FakeItem("21", ["tmdb://1", "tvdb://9"], item_type="show")
+
+
+def _server(playlists=()):
+    return FakeServer(
+        {
+            "Movies": FakeSection([MOVIE_A, MOVIE_B]),
+            "TV Shows": FakeSection([SHOW_A], section_type="show"),
+        },
+        playlists=playlists,
+    )
+
+
+def _config(config_factory, **playlists):
+    config = config_factory()
+    config.playlists = PlaylistsConfig.model_validate(playlists)
+    return config
+
+
+def _definition(**overrides):
+    return {
+        "title": "Timeline",
+        "builder": "playlist_test_ids",
+        "params": {},
+        **overrides,
+    }
+
+
+# --- the entry-point law: off, on, again -------------------------------------
+
+
+async def test_the_gate_off_writes_nothing_and_says_what_it_would_do(
+    session, config_factory
+):
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    server = _server()
+    config = _config(config_factory, definitions=[_definition()])
+
+    run = await reconcile_playlists(session, server, config)
+
+    assert server.created == []
+    assert [r.title for r in run.playlists] == ["Timeline"]
+    assert run.playlists[0].actions == [
+        "would create 'Timeline' with 2 item(s) from Movies, TV Shows"
+    ]
+    rows = (await session.execute(select(ManagedPlaylist))).scalars().all()
+    assert rows == []
+
+
+async def test_the_gate_on_creates_the_playlist_and_records_the_row(
+    session, config_factory
+):
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    server = _server()
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    run = await reconcile_playlists(session, server, config)
+
+    assert len(server.created) == 1
+    created = server.created[0]
+    assert created.title == "Timeline"
+    assert [i.ratingKey for i in created.items()] == ["11", "12"]
+    assert run.playlists[0].actions == ["created 'Timeline' with 2 item(s)"]
+
+    row = (await session.execute(select(ManagedPlaylist))).scalar_one()
+    assert row.title == "Timeline"
+    assert row.plex_rating_key == str(created.ratingKey)
+    assert row.libraries == ["Movies", "TV Shows"]
+    assert row.member_count == 2
+    assert row.last_added == 2
+    assert row.last_removed == 0
+
+
+async def test_a_second_pass_with_the_same_definition_writes_nothing(
+    session, config_factory
+):
+    """The hash short-circuit, proved with a sentinel that cannot be
+    reproduced: the second pass is handed a playlist whose write methods would
+    record any call, and the assertion is that none was made."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    server = _server()
+    await reconcile_playlists(session, server, config)
+    created = server.created[0]
+    created.writes.clear()
+    created.moves.clear()
+    created.reloads = 0
+
+    second = FakeServer(
+        {
+            "Movies": FakeSection([MOVIE_A, MOVIE_B]),
+            "TV Shows": FakeSection([SHOW_A], section_type="show"),
+        },
+        playlists=[created],
+    )
+    run = await reconcile_playlists(session, second, config)
+
+    assert second.created == []
+    assert created.writes == []
+    assert created.moves == []
+    assert run.playlists[0].actions == []
+
+
+# --- ownership, both directions ---------------------------------------------
+
+
+async def test_a_same_title_playlist_we_did_not_create_is_never_ours(
+    session, config_factory
+):
+    """A2, the first direction. Title match alone is never ownership, so the
+    stranger's playlist is neither adopted nor overwritten -- and no second
+    playlist is created beside it, which would be the other way to get this
+    wrong."""
+    _Ids.ids = [("tmdb", "1")]
+    stranger = FakePlaylist(5555, "Timeline", [MOVIE_B])
+    server = _server(playlists=[stranger])
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    run = await reconcile_playlists(session, server, config)
+
+    assert server.created == []
+    assert stranger.writes == []
+    assert [i.ratingKey for i in stranger.items()] == ["12"]
+    assert run.playlists[0].actions == [
+        "'Timeline' already exists on this server and is not ours -- no "
+        "managed_playlists row names it. Leaving it untouched; rename it, or "
+        "rename this definition"
+    ]
+    assert (await session.execute(select(ManagedPlaylist))).scalars().all() == []
+
+
+async def test_one_of_ours_that_was_renamed_in_plex_is_still_ours(
+    session, config_factory
+):
+    """A2, the second direction. A rename does not move the rating key, so the
+    row still names the object -- and the rename is REPORTED rather than
+    reverted: the title an operator typed into Plex is not this pass's to
+    overwrite, and 98a has no adoption ceremony that would justify it."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    server = _server()
+    await reconcile_playlists(session, server, config)
+    ours = server.created[0]
+    ours.title = "Timeline (mine now)"
+    ours.writes.clear()
+
+    _Ids.ids = [("tmdb", "1")]
+    second = FakeServer(
+        {
+            "Movies": FakeSection([MOVIE_A, MOVIE_B]),
+            "TV Shows": FakeSection([SHOW_A], section_type="show"),
+        },
+        playlists=[ours],
+    )
+    run = await reconcile_playlists(session, second, config)
+
+    assert second.created == []
+    assert [i.ratingKey for i in ours.items()] == ["11"]
+    assert any("is titled 'Timeline (mine now)' in Plex" in a
+               for a in run.playlists[0].actions)
+
+
+async def test_a_stale_row_whose_playlist_is_gone_is_recreated(
+    session, config_factory
+):
+    """Ours was deleted in Plex. The row's rating key names nothing on the
+    server, so there is no owned playlist -- and no stranger holding the title
+    either, so the honest answer is to build it again and re-point the row."""
+    _Ids.ids = [("tmdb", "1")]
+    session.add(ManagedPlaylist(
+        title="Timeline", plex_rating_key="404404", definition_hash="stale",
+        libraries=["Movies"],
+    ))
+    await session.flush()
+    server = _server()
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    await reconcile_playlists(session, server, config)
+
+    assert len(server.created) == 1
+    row = (await session.execute(select(ManagedPlaylist))).scalar_one()
+    assert row.plex_rating_key == str(server.created[0].ratingKey)
+
+
+# --- the diff, and the order ------------------------------------------------
+
+
+async def test_an_update_adds_removes_and_reorders_by_diff_only(
+    session, config_factory
+):
+    """A8. The playlist is brought in line by deltas, never rebuilt -- and
+    ``reload()`` is called before ``removeItems`` because the removal resolves
+    each item through the CACHED membership (pinned in the contract file)."""
+    _Ids.ids = [("tmdb", "2"), ("tmdb", "1")]
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    ours = FakePlaylist(6001, "Timeline", [MOVIE_A, SHOW_A])
+    session.add(ManagedPlaylist(
+        title="Timeline", plex_rating_key="6001", definition_hash="old",
+        libraries=["Movies", "TV Shows"],
+    ))
+    await session.flush()
+    server = _server(playlists=[ours])
+
+    run = await reconcile_playlists(session, server, config)
+
+    kinds = [kind for kind, _ in ours.writes]
+    assert kinds == ["add", "remove"]
+    assert ours.reloads >= 1
+    assert [i.ratingKey for i in ours.items()] == ["12", "11"]
+    assert any("updated 'Timeline': +1 -1" in a for a in run.playlists[0].actions)
+
+
+async def test_append_mode_never_removes_and_never_reorders(session, config_factory):
+    _Ids.ids = [("tmdb", "2")]
+    config = _config(
+        config_factory, apply_to_plex=True,
+        definitions=[_definition(sync_mode="append")],
+    )
+    ours = FakePlaylist(6002, "Timeline", [SHOW_A])
+    session.add(ManagedPlaylist(
+        title="Timeline", plex_rating_key="6002", definition_hash="old",
+        libraries=["Movies", "TV Shows"],
+    ))
+    await session.flush()
+
+    await reconcile_playlists(session, _server(playlists=[ours]), config)
+
+    assert [kind for kind, _ in ours.writes] == ["add"]
+    assert ours.moves == []
+    assert [i.ratingKey for i in ours.items()] == ["21", "12"]
+
+
+async def test_a_deleted_summary_is_cleared_in_plex_and_only_once(
+    session, config_factory
+):
+    """Roadmap row 187's semantics, ported to the playlist side.
+
+    ``_members_hash`` puts ``summary or ""`` in its payload, so DELETING a
+    ``summary:`` from a definition changes the hash and reaches the update
+    branch -- where, with no clear, ``if definition.summary`` is false, nothing
+    is written, and the NEW hash is stored anyway. Every later pass then
+    short-circuits on it and the summary Plex holds is the old one forever: a
+    setting that reads as applied and silently is not, which is the exact
+    failure ``_REFUSED_PLAYLIST_FIELDS`` exists to prevent, reappearing on a
+    field this section does offer.
+
+    The clear is licensed here in a way it is not on the collections side.
+    There, ``summary_asserted`` exists because an absent effective summary may
+    be a ``tmdb_summary:`` pull that FAILED, and clearing on that fallback
+    would wipe what the last healthy pass wrote. A playlist definition has no
+    such fallback -- ``tmdb_summary`` is in ``_REFUSED_PLAYLIST_FIELDS`` -- so
+    an absent ``summary`` is always the definition asserting there is none. The
+    LOCK is what still gates the write: this service locks every summary it
+    sets, so an unlocked one was never ours.
+    """
+    _Ids.ids = [("tmdb", "1")]
+    server = _server()
+    await reconcile_playlists(session, server, _config(
+        config_factory, apply_to_plex=True,
+        definitions=[_definition(summary="The films, in release order.")],
+    ))
+    ours = server.created[0]
+    assert ours.summary == "The films, in release order."
+    ours.writes.clear()
+
+    # The same definition with `summary:` deleted.
+    without = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+    second = FakeServer(
+        {
+            "Movies": FakeSection([MOVIE_A, MOVIE_B]),
+            "TV Shows": FakeSection([SHOW_A], section_type="show"),
+        },
+        playlists=[ours],
+    )
+    run = await reconcile_playlists(session, second, without)
+
+    assert ours.summary is None
+    assert ours.writes == [("summary", "")]
+    assert ours.fields == [], "the clear must hand the field back to Plex, unlocked"
+    assert any("cleared the summary of 'Timeline'" in a
+               for a in run.playlists[0].actions)
+
+    # Once, not every pass: the stored hash now matches, and the field is
+    # unlocked anyway, so neither route can write again.
+    ours.writes.clear()
+    third = FakeServer(
+        {
+            "Movies": FakeSection([MOVIE_A, MOVIE_B]),
+            "TV Shows": FakeSection([SHOW_A], section_type="show"),
+        },
+        playlists=[ours],
+    )
+    await reconcile_playlists(session, third, without)
+
+    assert ours.writes == []
+
+
+async def test_a_summary_the_operator_typed_by_hand_is_never_cleared(
+    session, config_factory
+):
+    """The other half of the lock. An UNLOCKED summary is one this service never
+    wrote, so the clear above leaves it exactly where it is -- the same
+    narrowing ``reconcile._clear_collection_summary`` makes, for the same
+    reason."""
+    _Ids.ids = [("tmdb", "1")]
+    ours = FakePlaylist(
+        6005, "Timeline", [MOVIE_A], summary="Typed in Plex", summary_locked=False
+    )
+    session.add(ManagedPlaylist(
+        title="Timeline", plex_rating_key="6005", definition_hash="old",
+        libraries=["Movies"],
+    ))
+    await session.flush()
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    run = await reconcile_playlists(session, _server(playlists=[ours]), config)
+
+    assert ours.summary == "Typed in Plex"
+    assert ours.writes == []
+    assert not any("cleared the summary" in a for a in run.playlists[0].actions)
+
+
+async def test_the_libraries_are_searched_in_the_order_the_definition_names(
+    session, config_factory
+):
+    """A3, through the real pass: ``tmdb://1`` is owned by BOTH libraries, and
+    which item lands in the playlist is decided by the order written."""
+    _Ids.ids = [("tmdb", "1")]
+    config = _config(
+        config_factory, apply_to_plex=True,
+        definitions=[_definition(libraries=["TV Shows", "Movies"])],
+    )
+
+    await reconcile_playlists(session, (server := _server()), config)
+
+    assert [i.ratingKey for i in server.created[0].items()] == ["21"]
+
+
+async def test_the_owned_index_is_built_once_per_library_per_pass(
+    session, config_factory
+):
+    """Two definitions over the same two libraries pay for two
+    ``section.all()`` walks, not four -- the index cache is the pass's, not the
+    definition's. ``build_owned_index`` was measured at 1,954 movies in 2.8
+    seconds against production, so this is a real cost, not a micro-optimisation."""
+    _Ids.ids = [("tmdb", "1")]
+    config = _config(
+        config_factory, apply_to_plex=True,
+        definitions=[_definition(), _definition(title="Timeline Two")],
+    )
+    server = _server()
+
+    await reconcile_playlists(session, server, config)
+
+    assert server.library.opened.count("Movies") == 1
+    assert server.library.opened.count("TV Shows") == 1
+    assert server.listings == 1
+
+
+# --- the laws carried over from the collections engine -----------------------
+
+
+async def test_an_empty_source_leaves_a_live_playlist_untouched(
+    session, config_factory
+):
+    _Ids.ids = []
+    ours = FakePlaylist(6003, "Timeline", [MOVIE_A])
+    session.add(ManagedPlaylist(
+        title="Timeline", plex_rating_key="6003", definition_hash="old",
+        libraries=["Movies"],
+    ))
+    await session.flush()
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    run = await reconcile_playlists(session, _server(playlists=[ours]), config)
+
+    assert ours.writes == []
+    assert run.playlists[0].actions == [
+        "'Timeline': source returned no items; leaving the playlist untouched"
+    ]
+
+
+async def test_a_failed_builder_is_contained_and_never_echoes_its_message(
+    session, config_factory, caplog
+):
+    """The containment invariant. The builder raises with a URL carrying a
+    credential in the message; nothing derived from that exception may reach an
+    action string, and the empty result it is replaced with is what the law
+    above reads as "change nothing"."""
+    _Ids.raises = True
+    ours = FakePlaylist(6004, "Timeline", [MOVIE_A])
+    session.add(ManagedPlaylist(
+        title="Timeline", plex_rating_key="6004", definition_hash="old",
+        libraries=["Movies"],
+    ))
+    await session.flush()
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    run = await reconcile_playlists(session, _server(playlists=[ours]), config)
+
+    assert run.playlists[0].failed is True
+    assert run.failures == ["Timeline"]
+    assert ours.writes == []
+    for action in run.playlists[0].actions + run.actions:
+        assert "SECRET" not in action
+        assert "http" not in action
+    assert "SECRET" not in run.detail
+
+
+async def test_a_schedule_gate_skips_without_touching_the_playlist(
+    session, config_factory
+):
+    _Ids.ids = [("tmdb", "1")]
+    config = _config(
+        config_factory, apply_to_plex=True,
+        definitions=[_definition(schedule={"every_n_runs": 2})],
+    )
+
+    run = await reconcile_playlists(session, (server := _server()), config, run_index=1)
+
+    assert server.created == []
+    assert run.playlists[0].skipped is True
+    assert run.playlists[0].failed is False
+
+
+async def test_the_limit_is_applied_after_resolution(session, config_factory):
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    config = _config(
+        config_factory, apply_to_plex=True, definitions=[_definition(limit=1)]
+    )
+
+    await reconcile_playlists(session, (server := _server()), config)
+
+    assert [i.ratingKey for i in server.created[0].items()] == ["11"]
+
+
+# --- A7's real refusal point -------------------------------------------------
+
+
+async def test_a_non_video_library_is_refused_before_the_builder_runs(
+    session, config_factory
+):
+    """The config holds library NAMES and nothing that says a name is a Music
+    section, so this cannot be a config-load refusal. It is the earliest point
+    that CAN know -- the section is opened, its type is read, and the
+    definition refuses BEFORE the builder is asked for anything and before any
+    Plex write."""
+    _Ids.ids = [("tmdb", "1")]
+    server = FakeServer({
+        "Movies": FakeSection([MOVIE_A]),
+        "Music": FakeSection([], section_type="artist"),
+    })
+    config = config_factory()
+    config.collections.libraries = ["Movies", "Music"]
+    config.playlists = PlaylistsConfig.model_validate({
+        "apply_to_plex": True,
+        "definitions": [_definition(libraries=["Movies", "Music"])],
+    })
+
+    run = await reconcile_playlists(session, server, config)
+
+    assert server.created == []
+    assert run.playlists[0].failed is True
+    action = run.playlists[0].actions[0]
+    assert "'Music'" in action
+    assert "artist" in action
+    assert "Can not mix media types when building a playlist" in action
+
+
+async def test_a_movie_library_and_a_show_library_may_share_one_playlist(
+    session, config_factory
+):
+    """The other half of the same fact: Movie, Show, Season and Episode all
+    answer ``listType == 'video'``, so mixing THOSE is fine and is not refused."""
+    _Ids.ids = [("tmdb", "2"), ("tvdb", "9")]
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    await reconcile_playlists(session, (server := _server()), config)
+
+    assert [i.ratingKey for i in server.created[0].items()] == ["12", "21"]
+
+
+async def test_episode_level_members_are_refused_against_a_non_show_library(
+    session, config_factory
+):
+    """``engine._run_one``'s SECOND post-level guard, ported with the first.
+
+    ``builder_level: episode`` resolves against ``build_owned_index(section,
+    "episode")``, which is ``section.search(libtype="episode")`` -- a Movie
+    library answers that with nothing at all. Without this refusal the pass
+    reaches the empty-result law and reports "source returned no items;
+    leaving the playlist untouched": a SOURCE diagnosis for a SCOPE mistake,
+    which sends the operator to look at the list instead of at
+    ``libraries:``.
+
+    Scoped-library-wise rather than per-pass, because a playlist names several
+    and the engine's version only ever sees one: every library in scope is
+    checked, and any that is not a Show library refuses the whole definition
+    by name."""
+    _Ids.ids = [("tmdb", "1")]
+    config = _config(
+        config_factory, apply_to_plex=True,
+        definitions=[_definition(builder_level="episode",
+                                 libraries=["TV Shows", "Movies"])],
+    )
+
+    run = await reconcile_playlists(session, (server := _server()), config)
+
+    assert server.created == []
+    assert run.playlists[0].failed is True
+    assert run.playlists[0].skipped is True
+    action = run.playlists[0].actions[0]
+    assert "episode-level members exist only in a Show library" in action
+    assert "'Movies' (a Movie library)" in action
+    assert "'TV Shows'" not in action, (
+        "the Show library in scope is fine and must not be named as the problem"
+    )
+
+
+async def test_episode_level_members_are_allowed_when_every_library_is_a_show_one(
+    session, config_factory
+):
+    """The other half: the refusal above is about SCOPE, not about
+    ``builder_level`` itself, so a definition narrowed to Show libraries builds
+    normally."""
+    _Ids.ids = [("tvdb", "9")]
+    config = _config(
+        config_factory, apply_to_plex=True,
+        definitions=[_definition(builder_level="episode", libraries=["TV Shows"])],
+    )
+
+    run = await reconcile_playlists(session, (server := _server()), config)
+
+    assert run.playlists[0].failed is False
+    assert [i.ratingKey for i in server.created[0].items()] == ["21"]
+
+
+# --- the sweep ---------------------------------------------------------------
+
+
+async def test_the_sweep_reports_an_orphan_while_delete_unconfigured_is_off(
+    session, config_factory
+):
+    orphan = FakePlaylist(7001, "Gone", [MOVIE_A])
+    session.add(ManagedPlaylist(
+        title="Gone", plex_rating_key="7001", definition_hash="x", libraries=["Movies"],
+    ))
+    await session.flush()
+    config = _config(config_factory, apply_to_plex=True, definitions=[])
+
+    run = await reconcile_playlists(session, _server(playlists=[orphan]), config)
+
+    assert orphan.deleted is False
+    assert any(
+        "set playlists.delete_unconfigured to delete it" in a for a in run.actions
+    )
+    assert (await session.execute(select(ManagedPlaylist))).scalars().all() != []
+
+
+async def test_the_sweep_deletes_when_opted_in_and_leaves_an_audit_row(
+    session, config_factory
+):
+    from autoposter.db.models import EventLog
+
+    orphan = FakePlaylist(7002, "Gone", [MOVIE_A])
+    session.add(ManagedPlaylist(
+        title="Gone", plex_rating_key="7002", definition_hash="x", libraries=["Movies"],
+    ))
+    await session.flush()
+    config = _config(
+        config_factory, apply_to_plex=True, delete_unconfigured=True, definitions=[]
+    )
+
+    await reconcile_playlists(session, _server(playlists=[orphan]), config)
+
+    assert orphan.deleted is True
+    assert (await session.execute(select(ManagedPlaylist))).scalars().all() == []
+    event = (await session.execute(
+        select(EventLog).where(EventLog.event_type == "playlist_deleted")
+    )).scalar_one()
+    assert event.payload["title"] == "Gone"
+    assert event.payload["rating_key"] == "7002"
+    assert event.payload["plex_title"] == "Gone"
+
+
+async def test_the_sweep_names_the_live_title_when_ours_was_renamed_in_plex(
+    session, config_factory
+):
+    """The report and the audit row must name the playlist that actually went.
+
+    A rename in Plex is reported and never reverted, and ``row.title`` is the
+    table's unique key so it cannot move -- so once the definition is removed,
+    the row says one thing and the object on the server says another. For the
+    one irreversible action this phase performs, naming only the row's title
+    would leave an audit trail for a playlist that was never on the server
+    under that name. Both are named."""
+    from autoposter.db.models import EventLog
+
+    orphan = FakePlaylist(7004, "Gone (mine now)", [MOVIE_A])
+    session.add(ManagedPlaylist(
+        title="Gone", plex_rating_key="7004", definition_hash="x", libraries=["Movies"],
+    ))
+    await session.flush()
+    config = _config(
+        config_factory, apply_to_plex=True, delete_unconfigured=True, definitions=[]
+    )
+
+    run = await reconcile_playlists(session, _server(playlists=[orphan]), config)
+
+    assert orphan.deleted is True
+    assert any("'Gone' (titled 'Gone (mine now)' in Plex)" in a for a in run.actions)
+    event = (await session.execute(
+        select(EventLog).where(EventLog.event_type == "playlist_deleted")
+    )).scalar_one()
+    assert event.payload["title"] == "Gone"
+    assert event.payload["plex_title"] == "Gone (mine now)"
+    assert event.payload["rating_key"] == "7004"
+
+
+async def test_a_delete_that_raised_fails_the_pass(session, config_factory):
+    """A raised delete used to leave ``failed`` at its default, so
+    ``PlaylistRun.failures`` stayed empty, the job raised nothing and
+    ``scheduled_runs.last_status`` recorded ``ok`` for a pass in which an
+    irreversible operation errored. ``service.reconcile_libraries``' own
+    per-library handler is the precedent: it appends an outcome carrying an
+    error, and that is exactly what makes ``ReconcileResult.failed`` true.
+
+    The row survives, because the object did -- the next pass finds it again
+    and reports it again."""
+    orphan = FakePlaylist(7005, "Gone", [MOVIE_A])
+    orphan.deletes_raise = True
+    session.add(ManagedPlaylist(
+        title="Gone", plex_rating_key="7005", definition_hash="x", libraries=["Movies"],
+    ))
+    await session.flush()
+    config = _config(
+        config_factory, apply_to_plex=True, delete_unconfigured=True, definitions=[]
+    )
+
+    run = await reconcile_playlists(session, _server(playlists=[orphan]), config)
+
+    assert orphan.deleted is False
+    assert run.failed is True
+    assert run.failures == ["Gone"]
+    assert (await session.execute(select(ManagedPlaylist))).scalars().all() != []
+    # The failure carried a URL with a token in its message; nothing derived
+    # from it may reach an action string or the served detail.
+    for action in run.actions:
+        assert "SECRET" not in action
+        assert "http" not in action
+    assert "SECRET" not in run.detail
+
+
+async def test_past_the_cap_the_sweep_refuses_entirely(session, config_factory):
+    """Deleting "the first one" of three would be the same accident spread over
+    passes -- the ``cleanup.max_orphans`` precedent, and the collections sweep's
+    own rule."""
+    orphans = [FakePlaylist(7100 + n, "Gone %d" % n, [MOVIE_A]) for n in range(3)]
+    for orphan in orphans:
+        session.add(ManagedPlaylist(
+            title=orphan.title, plex_rating_key=str(orphan.ratingKey),
+            definition_hash="x", libraries=["Movies"],
+        ))
+    await session.flush()
+    config = _config(
+        config_factory, apply_to_plex=True, delete_unconfigured=True,
+        max_deletes=2, definitions=[],
+    )
+
+    run = await reconcile_playlists(session, _server(playlists=orphans), config)
+
+    assert [o.deleted for o in orphans] == [False, False, False]
+    assert any(
+        "refusing to delete 3 unconfigured playlist(s): more than the "
+        "max_deletes cap of 2" in a
+        for a in run.actions
+    )
+
+
+async def test_a_row_whose_playlist_is_gone_is_not_a_sweep_candidate(
+    session, config_factory
+):
+    """The object is already gone; there is nothing to delete and nothing to
+    report as deletable. The row stays, and a definition pointed back at that
+    title re-points it (see the stale-row test above)."""
+    session.add(ManagedPlaylist(
+        title="Gone", plex_rating_key="999999", definition_hash="x", libraries=["Movies"],
+    ))
+    await session.flush()
+    config = _config(
+        config_factory, apply_to_plex=True, delete_unconfigured=True, definitions=[]
+    )
+
+    run = await reconcile_playlists(session, _server(), config)
+
+    assert run.actions == []
+    assert (await session.execute(select(ManagedPlaylist))).scalars().all() != []
+
+
+async def test_the_sweep_does_not_run_against_a_filtered_subset(
+    session, config_factory
+):
+    """``title=`` narrows the pass to one definition, and against a subset every
+    definition left out looks unaccounted for -- the same rule
+    ``engine.run_library``'s ``sweep`` argument encodes."""
+    orphan = FakePlaylist(7003, "Gone", [MOVIE_A])
+    session.add(ManagedPlaylist(
+        title="Gone", plex_rating_key="7003", definition_hash="x", libraries=["Movies"],
+    ))
+    await session.flush()
+    _Ids.ids = [("tmdb", "1")]
+    config = _config(
+        config_factory, apply_to_plex=True, delete_unconfigured=True,
+        definitions=[_definition()],
+    )
+
+    run = await reconcile_playlists(session, _server(playlists=[orphan]), config,
+                                    title="Timeline")
+
+    assert orphan.deleted is False
+    assert not any("Gone" in a for a in run.actions)
