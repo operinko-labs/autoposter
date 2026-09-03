@@ -7,10 +7,13 @@ import { Failures } from "./Failures";
 const PARKED = {
   id: 41,
   kind: "render_poster",
-  payload: { item_id: 9 },
   attempts: 5,
   reason: "TMDB returned 503",
   updated_at: "2026-01-02T03:04:05Z",
+  title: "Andor",
+  item_kind: "episode",
+  season_number: 2,
+  episode_number: 5,
 };
 
 function json(body: unknown, status = 200): Response {
@@ -34,6 +37,35 @@ describe("Failures", () => {
     expect(screen.getByText(/render_poster/)).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
     expect(screen.getByText("1 parked job")).toBeInTheDocument();
+  });
+
+  it("names the item, with its season and episode numbers", async () => {
+    // The report this fix answers: an operator on Failures saw a job id and
+    // a bare reason class, with no way to tell which show, episode or movie
+    // it was about.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ jobs: [PARKED] })));
+
+    render(<Failures />);
+
+    expect(await screen.findByText("Andor")).toBeInTheDocument();
+    expect(screen.getByText("S02E05")).toBeInTheDocument();
+  });
+
+  it("shows a dash for a job whose payload named nothing", async () => {
+    const NAMELESS = {
+      ...PARKED,
+      id: 42,
+      title: null,
+      item_kind: null,
+      season_number: null,
+      episode_number: null,
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ jobs: [NAMELESS] })));
+
+    render(<Failures />);
+
+    expect(await screen.findByText("render_poster")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
   it("retries a job and drops the row once the server confirms", async () => {

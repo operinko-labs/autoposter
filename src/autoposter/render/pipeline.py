@@ -426,12 +426,23 @@ def adopted_fingerprint(
 class SourceRefused(Exception):
     """Downloaded artwork this service will not hand to ImageMagick.
 
-    A render job that raises this parks like any other failure. It carries no
-    ``served_detail``, so ``queue/worker._served_reason`` serves the bare class
-    name for ``job.last_error`` (roadmap row 209) while the full message --
-    which names the reason and the stage -- reaches the pod log through the
-    ``logger.warning(..., exc_info=True)`` on that handler's own except branch.
+    A render job that raises this parks like any other failure. It carries
+    ``served_detail = True`` (the row-213 marker, ``plex/client.ItemNotFound``'s
+    mechanism), reviewed safe for a served surface: every raise site below
+    interpolates only the stage label (``"the poster source"``, ``"the
+    clearlogo"``) and facts about the downloaded bytes themselves (dimensions,
+    pixel count, byte count, the decode exception's class name) or, at the
+    aggregate site, the item's own Plex rating key -- no URL, no filesystem
+    path, no token. So ``queue/worker._served_reason`` serves the
+    class-prefixed message (``"SourceRefused: <stage> did not decode after
+    download (DecompressionBombError)"``, e.g.) for ``job.last_error`` instead
+    of the bare class name -- the operator's only way to tell a corrupt-source
+    park from every other kind without opening the pod log. The full message
+    and traceback still reach the pod log through ``exc_info=True`` on the
+    handler's own logging line.
     """
+
+    served_detail = True
 
 
 # The render path's ceiling on one downloaded artwork body. Same value, and the

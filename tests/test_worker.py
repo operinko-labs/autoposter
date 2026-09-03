@@ -349,9 +349,13 @@ async def test_source_refused_parks_on_the_first_attempt(session):
     await session.refresh(job)
     assert job.state == "parked"
     assert job.attempts == 1
-    # Served class-name-only: SourceRefused carries no served_detail (its own
-    # docstring), so the full reason reaches only the pod log, never this row.
-    assert job.last_error == "SourceRefused"
+    # Served class-prefixed (the Failures-naming fix, roadmap row 213):
+    # SourceRefused now carries served_detail = True (its own docstring), so
+    # the operator sees the stage-bearing reason on Failures, not just the
+    # bare class name.
+    assert job.last_error == (
+        "SourceRefused: the poster source did not decode after download (OSError)"
+    )
 
 
 async def test_retry_after_a_source_refused_park_succeeds_once_the_source_is_fixed(session):

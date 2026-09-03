@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
@@ -115,6 +115,98 @@ async def test_parked_jobs_excludes_other_states(client, auth_headers, session):
 
     response = await client.get("/api/jobs/parked", headers=auth_headers)
     assert len(response.json()["jobs"]) == 1
+
+
+async def test_parked_jobs_lifts_the_naming_fields_from_a_real_render_intent_payload(
+    client, auth_headers, session
+):
+    """The report this fix answers: an operator on Failures saw a job id and a
+    bare reason class ("SourceRefused") with no way to tell which show,
+    episode or movie it was about. `api/jobs.py:134-138`'s precedent -- the
+    Jobs page lifts four payload fields out by name rather than echoing the
+    payload wholesale -- applies here too."""
+    from dataclasses import asdict
+
+    from autoposter.intake.arr import RenderIntent
+
+    intent = RenderIntent(
+        kind="episode", title="Andor", tmdb_id=64677, season_number=2, episode_number=5,
+    )
+    session.add(_parked_job(payload=asdict(intent)))
+    await session.commit()
+
+    response = await client.get("/api/jobs/parked", headers=auth_headers)
+    job = response.json()["jobs"][0]
+    assert job["title"] == "Andor"
+    assert job["item_kind"] == "episode"
+    assert job["season_number"] == 2
+    assert job["episode_number"] == 5
+    # Never echoed wholesale: the payload can carry provider ids and, for
+    # other kinds, source URLs.
+    assert "payload" not in job
+
+
+async def test_a_source_refused_park_serves_its_full_reason_on_failures(
+    client, auth_headers, session
+):
+    """Through the real entry points: the worker's own `run_once` parks the
+    job exactly as production does, and the Failures page's own endpoint is
+    what serves the reason. `SourceRefused` now carries `served_detail = True`
+    (roadmap row 213's contract), so the operator sees the stage-bearing
+    sentence instead of the bare class name."""
+    from dataclasses import asdict
+
+    from autoposter.intake.arr import RenderIntent
+    from autoposter.queue.jobs import enqueue
+    from autoposter.queue.worker import run_once
+    from autoposter.render.pipeline import SourceRefused
+
+    async def handler(session_, job):
+        exc = SourceRefused(
+            "the clearlogo did not decode after download (DecompressionBombError)"
+        )
+        exc.max_attempts = 1
+        raise exc
+
+    intent = RenderIntent(kind="movie", title="Sinners", tmdb_id=1234)
+    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await run_once(session, "worker-1", {"process_item": handler})
+
+    response = await client.get("/api/jobs/parked", headers=auth_headers)
+    job = response.json()["jobs"][0]
+    assert job["reason"] == (
+        "SourceRefused: the clearlogo did not decode after download "
+        "(DecompressionBombError)"
+    )
+
+
+async def test_a_runtime_error_park_keeps_the_bare_class_name_on_failures(
+    client, auth_headers, session
+):
+    """The contrast the test above is only meaningful against: an untagged
+    exception class stays class-name-only, per the class-name-only default
+    the row-213 marker is an exception to, not a replacement for."""
+    from dataclasses import asdict
+
+    from autoposter.intake.arr import RenderIntent
+    from autoposter.queue.jobs import MAX_ATTEMPTS, enqueue
+    from autoposter.queue.worker import run_once
+
+    async def handler(session_, job):
+        raise RuntimeError("provider exploded")
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=5678)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    for _ in range(MAX_ATTEMPTS):
+        job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        job.state = "pending"
+        job.run_after = func.now()
+        await session.commit()
+        await run_once(session, "worker-1", {"process_item": handler})
+
+    response = await client.get("/api/jobs/parked", headers=auth_headers)
+    job = response.json()["jobs"][0]
+    assert job["reason"] == "RuntimeError"
 
 
 # --- POST /api/jobs/{job_id}/retry ---

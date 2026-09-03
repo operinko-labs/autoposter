@@ -224,18 +224,26 @@ async def test_a_corrupt_clearlogo_is_refused_and_says_so(
     assert "clearlogo" in str(caught.value)
 
 
-def test_the_refusal_serves_its_class_name_and_nothing_else():
-    """Roadmap row 209: ``job.last_error`` is a SERVED column.
+def test_the_refusal_serves_its_full_reason_class_prefixed():
+    """Roadmap row 213 (the Failures-naming fix): ``job.last_error`` is a
+    SERVED column, and an operator reading it could until now tell only that
+    *something* was refused, never what or why.
 
-    ``SourceRefused`` carries no ``served_detail``, so the queue's
-    ``_served_reason`` reduces it to a bare class name; the message -- which
-    names the art kind, and could name a provider path -- reaches the pod log
-    instead, at ``run_once``'s ``logger.warning(..., exc_info=True)``.
+    ``SourceRefused`` now carries ``served_detail = True`` -- every raise site
+    was audited and interpolates only a stage label and facts about the
+    downloaded bytes (dimensions, byte count, the decode exception's class
+    name), never a URL, a filesystem path or a token -- so the queue's
+    ``_served_reason`` serves the class-prefixed message whole. The full text
+    reaches the pod log too, at ``run_once``'s ``logger.warning(...,
+    exc_info=True)``.
     """
     exc = SourceRefused("the poster source did not decode after download (OSError)")
 
-    assert _served_reason(exc) == "SourceRefused"
-    assert getattr(exc, "served_detail", False) is False
+    assert (
+        _served_reason(exc)
+        == "SourceRefused: the poster source did not decode after download (OSError)"
+    )
+    assert getattr(exc, "served_detail", False) is True
 
 
 @pytest.mark.imagemagick

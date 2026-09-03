@@ -26,6 +26,7 @@ from autoposter.api.candidates import router as candidates_router
 from autoposter.api.collections_builders import router as collections_builders_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.facts_backfill import router as facts_backfill_router
+from autoposter.api.jobs import _number, _text
 from autoposter.api.jobs import router as jobs_router
 from autoposter.api.logs import router as logs_router
 from autoposter.api.manual import router as manual_router
@@ -580,19 +581,27 @@ async def parked_jobs(
             .scalars()
             .all()
         )
-    return {
-        "jobs": [
+    jobs = []
+    for row in rows:
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        jobs.append(
             {
                 "id": row.id,
                 "kind": row.kind,
-                "payload": row.payload,
                 "attempts": row.attempts,
                 "reason": row.last_error,
                 "updated_at": row.updated_at,
+                # The four payload fields that name the item, and nothing
+                # else -- api/jobs.py's precedent for the Jobs page. The
+                # payload is never echoed wholesale: it can carry provider
+                # ids and, for other kinds, source URLs.
+                "title": _text(payload, "title"),
+                "item_kind": _text(payload, "kind"),
+                "season_number": _number(payload, "season_number"),
+                "episode_number": _number(payload, "episode_number"),
             }
-            for row in rows
-        ]
-    }
+        )
+    return {"jobs": jobs}
 
 
 @router.post("/jobs/{job_id}/retry")
