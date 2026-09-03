@@ -635,14 +635,30 @@ async def fetch_plex_generated_base(
     ``http``, ``plex``, ``base_url`` and the token header baked in --
     ``render_artifact`` calls the result with only ``rating_key`` and
     ``destination``, so the token is never in scope there at all.
+
+    M1: a non-2xx from Plex (a rotated token's 401, a 3xx now that
+    ``follow_redirects=False``, a PMS 5xx) raises ``httpx.HTTPStatusError``
+    from ``_download``'s ``raise_for_status()``. ``process_item``'s per-kind
+    containment only catches ``SourceRefused``, so left uncaught this would
+    fail the whole job over what used to be a quiet ``no_art`` row. Caught
+    here and logged once, by rating key and status code only -- never the
+    URL, which carries no token itself but is still not worth logging -- so
+    the caller falls through to the existing ``no_art`` outcome.
     """
     plex_item = await plex.fetch_item(rating_key)
     url = await generated_title_card_url(plex_item, base_url)
     if url is None:
         return None
-    return await _download(
-        http, url, destination, stage=stage, headers=headers, follow_redirects=False,
-    )
+    try:
+        return await _download(
+            http, url, destination, stage=stage, headers=headers, follow_redirects=False,
+        )
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Plex's generated frame fetch failed for %s: HTTP %s",
+            rating_key, exc.response.status_code,
+        )
+        return None
 
 
 # The events_log identity of a re-key, for the reason scheduler/prune.py's
@@ -1252,6 +1268,12 @@ async def render_artifact(
             if selection.candidate is None and not plex_generated:
                 render.status = "no_art"
                 render.detail = f"no {art_kind} art on any provider"
+                # L1: a row that rendered plex_generated earlier and now
+                # finds no media:// entry (generation turned off, bundle
+                # pruned) must stop claiming a fallback it no longer made --
+                # cleared the same way the write-back's own elif clears it.
+                if render.source_mode == "plex_generated":
+                    render.source_mode = "generate"
                 await session.commit()
                 return render
             if plex_generated:

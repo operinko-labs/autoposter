@@ -470,3 +470,85 @@ async def test_title_card_refusal_is_contained_and_carries_no_token(session, cap
     assert "the title_card source did not decode after download" in (title_card.detail or "")
     assert "tok" not in (title_card.detail or "")
     assert "X-Plex-Token" not in (title_card.detail or "")
+
+
+async def test_title_card_non_2xx_from_plex_records_no_art_through_process_item(
+    session, caplog,
+):
+    """M1: a non-2xx from Plex (a rotated token's 401, here) must not fail
+    the whole job the way a bad-frame refusal does above -- it is Plex's own
+    status, not a bad frame, so ``fetch_plex_generated_base`` swallows it and
+    the row records the same ``no_art`` outcome a listing with no media://
+    entry would. process_item must complete with no exception, and the
+    warning it logs must name the rating key and the status code without
+    ever carrying the token."""
+    import functools
+
+    import httpx
+
+    from autoposter.db.models import Render
+    from autoposter.render.pipeline import fetch_plex_generated_base
+
+    class _FakeEntry:
+        def __init__(self, rating_key, key):
+            self.ratingKey = rating_key
+            self.key = key
+
+    class _FakePlexItem:
+        def posters(self):
+            return [
+                _FakeEntry(
+                    "media://5/x.bundle/Contents/Thumbnails/thumb1.jpg",
+                    "/library/metadata/900/file?url=media%3A%2F%2F5%2Fx.bundle...",
+                ),
+            ]
+
+    class _FakePlex:
+        async def resolve(self, intent):
+            return ResolvedItem(
+                rating_key="900", library="Severance (2022)", kind="episode",
+                title="Chapter One", year=2022, season_number=1, episode_number=1,
+                root_folder="Severance (2022)", file_path="/mnt/Media/x.mkv",
+                art_url=None, tmdb_id=1, tvdb_id=None, imdb_id=None,
+            )
+
+        async def fetch_item(self, rating_key):
+            return _FakePlexItem()
+
+    class _NoArtProvider:
+        name = "TMDB"
+
+        async def fetch(self, request):
+            return []
+
+    async def unauthorized_handler(request):
+        return httpx.Response(401, content=b"unauthorized")
+
+    config = load_config(EXAMPLE)
+    config.badges.enabled = False
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(unauthorized_handler)) as http:
+        plex_generated_base = functools.partial(
+            fetch_plex_generated_base, http, _FakePlex(),
+            base_url="http://plex.local", headers={"X-Plex-Token": "tok"},
+        )
+        with caplog.at_level("WARNING"):
+            results = await pipeline.process_item(
+                session, config, http, _FakePlex(), [_NoArtProvider()],
+                RenderIntent(kind="episode", title="Chapter One", season_number=1, episode_number=1),
+                plex_generated_base=plex_generated_base,
+            )
+
+    title_card = next(r for r in results if r.art_kind == "title_card")
+    assert title_card.status == "no_art"
+    assert title_card.detail == "no title_card art on any provider"
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "900" in log_text
+    assert "401" in log_text
+    assert "tok" not in log_text
+    assert "X-Plex-Token" not in log_text
+
+    rows = (await session.execute(select(Render))).scalars().all()
+    title_card_row = next(r for r in rows if r.art_kind == "title_card")
+    assert title_card_row.status == "no_art"

@@ -1127,6 +1127,37 @@ async def test_title_card_art_appearing_later_re_renders_and_clears_the_fallback
     assert second.source_mode == "generate"
 
 
+async def test_title_card_losing_its_generated_frame_clears_stale_source_mode(
+    session, tmp_path, monkeypatch
+):
+    """L1: a row that rendered plex_generated earlier and later finds no
+    media:// entry (Plex frame generation turned off, bundle pruned) must
+    not keep claiming a fallback it no longer made -- the no_art arm clears
+    source_mode the same symmetric way the write-back's own elif does."""
+    config = _logo_test_config(tmp_path)
+    _stub_out_imagemagick(monkeypatch)
+    resolved = _episode_item()
+    provider = _TitleCardAwareProvider(has_art=False)
+    listing_without_generated = [
+        _FakeGeneratedEntry("upload://abc123", "/library/metadata/1/file?url=upload..."),
+    ]
+
+    async with _fake_http() as http:
+        first = await render_artifact(
+            session, config, http, resolved, "title_card", [provider],
+            plex_generated_base=_plex_generated_base_for(http, GENERATED_LISTING_NO_SELF_FEED),
+        )
+        assert first.source_mode == "plex_generated"
+
+        second = await render_artifact(
+            session, config, http, resolved, "title_card", [provider],
+            plex_generated_base=_plex_generated_base_for(http, listing_without_generated),
+        )
+
+    assert second.status == "no_art"
+    assert second.source_mode == "generate"
+
+
 async def test_title_card_fingerprint_is_stable_across_a_bumped_plex_thumb_epoch(
     session, tmp_path, monkeypatch
 ):
