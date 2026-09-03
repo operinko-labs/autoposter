@@ -382,10 +382,10 @@ def _draw_languages(poster: Image.Image, canvas: tuple[int, int], inputs: BadgeI
 def _variable_values(art_kind: str, inputs: BadgeInputs) -> dict[str, object]:
     """The item values an operator's <<variable>> tokens can resolve against.
 
-    Roadmap row 100, sub-phase C2a: eighteen of the data-source probe's 29
+    Roadmap row 100, sub-phase C2a: seventeen of the data-source probe's 29
     external rating sources now resolve here -- the eleven mdb_*, the four
-    plex_*, and the imdb_rating/tmdb_rating/user_rating aliases, all carried
-    in `inputs.ratings` and merged in below. The remaining eleven (four
+    plex_*, and the imdb_rating/tmdb_rating aliases, all carried
+    in `inputs.ratings` and merged in below. The remaining twelve (four
     omdb_*, three anidb_*, mal_rating, two trakt_*, serializd_rating,
     floppy_rating) each need a new external integration this service does not
     have (probe bucket (c), fenced pending an operator decision --

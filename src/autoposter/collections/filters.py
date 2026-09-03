@@ -567,8 +567,8 @@ _BOTH = ("movie", "show")
 # fifteen still read against the roadmap line they came from, plus C2a's
 # ``versions`` (A14) appended last. Column totals are asserted in
 # tests/test_collection_filters.py as the transcription's checksum:
-# 13 tag / 3 str / 3 int / 3 float / 3 date / 1 duration / 7 bool;
-# 12 listing / 5 tier2-batched / 1 tier2-deferred / 7 unprobed / 8 search-only;
+# 13 tag / 3 str / 4 int / 3 float / 3 date / 1 duration / 7 bool;
+# 13 listing / 5 tier2-batched / 1 tier2-deferred / 7 unprobed / 8 search-only;
 # 21 both-kinds / 12 movie-only / 1 show-only for ``kinds``, and
 # 24 / 8 / 1 / 1 for ``search_kinds`` (the fourth bucket, ``()``, is
 # ``versions``'s own: filterable but not searchable, so it lands in neither

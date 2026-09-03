@@ -5,8 +5,11 @@ Cited by section throughout.
 """
 import pytest
 
+from autoposter.badges.values import plex_native_ratings
+from autoposter.facts.mdblist import parse_ratings
 from autoposter.overlays.variables import (
     DOUBLE_MODS,
+    PLEX_NATIVE_RATINGS,
     RATING_SOURCES,
     SINGLE_MODS,
     VAR_MODS,
@@ -163,6 +166,24 @@ def test_the_rating_vocabulary_is_the_banked_twenty_nine():
     for native in ("audience_rating", "critic_rating", "user_rating"):
         assert native not in RATING_SOURCES
         assert native in VAR_MODS
+
+
+def test_parse_ratings_keys_match_the_mdb_rating_sources():
+    """L-5: nothing structurally coupled `parse_ratings`' produced keys to
+    the grammar's own vocabulary -- a rename on either side would go
+    unnoticed until an operator's token silently stopped resolving. This is
+    what would have caught M-A's stale docstring count."""
+    assert set(parse_ratings({})) == {n for n in RATING_SOURCES if n.startswith("mdb_")}
+
+
+def test_plex_native_ratings_keys_match_the_plex_rating_sources_plus_user_rating():
+    """L-5's `plex_*` equivalent: the four `plex_*` RATING_SOURCES entries
+    plus the one PLEX_NATIVE_RATINGS entry (`user_rating`) this function
+    actually produces -- `audience_rating`/`critic_rating` are sourced
+    elsewhere (imdb_rating/tmdb_rating aliases)."""
+    assert set(plex_native_ratings(object())) == {
+        n for n in RATING_SOURCES if n.startswith("plex_")
+    } | {n for n in PLEX_NATIVE_RATINGS if n == "user_rating"}
 
 
 def test_the_modifier_sets_are_the_deduplicated_union():
