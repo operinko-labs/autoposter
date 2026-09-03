@@ -4,6 +4,17 @@ import { apiFetch } from "../api/client";
 import type { ParkedJob, ParkedJobsResponse } from "../api/types";
 import { formatTime } from "../format";
 
+/** The season/episode suffix Plex users read titles by, or null when the job
+ * is not for an episode or a season. Jobs.tsx's own helper, duplicated here:
+ * both pages read it off the same four lifted payload fields. */
+function seasonEpisode(job: ParkedJob): string | null {
+  const { season_number: season, episode_number: episode } = job;
+  if (season === null) return null;
+  const padded = String(season).padStart(2, "0");
+  if (episode === null) return `S${padded}`;
+  return `S${padded}E${String(episode).padStart(2, "0")}`;
+}
+
 export function Failures() {
   const [jobs, setJobs] = useState<ParkedJob[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +88,7 @@ export function Failures() {
               <thead>
                 <tr>
                   <th>Job</th>
+                  <th>Item</th>
                   <th>Attempts</th>
                   <th>Parked</th>
                   <th>Reason</th>
@@ -84,38 +96,45 @@ export function Failures() {
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((job) => (
-                  <tr key={job.id}>
-                    <td>
-                      {job.kind}
-                      <span className="muted mono"> #{job.id}</span>
-                    </td>
-                    <td>{job.attempts}</td>
-                    <td className="muted cell-time">{formatTime(job.updated_at)}</td>
-                    {/* A parked reason is an unbounded provider error string.
-                        Unwrapped it widened the table past the viewport and
-                        took the buttons beside it off screen with it. */}
-                    <td className="mono cell-wrap">{job.reason ?? "—"}</td>
-                    <td>
-                      <div className="row-actions">
-                        <button
-                          type="button"
-                          disabled={busyId === job.id}
-                          onClick={() => void act(job, "retry")}
-                        >
-                          Retry
-                        </button>
-                        <button
-                          type="button"
-                          disabled={busyId === job.id}
-                          onClick={() => void act(job, "dismiss")}
-                        >
-                          Dismiss
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {jobs.map((job) => {
+                  const suffix = seasonEpisode(job);
+                  return (
+                    <tr key={job.id}>
+                      <td>
+                        {job.kind}
+                        <span className="muted mono"> #{job.id}</span>
+                      </td>
+                      <td>
+                        {job.title ?? <span className="muted">—</span>}
+                        {suffix !== null && <span className="muted mono"> {suffix}</span>}
+                      </td>
+                      <td>{job.attempts}</td>
+                      <td className="muted cell-time">{formatTime(job.updated_at)}</td>
+                      {/* A parked reason is an unbounded provider error string.
+                          Unwrapped it widened the table past the viewport and
+                          took the buttons beside it off screen with it. */}
+                      <td className="mono cell-wrap">{job.reason ?? "—"}</td>
+                      <td>
+                        <div className="row-actions">
+                          <button
+                            type="button"
+                            disabled={busyId === job.id}
+                            onClick={() => void act(job, "retry")}
+                          >
+                            Retry
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busyId === job.id}
+                            onClick={() => void act(job, "dismiss")}
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

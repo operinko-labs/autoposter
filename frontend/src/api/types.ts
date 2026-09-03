@@ -90,14 +90,21 @@ export function isDashboardSnapshot(value: unknown): value is DashboardSnapshot 
   );
 }
 
-/** GET /api/jobs/parked. `reason` is the job's last_error. */
+/** GET /api/jobs/parked. `reason` is the job's last_error.
+ *
+ * The raw payload is deliberately absent, matching GET /api/jobs: the server
+ * lifts out the four fields that name the item (api/jobs.py's precedent) and
+ * keeps the rest -- provider ids, source URLs -- in the database. */
 export interface ParkedJob {
   id: number;
   kind: string;
-  payload: Record<string, unknown> | null;
   attempts: number;
   reason: string | null;
   updated_at: string | null;
+  title: string | null;
+  item_kind: string | null;
+  season_number: number | null;
+  episode_number: number | null;
 }
 
 export interface ParkedJobsResponse {
