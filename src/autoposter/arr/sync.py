@@ -14,7 +14,7 @@ registers. Every payload built here pins it to ``False``.
 import logging
 from dataclasses import asdict, dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.arr.client import ArrClient, ArrKind
@@ -318,6 +318,77 @@ async def sync_section(
     )
 
 
+async def _stale_rows_by_key(
+    session: AsyncSession, kind: str, guids_by_key: dict[str, dict]
+) -> dict[str, MediaItem]:
+    """For each unknown Plex key, the ONE row already carrying its identity.
+
+    One query for the whole section, never one per item: the anti-join in
+    ``enqueue_unknown_items`` is a single query by design and this must not
+    undo that.
+
+    Deliberately NARROWER than the pipeline's own re-key predicate, which also
+    demands the same library. All this decides is WHICH intent to enqueue; the
+    pipeline re-checks the full predicate when the job runs, so a wrong guess
+    here costs exactly what today's code costs -- a job that forks and creates
+    a twin -- and can never cause a wrong re-key. The season/episode columns
+    are pinned NULL because this sweep only ever walks movie and show
+    sections.
+
+    Exactly one match or nothing: two rows carrying one identity is the
+    ``plex_merge`` job's pair, and enqueuing either one's key would pick a
+    side at random.
+    """
+    tmdb = {as_int(g.get("tmdb")) for g in guids_by_key.values()} - {None}
+    tvdb = {as_int(g.get("tvdb")) for g in guids_by_key.values()} - {None}
+    imdb = {g.get("imdb") for g in guids_by_key.values()} - {None}
+    clauses = []
+    if tmdb:
+        clauses.append(MediaItem.tmdb_id.in_(tmdb))
+    if tvdb:
+        clauses.append(MediaItem.tvdb_id.in_(tvdb))
+    if imdb:
+        clauses.append(MediaItem.imdb_id.in_(imdb))
+    if not clauses:
+        return {}
+
+    rows = (
+        await session.execute(
+            select(MediaItem)
+            .where(MediaItem.kind == kind)
+            .where(MediaItem.season_number.is_(None))
+            .where(MediaItem.episode_number.is_(None))
+            .where(or_(*clauses))
+            .order_by(MediaItem.id)
+        )
+    ).scalars().all()
+
+    by_tmdb: dict[int, list[MediaItem]] = {}
+    by_tvdb: dict[int, list[MediaItem]] = {}
+    by_imdb: dict[str, list[MediaItem]] = {}
+    for row in rows:
+        if row.tmdb_id is not None:
+            by_tmdb.setdefault(row.tmdb_id, []).append(row)
+        if row.tvdb_id is not None:
+            by_tvdb.setdefault(row.tvdb_id, []).append(row)
+        if row.imdb_id is not None:
+            by_imdb.setdefault(row.imdb_id, []).append(row)
+
+    matched: dict[str, MediaItem] = {}
+    for key, guids in guids_by_key.items():
+        found: list[MediaItem] = []
+        for row in (
+            by_tmdb.get(as_int(guids.get("tmdb")), [])
+            + by_tvdb.get(as_int(guids.get("tvdb")), [])
+            + by_imdb.get(guids.get("imdb"), [])
+        ):
+            if row not in found:
+                found.append(row)
+        if len(found) == 1:
+            matched[key] = found[0]
+    return matched
+
+
 async def enqueue_unknown_items(
     session: AsyncSession, items: list, kind: str, batch_size: int = 500
 ) -> int:
@@ -352,23 +423,54 @@ async def enqueue_unknown_items(
         ).scalars()
     )
 
+    guids_by_key = {
+        str(item.ratingKey): parse_guids(
+            [g.id for g in getattr(item, "guids", None) or []]
+        )
+        for item in items
+        if str(item.ratingKey) not in known
+    }
+    stale_by_key = await _stale_rows_by_key(session, kind, guids_by_key)
+
     enqueued = 0
     for item in items:
         if enqueued >= batch_size:
             break
-        if str(item.ratingKey) in known:
+        key = str(item.ratingKey)
+        if key in known:
             continue
 
-        guids = parse_guids([g.id for g in getattr(item, "guids", None) or []])
-        intent = RenderIntent(
-            kind=kind,
-            title=item.title,
-            tmdb_id=as_int(guids.get("tmdb")),
-            tvdb_id=as_int(guids.get("tvdb")),
-            imdb_id=guids.get("imdb"),
-            year=getattr(item, "year", None),
-            rating_key=str(item.ratingKey),
-        )
+        stale = stale_by_key.get(key)
+        if stale is not None:
+            # This item's identity already HAS a row, under a different key --
+            # it was re-matched or renumbered and its row never followed. The
+            # anti-join above cannot see that, because it compares keys, so
+            # this used to read as "unknown" and enqueue the LIVE key, which
+            # the resolver accepts without forking and which therefore upserts
+            # a second row with nothing to warn about. Enqueuing the STALE
+            # row's intent instead makes the job fork, which is what lets the
+            # pipeline's identity re-key repair the row rather than duplicate
+            # it.
+            intent = RenderIntent(
+                kind=kind,
+                title=stale.title,
+                tmdb_id=stale.tmdb_id,
+                tvdb_id=stale.tvdb_id,
+                imdb_id=stale.imdb_id,
+                year=stale.year,
+                rating_key=stale.rating_key,
+            )
+        else:
+            guids = guids_by_key[key]
+            intent = RenderIntent(
+                kind=kind,
+                title=item.title,
+                tmdb_id=as_int(guids.get("tmdb")),
+                tvdb_id=as_int(guids.get("tvdb")),
+                imdb_id=guids.get("imdb"),
+                year=getattr(item, "year", None),
+                rating_key=key,
+            )
         job_id = await enqueue(
             session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key,
         )

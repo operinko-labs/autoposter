@@ -120,3 +120,54 @@ def test_the_id_coercion_helper_is_shared_with_the_plex_client():
 
     assert sync.as_int is as_int
     assert not hasattr(sync, "_as_int")
+
+
+async def test_an_identity_already_stored_under_another_key_is_enqueued_from_that_row(
+    session,
+):
+    """Discovery's anti-join is on the KEY, so a re-matched item's live key is
+    absent from ``media_items`` (only its stale key is there), the item reads
+    as "unknown", and it is enqueued with the LIVE key -- which
+    ``_fetch_by_rating_key_sync`` accepts, so no fork occurs, no warning
+    fires, and ``_upsert_media_item`` inserts a twin. Running per section over
+    whole libraries, that made this the largest twin producer in the tree.
+
+    Enqueuing the intent built from the EXISTING ROW instead turns it from a
+    producer into a repairer: the job forks, the pipeline's identity re-key
+    fires, and the item is fixed rather than duplicated.
+    """
+    session.add(MediaItem(
+        rating_key="900", library="Movies", kind="movie", title="Old Title",
+        tmdb_id=438631, year=2021,
+    ))
+    await session.commit()
+
+    items = [FakeItem("901", "Dune", ["tmdb://438631"])]
+    count = await enqueue_unknown_items(session, items, "movie")
+
+    assert count == 1
+    jobs = await _pending_jobs(session)
+    assert jobs[0].payload["rating_key"] == "900", (
+        "discovery enqueued the live key and would have minted a twin"
+    )
+    assert jobs[0].payload["title"] == "Old Title"
+
+
+async def test_two_rows_for_one_identity_fall_back_to_the_live_key(session):
+    """Ambiguity picks no side. Two rows carrying one identity is the twin
+    merge's pair; enqueuing either one's key here would choose at random, so
+    discovery does exactly what it does today and leaves the pair alone."""
+    for key in ("900", "902"):
+        session.add(MediaItem(
+            rating_key=key, library="Movies", kind="movie", title="Old Title",
+            tmdb_id=438631, year=2021,
+        ))
+    await session.commit()
+
+    items = [FakeItem("901", "Dune", ["tmdb://438631"])]
+    count = await enqueue_unknown_items(session, items, "movie")
+
+    assert count == 1
+    jobs = await _pending_jobs(session)
+    assert jobs[0].payload["rating_key"] == "901"
+    assert jobs[0].payload["title"] == "Dune"
