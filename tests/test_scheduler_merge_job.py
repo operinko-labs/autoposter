@@ -328,6 +328,40 @@ async def test_children_are_repointed_before_the_delete_and_no_cascade_loss(sess
     assert rows[episode_id].parent_id == season_id
 
 
+async def test_a_child_inserted_between_scan_and_lock_is_still_repointed(session):
+    """F1 (MEDIUM): the old code gated the repoint on ``plan.children``, a
+    ``COUNT(*)`` taken at scan time, minutes before the lock. Inserting a
+    child does not write the stale row, so the ``(id, updated_at)`` guard
+    cannot see one that lands in the scan-to-lock window -- and a gate on the
+    stale count would leave it for the CASCADE delete to take silently. The
+    repoint must run off what actually exists under the lock."""
+    common = dict(kind="show", library="TV Shows", title="A Show",
+                  tmdb_id=None, tvdb_id=77)
+    stale = await _item(session, "100", **common)
+    survivor = await _item(session, "200", **common)
+    survivor_id = survivor.id
+    scan = await find_mergeable(session)
+    assert scan.plans[0].children == 0, "nothing under the stale row at scan time"
+
+    # Simulate the scan-to-lock window: a child lands under the stale row
+    # AFTER the plan was built but BEFORE merge() takes its lock.
+    season = await _item(session, "110", kind="season", library="TV Shows",
+                         title="A Show", tmdb_id=None, tvdb_id=77,
+                         season_number=1, parent_id=stale.id)
+    season_id = season.id
+
+    outcome = await merge(session, scan.plans)
+    await session.commit()
+
+    assert outcome.children_repointed == 1
+    session.expire_all()
+    rows = {row.id: row for row in (await session.execute(select(MediaItem))).scalars()}
+    assert season_id in rows, (
+        "the cascade took a child that arrived in the scan-to-lock window"
+    )
+    assert rows[season_id].parent_id == survivor_id
+
+
 async def test_a_dismissal_the_survivor_lacks_is_repointed(session):
     """A4: it is repointed and it usually re-surfaces, because the evidence
     hash covers whether the row is scored. That is the dismissal contract --
@@ -362,6 +396,33 @@ async def test_a_dismissal_both_rows_hold_is_dropped(session):
     await session.commit()
 
     assert outcome.dismissals_dropped == 1
+    session.expire_all()
+    assert (
+        await session.execute(select(ActionDismissal))
+    ).scalar_one().item_id == survivor_id
+
+
+async def test_a_dismissal_inserted_between_scan_and_lock_is_repointed(session):
+    """F2 (LOW): the old code decided repoint-vs-drop off art_kind sets
+    captured at scan time. api/action_center.py inserts a dismissal without
+    writing media_items, so the ``(id, updated_at)`` guard cannot see one
+    that lands in the scan-to-lock window -- a scan-time set would leave it
+    for the CASCADE delete to take silently instead of repointing it."""
+    stale, survivor = await _pair(session)
+    survivor_id = survivor.id
+    scan = await find_mergeable(session)
+    assert scan.plans[0].dismissals_repoint == [], "nothing on the stale row at scan time"
+
+    # Simulate the scan-to-lock window: a dismissal lands on the stale row
+    # AFTER the plan was built but BEFORE merge() takes its lock.
+    session.add(ActionDismissal(item_id=stale.id, art_kind="poster",
+                                flag="language_miss", evidence="c" * 64))
+    await session.commit()
+
+    outcome = await merge(session, scan.plans)
+    await session.commit()
+
+    assert outcome.dismissals_repointed == 1 and outcome.dismissals_dropped == 0
     session.expire_all()
     assert (
         await session.execute(select(ActionDismissal))

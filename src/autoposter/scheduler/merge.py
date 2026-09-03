@@ -626,18 +626,39 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
                 .values(item_id=survivor.id)
                 .execution_options(synchronize_session=False)
             )
-        if plan.dismissals_drop:
+        # Re-read dismissal art_kinds AFTER the lock rather than trusting the
+        # plan's scan-time sets: api/action_center.py inserts a dismissal
+        # without writing media_items, so the (id, updated_at) guard above
+        # cannot see one that arrived in the scan-to-lock window. Deciding
+        # repoint-vs-drop off this read means a dismissal that landed in that
+        # window is handled like one that existed at scan time, instead of
+        # being silently cascade-deleted with the stale row.
+        dismissal_kinds: dict[int, set[str]] = {stale.id: set(), survivor.id: set()}
+        for item_id, art_kind in (
+            await session.execute(
+                select(ActionDismissal.item_id, ActionDismissal.art_kind)
+                .where(ActionDismissal.item_id.in_((stale.id, survivor.id)))
+            )
+        ).all():
+            dismissal_kinds[item_id].add(art_kind)
+        dismissals_drop = sorted(
+            dismissal_kinds[stale.id] & dismissal_kinds[survivor.id]
+        )
+        dismissals_repoint = sorted(
+            dismissal_kinds[stale.id] - dismissal_kinds[survivor.id]
+        )
+        if dismissals_drop:
             await session.execute(
                 delete(ActionDismissal)
                 .where(ActionDismissal.item_id == stale.id)
-                .where(ActionDismissal.art_kind.in_(plan.dismissals_drop))
+                .where(ActionDismissal.art_kind.in_(dismissals_drop))
                 .execution_options(synchronize_session=False)
             )
-        if plan.dismissals_repoint:
+        if dismissals_repoint:
             await session.execute(
                 update(ActionDismissal)
                 .where(ActionDismissal.item_id == stale.id)
-                .where(ActionDismissal.art_kind.in_(plan.dismissals_repoint))
+                .where(ActionDismissal.art_kind.in_(dismissals_repoint))
                 .values(item_id=survivor.id)
                 .execution_options(synchronize_session=False)
             )
@@ -716,14 +737,21 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
             .execution_options(synchronize_session=False)
         )
 
-        # THE CASCADE LAW. This runs before the delete below, always.
-        if plan.children:
-            await session.execute(
-                update(MediaItem)
-                .where(MediaItem.parent_id == stale.id)
-                .values(parent_id=survivor.id)
-                .execution_options(synchronize_session=False)
-            )
+        # THE CASCADE LAW. This runs before the delete below, always -- and
+        # unconditionally, not gated on plan.children: that count is a
+        # scan-time COUNT(*), taken minutes before this lock, and a child
+        # inserted under the stale row in the scan-to-lock window writes no
+        # media_items row of its own, so the (id, updated_at) guard above
+        # cannot see it. Running the UPDATE unconditionally and counting its
+        # rowcount repoints that child too, instead of leaving it for the
+        # CASCADE delete below to take silently.
+        children_result = await session.execute(
+            update(MediaItem)
+            .where(MediaItem.parent_id == stale.id)
+            .values(parent_id=survivor.id)
+            .execution_options(synchronize_session=False)
+        )
+        children_repointed_now = children_result.rowcount
 
         removed = (
             await session.execute(
@@ -764,9 +792,9 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
                 "imdb_id": pair.stale.imdb_id,
                 "renders_repointed": plan.renders_repoint,
                 "renders_dropped": plan.renders_drop,
-                "dismissals_repointed": plan.dismissals_repoint,
-                "dismissals_dropped": plan.dismissals_drop,
-                "children_repointed": plan.children,
+                "dismissals_repointed": dismissals_repoint,
+                "dismissals_dropped": dismissals_drop,
+                "children_repointed": children_repointed_now,
                 "parent_id_carried": carried_parent,
                 "facts_repointed": plan.facts_repoint,
                 "logo_upload_key_carried": carried_logo,
@@ -787,9 +815,9 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
         merged.append((pair.stale.rating_key, pair.survivor.rating_key))
         renders_repointed += len(plan.renders_repoint)
         renders_dropped += len(plan.renders_drop)
-        dismissals_repointed += len(plan.dismissals_repoint)
-        dismissals_dropped += len(plan.dismissals_drop)
-        children_repointed += plan.children
+        dismissals_repointed += len(dismissals_repoint)
+        dismissals_dropped += len(dismissals_drop)
+        children_repointed += children_repointed_now
         parents_carried += int(carry_parent)
         facts_repointed += int(plan.facts_repoint)
         logos_carried += int(carry_logo)
