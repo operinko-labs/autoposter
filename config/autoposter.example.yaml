@@ -309,6 +309,17 @@ prune:
   max_prunes: 500 # refuse the pass if more than this many rows look unresolvable
   max_prune_share: 0.25 # ...or more than this share of the library; "almost everything is gone" means the server changed, not the library
 
+merge:
+  # Reconciles the pairs of media_items rows a re-matched item left behind
+  # before the pipeline learned to re-key: renders, facts, credits,
+  # dismissals and child rows move onto the surviving twin, then the stale
+  # row is deleted. Files are never touched -- both rows record the same
+  # asset paths. The dry run needs no Plex at all; the applied pass verifies
+  # each survivor against Plex before deleting its twin.
+  apply: false # dry run by default: report which pairs would merge, delete nothing
+  max_merges: 500 # refuse the pass if more than this many twin pairs are found
+  max_merge_share: 0.25 # ...or if the rows in those pairs (two per pair) are more than this share of the library; that means the identity predicate is matching something it should not
+
 # Roadmap row 36 -- Plex's own housekeeping, run on scheduler.maintenance_days.
 # All three off: empty_trash especially, because Plex's auto-empty-trash is off
 # on this deployment and a disappearance therefore means somebody meant it.
@@ -347,6 +358,7 @@ scheduler:
   maintenance_days: 7 # Plex maintenance pass cadence
   cleanup_days: 7 # orphaned asset cleanup cadence
   prune_days: 7 # media_items prune cadence
+  merge_days: 7 # media_items twin merge cadence
   # cleanup_apply is not a setting here -- see cleanup.apply above, which
   # already governs whether the cleanup pass writes (dry run by default)
 

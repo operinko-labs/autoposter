@@ -2153,6 +2153,47 @@ class PruneConfig(BaseModel):
     )
 
 
+class MergeConfig(BaseModel):
+    """Merging the twin ``media_items`` rows a re-key was too late to prevent.
+    See ``scheduler/merge.py``.
+
+    Dry run by default, the same posture as ``prune.apply`` and
+    ``cleanup.apply``, and for the stricter of the two reasons: this pass
+    deletes a row. What makes it safer than the prune is that the row's
+    contents are not lost -- renders, facts, credits, dismissals and children
+    are repointed onto the surviving twin first -- but a wrong pair is still
+    two items collapsed into one, so it stays off until a dry-run report reads
+    the way an operator expects.
+
+    The dry run is probe-free on purpose: it elects the survivor by newest
+    rating key and touches no Plex at all, so the report can be read during an
+    outage. The APPLIED pass probes both rows by key and merges only the pair
+    where the survivor's key is accepted and the stale one's is not.
+    """
+
+    apply: bool = Field(
+        default=False,
+        description="Actually merge twin media_items rows; off only reports which pairs would merge.",
+    )
+    # Sanity caps mirroring prune.max_prunes / max_prune_share. The failure
+    # they catch is different from the prune's, and worse: an identity
+    # predicate that is wrong -- a library rename that makes two libraries
+    # read as one, an import that duplicated external ids -- makes a large
+    # part of the library look like twins at once, and every merge deletes a
+    # row. Past either cap the pass refuses and reports the numbers.
+    max_merges: int = Field(
+        default=500,
+        description="Refuse a pass whose twin-pair count exceeds this, and report the numbers instead of merging anything.",
+    )
+    max_merge_share: float = Field(
+        default=0.25,
+        description=(
+            "Refuse a pass whose twin-pair count exceeds this share of the "
+            "library, and report the numbers instead of merging anything."
+        ),
+    )
+
+
 class AdoptConfig(BaseModel):
     """One-time adoption of an existing library: ``python -m autoposter.adopt``.
 
@@ -2311,6 +2352,10 @@ class SchedulerConfig(BaseModel):
     prune_days: int = Field(
         default=7,
         description="How often the media_items prune sweep runs.",
+    )
+    merge_days: int = Field(
+        default=7,
+        description="How often the media_items twin merge runs.",
     )
 
 
@@ -2580,6 +2625,10 @@ class Config(BaseModel):
     prune: PruneConfig = Field(
         default_factory=PruneConfig,
         description="Retiring media_items rows Plex can no longer resolve.",
+    )
+    merge: MergeConfig = Field(
+        default_factory=MergeConfig,
+        description="Merging twin media_items rows left by re-matched items.",
     )
     maintenance: MaintenanceConfig = Field(
         default_factory=MaintenanceConfig,

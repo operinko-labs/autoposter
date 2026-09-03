@@ -808,6 +808,12 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   the ones it cannot. **Whether it deletes is not a `scheduler` setting** —
   see `prune.apply` below, which defaults to `false` (dry run: report which
   rows would go).
+- `merge_days` (default `7`) — cadence for the `media_items` twin merge: a
+  pure-SQL scan for pairs of rows carrying one identity under two rating keys,
+  reconciling each pair onto the surviving row. **Whether it merges is not a
+  `scheduler` setting** — see `merge.apply` below, which defaults to `false`
+  (dry run: report which pairs would merge). The scan itself asks Plex
+  nothing, so the dry-run report is readable even while Plex is down.
 
 ### Orphaned-asset cleanup: what it can and cannot find
 
@@ -856,6 +862,12 @@ re-matched under a new rating key — leaves its `media_items` row behind.
 Nothing else removes it, so every full pass re-enqueues that row, the job
 cannot find the item, and it parks. Forever, and once per pass. The
 `plex_prune` job retires those rows.
+
+One of those three causes is **not** this job's, and never was: an item
+**re-matched under a new rating key** still resolves — by the same GUID walk
+that split its row in two — so it is not "gone" by this sweep's definition and
+`plex_prune` correctly reports zero for it. That population belongs to the
+twin merge below.
 
 **What "gone" means here is wider than "deleted from Plex."** A row is
 prunable when the *render pipeline* cannot resolve it, and the pipeline never
@@ -945,6 +957,187 @@ consider that one yourself before a large applied prune. Pruning only some
 episodes of a surviving show leaves no orphaned directory at all — those
 artifacts live under the show's folder, and in the re-match case the new rows
 reuse the same paths.
+
+### Merging the twin rows a re-matched item left behind
+
+Plex's rating key is a *hint*, not an identity: a re-match or a library
+rebuild renumbers an item, and until the render pipeline learned to follow
+that, a second `media_items` row appeared under the new key. The original kept
+its render rows, its ratings and facts, its credits, its dismissals, its
+uploaded-clearlogo marker and its child seasons and episodes — and was never
+written again. It is why a library could sit at "16,831 of 17,242 scored"
+forever while the artwork on screen looked fresh: the *twin's* render rewrote
+the same file (asset paths are keyed by library and root folder, never by the
+rating key), and only the twin's row got the score.
+
+The pipeline no longer forks: when it resolves an item to a key no row holds
+and exactly one row carries that identity — same kind, same library, same
+season and episode numbers, and at least one external id in common — it moves
+that row onto the live key and records the move in `events_log`
+(`source = 'rekey'`, `event_type = 'media_item_rekeyed'`, carrying both keys).
+Nothing on disk changes.
+
+```sql
+SELECT payload->>'old_rating_key', payload->>'new_rating_key',
+       payload->>'title', received_at
+  FROM events_log WHERE event_type = 'media_item_rekeyed'
+ ORDER BY received_at DESC;
+```
+
+The `plex_merge` job reconciles the pairs that already existed. Per pair, with
+the row carrying the **newer** key surviving:
+
+- **renders** — for each art kind: the survivor lacks it → the row is
+  repointed; both have it → the stale one is deleted. The two counts are
+  reported **separately, and they mean opposite things**: a deleted duplicate
+  shrinks the Action Center's denominator (honest accounting — that row was
+  never going to be scored), while a repointed row stays in the denominator
+  and becomes *finishable*, because its item now carries the live key. Do not
+  read a falling total as data loss.
+- **dismissals** — repointed, and most of them will come back on the queue.
+  That is the dismissal contract, not a fault: a dismissal is keyed by a hash
+  of the render facts the queue judges, one of which is whether the row is
+  scored — and the survivor is scored where the stale row was not, so the hash
+  no longer matches and the row honestly re-surfaces.
+- **facts, credits and the clearlogo marker** — carried onto the survivor
+  where it has none. `logo_upload_key` especially: it is what makes the logo
+  revert safe, and losing it would mean that item's logo could never be
+  reverted again.
+- **child rows** — every season and episode under the stale row is repointed
+  onto the survivor **before** it is deleted. `media_items.parent_id` cascades,
+  so the other order would take live children with it.
+- **queued jobs** — pending, deferred and parked `process_item` jobs are
+  dismissed for **both** rating keys: an in-flight payload can name the dead
+  key (it was queued before the fork) or the survivor's (the graph it was
+  queued against has just changed). Running jobs are never interrupted; they
+  park themselves and the next pass dismisses them.
+
+Each merge leaves one `events_log` row (`source = 'merge'`,
+`event_type = 'media_items_merged'`) carrying both identities, every count and
+the carried `logo_upload_key`.
+
+```sql
+SELECT payload->>'stale_rating_key', payload->>'survivor_rating_key',
+       payload->>'title', received_at
+  FROM events_log WHERE event_type = 'media_items_merged'
+ ORDER BY received_at DESC;
+```
+
+- `merge.apply` (default `false`) — dry run: report which pairs would merge
+  and change nothing. The dry run asks Plex nothing at all, so it is readable
+  during an outage.
+- `merge.max_merges` (default `500`) — refuse the pass if more than this many
+  twin pairs are found.
+- `merge.max_merge_share` (default `0.25`) — refuse if more than this share of
+  the library is, which catches the same failure on a library too small for
+  the absolute cap. Only applied once there are at least 20 rows.
+
+Five things bound what one pass can do:
+
+1. **The applied pass refuses while Plex is unhealthy**, because every merge
+   ends in a delete and the surviving row cannot be verified. The *dry run*
+   deliberately does not refuse: the scan is pure SQL, and an outage must not
+   cost you the one report that is always available.
+2. **Every pair is verified against Plex by key before anything is deleted.**
+   The dry run elects the survivor by the newer rating key; the applied pass
+   asks Plex whether each row's own key is still accepted, and merges only the
+   pair where the survivor's is and the stale one's is not. A pair whose rows
+   **both** resolve is two real Plex items sharing one identity — a duplicate
+   in your library, and your decision, not this job's. A pair where **neither**
+   resolves is `plex_prune`'s population. A pair where the *older* key is the
+   live one means the election was wrong about it. All three are refused and
+   counted separately in the summary.
+3. **A cluster of three or more rows for one identity is ambiguous** and is
+   left alone, as is a pair whose keys cannot be ordered as numbers.
+4. **A pair that changed under the pass is skipped whole.** Both rows are
+   locked and the check runs before anything is written, so a skipped pair is
+   never half-merged.
+5. **The election-disagreed, ambiguous and unelectable populations are
+   refused every run, not just once.** All three are re-derived identically
+   on each pass and cannot resolve themselves — the same cluster or pair is
+   reported forever until something outside this job changes it. The dry-run
+   report names them; **resolve the identity in Plex** (so the next scan sees
+   one row, not several or none orderable) or **dismiss the row** if it is
+   never going to be fixed.
+
+The job also reports two counts it is *not* responsible for, so they are not
+mistaken for its work: how many unscored rows have **no identity twin at all**
+(an adopted season or episode stores its own external ids while the resolver
+reports the show's, so those pairs are invisible to this predicate — that is a
+known, deliberate limitation), and how many pairs have **no scored render on
+either row** (a different defect wearing this one's clothes).
+
+**Nothing on disk moves, in either direction.** Both rows of a pair record
+byte-identical `asset_path` strings, so a repointed render leaves its file
+where it is and a deleted one leaves it too. `asset_cleanup` needs no change,
+and its previous reports of "0 moved" were correct.
+
+**The order to run this in.**
+
+1. Deploy. The pipeline stops forking immediately.
+2. Let one ratings-drift cadence and one `arr_sync` cadence pass (or press the
+   Action Center's backfill), so re-matched rows get re-keyed as they are
+   visited. Re-keys are visible in `events_log` with the query above.
+3. Run `plex_merge` from the dashboard with `merge.apply: false` and **read
+   the report.** Cross-check it against the sizing queries below.
+4. Set `merge.apply: true`, run it again, and read the summary.
+5. Press the Action Center's quality backfill until it reports `complete`.
+   With forking stopped and the backlog merged, that is now a terminating
+   process.
+
+**Re-running the one-time adoption re-creates twins.** `python -m
+autoposter.adopt` upserts directly from the live library and does not consult
+the identity predicate, so an adoption run over a library this service has
+already been managing will insert a row for every item whose key has moved.
+That is acceptable for a one-time cutover tool — run `plex_merge` afterwards.
+
+**Sizing it yourself, before trusting any report.** Both queries are pure SQL,
+need no Plex, and are safe on a live database. The first counts the pairs; the
+second splits the render outcome into repoints and drops, and its
+`twin_also_unscored` column is the "neither row is scored" population the job
+reports separately.
+
+```sql
+SELECT s.kind,
+       count(*)                                                            AS twin_pairs,
+       count(*) FILTER (WHERE t.rating_key::bigint > s.rating_key::bigint) AS newer_is_twin
+  FROM media_items s
+  JOIN media_items t
+    ON t.id <> s.id
+   AND t.kind = s.kind
+   AND t.library = s.library
+   AND t.season_number  IS NOT DISTINCT FROM s.season_number
+   AND t.episode_number IS NOT DISTINCT FROM s.episode_number
+   AND ( (s.tmdb_id IS NOT NULL AND t.tmdb_id = s.tmdb_id)
+      OR (s.tvdb_id IS NOT NULL AND t.tvdb_id = s.tvdb_id)
+      OR (s.imdb_id IS NOT NULL AND t.imdb_id = s.imdb_id) )
+ GROUP BY 1 ORDER BY 2 DESC;
+```
+
+```sql
+WITH pair AS (
+  SELECT s.id AS stale_id, t.id AS twin_id
+    FROM media_items s JOIN media_items t
+      ON t.id <> s.id AND t.kind = s.kind AND t.library = s.library
+     AND t.season_number  IS NOT DISTINCT FROM s.season_number
+     AND t.episode_number IS NOT DISTINCT FROM s.episode_number
+     AND ( (s.tmdb_id IS NOT NULL AND t.tmdb_id = s.tmdb_id)
+        OR (s.tvdb_id IS NOT NULL AND t.tvdb_id = s.tvdb_id)
+        OR (s.imdb_id IS NOT NULL AND t.imdb_id = s.imdb_id) )
+)
+SELECT count(*) FILTER (WHERE tr.id IS NULL)     AS would_repoint,
+       count(*) FILTER (WHERE tr.id IS NOT NULL) AS would_delete,
+       count(*) FILTER (WHERE tr.id IS NOT NULL
+                          AND tr.quality_scored_at IS NULL) AS twin_also_unscored
+  FROM pair p
+  JOIN renders sr ON sr.item_id = p.stale_id
+  LEFT JOIN renders tr ON tr.item_id = p.twin_id AND tr.art_kind = sr.art_kind;
+```
+
+Note that the first query counts each pair **twice** (once from each side),
+and that both queries include `library` in the join because the job's identity
+predicate does — a 4K copy and an HD copy of one film in two libraries are two
+items and are never merged.
 
 The IMDb dataset refresh (`operations.imdb_refresh_hours`) deliberately does
 **not** run on this scheduler — it keeps its own separate background loop.

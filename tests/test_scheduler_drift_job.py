@@ -246,3 +246,24 @@ def test_make_credits_job_reads_its_cadence_live():
     holder.swap(SimpleNamespace(scheduler=SimpleNamespace(credits_scan_days=1)))
 
     assert job.current_interval() == 24 * 3600
+
+
+async def test_the_enqueued_intent_carries_the_rows_rating_key(session):
+    """The first of the two silent twin producers.
+
+    ``_stamp_and_enqueue`` built its ``RenderIntent`` with no ``rating_key``
+    field at all, so every drift job went straight to the GUID walk, resolved
+    the LIVE key and upserted a second row -- silently, because the pipeline's
+    fork warning only fires when the intent carried a key to disagree with.
+    Carrying the key is what every other row-derived intent already does
+    (``prune.intent_for``, ``routes._enqueue_reprocess``,
+    ``action_center._reprocess_entries``).
+    """
+    item = await _make_item(session, title="Stale Movie", tmdb_id=42)
+    await _make_facts(session, item.id, age_days=8)
+
+    count = await sweep_stale_facts(session, max_age_days=7, batch_size=500)
+
+    assert count == 1
+    (job,) = (await session.execute(select(Job).order_by(Job.id))).scalars().all()
+    assert job.payload["rating_key"] == item.rating_key

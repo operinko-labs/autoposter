@@ -98,6 +98,7 @@ SCHEDULED_JOB_NAMES = frozenset({
     "arr_sync",
     "asset_cleanup",
     "plex_prune",
+    "plex_merge",
     "stale_job_reclaim",
 })
 

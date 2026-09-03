@@ -911,7 +911,7 @@ async def test_a_discovery_enqueued_item_resolves_by_rating_key_when_the_crosswa
 
     shows.getGuid = _crosswalk_always_misses
 
-    enqueued = await enqueue_unknown_items(session, [show], "show")
+    enqueued = await enqueue_unknown_items(session, [show], "show", "Shows")
     assert enqueued == 1
     job = (await session.execute(select(Job))).scalars().one()
     intent = RenderIntent(**job.payload)
@@ -1100,3 +1100,44 @@ async def test_exists_many_offloads_the_whole_walk_in_one_thread(server, monkeyp
     assert threads and threading.current_thread() not in threads, (
         "the probes ran on the event loop thread"
     )
+
+
+async def test_keys_resolve_answers_only_for_the_stored_key(server):
+    """The twin merge's survivor election, which ``exists_many`` cannot make.
+
+    ``exists_many`` shares ``_search_sync`` with ``resolve``, so it falls
+    through to the GUID walk on any rating-key refusal -- a re-matched item
+    "exists" under both its stale key and its live one, and the election
+    between two twin rows would be a coin toss. ``keys_resolve`` asks
+    ``_fetch_by_rating_key_sync`` and nothing else: it answers whether THIS
+    row's stored key is still the item's key.
+    """
+    movie = FakeItem(
+        "12345", "Dune: Part Two", 2024,
+        "/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv",
+        ["tmdb://693134", "imdb://tt15239678"], library_section_title="Movies",
+    )
+    movies = FakeSection("Movies", "/mnt/Media/Movies", [movie])
+    live_server = FakeServer([movies], items_by_key={12345: movie})
+    client = PlexClient(server=live_server, excluded_libraries=[])
+
+    live = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
+                        rating_key="12345")
+    stale = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
+                         rating_key="999")
+
+    assert await client.keys_resolve([live, stale]) == [True, False]
+    assert movies.getguid_calls == [], (
+        "keys_resolve must never fall through to the GUID walk -- that is the "
+        "very fallback it exists to bypass"
+    )
+
+
+async def test_keys_resolve_refuses_an_intent_with_no_stored_key(server):
+    """No key means nothing to accept. A webhook-born intent carries none by
+    design, and answering True for it would elect a survivor on no evidence."""
+    client = PlexClient(server=server, excluded_libraries=["Photos"])
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134)
+
+    assert await client.keys_resolve([intent]) == [False]
+    assert await client.keys_resolve([]) == []

@@ -8,8 +8,9 @@ from pathlib import Path
 
 import httpx
 from PIL import Image, UnidentifiedImageError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.badges.compose import (
@@ -25,7 +26,7 @@ from autoposter.badges.values import (
     video_format_text,
 )
 from autoposter.config.schema import Config
-from autoposter.db.models import ItemFacts, MediaItem, Render
+from autoposter.db.models import EventLog, ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
@@ -595,6 +596,206 @@ async def _download(
         destination.unlink(missing_ok=True)
         raise
     return digest.hexdigest()
+
+
+# The events_log identity of a re-key, for the reason scheduler/prune.py's
+# PRUNE_SOURCE/PRUNE_EVENT are constants: the audit row is the only surviving
+# record that a row's Plex key moved under it, and a typo in either would make
+# a library's worth of them unfindable.
+REKEY_SOURCE = "rekey"
+REKEY_EVENT = "media_item_rekeyed"
+
+
+def _identity_clauses(item: ResolvedItem) -> list:
+    """The external-id half of the identity predicate, as OR-able clauses.
+
+    Empty when the resolved item carries no external id at all. That is the
+    "never a title-only match" rule expressed as an absence rather than as a
+    special case: with no clause to OR there is no identity to match on, and
+    every caller reads the empty list as a refusal.
+    """
+    clauses = []
+    if item.tmdb_id is not None:
+        clauses.append(MediaItem.tmdb_id == item.tmdb_id)
+    if item.tvdb_id is not None:
+        clauses.append(MediaItem.tvdb_id == item.tvdb_id)
+    if item.imdb_id is not None:
+        clauses.append(MediaItem.imdb_id == item.imdb_id)
+    return clauses
+
+
+async def _identity_candidates(
+    session: AsyncSession, item: ResolvedItem
+) -> list[MediaItem]:
+    """Every row carrying ``item``'s identity under some OTHER key, locked.
+
+    Its own function for two reasons. It is where the ``FOR UPDATE`` lives,
+    and a lock taken half-way down a longer function is the kind of thing that
+    gets moved by accident; and it is the seam the lost-race test wraps, which
+    needs somewhere to land a competing insert between the free-key check and
+    the update.
+
+    The predicate is the same cross-check ``_fetch_by_rating_key_sync``
+    already applies, and adds no new field: same kind, same library, the same
+    season/episode coordinates, and at least one external id in common. The
+    coordinates are not decoration -- every season of one show carries the
+    show's ids, so without them season 1's row matches season 2's resolution
+    and the exactly-one guard below refuses every season in the library
+    instead of making the one right re-key.
+
+    ``LIMIT 2`` because the caller only ever asks "exactly one?". A third row
+    changes no decision and a library-sized result is not worth reading to
+    find that out.
+    """
+    clauses = _identity_clauses(item)
+    if not clauses:
+        return []
+    return (
+        await session.execute(
+            select(MediaItem)
+            .where(MediaItem.kind == item.kind)
+            .where(MediaItem.library == item.library)
+            .where(MediaItem.season_number.is_not_distinct_from(item.season_number))
+            .where(MediaItem.episode_number.is_not_distinct_from(item.episode_number))
+            .where(or_(*clauses))
+            .where(MediaItem.rating_key != item.rating_key)
+            .order_by(MediaItem.id)
+            .limit(2)
+            .with_for_update()
+        )
+    ).scalars().all()
+
+
+async def _rekey_by_identity(
+    session: AsyncSession, item: ResolvedItem
+) -> str | None:
+    """Move an existing row onto ``item``'s live rating key. Returns the old key.
+
+    ``media_items`` is keyed on the Plex rating key and the Plex rating key is
+    a *hint*: ``resolve()`` returns the key it FOUND, which after a re-match
+    or a library rebuild is not the key the row holds. ``_upsert_media_item``
+    below is an ``ON CONFLICT (rating_key)`` upsert, so a new key conflicts
+    with nothing and INSERTS -- a second row that inherits every future render
+    while the original keeps its renders, its facts, its dismissals, its
+    ``logo_upload_key`` and its children and is never written again.
+
+    The precondition is proved from the DATABASE, not from a key comparison,
+    and that is the whole design. Comparing ``intent.rating_key`` to
+    ``item.rating_key`` covers only the paths that CARRY a key; the ratings
+    drift sweep and the Sonarr/Radarr webhooks carry none by construction, and
+    both minted twins with no warning at all. Two facts, in this order:
+
+    1. **No row already holds the resolved key.** If one does, the twin exists
+       already, and reconciling two rows is the ``plex_merge`` job's work
+       under a dry run an operator reads first -- so this does nothing. This
+       check is also the hot path's entire cost: an item whose key has not
+       moved satisfies it with its own row and returns immediately.
+    2. **Exactly one row carries the resolved identity.** Zero is an ordinary
+       new item; more than one is an ambiguity that would otherwise be settled
+       by picking a side at random.
+
+    Concurrency: ``rating_key`` carries a real unique constraint, which is why
+    ``_upsert_media_item`` is an upsert in the first place. Two workers can
+    resolve the same identity at once, so the candidate is taken ``FOR
+    UPDATE`` and the flush is guarded -- the loser rolls back and falls
+    through to the ordinary upsert, which then finds the row the winner
+    created. A lost race must never fail a job.
+
+    The write is committed rather than left to the caller's transaction. A
+    ``process_item`` whose every art kind refuses raises and the worker rolls
+    back, so a flush-only re-key would be lost -- and the same fork would then
+    happen again on every subsequent pass while the audit trail said it had
+    been fixed.
+    """
+    taken = (
+        await session.execute(
+            select(MediaItem.id).where(MediaItem.rating_key == item.rating_key)
+        )
+    ).scalar_one_or_none()
+    if taken is not None:
+        return None
+
+    candidates = await _identity_candidates(session, item)
+    if len(candidates) != 1:
+        if candidates:
+            logger.warning(
+                "not re-keying to %s: %d rows carry that identity "
+                "(%s in %r); the twin merge owns this pair",
+                item.rating_key, len(candidates), item.kind, item.library,
+            )
+        # The candidate query above takes FOR UPDATE. Left open, this
+        # transaction would hold that lock across the rest of process_item's
+        # render -- the provider fetch, the image download, the ImageMagick
+        # compose -- blocking any concurrent upsert or prune on either row
+        # for that whole window. Rolling back releases it immediately; there
+        # is nothing pending in this transaction to lose (the candidate
+        # query is read-only). This also fires on the zero-candidate path
+        # (an ordinary new item), which is the common case.
+        await session.rollback()
+        return None
+
+    stale = candidates[0]
+    stale_id = stale.id
+    old_key = stale.rating_key
+    try:
+        # An ORM mutation rather than a Core UPDATE: the row is in this
+        # session's identity map (the SELECT above loaded it), and a Core
+        # UPDATE with synchronize_session=False would leave the in-memory
+        # object still reporting the OLD key -- which is exactly what
+        # _upsert_media_item's re-SELECT would then hand back.
+        stale.rating_key = item.rating_key
+        await session.flush()
+        session.add(EventLog(
+            source=REKEY_SOURCE,
+            event_type=REKEY_EVENT,
+            payload={
+                "media_item_id": stale_id,
+                "old_rating_key": old_key,
+                "new_rating_key": item.rating_key,
+                "kind": item.kind,
+                "library": item.library,
+                "title": item.title,
+                "season_number": item.season_number,
+                "episode_number": item.episode_number,
+                "tmdb_id": item.tmdb_id,
+                "tvdb_id": item.tvdb_id,
+                "imdb_id": item.imdb_id,
+            },
+            outcome=f"re-keyed {old_key} -> {item.rating_key} on an identity match",
+        ))
+        await session.commit()
+    except (IntegrityError, DBAPIError) as exc:
+        # IntegrityError is the unique-constraint race (two workers resolve
+        # the same identity at once). DBAPIError also belongs here, but only
+        # when it carries sqlstate 40P01 -- under asyncpg, a lock cycle
+        # across two concurrent re-keys surfaces as a plain DBAPIError, not
+        # OperationalError, with that sqlstate stamped onto ``exc.orig``.
+        # Anything else (e.g. a dropped connection) must still fail the job.
+        if not isinstance(exc, IntegrityError) and getattr(
+            exc.orig, "sqlstate", None
+        ) != "40P01":
+            raise
+        await session.rollback()
+        if isinstance(exc, IntegrityError):
+            logger.warning(
+                "re-key of %s to %s lost a race; the winner's row holds the "
+                "key and this pass will upsert onto it",
+                old_key, item.rating_key, exc_info=True,
+            )
+        else:
+            logger.warning(
+                "re-key of %s to %s lost a race to a deadlock; nothing took "
+                "the key, and this pass mints a fresh twin for the next "
+                "merge to eat",
+                old_key, item.rating_key, exc_info=True,
+            )
+        return None
+
+    logger.info(
+        "re-keyed media_items row %d from %s to %s (%s %r)",
+        stale_id, old_key, item.rating_key, item.kind, item.title,
+    )
+    return old_key
 
 
 async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> MediaItem:
@@ -1530,6 +1731,20 @@ async def process_item(
             "the intent's row will not be scored by this job",
             item.rating_key, item.title, intent.rating_key,
         )
+
+    # The re-key. The WARNING above only fires when the intent CARRIED a key,
+    # so it can never see the two silent producers -- the ratings-drift sweep
+    # and the webhook intake both build intents with no rating key at all --
+    # and a key-comparison guard here would leave both open. This asks the
+    # database instead, which closes every upserting path in one place: is the
+    # resolved key free, and does exactly one row carry the resolved identity.
+    # It must run BEFORE the first _upsert_media_item below, because that is
+    # the call that would otherwise insert the twin (and render_artifact, the
+    # refusal path and the badge path all upsert again after it).
+    #
+    # The return value is deliberately unused: the durable record of a re-key
+    # is its events_log row, not a local.
+    await _rekey_by_identity(session, item)
 
     media_item = None
     plex_item = None

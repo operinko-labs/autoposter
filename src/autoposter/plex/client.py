@@ -649,6 +649,45 @@ class PlexClient:
 
         return await asyncio.to_thread(_walk)
 
+    def _key_resolves_sync(self, intent: RenderIntent) -> bool:
+        """Whether ``intent.rating_key`` is still the item's own key.
+
+        The wanted-type split is ``_search_sync``'s, verbatim: a movie intent
+        can only be a movie; show, season and episode intents all resolve
+        through a show library.
+        """
+        if not intent.rating_key:
+            return False
+        wanted_type = "movie" if intent.kind == "movie" else "show"
+        sections = self._sections(wanted_type)
+        return self._fetch_by_rating_key_sync(intent, sections) is not None
+
+    async def keys_resolve(self, intents: list[RenderIntent]) -> list[bool]:
+        """Whether each intent's STORED KEY is still accepted, in the order given.
+
+        The twin merge's survivor election, and deliberately NOT
+        ``exists_many``. That method shares ``_search_sync`` with ``resolve``,
+        which falls through to the GUID walk on any rating-key refusal -- so a
+        re-matched item reads as present under BOTH its stale key and its live
+        one, and an election between two rows carrying one identity would be a
+        coin toss. This asks ``_fetch_by_rating_key_sync`` and stops there: it
+        answers "is this row's key the item's key", which is exactly the
+        question that decides which of a twin pair survives.
+
+        One thread for the whole walk, like ``exists_many`` and for the same
+        reason: this loop shares the event loop with the worker pool and the
+        Plex liveness probe.
+
+        Nothing is caught. A probe that fails for any reason other than "not
+        found" must reach the caller, because a merge that read an error as a
+        refusal would delete the wrong row of the pair.
+        """
+
+        def _walk() -> list[bool]:
+            return [self._key_resolves_sync(intent) for intent in intents]
+
+        return await asyncio.to_thread(_walk)
+
     async def resolve(self, intent: RenderIntent) -> ResolvedItem:
         match = await asyncio.to_thread(self._search_sync, intent)
         if match is None:
