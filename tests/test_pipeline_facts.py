@@ -305,11 +305,17 @@ async def test_a_plex_without_fetch_item_is_not_swallowed(session, monkeypatch):
         )
 
 
+@pytest.mark.imagemagick
 async def test_title_card_self_feed_is_refused_through_process_item(session, tmp_path):
     """Finding #1's regression test, run through process_item -- the real
     entry point. An episode whose thumb is already our own badged output
     still resolves the media:// frame, never the upload:// entry Plex is
-    currently showing."""
+    currently showing.
+
+    Marked ``imagemagick`` because render_artifact runs for real here, all
+    the way through compositing: CI's main pytest step runs on a runner
+    with no ``magick`` and deselects this marker, and the ImageMagick step
+    runs it inside the shipped image, where the binary exists."""
     import functools
 
     import httpx
