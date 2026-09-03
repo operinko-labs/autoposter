@@ -877,6 +877,33 @@ deliberate — you exclude a library to stop processing those items — but know
 it before switching `prune.apply` on. No files are touched either way, and
 re-including the library re-creates the rows on the next pass.
 
+That is now decided by the row's own `library` column, not only by the probe,
+and the report counts it separately: `… ; 128 row(s) in excluded libraries
+retired; …` (or `would be retired` in a dry run). The probe alone was not
+enough — the resolver falls back from a stale rating key to a GUID search
+across every library it *is* allowed to walk, so an item that also exists in a
+non-excluded library resolved under the excluded row's intent and read as
+present. A DVR library duplicating shows already in your TV library is exactly
+that case, and those rows sat in the Action Center forever: their jobs defer
+on an unbounded horizon rather than parking, so they were never scored and
+never showed up as blocked either.
+
+**Excluding a large library will make the next pass refuse, and that is
+correct.** Those rows are measured by `prune.max_prunes` and
+`prune.max_prune_share` like any others, so a newly excluded library bigger
+than the cap reports the numbers and changes nothing. Read the count, satisfy
+yourself it is the library you excluded, then raise the cap deliberately for
+one run rather than leaving it raised.
+
+**`plex.excluded_libraries` needs a restart to take effect everywhere, but not
+here.** The `plex` section is frozen — the client the render workers hold, the
+liveness probe and the scheduler's server factory are all built once at
+startup, which is what the settings editor's "restart to apply" refers to. The
+`plex_prune` and `plex_merge` jobs are the exception: each rebuilds its own
+client per run from the live value, so an exclusion you save today is honoured
+by the next prune pass without a restart. The Action Center reads the live
+value per request and hides those rows immediately.
+
 A row that Plex *has* but has not finished scanning is never pruned: the probe
 asks only whether the item can be found, not whether it is usable yet.
 
