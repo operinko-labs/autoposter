@@ -31,6 +31,7 @@ from autoposter.api.jobs import router as jobs_router
 from autoposter.api.logs import router as logs_router
 from autoposter.api.manual import router as manual_router
 from autoposter.api.mismatches import router as mismatches_router
+from autoposter.api.playlists import router as playlists_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
 from autoposter.api.testing import router as testing_router
 from autoposter.api.version import router as version_router
@@ -70,6 +71,7 @@ from autoposter.db.models import (
     ItemFacts,
     Job,
     ManagedCollection,
+    ManagedPlaylist,
     MediaItem,
     Render,
     ScheduledRun,
@@ -185,6 +187,13 @@ router.include_router(testing_router)
 # a pass would do. Its own module for the reason testing mode is -- it drives
 # an engine directly and writes nothing.
 router.include_router(collections_builders_router)
+
+# The playlist definitions, their preview and the delete. Its own module for
+# the reason the collections builders are, plus one of its own: a playlist's
+# ownership predicate is a managed_playlists row keyed on the rating key, not
+# the label-plus-row pair collections use, and the two must not be reachable
+# from one handler that believes they are the same.
+router.include_router(playlists_router)
 
 # The jobs overview: what is pending or running, and the per-job cancel. Its
 # own module because cancelling races the worker pool, and the row locking and
@@ -573,6 +582,44 @@ async def list_collections(
                 # whose filter Plex evaluates live, so there is no member
                 # count to have. A zero delta is a different thing entirely:
                 # a pass that ran and found nothing to change. Rendering
+                # either as the other would be a false claim.
+                "member_count": row.member_count,
+                "last_added": row.last_added,
+                "last_removed": row.last_removed,
+                "last_reconciled_at": row.last_reconciled_at,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/playlists")
+async def list_playlists(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """The ``managed_playlists`` rows -- what this service owns and what the
+    last pass saw. ``GET /collections``' twin, with two differences that are
+    the whole of 98a's design: there is no ``library`` (a playlist belongs to
+    none; ``libraries`` is the definition's scope, recorded for the report) and
+    ``plex_rating_key`` is served, because for a playlist it IS the ownership
+    predicate rather than a convenience."""
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        rows = (
+            (await session.execute(select(ManagedPlaylist).order_by(ManagedPlaylist.id)))
+            .scalars()
+            .all()
+        )
+    return {
+        "playlists": [
+            {
+                "id": row.id,
+                "title": row.title,
+                "plex_rating_key": row.plex_rating_key,
+                "libraries": row.libraries,
+                # Straight through, nulls included. NULL means no pass has
+                # stamped this row; a zero delta is a different thing entirely
+                # -- a pass that ran and found nothing to change. Rendering
                 # either as the other would be a false claim.
                 "member_count": row.member_count,
                 "last_added": row.last_added,
