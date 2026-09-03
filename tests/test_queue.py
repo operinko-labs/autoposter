@@ -160,6 +160,57 @@ async def test_job_parks_after_max_attempts(session):
     assert await fail(session, job_id, "boom") == "parked"
 
 
+async def test_fail_parking_dismisses_a_parked_sibling_sharing_the_dedupe_key(session):
+    # The historical pile this guards against: before #138 stopped
+    # re-selecting blocked items, every backfill press for an already-parked
+    # item minted a fresh job that failed and parked alongside the previous
+    # parked rows -- uq_jobs_pending_dedupe never covered 'parked', so
+    # nothing stopped the pile from growing. fail()'s park arm must now
+    # retire any earlier parked row for the same dedupe_key itself, mirroring
+    # complete()'s deferred-sibling sweep.
+    first = await enqueue(session, "process_item", {"n": 1}, dedupe_key="k-park")
+    await claim(session, "worker-a")
+    assert await fail(session, first, "first reason", max_attempts=1) == "parked"
+
+    # A fresh press for the same item: uq_jobs_pending_dedupe does not cover
+    # 'parked', so this insert succeeds instead of colliding -- exactly how
+    # the historical pile actually formed, one row per press.
+    second = await enqueue(session, "process_item", {"n": 2}, dedupe_key="k-park")
+    assert second is not None, "a fresh row must still be insertable while the sibling is parked"
+    await claim(session, "worker-a")
+    assert await fail(session, second, "second reason", max_attempts=1) == "parked"
+
+    rows = (
+        await session.execute(
+            select(Job).where(Job.dedupe_key == "k-park").order_by(Job.id)
+        )
+    ).scalars().all()
+    assert [row.state for row in rows] == ["dismissed", "parked"], rows
+    assert rows[0].id == first
+    assert rows[1].id == second
+    assert rows[1].last_error == "second reason"
+
+
+async def test_fail_parking_leaves_unrelated_parked_rows_alone(session):
+    # The sweep must match on dedupe_key alone -- a parked row for a
+    # different item, or with no dedupe_key at all, must never be touched.
+    other = await enqueue(session, "process_item", {}, dedupe_key="k-other")
+    await claim(session, "worker-a")
+    assert await fail(session, other, "unrelated", max_attempts=1) == "parked"
+
+    keyless = await enqueue(session, "process_item", {})
+    await claim(session, "worker-a")
+    assert await fail(session, keyless, "no key at all", max_attempts=1) == "parked"
+
+    target = await enqueue(session, "process_item", {}, dedupe_key="k-target")
+    await claim(session, "worker-a")
+    assert await fail(session, target, "target reason", max_attempts=1) == "parked"
+
+    for job_id in (other, keyless, target):
+        row = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+        assert row.state == "parked"
+
+
 async def test_a_deferred_job_waits_the_long_horizon_and_never_parks(session):
     # ``deferred`` is not a failure with a bigger budget -- it has no budget.
     # Well past the attempt cap that parks an ordinary failure, this one is

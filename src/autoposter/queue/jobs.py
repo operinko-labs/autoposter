@@ -99,6 +99,33 @@ async def enqueue(
     return job_id
 
 
+# The Failures-page incident this sweep exists to fix: before #138 stopped
+# re-selecting blocked items, every backfill press for an already-parked item
+# minted a fresh job that failed and parked alongside the previous parked
+# rows for the same item -- 12 piled up for one movie. uq_jobs_pending_dedupe
+# only ever covered 'pending' and 'deferred' (see the index's comment in
+# db/models.py), so nothing about the index stopped the pile from growing,
+# and widening it to also cover 'parked' is deliberately not the fix: a
+# parked item must stay re-enqueueable by an explicit retry or a fresh
+# search (#138's design), and a unique index would block exactly that,
+# turning "already have a parked row" into "can never park again" for the
+# same key. The invariant this project actually wants -- at most one *live*
+# parked row per item -- is instead kept honest the same way complete()
+# keeps deferred rows honest below: a sweep, run every time a job parks,
+# retiring whatever parked siblings for the same key came before it. The
+# newest park wins, because it carries the freshest failure reason.
+_DISMISS_PARKED_SIBLINGS_SQL = text(
+    """
+    UPDATE jobs
+       SET state = 'dismissed',
+           updated_at = now()
+     WHERE dedupe_key = :dedupe_key
+       AND state = 'parked'
+       AND id <> :job_id
+    """
+)
+
+
 # Rows per INSERT statement in enqueue_batch. At 3 bind parameters per row
 # this stays far below asyncpg's limit while keeping a 15,000-item library at
 # ~15 round trips instead of 15,000.
@@ -335,6 +362,10 @@ async def fail(
 
     Cancellation still outranks the deferral -- it has to, since the horizon is
     unbounded and dismissing is the operator's only way to end one.
+
+    Parking also dismisses any other parked row sharing this job's dedupe_key
+    -- see ``_DISMISS_PARKED_SIBLINGS_SQL``'s comment for why that is a sweep
+    here rather than a widened unique index.
     """
     # Read without FOR UPDATE, unlike cancel_job's own read of this row: a
     # cancel that commits between this SELECT and the UPDATE below is missed
@@ -356,6 +387,11 @@ async def fail(
         job.run_after = func.now() + func.make_interval(0, 0, 0, 0, 0, 0, defer_seconds)
     elif job.attempts >= max_attempts:
         job.state = "parked"
+        if job.dedupe_key is not None:
+            await session.execute(
+                _DISMISS_PARKED_SIBLINGS_SQL,
+                {"dedupe_key": job.dedupe_key, "job_id": job_id},
+            )
     else:
         job.state = "pending"
         backoff = BACKOFF_BASE_SECONDS * (2 ** (job.attempts - 1))
