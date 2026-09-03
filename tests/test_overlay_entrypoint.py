@@ -765,3 +765,162 @@ async def test_an_unmatched_definition_never_resolves_its_image(
             session, config_with_badges, render, item, plex_item, _Facts(), http=http
         )
     assert calls == [], "an unmatched definition must not resolve its image"
+
+
+# --- per-family fires/silent, through the REAL apply_badges. One shaped item
+# and one healthy item per family, plus the A5 divergence test. ------------
+
+
+class _FakePlexItemRated(_FakePlexItem):
+    """1080p, with a Plex certification. `contentRating` is what the six
+    regionals select on."""
+
+    def __init__(self, content_rating="PG-13"):
+        super().__init__()
+        self.contentRating = content_rating
+
+
+class _CommonSenseFacts:
+    """`item_facts` as `facts/mdblist.py::parse_content_rating` writes it:
+    `content_rating` is a Common Sense AGE, not a certification.
+    `"G - All Ages"` is IN Kometa's us_movie `g` bucket verbatim (the same
+    bucket `"3"` is in), which is precisely why this makes a sharp
+    divergence test -- and, unlike `"3"`, it is not itself a digit, so
+    `badges/values.py::commonsense_text` answers `None` for it (any
+    non-numeric string that is not `"NR"` does) and it draws no commonsense
+    badge of its own. That matters here ONLY because the commonsense badge
+    is a SEPARATE badge this same `facts.content_rating` field also feeds
+    (`pipeline.py:1321`) -- if it drew, its own text would move between
+    `divergent` and `plex_only` below for a reason that has nothing to do
+    with which regional badge sourced correctly, and the `_sha` equality
+    this test needs would fail for the wrong reason."""
+
+    critic_rating = 4.9
+    audience_rating = 6.3
+    content_rating = "G - All Ages"
+
+
+class _FactsNoContentRating:
+    """`item_facts` with no Common Sense rating at all -- what "Plex alone"
+    genuinely looks like, as opposed to "Plex plus some OTHER Common Sense
+    value" (a numeric one would draw its own commonsense badge and break the
+    same equality `_CommonSenseFacts` above is built to avoid breaking)."""
+
+    critic_rating = 4.9
+    audience_rating = 6.3
+    content_rating = None
+
+
+async def _badged(session, config, plex_item, rating_key, facts=None):
+    item, render = await _render(session, rating_key=rating_key)
+    await apply_badges(
+        session, config, render, item, plex_item, facts or _Facts()
+    )
+    return plex_item.last_bytes
+
+
+async def test_direct_play_fires_on_a_4k_item_and_is_silent_on_a_1080_one(
+    session, config_with_badges
+):
+    config_with_badges.badges.families = []
+    baseline = await _badged(session, config_with_badges, _FakePlexItem(), "dp-base")
+
+    config_with_badges.badges.families = ["direct_play"]
+    silent = await _badged(session, config_with_badges, _FakePlexItem(), "dp-1080")
+    fires = await _badged(session, config_with_badges, _FakePlexItem4k(), "dp-4k")
+
+    assert _sha(silent) == _sha(baseline), "1080p must draw the gate-off pixels"
+    assert _sha(fires) != _sha(baseline), "4k must actually draw Direct-Play"
+
+
+async def test_a_regional_fires_on_its_bucket_and_is_silent_off_it(
+    session, config_with_badges
+):
+    config_with_badges.badges.families = []
+    baseline = await _badged(
+        session, config_with_badges, _FakePlexItemRated("PG-13"), "cr-base"
+    )
+
+    config_with_badges.badges.families = ["content_rating_us_movie"]
+    fires = await _badged(
+        session, config_with_badges, _FakePlexItemRated("PG-13"), "cr-pg13"
+    )
+    silent = await _badged(
+        session, config_with_badges, _FakePlexItemRated("Unrated Nonsense"), "cr-none"
+    )
+
+    assert _sha(fires) != _sha(baseline), "PG-13 must draw its regional badge"
+    assert _sha(silent) == _sha(baseline), "a certification in no bucket draws nothing"
+
+
+async def test_the_regionals_read_plexs_certification_not_item_facts_common_sense(
+    session, config_with_badges
+):
+    """Adjudication A5's divergence test, and it is sharp on purpose: the
+    item carries Plex `PG-13` AND an item_facts Common Sense age of
+    `"G - All Ages"`, which is IN Kometa's us_movie `g` bucket. If this view
+    read `item_facts.content_rating`, the `g` badge would draw. It must draw
+    the `pg-13` one.
+
+    `divergent` and `plex_only` are built to draw the SAME commonsense badge
+    as each other (neither's `facts.content_rating` is a digit, so neither
+    draws one at all -- see `_CommonSenseFacts` and `_FactsNoContentRating`
+    above) precisely so that `_sha` equality below isolates the REGIONAL
+    badge's sourcing and nothing else."""
+    config_with_badges.badges.families = ["content_rating_us_movie"]
+    divergent = await _badged(
+        session, config_with_badges, _FakePlexItemRated("PG-13"),
+        "cr-divergent", facts=_CommonSenseFacts(),
+    )
+
+    # The same item as Plex sees it, with no Common Sense value at all.
+    plex_only = await _badged(
+        session, config_with_badges, _FakePlexItemRated("PG-13"),
+        "cr-plex-only", facts=_FactsNoContentRating(),
+    )
+    # And the item as item_facts alone would have described it -- "3" here,
+    # not `_CommonSenseFacts`'s own value, is fine: this call only needs SOME
+    # `g`-bucket certification to demonstrate the bucket draws differently,
+    # and it does not participate in the `_sha` equality above.
+    as_common_sense = await _badged(
+        session, config_with_badges, _FakePlexItemRated("3"), "cr-as-cs"
+    )
+
+    assert _sha(divergent) == _sha(plex_only), (
+        "the Common Sense value must not change what is drawn"
+    )
+    assert _sha(divergent) != _sha(as_common_sense), (
+        "reading item_facts.content_rating would have drawn the g badge"
+    )
+
+
+async def test_enabling_a_family_re_badges_an_already_uploaded_item(
+    session, config_with_badges
+):
+    """The same law Finding 1 established for a hand-written definition: a
+    family named on an already-uploaded render must reach Plex."""
+    config_with_badges.badges.families = []
+    item, render = await _render(session, rating_key="family-rebadge")
+    plex_item = _FakePlexItem4k()
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 1
+    before = render.badge_fingerprint
+
+    config_with_badges.badges.families = ["direct_play"]
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2
+    assert render.badge_fingerprint != before
+
+
+async def test_enabling_no_family_moves_no_fingerprint(
+    session, config_with_badges
+):
+    """The storm guard at the family surface: a second pass with the same
+    empty `families` must not re-upload."""
+    config_with_badges.badges.families = []
+    item, render = await _render(session, rating_key="family-storm")
+    plex_item = _FakePlexItem()
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 1
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 1, "an unchanged config must not re-badge"

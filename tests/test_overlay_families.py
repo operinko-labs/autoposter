@@ -12,13 +12,14 @@ selects on, that every named image actually exists, and that adding the art
 moved no fingerprint.
 """
 import hashlib
-from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from autoposter.badges.compose import manifest_sha
+from autoposter.config.schema import BadgesConfig
 from autoposter.overlays.assets import ASSETS, IMAGES
 from autoposter.overlays.families import FAMILIES
+from autoposter.overlays.schema import OverlayDefinition
 
 OVERLAY_MANIFEST = ASSETS / "OVERLAY-MANIFEST.sha256"
 BUILTIN_MANIFEST = ASSETS / "MANIFEST.sha256"
@@ -211,11 +212,6 @@ def test_versions_is_not_shipped_and_the_reason_is_recorded():
 
 
 # --- the operator surface: `badges.families` -------------------------------
-
-from pydantic import ValidationError
-
-from autoposter.config.schema import BadgesConfig
-from autoposter.overlays.schema import OverlayDefinition
 
 
 def test_no_families_is_the_default_and_changes_nothing():
