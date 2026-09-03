@@ -930,6 +930,21 @@ class BadgesConfig(BaseModel):
             "and optional group."
         ),
     )
+    # Roadmap row 100, sub-phase C1. A family is a bundle of definitions this
+    # service ships, transcribed from the pinned Kometa tree
+    # (`overlays/families.py`) -- ~40 content-rating definitions is not
+    # something an operator writes by hand, so naming the family is the
+    # surface. Empty by default, which is byte-identical to no feature at
+    # all: `all_definitions()` returns `definitions` unchanged.
+    families: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Bundled overlay families to draw, by name -- each expands into "
+            "this service's own transcription of Kometa's definitions for it, "
+            "drawn before the operator's own definitions so those can suppress "
+            "a family member."
+        ),
+    )
     definition_image_max_bytes: int = Field(
         default=5 * 1024 * 1024, gt=0,
         description=(
@@ -937,6 +952,67 @@ class BadgesConfig(BaseModel):
             "a larger body is refused mid-stream."
         ),
     )
+
+    @model_validator(mode="after")
+    def _check_families(self) -> "BadgesConfig":
+        """Refuse an unknown or repeated family name at config load.
+
+        Naming what exists rather than saying "unknown": the list is closed
+        and short, and an operator who typed `ribbon` needs to be told it is
+        roadmap row 8a's rather than left to guess at a spelling.
+
+        The empty-`families` return is above the import, not just above the
+        loop, and that ordering is load-bearing: this validator runs on
+        EVERY `BadgesConfig` construction, including the ones `families`
+        never touches, and `actions/flags.py` imports `config.schema` on
+        every Action Center queue/summary request. Importing
+        `overlays/families.py` constructs ~40 `OverlayDefinition`s at module
+        scope, and each one's own `_validate` call-imports
+        `overlays.selection`, which imports `collections.filters`, which
+        imports `langcodes` -- exactly the transitive weight
+        `overlays/schema.py::_as_rgba`'s docstring already keeps off this
+        path. An operator who never names a family must not pay for one.
+        """
+        if not self.families:
+            return self
+
+        from autoposter.overlays.families import FAMILIES
+
+        for name in self.families:
+            if name not in FAMILIES:
+                raise ValueError(
+                    f"{name!r} is not a bundled overlay family. Available: "
+                    + ", ".join(sorted(FAMILIES))
+                )
+        duplicates = sorted({n for n in self.families if self.families.count(n) > 1})
+        if duplicates:
+            raise ValueError(
+                "each overlay family may be named once; repeated: "
+                + ", ".join(duplicates)
+            )
+        return self
+
+    def all_definitions(self) -> list["OverlayDefinition"]:
+        """Every definition this config draws: the named families, then the
+        operator's own.
+
+        Computed rather than folded into ``definitions`` at load, and that is
+        deliberate: the config editor round-trips config -> YAML -> config,
+        so an expansion written back into ``definitions`` would be expanded
+        again on the next load and every family member would draw twice.
+
+        Families come FIRST so an operator's own definition can name a family
+        member in ``suppress_overlays`` -- suppression is resolved before
+        group weight (``badges/compose.py::_resolve_definitions``), so it
+        wins regardless of order, but reading order matching drawing order is
+        what an operator expects.
+        """
+        from autoposter.overlays.families import FAMILIES
+
+        expanded: list[OverlayDefinition] = []
+        for name in self.families:
+            expanded.extend(FAMILIES[name])
+        return expanded + list(self.definitions)
 
 
 class MaintenanceConfig(BaseModel):

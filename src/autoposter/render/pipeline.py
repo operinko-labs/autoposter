@@ -25,6 +25,8 @@ from autoposter.db.models import ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
+from autoposter.overlays.selection import OverlayItemView
+from autoposter.overlays.selection import select as select_overlay_definitions
 from autoposter.overlays.sources import OverlaySourceError, resolve_image_path
 from autoposter.plex.artwork import upload_artwork
 from autoposter.plex.client import ResolvedItem
@@ -1322,12 +1324,38 @@ async def apply_badges(
         video_format=video_format_text(media),
     )
     values = badge_values(render.art_kind, inputs)
+
+    # The SELECTION half (overlay era sub-phase C1). Evaluated BEFORE the
+    # fingerprint gate on purpose: `badge_fingerprint` folds this item's own
+    # match outcomes in beside the definitions digest, so an item whose
+    # resolution (or, in a later slice, aspect or language count) changed
+    # re-renders. If the outcomes were computed after the gate, the gate
+    # could never see them and a changed item would keep its old badge
+    # forever -- adjudication A4. The cost is one `json.dumps` of the
+    # condition (ahead of `compiled_condition`'s cache lookup) plus a filter
+    # tree walk, per CONDITIONED definition, on every unchanged item; the
+    # view itself makes no Plex request of its own -- `media_info_from_plex`
+    # above already reloaded the item for `.media`, and the view's own
+    # accessors read `plex_item` the same reload-free way `filter_values.py`
+    # does for everything else.
+    # `all_definitions()`, not `.definitions`: a named family's definitions
+    # are drawn too, and they must be in the list the fingerprint hashes as
+    # well as in the list that gets selected over -- enabling a family has to
+    # re-badge exactly like adding a definition by hand does.
+    definitions = config.badges.all_definitions()
+    view = OverlayItemView(media, facts=facts, plex_item=plex_item)
+    matched_definitions, outcomes = select_overlay_definitions(definitions, view)
+
     # render.fingerprint, not render.base_sha256: the badged image is composed
     # from the *base we rendered*, so the gate has to track what went into that
-    # base -- see badge_fingerprint's docstring.
+    # base -- see badge_fingerprint's docstring. `definitions` is the WHOLE
+    # configured list, not the matched subset: editing or removing a
+    # definition this item never matched must still move the digest, or a
+    # config change goes unnoticed for every item it does not currently
+    # apply to.
     fingerprint = badge_fingerprint(
         render.fingerprint or "", render.art_kind, values, manifest_sha(),
-        config.badges.definitions,
+        definitions, outcomes,
     )
     if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
         return
@@ -1342,10 +1370,9 @@ async def apply_badges(
         await session.commit()
         return
 
-    definitions = config.badges.definitions
     resolved_images: dict[str, Path] = {}
     usable_definitions = []
-    for definition in definitions:
+    for definition in matched_definitions:
         try:
             path = await resolve_image_path(
                 definition,

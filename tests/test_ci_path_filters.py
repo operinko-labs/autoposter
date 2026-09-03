@@ -42,6 +42,7 @@ VERIFIED_NON_SOURCE = [
     "pyproject.toml",
     "config/autoposter.example.yaml",
     "assets/badges/MANIFEST.sha256",
+    "assets/badges/OVERLAY-MANIFEST.sha256",
     "assets/badges/languages.json",
     "assets/collections/content_rating_cs.json",
     ".forgejo/workflows/ci.yml",

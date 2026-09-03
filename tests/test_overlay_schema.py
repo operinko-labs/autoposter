@@ -309,3 +309,46 @@ def test_the_text_attribute_is_refused_not_silently_accepted():
     warns against."""
     with pytest.raises(ValidationError, match="is not rendered"):
         _d(text="hello")
+
+
+# --- the selection seam's one new field (overlay era, sub-phase C1) ---------
+
+
+def test_a_definition_may_carry_a_condition():
+    definition = OverlayDefinition(
+        name="Direct-Play", condition={"resolution.regex": "(?i)2160|4k"}
+    )
+    assert definition.condition == {"resolution.regex": "(?i)2160|4k"}
+
+
+def test_no_condition_is_the_default_and_means_draw_on_every_item():
+    assert OverlayDefinition(name="plain").condition is None
+
+
+def test_a_condition_naming_an_attribute_this_view_cannot_read_is_refused_at_load():
+    """Global Constraint 10: refused at config load, naming the key and
+    listing what is available -- never accepted and silently matching
+    nothing at render time."""
+    with pytest.raises(ValidationError) as caught:
+        OverlayDefinition(name="x", condition={"genre": "Horror"})
+    message = str(caught.value)
+    assert "genre" in message
+    assert "content_rating" in message
+
+
+def test_a_condition_with_a_bad_operator_is_refused_at_load():
+    with pytest.raises(ValidationError) as caught:
+        OverlayDefinition(name="x", condition={"content_rating.contains": "PG"})
+    assert "content_rating" in str(caught.value)
+
+
+def test_an_empty_condition_is_refused_at_load():
+    with pytest.raises(ValidationError):
+        OverlayDefinition(name="x", condition={})
+
+
+def test_the_refusal_names_the_overlay_it_came_from():
+    """An operator with twenty definitions needs both halves to fix one."""
+    with pytest.raises(ValidationError) as caught:
+        OverlayDefinition(name="my-overlay", condition={"genre": "Horror"})
+    assert "my-overlay" in str(caught.value)

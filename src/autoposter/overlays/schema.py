@@ -65,6 +65,36 @@ class OverlayDefinition(BaseModel):
         description="Not supported by this service; see roadmap row 97. Present only so writing it is refused with a real message instead of a generic extra-inputs error.",
     )
 
+    # The SELECTION half (overlay era, sub-phase C1). Every family roadmap
+    # row 100 names is a CONDITIONAL overlay -- Kometa expresses each as a
+    # `plex_search:` or `filters:` block -- and until this field existed the
+    # engine drew every configured definition on every badged item, so none
+    # of them was expressible: eight `aspect` definitions with no condition
+    # all draw on every poster, and group/weight cannot save that, because
+    # with no conditions the same highest-weight member wins on every item.
+    #
+    # The grammar is `collections/filters.py`'s, imported rather than
+    # re-implemented (adjudication A3) -- that parser and evaluator were
+    # proved against Kometa 2.4.8's own filter code. The VOCABULARY is
+    # narrower: only what `overlays/selection.py::OverlayItemView` can
+    # actually supply, which is why the key is `condition:` and not
+    # `filters:`. Using the collections spelling would promise an operator
+    # every collections attribute works here.
+    #
+    # Typed as the raw mapping rather than as a parsed `FilterGroup`: it has
+    # to round-trip through `model_dump(mode="json")` for
+    # `badges/compose.py::_definitions_digest`, so that editing a condition
+    # moves the fingerprint for free.
+    condition: dict[str, object] | None = Field(
+        default=None,
+        description=(
+            "This overlay's applicability test, in the same filter grammar a "
+            "collection's 'filters:' block uses, evaluated per item against "
+            "what the badge pass already holds. A definition with no "
+            "condition draws on every badged item."
+        ),
+    )
+
     horizontal_offset: int | str | None = Field(
         default=None,
         description="Horizontal distance from the edge horizontal_align names, in pixels or as a percentage of the canvas width.",
@@ -273,6 +303,22 @@ class OverlayDefinition(BaseModel):
                 "the 'text' attribute is not rendered; write the "
                 "<<variable>> literal in 'name' as 'text(LITERAL)' instead"
             )
+
+        # Refused at config load, not at render time, and with the overlay's
+        # own name in the message: a condition that silently matches nothing
+        # is indistinguishable from an overlay that is switched off. The
+        # import is call-time for the same reason `_as_rgba`'s is --
+        # `config/schema.py` types `BadgesConfig.definitions` with this class
+        # and `actions/flags.py` imports `config.schema` on every Action
+        # Center request, so a module-level import of the filter engine here
+        # would put it on that path for every one of them.
+        if self.condition is not None:
+            from autoposter.overlays.selection import parse_condition
+
+            try:
+                parse_condition(self.condition, field="condition")
+            except ValueError as exc:
+                raise ValueError(f"overlay {name!r}: {exc}") from exc
 
         if self.group and self.weight is None:
             raise ValueError("an overlay with a 'group' must also have a 'weight'")

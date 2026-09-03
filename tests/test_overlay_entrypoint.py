@@ -251,6 +251,119 @@ def test_removing_a_definition_reverts_the_fingerprint():
     assert reverted != with_one
 
 
+# --- A4: the fingerprint must cover the per-item MATCH OUTCOME, and the
+# storm pin must EXTEND rather than weaken. Three properties, three pins:
+# the empty case stays byte-identical (the literal above, untouched); an
+# unchanged item with unchanged matches keeps its digest, and specifically
+# keeps the digest the PRE-SEAM five-argument call produced; and an item
+# whose matched set moved re-renders. ------------------------------------
+
+# Captured on the freshly cut branch BEFORE `outcomes` existed (T1 Step 3),
+# by calling badge_fingerprint with exactly five arguments. Pinned as a
+# literal rather than re-derived, for the same reason the gate-off literal
+# above is: a re-derivation passes even when the formula and the pin move
+# together.
+PRE_SEAM_ONE_DEFINITION_FINGERPRINT = "973b2cf3010950d3980be8644f92f1ad5243936691ce100f89eb44bdf94f0923"
+
+
+def test_a_config_of_unconditioned_definitions_does_not_move_the_fingerprint():
+    """The storm guard, extended to the case this phase creates. An operator
+    who already configures row-97 definitions and writes no `condition:` on
+    any of them must see ZERO fingerprint movement -- `select` reports no
+    outcomes for an unconditioned definition, so the new digest part is never
+    appended."""
+    stamp = OverlayDefinition(name="text(HELLO)")
+    assert badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp],
+    ) == PRE_SEAM_ONE_DEFINITION_FINGERPRINT
+    assert badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp], [],
+    ) == PRE_SEAM_ONE_DEFINITION_FINGERPRINT
+
+
+def test_a_condition_carrying_definition_moves_the_fingerprint_from_the_pre_seam_value():
+    """The discriminating half of the same guard. `_definitions_digest`
+    excludes `condition` from a definition's dump only while it is unset
+    (None) -- a definition that DOES carry one must therefore differ from
+    the pre-seam literal. If it did not, the exclusion would be swallowing
+    more than the unset default, and an operator's own `condition:` edits
+    would stop moving the fingerprint too."""
+    conditioned = OverlayDefinition(
+        name="text(HELLO)", condition={"resolution": "4k"}
+    )
+    assert badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [conditioned],
+    ) != PRE_SEAM_ONE_DEFINITION_FINGERPRINT
+
+
+def test_an_empty_outcomes_list_is_indistinguishable_from_no_outcomes_at_all():
+    """Same guard, at the gate-off end: `outcomes=[]` and `outcomes=None`
+    must both leave `parts` untouched, so the pinned literal above stays
+    reachable from every call shape."""
+    assert badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6", "audience": "63%"}, "manifest-sha",
+        None, [],
+    ) == "576f88e58b3cf7af26d5058d63a46fa1eebfe89c63d7ce367d529a89ecf5a0bd"
+
+
+def test_an_unchanged_item_with_unchanged_matches_keeps_its_digest():
+    """A4's first half, tied to the real selection mechanism rather than to
+    two calls of `badge_fingerprint` with a hand-typed, byte-identical
+    `outcomes` literal -- that only proves hashlib is deterministic (it
+    cannot fail under any implementation of `_outcomes_digest`, and would
+    survive a bug where two evaluations of the SAME item disagree: a set
+    walked in insertion-unstable order, an `lru_cache` keyed on something
+    other than the condition's own content). `outcomes` is produced by
+    RUNNING `select()` against a real matching item, twice -- a genuinely
+    unchanged second pass over the first pass's own inputs -- not typed as a
+    literal."""
+    from autoposter.overlays.selection import OverlayItemView, select
+
+    stamp = OverlayDefinition(name="dp", condition={"resolution.regex": "(?i)2160|4k"})
+    plex_item = _FakePlexItem()
+    plex_item.media[0].videoResolution = "4k"
+    view = OverlayItemView(None, plex_item=plex_item)
+
+    _, first_outcomes = select([stamp], view)
+    _, second_outcomes = select([stamp], view)
+    first = badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp], first_outcomes,
+    )
+    second = badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp], second_outcomes,
+    )
+    assert first == second
+
+
+def test_a_changed_match_outcome_moves_the_digest():
+    """A4's second half, and the reason A4 was ruled yes: an item whose
+    resolution changed from 1080 to 4k keeps its old badge forever if the
+    fingerprint covers only the config, because the CONFIG did not move."""
+    stamp = OverlayDefinition(name="dp", condition={"resolution.regex": "(?i)2160|4k"})
+    before = badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp], [("dp", False)],
+    )
+    after = badge_fingerprint(
+        "base-fp", "poster", {"critic": "8.6"}, "manifest-sha", [stamp], [("dp", True)],
+    )
+    assert before != after
+
+
+def test_the_outcome_digest_is_order_significant_and_name_carrying():
+    """Two definitions that swap outcomes are a different item state, and a
+    name is part of what an outcome means -- otherwise `[True, False]` and
+    `[False, True]` would collide."""
+    a = OverlayDefinition(name="a", condition={"resolution": "4k"})
+    b = OverlayDefinition(name="b", condition={"resolution": "1080"})
+    one = badge_fingerprint(
+        "base-fp", "poster", {}, "manifest-sha", [a, b], [("a", True), ("b", False)],
+    )
+    two = badge_fingerprint(
+        "base-fp", "poster", {}, "manifest-sha", [a, b], [("a", False), ("b", True)],
+    )
+    assert one != two
+
+
 def test_blur_takes_the_maximum_across_every_matched_definition():
     """The per-item pre-pass semantics (p-overlay-b-recon.md, a fresh fetch
     of modules/overlays.py::run_overlays): max NN across every blur(NN)
@@ -501,3 +614,314 @@ async def test_apply_badges_threads_http_through_to_a_url_sourced_definition(
     assert _sha(plex_item.last_bytes) != _sha(baseline_plex.last_bytes), (
         "the downloaded image must actually be drawn, not skipped"
     )
+
+
+# --- the seam through the REAL entry point: gate-off / gate-on-but-unmatched
+# / gate-on-and-matched. Global Constraint 6. `_sha` is a PIXEL hash, not a
+# file hash: a differently-configured item legitimately stamps different EXIF
+# provenance, and what must be identical is what got DRAWN. --------------
+
+
+class _FakePlexItem4k(_FakePlexItem):
+    """The same fake, one attribute moved. `videoResolution` is what
+    `direct_play` selects on."""
+
+    def __init__(self):
+        super().__init__()
+        self.media[0].videoResolution = "4k"
+        self.contentRating = "PG-13"
+
+
+async def test_a_definition_whose_condition_fails_draws_exactly_the_gate_off_pixels(
+    session, config_with_badges, tmp_path
+):
+    """The middle arm of the three-way law, and the one that did not exist
+    before this phase: gate ON, condition NOT satisfied, and the drawn pixels
+    must equal the no-definitions baseline exactly."""
+    stamp = tmp_path / "stamp.png"
+    Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(stamp, format="PNG")
+    config_with_badges.overlays_root = tmp_path
+
+    config_with_badges.badges.definitions = []
+    base_item, base_render = await _render(session, rating_key="cond-baseline")
+    base_plex = _FakePlexItem()
+    await apply_badges(session, config_with_badges, base_render, base_item, base_plex, _Facts())
+
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="mystamp", file="stamp.png",
+            condition={"resolution.regex": "(?i)2160|4k"},
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="center", vertical_offset=0,
+        )
+    ]
+    item, render = await _render(session, rating_key="cond-unmatched")
+    plex_item = _FakePlexItem()  # 1080 -- does not satisfy the condition
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+
+    assert _sha(plex_item.last_bytes) == _sha(base_plex.last_bytes)
+
+
+async def test_a_definition_whose_condition_holds_is_actually_drawn(
+    session, config_with_badges, tmp_path
+):
+    """The third arm. Same config, an item that DOES satisfy it."""
+    stamp = tmp_path / "stamp.png"
+    Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(stamp, format="PNG")
+    config_with_badges.overlays_root = tmp_path
+
+    config_with_badges.badges.definitions = []
+    base_item, base_render = await _render(session, rating_key="cond-baseline-4k")
+    base_plex = _FakePlexItem4k()
+    await apply_badges(session, config_with_badges, base_render, base_item, base_plex, _Facts())
+
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="mystamp", file="stamp.png",
+            condition={"resolution.regex": "(?i)2160|4k"},
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="center", vertical_offset=0,
+        )
+    ]
+    item, render = await _render(session, rating_key="cond-matched")
+    plex_item = _FakePlexItem4k()
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+
+    assert _sha(plex_item.last_bytes) != _sha(base_plex.last_bytes)
+
+
+async def test_an_item_whose_match_outcome_changes_re_badges(
+    session, config_with_badges, tmp_path
+):
+    """A4 through the real entry point, which is where it matters: the same
+    render row, the same config, one item attribute moved -- and moved on an
+    attribute `badge_values` never reads, so nothing but the match OUTCOME
+    could be what moves the fingerprint. `contentRating` is read by the
+    overlay view (it is what the six regionals select on) but by no badge:
+    `BadgeInputs.content_rating` comes from `facts`, not from `plex_item`
+    (`pipeline.py:1321`) -- unlike `videoResolution`, which also drives
+    `resolution_image` and would move the fingerprint through `values` on
+    its own, discriminating nothing. Without the outcome in the fingerprint,
+    `apply_badges`'s gate sees an unchanged digest and
+    `upload_status == 'uploaded'` and returns early -- the item keeps the
+    wrong badge forever."""
+    stamp = tmp_path / "stamp.png"
+    Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(stamp, format="PNG")
+    config_with_badges.overlays_root = tmp_path
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="mystamp", file="stamp.png",
+            condition={"content_rating": "PG-13"},
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="center", vertical_offset=0,
+        )
+    ]
+
+    item, render = await _render(session, rating_key="outcome-moves")
+    plex_item = _FakePlexItem()  # no contentRating: does not match
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 1
+    unmatched_fingerprint = render.badge_fingerprint
+
+    plex_item.contentRating = "PG-13"  # the item changed
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2, "a changed match outcome must re-badge"
+    assert render.badge_fingerprint != unmatched_fingerprint
+
+
+async def test_an_unmatched_definition_never_resolves_its_image(
+    session, config_with_badges, tmp_path, monkeypatch
+):
+    """Global Constraint 7. Selection runs BEFORE the per-definition
+    resolution loop, so an overlay this item does not match costs no stat, no
+    download and no decode. Proven with a `url:` source, where the I/O is
+    observable: zero requests must be made."""
+    monkeypatch.setattr(
+        "autoposter.net.guard.resolve_host", lambda h, p: ["93.184.216.34"]
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        buffer = io.BytesIO()
+        Image.new("RGBA", (20, 20), (255, 0, 0, 255)).save(buffer, format="PNG")
+        return httpx.Response(
+            200, content=buffer.getvalue(), headers={"content-type": "image/png"},
+        )
+
+    config_with_badges.overlays_root = tmp_path
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="mystamp", url="https://example.com/a.png",
+            condition={"resolution.regex": "(?i)2160|4k"},
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="center", vertical_offset=0,
+        )
+    ]
+    item, render = await _render(session, rating_key="unmatched-url")
+    plex_item = _FakePlexItem()  # 1080
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await apply_badges(
+            session, config_with_badges, render, item, plex_item, _Facts(), http=http
+        )
+    assert calls == [], "an unmatched definition must not resolve its image"
+
+
+# --- per-family fires/silent, through the REAL apply_badges. One shaped item
+# and one healthy item per family, plus the A5 divergence test. ------------
+
+
+class _FakePlexItemRated(_FakePlexItem):
+    """1080p, with a Plex certification. `contentRating` is what the six
+    regionals select on."""
+
+    def __init__(self, content_rating="PG-13"):
+        super().__init__()
+        self.contentRating = content_rating
+
+
+class _CommonSenseFacts:
+    """`item_facts` as `facts/mdblist.py::parse_content_rating` writes it:
+    `content_rating` is a Common Sense AGE, not a certification.
+    `"G - All Ages"` is IN Kometa's us_movie `g` bucket verbatim (the same
+    bucket `"3"` is in), which is precisely why this makes a sharp
+    divergence test -- and, unlike `"3"`, it is not itself a digit, so
+    `badges/values.py::commonsense_text` answers `None` for it (any
+    non-numeric string that is not `"NR"` does) and it draws no commonsense
+    badge of its own. That matters here ONLY because the commonsense badge
+    is a SEPARATE badge this same `facts.content_rating` field also feeds
+    (`pipeline.py:1321`) -- if it drew, its own text would move between
+    `divergent` and `plex_only` below for a reason that has nothing to do
+    with which regional badge sourced correctly, and the `_sha` equality
+    this test needs would fail for the wrong reason."""
+
+    critic_rating = 4.9
+    audience_rating = 6.3
+    content_rating = "G - All Ages"
+
+
+class _FactsNoContentRating:
+    """`item_facts` with no Common Sense rating at all -- what "Plex alone"
+    genuinely looks like, as opposed to "Plex plus some OTHER Common Sense
+    value" (a numeric one would draw its own commonsense badge and break the
+    same equality `_CommonSenseFacts` above is built to avoid breaking)."""
+
+    critic_rating = 4.9
+    audience_rating = 6.3
+    content_rating = None
+
+
+async def _badged(session, config, plex_item, rating_key, facts=None):
+    item, render = await _render(session, rating_key=rating_key)
+    await apply_badges(
+        session, config, render, item, plex_item, facts or _Facts()
+    )
+    return plex_item.last_bytes
+
+
+async def test_direct_play_fires_on_a_4k_item_and_is_silent_on_a_1080_one(
+    session, config_with_badges
+):
+    config_with_badges.badges.families = []
+    base_1080 = await _badged(session, config_with_badges, _FakePlexItem(), "dp-base-1080")
+    base_4k = await _badged(session, config_with_badges, _FakePlexItem4k(), "dp-base-4k")
+
+    config_with_badges.badges.families = ["direct_play"]
+    silent = await _badged(session, config_with_badges, _FakePlexItem(), "dp-1080")
+    fires = await _badged(session, config_with_badges, _FakePlexItem4k(), "dp-4k")
+
+    assert _sha(silent) == _sha(base_1080), "1080p must draw the gate-off pixels"
+    assert _sha(fires) != _sha(base_4k), "4k must actually draw Direct-Play"
+
+
+async def test_a_regional_fires_on_its_bucket_and_is_silent_off_it(
+    session, config_with_badges
+):
+    config_with_badges.badges.families = []
+    baseline = await _badged(
+        session, config_with_badges, _FakePlexItemRated("PG-13"), "cr-base"
+    )
+
+    config_with_badges.badges.families = ["content_rating_us_movie"]
+    fires = await _badged(
+        session, config_with_badges, _FakePlexItemRated("PG-13"), "cr-pg13"
+    )
+    silent = await _badged(
+        session, config_with_badges, _FakePlexItemRated("Unrated Nonsense"), "cr-none"
+    )
+
+    assert _sha(fires) != _sha(baseline), "PG-13 must draw its regional badge"
+    assert _sha(silent) == _sha(baseline), "a certification in no bucket draws nothing"
+
+
+async def test_the_regionals_read_plexs_certification_not_item_facts_common_sense(
+    session, config_with_badges
+):
+    """Adjudication A5's divergence test, and it is sharp on purpose: the
+    item carries Plex `PG-13` AND an item_facts Common Sense age of
+    `"G - All Ages"`, which is IN Kometa's us_movie `g` bucket. If this view
+    read `item_facts.content_rating`, the `g` badge would draw. It must draw
+    the `pg-13` one.
+
+    `divergent` and `plex_only` are built to draw the SAME commonsense badge
+    as each other (neither's `facts.content_rating` is a digit, so neither
+    draws one at all -- see `_CommonSenseFacts` and `_FactsNoContentRating`
+    above) precisely so that `_sha` equality below isolates the REGIONAL
+    badge's sourcing and nothing else."""
+    config_with_badges.badges.families = ["content_rating_us_movie"]
+    divergent = await _badged(
+        session, config_with_badges, _FakePlexItemRated("PG-13"),
+        "cr-divergent", facts=_CommonSenseFacts(),
+    )
+
+    # The same item as Plex sees it, with no Common Sense value at all.
+    plex_only = await _badged(
+        session, config_with_badges, _FakePlexItemRated("PG-13"),
+        "cr-plex-only", facts=_FactsNoContentRating(),
+    )
+    # And the item as item_facts alone would have described it -- "3" here,
+    # not `_CommonSenseFacts`'s own value, is fine: this call only needs SOME
+    # `g`-bucket certification to demonstrate the bucket draws differently,
+    # and it does not participate in the `_sha` equality above.
+    as_common_sense = await _badged(
+        session, config_with_badges, _FakePlexItemRated("3"), "cr-as-cs"
+    )
+
+    assert _sha(divergent) == _sha(plex_only), (
+        "the Common Sense value must not change what is drawn"
+    )
+    assert _sha(divergent) != _sha(as_common_sense), (
+        "reading item_facts.content_rating would have drawn the g badge"
+    )
+
+
+async def test_enabling_a_family_re_badges_an_already_uploaded_item(
+    session, config_with_badges
+):
+    """The same law Finding 1 established for a hand-written definition: a
+    family named on an already-uploaded render must reach Plex."""
+    config_with_badges.badges.families = []
+    item, render = await _render(session, rating_key="family-rebadge")
+    plex_item = _FakePlexItem4k()
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 1
+    before = render.badge_fingerprint
+
+    config_with_badges.badges.families = ["direct_play"]
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2
+    assert render.badge_fingerprint != before
+
+
+async def test_enabling_no_family_moves_no_fingerprint(
+    session, config_with_badges
+):
+    """The storm guard at the family surface: a second pass with the same
+    empty `families` must not re-upload."""
+    config_with_badges.badges.families = []
+    item, render = await _render(session, rating_key="family-storm")
+    plex_item = _FakePlexItem()
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 1
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 1, "an unchanged config must not re-badge"
