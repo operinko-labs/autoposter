@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
+import langcodes
+
 from autoposter.assets import asset_path
 
 @lru_cache(maxsize=1)
@@ -106,6 +108,46 @@ class MediaInfo:
     # own right, not just diagnostics. Defaulted because every construction
     # site predating the video_format badge passes the other eight positionally.
     file_path: str | None = None
+    # The FILTER dialect's stream languages, ISO 639-1, in listing order --
+    # Kometa's own `audio_language`/`subtitle_language` value, transcribed
+    # from `modules/plex.py:2915-2922` at the pinned digest:
+    #
+    #     for media in item.media:
+    #         for part in media.parts:
+    #             test_number.extend([a.language for a in part.audioStreams()])
+    #
+    # EVERY stream, across EVERY `<Media>`, NOT deduplicated -- and
+    # `.count_*` is `len()` of exactly that list (`plex.py:2931-2932`). So a
+    # film with an English track plus an English commentary track is "Dual"
+    # upstream, and three English subtitle tracks satisfy
+    # `subtitle_language.count_gte: 2`. That is upstream's arithmetic and it
+    # is transcribed, not corrected (roadmap row 100, sub-phase C2b,
+    # adjudication A-3). A stream with no language code counts too, and is
+    # never skipped: Kometa's `a.language for a in part.audioStreams()`
+    # appends whatever `a.language` is, so an unlabelled stream is one MORE
+    # (empty-string) entry, mirrored here rather than dropped.
+    #
+    # DISTINCT FROM `audio_languages` ABOVE, deliberately and permanently:
+    # that field is DISTINCT codes off the PRIMARY version and it feeds
+    # `language_slots`' flag badge, which would draw a duplicate flag if it
+    # counted streams. Two fields, two contracts, neither bent to serve the
+    # other. `_stream_languages` in `plex/client.py` is the collections
+    # engine's sibling read and it ends in `_uniq` -- that dedupe is
+    # pre-existing and out of this sub-phase's scope; the divergence it
+    # leaves between the two item views is recorded in
+    # `overlays/selection.py` rather than papered over.
+    #
+    # Defaulted for the same reason `file_path` is: every construction site
+    # predating this phase passes the fields before them POSITIONALLY,
+    # several of them in parity-pin files this phase may not edit.
+    #
+    # `()` rather than `None` for "no such streams": `filters._is_missing`
+    # reads an empty sequence as missing for a `tag`, and the `.count_*`
+    # operators reduce both shapes to zero before that rule runs, so one
+    # shape keeps `overlays/selection.py::OverlayItemView.get`'s branches
+    # uniform.
+    audio_stream_languages: tuple[str, ...] = ()
+    subtitle_stream_languages: tuple[str, ...] = ()
 
 
 def media_info_from_plex(item) -> MediaInfo:
@@ -147,8 +189,61 @@ def media_info_from_plex(item) -> MediaInfo:
     if file_path and _HDR10_PLUS.search(file_path):
         flags.add("plus")
 
+    # Kometa's own filter read, transcribed (`modules/plex.py:2915-2922`):
+    # every audio/subtitle stream's language, across EVERY `<Media>`, in
+    # listing order, with no dedupe and no drop for an unlabelled stream --
+    # Kometa's own `a.language for a in part.audioStreams()` never skips
+    # one, so a stream with no language code still contributes one
+    # (empty-string) entry, and `.count_*`'s `len()` sees it. A SEPARATE
+    # walk from the loop above rather than an `elif` inside it, for two
+    # reasons that are both
+    # behavioural: that loop is scoped to `media` (the PRIMARY version) and
+    # widening it would change `audio_languages`, `hdr_flags` and
+    # `file_path` for every multi-version item; and this walk must NOT
+    # deduplicate, which is the opposite of what the loop above does. Both
+    # walk objects `item.reload()` already fetched, so the cost claim (zero
+    # extra Plex requests, zero extra bytes) is unchanged.
+    audio_streams: list[str] = []
+    subtitle_streams: list[str] = []
+    for version in getattr(item, "media", []) or []:
+        for part in getattr(version, "parts", []) or []:
+            for stream in getattr(part, "streams", []) or []:
+                # `langcodes` (the same library `collections/filters.py`'s
+                # `base_language_code` reduces a language value with) rather
+                # than a bare `[:2]` slice of `languageCode`: the stream's
+                # code is ISO 639-2 (three letters) and a handful of common
+                # languages do not truncate to their ISO 639-1 form --
+                # Swedish's `swe` is `sv`, not `sw` (Swahili). An unparseable
+                # or absent code falls back to the empty string, matching
+                # "no language" rather than a wrong guess.
+                raw = getattr(stream, "languageCode", None) or ""
+                if raw:
+                    try:
+                        code = (langcodes.Language.get(raw).language or raw[:2]).lower()
+                    except ValueError:
+                        code = raw[:2].lower()
+                else:
+                    code = ""
+                if stream.streamType == 2:
+                    audio_streams.append(code)
+                elif stream.streamType == 3:
+                    subtitle_streams.append(code)
+
     return MediaInfo(
         video_resolution=getattr(media, "videoResolution", None),
+        # NOT `aspectRatio`, and that is deliberate (roadmap row 100,
+        # sub-phase C2b, adjudication A-2). The value rides on this same
+        # already-in-hand `<Media>` object -- zero extra Plex requests,
+        # which is the cost claim C2b rests on -- but `media` here is
+        # `item.media[0]`, ONE version, and A-2 rules that `aspect` answers
+        # through the SAME whole-`<Media>`-list walk `resolution` uses. So
+        # the read lives in `collections/filter_values.py::_aspect`, shared
+        # verbatim by both item views, and `MediaInfo` deliberately carries
+        # no aspect field: a second, `media[0]`-shaped copy of the same
+        # value is exactly the drift `overlays/selection.py`'s own R2 note
+        # ("one accessor, not two copies that can drift") rules out, and
+        # nothing would consume it -- `overlays/variables.py`'s grammar has
+        # no `<<aspect>>` token in any of its variable classes.
         audio_codec=getattr(media, "audioCodec", None),
         audio_channels=getattr(media, "audioChannels", None),
         duration_ms=getattr(item, "duration", None),
@@ -157,6 +252,8 @@ def media_info_from_plex(item) -> MediaInfo:
         season_number=getattr(item, "seasonNumber", None),
         episode_number=getattr(item, "episodeNumber", None),
         file_path=file_path,
+        audio_stream_languages=tuple(audio_streams),
+        subtitle_stream_languages=tuple(subtitle_streams),
     )
 
 
