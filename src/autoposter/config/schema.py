@@ -2356,6 +2356,13 @@ class PlaylistsConfig(BaseModel):
         default_factory=list,
         description="Operator-configured playlists, each built by one registered list builder.",
     )
+    presets: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Preset timeline playlists this service builds, named by key from "
+            "the shipped table; an empty list builds none of them."
+        ),
+    )
     # The only setting here that authorises a delete, and off means REPORTED --
     # the posture collections.delete_unconfigured takes, for the same reasons.
     delete_unconfigured: bool = Field(
@@ -2383,6 +2390,11 @@ class PlaylistsConfig(BaseModel):
         ``managed_playlists``' unique key and the row the members hash is stored
         on. Two definitions sharing one would overwrite each other on every pass
         and the hash would flap between them forever.
+
+        A definition sharing a PRESET's title is a different thing and is not
+        refused here: it is the operator overriding that preset, so
+        ``playlist_presets.preset_definitions`` drops the preset and
+        ``preset_conflicts`` reports what was displaced.
         """
         seen: dict[str, PlaylistDefinition] = {}
         for definition in self.definitions:
@@ -2395,6 +2407,44 @@ class PlaylistsConfig(BaseModel):
                     "identifies it and one would overwrite the other on every pass"
                 )
             seen[definition.title] = definition
+        return self
+
+    @model_validator(mode="after")
+    def _presets_must_be_known(self) -> "PlaylistsConfig":
+        """Every key in ``presets`` names a row of the shipped table.
+
+        This is the *only* thing that makes a bad key an error.
+        ``playlist_presets.preset_definitions`` is written as a scan of the
+        table rather than a lookup of this list precisely so it cannot raise
+        during validation, so an unknown key does not fail there -- it expands
+        to nothing at all, and without this refusal a mis-typed preset would be
+        a switch an operator believed they had flipped.
+
+        Two refusals, the two ``CollectionsConfig._presets_must_be_known_and_
+        ready`` makes one section along, minus its third: there is no readiness
+        tier here, because every playlist preset sits on a builder that
+        shipped.
+
+        Imported at validation time, not module scope: ``playlist_presets``
+        imports ``PlaylistDefinition`` from this module, the cycle every
+        validator in this file documents.
+        """
+        from autoposter.collections.playlist_presets import BY_KEY
+
+        seen: set[str] = set()
+        for key in self.presets:
+            if key in seen:
+                raise ValueError(
+                    f"playlist preset {key!r} is listed twice in 'presets': a "
+                    "preset is either switched on or it is not, so a repeated "
+                    "key builds nothing extra and means less than it looks like"
+                )
+            seen.add(key)
+            if key not in BY_KEY:
+                raise ValueError(
+                    f"unknown playlist preset {key!r}: the shipped keys are "
+                    + ", ".join(sorted(BY_KEY))
+                )
         return self
 
 

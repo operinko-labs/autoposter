@@ -34,7 +34,7 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.overlays.selection import OverlayItemView
 from autoposter.overlays.selection import select as select_overlay_definitions
 from autoposter.overlays.sources import OverlaySourceError, resolve_image_path
-from autoposter.plex.artwork import upload_artwork
+from autoposter.plex.artwork import generated_title_card_url, upload_artwork
 from autoposter.plex.client import ResolvedItem
 from autoposter.plex.writer import apply_facts, exemption_reason
 from autoposter.providers import base as art
@@ -547,7 +547,8 @@ def _validate_image(path: Path, stage: str) -> None:
 
 
 async def _download(
-    http: httpx.AsyncClient, url: str, destination: Path, *, stage: str
+    http: httpx.AsyncClient, url: str, destination: Path, *, stage: str,
+    headers: dict[str, str] | None = None, follow_redirects: bool = True,
 ) -> str:
     """Fetch artwork to ``destination`` and return its SHA-256.
 
@@ -575,11 +576,21 @@ async def _download(
     ``application/octet-stream`` over bytes that decode perfectly.
 
     ``stage`` names what is being fetched, for the refusal message.
+
+    ``headers`` and ``follow_redirects`` are both keyword-only and default to
+    the values every existing call site already gets (no headers, redirects
+    followed), so nothing already calling this changes. The plex-preview
+    fallback (roadmap row 241) is the first caller to pass either: an
+    ``X-Plex-Token`` header, and ``follow_redirects=False`` (adjudication A5)
+    because a custom auth header is not one httpx strips on a cross-origin
+    redirect, and PMS never needs to redirect an image blob anyway.
     """
     digest = hashlib.sha256()
     size = 0
     try:
-        async with http.stream("GET", url, follow_redirects=True) as response:
+        async with http.stream(
+            "GET", url, follow_redirects=follow_redirects, headers=headers
+        ) as response:
             response.raise_for_status()
             with destination.open("wb") as handle:
                 async for chunk in response.aiter_bytes():
@@ -598,12 +609,82 @@ async def _download(
     return digest.hexdigest()
 
 
+async def fetch_plex_generated_base(
+    http: httpx.AsyncClient, plex, rating_key: str, destination: Path,
+    *, base_url: str, headers: dict[str, str], stage: str,
+) -> str | None:
+    """Download Plex's own generated title-card frame, or answer ``None``.
+
+    The plex-preview fallback (roadmap row 241): lazily fetches the plexapi
+    item for ``rating_key`` (adjudication A2 -- only an episode whose
+    provider ladder came back empty ever reaches this, so this is not a
+    second fetch for every item ``process_item`` already handles), lists its
+    posters, and downloads the ``media://``-prefixed entry
+    (``generated_title_card_url``) -- never an ``upload://`` entry, which is
+    our own previous output locked onto the same field (the self-feed loop
+    C1.2 refutes). ``None`` when the listing has no such entry, the caller's
+    cue to fall through to the existing ``no_art`` outcome.
+
+    Goes through ``_download``, not a bare GET, so the fetch gets #131's
+    full-decode validation and the byte cap for free.
+    ``follow_redirects=False`` (adjudication A5): ``X-Plex-Token`` is a
+    custom header httpx will not strip on a cross-origin redirect, and PMS
+    never needs one for an image blob anyway.
+
+    Built as a ``functools.partial`` at app.py's composition time, with
+    ``http``, ``plex``, ``base_url`` and the token header baked in --
+    ``render_artifact`` calls the result with only ``rating_key`` and
+    ``destination``, so the token is never in scope there at all.
+
+    M1: a non-2xx from Plex (a rotated token's 401, a 3xx now that
+    ``follow_redirects=False``, a PMS 5xx) raises ``httpx.HTTPStatusError``
+    from ``_download``'s ``raise_for_status()``. ``process_item``'s per-kind
+    containment only catches ``SourceRefused``, so left uncaught this would
+    fail the whole job over what used to be a quiet ``no_art`` row. Caught
+    here and logged once, by rating key and status code only -- never the
+    URL, which carries no token itself but is still not worth logging -- so
+    the caller falls through to the existing ``no_art`` outcome.
+    """
+    plex_item = await plex.fetch_item(rating_key)
+    url = await generated_title_card_url(plex_item, base_url)
+    if url is None:
+        return None
+    try:
+        return await _download(
+            http, url, destination, stage=stage, headers=headers, follow_redirects=False,
+        )
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Plex's generated frame fetch failed for %s: HTTP %s",
+            rating_key, exc.response.status_code,
+        )
+        return None
+
+
 # The events_log identity of a re-key, for the reason scheduler/prune.py's
 # PRUNE_SOURCE/PRUNE_EVENT are constants: the audit row is the only surviving
 # record that a row's Plex key moved under it, and a typo in either would make
 # a library's worth of them unfindable.
 REKEY_SOURCE = "rekey"
 REKEY_EVENT = "media_item_rekeyed"
+
+# The events_log identity of a FORK STOP, filed under REKEY_SOURCE beside the
+# re-key's own row rather than under a source of its own: both are the same
+# identity story, and an operator asking "what happened to this row's key"
+# should grep one source. Its own event_type, because the two rows say
+# opposite things -- one records a key that moved, the other a job that
+# declined to touch a key that did not.
+FORK_EVENT = "process_item_fork_stopped"
+
+# The no-op outcome's name. A job that stops here COMPLETES -- queue/worker's
+# `else: await complete(...)` -- so it is never retried, never deferred and
+# never parked. `complete()` does write `job.last_error` (the SERVED column,
+# api/jobs.py), but writes it None (queue/jobs.py:327): NOTHING IS SERVED,
+# which is stricter than the class-name-only rule row 213 sets for the paths
+# that do serve something. _served_reason is never even reached -- it is
+# called only from the fail() branches. The pod log's WARNING and this audit
+# row are the whole record.
+FORK_OUTCOME = "fork_stopped"
 
 
 def _identity_clauses(item: ResolvedItem) -> list:
@@ -779,14 +860,15 @@ async def _rekey_by_identity(
         if isinstance(exc, IntegrityError):
             logger.warning(
                 "re-key of %s to %s lost a race; the winner's row holds the "
-                "key and this pass will upsert onto it",
+                "key, so this pass stops rather than upsert onto it",
                 old_key, item.rating_key, exc_info=True,
             )
         else:
             logger.warning(
                 "re-key of %s to %s lost a race to a deadlock; nothing took "
-                "the key, and this pass mints a fresh twin for the next "
-                "merge to eat",
+                "the key in THIS transaction -- the rollback says no more "
+                "than that -- so this pass falls through and mints a fresh "
+                "twin unless another worker landed the key first",
                 old_key, item.rating_key, exc_info=True,
             )
         return None
@@ -1012,6 +1094,104 @@ def _provider_rank(providers: list, provider_name: str | None) -> int | None:
     return names.index(provider_name)
 
 
+# How many clearlogo candidates one poster may try before it renders without
+# one. Every attempt past the first is a download this pass did not previously
+# make, and a title whose whole logo set is corrupt would otherwise walk a
+# provider's entire catalogue on every visit. Three is two more chances than
+# the pipeline had before the 'Inside Out 2' bomb and still a bounded cost per
+# item. Counted per ATTEMPT, not per download: a candidate dropped on its
+# reported size spends one too, which is what keeps a run of oversized
+# candidates bounded as well.
+_MAX_LOGO_ATTEMPTS = 3
+
+
+async def _pick_logo(
+    http: httpx.AsyncClient,
+    config: Config,
+    item: ResolvedItem,
+    providers: list,
+    tmpdir: Path,
+) -> tuple[Path | None, str, int]:
+    """The clearlogo for this poster: ``(path, sha256, candidates skipped)``.
+
+    Two guards, both from the 'Inside Out 2' clearlogo (a 32000x18839 PNG,
+    602,848,000px, which ``ladder.rank_key`` ranked FIRST because it sorts on
+    ``-pixels``):
+
+    * A candidate whose provider-REPORTED ``width * height`` is over
+      ``_ARTWORK_MAX_PIXELS`` is skipped without being downloaded -- the same
+      ceiling ``_validate_image`` would refuse it at, read from the same
+      metadata the ladder ranked it by, so the check costs nothing and needs
+      no new provider field. A candidate reporting no dimensions at all (TMDB
+      omits them on some entries; Fanart's ``_int_or_none`` answers None for a
+      non-numeric) is downloaded exactly as before: unknown is not "too big",
+      and the full decode still settles it.
+    * A candidate that IS downloaded and then refused is skipped and the
+      ladder is asked again with that URL excluded (``select_artwork``'s
+      ``exclude_urls``).
+
+    ``(None, "", n)`` when nothing usable was found -- the caller falls
+    through to the EXISTING no-logo path, so the poster is rendered without a
+    logo rather than refused. The refusal outcome stays for the BASE image
+    alone: a missing logo is a styling difference, a missing base image is no
+    artwork at all.
+
+    The re-ask is usually free: ``providers/cache.py`` is a TTL cache of the
+    decoded JSON payload keyed by the metadata request (``providers/fetch.py``
+    consults it before issuing anything), so a second walk within the TTL is a
+    database read rather than a network hit -- but ONLY when
+    ``providers.cache_ttl_seconds > 0``, because ``app.py:173`` builds no cache
+    at all when it is zero. With caching off, each attempt past the first is a
+    real outbound listing request per provider, which is the other half of why
+    ``_MAX_LOGO_ATTEMPTS`` is small. Image bodies are never cached either way,
+    which is also why a refused candidate is re-fetched rather than remembered
+    across passes.
+    """
+    tried: set[str] = set()
+    skipped = 0
+    for _ in range(_MAX_LOGO_ATTEMPTS):
+        selection = await select_artwork(
+            providers,
+            config.artwork.logo_language_order,
+            art.ArtRequest(
+                art_kind=art.LOGO,
+                is_movie=item.kind == "movie",
+                tmdb_id=item.tmdb_id,
+                tvdb_id=item.tvdb_id,
+                imdb_id=item.imdb_id,
+                season_number=item.season_number,
+                episode_number=item.episode_number,
+                prefer_clearart=config.artwork.use_clearart,
+            ),
+            exclude_urls=tried,
+        )
+        candidate = selection.candidate
+        if candidate is None:
+            break
+        tried.add(candidate.url)
+        # `or 0` on both halves: an unreported dimension must read as "not
+        # over the ceiling", never as a zero-sized image to reject.
+        if (candidate.width or 0) * (candidate.height or 0) > _ARTWORK_MAX_PIXELS:
+            skipped += 1
+            continue
+        suffix = Path(httpx.URL(candidate.url).path).suffix or ".png"
+        logo_path = tmpdir / f"logo{suffix}"
+        try:
+            logo_sha = await _download(
+                http, candidate.url, logo_path, stage="the clearlogo"
+            )
+        except SourceRefused as exc:
+            skipped += 1
+            # No URL: `exc` already names the stage and what was wrong with
+            # the bytes (dimensions, or the decode exception's class name),
+            # and a provider URL in a log line is the one thing row 209 keeps
+            # out of them. `_download` has already removed the partial file.
+            logger.warning("clearlogo candidate refused for %s: %s", item.rating_key, exc)
+            continue
+        return logo_path, logo_sha, skipped
+    return None, "", skipped
+
+
 async def render_artifact(
     session: AsyncSession,
     config: Config,
@@ -1019,8 +1199,20 @@ async def render_artifact(
     item: ResolvedItem,
     art_kind: str,
     providers: list,
+    *,
+    plex_generated_base=None,
 ) -> Render:
-    """Build one artifact. Idempotent: safe to run repeatedly for the same item."""
+    """Build one artifact. Idempotent: safe to run repeatedly for the same item.
+
+    ``plex_generated_base`` is the plex-preview fallback's own hook (roadmap
+    row 241): an async callable ``(rating_key, destination, *, stage) -> str
+    | None`` -- ``fetch_plex_generated_base`` bound at app.py's composition
+    time via ``functools.partial`` with ``http``, ``plex``, ``base_url`` and
+    the ``X-Plex-Token`` header baked in, so this function never sees the
+    token. ``None`` (every existing call site, every existing test) means the
+    rung simply never runs and ``title_card`` behaves exactly as it does on
+    main.
+    """
     settings = art_config_for(config, art_kind)
     media_item = await _upsert_media_item(session, item)
     # The adoption walk's guard (naming.missing_number): year-grouped specials
@@ -1093,6 +1285,7 @@ async def render_artifact(
         # mount cannot stall the event loop.
         override = await asyncio.to_thread(manual_override_path, config, item, art_kind)
         show_fallback = False
+        plex_generated = False
         local_source = False
         chosen_candidate = None
         # Action Center quality facts (roadmap 11a). Each of these is already
@@ -1167,24 +1360,67 @@ async def render_artifact(
                     ),
                 )
                 show_fallback = selection.candidate is not None
-            if selection.candidate is None:
+            # The plex-preview fallback (roadmap row 241), title_card's own
+            # twin of the season_poster rung just above -- and the same seam:
+            # after the ladder, before the no_art record. Unreachable when
+            # online_fetch_disabled() already returned above (adjudication
+            # A4): row 47 scopes itself to "no provider requests", and this
+            # reads Plex's own server rather than a provider, but the rung
+            # sits after that gate anyway rather than being carved out of it,
+            # so a deployment running with fetch disabled sees no change from
+            # main. Named here rather than restructuring that early return.
+            # ``plex_generated`` itself is initialised above, alongside
+            # ``show_fallback``, so the write-back below can read it even on
+            # the manual-override branch (which never reaches this block at
+            # all) without an UnboundLocalError.
+            if (
+                selection.candidate is None
+                and art_kind == "title_card"
+                and plex_generated_base is not None
+            ):
+                plex_base_sha = await plex_generated_base(
+                    item.rating_key, working, stage="the title_card source",
+                )
+                plex_generated = plex_base_sha is not None
+            if selection.candidate is None and not plex_generated:
                 render.status = "no_art"
                 render.detail = f"no {art_kind} art on any provider"
+                # L1: a row that rendered plex_generated earlier and now
+                # finds no media:// entry (generation turned off, bundle
+                # pruned) must stop claiming a fallback it no longer made --
+                # cleared the same way the write-back's own elif clears it.
+                if render.source_mode == "plex_generated":
+                    render.source_mode = "generate"
                 await session.commit()
                 return render
-            candidate = selection.candidate
-            chosen_candidate = candidate
-            base_sha = await _download(
-                http, candidate.url, working, stage=f"the {art_kind} source"
-            )
-            source_url = candidate.url
-            provider_name = candidate.provider
-            textless = candidate.is_textless
-            # True exactly when the order preferred textless art, no provider
-            # had any, and the ladder took a text-bearing image rather than
-            # nothing. The ladder has returned this since it was written and
-            # nothing has ever read it.
-            textless_fallback = selection.is_fallback
+            if plex_generated:
+                # The synthetic, STABLE key -- never the live Plex thumb URL,
+                # which carries a cache-busting epoch our own uploadPoster/
+                # lockPoster bumps on every pass (the epoch-URL refutation,
+                # C1.3). Storing and hashing this same string (the write-back
+                # below reuses this variable) is what keeps a bumped epoch
+                # from moving the fingerprint while regenerated bytes still
+                # do, through base_sha alone -- and what keeps
+                # config/impact.py's recompute honest, since it reads this
+                # same stored column back.
+                base_sha = plex_base_sha
+                source_url = f"plex://{item.rating_key}/title_card"
+                provider_name = "plex"
+                textless = None
+            else:
+                candidate = selection.candidate
+                chosen_candidate = candidate
+                base_sha = await _download(
+                    http, candidate.url, working, stage=f"the {art_kind} source"
+                )
+                source_url = candidate.url
+                provider_name = candidate.provider
+                textless = candidate.is_textless
+                # True exactly when the order preferred textless art, no
+                # provider had any, and the ladder took a text-bearing image
+                # rather than nothing. The ladder has returned this since it
+                # was written and nothing has ever read it.
+                textless_fallback = selection.is_fallback
 
         # Posterizarr parity: UseLogo/UseClearlogo composites a clearlogo in place
         # of the title text on posters. With LogoTextFallback false, a poster with
@@ -1208,36 +1444,34 @@ async def render_artifact(
                 logo_path = Path(tmpdir) / f"logo{picked_logo.suffix}"
                 logo_sha = await asyncio.to_thread(_stage_override, picked_logo, logo_path)
             elif not online_fetch_disabled(config, art_kind):
-                logo_selection = await select_artwork(
-                    providers,
-                    config.artwork.logo_language_order,
-                    art.ArtRequest(
-                        art_kind=art.LOGO,
-                        is_movie=item.kind == "movie",
-                        tmdb_id=item.tmdb_id,
-                        tvdb_id=item.tvdb_id,
-                        imdb_id=item.imdb_id,
-                        season_number=item.season_number,
-                        episode_number=item.episode_number,
-                        prefer_clearart=config.artwork.use_clearart,
-                    ),
+                logo_path, logo_sha, skipped_logos = await _pick_logo(
+                    http, config, item, providers, Path(tmpdir),
                 )
-                if logo_selection.candidate is not None:
-                    logo_candidate = logo_selection.candidate
-                    suffix = Path(httpx.URL(logo_candidate.url).path).suffix or ".png"
-                    logo_path = Path(tmpdir) / f"logo{suffix}"
-                    logo_sha = await _download(
-                        http, logo_candidate.url, logo_path, stage="the clearlogo"
-                    )
-                elif not config.artwork.logo_text_fallback:
-                    suppress_text = True
-                else:
-                    # The other half of the same decision, which until now had
-                    # no variable at all: no logo on any provider AND
-                    # logo_text_fallback on, so this poster is wearing its
-                    # title text in a logo's place. That is the fact roadmap
-                    # 103 calls "logo-to-text fallback taken".
-                    logo_text_fallback_taken = True
+                if logo_path is None:
+                    if skipped_logos:
+                        # The aggregate line, once per poster: the pod log is
+                        # the trusted sink for the item's own identity, and
+                        # `_pick_logo` has already logged each refusal. No
+                        # URL here either.
+                        logger.warning(
+                            "no usable clearlogo for %s %r: skipped %d candidate(s) "
+                            "over the %dpx ceiling or refused after download; "
+                            "rendering the poster without one",
+                            item.rating_key, item.title, skipped_logos,
+                            _ARTWORK_MAX_PIXELS,
+                        )
+                    if not config.artwork.logo_text_fallback:
+                        suppress_text = True
+                    else:
+                        # The other half of the same decision, which until now
+                        # had no variable at all: no logo on any provider AND
+                        # logo_text_fallback on, so this poster is wearing its
+                        # title text in a logo's place. That is the fact
+                        # roadmap 103 calls "logo-to-text fallback taken".
+                        # Reached identically whether the ladder had nothing
+                        # or everything it had was unusable -- a poster with
+                        # no logo is a poster with no logo.
+                        logo_text_fallback_taken = True
 
         suppress_styling = (
             settings.skip_add_text_when_with_text and known_with_text(chosen_candidate)
@@ -1324,6 +1558,8 @@ async def render_artifact(
     render.detail = (
         "no season_poster art on any provider; styled the show's poster instead"
         if show_fallback
+        else "no title_card art on any provider; used Plex's generated frame instead"
+        if plex_generated
         else None
     )
     # Provenance the "unchanged" short-circuit above cannot blank out, unlike
@@ -1334,6 +1570,12 @@ async def render_artifact(
     if show_fallback:
         render.source_mode = "show_fallback"
     elif render.source_mode == "show_fallback":
+        render.source_mode = "generate"
+    # The plex-preview fallback's own twin of the block above -- row 241,
+    # cleared the same symmetric way row 132 clears show_fallback.
+    if plex_generated:
+        render.source_mode = "plex_generated"
+    elif render.source_mode == "plex_generated":
         render.source_mode = "generate"
     # A real render just happened, so the adoption no longer describes reality:
     # this row now has a source URL and a fingerprint that covers it.
@@ -1689,6 +1931,7 @@ async def process_item(
     mdblist=None,
     artwork_probe=None,
     imdb_parental=None,
+    plex_generated_base=None,
 ) -> list[Render]:
     """Resolve one intent and build every artifact it implies.
 
@@ -1712,20 +1955,30 @@ async def process_item(
     A failure anywhere in this step is caught and logged rather than
     propagated — a ratings-provider hiccup must not cost the item its
     poster and background, which the artifact loop below still owes it.
+
+    ``plex_generated_base`` is passed straight to ``render_artifact``; see
+    its own docstring for what it does and why it is optional.
+
+    Answers ``[]`` -- a completed no-op job -- when the intent carried a
+    rating key, the resolved key differs, and a ``media_items`` row already
+    exists under the resolved key that the identity re-key did not put there.
+    A resolved key with no row at all is NOT a stop: that job falls through to
+    the ordinary upsert exactly as before, which is what still mints a newly
+    discovered item. See the fork stop below.
     """
     item = await plex.resolve(intent)
 
     # The identity fork (roadmap: the ~411 unscorable floor investigation).
     # `resolve()` treats `intent.rating_key` as a hint and is free to return a
     # DIFFERENT key -- the live copy's, after a re-match or a library rebuild
-    # renumbers the item. When that happens, everything below this point
-    # (media_item upsert, the render rows) is keyed on the RESOLVED item, not
-    # the one the intent named, and the intent's original row is silently
-    # never touched. The served surfaces stay class-name-only as everywhere
-    # else in this queue; the pod log is the trusted sink, so this is a
-    # WARNING there and nowhere else -- but it turns a silent hole into a
+    # renumbers the item. Everything below this point (media_item upsert, the
+    # render rows, the Plex field writes) is keyed on the RESOLVED item, not
+    # the one the intent named. The served surfaces stay class-name-only as
+    # everywhere else in this queue; the pod log is the trusted sink, so this
+    # is a WARNING there and nowhere else -- but it turns a silent hole into a
     # grep.
-    if intent.rating_key is not None and item.rating_key != intent.rating_key:
+    forked = intent.rating_key is not None and item.rating_key != intent.rating_key
+    if forked:
         logger.warning(
             "resolved rating key %s for %r differs from the intent's %s; "
             "the intent's row will not be scored by this job",
@@ -1741,10 +1994,71 @@ async def process_item(
     # It must run BEFORE the first _upsert_media_item below, because that is
     # the call that would otherwise insert the twin (and render_artifact, the
     # refusal path and the badge path all upsert again after it).
+    rekeyed_from = await _rekey_by_identity(session, item)
+
+    # The fork stop. It fires on exactly one condition: a row ALREADY HOLDS
+    # the resolved key and it is not this intent's row. Then the resolved item
+    # is somebody else's -- it has its own media_items row and its own visits,
+    # and this job was never asked about it. Carrying on rendered it, uploaded
+    # it, and -- because the unchanged-check compares against the intent's row
+    # -- wrote Plex fields to it on every single pass ("plex: wrote 2 field(s)
+    # to movie 'Boss Level'", every run, forever).
     #
-    # The return value is deliberately unused: the durable record of a re-key
-    # is its events_log row, not a local.
-    await _rekey_by_identity(session, item)
+    # Two filters, cheapest first, and the order is the whole design:
+    #
+    # 1. `rekeyed_from != intent.rating_key`. A re-key that MOVED this
+    #    intent's row onto the resolved key is the success this phase exists
+    #    for: the row under that key is ours, and the job goes on. Checking it
+    #    first also means the hot path -- an unforked item, or a successful
+    #    re-key -- never issues the query below at all.
+    # 2. A row exists under `item.rating_key`. This is the part that cannot be
+    #    inferred from the re-key's return value, because _rekey_by_identity
+    #    answers None on FIVE different refusals and only two of them mean a
+    #    row is there (the key was already taken; an IntegrityError race the
+    #    winner committed). On the other three -- zero identity candidates, an
+    #    ambiguous pair, a 40P01 deadlock -- the resolved key is EMPTY, there
+    #    is no twin, and stopping would delete a job's whole purpose: the
+    #    ordinary upsert below is what mints that row, and it is what arr
+    #    discovery relies on. The twin merge reconciles rows; it never creates
+    #    them, so a stop there would wait for something that never comes.
+    #
+    # One indexed read on the rating_key unique constraint, and an honest one:
+    # four of the five refusal arms roll back before returning (:797, :841),
+    # ending the transaction, and the taken-key arm has issued nothing but
+    # this same select -- so whatever it sees is committed truth.
+    #
+    # This changes nothing about the refusal itself (`p-rekey-facts.md` C1:
+    # cross-library or id-disjoint is not a re-key, and the pair stays the
+    # twin merge's work), and nothing about the row-less fall-through C1.1
+    # calls "the twin path as today" -- only about a pair that already exists.
+    # Returning an empty list COMPLETES the job (queue/worker.py's
+    # `else: complete(...)`), so it is never retried, deferred or parked; a
+    # job that cannot do anything useful must not look like a failure an
+    # operator has to clear.
+    if forked and rekeyed_from != intent.rating_key:
+        resolved_row_id = (
+            await session.execute(
+                select(MediaItem.id).where(MediaItem.rating_key == item.rating_key)
+            )
+        ).scalar_one_or_none()
+        if resolved_row_id is not None:
+            session.add(EventLog(
+                source=REKEY_SOURCE,
+                event_type=FORK_EVENT,
+                payload={
+                    "intent_rating_key": intent.rating_key,
+                    "resolved_rating_key": item.rating_key,
+                    "kind": item.kind,
+                    "library": item.library,
+                    "title": item.title,
+                },
+                outcome=FORK_OUTCOME,
+            ))
+            # A commit, not a flush: _rekey_by_identity's refusal paths roll
+            # back (releasing their FOR UPDATE), and this row must survive
+            # whatever the caller does next.
+            await session.commit()
+            return []
 
     media_item = None
     plex_item = None
@@ -1792,7 +2106,10 @@ async def process_item(
     for art_kind in ART_KINDS_FOR[intent.kind]:
         try:
             results.append(
-                await render_artifact(session, config, http, item, art_kind, providers)
+                await render_artifact(
+                    session, config, http, item, art_kind, providers,
+                    plex_generated_base=plex_generated_base,
+                )
             )
         except SourceRefused as exc:
             # Unlike the metadata and badge blocks above, this loop used to

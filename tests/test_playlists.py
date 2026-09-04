@@ -26,6 +26,9 @@ from autoposter.collections.playlists import reconcile_playlists
 from autoposter.config.schema import PlaylistsConfig
 from autoposter.db.models import ManagedPlaylist
 
+from autoposter.collections import playlist_presets
+from autoposter.collections.playlist_presets import PlaylistPreset
+
 
 # --- the plexapi stand-ins ---------------------------------------------------
 
@@ -1070,3 +1073,200 @@ def test_playlists_enabled_is_frozen_and_nothing_else_about_playlists_is():
             "%s is not read once at startup, so telling an operator a restart "
             "is needed would be a false claim" % live
         )
+
+
+# --- presets, and the empty scope L-6 found -----------------------------------
+
+
+@pytest.fixture
+def a_preset(monkeypatch):
+    """One preset pointing at this file's registered test builder.
+
+    The nine shipped presets sit on ``imdb_list`` and ``mdblist_list``, whose
+    builders reach the network -- which conftest's autouse
+    ``no_outbound_network`` fixture forbids and the pass's containment
+    invariant would then turn into a contained failure. Testing the expansion
+    through the REAL pass therefore means swapping the table, not the builder:
+    what is under test is that ``reconcile_playlists`` builds what
+    ``playlist_definitions`` returns, and that is exactly as true of one row as
+    of nine.
+
+    Both module attributes are patched because both are read by name at call
+    time -- ``preset_definitions`` scans ``PLAYLIST_PRESETS``, and
+    ``PlaylistsConfig._presets_must_be_known`` re-imports ``BY_KEY`` from the
+    module on every validation.
+    """
+    preset = PlaylistPreset(
+        key="test_timeline",
+        title="Test Timeline",
+        builder="playlist_test_ids",
+        params={},
+    )
+    monkeypatch.setattr(playlist_presets, "PLAYLIST_PRESETS", (preset,))
+    monkeypatch.setattr(playlist_presets, "BY_KEY", {preset.key: preset})
+    monkeypatch.setattr(playlist_presets, "BY_TITLE", {preset.title: preset})
+    return preset
+
+
+@pytest.fixture
+def an_mdblist_preset(monkeypatch):
+    """One preset on the REAL ``mdblist_list`` builder, for the no-key report.
+
+    The builder itself is the point here rather than an obstacle: with no
+    MDBList client on the bundle it raises ``MdblistBuilderRefused`` before
+    reaching the network, which is exactly the deployment this test describes.
+    ``46555`` is a real numeric list reference so ``MdblistListParams`` (which
+    ``PlaylistDefinition`` runs ``params`` through) accepts it.
+    """
+    preset = PlaylistPreset(
+        key="test_mdblist_timeline",
+        title="Test MDBList Timeline",
+        builder="mdblist_list",
+        params={"list": "46555"},
+    )
+    monkeypatch.setattr(playlist_presets, "PLAYLIST_PRESETS", (preset,))
+    monkeypatch.setattr(playlist_presets, "BY_KEY", {preset.key: preset})
+    monkeypatch.setattr(playlist_presets, "BY_TITLE", {preset.title: preset})
+    return preset
+
+
+async def test_a_switched_on_preset_is_built_by_the_real_pass(
+    session, config_factory, a_preset
+):
+    """Through ``reconcile_playlists`` itself, not ``playlist_definitions``:
+    the standing lesson here is two same-branch defects where the helper
+    passed and the wired path differed."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    server = _server()
+    config = _config(config_factory, apply_to_plex=True, presets=["test_timeline"])
+
+    # No ``run =``: this test asserts on the server and the rows, and ruff's
+    # ``F`` rules are on (`select = ["E4","E7","E9","F"]`, pyproject.toml), so
+    # an unused binding kept "for symmetry" fails Step 19's lint gate.
+    await reconcile_playlists(session, server, config)
+
+    assert [p.title for p in server.created] == ["Test Timeline"]
+    rows = (await session.execute(select(ManagedPlaylist))).scalars().all()
+    assert [row.title for row in rows] == ["Test Timeline"]
+
+
+async def test_the_sweep_does_not_orphan_a_preset_the_config_switched_on(
+    session, config_factory, a_preset
+):
+    """The bug this composition exists to prevent: a sweep enumerating
+    ``config.playlists.definitions`` alone would call every preset's playlist
+    an orphan on the pass after it created it.
+
+    Two passes, with ``delete_unconfigured`` deliberately **on**. Off means
+    "reported, not deleted", so a test run under the default would prove only
+    that a guard the sweep already has still works; on is the setting under
+    which the composition defect actually loses an operator's playlist.
+    """
+    _Ids.ids = [("tmdb", "1")]
+    server = _server()
+    config = _config(
+        config_factory,
+        apply_to_plex=True,
+        delete_unconfigured=True,
+        presets=["test_timeline"],
+    )
+
+    # Pass one builds it. No ``run =`` for the same F841 reason as above.
+    await reconcile_playlists(session, server, config)
+
+    assert [p.title for p in server.created] == ["Test Timeline"]
+    created = server.created[0]
+    row = (await session.execute(select(ManagedPlaylist))).scalar_one()
+    assert row.title == "Test Timeline"
+
+    # Pass two sweeps. The row's title is accounted for only if the sweep reads
+    # the composition; reading ``config.playlists.definitions`` -- empty here --
+    # makes this playlist a candidate and deletes it.
+    second = await reconcile_playlists(session, server, config)
+
+    assert not any("no playlist definition builds it" in a for a in second.actions)
+    # Deletion is recorded per playlist, on ``FakePlaylist.deleted`` (a bool
+    # initialised False) -- ``FakeServer`` has no ``deleted`` attribute at all.
+    assert created.deleted is False, "the sweep deleted the preset's playlist"
+    # ``_swept`` counts a deletion on ``PlaylistResult.deleting``, and the
+    # sweep's results land in ``run.playlists`` beside the definitions'.
+    assert sum(result.deleting for result in second.playlists) == 0
+    rows = (await session.execute(select(ManagedPlaylist))).scalars().all()
+    assert [r.title for r in rows] == ["Test Timeline"]
+
+
+async def test_an_operator_definition_shadows_the_preset_and_the_pass_says_so(
+    session, config_factory, a_preset
+):
+    """A6's report half, at the real entry point. The operator's definition is
+    the one that runs, and the displacement is an action rather than silence.
+    """
+    _Ids.ids = [("tmdb", "1")]
+    server = _server()
+    config = _config(
+        config_factory,
+        presets=["test_timeline"],
+        definitions=[_definition(title="Test Timeline")],
+    )
+
+    run = await reconcile_playlists(session, server, config)
+
+    assert [r.title for r in run.playlists] == ["Test Timeline"]
+    assert (
+        "the 'test_timeline' preset is not built: an operator definition "
+        "already builds 'Test Timeline'"
+    ) in run.actions
+
+
+async def test_an_mdblist_preset_is_named_when_the_deployment_has_no_key(
+    session, config_factory, an_mdblist_preset
+):
+    """Two of the nine sit on MDBList, and MDBList needs an API key.
+
+    Without one the builder raises before any request and the containment turns
+    that into ``"source returned no items; leaving the playlist untouched"`` --
+    a SOURCE diagnosis for a CONFIGURATION mistake, the same wrong blame L-6
+    fixed one guard along. An operator who switched ``pokemon_timeline`` on
+    would read that and go looking at the list. So the pass names the KEY, once
+    per pass, beside the conflict report.
+    """
+    server = _server()
+    config = _config(config_factory, presets=["test_mdblist_timeline"])
+
+    run = await reconcile_playlists(session, server, config)
+
+    assert (
+        "the 'test_mdblist_timeline' preset is skipped: no mdblist key is "
+        "configured for this deployment, so its list cannot be fetched"
+    ) in run.actions
+
+
+async def test_an_empty_library_scope_is_a_named_refusal_not_an_indexerror(
+    session, config_factory
+):
+    """L-6 from the 98a branch review.
+
+    ``collections.libraries`` carries no minimum length and
+    ``playlists.libraries`` is unset here, so a definition that omits
+    ``libraries:`` inherits an EMPTY scope -- which
+    ``_libraries_must_not_be_blank`` never sees, because that validator refuses
+    only the explicitly empty list. The old behaviour was
+    ``primary = libraries[0]`` raising ``IndexError``, contained by the
+    per-definition handler and reported as ``'Timeline': failed (IndexError)``:
+    correct in that nothing was written, useless in that the message named
+    nothing an operator could act on.
+    """
+    _Ids.ids = [("tmdb", "1")]
+    server = _server()
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+    config.collections.libraries = []
+
+    run = await reconcile_playlists(session, server, config)
+
+    assert server.created == []
+    assert run.playlists[0].failed is True
+    assert run.playlists[0].actions == [
+        "'Timeline' has no library to resolve its members from: the playlists "
+        "section's scope is empty. Name libraries on this playlist, set "
+        "playlists.libraries, or configure collections.libraries"
+    ]

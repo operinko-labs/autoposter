@@ -16,6 +16,7 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.overrides import OVERRIDES_ROW_ID
+from autoposter.collections.playlist_presets import playlist_definitions
 from autoposter.config.schema import PlaylistsConfig, Secrets
 from autoposter.db.models import ConfigOverride, ManagedPlaylist
 
@@ -134,6 +135,7 @@ async def test_the_definitions_listing_answers_without_plex(
 
     assert body["libraries"] == ["Movies", "TV Shows"]
     assert body["definitions"] == []
+    assert body["preset_conflicts"] == []
 
 
 async def test_the_definitions_listing_reports_file_provenance_by_default(
@@ -150,10 +152,15 @@ async def test_the_definitions_listing_reports_file_provenance_by_default(
         "builder": "imdb_list",
         "params": {"list": "ls539646485"},
         "libraries": ["Movies"],
+        "summary": None,
+        "limit": None,
+        "schedule": None,
         "sync_mode": "sync",
         "builder_level": "item",
         "provenance": "file",
+        "preset_key": None,
     }]
+    assert body["preset_conflicts"] == []
 
 
 async def test_a_stored_playlists_definitions_override_reports_override(
@@ -174,6 +181,117 @@ async def test_a_stored_playlists_definitions_override_reports_override(
     ).json()
 
     assert body["definitions"][0]["provenance"] == "override"
+
+
+async def test_the_listing_serves_summary_limit_and_schedule(
+    client, app, auth_headers
+):
+    """L-7 from the 98a branch review: without these three the editor cannot
+    show a definition, let alone round-trip one. Parity with the collections
+    listing was the reason they were missing and it is not a good enough one.
+    """
+    _swap_playlists(app, definitions=[{
+        **A_DEFINITION,
+        "summary": "The films, in release order.",
+        "limit": 40,
+        "schedule": {"every_n_runs": 3},
+    }])
+
+    body = (
+        await client.get("/api/playlists/definitions", headers=auth_headers)
+    ).json()
+
+    row = body["definitions"][0]
+    assert row["summary"] == "The films, in release order."
+    assert row["limit"] == 40
+    # The FULL model, both fields, defaults included. There is no
+    # exclude-anything precedent to copy: the collections listing
+    # (`api/collections_builders.py::collections_definitions`) does not serve
+    # `schedule` at all, and the one place this codebase serialises a nested
+    # config model onto a response is `GET /api/config`, which does a plain
+    # `config.model_dump(mode="json")` (`api/routes.py:1452`). So `months`
+    # comes with it, and asserting the whole dict is what makes the served
+    # shape a contract rather than a subset nobody pinned.
+    assert row["schedule"] == {"every_n_runs": 3, "months": None}
+
+
+async def test_a_switched_on_preset_is_listed_as_a_preset_row(
+    client, app, auth_headers
+):
+    """A third provenance value, and the key beside it. The panel offers no
+    Edit and no Remove on these: a preset is switched off by name in
+    ``playlists.presets``, not by editing a definition that is not stored
+    anywhere."""
+    _swap_playlists(app, presets=["star_wars_timeline"])
+
+    body = (
+        await client.get("/api/playlists/definitions", headers=auth_headers)
+    ).json()
+
+    assert [(r["title"], r["provenance"], r["preset_key"]) for r in body["definitions"]] == [
+        ("Star Wars (Timeline Order)", "preset", "star_wars_timeline")
+    ]
+
+
+async def test_a_shadowed_preset_is_served_as_a_conflict_not_as_a_row(
+    client, app, auth_headers
+):
+    """A6's report, on the surface the panel reads. The operator's definition
+    is the only row; the displaced preset is named separately so the panel can
+    say which key stopped building."""
+    _swap_playlists(
+        app,
+        presets=["star_wars_timeline"],
+        definitions=[{
+            "title": "Star Wars (Timeline Order)",
+            "builder": "imdb_list",
+            "params": {"list": "ls055350410"},
+        }],
+    )
+
+    body = (
+        await client.get("/api/playlists/definitions", headers=auth_headers)
+    ).json()
+
+    assert [r["provenance"] for r in body["definitions"]] == ["file"]
+    assert body["preset_conflicts"] == [
+        {"key": "star_wars_timeline", "title": "Star Wars (Timeline Order)"}
+    ]
+
+
+async def test_the_listing_is_the_same_composition_the_pass_runs(
+    client, app, auth_headers
+):
+    """One composition, three readers — the constraint, pinned on the third.
+
+    The pass and the delete sweep both enumerate
+    ``playlist_presets.playlist_definitions`` (T1 Step 11), and this listing is
+    the third caller. Nothing stops it re-expanding the presets and appending
+    the operator's own by hand, and that would agree with the function today
+    and drift silently later — while the panel's ``overrideOrdinal`` counts on
+    the two orders being identical to map a listing row back to its stored
+    entry. So the listing goes through the function too, and this says so in a
+    way a rewrite cannot pass by accident.
+    """
+    _swap_playlists(
+        app,
+        presets=["star_wars_timeline", "mcu_timeline"],
+        definitions=[A_DEFINITION],
+    )
+
+    body = (
+        await client.get("/api/playlists/definitions", headers=auth_headers)
+    ).json()
+
+    config = app.state.config_holder.current
+    assert [row["title"] for row in body["definitions"]] == [
+        definition.title for definition in playlist_definitions(config)
+    ]
+    # Not a tautology over an empty list: two presets ahead of one operator
+    # definition, which is also the ordering `overrideOrdinal` depends on.
+    assert [row["provenance"] for row in body["definitions"]] == [
+        "preset", "preset", "file",
+    ]
 
 
 # --- POST /api/playlists/preview ---------------------------------------------

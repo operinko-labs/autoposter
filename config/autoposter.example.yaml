@@ -330,6 +330,18 @@ playlists:
   #     builder_level: item # or `season`/`episode` -- Show libraries only
   #     limit: 50 # cap applied after resolution
   definitions: []
+  presets: [] # preset timeline playlists to build, by key; an empty list builds none
+  # The nine keys, all built from list builders that already ship (no Trakt):
+  #   arrowverse_timeline, mcu_timeline, dc_animated_timeline, pokemon_timeline,
+  #   star_trek_timeline, star_wars_timeline, clone_wars_timeline,
+  #   x_men_timeline, dragon_ball_timeline
+  # A preset is data: switch one on by listing its key, off by removing it, and
+  # override one by writing a definition above with the same title -- the
+  # definition wins and the displaced preset is reported, never silently
+  # replaced.
+  # pokemon_timeline and dragon_ball_timeline are MDBList lists and need an
+  # MDBList API key. Without one they build nothing, and each pass says so by
+  # key rather than leaving them quietly empty.
 
 cleanup:
   apply: false # dry run by default: report what would move, change nothing

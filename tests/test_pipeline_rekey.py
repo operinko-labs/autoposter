@@ -131,7 +131,7 @@ def _row_level_render_artifact(monkeypatch):
     """
     seen: list[tuple[int, str]] = []
 
-    async def fake(session, config, http, item, art_kind, providers):
+    async def fake(session, config, http, item, art_kind, providers, **_kwargs):
         media_item = await pipeline._upsert_media_item(session, item)
         target = pipeline.naming.asset_path(
             config, item.library, item.root_folder, art_kind,
@@ -156,9 +156,18 @@ async def _items(session):
 
 
 async def _audits(session):
+    """The RE-KEY audit rows only.
+
+    Filtered on the event type as well as the source: the fork stop files its
+    own row under the same source (one identity story, one source to grep),
+    and "no re-key happened" must stay a claim about re-keys.
+    """
     return (
         await session.execute(
-            select(EventLog).where(EventLog.source == pipeline.REKEY_SOURCE)
+            select(EventLog).where(
+                EventLog.source == pipeline.REKEY_SOURCE,
+                EventLog.event_type == pipeline.REKEY_EVENT,
+            )
         )
     ).scalars().all()
 
@@ -461,8 +470,15 @@ async def test_a_taken_key_leaves_the_existing_twin_alone(
     session, tmp_path, monkeypatch
 ):
     """When the resolved key already has a row, the twin exists already: this
-    is the merge job's pair, not a re-key. The runtime does nothing and the
-    ordinary upsert writes the row that holds the key, exactly as today."""
+    is the merge job's pair, not a re-key. The runtime now does nothing at all
+    -- it used to render onto the twin's row, which is the RESOLVED item's own
+    row and gets its own visits from its own intents.
+
+    This is the fork stop's own case, and the reason the stop asks the
+    DATABASE rather than reading the re-key's None: the four sibling refusals
+    above answer None too, and on three of them nothing holds the resolved
+    key, so those still fall through and mint.
+    """
     stale = await _row(session, "1")
     twin = await _row(session, "2")
     stale_id, twin_id = stale.id, twin.id
@@ -470,25 +486,29 @@ async def test_a_taken_key_leaves_the_existing_twin_alone(
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
                           rating_key="1")
 
-    await pipeline.process_item(
+    results = await pipeline.process_item(
         session, _config(tmp_path), None, _FakePlex(_resolved("2")), [], intent,
     )
 
+    assert results == []
     session.expire_all()
     assert {row.id for row in await _items(session)} == {stale_id, twin_id}
-    assert {item_id for item_id, _ in seen} == {twin_id}
+    assert seen == [], "the twin's row was rendered by the stale row's job"
     assert await _audits(session) == []
 
 
-async def test_a_lost_race_degrades_to_the_ordinary_upsert(
+async def test_a_lost_race_does_not_fail_the_job(
     session, session_factory, tmp_path, monkeypatch, caplog
 ):
     """Two workers can resolve one identity at once and race the key.
 
     ``rating_key`` carries a real unique constraint, so the loser's flush
-    raises ``IntegrityError``. It must roll back and continue -- the same
-    rollback-then-continue shape ``process_item`` already uses for its
-    metadata and refusal paths -- and the job must not fail.
+    raises ``IntegrityError``. It must roll back and continue -- and, since
+    the winner's insert COMMITTED a row under the resolved key, the fork stop
+    then ends the pass: that row is the winner's and the winner is rendering
+    it. This is one of only two refusals where the resolved key is provably
+    occupied, which is why the stop can fire here and does not on the
+    row-less ones. A lost race must never FAIL a job, which is what this pins.
 
     The competing insert is landed from inside ``_identity_candidates``, which
     is where the lock is taken: that puts the winner's commit exactly between
@@ -496,8 +516,7 @@ async def test_a_lost_race_degrades_to_the_ordinary_upsert(
     outside. Same trick as ``tests/test_scheduler_prune_job.py``'s
     ``_ReupsertingPlex``.
     """
-    stale = await _row(session, "1")
-    stale_id = stale.id
+    await _row(session, "1")
     real_candidates = pipeline._identity_candidates
 
     async def racing_candidates(inner_session, item):
@@ -520,14 +539,12 @@ async def test_a_lost_race_degrades_to_the_ordinary_upsert(
             session, _config(tmp_path), None, _FakePlex(_resolved("2")), [], intent,
         )
 
-    assert len(results) == 2, "the job must complete, not fail, on a lost race"
+    assert results == [], "the job must complete as a no-op, not fail, on a lost race"
     session.expire_all()
     assert {row.rating_key for row in await _items(session)} == {"1", "2"}, (
         "the loser must not have duplicated the key"
     )
-    assert stale_id not in {item_id for item_id, _ in seen}, (
-        "the pass must have upserted onto the winner's row"
-    )
+    assert seen == [], "the loser rendered the winner's row"
     assert await _audits(session) == [], (
         "a rolled-back re-key must leave no audit row"
     )
@@ -538,7 +555,7 @@ async def test_a_lost_race_degrades_to_the_ordinary_upsert(
     assert "fresh twin" not in caplog.text
 
 
-async def test_a_deadlock_degrades_to_the_ordinary_upsert(
+async def test_a_deadlock_does_not_fail_the_job(
     session, session_factory, tmp_path, monkeypatch, caplog
 ):
     """A lock cycle across two identity re-keys raises, under asyncpg, a
@@ -560,8 +577,7 @@ async def test_a_deadlock_degrades_to_the_ordinary_upsert(
     land on, the same shape ``test_a_lost_race_degrades_to_the_ordinary_upsert``
     pins for the unique-constraint race.
     """
-    stale = await _row(session, "1")
-    stale_id = stale.id
+    await _row(session, "1")
     real_flush = session.flush
     calls = {"n": 0}
 
@@ -590,21 +606,18 @@ async def test_a_deadlock_degrades_to_the_ordinary_upsert(
             session, _config(tmp_path), None, _FakePlex(_resolved("2")), [], intent,
         )
 
-    assert len(results) == 2, "the job must complete, not fail, on a deadlock"
+    assert results == [], "the job must complete as a no-op, not fail, on a deadlock"
     session.expire_all()
     assert {row.rating_key for row in await _items(session)} == {"1", "2"}, (
         "the loser must not have duplicated the key"
     )
-    assert stale_id not in {item_id for item_id, _ in seen}, (
-        "the pass must have upserted onto the winner's row"
-    )
+    assert seen == [], "the deadlock victim rendered the winner's row"
     assert await _audits(session) == [], (
         "a rolled-back re-key must leave no audit row"
     )
     # L3: this is the deadlock arm -- a deadlock victim's rollback implies
     # nothing about the key having been taken, unlike the IntegrityError arm
-    # above, so the log text must say a fresh twin is minted this pass, not
-    # that the winner's row holds the key.
+    # above, so the log text must not claim the winner's row holds it.
     assert "nothing took the key" in caplog.text
     assert "fresh twin" in caplog.text
 
@@ -744,3 +757,175 @@ async def test_the_real_render_scores_the_re_keyed_row(
         "the re-keyed row's renders were not scored -- the unscored floor "
         "would not move"
     )
+
+# --- the fork stop --------------------------------------------------------
+#
+# The re-key's refusals (above) are correct and stay exactly as ruled: no
+# re-key, no audit row, the twin pair left to the merge job. What changes here
+# is what the job does AFTERWARDS -- and ONLY when a media_items row ALREADY
+# HOLDS the resolved key. Then the resolved item is somebody else's: it has
+# its own row and its own visits, and this job was never asked about it. It
+# used to carry on for it anyway -- upsert it, render every art kind onto it,
+# upload, and -- because the unchanged-check compares against the intent's row
+# -- write Plex fields to it on every single visit ("plex: wrote 2 field(s) to
+# movie 'Boss Level'", every run, forever).
+#
+# When the resolved key is ROW-LESS the job proceeds exactly as it always has,
+# minting the resolved item's row through the ordinary upsert. That is not an
+# oversight: three of _rekey_by_identity's five refusals (zero identity
+# candidates, an ambiguous pair, a 40P01 deadlock) leave it row-less, there is
+# no twin for the merge job to reconcile on any of them, and the merge job
+# creates no rows. The five refusal pins ABOVE are what hold that line; they
+# are deliberately not touched by this task.
+
+
+class _CountingPlex(_FakePlex):
+    """``_FakePlex``, but ``fetch_item`` is recorded rather than forbidden.
+
+    ``process_item``'s metadata block catches every exception and logs a
+    WARNING, so a ``fetch_item`` that RAISED would let a fork that did NOT
+    stop pass this file's tests. Counting is the only shape that fails loudly.
+    """
+
+    def __init__(self, item):
+        super().__init__(item)
+        self.fetched = []
+
+    async def fetch_item(self, rating_key):
+        self.fetched.append(rating_key)
+        return object()
+
+
+async def _renders(session):
+    return (await session.execute(select(Render).order_by(Render.id))).scalars().all()
+
+
+async def _fork_stops(session):
+    return (
+        await session.execute(
+            select(EventLog).where(EventLog.event_type == pipeline.FORK_EVENT)
+        )
+    ).scalars().all()
+
+
+async def test_a_refused_re_key_stops_before_any_render_row(
+    session, tmp_path, monkeypatch
+):
+    """The whole defect, in one test. Key 1's row is in another library, so
+    the re-key correctly refuses -- and key 2 is the RESOLVED item's OWN row,
+    which gets its own visits from its own intents. The job must then do
+    NOTHING, rather than render and score somebody else's row.
+
+    The pre-existing key-2 row is what makes this the stop's case at all: the
+    five refusal pins above cover the row-LESS forks, where the job still
+    falls through and mints. ``title="Boss Level"`` is the production line
+    this defect was found in, and it doubles as the no-upsert probe --
+    ``_upsert_media_item`` would overwrite it with the resolved title.
+    """
+    await _row(session, "1", library="Movies 4K")
+    await _row(session, "2", library="Movies", title="Boss Level")
+    seen = _row_level_render_artifact(monkeypatch)
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
+                          rating_key="1")
+
+    results = await pipeline.process_item(
+        session, _config(tmp_path), None,
+        _FakePlex(_resolved("2", library="Movies")), [], intent,
+    )
+
+    assert results == []
+    session.expire_all()
+    rows = {row.rating_key: row for row in await _items(session)}
+    assert set(rows) == {"1", "2"}, "a third row was minted"
+    assert rows["2"].title == "Boss Level", (
+        "the resolved item's own row was upserted by this job"
+    )
+    assert seen == [], "a render row was written for the resolved item"
+    assert await _renders(session) == []
+
+
+async def test_the_fork_stop_writes_no_field_to_the_resolved_plex_item(
+    session, tmp_path, monkeypatch
+):
+    """The observed symptom. ``apply_facts`` reaches Plex through the object
+    ``fetch_item`` returns, so a stop that happens before that call is the
+    thing that ends the write-every-run loop."""
+    await _row(session, "1", library="Movies 4K")
+    await _row(session, "2", library="Movies")
+    _row_level_render_artifact(monkeypatch)
+    config = _config(tmp_path)
+    config.operations.enabled = True
+    plex = _CountingPlex(_resolved("2", library="Movies"))
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
+                          rating_key="1")
+
+    results = await pipeline.process_item(
+        session, config, None, plex, [], intent, tmdb_facts=object(),
+    )
+
+    assert results == []
+    assert plex.fetched == [], "the resolved item was fetched and written to"
+
+
+async def test_the_fork_stop_warns_once_and_leaves_one_audit_row(
+    session, tmp_path, monkeypatch, caplog
+):
+    """A stop nobody can see is a job that silently did nothing. The WARNING
+    is the grep and the events_log row is the durable record -- filed under
+    the re-key's own source, because an operator asking what happened to a
+    row's key should grep one source, not two."""
+    await _row(session, "1", library="Movies 4K")
+    await _row(session, "2", library="Movies")
+    _row_level_render_artifact(monkeypatch)
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
+                          rating_key="1")
+
+    with caplog.at_level(logging.WARNING):
+        await pipeline.process_item(
+            session, _config(tmp_path), None,
+            _FakePlex(_resolved("2", library="Movies")), [], intent,
+        )
+
+    forks = [
+        record for record in caplog.records
+        if "differs from the intent's" in record.getMessage()
+    ]
+    assert len(forks) == 1
+    session.expire_all()
+    (audit,) = await _fork_stops(session)
+    assert audit.source == pipeline.REKEY_SOURCE
+    assert audit.outcome == pipeline.FORK_OUTCOME
+    assert audit.payload["intent_rating_key"] == "1"
+    assert audit.payload["resolved_rating_key"] == "2"
+
+
+async def test_a_successful_re_key_still_renders_the_intents_own_row(
+    session, tmp_path, monkeypatch
+):
+    """The stop's first over-firing guard: a SUCCESSFUL re-key.
+
+    A row does now exist under the resolved key -- the re-key just moved it
+    there -- so an existence check on its own would stop the very case the
+    re-key phase exists to enable. ``rekeyed_from == intent.rating_key`` is
+    what settles it, and it settles it without a query.
+
+    The stop's other over-firing guard is a refusal onto a ROW-LESS resolved
+    key, and that is pinned by the five refusal tests above
+    (``test_a_cross_library_match_is_not_a_re_key`` and its four siblings),
+    which still assert the ordinary upsert's ``{"1", "2"}`` and must keep
+    passing untouched through this whole task.
+    """
+    stale = await _row(session, "1")
+    stale_id = stale.id
+    seen = _row_level_render_artifact(monkeypatch)
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
+                          rating_key="1")
+
+    results = await pipeline.process_item(
+        session, _config(tmp_path), None, _FakePlex(_resolved("2")), [], intent,
+    )
+
+    assert len(results) == 2
+    assert {item_id for item_id, _ in seen} == {stale_id}
+    session.expire_all()
+    assert await _fork_stops(session) == []

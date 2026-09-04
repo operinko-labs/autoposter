@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from autoposter.providers.base import ArtCandidate, ArtRequest
@@ -70,13 +71,30 @@ def textless_only(language_order: list[str]) -> bool:
 
 
 async def select_artwork(
-    providers: list, language_order: list[str], request: ArtRequest
+    providers: list,
+    language_order: list[str],
+    request: ArtRequest,
+    *,
+    exclude_urls: Collection[str] = (),
 ) -> Selection:
     """Walk providers in order and return the best artwork.
 
     When textless is preferred but a provider offers only text-bearing art, that
     image is parked and the walk continues. The parked image is used only after
     every provider has been tried, and never in textless-only mode.
+
+    ``exclude_urls`` drops candidates by URL before ``best_candidate`` ranks
+    them, which is how a caller asks for the NEXT best. The render path needs
+    that because a logo can only be found unusable *after* it has been
+    downloaded and decoded (``render/pipeline._validate_image``), and until
+    now the ladder had no way to answer "and then what" -- so one corrupt
+    clearlogo refused its poster on every visit forever.
+
+    Keyword-only, and empty by default. Every pre-existing call site -- the
+    two base-image asks in ``render/pipeline.render_artifact`` and the
+    mass-ops logo updater in ``artwork_modes/logo.py`` -- passes nothing and
+    gets exactly the walk it always got, which is what keeps an unaffected
+    row's fingerprint from moving.
     """
     prefer = prefers_textless(language_order)
     only = textless_only(language_order)
@@ -89,7 +107,9 @@ async def select_artwork(
             logger.warning("provider %s failed, continuing", provider.name, exc_info=True)
             continue
 
-        choice = best_candidate(candidates, language_order)
+        choice = best_candidate(
+            [c for c in candidates if c.url not in exclude_urls], language_order
+        )
         if choice is None:
             continue
         if prefer and not choice.is_textless:

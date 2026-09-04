@@ -198,6 +198,54 @@ def _agent_default(listing):
     return None
 
 
+# How Plex keys a frame it derived from the media file itself, rather than a
+# user upload or an agent's own guess -- the shape the live probe against
+# episode 153736 confirmed (docs/research/2026-09-03-plex-episode-posters-
+# probe.md): the LAST posters() entry, provider=None, ratingKey
+# 'media://<bundle-hash>.bundle/Contents/Thumbnails/thumb1.jpg'.
+GENERATED_ARTWORK_PREFIX = "media://"
+
+
+def _generated_default(listing):
+    """The entry in a ``posters()`` listing that Plex derived from the media file.
+
+    ``None`` when no such entry exists. This is deliberately NOT
+    ``_agent_default``: the probe that settled adjudication A1 found the
+    first non-``upload://`` entry is Plex's own *agent* guess (a
+    ``metadata://`` local poster, or a tmdb/imdb/tvdb hit) -- never the frame
+    Plex captured from the video stream itself. That frame is a *different*
+    entry, keyed ``media://...``, and it is what this selects instead.
+    ``ratingKey`` is read defensively and an entry without one is skipped,
+    not returned, the same defensive shape ``_agent_default`` uses.
+    """
+    for entry in listing:
+        rating_key = getattr(entry, "ratingKey", "") or ""
+        if rating_key.startswith(GENERATED_ARTWORK_PREFIX):
+            return entry
+    return None
+
+
+async def generated_title_card_url(plex_item, base_url: str) -> str | None:
+    """The absolute URL of Plex's own generated title-card frame, or ``None``.
+
+    Scoped to ``title_card`` only (the plex-preview fallback's own scope,
+    adjudication A6) -- unlike ``_artwork_url`` this does not route on
+    ``art_kind`` through ``PLEX_ART_FIELDS``: nothing else calls it yet, and
+    a parameter with exactly one legal value is not a parameter.
+
+    Blocking: ``posters()`` is an HTTP GET through plexapi. Offloaded like
+    every other plexapi field or listing read in this module.
+    """
+    entries = await asyncio.to_thread(plex_item.posters)
+    entry = _generated_default(entries)
+    if entry is None:
+        return None
+    path = getattr(entry, "key", "") or ""
+    if not path:
+        return None
+    return f"{base_url.rstrip('/')}{path}"
+
+
 def reset_artwork_to_agent_default(plex_item, art_kind: str) -> bool:
     """Unlock one artwork field on ``plex_item`` and hand it back to Plex's agent.
 

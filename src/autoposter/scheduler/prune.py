@@ -113,12 +113,19 @@ class PruneScan:
     ``total`` is the denominator the plausibility caps need -- "40 of 16,000"
     is ordinary churn, "15,900 of 16,000" means the server, not the library,
     changed.
+
+    ``excluded`` is how many of ``prunable`` are there because their library
+    is in ``plex.excluded_libraries``, rather than because Plex lost them.
+    Reported separately because the two are different news: one is churn, the
+    other is the operator's own configuration catching up with rows that
+    predate it, and reading the second as the first would look like data loss.
     """
 
     prunable: list[PruneCandidate]
     gone: int
     held: int
     total: int
+    excluded: int = 0
 
     @property
     def directories(self) -> int:
@@ -180,7 +187,9 @@ def _ancestors(candidate: PruneCandidate, by_id: dict[int, PruneCandidate]) -> l
     return chain
 
 
-async def find_prunable(session: AsyncSession, plex) -> PruneScan:
+async def find_prunable(
+    session: AsyncSession, plex, excluded: frozenset[str] = frozenset()
+) -> PruneScan:
     """Every ``media_items`` row the pipeline can no longer resolve, safe to delete.
 
     One probe pass, then two rules over its result.
@@ -190,13 +199,32 @@ async def find_prunable(session: AsyncSession, plex) -> PruneScan:
     whole sweep with it, because a server that answers nothing would otherwise
     report the entire library as gone.
 
+    ``excluded`` is the live ``plex.excluded_libraries``, and a row whose own
+    ``library`` column is in it is gone WHATEVER the probe says. The probe is
+    not sufficient on its own: ``_search_sync`` falls back from the stored
+    rating key to a GUID walk over every permitted section of the right type,
+    so an item whose identity also exists in a non-excluded library resolves
+    under the excluded row's intent and reads as present. The row's library is
+    the fact that settles it -- the pipeline will never write to that item
+    again either way, which is exactly the "cannot resolve it" this sweep
+    means. Compared exactly, never case-folded, matching every other reader of
+    the setting (``plex/client.py:327``, ``api/mismatches.py:249``).
+
+    That answer is folded in ONCE, above both rules, so the cascade guard and
+    the gone set cannot disagree about the same row: a row holds its ancestors
+    when it will itself survive the sweep, not merely when the probe answered
+    for it. A permitted descendant therefore still holds an excluded ancestor
+    -- deleting it would cascade away a row this service still manages -- while
+    an excluded descendant no longer holds anything, because it is going too.
+
     The first rule is the cascade guard. ``media_items.parent_id`` deletes
     ``ondelete="CASCADE"`` (``db/models.py``), so removing a show silently
     removes its seasons and episodes. A parent is therefore prunable only when
-    it AND every descendant probed gone; one resolvable descendant holds every
-    ancestor above it, and the held count is reported rather than swallowed. A
-    gone child under a surviving parent is still prunable on its own -- the
-    rule protects live rows from a cascade, not gone rows from themselves.
+    it AND every descendant probed gone; one descendant that survives this
+    sweep holds every ancestor above it, and the held count is reported rather
+    than swallowed. A gone child under a surviving parent is still prunable on
+    its own -- the rule protects live rows from a cascade, not gone rows from
+    themselves.
 
     The second is the ordering. The returned list is deepest-first, so an
     episode is deleted before its season and a season before its show. That is
@@ -243,7 +271,7 @@ async def find_prunable(session: AsyncSession, plex) -> PruneScan:
         for row in rows
     ]
     if not candidates:
-        return PruneScan(prunable=[], gone=0, held=0, total=0)
+        return PruneScan(prunable=[], gone=0, held=0, total=0, excluded=0)
 
     resolved_flags = await plex.exists_many([intent_for(c) for c in candidates])
     by_id = {candidate.id: candidate for candidate in candidates}
@@ -251,15 +279,35 @@ async def find_prunable(session: AsyncSession, plex) -> PruneScan:
     # descendant from the held-computation and permit exactly the
     # over-deletion the cascade guard prevents. This turns that into a loud
     # ValueError the job layer treats as a probe failure.
+    #
+    # Reachability is the probe's answer AND the row's library, folded once
+    # here so that the gone set and the cascade guard below cannot disagree.
+    # The guard's rule becomes "a row holds its ancestors when it will itself
+    # SURVIVE this sweep", which is what it always meant -- reading the raw
+    # flags instead would hold an excluded show forever by its own
+    # still-resolving episode, and this population would never shrink.
+    #
+    # Note what the fold does NOT do: for a row whose own library is
+    # permitted, `resolved and True` is `resolved`, so its goneness is the
+    # probe's answer verbatim, unchanged from before. And a permitted
+    # descendant still survives, so it still holds its ancestors even when
+    # the ancestor's own library is excluded -- deleting that ancestor would
+    # cascade (parent_id is ondelete="CASCADE") and take a row this service
+    # still manages, without an audit row. That direction is the one the
+    # guard exists for and it is preserved exactly.
+    reachable = [
+        resolved and candidate.library not in excluded
+        for candidate, resolved in zip(candidates, resolved_flags, strict=True)
+    ]
     gone = {
         candidate.id
-        for candidate, resolved in zip(candidates, resolved_flags, strict=True)
-        if not resolved
+        for candidate, ok in zip(candidates, reachable, strict=True)
+        if not ok
     }
 
     held: set[int] = set()
-    for candidate, resolved in zip(candidates, resolved_flags, strict=True):
-        if resolved:
+    for candidate, ok in zip(candidates, reachable, strict=True):
+        if ok:
             held.update(_ancestors(candidate, by_id))
 
     prunable = [c for c in candidates if c.id in gone and c.id not in held]
@@ -269,6 +317,7 @@ async def find_prunable(session: AsyncSession, plex) -> PruneScan:
         gone=len(gone),
         held=len(gone & held),
         total=len(candidates),
+        excluded=sum(1 for c in prunable if c.library in excluded),
     )
 
 
@@ -544,6 +593,11 @@ def make_prune_job(
     Config comes off ``holder`` per run -- ``prune.apply``, both caps, the
     cleanup caps the warning is measured against, and this job's own cadence --
     so every one of them is live.
+
+    ``plex.excluded_libraries`` is read off the holder here too, and is what
+    makes an excluded library's rows retirable even while Plex still answers
+    for them -- the ``plex`` section is frozen for the client the WORKERS
+    hold, not for this job's, which is rebuilt per run (``app.py``).
     """
 
     async def run(session: AsyncSession) -> str:
@@ -563,7 +617,14 @@ def make_prune_job(
             # connection, a rejected token or a plexapi BadRequest all raise
             # here, and every one of those messages carries the server address.
             plex = await asyncio.to_thread(plex_factory)
-            scan = await find_prunable(session, plex)
+            # Read off the holder like everything else this job uses, so an
+            # edited exclusion list reaches the sweep on its next run. The
+            # `plex` section is a FROZEN_SECTIONS entry (config/live.py) --
+            # true of the CLIENT the workers hold, which is built once at
+            # startup, and not of this job, whose PlexClient is rebuilt per run
+            # from the same live value (app.py's plex_factory lambda).
+            excluded = frozenset(holder.current.plex.excluded_libraries)
+            scan = await find_prunable(session, plex, excluded)
         except Exception as exc:
             # The class name only, never str(exc) and never a URL: a Plex
             # error's message carries the server address and sometimes the
@@ -592,7 +653,8 @@ def make_prune_job(
         if not config.prune.apply:
             return (
                 f"dry run: {len(scan.prunable)} of {scan.total} media_items row(s) "
-                f"would be pruned; {held}; {files_sentence(scan.directories)}"
+                f"would be pruned; {scan.excluded} row(s) in excluded libraries "
+                f"would be retired; {held}; {files_sentence(scan.directories)}"
             )
 
         outcome = await retire(session, scan.prunable)
@@ -604,11 +666,15 @@ def make_prune_job(
         # threshold this prune never crossed. The dry run has no such
         # distinction to make -- there, the candidates are the whole story.
         pruned_keys = set(outcome.pruned)
-        directories = _directory_count(
-            [c for c in scan.prunable if c.rating_key in pruned_keys]
-        )
+        deleted = [c for c in scan.prunable if c.rating_key in pruned_keys]
+        directories = _directory_count(deleted)
+        # The same rule for the excluded population, and for the same reason:
+        # "retired" must describe rows that are gone, not rows that were
+        # offered and then shielded by a concurrent re-upsert.
+        excluded_pruned = sum(1 for c in deleted if c.library in excluded)
         summary = (
             f"pruned {len(outcome.pruned)} of {scan.total} media_items row(s); "
+            f"{excluded_pruned} row(s) in excluded libraries retired; "
             f"{held}; dismissed {dismissed} queued job(s); "
             f"{files_sentence(directories)}"
         )

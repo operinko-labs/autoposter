@@ -87,6 +87,16 @@ markers = [
     'imagemagick: needs a real `magick` binary; pass "hdri" when byte-exact parity requires a Q16-HDRI build',
     "deep: an ASGI-plus-database integration suite, deselected on pull requests and run in full on main; see DEEP_SUITES in tests/conftest.py",
 ]
+# Pillow deprecations otherwise sit unnoticed among "N warnings" until the
+# removal release breaks the suite outright. Fail on one now so a future
+# Pillow bump surfaces here instead of whispering.
+# Matched on message rather than module: Pillow's `deprecate()` helper warns
+# with stacklevel=3, which attributes the warning to the *caller's* module
+# (this test file), not to `PIL` -- so a `module="PIL"` filter never matches,
+# verified empirically before choosing this form.
+filterwarnings = [
+    "error:.*is deprecated and will be removed in Pillow.*:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

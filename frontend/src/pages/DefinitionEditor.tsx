@@ -28,9 +28,65 @@
  * design. */
 import { useState } from "react";
 
-/** The path prefix the schema's descriptions are published under
- * (`config/descriptions.py` walks `list[Model]` into a `[]` segment). */
-const DESCRIPTION_PREFIX = "collections.definitions[].";
+/** Which curated field a kind's form may add, change or delete.
+ *
+ * `title` and `libraries` are on every kind and are not listed: they are the
+ * definition's identity and its scope, and no section has a definition without
+ * them. Everything else is opt-in per kind, because a control a section's
+ * schema refuses is not a disabled input — it is an edit the server is bound
+ * to reject, offered anyway. */
+export type DraftField =
+  | "summary"
+  | "sort"
+  | "sync_mode"
+  | "builder_level"
+  | "limit"
+  | "labels"
+  | "label_sync"
+  | "item_label"
+  | "sort_title"
+  | "collection_mode";
+
+/** One config section this form edits. */
+export interface DefinitionKind {
+  /** The path prefix the schema's descriptions are published under
+   * (`config/descriptions.py` walks `list[Model]` into a `[]` segment). */
+  descriptionPrefix: string;
+  /** The curated fields, and therefore the controls. */
+  fields: readonly DraftField[];
+}
+
+/** `collections.definitions` — the nine fields row 138 shipped, unchanged.
+ * Listed here rather than left implicit so the parameterisation is provably
+ * behaviour-preserving for the section that already had this form. */
+export const COLLECTION_DEFINITIONS: DefinitionKind = {
+  descriptionPrefix: "collections.definitions[].",
+  fields: [
+    "summary",
+    "sort",
+    "sync_mode",
+    "limit",
+    "labels",
+    "label_sync",
+    "item_label",
+    "sort_title",
+    "collection_mode",
+  ],
+};
+
+/** `playlists.definitions`. The absences are the point: `sort`, `sort_title`,
+ * `collection_mode`, `labels`, `label_sync` and `item_label` are all in
+ * `config/schema.py`'s `_REFUSED_PLAYLIST_FIELDS`, which raises on the key at
+ * config load — so a control for one would offer an edit that cannot be
+ * saved. `builder_level` is here and not on the collections kind because that
+ * is where 98b's scope put it, not because a collection lacks the field. */
+export const PLAYLIST_DEFINITIONS: DefinitionKind = {
+  descriptionPrefix: "playlists.definitions[].",
+  fields: ["summary", "sync_mode", "builder_level", "limit"],
+};
+
+/** Plex's playlist member levels. `item` is the schema's default. */
+const BUILDER_LEVELS = ["item", "season", "episode"];
 
 /** Plex's own collection display modes, plus the unset state as its own named
  * option — `None` ("leave Plex's setting alone") and `"default"` are two
@@ -54,6 +110,7 @@ export interface Draft {
   summary: string;
   sort: string;
   sync_mode: string;
+  builder_level: string;
   limit: string;
   labels: string[];
   label_sync: boolean;
@@ -102,6 +159,10 @@ export function draftFrom(
     summary: text(entry.summary),
     sort: text(entry.sort),
     sync_mode: entry.sync_mode === "append" ? "append" : "sync",
+    builder_level:
+      entry.builder_level === "season" || entry.builder_level === "episode"
+        ? entry.builder_level
+        : "item",
     limit: typeof entry.limit === "number" ? String(entry.limit) : "",
     labels: stringList(entry.labels),
     label_sync: entry.label_sync === true,
@@ -119,9 +180,15 @@ export function entryFromDraft(
   entry: Record<string, unknown>,
   draft: Draft,
   roster: string[],
+  kind: DefinitionKind,
 ): Record<string, unknown> {
   const next: Record<string, unknown> = { ...entry };
-  const put = (key: string, value: unknown, isDefault: boolean) => {
+  const edits = new Set<DraftField>(kind.fields);
+  const put = (key: DraftField, value: unknown, isDefault: boolean) => {
+    // A field outside this kind is neither written nor DELETED. Deleting it
+    // would make the parameterisation lossy in exactly the way the `{...entry}`
+    // copy above exists to prevent.
+    if (!edits.has(key)) return;
     if (isDefault) delete next[key];
     else next[key] = value;
   };
@@ -135,6 +202,7 @@ export function entryFromDraft(
   const sort = draft.sort.trim();
   put("sort", sort, sort === "" || sort === "custom");
   put("sync_mode", draft.sync_mode, draft.sync_mode === "sync");
+  put("builder_level", draft.builder_level, draft.builder_level === "item");
   put("limit", Number(draft.limit), draft.limit.trim() === "");
   const labels = draft.labels.filter((item) => item.trim() !== "");
   put("labels", labels, labels.length === 0);
@@ -206,6 +274,7 @@ export function DefinitionEditor({
   libraries,
   descriptions,
   busy,
+  kind,
   onSave,
   onCancel,
 }: {
@@ -213,6 +282,7 @@ export function DefinitionEditor({
   libraries: string[];
   descriptions: Record<string, string>;
   busy: boolean;
+  kind: DefinitionKind;
   onSave: (entry: Record<string, unknown>) => void;
   onCancel: () => void;
 }) {
@@ -223,7 +293,9 @@ export function DefinitionEditor({
 
   // Row 138's own promise: the twenty-one fields are already described and
   // already served under a `[]` segment, waiting for a row to hang on.
-  const hint = (field: string) => descriptions[DESCRIPTION_PREFIX + field] || undefined;
+  const hint = (field: string) =>
+    descriptions[kind.descriptionPrefix + field] || undefined;
+  const shows = (field: DraftField) => kind.fields.includes(field);
 
   const scopeEmpty =
     !draft.everyLibrary && roster.every((name) => !draft.libraries[name]);
@@ -273,103 +345,138 @@ export function DefinitionEditor({
         {scopeEmpty && <p className="definition-refusal">{EMPTY_SCOPE_NOTE}</p>}
       </fieldset>
 
-      <label className="definition-field" title={hint("summary")}>
-        <span>Summary</span>
-        <input
-          type="text"
-          aria-label="Summary"
-          value={draft.summary}
-          onChange={(event) => set({ summary: event.target.value })}
-        />
-      </label>
+      {shows("summary") && (
+        <label className="definition-field" title={hint("summary")}>
+          <span>Summary</span>
+          <input
+            type="text"
+            aria-label="Summary"
+            value={draft.summary}
+            onChange={(event) => set({ summary: event.target.value })}
+          />
+        </label>
+      )}
 
-      <label className="definition-field" title={hint("sort")}>
-        <span>Sort</span>
-        <input
-          type="text"
-          aria-label="Sort"
-          value={draft.sort}
-          onChange={(event) => set({ sort: event.target.value })}
-        />
-      </label>
+      {shows("sort") && (
+        <label className="definition-field" title={hint("sort")}>
+          <span>Sort</span>
+          <input
+            type="text"
+            aria-label="Sort"
+            value={draft.sort}
+            onChange={(event) => set({ sort: event.target.value })}
+          />
+        </label>
+      )}
 
-      <label className="definition-field" title={hint("sync_mode")}>
-        <span>Sync mode</span>
-        <select
-          aria-label="Sync mode"
-          value={draft.sync_mode}
-          onChange={(event) => set({ sync_mode: event.target.value })}
-        >
-          <option value="sync">sync</option>
-          <option value="append">append</option>
-        </select>
-      </label>
+      {shows("sync_mode") && (
+        <label className="definition-field" title={hint("sync_mode")}>
+          <span>Sync mode</span>
+          <select
+            aria-label="Sync mode"
+            value={draft.sync_mode}
+            onChange={(event) => set({ sync_mode: event.target.value })}
+          >
+            <option value="sync">sync</option>
+            <option value="append">append</option>
+          </select>
+        </label>
+      )}
 
-      <label className="definition-field" title={hint("limit")}>
-        <span>Limit</span>
-        <input
-          type="number"
-          min={1}
-          aria-label="Limit"
-          value={draft.limit}
-          onChange={(event) => set({ limit: event.target.value })}
-        />
-      </label>
+      {shows("builder_level") && (
+        <label className="definition-field" title={hint("builder_level")}>
+          <span>Builder level</span>
+          <select
+            aria-label="Builder level"
+            value={draft.builder_level}
+            onChange={(event) => set({ builder_level: event.target.value })}
+          >
+            {BUILDER_LEVELS.map((level) => (
+              <option key={level} value={level}>
+                {level}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
-      <label className="definition-field" title={hint("sort_title")}>
-        <span>Sort title</span>
-        <input
-          type="text"
-          aria-label="Sort title"
-          value={draft.sort_title}
-          onChange={(event) => set({ sort_title: event.target.value })}
-        />
-      </label>
+      {shows("limit") && (
+        <label className="definition-field" title={hint("limit")}>
+          <span>Limit</span>
+          <input
+            type="number"
+            min={1}
+            aria-label="Limit"
+            value={draft.limit}
+            onChange={(event) => set({ limit: event.target.value })}
+          />
+        </label>
+      )}
 
-      <label className="definition-field" title={hint("collection_mode")}>
-        <span>Collection mode</span>
-        <select
-          aria-label="Collection mode"
-          value={draft.collection_mode}
-          onChange={(event) => set({ collection_mode: event.target.value })}
-        >
-          {COLLECTION_MODES.map((mode) => (
-            <option key={mode.value} value={mode.value}>
-              {mode.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      {shows("sort_title") && (
+        <label className="definition-field" title={hint("sort_title")}>
+          <span>Sort title</span>
+          <input
+            type="text"
+            aria-label="Sort title"
+            value={draft.sort_title}
+            onChange={(event) => set({ sort_title: event.target.value })}
+          />
+        </label>
+      )}
 
-      <div className="definition-field" title={hint("labels")}>
-        <span>Labels</span>
-        <StringList
-          name="labels"
-          addLabel="Add label"
-          value={draft.labels}
-          onChange={(next) => set({ labels: next })}
-        />
-      </div>
+      {shows("collection_mode") && (
+        <label className="definition-field" title={hint("collection_mode")}>
+          <span>Collection mode</span>
+          <select
+            aria-label="Collection mode"
+            value={draft.collection_mode}
+            onChange={(event) => set({ collection_mode: event.target.value })}
+          >
+            {COLLECTION_MODES.map((mode) => (
+              <option key={mode.value} value={mode.value}>
+                {mode.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
-      <label className="definition-field" title={hint("label_sync")}>
-        <span>Label sync</span>
-        <input
-          type="checkbox"
-          aria-label="Label sync"
-          checked={draft.label_sync}
-          onChange={(event) => set({ label_sync: event.target.checked })}
-        />
-      </label>
+      {shows("labels") && (
+        <div className="definition-field" title={hint("labels")}>
+          <span>Labels</span>
+          <StringList
+            name="labels"
+            addLabel="Add label"
+            value={draft.labels}
+            onChange={(next) => set({ labels: next })}
+          />
+        </div>
+      )}
 
-      <div className="definition-field" title={hint("item_label")}>
-        <span>Member labels</span>
-        <StringList
-          name="item_label"
-          addLabel="Add member label"
-          value={draft.item_label}
-          onChange={(next) => set({ item_label: next })}
-        />
-      </div>
+      {shows("label_sync") && (
+        <label className="definition-field" title={hint("label_sync")}>
+          <span>Label sync</span>
+          <input
+            type="checkbox"
+            aria-label="Label sync"
+            checked={draft.label_sync}
+            onChange={(event) => set({ label_sync: event.target.checked })}
+          />
+        </label>
+      )}
+
+      {shows("item_label") && (
+        <div className="definition-field" title={hint("item_label")}>
+          <span>Member labels</span>
+          <StringList
+            name="item_label"
+            addLabel="Add member label"
+            value={draft.item_label}
+            onChange={(next) => set({ item_label: next })}
+          />
+        </div>
+      )}
 
       <dl className="definition-readonly">
         <dt title={hint("builder")}>Builder</dt>
@@ -388,7 +495,7 @@ export function DefinitionEditor({
         <button
           type="button"
           disabled={busy || !ready}
-          onClick={() => onSave(entryFromDraft(entry, draft, roster))}
+          onClick={() => onSave(entryFromDraft(entry, draft, roster, kind))}
         >
           Save
         </button>

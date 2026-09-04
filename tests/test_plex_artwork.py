@@ -4,7 +4,9 @@ import tempfile
 
 import pytest
 
-from autoposter.plex.artwork import upload_artwork
+from autoposter.plex.artwork import (
+    GENERATED_ARTWORK_PREFIX, _generated_default, generated_title_card_url, upload_artwork,
+)
 
 
 class FakePlexItem:
@@ -116,3 +118,60 @@ def test_a_failing_write_closes_the_handle_before_the_file_is_unlinked(tmp_path,
         upload_artwork(FakePlexItem(), b"webp-bytes", "poster")
 
     assert handle.closed is True
+
+
+class FakePosterEntry:
+    def __init__(self, rating_key, key=""):
+        self.ratingKey = rating_key
+        self.key = key
+
+
+def test_generated_artwork_prefix_is_media():
+    assert GENERATED_ARTWORK_PREFIX == "media://"
+
+
+def test_generated_default_picks_the_media_prefixed_entry():
+    """C5: the media:// entry, never the agent's own guess or an upload."""
+    listing = [
+        FakePosterEntry("upload://abc", "/x"),
+        FakePosterEntry("com.plexapp.agents.themoviedb://1", "/y"),
+        FakePosterEntry("media://5/x.bundle/Contents/Thumbnails/thumb1.jpg", "/z"),
+    ]
+    entry = _generated_default(listing)
+    assert entry is not None
+    assert entry.ratingKey.startswith("media://")
+
+
+def test_generated_default_is_none_without_a_media_entry():
+    """The self-feed pin's other half: an upload:// entry (ours or anyone
+    else's) and an agent guess are both present, but neither is a derived
+    frame -- there is nothing here to select."""
+    listing = [
+        FakePosterEntry("upload://abc", "/x"),
+        FakePosterEntry("com.plexapp.agents.themoviedb://1", "/y"),
+    ]
+    assert _generated_default(listing) is None
+
+
+def test_generated_default_skips_an_entry_with_no_rating_key():
+    assert _generated_default([FakePosterEntry("", "/x")]) is None
+
+
+async def test_generated_title_card_url_joins_the_entrys_key_to_base_url():
+    entry_path = "/library/metadata/1/file?url=media%3A%2F%2F5%2Fx.bundle...thumb1.jpg"
+    listing = [FakePosterEntry("media://5/x.bundle/Contents/Thumbnails/thumb1.jpg", entry_path)]
+
+    class FakePlexItem:
+        def posters(self):
+            return listing
+
+    url = await generated_title_card_url(FakePlexItem(), "http://plex.local/")
+    assert url == f"http://plex.local{entry_path}"
+
+
+async def test_generated_title_card_url_is_none_without_a_media_entry():
+    class FakePlexItem:
+        def posters(self):
+            return [FakePosterEntry("upload://abc", "/x")]
+
+    assert await generated_title_card_url(FakePlexItem(), "http://plex.local/") is None

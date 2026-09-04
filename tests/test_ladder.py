@@ -149,3 +149,44 @@ async def test_textless_hit_at_a_later_provider_beats_a_much_higher_scored_parke
     assert result.candidate.provider == "TVDB"
     assert result.candidate.language is None
     assert result.is_fallback is False
+
+
+async def test_excluded_urls_are_dropped_before_the_ranking():
+    """The next-best question. A caller that downloaded the ladder's first
+    answer and had it refused must be able to ask again without
+    reimplementing the walk -- and must then get the SECOND-best candidate,
+    not the same one."""
+    first = candidate("en", score=9.0)
+    second = candidate("en", score=1.0)
+    provider = FakeProvider("TMDB", [first, second])
+
+    result = await select_artwork(
+        [provider], ORDER, REQUEST, exclude_urls={first.url}
+    )
+
+    assert result.candidate.url == second.url
+
+
+async def test_excluding_every_candidate_answers_an_empty_selection():
+    """Exhaustion, not an error: the render path reads this as "no logo" and
+    falls through to its existing no-logo branch."""
+    only = candidate("en")
+    provider = FakeProvider("TMDB", [only])
+
+    result = await select_artwork([provider], ORDER, REQUEST, exclude_urls={only.url})
+
+    assert result == Selection(candidate=None, is_fallback=False)
+
+
+async def test_the_exclusion_set_defaults_to_empty_and_changes_nothing():
+    """Every pre-existing call site passes no exclusion at all. With none, the
+    answer must be exactly the one this function has always given -- that is
+    what keeps a healthy poster's fingerprint from moving."""
+    import inspect
+
+    signature = inspect.signature(select_artwork)
+    assert signature.parameters["exclude_urls"].default == ()
+
+    first = candidate("en", score=9.0)
+    provider = FakeProvider("TMDB", [first, candidate("en", score=1.0)])
+    assert (await select_artwork([provider], ORDER, REQUEST)).candidate.url == first.url

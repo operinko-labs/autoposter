@@ -441,6 +441,57 @@ export interface DefinitionsListingResponse {
   definitions: DefinitionSummary[];
 }
 
+/** One row of GET /api/playlists/definitions.
+ *
+ * Not `DefinitionSummary`: a playlist has no `sort`, and it has three fields
+ * the collections listing withholds (`summary`, `limit`, `schedule` — the 98a
+ * branch review's L-7, fixed in 98b because the editor cannot show what the
+ * listing does not carry).
+ *
+ * `schedule` stays `Record<string, unknown> | null` rather than naming
+ * `ScheduleGate`'s two fields, deliberately: the server sends the whole model
+ * (`every_n_runs` and `months`), and nothing on this side reads either one —
+ * the form does not show a schedule and the write is seeded from the stored
+ * document, never from this row. A named type here would be a second place to
+ * keep in step with `config/schema.py` for no reader.
+ *
+ * `provenance` has a third value here. A `"preset"` row is one
+ * `playlists.presets` expands into: it is stored in no document, so it is
+ * neither editable nor removable through the overrides layer — switching it
+ * off means removing its `preset_key` from `playlists.presets`, which the
+ * settings page's string-list editor already does. `preset_key` is null on
+ * every other row. */
+export interface PlaylistDefinitionSummary {
+  title: string;
+  builder: string;
+  params: Record<string, unknown>;
+  libraries: string[] | null;
+  summary: string | null;
+  limit: number | null;
+  schedule: Record<string, unknown> | null;
+  sync_mode: string;
+  builder_level: string;
+  provenance: "file" | "override" | "preset";
+  preset_key: string | null;
+}
+
+/** A switched-on preset an operator definition of the same title displaced.
+ * The preset is not built and is not listed as a row; it is named here so the
+ * panel can say which key stopped building rather than leaving the operator
+ * to notice a playlist quietly changing shape. */
+export interface PlaylistPresetConflict {
+  key: string;
+  title: string;
+}
+
+/** GET /api/playlists/definitions. `libraries` is the playlists section's own
+ * scope, in the order a definition searches it. */
+export interface PlaylistDefinitionsListingResponse {
+  libraries: string[];
+  definitions: PlaylistDefinitionSummary[];
+  preset_conflicts: PlaylistPresetConflict[];
+}
+
 /** POST /api/collections/parse-source — a pasted URL resolved to the builder
  * and params the definition will carry. Shape-checked only: existence is the
  * first pass's business. A refusal is a 422 whose detail is one sentence. */
