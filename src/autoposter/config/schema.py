@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
 
+from PIL import ImageColor
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from autoposter.overlays.schema import OverlayDefinition
@@ -453,6 +454,13 @@ class CollectionPosterTitleConfig(BaseModel):
 
     ``AddBorder`` and ``AddOverlay`` from ``CollectionPosterOverlayPart`` are
     not implemented and deliberately have no key here.
+
+    ``font_color``/``stroke_color`` are described on ``TextStyle`` as an
+    ImageMagick vocabulary, which is accurate for the render pipeline's other
+    callers; this module draws with Pillow's narrower ``ImageColor`` parser
+    instead, and ``_colors_must_be_drawable`` below refuses a value Pillow
+    cannot resolve at save time, the same treatment ``_gravities_must_be_drawable``
+    already gives ``gravity``.
     """
 
     enabled: bool = Field(
@@ -545,6 +553,30 @@ class CollectionPosterTitleConfig(BaseModel):
                     "composite draws with Pillow and anchors its blocks "
                     "vertically only"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _colors_must_be_drawable(self) -> "CollectionPosterTitleConfig":
+        """Refuse a color Pillow's ``ImageColor`` cannot parse.
+
+        ``font_color``/``stroke_color`` are described as an ImageMagick
+        vocabulary but this module draws with Pillow, which recognises a
+        narrower set of names -- a value Pillow rejects would otherwise fail
+        inside the compositing thread on every pass, for every managed
+        collection, until the operator finds the traceback in the pod log.
+        """
+        for block_name, style in (
+            ("title", self.title),
+            ("collection_line", self.collection_line),
+        ):
+            for field in ("font_color", "stroke_color"):
+                try:
+                    ImageColor.getrgb(getattr(style, field))
+                except ValueError as exc:
+                    raise ValueError(
+                        f"collections.poster_title.{block_name}.{field} is not "
+                        f"a color Pillow can draw ({type(exc).__name__})"
+                    ) from None
         return self
 
 

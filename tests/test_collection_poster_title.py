@@ -123,6 +123,35 @@ def test_a_gravity_this_module_cannot_anchor_is_refused_by_name():
     assert "'southeast'" in str(excinfo.value)
 
 
+def test_a_color_pillow_cannot_draw_is_refused_by_name():
+    """``font_color``/``stroke_color`` describe an ImageMagick vocabulary but
+    this module draws with Pillow's ``ImageColor``, a narrower parser. A value
+    it cannot resolve is a loud refusal at config-validation time rather than
+    a traceback repeating on every subsequent pass."""
+    with pytest.raises(ValueError) as excinfo:
+        CollectionPosterTitleConfig(
+            collection_line={
+                "font": BUNDLED, "min_point_size": 40, "max_point_size": 90,
+                "max_width": 1200, "max_height": 150, "text_offset": "+120",
+                "font_color": "not-a-colour",
+            },
+        )
+    assert "collections.poster_title.collection_line.font_color" in str(excinfo.value)
+
+
+def test_a_color_pillow_can_draw_is_accepted():
+    """A hex value and a name Pillow does recognise both save cleanly."""
+    settings = CollectionPosterTitleConfig(
+        collection_line={
+            "font": BUNDLED, "min_point_size": 40, "max_point_size": 90,
+            "max_width": 1200, "max_height": 150, "text_offset": "+120",
+            "font_color": "#ffffff", "stroke_color": "white",
+        },
+    )
+    assert settings.collection_line.font_color == "#ffffff"
+    assert settings.collection_line.stroke_color == "white"
+
+
 # --- the composite itself -----------------------------------------------------
 #
 # Every test below draws for real, with Pillow, against a plain-colour poster.
