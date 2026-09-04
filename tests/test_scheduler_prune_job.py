@@ -158,6 +158,80 @@ async def test_a_gone_child_under_a_surviving_parent_is_prunable_on_its_own(sess
     assert (scan.gone, scan.held, scan.total) == (1, 0, 3)
 
 
+async def test_an_excluded_librarys_row_is_gone_even_though_plex_resolves_it(session):
+    """The probe alone is not enough. ``_search_sync`` falls back from the
+    stored rating key to a GUID walk over every PERMITTED section of the right
+    type, so a show or episode whose identity also exists in a non-excluded
+    library resolves under the excluded row's intent and reads as PRESENT --
+    a DVR library duplicating shows already in the TV library is exactly that
+    case. The row's own ``library`` column is the fact that settles it: the
+    pipeline will never write to that item again either way."""
+    await _add_item(session, "10", library="Movies")
+    await _add_item(session, "11", library="DVR")
+
+    scan = await find_prunable(session, FakePlex(live={"10", "11"}), frozenset({"DVR"}))
+
+    assert [c.rating_key for c in scan.prunable] == ["11"]
+    assert (scan.gone, scan.held, scan.total, scan.excluded) == (1, 0, 2, 1)
+
+
+async def test_an_excluded_familys_resolving_descendant_does_not_hold_it(session):
+    """The cascade guard asks "does a descendant still RESOLVE", and inside an
+    excluded library every one of them does. If the guard read the raw probe
+    flags, an excluded show would be held by its own episode forever and the
+    population this pass exists to retire would never shrink. So the guard
+    reads the same effective reachability the ``gone`` set does."""
+    show = await _add_item(session, "100", kind="show", library="DVR")
+    season = await _add_item(session, "110", kind="season", parent=show, library="DVR")
+    await _add_item(session, "111", kind="episode", parent=season, library="DVR")
+
+    scan = await find_prunable(
+        session, FakePlex(live={"100", "110", "111"}), frozenset({"DVR"})
+    )
+
+    assert [c.rating_key for c in scan.prunable] == ["111", "110", "100"]
+    assert (scan.gone, scan.held, scan.excluded) == (3, 0, 3)
+
+
+async def test_the_fold_never_retires_a_row_whose_own_library_is_permitted(session):
+    """Both cross-library directions, in one pair of families, because the
+    fold has to get both right and they pull opposite ways.
+
+    UPWARD -- an excluded show whose episode lives in a PERMITTED library and
+    still resolves is HELD, and kept. ``media_items.parent_id`` is
+    ``ondelete="CASCADE"`` (``db/models.py:36``), so deleting the show would
+    silently take a row this service still manages, without even an audit row.
+    That is the one outcome the cascade guard exists to prevent, and widening
+    the guard's input must not cost it: the episode survives this sweep, so it
+    holds every ancestor above it whatever its parent's library says.
+
+    DOWNWARD -- a permitted show that still resolves keeps its own row while
+    its DVR-library episode is retired underneath it. Goneness for a row whose
+    own library is permitted is exactly the probe's answer, unchanged by the
+    fold: ``not (resolved and True)`` is ``not resolved``. The fold can never
+    make a permitted row gone that the probe called present.
+    """
+    excluded_show = await _add_item(session, "200", kind="show", library="DVR")
+    await _add_item(
+        session, "201", kind="episode", parent=excluded_show, library="TV Shows"
+    )
+    permitted_show = await _add_item(session, "300", kind="show", library="TV Shows")
+    await _add_item(
+        session, "301", kind="episode", parent=permitted_show, library="DVR"
+    )
+
+    scan = await find_prunable(
+        session,
+        FakePlex(live={"200", "201", "300", "301"}),
+        frozenset({"DVR"}),
+    )
+
+    # Only the excluded episode goes. The excluded show is gone-but-held by its
+    # permitted episode; the permitted show was never gone at all.
+    assert [c.rating_key for c in scan.prunable] == ["301"]
+    assert (scan.gone, scan.held, scan.total, scan.excluded) == (2, 1, 4, 1)
+
+
 async def test_an_empty_table_probes_nothing(session):
     plex = FakePlex(live=set())
 
@@ -516,7 +590,8 @@ def test_an_implausible_share_refuses_on_a_library_too_small_for_the_absolute_ca
     assert implausible_prune_count(2, 3, prune) is None
 
 
-def _config(*, apply=False, max_prunes=500, max_prune_share=0.25, max_orphans=500):
+def _config(*, apply=False, max_prunes=500, max_prune_share=0.25, max_orphans=500,
+            excluded=()):
     """Only what the job actually reads, the ``tests/test_scheduler_cleanup_job.py``
     ``_config`` pattern -- a SimpleNamespace keeps each test's intent on screen."""
     return SimpleNamespace(
@@ -525,6 +600,7 @@ def _config(*, apply=False, max_prunes=500, max_prune_share=0.25, max_orphans=50
         ),
         cleanup=SimpleNamespace(max_orphans=max_orphans, max_orphan_share=0.25),
         scheduler=SimpleNamespace(prune_days=7),
+        plex=SimpleNamespace(excluded_libraries=list(excluded)),
     )
 
 
@@ -847,6 +923,70 @@ async def test_a_skipped_rows_queued_job_is_not_dismissed(session):
     assert (await session.execute(select(EventLog))).scalars().all() == [], (
         "nothing was deleted, so nothing may carry a deletion audit row"
     )
+
+
+async def test_an_applied_pass_retires_excluded_rows_and_counts_them_separately(session):
+    """The whole finding, through the real job: Plex still resolves the DVR
+    row -- the operator did not delete it, they excluded its library -- and it
+    is retired anyway, through the same retire path the orphan case uses. Its
+    forever-deferring job goes with it: `dismiss_jobs_for` covers `deferred`,
+    which is the state an unresolvable item's job actually reaches (the worker
+    defers on ItemNotFound, it does not park)."""
+    await _add_item(session, "10", library="Movies")
+    await _add_item(session, "11", library="DVR", kind="show")
+    session.add(Job(
+        kind="process_item",
+        payload={"kind": "show", "title": "Recorded", "rating_key": "11"},
+        dedupe_key="process_item:show:title recorded",
+        state="deferred",
+    ))
+    await session.commit()
+
+    config = _config(apply=True, excluded=["DVR"])
+    summary = await _job(config, FakePlex(live={"10", "11"})).run(session)
+
+    assert "pruned 1 of 2" in summary
+    assert "1 row(s) in excluded libraries retired" in summary
+    assert "dismissed 1" in summary
+    session.expire_all()
+    assert [i.rating_key for i in (await session.execute(select(MediaItem))).scalars()] == ["10"]
+    assert (await session.execute(select(Job))).scalar_one().state == "dismissed"
+    (event,) = (await session.execute(select(EventLog))).scalars().all()
+    assert event.payload["rating_key"] == "11"
+    assert event.payload["library"] == "DVR"
+
+
+async def test_a_dry_run_names_the_excluded_population_without_deleting(session):
+    """Dry run is the default and stays honoured: the population is named and
+    counted, and nothing is touched."""
+    await _add_item(session, "10", library="Movies")
+    await _add_item(session, "11", library="DVR")
+
+    config = _config(apply=False, excluded=["DVR"])
+    summary = await _job(config, FakePlex(live={"10", "11"})).run(session)
+
+    assert "1 row(s) in excluded libraries would be retired" in summary
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 2
+    assert (await session.execute(select(EventLog))).scalars().all() == []
+
+
+async def test_the_caps_still_rule_a_newly_excluded_library(session):
+    """Excluded rows are not exempt from the plausibility caps -- they join
+    `prunable` and are measured with everything else. Excluding a large
+    library in one edit therefore refuses and reports the numbers rather than
+    retiring a library's worth of rows on the next pass, which is the whole
+    point of the caps and is what the operator note warns about."""
+    for n in range(4):
+        await _add_item(session, str(100 + n), library="DVR")
+
+    config = _config(apply=True, max_prunes=3, max_prune_share=1.0, excluded=["DVR"])
+    summary = await _job(config, FakePlex(live={"100", "101", "102", "103"})).run(session)
+
+    assert "refus" in summary.lower()
+    assert "4" in summary and "3" in summary
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 4
 
 
 def test_the_job_name_is_in_the_hand_trigger_allowlist():

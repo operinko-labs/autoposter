@@ -14,7 +14,14 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { DefinitionEditor, draftFrom, entryFromDraft, hostOnly } from "./DefinitionEditor";
+import {
+  COLLECTION_DEFINITIONS,
+  DefinitionEditor,
+  draftFrom,
+  entryFromDraft,
+  hostOnly,
+  PLAYLIST_DEFINITIONS,
+} from "./DefinitionEditor";
 
 const LIBRARIES = ["Movies", "TV Shows"];
 
@@ -42,6 +49,7 @@ function renderEditor(entry: Record<string, unknown>, onSave = vi.fn()) {
       libraries={LIBRARIES}
       descriptions={DESCRIPTIONS}
       busy={false}
+      kind={COLLECTION_DEFINITIONS}
       onSave={onSave}
       onCancel={vi.fn()}
     />,
@@ -218,11 +226,94 @@ describe("the editor's pure halves", () => {
   it("never invents a key the draft did not set", () => {
     const entry = { title: "A", builder: "b", params: {} };
     const roster = LIBRARIES;
-    expect(entryFromDraft(entry, draftFrom(entry, LIBRARIES), roster)).toEqual(entry);
+    expect(
+      entryFromDraft(entry, draftFrom(entry, LIBRARIES), roster, COLLECTION_DEFINITIONS),
+    ).toEqual(entry);
   });
 
   it("reduces a URL to its host and says so when it cannot", () => {
     expect(hostOnly("https://hooks.example/T0K3N/path")).toBe("hooks.example");
     expect(hostOnly("not a url")).toBe("(unreadable URL)");
+  });
+});
+
+/** A stored PLAYLIST entry. `filters` and `sort_title` are refused by the
+ * schema on a playlist, so they cannot appear here; `schedule` can, and it is
+ * the field this form must carry through untouched. */
+const PLAYLIST_ENTRY = {
+  title: "Star Wars (Timeline Order)",
+  builder: "imdb_list",
+  params: { list: "ls501373412" },
+  summary: "In-universe order.",
+  builder_level: "episode",
+  schedule: { every_n_runs: 4 },
+};
+
+function renderPlaylistEditor(
+  entry: Record<string, unknown>,
+  onSave = vi.fn(),
+) {
+  render(
+    <DefinitionEditor
+      entry={entry}
+      libraries={LIBRARIES}
+      descriptions={{}}
+      busy={false}
+      kind={PLAYLIST_DEFINITIONS}
+      onSave={onSave}
+      onCancel={vi.fn()}
+    />,
+  );
+  return onSave;
+}
+
+describe("the playlist kind", () => {
+  it("offers only the fields a playlist has, and none a collection has", () => {
+    renderPlaylistEditor(PLAYLIST_ENTRY);
+
+    expect(screen.getByLabelText("Title")).toBeInTheDocument();
+    expect(screen.getByLabelText("Summary")).toBeInTheDocument();
+    expect(screen.getByLabelText("Sync mode")).toBeInTheDocument();
+    expect(screen.getByLabelText("Builder level")).toBeInTheDocument();
+    expect(screen.getByLabelText("Limit")).toBeInTheDocument();
+    // Every one of these is in `_REFUSED_PLAYLIST_FIELDS`: offering the
+    // control would offer an edit config load is bound to reject.
+    expect(screen.queryByLabelText("Sort")).toBeNull();
+    expect(screen.queryByLabelText("Sort title")).toBeNull();
+    expect(screen.queryByLabelText("Collection mode")).toBeNull();
+    expect(screen.queryByLabelText("Label sync")).toBeNull();
+  });
+
+  it("writes builder_level, and drops the key again at its default", () => {
+    const onSave = renderPlaylistEditor(PLAYLIST_ENTRY);
+
+    fireEvent.change(screen.getByLabelText("Builder level"), {
+      target: { value: "item" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Absence is the overrides document's revert, and `item` IS the schema's
+    // default -- so writing it explicitly would pin a value the operator did
+    // not choose.
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect("builder_level" in onSave.mock.calls[0][0]).toBe(false);
+  });
+
+  it("carries an unedited key through, so a schedule survives an edit", () => {
+    const onSave = renderPlaylistEditor(PLAYLIST_ENTRY);
+
+    fireEvent.change(screen.getByLabelText("Summary"), {
+      target: { value: "Release order." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave.mock.calls[0][0]).toMatchObject({
+      title: "Star Wars (Timeline Order)",
+      builder: "imdb_list",
+      params: { list: "ls501373412" },
+      summary: "Release order.",
+      builder_level: "episode",
+      schedule: { every_n_runs: 4 },
+    });
   });
 });

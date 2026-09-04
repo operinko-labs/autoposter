@@ -83,6 +83,8 @@ class Render(Base):
     art_kind: Mapped[str] = mapped_column(String(24))
     # 'generate' composites our own text and fade over textless art.
     # 'verbatim' applies supplied art untouched (the MediUX seam, spec section 11).
+    # 'plex_generated' composites over the frame Plex itself derived from the
+    # media file, when no provider had a title_card (roadmap row 241).
     source_mode: Mapped[str] = mapped_column(String(16), default="generate")
     provider: Mapped[str | None] = mapped_column(String(32))
     source_url: Mapped[str | None] = mapped_column(Text)

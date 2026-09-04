@@ -117,9 +117,9 @@ def test_an_addon_on_top_lays_image_above_the_text():
     # Inter-Medium 55pt "4.9"'s own ink genuinely reaches into the last few
     # rows before the box's bottom edge in this pinned environment.
     upper = layer.crop((795, 550, 985, 645))
-    assert any(p == (0, 255, 0, 255) for p in upper.getdata())
+    assert any(p == (0, 255, 0, 255) for p in upper.get_flattened_data())
     lower = layer.crop((795, 700, 985, 740))
-    assert not any(p == (0, 255, 0, 255) for p in lower.getdata())
+    assert not any(p == (0, 255, 0, 255) for p in lower.get_flattened_data())
 
 
 def test_an_image_with_no_text_is_centred_and_never_resized():
@@ -168,7 +168,7 @@ def _color_bbox(layer: Image.Image, box: tuple[int, int, int, int], color: tuple
     fully-opaque interior without hand-computing font metrics."""
     region = layer.crop(box)
     mask = Image.new("L", region.size, 0)
-    mask.putdata([255 if px == color else 0 for px in region.getdata()])
+    mask.putdata([255 if px == color else 0 for px in region.get_flattened_data()])
     return mask.getbbox()
 
 
@@ -290,7 +290,7 @@ def test_a_stroke_draws_an_outline_around_the_text():
         POSTER_CANVAS,
         text="A", font=font,
     )
-    colors = {px for px in layer.crop(box).getdata() if px[3] > 0}
+    colors = {px for px in layer.crop(box).get_flattened_data() if px[3] > 0}
     assert (255, 0, 0, 255) in colors, "the stroke colour must appear"
     assert (255, 255, 255, 255) in colors, "the fill colour must still appear"
 
