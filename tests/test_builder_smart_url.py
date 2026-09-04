@@ -17,8 +17,6 @@ extractor plus 9c's reconciler, so the tests split the same way:
   query, never a second query grammar.
 """
 import logging
-import traceback
-from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse, urlsplit
 
@@ -36,7 +34,6 @@ from autoposter.collections.builders.base import LibraryTypeMismatch
 from autoposter.collections.builders.smart_filter import SmartFilterBuilder
 from autoposter.collections.engine import run_library
 from autoposter.collections.smart import smart_definition_hash
-from autoposter.config.loader import build_config, read_config_document
 from autoposter.config.schema import CollectionDefinition
 
 LABEL = "autoposter"
@@ -171,58 +168,64 @@ def test_str_validationerror_for_smarturlparams_names_no_token():
     assert "X-Plex-Token=" not in str(caught.value)
 
 
-def test_a_valid_pasted_url_keeps_no_token_in_the_stored_params():
-    """The token-hygiene claim covers a SUCCESSFUL parse too: an operator's
-    address bar carries the token whether or not the paste happens to be
-    well-formed, and ``params.url`` is what ``GET /api/config``, a config
-    snapshot and ``/api/config/overrides/export`` all serve back verbatim."""
-    params = SmartUrlParams(url=_MOVIE_URL_WITH_TOKEN)
-    assert _TOKEN not in params.url
-    assert "X-Plex-Token" not in params.url
-    # ...and the query itself is unaffected -- the token rode outside the
-    # ``key`` parameter this builder actually stores.
-    args, libtype = smart_query_from_uri(params.url)
-    assert args == "?type=1&sort=random&genre=1138"
-    assert libtype == "movie"
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "CollectionDefinition's own mode='after' validator (config/schema.py, "
-        "out of scope for this fix) echoes its WHOLE raw input dict -- title, "
-        "builder, params, token included -- in pydantic-core's own "
-        "input_value= whenever ANY of its checks fail, this one included. "
-        "Verified directly against build_config() in this session: str(exc) "
-        "and traceback.format_exc() both still carry the token. Closing it "
-        "needs config/schema.py's own hide_input_in_errors, or main.py "
-        "catching ValidationError and re-raising via "
-        "errors(include_input=False) -- neither is in scope here."
-    ),
-)
-def test_a_boot_shaped_config_load_over_a_token_bearing_url():
-    """C1(b), the named boot scenario: ``load_config``/``build_config`` is
-    uncaught at ``main.py:83``, so a config-load refusal's full exception
-    chain is what reaches the pod logs. ``SmartUrlParams``'s OWN validation is
-    fully clean now (see ``test_str_validationerror_for_smarturlparams_names_no_token``
-    above) -- what remains is entirely ``CollectionDefinition``'s own echo,
-    which this module cannot reach. See the module docstring's "What this
-    cannot reach"."""
-    data = read_config_document(
-        Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
-    )
-    bad_url_with_token = (
-        "http://192.168.1.10:32400/web/index.html#!/server/abc123/"
-        "com.plexapp.plugins.library?key=%2Flibrary%2Fsections%2F1%2Fall%3Ftype%3D1"
-        "&X-Plex-Token=" + _TOKEN
-    )
-    data.setdefault("collections", {}).setdefault("definitions", []).append(
-        {"title": "Pasted", "builder": "smart_url", "params": {"url": bad_url_with_token}}
-    )
+def test_a_url_carrying_an_x_plex_token_is_refused():
+    """The re-ruled Global Constraint 8 (facts, Amendment 2026-09-05): a
+    ``mode="before"`` STRIP cannot clean the stored copy, because
+    ``config/schema.py``'s own check (``model.model_validate(self.params)``)
+    validates a throwaway instance and discards it --
+    ``CollectionDefinition.params['url']``, what ``GET /api/config``, a
+    config snapshot and ``/api/config/overrides/export`` all serve back
+    verbatim, would still carry whatever the operator pasted. So a
+    token-bearing paste is REFUSED outright, with one fixed sentence that
+    names ``params.url`` and nothing else -- no host, no token, no echo of
+    the pasted value."""
     with pytest.raises(ValidationError) as caught:
-        build_config(data)
+        SmartUrlParams(url=_MOVIE_URL_WITH_TOKEN)
     assert _TOKEN not in str(caught.value)
-    assert _TOKEN not in traceback.format_exc()
+    [error] = caught.value.errors()
+    assert _TOKEN not in error["msg"]
+    assert (
+        "params.url carries a Plex token: remove the X-Plex-Token query "
+        "parameter; the server's own token is used"
+    ) in error["msg"]
+
+
+def test_a_url_carrying_a_lowercase_token_parameter_is_refused():
+    """The OTHER name ``_TOKEN_TERM`` recognises -- a bare ``token=``, not
+    just ``X-Plex-Token=`` -- gets the identical refusal."""
+    uri = _MOVIE_URL + "&token=" + _TOKEN
+    with pytest.raises(ValidationError) as caught:
+        SmartUrlParams(url=uri)
+    assert _TOKEN not in str(caught.value)
+    [error] = caught.value.errors()
+    assert _TOKEN not in error["msg"]
+    assert (
+        "params.url carries a Plex token: remove the X-Plex-Token query "
+        "parameter; the server's own token is used"
+    ) in error["msg"]
+
+
+def test_a_token_bearing_url_is_refused_through_collectiondefinition_without_the_token_served():
+    """The boot/config-load surface: ``CollectionDefinition`` is the model
+    every config load, and ``GET /api/config``'s own re-check, actually
+    validates against. Its wrapped ``errors()[*]["msg"]`` -- the projection
+    ``api/routes.py``'s 422 body serves -- must stay token-free too.
+
+    Deliberately NOT asserted here: ``str(caught.value)`` on the OUTER
+    error. ``CollectionDefinition``'s own ``mode="after"`` validator
+    (``config/schema.py``, out of scope for this branch) echoes its WHOLE
+    raw input dict in pydantic-core's ``input_value=`` whenever any of its
+    checks fail -- a documented residual (module docstring, "What this
+    cannot reach"; facts, Amendment 2026-09-05) whose only sink is the
+    trusted pod log (row 207), not a served surface."""
+    with pytest.raises(ValidationError) as caught:
+        CollectionDefinition(
+            title="Pasted", builder="smart_url",
+            params={"url": _MOVIE_URL_WITH_TOKEN},
+        )
+    [error] = caught.value.errors()
+    assert _TOKEN not in error["msg"]
+    assert "params.url carries a Plex token" in error["msg"]
 
 
 def test_a_token_inside_the_key_parameter_never_reaches_the_stored_query():
@@ -459,13 +462,14 @@ async def test_a_pasted_url_and_the_equivalent_smart_filter_store_one_filter(
     to what ``smart_filter`` builds from the same query, or the paste would be
     a second query grammar rather than a spelling of the one 9b proved.
 
-    The pasted URL carries a live ``X-Plex-Token`` (Global Constraint 8, I2):
-    ``_MOVIE_URL`` alone never drove a token through ``run_library``, so
-    neither the prior action-string log nor a caplog check ever exercised
-    ``apply``'s ``logger.debug`` with a credential in reach."""
+    A token-bearing paste is refused at construction now (Global Constraint 8,
+    re-ruled -- see the token-refusal tests above), so it can never reach
+    ``CollectionDefinition`` here at all; this uses the token-free URL and
+    keeps the caplog/action-string pins as a general hygiene check on what
+    the engine logs and reports for an accepted definition."""
     section = FakeSection()
     pasted = CollectionDefinition(
-        title="Pasted Horror", builder="smart_url", params={"url": _MOVIE_URL_WITH_TOKEN},
+        title="Pasted Horror", builder="smart_url", params={"url": _MOVIE_URL},
     )
     written = CollectionDefinition(
         title="Written Horror",
@@ -504,12 +508,13 @@ async def test_a_movie_url_on_a_show_library_is_refused_by_class_and_by_message(
     one definition, reported as an action string, and it names the libtype the
     URL asked for -- the operator's own value, per Global Constraint 7.
 
-    Also carries a live token (I2): the refusal's action string and the
-    engine's own ``logger.warning`` are exactly where a credential would leak
-    from a definition that fails AFTER a successful, token-bearing parse."""
+    A token-bearing paste is refused at construction now (Global Constraint 8,
+    re-ruled -- see the token-refusal tests above), so this uses the
+    token-free URL; the caplog/action-string pins stay as a general hygiene
+    check on the refusal's own action string and ``logger.warning`` line."""
     section = FakeSection()
     definition = CollectionDefinition(
-        title="Pasted Horror", builder="smart_url", params={"url": _MOVIE_URL_WITH_TOKEN},
+        title="Pasted Horror", builder="smart_url", params={"url": _MOVIE_URL},
     )
 
     with caplog.at_level(logging.DEBUG):

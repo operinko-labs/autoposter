@@ -22,31 +22,39 @@ out of ``parse_qs`` and ``str.index`` and Kometa catches only ``ValueError``
 there. Named refusals here, because "the config is wrong" and "the service
 crashed" have to look different to an operator.
 
-**The pasted value is token-stripped before it reaches the model at all.**
-This is the first config value in the collections package that an operator
-pastes from a BROWSER, and a Plex Web URL can carry ``X-Plex-Token``.
-``SmartUrlParams``'s own ``mode="before"`` field validator runs
-``strip_plex_token`` on the raw string ahead of pydantic's own type check and
-ahead of ``_the_url_must_carry_a_filter``, so a successfully-parsed
-``params.url`` never carries the token forward either -- not into the query
-stored on Plex's server, a log line, an action string, nor into
-``GET /api/config``, a config snapshot, or ``/api/config/overrides/export``.
-``model_config``'s ``hide_input_in_errors`` is set for the refusal path, for
-the same reason: pydantic-core otherwise echoes the RAW field input in
-``input_value=`` even once a ``mode="before"`` validator has transformed it,
-which would put the token straight back into ``str(ValidationError)``.
-``smart_query_from_uri`` strips again internally (belt-and-braces), so it
-stays safe called directly, outside this model. Compare
+**A pasted value that carries a token is refused, not stripped.** This is
+the first config value in the collections package that an operator pastes
+from a BROWSER, and a Plex Web URL can carry ``X-Plex-Token``. A
+``mode="before"`` strip cannot make ``params.url`` clean, because
+``config/schema.py``'s own check (``model.model_validate(self.params)``)
+validates a THROWAWAY instance and discards it -- ``CollectionDefinition
+.params`` itself, which is what ``GET /api/config``, a config snapshot and
+``/api/config/overrides/export`` all serve back verbatim, stays whatever the
+operator pasted. So ``SmartUrlParams``'s own ``mode="before"`` field
+validator instead REFUSES any ``url`` whose query carries ``X-Plex-Token`` or
+``token`` (the same names ``_TOKEN_TERM`` recognises, either encoding) with
+one fixed sentence naming ``params.url`` and nothing else -- the server's own
+token is what the builder uses, so the pasted one is never needed, and a
+value that fails this check never becomes a successfully-parsed
+``params.url`` in the first place. ``model_config``'s ``hide_input_in_errors``
+stays set for the same reason it was needed before: pydantic-core otherwise
+echoes the RAW field input in ``input_value=`` regardless of which validator
+raised, which would put the token straight back into
+``str(ValidationError)``. ``smart_query_from_uri`` keeps its own
+``strip_plex_token`` call internally (belt-and-braces for callers outside
+this model), so it stays safe called directly. Compare
 ``smart_filter.py:182``'s ``logger.debug("smart_filter: %s -> %s", ...)``,
 which is safe only because that URL was BUILT rather than pasted.
 
-**What this cannot reach.** ``CollectionDefinition``'s own ``mode="after"``
-validator (``config/schema.py``, outside this module) echoes its WHOLE raw
-input dict when any of its checks fail, this one included -- so a config-load
-refusal's ``str(ValidationError)``/``traceback.format_exc()``, taken through
-that OUTER model, still carries the token via that dict. Nothing in this
-module can close that; it is a controller-level residual on Global
-Constraint 8, not a lapse here.
+**What this cannot reach.** A token-bearing URL is refused at validation, so
+nothing token-bearing is ever stored in ``params.url`` -- but
+``CollectionDefinition``'s own ``mode="after"`` validator (``config/schema.py``,
+outside this module) echoes its WHOLE raw input dict when any of its checks
+fail, this refusal included -- so a config-load refusal's
+``str(ValidationError)``/``traceback.format_exc()``, taken through that OUTER
+model, still carries the token via that dict. Nothing in this module can
+close that; it is a controller-level residual on Global Constraint 8 (the
+pod-log sink, row 207), not a lapse here.
 """
 import logging
 import re
@@ -183,10 +191,9 @@ def smart_query_from_uri(uri: str) -> tuple[str, str]:
     key = keys[0]
     if "?" not in key:
         raise SmartUrlNotAFilter(
-            f"`params.url` has no query string -- its `key` parameter "
-            f"({key!r}) names a library section but no filter. This is what "
-            "a plain library view looks like; switch a filter on in Plex "
-            "Web first"
+            "`params.url` has no query string -- its `key` parameter names "
+            "a library section but no filter. This is what a plain library "
+            "view looks like; switch a filter on in Plex Web first"
         )
     args = strip_plex_token(key[key.index("?"):])
     marker = args.find("type=")
@@ -205,6 +212,16 @@ def smart_query_from_uri(uri: str) -> tuple[str, str]:
     return args, libtype
 
 
+# The one fixed sentence a token-bearing paste gets, regardless of which
+# name matched or where in the URL it sat: it names ``params.url`` and
+# nothing else -- no host, no token, no echo of the pasted value -- so it is
+# exactly as safe to put in ``input_value=`` as it is to print in a log line.
+_TOKEN_REFUSAL = (
+    "params.url carries a Plex token: remove the X-Plex-Token query "
+    "parameter; the server's own token is used"
+)
+
+
 class SmartUrlParams(BaseModel):
     """One key: the URL. ``extra="forbid"`` for the reason every params model
     here has it -- a mis-spelled key is an error rather than a silently ignored
@@ -212,10 +229,10 @@ class SmartUrlParams(BaseModel):
 
     ``hide_input_in_errors`` is set for the reason the module docstring
     explains: pydantic-core auto-appends the RAW field input to a
-    ``value_error`` in ``input_value=`` regardless of what a ``mode="before"``
-    validator did to it, so without this flag ``_strip_the_token_before_the_model_sees_it``
-    would strip the token from the message and the value while pydantic put
-    it right back in the envelope around them."""
+    ``value_error`` in ``input_value=`` regardless of which validator raised
+    it, so without this flag the refusal in
+    ``_the_url_must_carry_no_token`` would still put the token straight back
+    into the envelope around its own, clean message."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -223,21 +240,29 @@ class SmartUrlParams(BaseModel):
         min_length=1,
         description=(
             "A Plex Web smart-filter URL, copied whole from the address bar. "
-            "Any X-Plex-Token in it is stripped before anything reads it."
+            "A URL carrying an X-Plex-Token (or token=) query parameter is "
+            "refused -- the server's own token is used instead."
         ),
     )
 
     @field_validator("url", mode="before")
     @classmethod
-    def _strip_the_token_before_the_model_sees_it(cls, value: object) -> object:
-        """Runs before pydantic's own type check and before
-        ``_the_url_must_carry_a_filter``, so the token is gone from the value
-        this model ever stores -- a valid paste's ``params.url`` included --
-        and from the raw input pydantic-core would otherwise echo on a
-        failure. A non-string value is returned unchanged and left to
-        pydantic's ordinary type error; nothing here should call a string
-        method on it."""
-        return strip_plex_token(value) if isinstance(value, str) else value
+    def _the_url_must_carry_no_token(cls, value: object) -> object:
+        """A ``mode="before"`` strip cannot fix the stored copy:
+        ``config/schema.py``'s own check validates a throwaway instance and
+        discards it, so ``CollectionDefinition.params['url']`` -- what
+        ``GET /api/config``, a config snapshot and
+        ``/api/config/overrides/export`` actually serve -- would still carry
+        whatever the operator pasted. So a token-bearing value is refused
+        here instead, before pydantic's own type check and before
+        ``_the_url_must_carry_a_filter`` -- it never becomes a stored
+        ``params.url`` at all. Runs on the raw string, in either encoding,
+        the same names ``_TOKEN_TERM`` recognises. A non-string value is
+        returned unchanged and left to pydantic's ordinary type error;
+        nothing here should call a string method on it."""
+        if isinstance(value, str) and _TOKEN_TERM.search(value):
+            raise ValueError(_TOKEN_REFUSAL)
+        return value
 
     @field_validator("url")
     @classmethod
