@@ -242,6 +242,47 @@ def test_a_named_user_list_needs_no_gate():
     assert section.definitions[0].sync_to_users == ["alice"]
 
 
+def test_the_list_form_of_all_is_refused_unless_the_section_switch_is_on():
+    """``sync_to_users: [all]`` (the YAML list form of the word) means the
+    same thing as ``sync_to_users: all`` and must hit the same gate -- not
+    take the ``list[str]`` branch and resolve against a user literally
+    titled "all"."""
+    with pytest.raises(ValidationError) as error:
+        PlaylistsConfig.model_validate({
+            "definitions": [{**A_DEFINITION, "sync_to_users": ["all"]}],
+        })
+
+    message = str(error.value)
+    assert "sync_all_users" in message
+    assert "Marvel Cinematic Universe" in message
+
+
+def test_the_list_form_of_all_loads_once_the_section_switch_is_on():
+    """Normalised to the same value the bare-word form produces, so nothing
+    downstream has to know two spellings mean one thing."""
+    section = PlaylistsConfig.model_validate({
+        "sync_all_users": True,
+        "definitions": [{**A_DEFINITION, "sync_to_users": ["all"]}],
+    })
+
+    assert section.definitions[0].sync_to_users == "all"
+
+
+def test_all_mixed_with_named_users_is_always_refused():
+    """Not one meaning or the other, so no gate can allow it -- refused at
+    config load the same shape as the other refusals here, regardless of
+    ``sync_all_users``."""
+    with pytest.raises(ValidationError) as error:
+        PlaylistsConfig.model_validate({
+            "sync_all_users": True,
+            "definitions": [{**A_DEFINITION, "sync_to_users": ["all", "someone"]}],
+        })
+
+    message = str(error.value)
+    assert "sync_to_users" in message
+    assert "all" in message
+
+
 def test_the_section_defaults_leave_every_user_untouched():
     """The two gates and the two caps, as shipped. ``sync_to_users_apply`` off
     is the whole safety posture of this phase: a pass reports what each user

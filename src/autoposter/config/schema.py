@@ -2353,6 +2353,34 @@ class PlaylistDefinition(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _the_list_form_of_all_means_the_same_thing(self) -> "PlaylistDefinition":
+        """``sync_to_users: [all]`` (the YAML list form) must mean the same
+        thing as ``sync_to_users: all``.
+
+        Without this, ``["all"]`` is a one-element ``list[str]`` as far as the
+        union at this field's declaration is concerned -- it never reaches
+        ``PlaylistsConfig._all_users_needs_its_own_gate``, and later resolves
+        against a user literally titled "all", which does not exist, so the
+        playlist silently reaches nobody. Matched case-sensitively, the same
+        word the gate refuses.
+
+        A list that mixes "all" with named users is neither meaning and is
+        refused outright here, unconditionally: there is no gate that could
+        make sense of it.
+        """
+        if isinstance(self.sync_to_users, list):
+            if self.sync_to_users == ["all"]:
+                self.sync_to_users = "all"
+            elif "all" in self.sync_to_users:
+                raise ValueError(
+                    f"playlist {self.title!r} sync_to_users mixes 'all' with "
+                    "named users: 'all' means every user this server shares "
+                    "with and cannot be combined with names. List users "
+                    "explicitly, or use 'all' alone"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _libraries_must_not_be_blank(self) -> "PlaylistDefinition":
         """Kometa's own rule, and its reasoning holds here unchanged
         (modules/builder.py:710-718): an OMITTED ``libraries`` means every
