@@ -186,6 +186,44 @@ async def test_exhausted_retries_fail_quietly_log_the_host_and_write_the_events_
     assert HOOK_TOKEN not in stored
 
 
+async def test_a_transport_failure_is_stored_as_its_class_name_only(
+    make_client, session_factory, session, sleeps, caplog
+):
+    """EventLog.outcome and payload["error"] are served by /api/events and
+    the dashboard stream. The transport's own message went in whole, and
+    its URL-freedom rested on this method never calling raise_for_status()
+    -- one follow_redirects or status check away from a Discord-shape
+    /api/webhooks/<id>/<token> on a served row. Class name only on the
+    stored copy; the WARNING keeps the message (the pod log, row 207)."""
+
+    def handler(request):
+        raise httpx.ConnectError(
+            "boom at http://hook.internal:8443/api/webhooks/123/tok-LEAKED"
+        )
+
+    notifier = build_notifier(_config(retry_count=1), make_client(handler), session_factory)
+
+    with caplog.at_level(logging.DEBUG):
+        ok = await notifier.send("scheduled_run_completed", "s", {"status": "failed"})
+
+    assert ok is False
+    assert sleeps == []
+
+    row = (await session.execute(select(EventLog))).scalar_one()
+    assert row.outcome == "notification failed after 1 attempt(s): ConnectError"
+    stored = json.dumps(row.payload)
+    for marker in ("hook.internal", "8443", "tok-LEAKED", "boom"):
+        assert marker not in row.outcome
+        assert marker not in stored
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert (
+        "failed after 1 attempt(s): ConnectError: boom at http://hook.internal:8443"
+        in warnings[0].getMessage()
+    )
+
+
 async def test_a_bug_before_the_transport_is_contained_by_the_outer_wrapper(
     make_client, caplog
 ):
