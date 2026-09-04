@@ -686,6 +686,10 @@ export function ItemDetail() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<string | null>(null);
+  /** The server's twin note for this row, or null. Separate from `outcome`
+   * because they answer different questions: `outcome` is what this click
+   * did, `twinNote` is what is true of the row regardless of the click. */
+  const [twinNote, setTwinNote] = useState<string | null>(null);
   /** The art kind whose clear-override call is in flight, or null. */
   const [clearing, setClearing] = useState<string | null>(null);
   const [clearNote, setClearNote] = useState<ClearNote | null>(null);
@@ -701,6 +705,7 @@ export function ItemDetail() {
     let cancelled = false;
     setItem(null);
     setOutcome(null);
+    setTwinNote(null);
     setClearNote(null);
     // A panel opened on the previous item browses the previous item's
     // candidates; left open it would offer a pick against this one.
@@ -726,6 +731,7 @@ export function ItemDetail() {
   async function reprocess() {
     setBusy(true);
     setOutcome(null);
+    setTwinNote(null);
     setError(null);
     try {
       const response = await apiFetch<ReprocessResponse>(
@@ -742,6 +748,9 @@ export function ItemDetail() {
           ? `Queued as job #${response.job_id}.`
           : "Already queued — nothing new was added.",
       );
+      // Whatever the server sent, unchanged, and NOT gated on `queued`: the
+      // condition it describes belongs to the row, not to this click.
+      setTwinNote(response.note);
     } catch (caught) {
       setError((caught as Error).message);
     } finally {
@@ -890,6 +899,7 @@ export function ItemDetail() {
 
       {error !== null && <p className="page-error">{error}</p>}
       {outcome !== null && <p className="item-outcome">{outcome}</p>}
+      {twinNote !== null && <p className="item-twin-note">{twinNote}</p>}
 
       {/* One pair per art kind, each labelled: a movie has a poster AND a
         * background, and the page used to show only the poster -- so half of
