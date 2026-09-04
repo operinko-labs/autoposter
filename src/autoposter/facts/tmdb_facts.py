@@ -108,6 +108,58 @@ def _collection_id(payload: dict) -> int | None:
         return None
 
 
+# Kometa's own `discover_status`, transcribed entry for entry from
+# `/modules/tmdb.py:108` in the pinned v2.4.8 image: TMDb's `status` strings
+# on the left, the tokens an operator writes in a `tmdb_status:` filter on
+# the right. Kometa validates a written value against exactly these six as a
+# `commalist` (`/modules/builder.py:4369`, `options=[v for k, v in
+# tmdb.discover_status.items()]`) and compares with
+# `discover_status[item.status]` against that written set
+# (`/modules/tmdb.py:685-693`).
+#
+# THE MAPPING HAPPENS HERE, not at filter time, and that is the whole reason
+# this table is in the parser: the TOKEN is the value space the comparison
+# lives in, and TMDb's own string is not. Storing `"Returning Series"` in a
+# column named `tmdb_status` would be a column carrying Kometa's NAME with a
+# different meaning -- exactly the trap roadmap row 156 exists to name (see
+# `ItemFacts.content_rating`, which is MDBList's Common Sense AGE rating and
+# not Plex's certification). One mapping site, at the edge, and every reader
+# downstream gets the value the filter compares in.
+TMDB_SHOW_STATUS = {
+    "Returning Series": "returning",
+    "Planned": "planned",
+    "In Production": "production",
+    "Ended": "ended",
+    "Canceled": "canceled",
+    "Pilot": "pilot",
+}
+
+
+def _show_status(payload: dict) -> str | None:
+    """TMDb's ``status`` as Kometa's own token, or ``None``.
+
+    A status outside the six is KEPT VERBATIM rather than dropped, and that
+    is a declared divergence in this service's favour. Upstream's
+    ``discover_status[item.status]`` is a bare subscript with no guard
+    (``/modules/tmdb.py:685``), so a seventh TMDb status raises ``KeyError``
+    there; TMDb's ``status`` is a closed enum in practice, which is why
+    upstream gets away with it. Here the unmapped string is stored as TMDb
+    spelled it: it matches none of the four shipped bands (which name
+    ``returning``/``canceled``/``ended`` only), so the DRAWN outcome is
+    upstream's minus the crash -- and, unlike ``None``, it stays
+    distinguishable from "TMDb has not told us", which is what the NULL
+    column means and what rows 189/192's coverage arithmetic depends on
+    being able to tell apart.
+
+    Blank and whitespace-only read as absent, the rule ``_original_title``
+    already applies: a missing value must never be written as an empty one.
+    """
+    value = payload.get("status")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return TMDB_SHOW_STATUS.get(value, value)
+
+
 def _original_title(payload: dict, key: str) -> str | None:
     """TMDb's original-language title, or ``None``.
 
@@ -167,13 +219,24 @@ def parse_show_facts(payload: dict) -> GatheredFacts:
     countries = _countries(payload)
     language = _language(payload)
     original_title = _original_title(payload, "original_name")
+    # Roadmap row 100, sub-phase C2c. Two more keys off the payload this
+    # function is already handed -- Kometa reads the same two out of the same
+    # response in one block (`/modules/tmdb.py:272-273`). ``last_air_date`` is
+    # the show's LAST episode; ``first_air_date`` above is its first, and they
+    # go to different fields on purpose -- reading one for the other is the
+    # whole reason `last_episode_aired` is its own name rather than an alias
+    # of `originally_available`.
+    status = _show_status(payload)
+    last_aired = _as_date(payload.get("last_air_date"))
     sources = {}
     if rating is not None:
         sources["audience_rating"] = "tmdb"
     for key, value in (("genres", genres), ("studio", studio),
                        ("originally_available", aired),
                        ("tmdb_origin_country", countries),
-                       ("tmdb_original_language", language)):
+                       ("tmdb_original_language", language),
+                       ("tmdb_status", status),
+                       ("last_episode_aired", last_aired)):
         if value:
             sources[key] = "tmdb"
     return GatheredFacts(
@@ -184,6 +247,8 @@ def parse_show_facts(payload: dict) -> GatheredFacts:
         original_title=original_title,
         tmdb_origin_country=countries,
         tmdb_original_language=language,
+        tmdb_status=status,
+        last_episode_aired=last_aired,
         sources=sources,
     )
 
