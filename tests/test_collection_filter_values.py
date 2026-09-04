@@ -175,7 +175,7 @@ def test_the_runtime_batched_field_map_matches_the_batched_rows():
         assert hasattr(ItemTags((), (), (), (), ()), field), field
 
 
-def test_the_thirteen_shipped_families_are_named():
+def test_the_fourteen_shipped_families_are_named():
     """Spelled out rather than derived, so that the set of attributes an
     operator can actually filter on is reviewable in one line -- and so that
     Task 2's probe verdicts cannot drift silently into or out of tier 1.
@@ -183,7 +183,8 @@ def test_the_thirteen_shipped_families_are_named():
     The last three of the first twelve are phase B's: probe (d) walked both
     section listings and found ``viewCount``/``lastViewedAt``/``userRating``
     present-when-set, which is the verdict ``unprobed`` was waiting for.
-    ``versions`` is sub-phase C2a's (adjudication A14)."""
+    ``versions`` is sub-phase C2a's (adjudication A14); ``aspect`` is
+    sub-phase C2b's (adjudication A11)."""
     assert SHIPPED_ATTRIBUTES == (
         "year",
         "resolution",
@@ -198,6 +199,7 @@ def test_the_thirteen_shipped_families_are_named():
         "last_played",
         "user_rating",
         "versions",
+        "aspect",
     )
     assert BATCHED_ATTRIBUTES == (
         "genre",
@@ -649,3 +651,44 @@ def test_a_hundred_item_library_evaluates_with_zero_plex_requests():
     assert server.calls == []
     assert results.count(True) == 50
     assert results.count(False) == 50
+
+
+def test_aspect_reads_the_media_aspect_ratio():
+    """The same `<Media>` walk `resolution` uses, on the same fixture shape."""
+    xml = MOVIE_XML.replace(
+        '<Media id="9" videoResolution="1080" width="1920">',
+        '<Media id="9" videoResolution="1080" width="1920" aspectRatio="1.78">',
+    )
+    assert PlexItemView(a_movie(xml)).get("aspect") == 1.78
+
+
+def test_aspect_walks_every_version_and_answers_the_first_that_carries_one():
+    """ADJUDICATION A-2, pinned. `aspect` is a `float` and cannot answer a
+    tuple the way `resolution` does, so the same whole-list walk is narrowed
+    to the FIRST version carrying the attrib -- here the second, because Plex
+    omits `aspectRatio` on a version it has not analysed."""
+    xml = MOVIE_XML.replace(
+        '<Media id="9" videoResolution="1080" width="1920"><Part id="1" file="/m.mkv"/></Media>',
+        '<Media id="9" videoResolution="1080"><Part id="1" file="/a.mkv"/></Media>'
+        '<Media id="10" videoResolution="4k" aspectRatio="2.35"><Part id="2" file="/b.mkv"/></Media>',
+    )
+    assert PlexItemView(a_movie(xml)).get("aspect") == 2.35
+
+
+def test_aspect_is_missing_not_zero_for_an_unanalysed_or_media_less_item():
+    """Two different absences, one answer. `MOVIE_XML` itself carries no
+    `aspectRatio` (Plex omits it until the file is analysed) and a show has
+    no `<Media>` at all -- both are missing, and the table's float rule
+    excludes a missing value under every operator."""
+    assert PlexItemView(a_movie()).get("aspect") is None
+    assert PlexItemView(a_show()).get("aspect") is None
+
+
+def test_the_aspect_accessor_costs_no_plex_request():
+    """The module's one hard rule, re-asserted for the new accessor rather
+    than assumed from the ones beside it: `a_movie()`'s server raises on any
+    request, and `MOVIE_XML` deliberately has no `aspectRatio`, which is
+    exactly the missing-value shape that trips
+    `PlexPartialObject.__getattribute__`'s reload branch for a naive
+    `item.media` read."""
+    assert PlexItemView(a_movie()).get("aspect") is None

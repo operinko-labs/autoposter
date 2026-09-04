@@ -12,6 +12,8 @@ from autoposter.badges.values import (
     commonsense_text,
     critic_text,
     episode_text,
+    language_slots,
+    media_info_from_plex,
     plex_native_ratings,
     runtime_text,
     video_format_text,
@@ -198,3 +200,145 @@ def test_plex_native_ratings_does_not_trigger_a_partial_object_reload():
         "plex_tomatoes_rating": None,
         "plex_tomatoesaudience_rating": None,
     }
+
+
+def _item_with_streams(audio, subtitles, extra_version=None):
+    """A plexapi-shaped stand-in carrying one `<Media>` with one `<Part>`
+    whose `streams` list holds the given `(languageCode, streamType)` pairs.
+    `extra_version` is a second `(audio, subtitles)` pair, shaped as a SECOND
+    `<Media>` child, so the whole-list walk can be exercised.
+
+    Streams are plain objects, not partial ones, which is what the real
+    `<Stream>` children are too -- `media_info_from_plex` reads them with a
+    plain `getattr` and always has."""
+    def _version(audio_codes, subtitle_codes):
+        streams = [
+            type("S", (), {"streamType": kind, "languageCode": code})()
+            for code, kind in list(audio_codes) + list(subtitle_codes)
+        ]
+        part = type("P", (), {"file": "/movies/X/X.mkv", "streams": streams})()
+        return type("M", (), {
+            "parts": [part], "videoResolution": "1080",
+            "audioCodec": "eac3", "audioChannels": 6, "aspectRatio": 1.78,
+        })()
+
+    versions = [_version(audio, subtitles)]
+    if extra_version is not None:
+        versions.append(_version(*extra_version))
+    return type("I", (), {
+        "media": versions, "duration": 4845912,
+        "seasonNumber": None, "episodeNumber": None,
+    })()
+
+
+def test_the_stream_language_lists_come_from_the_streams_the_badge_pass_walks():
+    """C7's A-3, the data half. `media_info_from_plex` already reloads the
+    item and holds its `<Media>`/`<Part>`/`<Stream>` children; these two
+    fields are one more walk of those SAME already-in-hand objects -- zero
+    extra Plex requests, zero extra bytes, which is the cost property the
+    whole sub-phase rests on."""
+    item = _item_with_streams(
+        audio=[("eng", 2), ("fin", 2)],
+        subtitles=[("eng", 3), ("swe", 3), ("fin", 3)],
+    )
+    info = media_info_from_plex(item)
+    assert info.audio_stream_languages == ("en", "fi")
+    assert info.subtitle_stream_languages == ("en", "sv", "fi")
+
+
+def test_every_stream_counts_because_kometa_counts_streams_not_languages():
+    """**Kometa's rule, transcribed** (`modules/plex.py:2915-2922`): the
+    filter value is `test_number.extend([a.language for a in
+    part.audioStreams()])` over every part of every `<Media>` -- a flat list
+    of STREAMS with no dedupe at all -- and `.count_*` is `len()` of it
+    (`plex.py:2931-2932`). So a film whose three English subtitle tracks are
+    full, SDH and forced has THREE subtitle-language entries upstream, and
+    `subtitle_language.count_gte: 2` fires on it. This plan's first draft
+    pinned the opposite (one distinct language) as "what `language_count`
+    counts"; the pinned image says otherwise and upstream wins.
+
+    The audio list's third stream carries no `languageCode` at all.
+    Kometa's own line is `a.language for a in part.audioStreams()` -- it
+    never skips a stream, so an unlabelled one is still one MORE entry, not
+    a dropped one; two English tracks plus one unlabelled track is a count
+    of THREE, not two."""
+    item = _item_with_streams(
+        audio=[("eng", 2), ("eng", 2), (None, 2)],
+        subtitles=[("eng", 3), ("eng", 3), ("dan", 3), ("eng", 3)],
+    )
+    info = media_info_from_plex(item)
+    assert info.audio_stream_languages == ("en", "en", "")
+    assert info.subtitle_stream_languages == ("en", "en", "da", "en")
+
+
+def test_the_stream_lists_span_every_media_version():
+    """The other half of `plex.py:2915-2922`'s shape: the outer loop is `for
+    media in item.media`, not `item.media[0]`. A dual-version item whose
+    remux carries Finnish audio and whose web-dl carries English has BOTH,
+    which is what Kometa counts. (The `audio_languages` field above
+    deliberately does NOT do this -- see the next test.)"""
+    item = _item_with_streams(
+        audio=[("eng", 2)], subtitles=[("eng", 3)],
+        extra_version=([("fin", 2)], [("swe", 3)]),
+    )
+    info = media_info_from_plex(item)
+    assert info.audio_stream_languages == ("en", "fi")
+    assert info.subtitle_stream_languages == ("en", "sv")
+
+
+def test_an_item_with_no_subtitle_streams_has_empty_tuples_not_none():
+    """`()` rather than `None`, matching `audio_languages`' shape:
+    `filters._is_missing` reads an empty sequence as missing for a `tag`
+    attribute, and the `.count_*` operators reduce BOTH shapes to zero before
+    that rule runs (Concern D), so one shape across all three fields keeps
+    `OverlayItemView.get` a two-line branch."""
+    item = _item_with_streams(audio=[("eng", 2)], subtitles=[])
+    info = media_info_from_plex(item)
+    assert info.subtitle_stream_languages == ()
+    assert info.audio_stream_languages == ("en",)
+
+
+@pytest.mark.parametrize("raw", ["und", "mis", "qaa"])
+def test_a_code_langcodes_cannot_resolve_passes_through_unchanged_not_truncated(raw):
+    """`langcodes.Language.get(raw).language` is `None` for `und` -- Plex's
+    own "undetermined" tag -- so the fallback that used to read `or raw[:2]`
+    yielded `"un"`: a real-looking but WRONG two-letter code, on the one
+    input where the library declines to answer. `mis`/`qaa` are ISO 639-2
+    codes `langcodes` already answers with themselves unchanged, pinning
+    that the non-broken path stays untouched. The honest rule for a code
+    `langcodes` cannot map to ISO 639-1 is the same one `base_language_code`
+    (`collections/filters.py:2253`) documents: keep the raw tag unchanged
+    rather than truncate it into a different code."""
+    item = _item_with_streams(audio=[(raw, 2)], subtitles=[])
+    info = media_info_from_plex(item)
+    assert info.audio_stream_languages == (raw,)
+
+
+def test_the_distinct_audio_languages_field_is_untouched_and_still_deduplicates():
+    """The guard on the coexistence. `audio_languages` is the FLAG badge's
+    input (`language_slots` below it) and wants distinct languages off the
+    primary version; `audio_stream_languages` is the FILTER dialect's value
+    and wants every stream. Widening the old field instead of adding the new
+    one would have drawn a duplicate flag on every multi-track item, so the
+    two are pinned apart here rather than left to a reader's assumption."""
+    item = _item_with_streams(
+        audio=[("eng", 2), ("eng", 2), ("fin", 2)], subtitles=[]
+    )
+    info = media_info_from_plex(item)
+    assert info.audio_languages == ("en", "fi")
+    assert info.audio_stream_languages == ("en", "en", "fi")
+    assert language_slots(info) == language_slots(
+        MediaInfo("1080", "eac3", 6, 4845912, ("en", "fi"), frozenset(), None, None)
+    )
+
+
+def test_the_new_fields_are_defaulted_so_positional_construction_still_works():
+    """`MediaInfo` is frozen and every construction site predating this phase
+    passes the first nine fields positionally (`tests/test_badge_parity.py`,
+    `tests/test_overlay_engine_golden.py`'s ALL_SOULS/EPISODE among them, and
+    they are parity-pin files this plan may not edit -- Global Constraint 8).
+    A non-defaulted tenth or eleventh field would be a TypeError in all of
+    them."""
+    info = MediaInfo("1080", "eac3", 6, 4845912, ("en",), frozenset(), None, None)
+    assert info.audio_stream_languages == ()
+    assert info.subtitle_stream_languages == ()

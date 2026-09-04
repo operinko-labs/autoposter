@@ -108,7 +108,7 @@ Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
   search names have no filter (``unplayed``, ``progress``, ``hdr``,
   ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
 
-This table covers **33** of the 55 search names and **26** of the 70 filter
+This table covers **33** of the 55 search names and **27** of the 70 filter
 names. Both halves of the residue are real work, and they are different work:
 the 45 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
 ``plays``, ``last_played``, 10a's ``country``, phase B's four people rows and
@@ -208,7 +208,32 @@ SOURCE_TIERS = (
 # modifier, and accepting a second spelling for the default is how a config
 # ends up with two vocabularies.
 OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
-    "tag": ("eq", "not", "regex"),
+    # `.count_gt/.count_gte/.count_lt/.count_lte` are Kometa's own modifier
+    # class for tag attributes (`builder.py:4350`) -- "how many tags does
+    # this item have", as opposed to "which". Added by roadmap row 100
+    # sub-phase C2b, whose `language_count` family selects on
+    # `audio_language.count_gte: 2`.
+    #
+    # ADJUDICATION A-1, and it REVERSES the phase-C recon's own A8
+    # recommendation, which was two derived int attributes named
+    # `audio_language_count`/`subtitle_language_count`. Those names are not
+    # in Kometa's filter vocabulary at all, and `FilterAttribute`'s docstring
+    # below makes `name` a promise: it is Kometa's own name and what an
+    # operator writes in YAML. Inventing two would have made the 27-of-70
+    # arithmetic in this module's docstring untrue and handed an operator a
+    # spelling Kometa refuses. The cost of the exact-parity form is that
+    # these four are legal on EVERY tag row, which is Kometa's own scoping;
+    # the recon's objection to it ("collections would parse it and then have
+    # no accessor") does not hold on this tree -- `audio_language` and
+    # `subtitle_language` are `tier2-batched` with real accessors, and
+    # `overlays/selection.py::OverlayItemView` supplies both from the
+    # `MediaInfo` the badge pass already built.
+    #
+    # SEARCH-side: deliberately absent from `SEARCH_OPERATORS_BY_TYPE` below.
+    # Kometa's count modifiers are a client-side filter mechanism; Plex is
+    # never asked "how many audio languages", so a `plex_search` naming one
+    # is refused by `_split_key` naming what the search half does take.
+    "tag": ("eq", "not", "regex", "count_gt", "count_gte", "count_lt", "count_lte"),
     "str": ("contains", "not", "is", "isnot", "begins", "ends", "regex"),
     "int": ("eq", "not", "gt", "gte", "lt", "lte"),
     "float": ("eq", "not", "gt", "gte", "lt", "lte"),
@@ -422,6 +447,15 @@ PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
     ("tag", "eq"): "iexact",
     ("tag", "not"): "iexact",
     ("tag", "regex"): "iregex",
+    # A count comparison has no plexapi key: that table is per-VALUE
+    # comparisons ("is this tag equal to X"), and "how many tags are there"
+    # is not expressible in it. `None`, explicitly, keeps this table total
+    # over OPERATORS_BY_TYPE -- which its own coverage test asserts -- rather
+    # than leaving four holes a 9b translator would discover at run time.
+    ("tag", "count_gt"): None,
+    ("tag", "count_gte"): None,
+    ("tag", "count_lt"): None,
+    ("tag", "count_lte"): None,
     ("str", "contains"): "icontains",
     ("str", "not"): "icontains",
     ("str", "is"): "iexact",
@@ -464,6 +498,24 @@ PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
 # match the first one", and what makes the missing-value rule fall out of one
 # branch instead of one per operator.
 _NEGATES = {"not": None, "isnot": "is"}
+
+# The `.count_*` modifiers' comparisons, keyed by operator name. A separate
+# table rather than an if-chain inside `_matches` so that the operator list
+# in OPERATORS_BY_TYPE["tag"] and the comparisons here cannot drift: a fifth
+# spelling added to one and not the other is a KeyError on the first item
+# rather than a silently-never-matching filter.
+#
+# None of the four is in `_NEGATES`: a count comparison is positive and has
+# no negated spelling upstream, so `_matches` runs it directly. Kometa's own
+# four are `builder.py:419`'s `tag_modifiers`, and its comparison is
+# `util.is_number_filter` (`util.py:623-632`) after the list has been
+# reduced to a length -- the same four relations, spelled as rejections.
+_COUNT_COMPARISONS = {
+    "count_gt": lambda have, want: have > want,
+    "count_gte": lambda have, want: have >= want,
+    "count_lt": lambda have, want: have < want,
+    "count_lte": lambda have, want: have <= want,
+}
 
 # The value types whose missing-value rule ignores the operator: SETTLED-BY-
 # ORACLE against Kometa's number/date filter, which excludes a ``None`` value
@@ -1284,6 +1336,42 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         search_field=None, show_search_field=None,
         search_kinds=(), filterable=True,
     ),
+    FilterAttribute(
+        "aspect", "float", _BOTH, "listing",
+        "The `<Media aspectRatio=...>` float (plexapi casts it, `Media."
+        "_loadData`), which Kometa reads through the same attribute "
+        "(`plex.py:200`) and puts in `float_attributes` (`builder.py:474`, "
+        "`plex.float_attributes + ['aspect', 'tmdb_vote_average']`) -- so it "
+        "is a CLIENT-SIDE `filters:` comparison and never a Plex search: the "
+        "second of the 44 filter-only names to arrive under a table row, "
+        "after `versions`. ADJUDICATION A11 (raised in the phase-C recon, "
+        "ruled by sub-phase C2b). `listing`: the section listing carries "
+        "`<Media>` in full and un-truncated (9a's probe, recorded on the "
+        "`resolution` row above), which is the same read that row and "
+        "`versions` already rely on. KINDS: both, and that is Kometa's own "
+        "scoping rather than an inference -- `aspect` sits in "
+        "`builder.py:278-308`'s `filters_by_type[\"movie_show_season_"
+        "episode\"]`, and `filters` (`builder.py:350-356`) is built by "
+        "substring test, so both `filters[\"movie\"]` and `filters[\"show\"]` "
+        "carry it. A show has no `<Media>` and is excluded by the float "
+        "missing-value rule anyway, so the column costs nothing either way; "
+        "it is set to what upstream sets. MULTI-VERSION RULE (adjudication A-2): "
+        "a `float` cannot answer a tuple the way `resolution`'s `tag` type "
+        "does, so `filter_values._aspect` walks every `<Media>` child in "
+        "listing order -- the SAME selection `_resolutions` makes -- and "
+        "answers the FIRST that carries the attrib; the production "
+        "histogram on the `resolution` row ({1: 1905, 2: 46, 3: 4}) is why "
+        "that is the single-version answer for almost every item. CAVEAT an "
+        "operator needs: Kometa's own aspect bands are open at BOTH ends "
+        "(`.gt`/`.lt`, never `.gte`/`.lte`), so a 1.90 aspect matches none "
+        "of them -- transcribed, not corrected. An item Plex has not "
+        "analysed carries no `aspectRatio` at all and the `float` "
+        "missing-value rule excludes it under every operator, `.not` "
+        "included, which is what keeps an unanalysed file un-badged rather "
+        "than wrongly badged.",
+        search_field=None, show_search_field=None,
+        search_kinds=(), filterable=True,
+    ),
 )
 
 BY_NAME: dict[str, FilterAttribute] = {row.name: row for row in FILTER_ATTRIBUTES}
@@ -1748,6 +1836,12 @@ def _parse_value(
         # item have a critic rating at all" -- so the value's type has nothing
         # to do with the row's.
         return _as_bool(value, field)
+    if operator in _COUNT_COMPARISONS:
+        # ``.count_*`` asks HOW MANY tags the item has, so the written value
+        # is a number even though every row carrying these operators is a
+        # ``tag``. Same shape as ``.rated`` above: the operator decides the
+        # value's type, not the row.
+        return _as_int(value, field)
     if attribute.type == "bool":
         return _as_bool(value, field)
     if attribute.type in ("tag", "str"):
@@ -1793,11 +1887,11 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
     #
     # The FIRST of the two branches is reachable now, for real: ``versions``
     # (C2a, A14) is filterable but has no Plex search field, the first of the
-    # 44 filter-only attributes (``aspect``, ``height``, ``summary``, ... --
+    # 44 filter-only attributes (``height``, ``summary``, ``filepath``, ... --
     # roadmap row 96's residue) to arrive under a table row rather than a bare
     # KeyError. It was written and tested with a synthetic row since
     # search-tails-1, before any real row reached it; ``versions`` is now that
-    # real row.
+    # real row, and ``aspect`` (C2b, A11) has since become the second.
     if searching and not attribute.searchable:
         raise ValueError(
             f"{field}: {name!r} is a client-side filter attribute but Plex has "
@@ -2268,6 +2362,37 @@ def _matches(predicate: FilterPredicate, view: ItemView, now: dt.datetime) -> bo
     attribute = predicate.attribute
     negative = predicate.operator in _NEGATES
     have = view.get(attribute.name)
+    if predicate.operator in _COUNT_COMPARISONS:
+        # ``.count_*`` asks HOW MANY, and Kometa answers it with a NUMBER
+        # derived before any missing-value test runs
+        # (``modules/plex.py:2931-2932`` at the pinned digest):
+        #
+        #     test_number = len(test_number) if test_number else 0
+        #     modifier = f".{modifier[7:]}"
+        #
+        # after which ``.count_lt: 3`` is an ordinary ``.lt`` over that
+        # number (``plex.py:2934`` -> ``util.is_number_filter``,
+        # ``util.py:623-632``). So a stream-less item counts as ZERO and is
+        # KEPT by ``audio_language.count_lt: 3`` rather than dropped by the
+        # tag missing-value rule -- which is why this branch is HERE, above
+        # ``_is_missing``, and not in ``_matches_one``, which is only ever
+        # reached after that rule has already had its say. Transcribed, not
+        # invented; the pin in tests/test_collection_filters.py carries the
+        # citation.
+        #
+        # ``len(_as_tags(...))`` counts the ENTRIES the view answered,
+        # duplicates included -- Kometa's own value is an ``extend``-ed list
+        # of every stream across every ``<Media>`` (``plex.py:2915-2922``)
+        # with no dedupe anywhere in the path. A bare string counts as one,
+        # via ``_as_tags``, no special case.
+        #
+        # ``if have else 0`` mirrors upstream's own truthiness test exactly:
+        # ``None``, ``()`` and ``""`` are all zero, and nothing else is.
+        count = len(_as_tags(have, attribute.name)) if have else 0
+        return any(
+            _COUNT_COMPARISONS[predicate.operator](count, want)
+            for want in predicate.values
+        )
     if _is_missing(have, attribute.type):
         # ``year``'s bare/``.not`` forms take the TAG half of the rule
         # (SETTLED against the fetched transcription, roadmap row 159):

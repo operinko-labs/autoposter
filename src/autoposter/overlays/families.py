@@ -1,4 +1,4 @@
-"""The shipped overlay families (roadmap row 100, sub-phases C1 and C2a).
+"""The shipped overlay families (roadmap row 100, sub-phases C1, C2a and C2b).
 
 Flat `OverlayDefinition` lists, not templates. Kometa expresses each family
 as a templated YAML file whose `<<key>>` resolver this service does not
@@ -6,9 +6,14 @@ implement (and does not need: the recon's cut emits flat definitions), so
 every number here is the RESOLVED value, transcribed from the pinned
 v2.4.8 tree -- the same image digest `assets/badges/PROVENANCE.md` records.
 
-Three families ship: `direct_play`, the six content-rating regionals (C1),
-and `versions` (C2a, adjudication A14 ruled -- the `collections/filters.py`
-row it needed now exists).
+Five families ship: `direct_play` and the six content-rating regionals (C1),
+`versions` (C2a, adjudication A14 ruled -- the `collections/filters.py` row
+it needed now exists), and `aspect` + `language_count` (C2b, adjudications
+A11 and A-1 ruled the same way). The last two are the first families whose
+CORRECTNESS depends on group/weight resolution rather than merely benefiting
+from it: `aspect`'s 1.65 and 1.66 bands overlap, and `language_count`'s Dual
+and Multi both match a 2-language item, so each list carries an explicit
+`group` and descending `weight` and the tie-breaks are pinned.
 
 Each family is opt-in through `config.badges.families`, and a family that is
 not named costs nothing: no definition, no fingerprint movement, no asset
@@ -684,6 +689,144 @@ VERSIONS: list[OverlayDefinition] = [
     ),
 ]
 
+# Probe section 4.1 (`aspect.yml:48-72` at the pinned tag). EIGHT bands, and
+# note what is NOT here: no 2.0 and no 2.4. Kometa's own list is
+# 1.33/1.65/1.66/1.78/1.85/2.2/2.35/2.77, and each band is a +/-0.01 window
+# around the nominal ratio, OPEN AT BOTH ENDS (`.gt`/`.lt`, never the
+# inclusive forms) -- so a 1.90 aspect matches nothing at all. That is
+# upstream's own arithmetic and it is transcribed, not corrected.
+#
+# THE FIRST FAMILY THAT DRAWS TEXT. `final_name: text(<<text_<<key>>>>)` with
+# `text_<<key>>: <<overlay_name>>` (`aspect.yml:12,38`) means the drawn
+# string is the overlay's OWN NAME -- resolved flat, `name="text(1.33)"`,
+# with no `<<variable>>` token in it, so `render_text` has nothing to
+# substitute and `UnresolvedVariable` can never fire for this family. It also
+# means these definitions name no image at all: they take
+# `resolve_image_path`'s name-keyed fallback rung, find nothing, and draw
+# text alone, which is the rung's documented "a text overlay carrying no
+# addon has no image" case reached by a shipped family for the first time.
+#
+# `font="Inter-Medium.ttf"` is the BARE bundled name, answered by
+# `overlays/sources.py::resolve_font_path`'s bundled rung (adjudication A-4)
+# for every operator whatever their `fonts_root` holds -- an absolute bundled
+# path here would be refused by `_confined` and the definition skipped for
+# everyone whose mount is not an ancestor of the bundled fonts directory.
+#
+# A DECLARED TRANSCRIPTION DIVERGENCE, and the only one in this family:
+# `aspect.yml:33` writes `font: fonts/Inter-Medium.ttf` -- a PATH, relative
+# to Kometa's own config tree, which has a `fonts/` directory beside the
+# overlay YAML. This service writes the bare filename instead, because the
+# bundled rung above is an exact-NAME lookup on the whole written value:
+# `fonts/Inter-Medium.ttf` misses `BUNDLED_FONTS` entirely AND resolves
+# under `_confined` to `<fonts_root>/fonts/Inter-Medium.ttf`, which no
+# operator has, so transcribing the path literally would skip every aspect
+# badge for everyone. The pixels are identical -- it is the same face -- so
+# this is a spelling divergence in the source string, recorded here per the
+# plan's own Step 1 rule 1 rather than left as an unexplained difference
+# between two files a reader may compare.
+#
+# GROUP AND WEIGHT ARE LOAD-BEARING HERE, unlike every C1/C2a family
+# (adjudication A-5): the 1.65 band (1.64-1.66) and the 1.66 band
+# (1.65-1.67) genuinely OVERLAP, so a 1.655 item matches both and only the
+# shared group plus the descending weights make the answer deterministic --
+# 70 beats 60, the 1.65 badge draws, and `select` still records BOTH
+# outcomes, which over-covers the fingerprint and can never under-cover it.
+#
+# `back_radius=30` is NOT in `aspect.yml` itself -- it inherits from the
+# un-vendored `templates.yml` (`external_templates: default: templates`),
+# grammar probe section 5.5's `standard` template default, the same
+# reasoning `DIRECT_PLAY`'s own comment gives for the identical situation.
+ASPECT: list[OverlayDefinition] = [
+    OverlayDefinition(
+        name=f"text({label})",
+        condition={"aspect.gt": low, "aspect.lt": high},
+        group="aspect", weight=weight,
+        horizontal_align="center", horizontal_offset=0,
+        vertical_align="bottom", vertical_offset=150,
+        back_width=305, back_height=105,
+        back_color="#00000099", back_radius=30,
+        font="Inter-Medium.ttf", font_size=63,
+    )
+    for label, low, high, weight in (
+        ("1.33", 1.32, 1.34, 80),
+        ("1.65", 1.64, 1.66, 70),
+        ("1.66", 1.65, 1.67, 60),
+        ("1.78", 1.77, 1.79, 50),
+        ("1.85", 1.84, 1.86, 40),
+        ("2.2", 2.19, 2.21, 30),
+        ("2.35", 2.34, 2.36, 20),
+        ("2.77", 2.76, 2.78, 10),
+    )
+]
+
+# Probe section 4.2 (`language_count.yml:53-79`). Two overlays over the count
+# of audio-language STREAMS: Dual is `count_gte: 2` AND `count_lt: 3` --
+# exactly two -- and Multi is `count_gte: 2` with no upper bound.
+#
+# WHAT IS COUNTED IS STREAMS, NOT DISTINCT LANGUAGES, and that is Kometa's
+# own arithmetic transcribed rather than tidied: `modules/plex.py:2915-2922`
+# builds the value with `test_number.extend([a.language for a in
+# part.audioStreams()])` over every part of every `<Media>`, with no dedupe
+# anywhere, and `.count_*` is `len()` of that (`plex.py:2931-2932`). So a
+# film with an English track plus an English commentary track IS Dual
+# upstream, and it is Dual here. An item with no audio streams at all counts
+# as ZERO, is compared like any other number, and fails `count_gte: 2` --
+# see `collections/filters.py::_matches`, which mirrors the same two lines.
+#
+# THE SLOT IS UPSTREAM'S: center/0, bottom/30 (`language_count.yml:13-14`
+# sets the alignments, and its `conditionals:` resolve the two offsets at
+# `:28-29` and `:33-34`). That is the SAME slot `DIRECT_PLAY` occupies,
+# which is upstream's own arrangement between two of its own default
+# overlays -- an operator enabling both gets what Kometa would give them.
+# Neither is moved. It does NOT share the content-rating regionals' left/15,
+# bottom/270; an earlier draft of this family had it there and that was
+# simply wrong.
+#
+# ADJUDICATION A-1: the count is spelled as Kometa's own `.count_*` MODIFIER
+# on the existing `audio_language` attribute (`builder.py:4350`), not as an
+# invented `audio_language_count` attribute -- so a Kometa config ports
+# verbatim. This reverses the phase-C recon's A8 recommendation; see the
+# comment on `collections/filters.py::OPERATORS_BY_TYPE` for the full
+# argument. A two-key condition mapping is already an AND, because
+# `parse_filters`' `base` defaults to `all`, so Dual needs no grammar of its
+# own.
+#
+# GROUP AND WEIGHT ARE LOAD-BEARING HERE TOO, and more obviously than for
+# `aspect` (adjudication A-5): a 2-language item satisfies Dual AND Multi by
+# construction, because Multi is deliberately unbounded above. Group
+# `language` with 20 > 10 is the whole of what makes Dual win it.
+#
+# ONLY THE AUDIO PAIR SHIPS. `use_subtitles: true` is a template variable
+# upstream, selecting `subtitle_language` and the `*_subs` art; this module
+# ships FLAT resolved definitions rather than a template resolver, so only
+# the `false` resolution is a family. The subtitle stream languages are
+# collected anyway (`badges/values.py::MediaInfo.subtitle_stream_languages`,
+# adjudication A-3) and `subtitle_language.count_*` parses, so a
+# `language_count_subs` family is a one-commit follow-up whenever it is
+# wanted -- it needs two more vendored PNGs and nothing else.
+LANGUAGE_COUNT: list[OverlayDefinition] = [
+    OverlayDefinition(
+        name="dual_audio",
+        builtin="dual_audio",
+        condition={"audio_language.count_gte": 2, "audio_language.count_lt": 3},
+        group="language", weight=20,
+        horizontal_align="center", horizontal_offset=0,
+        vertical_align="bottom", vertical_offset=30,
+        back_width=188, back_height=105,
+        back_color="#00000099", back_radius=30,
+    ),
+    OverlayDefinition(
+        name="multi_audio",
+        builtin="multi_audio",
+        condition={"audio_language.count_gte": 2},
+        group="language", weight=10,
+        horizontal_align="center", horizontal_offset=0,
+        vertical_align="bottom", vertical_offset=30,
+        back_width=188, back_height=105,
+        back_color="#00000099", back_radius=30,
+    ),
+]
+
 FAMILIES: dict[str, list[OverlayDefinition]] = {
     "direct_play": DIRECT_PLAY,
     "content_rating_au": CONTENT_RATING_AU,
@@ -693,6 +836,8 @@ FAMILIES: dict[str, list[OverlayDefinition]] = {
     "content_rating_us_movie": CONTENT_RATING_US_MOVIE,
     "content_rating_us_show": CONTENT_RATING_US_SHOW,
     "versions": VERSIONS,
+    "aspect": ASPECT,
+    "language_count": LANGUAGE_COUNT,
 }
 
 __all__ = ["FAMILIES"]

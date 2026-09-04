@@ -44,6 +44,7 @@ from autoposter.collections.filters import (
     batched_attributes,
     evaluate,
     parse_filters,
+    predicates,
     resolve_search_values,
 )
 
@@ -126,6 +127,7 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "duplicate",
         "unmatched",
         "versions",
+        "aspect",
     ]
 
 
@@ -173,7 +175,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "tag": 13,
         "str": 3,
         "int": 4,
-        "float": 3,
+        "float": 4,
         "date": 3,
         "duration": 1,
         "bool": 7,
@@ -192,6 +194,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "last_played",
         "user_rating",
         "versions",
+        "aspect",
     ]
     assert by_source["tier2-batched"] == [
         "genre",
@@ -283,7 +286,7 @@ def test_item_kinds_are_movie_show_or_both():
         "unplayed", "writer",
     ]
     assert show_only == ["network"]
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 21
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 22
 
 
 def test_versions_is_filterable_with_the_int_operators():
@@ -310,6 +313,42 @@ def test_versions_is_not_searchable_and_the_refusal_says_where_it_lives():
     assert "filters:" in message
 
 
+def test_aspect_is_filterable_with_the_float_operators():
+    """Dialect 1 of A11's both-dialect pin: `aspect.gt`/`aspect.lt` in a
+    `filters:` block, the way the aspect overlay family (T2) selects on it.
+    The bands are open at BOTH ends upstream (`.gt`/`.lt`, never the
+    inclusive forms), which is why the family transcribes 1.32/1.34 around a
+    nominal 1.33 rather than 1.325/1.335."""
+    band = {"aspect.gt": 1.32, "aspect.lt": 1.34}
+    assert evaluate(parse_filters(band), _view("aspect", 1.33)) is True
+    assert evaluate(parse_filters(band), _view("aspect", 1.32)) is False
+    assert evaluate(parse_filters(band), _view("aspect", 1.34)) is False
+    assert evaluate(parse_filters(band), _view("aspect", 1.90)) is False
+
+
+def test_an_item_with_no_aspect_is_excluded_by_every_operator():
+    """The `float` half of the missing-value rule, which is what makes an
+    UNANALYSED item draw no aspect badge rather than a wrong one: Plex omits
+    `aspectRatio` on a file it has not analysed, and `_is_missing` excludes a
+    missing float under every operator, `.not` included."""
+    assert evaluate(parse_filters({"aspect.gt": 1.0}), _view("aspect", None)) is False
+    assert evaluate(parse_filters({"aspect.not": 1.78}), _view("aspect", None)) is False
+
+
+def test_aspect_is_not_searchable_and_the_refusal_says_where_it_lives():
+    """Dialect 2 of A11's both-dialect pin, the same shape `versions` already
+    has: `aspect` is one of the 44 Kometa filter names with no Plex search
+    field at all -- `builder.py:474` puts it in `float_attributes`, a
+    CLIENT-SIDE comparison, and `plex.searches` has no entry for it -- so a
+    `plex_search:` use is refused naming the `filters:` block instead."""
+    with pytest.raises(ValueError) as error:
+        parse_filters({"aspect.gt": 1.77}, searching=True)
+    message = str(error.value)
+    assert "aspect" in message
+    assert "no search field" in message
+    assert "filters:" in message
+
+
 def test_every_operator_maps_onto_plexapis_own_operator_table():
     """9b translates this vocabulary into a Plex search rather than reinventing
     it, so every operator names the ``plexapi.base.OPERATORS`` key it means --
@@ -322,10 +361,16 @@ def test_every_operator_maps_onto_plexapis_own_operator_table():
     assert set(PLEXAPI_EQUIVALENT) == pairs
     for pair, key in PLEXAPI_EQUIVALENT.items():
         assert key is None or key in OPERATORS, pair
-    # The one deliberate gap: "in the last N days" is a relative window and
-    # plexapi's table is all absolute comparisons.
+    # The deliberate gaps: "in the last N days" is a relative window and
+    # plexapi's table is all absolute comparisons; `.count_*` (sub-phase
+    # C2b) asks how MANY children the item has, which plexapi spells with no
+    # operator key at all.
     unmapped = [pair for pair, key in PLEXAPI_EQUIVALENT.items() if key is None]
-    assert unmapped == [("date", "eq"), ("date", "not")]
+    assert unmapped == [
+        ("tag", "count_gt"), ("tag", "count_gte"),
+        ("tag", "count_lt"), ("tag", "count_lte"),
+        ("date", "eq"), ("date", "not"),
+    ]
 
 
 def test_every_negative_operators_plexapi_mapping_equals_its_positive_counterparts():
@@ -384,7 +429,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 24, ("movie",): 8, ("show",): 1, (): 1,
+        ("movie", "show"): 24, ("movie",): 8, ("show",): 1, (): 2,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -392,27 +437,31 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     assert BY_NAME["duration"].search_kinds == ("movie",)
 
 
-def test_every_row_but_versions_is_searchable_and_twentysix_are_filterable():
-    """C2a's `versions` row (adjudication A14) is the table's first
-    filterable-but-not-searchable row: it has no Plex search field at all
-    (Kometa's own `versions` filter has none -- the search-side spelling is
-    the separate, unfilterable `duplicate` row). Every other row remains
-    both, unchanged."""
+def test_only_versions_and_aspect_are_unsearchable_and_twentyseven_are_filterable():
+    """`versions` (C2a, A14) was the table's first filterable-but-not-
+    searchable row; `aspect` (C2b, A11) is the second, and for the same
+    reason -- Kometa's own `aspect` filter is a client-side `float_attributes`
+    comparison (`builder.py:474`) and `plex.searches` spells no search field
+    for it. Every other row remains both, unchanged."""
     from autoposter.collections.filters import (
         FILTERABLE_ATTRIBUTES,
         FILTER_ATTRIBUTES,
         SEARCHABLE_ATTRIBUTES,
     )
 
-    assert all(row.searchable for row in FILTER_ATTRIBUTES if row.name != "versions")
+    assert all(
+        row.searchable for row in FILTER_ATTRIBUTES
+        if row.name not in ("versions", "aspect")
+    )
     assert BY_NAME["versions"].searchable is False
+    assert BY_NAME["aspect"].searchable is False
     assert len(SEARCHABLE_ATTRIBUTES) == 33
-    assert len(FILTERABLE_ATTRIBUTES) == 26
+    assert len(FILTERABLE_ATTRIBUTES) == 27
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
         "unplayed", "progress", "decade",
         "hdr", "dovi", "trash", "duplicate", "unmatched",
     }
-    assert set(FILTERABLE_ATTRIBUTES) - set(SEARCHABLE_ATTRIBUTES) == {"versions"}
+    assert set(FILTERABLE_ATTRIBUTES) - set(SEARCHABLE_ATTRIBUTES) == {"versions", "aspect"}
 
 
 def test_the_show_search_field_rescoping_is_transcribed():
@@ -1038,6 +1087,50 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
         (["Horror"], ["^Doc", "^Sci"], False),
         (None, ".", False),
     ],
+    # `.count_*` (roadmap row 100, sub-phase C2b, adjudication A-1): Kometa's
+    # own modifier for "how many tags does this item have"
+    # (`builder.py:419` declares the four, `builder.py:4350` parses their
+    # value as an int), legal on every tag row. The written value is an int.
+    #
+    # THE MISSING CASE IS ZERO, NOT EXCLUDED, and that is Kometa's rule
+    # rather than an exception someone invented for these four:
+    # `plex.py:2931-2932` reduces the collected list with
+    # `len(test_number) if test_number else 0` BEFORE `plex.py:2934` applies
+    # any missing-value test, so `None` and `[]` both arrive at the
+    # comparison as 0. `is_number_filter(0, ".lt", 3)` is `0 >= 3` -> False
+    # -> kept (`util.py:623-632`). Every set below therefore carries a
+    # `None` row (the coverage test demands one) whose expectation is
+    # whatever the comparison says about ZERO -- which is why
+    # `test_the_missing_value_rule_splits_by_type_family` exempts these four
+    # by name.
+    ("tag", "count_gt"): [
+        (["Horror", "Thriller"], 1, True),
+        (["Horror", "Thriller"], 2, False),
+        (["Horror", "Horror"], 1, True),
+        (["Horror"], 0, True),
+        ("Horror", 0, True),
+        (None, 0, False),
+        ([], 0, False),
+    ],
+    ("tag", "count_gte"): [
+        (["Horror", "Thriller"], 2, True),
+        (["Horror", "Thriller"], 3, False),
+        (["Horror"], 1, True),
+        (None, 1, False),
+        ([], 0, True),
+    ],
+    ("tag", "count_lt"): [
+        (["Horror"], 2, True),
+        (["Horror", "Thriller"], 2, False),
+        (None, 5, True),
+        ([], 5, True),
+    ],
+    ("tag", "count_lte"): [
+        (["Horror", "Thriller"], 2, True),
+        (["Horror", "Thriller"], 1, False),
+        (None, 5, True),
+        ([], 5, True),
+    ],
     # -- str: substring by default, the rest spelled out ----------------------
     ("str", "contains"): [
         ("Warner Bros. Pictures", "warner", True),
@@ -1342,10 +1435,23 @@ def test_the_missing_value_rule_splits_by_type_family():
     missing-value check ignores the modifier entirely.
 
     Read off the case table rather than re-listed, so the two cannot disagree.
+
+    THE ONE EXEMPTION, and it is upstream's own (sub-phase C2b): the four
+    ``.count_*`` modifiers never reach this rule in either system. Kometa
+    reduces the collected list to ``len(test_number) if test_number else 0``
+    BEFORE its missing-value test (``modules/plex.py:2931-2932``), so a
+    missing value is compared as the NUMBER zero; this table does the same,
+    in ``filters._matches``, above ``_is_missing``. Excluded by name here
+    rather than by filtering the table, so a future count-like operator has
+    to justify itself in this docstring instead of quietly inheriting the
+    exemption.
     """
     negative = {"not", "isnot"}
+    counting = {"count_gt", "count_gte", "count_lt", "count_lte"}
     always_excluded = {"int", "float", "date", "duration"}
     for (value_type, operator), cases in OPERATOR_CASES.items():
+        if operator in counting:
+            continue
         for have, _, expected in cases:
             if have is None:
                 if value_type in always_excluded:
@@ -1752,19 +1858,22 @@ def test_a_relative_window_refuses_an_unknown_unit_naming_all_seven():
 
 
 def test_an_attribute_no_row_names_is_refused_with_the_right_vocabulary():
-    """Two vocabularies, two lists. ``aspect`` is one of the 44 Kometa filter
-    names with no Plex search field, and no row names it yet, so both blocks
-    answer "unknown" -- but each names ITS OWN vocabulary, not the table."""
+    """Two vocabularies, two lists. ``height`` is one of row 96's 44 Kometa
+    filter-only names, and no row names it yet (``aspect`` -- the row this
+    test originally used as its example -- graduated into the table in
+    sub-phase C2b, so the example moved rather than the assertion), so both
+    blocks answer "unknown" -- but each names ITS OWN vocabulary, not the
+    table."""
     with pytest.raises(ValueError) as error:
-        parse_filters({"aspect": "1.78"}, searching=True)
+        parse_filters({"height": "1000"}, searching=True)
     message = str(error.value)
-    assert "aspect" in message
+    assert "height" in message
     assert "plex_search" in message
     assert "unplayed" in message        # a searchable name is offered
     assert "plays" in message
 
     with pytest.raises(ValueError) as error:
-        parse_filters({"aspect": "1.78"})
+        parse_filters({"height": "1000"})
     message = str(error.value)
     assert "filters:" in message
     assert "unplayed" not in message    # search-only names are NOT offered
@@ -1964,3 +2073,143 @@ def test_the_refusal_gets_the_article_right_for_an_int_attribute():
     with pytest.raises(ValueError) as error:
         parse_filters({"studio.gt": "A24"}, field="params", searching=True, base="all")
     assert "a str attribute" in str(error.value)
+
+
+# --- Concern D: Kometa's .count_* tag modifiers (adjudication A-1) ----------
+
+
+def test_the_tag_type_carries_kometas_own_count_modifiers():
+    """C7's adjudication A-1. Kometa spells "how many tags does this item
+    have" as a MODIFIER on the tag attribute itself (`builder.py:4350`), not
+    as a separate `*_count` attribute -- so a Kometa config ports verbatim
+    and this table's `name` column keeps its promise (every name is Kometa's
+    own). This reverses the phase-C recon's A8 recommendation, which is
+    recorded on the operator table's own comment rather than left implicit."""
+    assert OPERATORS_BY_TYPE["tag"] == (
+        "eq", "not", "regex", "count_gt", "count_gte", "count_lt", "count_lte",
+    )
+    assert BY_NAME["audio_language"].operators == OPERATORS_BY_TYPE["tag"]
+    assert BY_NAME["subtitle_language"].operators == OPERATORS_BY_TYPE["tag"]
+
+
+def test_a_count_modifier_takes_an_int_whatever_the_rows_own_type_is():
+    """`.count_gte` asks HOW MANY, so the written value is a number even
+    though the row is a `tag` -- the same shape `.rated` already has for a
+    float row. A word here is a refusal at load, not a comparison that
+    silently never matches."""
+    group = parse_filters({"audio_language.count_gte": 2})
+    [written] = predicates(group)
+    assert written.operator == "count_gte"
+    assert written.values == (2,)
+
+    with pytest.raises(ValueError) as caught:
+        parse_filters({"audio_language.count_gte": "two"})
+    assert "audio_language" in str(caught.value)
+
+
+def test_count_operators_compare_the_number_of_tags_the_view_answered():
+    view = _view("audio_language", ("en", "fi", "sv"))
+    assert evaluate(parse_filters({"audio_language.count_gte": 2}), view) is True
+    assert evaluate(parse_filters({"audio_language.count_gte": 4}), view) is False
+    assert evaluate(parse_filters({"audio_language.count_gt": 3}), view) is False
+    assert evaluate(parse_filters({"audio_language.count_lt": 4}), view) is True
+    assert evaluate(parse_filters({"audio_language.count_lte": 3}), view) is True
+
+
+def test_a_repeated_tag_counts_twice_because_kometa_counts_entries_not_distinct_values():
+    """**Kometa's rule, transcribed** (`modules/plex.py:2915-2922`): the
+    value a count compares is a flat `extend`-ed list of STREAMS with no
+    dedupe, and `.count_*` is `len()` of it (`plex.py:2931-2932`). So the
+    count is of ENTRIES as the view answered them, repeats included -- there
+    is no `set()` anywhere in this path, and `_as_tags` above already
+    preserves duplicates. An item whose two audio tracks are both English is
+    "Dual" upstream, and this table agrees with it.
+
+    Written on `genre` as well as `audio_language` because the rule belongs
+    to the OPERATOR, not to the two language rows: `_as_tags` is the only
+    thing between the view and `len`."""
+    assert evaluate(
+        parse_filters({"audio_language.count_gte": 2}),
+        _view("audio_language", ("en", "en")),
+    ) is True
+    assert evaluate(
+        parse_filters({"genre.count_gte": 3}), _view("genre", ["Horror", "Horror"])
+    ) is False
+    assert evaluate(
+        parse_filters({"genre.count_gte": 2}), _view("genre", ["Horror", "Horror"])
+    ) is True
+
+
+def test_a_bare_string_tag_value_counts_as_one():
+    """`_as_tags` already reads a bare string as a one-element list, which is
+    what `content_rating` (a tag over a single Plex string) relies on. The
+    count follows it rather than special-casing."""
+    assert evaluate(
+        parse_filters({"content_rating.count_gte": 1}), _view("content_rating", "PG-13")
+    ) is True
+    assert evaluate(
+        parse_filters({"content_rating.count_gte": 2}), _view("content_rating", "PG-13")
+    ) is False
+
+
+def test_the_dual_band_is_expressible_as_one_two_key_condition():
+    """The exact shape `language_count`'s Dual overlay uses (T2): a two-key
+    mapping is already an AND, because `parse_filters`' `base` defaults to
+    `all`. `.count_gte: 2` with `.count_lt: 3` is "exactly two"."""
+    dual = {"audio_language.count_gte": 2, "audio_language.count_lt": 3}
+    assert evaluate(parse_filters(dual), _view("audio_language", ("en", "fi"))) is True
+    assert evaluate(parse_filters(dual), _view("audio_language", ("en",))) is False
+    assert evaluate(
+        parse_filters(dual), _view("audio_language", ("en", "fi", "sv"))
+    ) is False
+
+
+def test_a_stream_less_item_counts_as_zero_the_way_kometa_counts_it():
+    """**Kometa's rule, transcribed** -- and it is the OPPOSITE of what this
+    plan's first draft pinned. `plex.py:2931-2932` reduces the collected list
+    to a number BEFORE any missing-value test runs:
+
+        test_number = len(test_number) if test_number else 0
+
+    and `plex.py:2934` then asks `util.is_number_filter(test_number, modifier,
+    filter_data)`, which returns True to REJECT (`util.py:623-632`). For an
+    item with no audio streams that is `is_number_filter(0, ".lt", 3)` ->
+    `0 >= 3` -> False -> **the item is KEPT**. So a stream-less item counts as
+    ZERO, is compared like any other number, and `audio_language.count_lt: 3`
+    lets it through.
+
+    This is why the count branch sits in `_matches` ABOVE the missing-value
+    rule rather than inside `_matches_one`: the tag rule ("a positive
+    operator excludes a missing value") is real and stays, but a count
+    modifier never reaches it, exactly as upstream never reaches its own.
+    Immaterial to the two shipped families -- both `language_count` bands
+    open at `count_gte: 2`, which zero fails either way -- but it is a real
+    behaviour of the one module whose standing claim is oracle-proven Kometa
+    parity, so it is transcribed rather than argued."""
+    for missing in (None, ()):
+        view = _view("audio_language", missing)
+        assert evaluate(parse_filters({"audio_language.count_lt": 3}), view) is True
+        assert evaluate(parse_filters({"audio_language.count_lte": 0}), view) is True
+        assert evaluate(parse_filters({"audio_language.count_gte": 1}), view) is False
+        assert evaluate(parse_filters({"audio_language.count_gt": 0}), view) is False
+
+
+def test_a_count_modifier_is_refused_in_a_plex_search_block():
+    """The second dialect. `count_*` is a client-side filter modifier only --
+    it is absent from `SEARCH_OPERATORS_BY_TYPE["tag"]`, so a `plex_search`
+    writing it is refused naming what the search half does take, exactly the
+    way `.contains` on a tag already is."""
+    with pytest.raises(ValueError) as caught:
+        parse_filters({"audio_language.count_gte": 2}, searching=True)
+    message = str(caught.value)
+    assert "count_gte" in message
+    assert "plex_search" in message
+
+
+def test_the_count_modifiers_have_no_plexapi_equivalent_and_say_so():
+    """`PLEXAPI_EQUIVALENT` must stay total over `OPERATORS_BY_TYPE` (the
+    coverage test above asserts it), and the honest key for a count
+    comparison is None: plexapi's table is all per-value comparisons and has
+    no "how many children" key at all."""
+    for operator in ("count_gt", "count_gte", "count_lt", "count_lte"):
+        assert PLEXAPI_EQUIVALENT[("tag", operator)] is None

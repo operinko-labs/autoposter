@@ -11,12 +11,14 @@ from pathlib import Path
 
 import httpx
 import numpy as np
+import pytest
 from PIL import Image
 
 from autoposter.badges.compose import badge_fingerprint, compose
 from autoposter.config.schema import BadgesConfig
 from autoposter.db.models import MediaItem, Render
 from autoposter.overlays.assets import FONTS
+from autoposter.overlays.families import FAMILIES
 from autoposter.overlays.schema import OverlayDefinition
 from autoposter.render.pipeline import apply_badges
 # Bare module import, not `tests.test_overlay_engine_golden`: this repo has no
@@ -178,6 +180,109 @@ def test_a_font_path_that_leaves_fonts_root_is_refused_not_crashed():
     stamp = _text_stamp(font="../../../etc/passwd")
     data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp], fonts_root=FONTS)
     assert _sha(data) == POSTER_PIXELS_SHA
+
+
+def test_a_bundled_face_resolves_even_when_fonts_root_does_not_hold_it(tmp_path):
+    """**Adjudication A-4**, and the concrete blocker the C2b recon found:
+    the `aspect` family is the first shipped family that draws TEXT, and a
+    family definition's `font:` goes through `resolve_font_path`, which
+    confines the value strictly beneath the OPERATOR's `fonts_root`. The
+    bundled `Inter-Medium.ttf` lives under `assets/badges/fonts/` and is
+    reachable only by the builtin draw path, which never touches
+    `fonts_root` -- so before this rung existed, every aspect badge was
+    refused and skipped for every operator whose `fonts_root` did not happen
+    to contain Inter-Medium.
+
+    `tmp_path` here is an EMPTY fonts_root: a real operator mount with their
+    own faces in it and no Inter-Medium. The badge must still draw, in
+    Inter-Medium."""
+    stamp = _text_stamp(font="Inter-Medium.ttf", font_size=63)
+    data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp], fonts_root=tmp_path)
+    assert _sha(data) != POSTER_PIXELS_SHA, "the bundled face must draw, not be skipped"
+
+
+def test_the_operators_own_copy_of_a_bundled_name_wins_over_the_bundled_one(tmp_path):
+    """Precedence, pinned: the fallback is a FALLBACK. An operator who puts
+    their own `Inter-Medium.ttf` in `fonts_root` gets theirs -- the bundled
+    rung is consulted only when the confined path does not exist."""
+    (tmp_path / "Inter-Medium.ttf").write_bytes((FONTS / "Inter-Bold.ttf").read_bytes())
+    theirs = compose(BASE, "poster", ALL_SOULS, fonts_root=tmp_path,
+                     definitions=[_text_stamp(font="Inter-Medium.ttf", font_size=63)])
+    bundled = compose(BASE, "poster", ALL_SOULS, fonts_root=tmp_path / "empty",
+                      definitions=[_text_stamp(font="Inter-Medium.ttf", font_size=63)])
+    assert _sha(theirs) != _sha(bundled), (
+        "the operator's own file must be the one that draws"
+    )
+
+
+def test_a_bundled_face_resolves_with_no_fonts_root_configured_at_all():
+    """`compose`'s `fonts_root` defaults to None and several callers leave it
+    there. Before A-4 that short-circuited to a skip before
+    `resolve_font_path` was even called; now the bundled rung answers, which
+    is what makes the aspect family draw for a caller that passes no mount."""
+    stamp = _text_stamp(font="Inter-Medium.ttf", font_size=63)
+    data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp])
+    assert _sha(data) != POSTER_PIXELS_SHA
+
+
+def test_a_font_that_resolves_nowhere_is_reported_skipped_by_name(caplog):
+    """**A-4's other half: never silently.** A definition naming a face that
+    is neither under `fonts_root` nor bundled is skipped -- and the warning
+    names the DEFINITION, so an operator with twenty of them can find the one
+    that is wrong. The message deliberately carries the exception's class
+    name rather than its text, because the text may quote an operator-typed
+    path (the rule `overlays/sources.py` already holds itself to)."""
+    stamp = _text_stamp(name="text(BADFONT)", font="Helvetica-Neue.ttf")
+    with caplog.at_level("WARNING"):
+        data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp], fonts_root=FONTS)
+    assert _sha(data) == POSTER_PIXELS_SHA, "the rest of the item is unaffected"
+    assert any(
+        "text(BADFONT)" in record.getMessage() and "font" in record.getMessage()
+        for record in caplog.records
+    ), "the skip must name the definition"
+
+
+def test_the_bundled_rung_is_an_exact_name_lookup_not_a_path_join():
+    """The containment property A-4 promises: the rung adds NO traversal
+    surface, because it is a constant-keyed dict lookup on the whole written
+    value, not a join of operator input onto a bundled directory. A value
+    with any path structure in it MISSES the table, and one that leaves the
+    root is still refused by `_confined` exactly as it was before.
+
+    On the three values below, and on why the obvious fourth and fifth are
+    NOT here: `FONTS` is `assets/badges/fonts` and it really contains
+    `Inter-Medium.ttf`, so `../fonts/Inter-Medium.ttf` and
+    `./Inter-Medium.ttf` NORMALISE BACK INSIDE the root --
+    `(root / value).resolve()` collapses both to
+    `assets/badges/fonts/Inter-Medium.ttf`, which passes `_confined` and
+    exists, so `resolve_font_path` legitimately returns rung 1's path for
+    them. That is correct behaviour, not a hole: a value that resolves back
+    inside the mount is not a traversal. Asserting a refusal for them would
+    have pinned a bug. The property they DO have is pinned below instead."""
+    from autoposter.overlays.sources import BUNDLED_FONTS, OverlaySourceError, resolve_font_path
+
+    assert set(BUNDLED_FONTS) == {"Inter-Bold.ttf", "Inter-Medium.ttf"}
+    assert all(path.is_absolute() and path.exists() for path in BUNDLED_FONTS.values())
+    for hostile in (
+        "fonts/Inter-Medium.ttf",   # confined, but no such file, and it is
+                                    # NOT the bundled key -- the table is
+                                    # keyed on the bare name
+        "../../../etc/passwd",      # leaves the root: _confined refuses
+        "/etc/passwd",              # absolute: `root / value` IS `value`,
+                                    # so it leaves the root too
+    ):
+        with pytest.raises(OverlaySourceError):
+            resolve_font_path(FONTS, hostile, "hostile")
+
+    # The normalisation property, asserted rather than assumed: a value that
+    # resolves back INSIDE the root resolves, and it resolves to rung 1's
+    # confined path -- never to the bundled table, which these strings do
+    # not key.
+    for inside in ("../fonts/Inter-Medium.ttf", "./Inter-Medium.ttf"):
+        assert inside not in BUNDLED_FONTS
+        assert resolve_font_path(FONTS, inside, "normalised") == (
+            FONTS / "Inter-Medium.ttf"
+        ).resolve(), inside
 
 
 # --- badge_fingerprint must cover `definitions` (Finding 1), without moving
@@ -1132,3 +1237,252 @@ async def test_enabling_no_family_moves_no_fingerprint(
     assert plex_item.uploads == 1
     await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
     assert plex_item.uploads == 1, "an unchanged config must not re-badge"
+
+
+class _FakePlexItemShot(_FakePlexItem):
+    """One `<Media>` carrying an `aspectRatio` -- what the eight bands
+    compare. `1.655` is the deliberate overlap case (A-5): it satisfies the
+    1.65 band AND the 1.66 band."""
+
+    def __init__(self, aspect=2.35):
+        super().__init__()
+        self.media[0].aspectRatio = aspect
+
+
+class _FakePlexItemLanguages(_FakePlexItem):
+    """Audio streams on the one `<Media>`'s one `<Part>` -- what
+    `media_info_from_plex` walks and `language_count` counts."""
+
+    def __init__(self, *codes):
+        super().__init__()
+        self.media[0].parts = [type("P", (), {
+            "file": None,
+            "streams": [
+                type("S", (), {"streamType": 2, "languageCode": code})()
+                for code in codes
+            ],
+        })()]
+
+
+async def test_aspect_fires_on_a_shot_item_and_is_silent_on_an_unanalysed_one(
+    session, config_with_badges
+):
+    """The entry-point law for the first TEXT family: through the real
+    `apply_badges`, not `compose()` alone. The silent half is the one that
+    matters most here -- an item Plex has not analysed carries no
+    `aspectRatio`, and the float missing-value rule must drop it rather than
+    drawing a wrong band."""
+    config_with_badges.badges.families = []
+    base_shot = await _badged(session, config_with_badges, _FakePlexItemShot(), "asp-base-1")
+    base_none = await _badged(session, config_with_badges, _FakePlexItem(), "asp-base-2")
+
+    config_with_badges.badges.families = ["aspect"]
+    fires = await _badged(session, config_with_badges, _FakePlexItemShot(), "asp-1")
+    silent = await _badged(session, config_with_badges, _FakePlexItem(), "asp-2")
+
+    assert _sha(fires) != _sha(base_shot), "a 2.35 item must actually draw its band"
+    assert _sha(silent) == _sha(base_none), "an unanalysed item must draw the gate-off pixels"
+
+
+async def test_the_aspect_text_draws_in_the_bundled_face_through_the_real_entry_point(
+    session, config_with_badges, tmp_path
+):
+    """A-4 end to end, and the reason the rung exists: `config.fonts_root` is
+    an operator mount that does NOT contain Inter-Medium, which is the normal
+    case. Before the bundled rung the definition was skipped here and this
+    test's `fires` came back identical to `baseline`."""
+    config_with_badges.fonts_root = tmp_path
+    config_with_badges.badges.families = []
+    baseline = await _badged(session, config_with_badges, _FakePlexItemShot(), "asp-font-0")
+
+    config_with_badges.badges.families = ["aspect"]
+    fires = await _badged(session, config_with_badges, _FakePlexItemShot(), "asp-font-1")
+    assert _sha(fires) != _sha(baseline)
+
+
+async def test_only_the_highest_weighted_overlapping_band_is_drawn(
+    session, config_with_badges
+):
+    """A-5 through the real entry point. A 1.655 item matches the 1.65 band
+    AND the 1.66 band; group resolution draws only 1.65. Proven by comparing
+    against the SAME item badged with a config that carries the 1.65
+    definition alone -- if both had drawn, the two would differ."""
+    from autoposter.overlays.families import FAMILIES
+
+    bands = {d.name: d for d in FAMILIES["aspect"]}
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = [bands["text(1.65)"]]
+    winner_only = await _badged(
+        session, config_with_badges, _FakePlexItemShot(1.655), "asp-w-1"
+    )
+
+    config_with_badges.badges.definitions = []
+    config_with_badges.badges.families = ["aspect"]
+    both_match = await _badged(
+        session, config_with_badges, _FakePlexItemShot(1.655), "asp-w-2"
+    )
+    assert _sha(both_match) == _sha(winner_only), (
+        "1.66 must lose the group to 1.65 rather than drawing over it"
+    )
+
+
+async def test_language_count_fires_dual_on_two_and_multi_on_three(
+    session, config_with_badges
+):
+    """Both halves of A-5's second case, through `apply_badges`: a
+    2-language item matches Dual and Multi and must draw DUAL (weight 20 >
+    10); a 3-language item matches Multi alone. The two must therefore differ
+    from each other AND both differ from a 1-language item, which matches
+    neither."""
+    config_with_badges.badges.families = []
+    base_one = await _badged(
+        session, config_with_badges, _FakePlexItemLanguages("eng"), "lc-base-1"
+    )
+    base_two = await _badged(
+        session, config_with_badges, _FakePlexItemLanguages("eng", "fin"), "lc-base-2"
+    )
+    base_three = await _badged(
+        session, config_with_badges,
+        _FakePlexItemLanguages("eng", "fin", "swe"), "lc-base-3",
+    )
+
+    config_with_badges.badges.families = ["language_count"]
+    one = await _badged(session, config_with_badges, _FakePlexItemLanguages("eng"), "lc-1")
+    two = await _badged(
+        session, config_with_badges, _FakePlexItemLanguages("eng", "fin"), "lc-2"
+    )
+    three = await _badged(
+        session, config_with_badges,
+        _FakePlexItemLanguages("eng", "fin", "swe"), "lc-3",
+    )
+
+    assert _sha(one) == _sha(base_one), "one language matches neither band"
+    assert _sha(two) != _sha(base_two), "two languages must draw dual_audio"
+    assert _sha(three) != _sha(base_three), "three languages must draw multi_audio"
+    assert _sha(two) != _sha(three), "dual and multi must be different art"
+
+
+async def test_three_english_subtitle_tracks_are_three_subtitle_streams(
+    session, config_with_badges
+):
+    """**Kometa's counting rule, end to end through the real entry point**
+    rather than only at `media_info_from_plex`. `subtitle_language.count_gte:
+    2` MUST fire on a film whose three English subtitle tracks are full, SDH
+    and forced, because upstream's value is a flat `extend`-ed list of
+    streams with no dedupe (`modules/plex.py:2915-2922`) and `.count_*` is
+    `len()` of it (`plex.py:2931-2932`).
+
+    This plan's first draft asserted the opposite -- that the three collapse
+    to one language and the badge stays silent -- and it was wrong; the
+    pinned image settled it. The test is inverted rather than deleted
+    because it is the one place the whole `MediaInfo` -> view -> `_matches`
+    -> `compose` chain is exercised on the repeat case, and a regression to
+    a deduped read anywhere along it lands here.
+
+    Written as a hand-configured definition because the subtitle FAMILY does
+    not ship (adjudication A-3) while the attribute and the operators do.
+    The one-language control is the second half: it must stay silent, which
+    is what proves the fire above is the COUNT and not just "any subtitle
+    stream at all"."""
+    item = _FakePlexItemLanguages("eng")
+    item.media[0].parts[0].streams += [
+        type("S", (), {"streamType": 3, "languageCode": code})()
+        for code in ("eng", "eng", "eng")
+    ]
+    one = _FakePlexItemLanguages("eng")
+    one.media[0].parts[0].streams += [
+        type("S", (), {"streamType": 3, "languageCode": "eng"})()
+    ]
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = []
+    baseline_three = await _badged(session, config_with_badges, item, "subs-base-3")
+    baseline_one = await _badged(session, config_with_badges, one, "subs-base-1")
+
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="subs", builtin="multi_audio",
+            condition={"subtitle_language.count_gte": 2},
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="top", vertical_offset=0,
+        ),
+    ]
+    fires = await _badged(session, config_with_badges, item, "subs-3")
+    silent = await _badged(session, config_with_badges, one, "subs-1")
+    assert _sha(fires) != _sha(baseline_three), (
+        "three English tracks are THREE subtitle-language entries, the way "
+        "Kometa counts them"
+    )
+    assert _sha(silent) == _sha(baseline_one), "one track is one, and stays silent"
+
+
+async def test_enabling_a_c2b_family_re_badges_once_and_the_second_pass_is_unchanged(
+    session, config_with_badges
+):
+    """**The digest-evolution law, both directions, through the real entry
+    point** (Global Constraint 6). Three properties, and the middle one is
+    the honest reading of "re-renders exactly the items whose verdict is
+    true":
+
+    1. gate-off, the item badges once;
+    2. enabling the family re-badges it ONCE -- and it does so for EVERY
+       already-badged item, matched or not, because `apply_badges` hashes the
+       WHOLE `all_definitions()` list, not the matched subset. That is the
+       one-time re-badge roadmap row 100's cell already discloses; what the
+       VERDICT decides is what gets DRAWN (the fires/silent pins above), not
+       whether the fingerprint moves;
+    3. a second pass over the same config uploads nothing -- the fingerprint
+       is stable again, which is the property that makes (2) one-time rather
+       than a storm."""
+    item, render = await _render(session, rating_key="c2b-storm")
+    plex_item = _FakePlexItemShot()
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = []
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 1
+    gate_off_fingerprint = render.badge_fingerprint
+
+    config_with_badges.badges.families = ["aspect"]
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2, "enabling a family must re-badge an already-uploaded item"
+    enabled_fingerprint = render.badge_fingerprint
+    assert enabled_fingerprint != gate_off_fingerprint
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2, "the second pass must upload nothing"
+    assert render.badge_fingerprint == enabled_fingerprint
+
+    config_with_badges.badges.families = []
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 3
+    assert render.badge_fingerprint == gate_off_fingerprint, (
+        "disabling the family must revert the fingerprint exactly"
+    )
+
+
+async def test_a_family_this_config_does_not_name_costs_nothing(
+    session, config_with_badges
+):
+    """The other end of the same law: `FAMILIES` gaining two keys must not
+    move a fingerprint for a config that names neither.
+    `BadgesConfig.all_definitions()` expands only NAMED families, so a
+    C1/C2a config is byte-identical across this sub-phase -- and so is the
+    empty one, which is what the two pinned literals at the top of this file
+    (`576f88e5...` and `PRE_SEAM_ONE_DEFINITION_FINGERPRINT`) guard
+    unmodified."""
+    from autoposter.config.schema import BadgesConfig
+
+    assert BadgesConfig().all_definitions() == []
+    assert BadgesConfig(families=["direct_play"]).all_definitions() == list(
+        FAMILIES["direct_play"]
+    )
+
+    item, render = await _render(session, rating_key="c2b-untouched")
+    plex_item = _FakePlexItemShot()
+    config_with_badges.badges.families = ["direct_play"]
+    config_with_badges.badges.definitions = []
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    first = render.badge_fingerprint
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert render.badge_fingerprint == first
+    assert plex_item.uploads == 1

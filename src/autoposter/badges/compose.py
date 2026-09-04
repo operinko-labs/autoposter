@@ -480,12 +480,15 @@ def _draw_definitions(
             # discipline `overlays.sources`'s `file:` image source uses, and
             # a resolution failure skips just THIS definition rather than
             # escaping compose() for `pipeline.py`'s blanket per-item handler.
-            if fonts_root is None:
-                logger.warning(
-                    "overlay %r has no usable font (no fonts_root configured); skipping it",
-                    definition.name,
-                )
-                continue
+            #
+            # A-4 (sub-phase C2b): `fonts_root` may be None, and that is no
+            # longer a short-circuit skip -- `resolve_font_path` falls back
+            # to this service's own bundled faces by exact name, which is
+            # what lets the `aspect` family draw its text in Inter-Medium for
+            # every operator rather than only for one who happens to have
+            # mounted it. A definition naming a face that is neither under
+            # `fonts_root` nor bundled is still skipped, and still warned
+            # about BY NAME.
             try:
                 font_path = resolve_font_path(fonts_root, definition.font, definition.name)
             except OverlaySourceError as exc:

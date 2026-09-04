@@ -82,10 +82,24 @@ badges:
   # Roadmap row 100. Opt-in bundles of this service's own transcription of
   # Kometa's overlay families -- naming one draws its whole set, before
   # definitions: below (so those can suppress a family member). Empty means
-  # no change at all. Available: direct_play, content_rating_au,
+  # no change at all. Available: aspect, content_rating_au,
   # content_rating_de, content_rating_nz, content_rating_uk,
-  # content_rating_us_movie, content_rating_us_show. An unknown or repeated
-  # name is refused at load, naming what is available.
+  # content_rating_us_movie, content_rating_us_show, direct_play,
+  # language_count, versions. An unknown or repeated name is refused at
+  # load, naming what is available.
+  #
+  # aspect draws the film's ratio (1.33 ... 2.77) as text, and only for an
+  # item Plex has already analysed -- an unanalysed file carries no
+  # aspectRatio and draws nothing rather than a wrong band. language_count
+  # draws Dual for exactly two audio TRACKS and Multi for two or more --
+  # at exactly two, Dual wins by weight, so Multi shows from three.
+  # Tracks, not distinct languages: that is how Kometa counts, so a film
+  # with an English track plus an English commentary track is Dual. It also
+  # shares its slot with direct_play, which is upstream's own arrangement --
+  # enabling both draws two badges in one place. Both verdicts are
+  # recomputed from live Plex on every visit, so a re-analysis or a new
+  # audio track shows up on the NEXT pass over that item -- there is no
+  # watcher; the revisit cadence is the *arr intake and the drift sweep.
   #
   # Enabling a family re-badges every item it already matches, once: the
   # first condition: this config ever carries -- from a family or from

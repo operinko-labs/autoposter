@@ -25,7 +25,7 @@ from pathlib import Path
 import httpx
 
 from autoposter.net.guard import FetchRefused, guarded_download
-from autoposter.overlays.assets import IMAGES
+from autoposter.overlays.assets import IMAGES, INTER_BOLD, INTER_MEDIUM
 from autoposter.overlays.schema import OverlayDefinition
 
 # Probe section 1.2: Kometa validates `Content-Type == "image/png"` on every
@@ -61,22 +61,76 @@ def _confined(root: Path, value: str, name: str) -> Path:
     return candidate
 
 
-def resolve_font_path(fonts_root: Path, value: str, name: str) -> Path:
-    """A definition's `font:` value, confined beneath `fonts_root`.
+# The faces this service SHIPS, keyed by the bare filename a definition
+# writes (roadmap row 100, sub-phase C2b, adjudication A-4).
+#
+# Why this exists: the `aspect` family is the first shipped family that draws
+# TEXT, and a family definition's `font:` flows through `resolve_font_path`
+# below, which confines the value strictly beneath the OPERATOR's own
+# `fonts_root` mount. The bundled faces live under `assets/badges/fonts/` and
+# are reachable only by the BUILTIN draw path (`badges/compose.py` calls
+# `ImageFont.truetype(definition.font, ...)` directly for the nine builtins,
+# and never consults `fonts_root` for them). So without this rung, every
+# aspect badge would be refused and skipped for every operator whose
+# `fonts_root` does not happen to contain Inter-Medium -- a visible parity
+# divergence on every aspect badge, or none at all.
+#
+# Why a dict rather than a directory join: this is an EXACT-NAME lookup on
+# the whole written value, so no operator string is ever joined onto a path
+# here and the rung adds no traversal surface of its own. A written value
+# with any path structure in it -- `../fonts/Inter-Medium.ttf`,
+# `fonts/Inter-Medium.ttf`, `./Inter-Medium.ttf` -- misses this table and is
+# handled by `_confined` exactly as it was before, which is a refusal.
+#
+# Why not a new `OverlayDefinition` field: a field would owe
+# `badges/compose.py::_definitions_digest` its one-line `pop` under that
+# function's LAW, and getting that wrong moves the digest for every
+# already-badged item. An accessor branch owes nothing, so the
+# digest-evolution law is never engaged and no already-badged item can move.
+BUNDLED_FONTS: dict[str, Path] = {
+    "Inter-Bold.ttf": INTER_BOLD,
+    "Inter-Medium.ttf": INTER_MEDIUM,
+}
 
-    The field's own description promises "a path beneath fonts_root" -- the
-    same rung this schema's `file:` image source uses, so this reuses the
-    same `_confined` (root itself refused, not just an escape from it) rather
-    than trusting the string raw. `badges/compose.py::_draw_definitions` was
-    passing the raw string straight to `ImageFont.truetype`, which resolves
-    against the process cwd, not `fonts_root` -- guaranteed to fail for the
-    documented spelling, and the one path in this module that skipped
-    `_confined` entirely (H1).
+
+def resolve_font_path(fonts_root: Path | None, value: str, name: str) -> Path:
+    """A definition's `font:` value, as a real file on disk, or a refusal.
+
+    Two rungs, in this order:
+
+    1. **the operator's own mount.** The field's own description promises "a
+       path beneath fonts_root" -- the same rung this schema's `file:` image
+       source uses, so it reuses the same `_confined` (root itself refused,
+       not just an escape from it) rather than trusting the string raw.
+       `badges/compose.py::_draw_definitions` was passing the raw string
+       straight to `ImageFont.truetype`, which resolves against the process
+       cwd, not `fonts_root` -- guaranteed to fail for the documented
+       spelling, and the one path in this module that skipped `_confined`
+       entirely (H1).
+    2. **this service's own bundled faces** (`BUNDLED_FONTS` above,
+       adjudication A-4). Consulted only when rung 1 did not produce an
+       existing file, so an operator who puts their own `Inter-Medium.ttf` in
+       `fonts_root` gets theirs -- the bundle is a fallback, never an
+       override.
+
+    `fonts_root` is optional because `compose`'s own parameter is: a caller
+    that passes no mount can still draw a bundled face, which is what makes
+    the `aspect` family work everywhere. A traversal attempt still raises
+    from `_confined` before rung 2 is reached, so widening this function did
+    not widen the containment check H1 added.
+
+    Raises `OverlaySourceError` when neither rung answers. The caller
+    (`_draw_definitions`) catches it and skips just THAT definition, naming
+    it -- never silently.
     """
-    path = _confined(fonts_root, value, name)
-    if not path.exists():
-        raise OverlaySourceError(f"overlay {name!r}: the configured font does not exist")
-    return path
+    bundled = BUNDLED_FONTS.get(value)
+    if fonts_root is not None:
+        path = _confined(fonts_root, value, name)
+        if path.exists():
+            return path
+    if bundled is not None and bundled.exists():
+        return bundled
+    raise OverlaySourceError(f"overlay {name!r}: the configured font does not exist")
 
 
 def _validate_overlay_image(path: Path, name: str) -> None:
