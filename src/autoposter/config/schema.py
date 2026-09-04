@@ -580,12 +580,45 @@ class CollectionPosterTitleConfig(BaseModel):
         return self
 
 
+class SeasonPosterConfig(ArtKindConfig):
+    """Season posters can carry the SHOW's own title above their season text."""
+
+    # Roadmap row 78 -- Posterizarr's ShowTitleOnSeasonPosterPart. Shaped
+    # exactly like TitleCardConfig.episode_text: a second, independent
+    # TextStyle whose own add_text is the feature's gate (upstream's
+    # AddShowTitletoSeason). None by default, so a config that never mentions
+    # the key draws precisely what it drew before this row -- the same
+    # off-by-construction the title card's second block has always had.
+    #
+    # The block's text_offset is upstream's, transcribed verbatim ("+300"),
+    # and it is NOT the offset the block is drawn at. Upstream gives this
+    # block the same "+300"/south as the season text it is supposed to sit
+    # ABOVE, which would land the two on top of each other; upstream's own
+    # toggle ships false, so those values were never tuned against a real
+    # render, and no captured output of this feature exists anywhere to match.
+    # render/pipeline.py::stacked_above raises it by one fitted line of the
+    # season text plus a 10px gutter, at the season block's own gravity. That
+    # raise is OURS, adjudicated, and said so wherever it is described.
+    show_title: TextStyle | None = Field(
+        default=None,
+        description=(
+            "The show's own title, drawn as a second text block above the "
+            "season poster's season text -- font, sizing and positioning. "
+            "Unset means no show title is drawn. The season's own wording is "
+            "renamed by artwork.title_card.season_name_overrides."
+        ),
+    )
+
+
 class ArtworkConfig(BaseModel):
     poster: ArtKindConfig = Field(
         description="Movie/show poster art: whether it is built, its sources and its text block.",
     )
-    season_poster: ArtKindConfig = Field(
-        description="Season poster art: whether it is built, its sources and its text block.",
+    season_poster: SeasonPosterConfig = Field(
+        description=(
+            "Season poster art: whether it is built, its sources, its season "
+            "text block and the show title drawn above it."
+        ),
     )
     background: ArtKindConfig = Field(
         description="Background/fanart art: whether it is built, its sources and its text block.",

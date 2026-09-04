@@ -153,6 +153,12 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
         root_folder=root_folder, file_path=None, art_url=None,
         tmdb_id=_as_int(guids.get("tmdb")), tvdb_id=_as_int(guids.get("tvdb")),
         imdb_id=guids.get("imdb"), parent_rating_key=str(show.ratingKey),
+        # Roadmap row 78. `show` is already a parameter -- the walk holds it
+        # for the root folder and the parent key -- so the show's title costs
+        # nothing here and must agree with what PlexClient.resolve produces,
+        # or an adopted fingerprint and the render path's would disagree the
+        # first time the gate is turned on.
+        show_title=show.title,
     )
 
 

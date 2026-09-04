@@ -59,6 +59,16 @@ class ResolvedItem:
     # Roadmap row 44. Plex carries originalTitle for movies and not for shows
     # or episodes, so None is the ordinary case rather than the corner one.
     original_title: str | None = None
+    # Roadmap row 78. The SHOW's own title, filled for a SEASON only: a
+    # season's `title` is the season's own Plex title ("Season 2",
+    # "Specials", or a bare year), so a season poster had no way to draw the
+    # show's name. Sourced off the container the producers already hold,
+    # exactly as `year` is -- no extra Plex request. None everywhere else,
+    # including on an episode: only the season poster draws it, and
+    # `adopt/walk._resolved_episode` is handed the season rather than the
+    # show, so filling it there would mean threading a fourth argument
+    # through that walk to feed a field nothing reads.
+    show_title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -285,6 +295,10 @@ class _RawMatch:
     ``_fetch_by_rating_key_sync`` arrives at the same split from the other
     direction — it fetches the season or episode itself and climbs back up to
     the show — and must fill these fields identically.
+
+    ``show_title`` is the SHOW's own title and is filled for a SEASON intent
+    only (roadmap row 78); both producers below take it off the show object
+    they already hold.
     """
 
     rating_key: str
@@ -298,6 +312,7 @@ class _RawMatch:
     guids: list[str]
     parent_rating_key: str | None
     original_title: str | None = None
+    show_title: str | None = None
 
 
 class PlexClient:
@@ -450,6 +465,9 @@ class PlexClient:
             guids=[g.id for g in getattr(container, "guids", [])],
             parent_rating_key=parent_rating_key,
             original_title=getattr(item, "originalTitle", None),
+            show_title=(
+                getattr(container, "title", None) if intent.kind == "season" else None
+            ),
         )
 
     def _search_sync(self, intent: RenderIntent) -> _RawMatch | None:
@@ -559,6 +577,10 @@ class PlexClient:
                         guids=[g.id for g in getattr(item, "guids", [])],
                         parent_rating_key=parent_rating_key,
                         original_title=getattr(target, "originalTitle", None),
+                        show_title=(
+                            getattr(item, "title", None)
+                            if intent.kind == "season" else None
+                        ),
                     )
         return None
 
@@ -737,4 +759,5 @@ class PlexClient:
             imdb_id=guids.get("imdb") or intent.imdb_id,
             parent_rating_key=match.parent_rating_key,
             original_title=match.original_title,
+            show_title=match.show_title,
         )
