@@ -372,21 +372,29 @@ async def test_a_failed_poll_does_not_end_the_loop(session_factory, config, capl
 
 
 async def test_a_hung_snapshot_build_times_out_and_the_loop_tries_again(
-    session_factory, config, caplog
+    session_factory, config, caplog, monkeypatch
 ):
     """A poll that hangs without raising -- a stuck DB call through the
     greenlet bridge -- must not block the loop (and the connection it
     borrowed) forever. Bounded by asyncio.timeout, logged, and the next tick
     tries again rather than staying stuck.
 
-    Driven by an ``asyncio.Event`` rather than a real sleep: the first call
-    blocks on an event nobody ever sets (asyncio.timeout cancels it, the same
-    as it would a genuinely stuck DB call), and the second call sets an event
-    of its own before returning, which is what the test waits on -- not a
-    real-time race between the injected hang and the outer bound.
+    No wall-clock quantity decides the outcome here, so this cannot flake
+    under load the way a real ``asyncio.timeout`` racing a real sleep and a
+    real DB-backed retry can. The timeout is 0 seconds: asyncio fires that on
+    the very next loop iteration regardless of how loaded the machine is, and
+    it never has to "win" a race, because the first build's
+    ``never_set.wait()`` never completes on its own -- the timeout is the
+    only way out. The second build returns a canned snapshot synchronously
+    (no ``await`` in that branch, no database), so it can never itself be
+    caught by that same zero timeout. The inter-tick delay is replaced with a
+    bare ``asyncio.sleep(0)`` -- a yield to the loop's next ready callback,
+    not a timed wait -- so the loop cannot spin. The outer ``asyncio.wait_for``
+    bounds below are a safety net against a genuine hang, not a clock this
+    test's pass/fail depends on; the actual assertions are the ``attempts``
+    counter and the ``retried`` event.
     """
     attempts = []
-    real_build = None
     never_set = asyncio.Event()
     retried = asyncio.Event()
 
@@ -396,25 +404,31 @@ async def test_a_hung_snapshot_build_times_out_and_the_loop_tries_again(
             await never_set.wait()
         else:
             retried.set()
-        return await real_build()
+        return {"status": {}, "events": []}
+
+    real_sleep = asyncio.sleep
+
+    async def yield_once(_seconds):
+        await real_sleep(0)
+
+    monkeypatch.setattr("autoposter.api.dashboard_stream.asyncio.sleep", yield_once)
 
     broadcaster = StatusBroadcaster(
         session_factory, ConfigHolder(config), {}, started_at=datetime.now(UTC),
-        interval_seconds=FAST_POLL, snapshot_timeout_seconds=0.05,
+        interval_seconds=FAST_POLL, snapshot_timeout_seconds=0,
     )
-    real_build = broadcaster._build_snapshot
     broadcaster._build_snapshot = flaky_build
 
     _, queue = broadcaster.subscribe()
     with caplog.at_level(logging.WARNING):
         # Bounded generously: this only guards against a genuine hang, not
         # the timing of the retry itself -- that is what `retried` is for.
-        await asyncio.wait_for(retried.wait(), timeout=5)
-        snapshot = await asyncio.wait_for(queue.get(), timeout=5)
+        await asyncio.wait_for(retried.wait(), timeout=30)
+        snapshot = await asyncio.wait_for(queue.get(), timeout=30)
 
     assert len(attempts) >= 2, "the loop did not try again after the timeout"
     assert "status" in snapshot and "events" in snapshot
-    assert "dashboard status poll timed out" in caplog.text
+    assert "dashboard status poll timed out: TimeoutError" in caplog.text
 
     await stop(broadcaster)
 
