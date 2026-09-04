@@ -21,10 +21,10 @@ import pytest_asyncio
 import yaml
 from sqlalchemy import select
 
-from autoposter.config.impact import affected_items, count_affected
+from autoposter.config.impact import affected_items, count_affected, count_collection_posters
 from autoposter.config.loader import build_config
 from autoposter.config.overrides import merge_overrides
-from autoposter.db.models import Job, MediaItem, Render
+from autoposter.db.models import Job, ManagedCollection, MediaItem, Render
 from autoposter.plex.client import ResolvedItem
 from autoposter.render.pipeline import compute_fingerprint, gather_fingerprint_inputs
 
@@ -338,3 +338,47 @@ async def test_the_affected_items_honour_the_same_gates(session, seeded, variant
     )
     kinds = {intent.kind for intent in intents}
     assert "show" not in kinds, "the show's only artifact is a disabled poster"
+
+
+# --- collection posters (roadmap row 105, adjudication A-7) -------------------
+#
+# The honesty row this preview owed and did not have. ``count_affected`` walks
+# ``renders``, and there is no renders row for a collection -- so a
+# ``collections.poster_title`` edit previewed as "no re-renders" while every
+# managed collection's poster was about to be re-composited and re-uploaded.
+
+
+async def _seed_collections(session, count: int) -> None:
+    for index in range(count):
+        session.add(
+            ManagedCollection(
+                library="Movies", title=f"Collection {index}", kind="smart",
+                definition_hash="d" * 64,
+            )
+        )
+    await session.flush()
+
+
+async def test_a_poster_title_edit_counts_every_managed_collection(
+    session, config, variant
+):
+    await _seed_collections(session, 3)
+    after = variant({"collections": {"poster_title": {"enabled": True}}})
+    assert await count_collection_posters(session, config, after) == 3
+
+
+async def test_turning_knobs_while_the_gate_is_off_counts_nothing(
+    session, config, variant
+):
+    """Off means the composite is skipped entirely, so no byte moves however
+    the boxes are retuned. Reporting a cost here would teach an operator to
+    ignore the number."""
+    await _seed_collections(session, 3)
+    after = variant({"collections": {"poster_title": {"collection_line_text": "SET"}}})
+    assert await count_collection_posters(session, config, after) == 0
+
+
+async def test_an_unrelated_edit_counts_no_collection_posters(session, config, variant):
+    await _seed_collections(session, 3)
+    after = variant({"workers": 9})
+    assert await count_collection_posters(session, config, after) == 0

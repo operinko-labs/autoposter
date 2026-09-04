@@ -45,7 +45,7 @@ from autoposter.api.auth import (
     verify_password,
 )
 from autoposter.config.descriptions import FIELD_DESCRIPTIONS
-from autoposter.config.impact import affected_items, count_affected
+from autoposter.config.impact import affected_items, count_affected, count_collection_posters
 from autoposter.config.live import (
     FROZEN_SECTIONS,
     LIVE_EXCEPTIONS,
@@ -1902,6 +1902,12 @@ async def preview_config_overrides(
     scheduler tweak would be worse than reporting nothing. When it is not
     null, it is an over-estimate by construction -- render it with a "~".
 
+    ``collection_posters`` is a separate count and deliberately not part of
+    ``impact``: ``config/impact.py`` walks the ``renders`` table, which has no
+    row for a collection, so a ``collections.poster_title`` edit reports a null
+    impact beside a real collection-poster count. Also an over-estimate --
+    render it with a "~".
+
     Migrated sections are stripped first, for the same reason
     ``import_config_overrides`` strips them: a pre-migration backup previewed
     here must validate the same way importing it would, or the panel's
@@ -1911,15 +1917,26 @@ async def preview_config_overrides(
     before = request.app.state.config
     _, after = await _validated_generation(request, without_migrated_sections(body.document))
     impact = None
-    if _render_affecting(before, after):
+    collection_posters = 0
+    render_affecting = _render_affecting(before, after)
+    # A second reason to open a session, and the same "do not pay for a
+    # scheduler tweak" posture: a collections.poster_title edit moves no render
+    # fingerprint at all (config/loader.py's render_version excludes the whole
+    # section) and so reports a null impact, while genuinely re-uploading every
+    # managed collection's poster once. Both numbers are true at once.
+    poster_change = after.collections.poster_title != before.collections.poster_title
+    if render_affecting or poster_change:
         async with request.app.state.session_factory() as session:
-            impact = asdict(await count_affected(session, after))
+            if render_affecting:
+                impact = asdict(await count_affected(session, after))
+            collection_posters = await count_collection_posters(session, before, after)
     return {
         "version_before": before.version,
         "version_after": after.version,
         "restart_required": _restart_required(before, after),
         "inert": _inert_changes(before, after),
         "impact": impact,
+        "collection_posters": collection_posters,
     }
 
 

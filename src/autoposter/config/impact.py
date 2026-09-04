@@ -30,11 +30,11 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.schema import Config
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import ManagedCollection, MediaItem, Render
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.render.pipeline import (
@@ -289,3 +289,41 @@ async def affected_items(session: AsyncSession, new_config: Config) -> list[Rend
         seen.add(intent.dedupe_key)
         intents.append(intent)
     return intents
+
+
+async def count_collection_posters(
+    session: AsyncSession, before: Config, after: Config
+) -> int:
+    """How many managed collection posters this edit would re-composite.
+
+    The honesty row the preview owed and did not have (roadmap row 105).
+    ``count_affected`` above walks the ``renders`` table and ``_ART_KINDS``
+    holds the four ITEM kinds, so a ``collections.poster_title`` edit previewed
+    as "no re-renders" while up to every managed collection's poster was about
+    to be re-composited and re-uploaded on the next pass. Not wrong -- out of
+    scope -- but the page's promise is "see the cost before committing", and
+    this is the first setting with a real cost that walk cannot see.
+
+    Zero unless the block actually changed AND at least one side of the edit
+    has it switched on: with the gate off the composite is skipped entirely, so
+    retuning the boxes moves no bytes and reporting a cost would teach an
+    operator to ignore the number.
+
+    An OVER-estimate, in the same direction and for the same reason
+    ``count_affected`` is one: a managed collection whose poster comes from the
+    operator's own file under ``assets_root``, or a divider whose art is
+    already captioned, passes through untouched -- and this count cannot know
+    which those are without reading the filesystem. Render it with a "~".
+
+    One ``SELECT COUNT`` and no walk: unlike the render preview there is
+    nothing per-row to recompute, because a collection poster carries no
+    fingerprint. Read-only, like everything else in this module.
+    """
+    if after.collections.poster_title == before.collections.poster_title:
+        return 0
+    if not (
+        before.collections.poster_title.enabled or after.collections.poster_title.enabled
+    ):
+        return 0
+    total = await session.execute(select(func.count()).select_from(ManagedCollection))
+    return int(total.scalar_one())
