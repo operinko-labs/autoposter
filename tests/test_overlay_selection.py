@@ -26,6 +26,8 @@ What DOES bind, and is pinned below: wherever the two views both answer, they
 must answer identically. A disagreement would be the same-name-different-filter
 class `collections/filters.py`'s module docstring rules out.
 """
+import datetime as dt
+
 import pytest
 
 from autoposter.badges.values import media_info_from_plex
@@ -114,6 +116,7 @@ def test_the_vocabulary_is_exactly_what_this_slice_supplies():
     assert OVERLAY_ATTRIBUTES == (
         "content_rating", "resolution", "versions",
         "aspect", "audio_language", "subtitle_language",
+        "tmdb_status", "last_episode_aired",
     )
 
 
@@ -460,10 +463,10 @@ def test_a_condition_can_now_name_aspect_and_the_count_modifiers():
         assert (written.attribute.name, written.operator) == (attribute, operator)
 
 
-def test_an_attribute_still_outside_the_vocabulary_is_refused_naming_the_six():
+def test_an_attribute_still_outside_the_vocabulary_is_refused_naming_the_eight():
     """The narrowing did not become a free-for-all: `genre` is a perfectly
     good collections filter this view still cannot supply, and the refusal
-    now names all six attributes it CAN."""
+    now names all eight attributes it CAN."""
     with pytest.raises(ValueError) as caught:
         parse_condition({"genre": "Horror"})
     message = str(caught.value)
@@ -471,3 +474,167 @@ def test_an_attribute_still_outside_the_vocabulary_is_refused_naming_the_six():
     for available in ("content_rating", "resolution", "versions",
                       "aspect", "audio_language", "subtitle_language"):
         assert available in message
+    assert "tmdb_status" in message, (
+        "the refusal lists what IS available, so it must grow with the "
+        "vocabulary rather than going stale"
+    )
+
+
+# --- roadmap row 100 sub-phase C2c: the first facts-backed attributes -------
+
+
+class _StatusFacts:
+    """An `ItemFacts`-shaped stand-in carrying the two C2c columns. The real
+    object `apply_badges` hands the view is either an `ItemFacts` row or a
+    bare `GatheredFacts()`; both carry these attributes after T1, and both
+    read the same way here."""
+
+    critic_rating = 4.9
+    audience_rating = 6.3
+    content_rating = "3"
+
+    def __init__(self, tmdb_status=None, last_episode_aired=None):
+        self.tmdb_status = tmdb_status
+        self.last_episode_aired = last_episode_aired
+
+
+def test_the_status_attributes_are_answered_from_the_facts_row():
+    """The first two attributes this view answers from `facts` rather than
+    from `plex_item` or the `MediaInfo` -- and the whole reason C2c needs no
+    `render/pipeline.py` edit: `apply_badges` already loads the persisted
+    `ItemFacts` row and passes it to this constructor."""
+    facts = _StatusFacts(tmdb_status="returning",
+                         last_episode_aired=dt.date(2026, 8, 20))
+    view = _view(_Item(), facts)
+    assert view.get("tmdb_status") == "returning"
+    assert view.get("last_episode_aired") == dt.date(2026, 8, 20)
+
+
+def test_a_view_whose_facts_lack_the_columns_answers_none_rather_than_raising():
+    """`getattr` with a default, not attribute access, and it is load-bearing
+    rather than defensive habit. `facts` reaches this view as an `ItemFacts`
+    row, as a bare `GatheredFacts()` (`apply_badges`'s own `or
+    GatheredFacts()` fallback), as None (several fingerprint pins build the
+    view by hand), and as a small stand-in carrying only the three rating
+    fields (which is what this file's own `_Facts` is, and what
+    `tests/test_overlay_entrypoint.py::_Facts` is). Only the first two carry
+    these attributes at all; a plain attribute read would raise
+    `AttributeError` out of `evaluate` for the rest, mid-badge, for every
+    item."""
+    for facts in (None, _Facts(), _StatusFacts()):
+        view = _view(_Item(), facts)
+        assert view.get("tmdb_status") is None, facts
+        assert view.get("last_episode_aired") is None, facts
+
+
+def test_a_blank_status_string_reads_as_absent_not_as_a_value():
+    """`or None` on the status branch, matching `content_rating`'s own read
+    two branches up. An empty string is not a status: the tag missing-value
+    rule must exclude the item rather than compare `""` against a band. The
+    parser never writes one, so this is a guard against a hand-written row
+    or a future writer, which is exactly what a view-level rule is for."""
+    view = _view(_Item(), _StatusFacts(tmdb_status="   "))
+    assert view.get("tmdb_status") is None
+
+
+def test_the_status_attributes_have_no_collections_counterpart_to_agree_with():
+    """This module's closing line demands 'an agreement pin against
+    `filter_values.PlexItemView` if that view supplies it too'. It supplies
+    NEITHER -- both rows are on the `facts` tier, and `PlexItemView`'s
+    accessors are derived from the `listing` and `tier2-batched` tiers -- so
+    no agreement pin is owed, and this is that fact stated rather than left
+    unsaid. What the collections side does is REFUSE, naming the tier, and
+    that is pinned in `tests/test_collection_filter_values.py`."""
+    from autoposter.collections.filter_values import AttributeNotInListing
+
+    for name in ("tmdb_status", "last_episode_aired"):
+        with pytest.raises(AttributeNotInListing, match="facts"):
+            PlexItemView(_Item()).get(name)
+
+
+def test_a_condition_can_now_name_the_two_status_attributes():
+    for condition, attribute, operator in (
+        ({"tmdb_status": "ended"}, "tmdb_status", "eq"),
+        ({"tmdb_status.not": "canceled"}, "tmdb_status", "not"),
+        ({"last_episode_aired": 14}, "last_episode_aired", "eq"),
+        ({"last_episode_aired.after": "2026-01-01"}, "last_episode_aired", "after"),
+    ):
+        [written] = predicates_of(parse_condition(condition))
+        assert (written.attribute.name, written.operator) == (attribute, operator)
+
+
+def test_the_bare_integer_is_a_window_in_days_through_the_real_view():
+    """The AIRING band's whole semantics, evaluated end to end over this view
+    rather than over a dict. `evaluate`'s `now=` is pinned so the test does
+    not drift with the wall clock -- a 14-day window tested against
+    `datetime.now()` would pass for the first fortnight after any fixture
+    date was written and then silently start failing."""
+    now = dt.datetime(2026, 9, 5, 12, 0)
+    window = parse_condition({"last_episode_aired": 14})
+    recent = _view(_Item(), _StatusFacts(last_episode_aired=dt.date(2026, 8, 30)))
+    stale = _view(_Item(), _StatusFacts(last_episode_aired=dt.date(2026, 7, 1)))
+    never = _view(_Item(), _StatusFacts())
+    assert evaluate(window, recent, now=now) is True
+    assert evaluate(window, stale, now=now) is False
+    assert evaluate(window, never, now=now) is False, (
+        "a NULL column is the state of every row on the C2c upgrade, and it "
+        "must draw nothing rather than everything"
+    )
+
+
+def test_an_absolute_date_condition_compiles_instead_of_raising_a_type_error():
+    """**FINDING L-7, met here on a CORRECTED rationale.** The roadmap said
+    this lands with C2c because C2c brings the first date-typed attribute --
+    true -- but the trigger it named (the shipped family) is wrong: the
+    `AIRING` band writes `{"last_episode_aired": 14}`, an int, which
+    `json.dumps` handles. The reachable break is an OPERATOR writing the
+    ABSOLUTE form, `last_episode_aired.after: 2026-01-01`, which YAML parses
+    to a `datetime.date`. `json.dumps` refuses that with `TypeError`, raised
+    from `compiled_condition` INSIDE `apply_badges` -- at render time, not at
+    load time, so config validation would have passed and the failure would
+    surface per item, mid-pass.
+
+    `default=str` is the whole fix, and it round-trips: `str(date)` is ISO,
+    which `filters._as_date` accepts, so the cached re-parse produces the
+    same predicate."""
+    definition = OverlayDefinition(
+        name="text(RECENT)",
+        condition={"last_episode_aired.after": dt.date(2026, 1, 1)},
+        horizontal_align="left", horizontal_offset=15,
+        vertical_align="top", vertical_offset=330,
+        back_color="#00000099",
+    )
+    group = compiled_condition(definition)
+    [written] = predicates_of(group)
+    assert written.attribute.name == "last_episode_aired"
+    assert written.operator == "after"
+
+    now = dt.datetime(2026, 9, 5, 12, 0)
+    after = _view(_Item(), _StatusFacts(last_episode_aired=dt.date(2026, 6, 1)))
+    before = _view(_Item(), _StatusFacts(last_episode_aired=dt.date(2025, 6, 1)))
+    assert evaluate(group, after, now=now) is True
+    assert evaluate(group, before, now=now) is False
+
+
+def test_a_definition_carrying_a_date_condition_still_fingerprints():
+    """The other half of L-7, and the reason the plan pins both rather than
+    reasoning about one. `compiled_condition` is not the only place a
+    condition is serialised: `badges/compose.py::_definitions_digest` dumps
+    every definition with `model_dump(mode="json")`, and a `date` sitting
+    inside a `dict[str, object]` field is serialised by pydantic's json mode
+    rather than by `json.dumps`. That path is believed fine; believing is not
+    pinning, and a `TypeError` there would break the fingerprint for every
+    item rather than for one definition."""
+    from autoposter.badges.compose import badge_fingerprint
+
+    definition = OverlayDefinition(
+        name="text(RECENT)",
+        condition={"last_episode_aired.after": dt.date(2026, 1, 1)},
+        horizontal_align="left", horizontal_offset=15,
+        vertical_align="top", vertical_offset=330,
+        back_color="#00000099",
+    )
+    digest = badge_fingerprint(
+        "base", "poster", {}, "manifest", [definition], [("text(RECENT)", True)],
+    )
+    assert len(digest) == 64 and int(digest, 16) >= 0

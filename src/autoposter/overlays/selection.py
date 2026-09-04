@@ -128,11 +128,38 @@ __all__ = [
 #   introduces, it is pinned in `tests/test_overlay_selection.py` so it
 #   cannot drift unnoticed, and closing it is a separate adjudication.
 #
+# - `tmdb_status`, `last_episode_aired` (sub-phase C2c): the show's TMDb
+#   airing status as Kometa's own token, and the date its most recent
+#   episode aired. **THE FIRST TWO ATTRIBUTES THIS VIEW ANSWERS FROM
+#   `facts`** -- every one above comes from `plex_item` or from the
+#   `MediaInfo`. `apply_badges` already loads the persisted `ItemFacts` row
+#   (or a bare `GatheredFacts()`) and hands it to this constructor, which is
+#   why a facts-backed attribute costs no `render/pipeline.py` edit at all.
+#   Their `collections/filters.py` rows sit on the new `facts` source tier,
+#   which is REFUSAL-ONLY for a collection (roadmap row 156's fence, named
+#   rather than opened) and readable only here.
+#
+#   NO AGREEMENT PIN IS OWED, and that is stated rather than left unsaid:
+#   `filter_values.PlexItemView` supplies NEITHER -- its accessors are
+#   derived from the `listing` and `tier2-batched` tiers, so a `facts` row
+#   reaches none of them and it refuses by naming the tier. What is pinned
+#   instead is that refusal (`tests/test_collection_filter_values.py`).
+#
+#   The reads use `getattr` WITH A DEFAULT rather than attribute access, and
+#   that is load-bearing: `facts` arrives here as an `ItemFacts` row, as a
+#   bare `GatheredFacts()`, as None (several fingerprint pins build this view
+#   by hand), and as small stand-in objects in tests that carry only the
+#   three rating fields. Only the first two carry these attributes at all,
+#   and a plain read would raise `AttributeError` out of `evaluate`,
+#   mid-badge, for every item -- the same defensive shape `apply_badges`
+#   already uses for `critic_rating`/`content_rating`.
+#
 # Later slices append; each addition owes a source note here and an agreement
 # pin against `filter_values.PlexItemView` if that view supplies it too.
 OVERLAY_ATTRIBUTES: tuple[str, ...] = (
     "content_rating", "resolution", "versions",
     "aspect", "audio_language", "subtitle_language",
+    "tmdb_status", "last_episode_aired",
 )
 
 
@@ -223,6 +250,20 @@ class OverlayItemView:
                 self._media.subtitle_stream_languages
                 if self._media is not None else None
             )
+        # The two facts-backed rows (sub-phase C2c). `getattr` with a default,
+        # never attribute access -- see the source note on
+        # `OVERLAY_ATTRIBUTES` above for the four shapes `facts` arrives in.
+        #
+        # `or None` on the status, matching `content_rating` above: an empty
+        # or whitespace string is not a status, and the tag missing-value
+        # rule must exclude the item rather than compare `""` against a band.
+        # The date needs no such coercion -- a `date` is either present or
+        # None, and `_MISSING_ALWAYS_EXCLUDES` handles the None.
+        if attribute == "tmdb_status":
+            value = getattr(self._facts, "tmdb_status", None)
+            return value.strip() or None if isinstance(value, str) else None
+        if attribute == "last_episode_aired":
+            return getattr(self._facts, "last_episode_aired", None)
         raise AttributeNotOnItem(
             f"{attribute!r} is not an attribute an overlay condition can "
             "read on this service. Available: " + ", ".join(OVERLAY_ATTRIBUTES)
@@ -316,10 +357,27 @@ def compiled_condition(definition) -> FilterGroup | None:
     `definition` is an `overlays.schema.OverlayDefinition`; typed loosely so
     this module does not import the schema that imports it back at validation
     time.
+
+    **`default=str` is finding L-7, and it lands with sub-phase C2c because
+    C2c brings the first date-typed attribute into `OVERLAY_ATTRIBUTES` --
+    but NOT for the reason the roadmap gave.** The shipped `status` family
+    writes `{"last_episode_aired": 14}`, an int, which dumps fine. The
+    reachable break is an OPERATOR writing the absolute form,
+    `last_episode_aired.after: 2026-01-01`, which YAML parses to a
+    `datetime.date`; `json.dumps` refuses that with `TypeError`, raised from
+    HERE, inside `apply_badges`, at RENDER time -- config validation would
+    have passed, because `OverlayDefinition._validate` calls
+    `parse_condition` on the raw mapping and `filters._as_date` accepts a
+    `date` object directly.
+
+    The keyword round-trips rather than merely silencing: `str(date)` is ISO,
+    which `_as_date` also accepts, so the cache key is stable and the
+    re-parsed predicate is the same one. It applies to any unserialisable
+    value, not only dates, which is the right scope for a key-building dump.
     """
     if definition.condition is None:
         return None
-    return _compiled(json.dumps(definition.condition, sort_keys=True))
+    return _compiled(json.dumps(definition.condition, sort_keys=True, default=str))
 
 
 def select(definitions, view) -> tuple[list, list[tuple[str, bool]]]:
