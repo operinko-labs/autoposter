@@ -212,6 +212,27 @@ async def test_persist_season_produces_no_pointless_row(session):
     assert (await session.execute(select(ItemFacts))).scalars().all() == []
 
 
+async def test_persist_facts_never_hands_back_an_open_transaction(session):
+    """The same commit-then-re-SELECT idiom as ``queue/jobs.py``'s ``claim``:
+    ``persist_facts`` commits, then reads the row back, which autobegins a
+    transaction nothing closes. It is called from inside ``process_item``
+    (render/pipeline.py), so what it hands back is held across the rest of
+    that job.
+
+    Both returns, because both do it: the upsert path's trailing read and the
+    ``_stored()`` helper the empty-gather and item_id-only returns go
+    through."""
+    media = MediaItem(rating_key="p9", library="Movies", kind="movie", title="X")
+    session.add(media)
+    await session.flush()
+
+    await persist_facts(session, media.id, GatheredFacts(critic_rating=4.9))
+    assert session.in_transaction() is False, "the upsert path's trailing read"
+
+    await persist_facts(session, media.id, GatheredFacts())
+    assert session.in_transaction() is False, "the _stored() helper's read"
+
+
 async def test_no_mdblist_key_only_degrades_content_rating(session):
     """Finding 1: the stand-in used when no API key is configured must not
     affect critic rating, audience rating, genres, or studio."""

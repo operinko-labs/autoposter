@@ -269,11 +269,17 @@ async def persist_facts(
     )
     async def _stored() -> ItemFacts | None:
         await session.commit()
-        return (
+        row = (
             await session.execute(
                 select(ItemFacts).where(ItemFacts.item_id == media_item_id)
             )
         ).scalar_one_or_none()
+        # The read above autobegan a second transaction, and this function is
+        # called from inside process_item -- so what it handed back was held
+        # across the rest of that job's render. Nothing is pending; this ends
+        # an empty read transaction. Same reasoning as the return below.
+        await session.commit()
+        return row
 
     if facts.is_empty():
         return await _stored()
@@ -332,6 +338,12 @@ async def persist_facts(
         stmt.on_conflict_do_update(index_elements=["item_id"], set_=set_)
     )
     await session.commit()
-    return (
+    row = (
         await session.execute(select(ItemFacts).where(ItemFacts.item_id == media_item_id))
     ).scalar_one()
+    # The commit above ended the upsert's transaction; this plain read then
+    # autobegan another one that nothing closed, and persist_facts is called
+    # from process_item, so the caller held it across the rest of the render.
+    # expire_on_commit=False (db/base.py) keeps `row` usable after this.
+    await session.commit()
+    return row

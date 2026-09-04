@@ -179,7 +179,17 @@ async def claim(session: AsyncSession, worker_id: str) -> Job | None:
     await session.commit()
     if job_id is None:
         return None
-    return (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    # The commit above ended the claim's transaction; this plain load then
+    # autobegan a SECOND one, which nothing here closed and which the worker
+    # therefore held for the whole of the handler -- and process_item's first
+    # act is plex.resolve, a to_thread GUID walk. worker.py's own commit is in
+    # the `handler is None` parked branch, not on the main path. Nothing is
+    # pending to write, so this commits an empty read transaction and hands
+    # the caller a clean session. The factory is expire_on_commit=False
+    # (db/base.py), so `job`'s attributes survive it unexpired.
+    await session.commit()
+    return job
 
 
 # The gap between one reclaimed job's run_after and the next. Production
