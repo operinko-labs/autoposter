@@ -578,7 +578,7 @@ jobs:
           assert (root / 'badges' / 'fonts' / 'Inter-Bold.ttf').is_file(), root
           assert (root / 'badges' / 'languages.json').is_file(), root
           assert (root / 'collections' / 'content_rating_cs.json').is_file(), root
-          info = MediaInfo('1080', 'eac3', 6, 1, (), frozenset(), None, None, None)
+          info = MediaInfo(video_resolutions=('1080',), audio_track_titles=(), audio_channels=None, duration_ms=None, audio_languages=(), hdr_flags=frozenset(), season_number=None, episode_number=None)
           assert resolution_image(info) == '1080p'
           print('assets reachable at', root, 'with', len(BADGES), 'badges defined')
           "
