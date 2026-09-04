@@ -15,6 +15,7 @@ import type {
 } from "../api/types";
 import { artKindFor } from "../artKind";
 import { formatTime } from "../format";
+import { MetadataOverridesPanel } from "./MetadataOverridesPanel";
 import "./item.css";
 
 /** The shape of the pane box, matched by art kind in item.css: posters are
@@ -974,6 +975,8 @@ export function ItemDetail() {
         <h2>Facts</h2>
         <Facts facts={item.facts} />
       </div>
+
+      <MetadataOverridesPanel itemId={item.id} />
 
       <div className="panel item-panel">
         <h2>Renders</h2>
