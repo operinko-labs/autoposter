@@ -183,3 +183,103 @@ def test_the_section_scope_is_validated_the_same_way(config_factory):
         Config.model_validate(document)
 
     assert "'TV Shows'" in str(error.value)
+
+
+# --- who a playlist is copied to ---------------------------------------------
+
+
+def test_sync_to_users_defaults_to_nobody():
+    """The default this whole phase must have. Kometa's is the same
+    (``valid_users == []`` at 498b3af, contrary to older docs claiming
+    ``all``), and the alternative -- a definition silently fanning out into
+    seventeen accounts -- is the one behaviour a per-user sync must not have."""
+    assert PlaylistDefinition.model_validate(A_DEFINITION).sync_to_users is None
+
+
+def test_a_definition_may_name_users_by_title():
+    """By ``title``, because it is the ONLY field present for both kinds of
+    user: ``MyPlexAccount.user()``'s own code comments it -- "Home users don't
+    have email, username etc." -- and matches Home users on ``title`` alone.
+    A config keyed on ``username`` could not name a Home account at all."""
+    definition = PlaylistDefinition.model_validate(
+        {**A_DEFINITION, "sync_to_users": ["alice", "bob"]}
+    )
+
+    assert definition.sync_to_users == ["alice", "bob"]
+
+
+def test_all_is_refused_unless_the_section_switch_is_on():
+    """A9's gate, refused at CONFIG LOAD rather than skipped at pass time: the
+    section validator can see both the flag and every definition, so the
+    operator learns at the moment of the edit."""
+    with pytest.raises(ValidationError) as error:
+        PlaylistsConfig.model_validate({
+            "definitions": [{**A_DEFINITION, "sync_to_users": "all"}],
+        })
+
+    message = str(error.value)
+    assert "sync_all_users" in message
+    assert "Marvel Cinematic Universe" in message
+
+
+def test_all_loads_once_the_section_switch_is_on():
+    section = PlaylistsConfig.model_validate({
+        "sync_all_users": True,
+        "definitions": [{**A_DEFINITION, "sync_to_users": "all"}],
+    })
+
+    assert section.definitions[0].sync_to_users == "all"
+
+
+def test_a_named_user_list_needs_no_gate():
+    """The gate guards the meaning of one WORD. Naming people explicitly is
+    already an explicit act and is not behind it."""
+    section = PlaylistsConfig.model_validate({
+        "definitions": [{**A_DEFINITION, "sync_to_users": ["alice"]}],
+    })
+
+    assert section.sync_all_users is False
+    assert section.definitions[0].sync_to_users == ["alice"]
+
+
+def test_the_section_defaults_leave_every_user_untouched():
+    """The two gates and the two caps, as shipped. ``sync_to_users_apply`` off
+    is the whole safety posture of this phase: a pass reports what each user
+    would receive and sends nothing."""
+    section = PlaylistsConfig.model_validate({})
+
+    assert section.sync_to_users_apply is False
+    assert section.sync_all_users is False
+    assert section.exclude_users == []
+    assert section.max_users == 25
+    assert section.max_user_writes == 50
+
+
+@pytest.mark.parametrize("name", ["max_users", "max_user_writes"])
+def test_a_cap_refuses_a_negative_value(name):
+    """``ge=0`` on both, matching ``max_deletes``: zero means "opted in and
+    writes nothing", which is a coherent state; below zero is not."""
+    with pytest.raises(ValidationError):
+        PlaylistsConfig.model_validate({name: -1})
+
+
+def test_the_apply_gate_is_independent_of_apply_to_plex():
+    """The combination that has to be expressible: admin playlists live, user
+    copies reported. Two switches because they authorise two different things
+    -- writing to this account, and writing into other people's."""
+    section = PlaylistsConfig.model_validate({
+        "apply_to_plex": True, "sync_to_users_apply": False,
+    })
+
+    assert section.apply_to_plex is True
+    assert section.sync_to_users_apply is False
+
+
+def test_a_preset_never_carries_sync_to_users():
+    """Which is what makes the ``all`` refusal complete: it scans
+    ``self.definitions``, and the nine shipped presets are built from a frozen
+    table that sets no such field, so there is nothing it could miss."""
+    from autoposter.collections.playlist_presets import PLAYLIST_PRESETS
+
+    for preset in PLAYLIST_PRESETS:
+        assert preset.definition().sync_to_users is None

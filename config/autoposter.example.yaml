@@ -328,10 +328,26 @@ playlists:
   # libraries: [Movies] # narrow which libraries members resolve from, searched in this order, first match winning; omitted means collections.libraries
   delete_unconfigured: false # delete playlists we own once no definition builds them; the only setting here that deletes anything
   max_deletes: 5 # past this many orphans one sweep refuses entirely and reports the numbers
+  sync_to_users_apply: false # copy playlists into other people's accounts; off reports what each would receive
+  sync_all_users: false # allow `sync_to_users: all` on a definition below
+  exclude_users: [] # users `all` never resolves to, by the display title Plex shows
+  max_users: 25 # past this many resolved users the whole fan-out refuses and reports the numbers
+  max_user_writes: 50 # past this many writes across every user copy, likewise
   # A playlist is ours if and only if a managed_playlists row's rating key
   # names a playlist currently on the server -- there is no ownership label,
   # because a Plex playlist cannot carry one. A playlist this service did not
   # create is never modified and never deleted, whatever its title.
+  #
+  # A user's copy is a SEPARATE playlist in their account with its own rating
+  # key, and it is ours only while a managed_playlist_users row names it -- so
+  # a playlist somebody made themselves under one of these titles is never
+  # touched. Copies are diffed, never deleted and recreated. Nothing is written
+  # to anybody's account until sync_to_users_apply is switched on, and a
+  # PIN-protected user is always skipped by name: this service never holds a
+  # Plex PIN. Per-user sync needs AUTOPOSTER_PLEX_ACCOUNT_TOKEN, and that token
+  # must be this server's OWNER's -- the pass verifies it before its first
+  # write. A user's copy is created in the definition's order and is not
+  # reordered afterwards.
   #
   #   - title: Marvel Cinematic Universe
   #     builder: imdb_list # any registered list builder; smart and family builders are refused by name
@@ -341,6 +357,7 @@ playlists:
   #     summary: The films, in release order.
   #     sync_mode: sync # or `append`: only ever adds, never removes, never reorders
   #     builder_level: item # or `season`/`episode` -- Show libraries only
+  #     sync_to_users: [alice, bob] # also copy it into these users' accounts, by their Plex display title; or `all`
   #     limit: 50 # cap applied after resolution
   definitions: []
   presets: [] # preset timeline playlists to build, by key; an empty list builds none
