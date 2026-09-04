@@ -183,7 +183,7 @@ async def test_a_source_refused_park_serves_its_full_reason_on_failures(
 
 
 async def test_a_runtime_error_park_keeps_the_bare_class_name_on_failures(
-    client, auth_headers, session
+    client, auth_headers, session, session_factory
 ):
     """The contrast the test above is only meaningful against: an untagged
     exception class stays class-name-only, per the class-name-only default
@@ -200,11 +200,24 @@ async def test_a_runtime_error_park_keeps_the_bare_class_name_on_failures(
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=5678)
     job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     for _ in range(MAX_ATTEMPTS):
-        job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
-        job.state = "pending"
-        job.run_after = func.now()
-        await session.commit()
-        await run_once(session, "worker-1", {"process_item": handler})
+        # A fresh session per simulated attempt, matching run_worker's own
+        # "async with session_factory() as session" per claim (worker.py):
+        # reusing one session let a stale, never-expired identity-map ``Job``
+        # mask claim()'s raw-SQL state/attempts writes between iterations.
+        async with session_factory() as attempt_session:
+            job = (
+                await attempt_session.execute(select(Job).where(Job.id == job_id))
+            ).scalar_one()
+            job.state = "pending"
+            job.run_after = func.now()
+            await attempt_session.commit()
+            # The fresh session alone is not enough here: this ``job`` local
+            # stays alive across the call below (unlike run_worker's, which
+            # is claim()'s own and dies with the loop iteration), keeping the
+            # identity map's cached instance alive too, so claim()'s raw-SQL
+            # writes would still be masked without this explicit expire.
+            attempt_session.expire_all()
+            await run_once(attempt_session, "worker-1", {"process_item": handler})
 
     response = await client.get("/api/jobs/parked", headers=auth_headers)
     job = response.json()["jobs"][0]

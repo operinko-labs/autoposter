@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from autoposter.db.models import ImdbRating, MediaItem
 from autoposter.facts import imdb as imdb_module
@@ -296,6 +297,49 @@ async def test_auto_refresh_runs_when_data_is_older_than_the_interval(session_fa
         assert await get_rating(check, "tt0111161") == pytest.approx(9.3)
 
 
+async def test_no_transaction_is_open_when_the_dataset_download_runs(session_factory):
+    """The 2026-09-03 05:20:12Z boot-time transaction: 178 s, below the 300 s
+    alert threshold, which is exactly why it produced a Postgres log line and
+    no alert while the 20:55 prune produced an alert.
+
+    ``_maybe_refresh`` opened a transaction at ``_is_stale`` and held it
+    across two gzipped downloads (54 MB + 8.6 MB) and a 9.8M-row parse. The
+    read must close before the download; and closing it in ``_maybe_refresh``
+    alone is not enough, because ``_fetch_dataset`` reads the per-dataset poll
+    state and reopens one immediately before ``download_tsv``.
+
+    Seeded with a movie only, so ``show_ids`` is empty, the episodes fetch is
+    skipped and the ratings download is the first and only HTTP call."""
+    await _seed_movie(session_factory)
+
+    sessions = []
+
+    def recording_factory():
+        # async_sessionmaker.__call__ returns the AsyncSession itself, which
+        # is its own async context manager -- so capturing it here captures
+        # the very object _maybe_refresh enters.
+        made = session_factory()
+        sessions.append(made)
+        return made
+
+    seen = []
+
+    def handler(request):
+        seen.append(sessions[-1].in_transaction())
+        return _dataset_handler(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        refresher = ImdbAutoRefresh(recording_factory, http, interval_hours=24)
+        await refresher._maybe_refresh()
+
+    # Collected and asserted out here, not inside the handler: _maybe_refresh
+    # deliberately swallows every Exception, so an assert in there would be
+    # eaten and the test would pass on a broken build.
+    assert seen == [False]
+    async with session_factory() as check:
+        assert await get_rating(check, "tt0111161") == pytest.approx(9.3)
+
+
 async def test_auto_refresh_survives_a_failed_attempt_and_retries_next_interval(
     session_factory, monkeypatch, caplog
 ):
@@ -559,6 +603,24 @@ async def test_304_with_unchanged_id_set_skips_the_parse_and_stores_nothing_new(
     )
     rows = (await session.execute(select(ImdbRating))).scalars().all()
     assert {row.tconst for row in rows} == {"tt0111161"}
+
+
+async def test_second_refresh_survives_an_expire_on_commit_session(engine):
+    """``_fetch_dataset``'s commit (imdb.py) sits between loading the stored
+    dataset state and dereferencing its last_modified/etag/wanted_hash on the
+    second refresh. Every caller in this codebase happens to use
+    expire_on_commit=False (db/base.py's factory; this file's own ``session``
+    fixture), which is the only reason that ordering has never mattered here.
+    A session built the ordinary SQLAlchemy way -- expire_on_commit=True is
+    the library's own default -- must not hit MissingGreenlet on that read."""
+    expiring = async_sessionmaker(engine, expire_on_commit=True)
+    server = _ConditionalServer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as http, expiring() as session:
+        await refresh(session, http, {"tt0111161"}, set())
+        await refresh(session, http, {"tt0111161"}, set())
+
+    assert len(server.requests) == 2
+    assert server.requests[1].headers["if-modified-since"] == server.last_modified[RATINGS_URL]
 
 
 async def test_304_with_a_changed_id_set_still_downloads_and_parses(session):

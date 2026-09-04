@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -282,6 +283,71 @@ async def test_the_lifespan_reads_the_boot_instant_from_the_database_clock(
         f"expected a signed millisecond value in the boot-time clock delta log, "
         f"got {value!r}"
     )
+
+
+async def test_the_lifespan_disposes_the_engine_after_closing_the_http_client(
+    session_factory, secrets, stubbed_background_services
+):
+    """Shutdown gap: nothing in the served application ever called
+    ``engine.dispose()``, so the pod's 5 pooled connections were never
+    gracefully closed -- the process exited and Postgres saw a socket close
+    rather than a terminate ("unexpected EOF on client connection with an
+    open transaction", at every deploy).
+
+    Ordering is the load-bearing half. Dispose has to come after the
+    ``gather`` -- so every cancelled background task has had its cancellation
+    delivered and its session returned to the pool -- and after
+    ``http.aclose()``. The fake records whether the shared client was already
+    closed when it ran, which is exactly that ordering expressed as a value.
+    """
+    disposals = []
+
+    class _FakeEngine:
+        async def dispose(self):
+            disposals.append(app.state.http.is_closed)
+
+    app = _background_app(
+        load_config(EXAMPLE), session_factory, secrets, engine=_FakeEngine()
+    )
+
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert disposals == [True], (
+        "the engine was disposed zero times, more than once, or before the "
+        f"shared http client was closed ({disposals!r})"
+    )
+
+
+async def test_a_dispose_failure_does_not_fail_the_lifespan(
+    session_factory, secrets, stubbed_background_services, caplog
+):
+    """``dispose()`` must not be able to fail the shutdown it is part of --
+    an exception out of it would propagate out of the lifespan generator
+    (uvicorn reports ``Application shutdown failed`` and exits non-zero) and
+    skip the ``removeHandler`` call right after it, leaving the root logger
+    pointed at a teardown-stage buffer.
+    """
+
+    class _RaisingEngine:
+        async def dispose(self):
+            raise RuntimeError("pool already gone")
+
+    app = _background_app(
+        load_config(EXAMPLE), session_factory, secrets, engine=_RaisingEngine()
+    )
+
+    with caplog.at_level("WARNING"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert app.state.log_buffer not in logging.getLogger().handlers, (
+        "removeHandler was skipped because dispose() raised past it"
+    )
+    assert any(
+        "engine dispose failed" in record.message and "RuntimeError" in record.message
+        for record in caplog.records
+    ), "the dispose failure was swallowed silently instead of logged"
 
 
 async def test_the_lifespan_builds_the_plex_client_from_the_effective_config(

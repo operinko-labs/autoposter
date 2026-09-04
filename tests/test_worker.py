@@ -50,6 +50,27 @@ async def test_run_once_returns_false_when_nothing_is_due(session):
     assert await run_once(session, "worker-1", _only_process_item(handler)) is False
 
 
+async def test_the_handler_runs_with_no_open_transaction(session):
+    """``claim()`` commits, then re-SELECTs the row -- which autobegins a
+    second transaction it never closes and hands straight to the handler.
+    ``worker.py``'s own commit is inside the ``handler is None`` parked
+    branch, not the main path, so every real job ran its whole handler inside
+    that transaction; ``process_item``'s first act is ``plex.resolve``, a
+    ``to_thread`` GUID walk. Seconds of idle-in-transaction, on every single
+    job, times every worker."""
+    seen = {}
+
+    async def handler(session_, intent):
+        seen["in_transaction"] = session_.in_transaction()
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=1)
+    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+
+    assert await run_once(session, "worker-1", _only_process_item(handler)) is True
+
+    assert seen == {"in_transaction": False}
+
+
 async def test_item_not_found_defers_rather_than_failing(session):
     async def handler(session_, intent):
         raise ItemNotFound("plex has not scanned yet")
@@ -112,7 +133,7 @@ async def test_a_plex_outage_reason_never_carries_the_server_address(session, ca
     assert "plex.internal" in caplog.text
 
 
-async def test_path_mismatch_parks_instead_of_deferring_forever(session):
+async def test_path_mismatch_parks_instead_of_deferring_forever(session, session_factory):
     # Site :488's raise (PlexPathMismatch) is a permanent path-mapping
     # misconfiguration, not a "Plex hasn't scanned yet" wait -- the item
     # resolved fine, but its file does not map under any of the library's
@@ -128,8 +149,15 @@ async def test_path_mismatch_parks_instead_of_deferring_forever(session):
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=13)
     job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     for _ in range(MAX_ATTEMPTS):
-        await _make_due_now(session, job_id)
-        await run_once(session, "worker-1", _only_process_item(handler))
+        # A fresh session per simulated attempt, matching run_worker's own
+        # "async with session_factory() as session" per claim (worker.py):
+        # reusing one session let a stale, never-expired identity-map ``Job``
+        # mask claim()'s raw-SQL state/attempts writes between iterations.
+        async with session_factory() as attempt_session:
+            await _make_due_now(attempt_session, job_id)
+            # Explicit, not reliant on the ``job`` local's refcount lifetime to evict it.
+            attempt_session.expire_all()
+            await run_once(attempt_session, "worker-1", _only_process_item(handler))
 
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
@@ -284,7 +312,7 @@ async def test_item_not_found_defers_forever_instead_of_parking(session):
     assert job.attempts == 0
 
 
-async def test_a_generic_failure_still_parks(session):
+async def test_a_generic_failure_still_parks(session, session_factory):
     # The contrast the test above is only meaningful against: nothing here
     # widened the ordinary failure path into an unbounded one.
     async def generic_handler(session_, intent):
@@ -293,15 +321,22 @@ async def test_a_generic_failure_still_parks(session):
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=11)
     job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     for _ in range(MAX_ATTEMPTS):
-        await _make_due_now(session, job_id)
-        await run_once(session, "worker-1", _only_process_item(generic_handler))
+        # A fresh session per simulated attempt -- see the comment on the
+        # PlexPathMismatch test above.
+        async with session_factory() as attempt_session:
+            await _make_due_now(attempt_session, job_id)
+            # Explicit, not reliant on the ``job`` local's refcount lifetime to evict it.
+            attempt_session.expire_all()
+            await run_once(attempt_session, "worker-1", _only_process_item(generic_handler))
 
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
     assert job.state == "parked"
 
 
-async def test_plex_connection_error_survives_more_attempts_than_a_generic_failure(session):
+async def test_plex_connection_error_survives_more_attempts_than_a_generic_failure(
+    session, session_factory
+):
     # Finding 1: a Plex connectivity failure (surfacing from _LazyPlexServer's
     # connect attempt as a requests.exceptions.ConnectionError/Timeout, tagged
     # by app.py's _handle_intent) must get the same larger, configurable
@@ -315,8 +350,15 @@ async def test_plex_connection_error_survives_more_attempts_than_a_generic_failu
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=20)
     job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     for _ in range(MAX_ATTEMPTS):
-        await _make_due_now(session, job_id)
-        await run_once(session, "worker-1", _only_process_item(connection_error_handler))
+        # A fresh session per simulated attempt -- see the comment on the
+        # PlexPathMismatch test above.
+        async with session_factory() as attempt_session:
+            await _make_due_now(attempt_session, job_id)
+            # Explicit, not reliant on the ``job`` local's refcount lifetime to evict it.
+            attempt_session.expire_all()
+            await run_once(
+                attempt_session, "worker-1", _only_process_item(connection_error_handler)
+            )
 
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
@@ -722,3 +764,24 @@ async def test_an_uncancelled_job_still_reschedules_after_a_failure(session):
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
     assert job.state == "pending"
+
+
+async def test_a_cancel_requested_mid_attempt_is_still_honoured(session):
+    # Every test above sets cancel_requested *before* run_once, so claim()'s
+    # own SELECT reads it fresh either way. Production's actual ordering is
+    # the opposite: the operator's cancel is a concurrent request that can
+    # land any time between claim() (which hands run_once a Job it holds for
+    # the whole attempt) and fail() recording the outcome. This simulates
+    # that ordering directly, from inside the handler.
+    async def handler(session_, intent):
+        await _cancel_requested(session_, job_id)
+        raise RuntimeError("provider exploded")
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=55)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+
+    await run_once(session, "worker-1", _only_process_item(handler))
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "dismissed"

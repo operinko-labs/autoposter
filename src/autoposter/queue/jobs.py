@@ -179,7 +179,17 @@ async def claim(session: AsyncSession, worker_id: str) -> Job | None:
     await session.commit()
     if job_id is None:
         return None
-    return (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    # The commit above ended the claim's transaction; this plain load then
+    # autobegan a SECOND one, which nothing here closed and which the worker
+    # therefore held for the whole of the handler -- and process_item's first
+    # act is plex.resolve, a to_thread GUID walk. worker.py's own commit is in
+    # the `handler is None` parked branch, not on the main path. Nothing is
+    # pending to write, so this commits an empty read transaction and hands
+    # the caller a clean session. The factory is expire_on_commit=False
+    # (db/base.py), so `job`'s attributes survive it unexpired.
+    await session.commit()
+    return job
 
 
 # The gap between one reclaimed job's run_after and the next. Production
@@ -375,6 +385,15 @@ async def fail(
     # there. The race costs the cancel one extra attempt; it never loses the
     # cancel. Locking here was reviewed and judged not worth it for that.
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    # claim()'s own commit (see its comment) is what used to keep this SELECT
+    # honest: every failure branch's rollback() was a real rollback that
+    # expired every attribute, so this reload always hit the database. Now
+    # that claim() leaves nothing open, a caller holding a strong reference to
+    # this same Job across the attempt (run_once's local) keeps it alive in
+    # the identity map, and the ORM hands back that claim-time cached instance
+    # here instead of the row this SELECT just re-fetched. cancel_requested is
+    # refreshed explicitly so a cancel requested mid-attempt is still seen.
+    await session.refresh(job, attribute_names=["cancel_requested"])
     job.last_error = error
     job.claimed_by = None
     job.claimed_at = None

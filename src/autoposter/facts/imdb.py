@@ -245,12 +245,35 @@ async def _fetch_dataset(
     """
     wanted_hash = _wanted_hash(wanted_ids)
     state = await _get_dataset_state(session, dataset) if track_state else None
+    # Copied into locals before the commit below, rather than relying on the
+    # session factory's expire_on_commit=False (as claim() and persist_facts
+    # do): this site dereferences state's attributes AFTER that commit, and a
+    # caller using a default expire_on_commit=True session would otherwise
+    # hit an implicit refresh on an AsyncSession here, which raises
+    # MissingGreenlet.
+    state_last_modified = state.last_modified if state is not None else None
+    state_etag = state.etag if state is not None else None
+    state_wanted_hash = state.wanted_hash if state is not None else None
+    if track_state:
+        # That read autobegan a transaction, and download_tsv below streams a
+        # gzipped dataset (title.episode.tsv.gz is ~54 MB gzip / ~500 MB
+        # decompressed) under a 300-second-per-file timeout -- minutes of
+        # idle-in-transaction for the sake of one poll-state row. Nothing is
+        # pending: store_ratings, store_episodes and _save_dataset_state each
+        # commit for themselves.
+        #
+        # Gated on track_state deliberately. track_state=False is the
+        # miss-triggered refresh, which runs INSIDE the queue worker's open
+        # write transaction (facts/gather.py -> note_rating_miss); committing
+        # there would change what that job commits and when. It also skips
+        # _get_dataset_state entirely, so it opens nothing new here anyway.
+        await session.commit()
 
     headers: dict[str, str] = {}
-    if state is not None and state.last_modified and state.wanted_hash == wanted_hash:
-        headers["If-Modified-Since"] = state.last_modified
-        if state.etag:
-            headers["If-None-Match"] = state.etag
+    if state is not None and state_last_modified and state_wanted_hash == wanted_hash:
+        headers["If-Modified-Since"] = state_last_modified
+        if state_etag:
+            headers["If-None-Match"] = state_etag
 
     status, resp_headers, lines = await download_tsv(http, url, headers=headers or None)
 
@@ -599,6 +622,18 @@ class ImdbAutoRefresh:
                 if not await _is_stale(session, self._interval_hours):
                     return
                 movie_ids, show_ids = await _wanted_ids(session)
+                # Read, close, download, write. This loop starts at boot,
+                # before its first interval wait (see run() above), and the
+                # two reads just made would otherwise have been held open
+                # across refresh()'s downloads and its 9.8M-row parse -- 178
+                # seconds measured at 05:20:12Z on 2026-09-03, and only under
+                # the 300 s alert threshold because a deploy killed it. The
+                # write phase inside refresh() opens its own short
+                # transactions (store_ratings/store_episodes/
+                # _save_dataset_state each commit); _fetch_dataset closes the
+                # poll-state read the same way, immediately before its
+                # download.
+                await session.commit()
                 rating_count = await refresh(session, self._http, movie_ids, show_ids)
                 episode_count = await _stored_episode_count(session, show_ids)
         except Exception as exc:  # noqa: BLE001 - deliberately never propagates

@@ -108,7 +108,8 @@ def build() -> FastAPI:
     # the effective one. Building the holder there rather than here is what
     # gives every test's application one too.
     app = create_app(
-        config, session_factory, secrets, run_background=True, plex_factory=plex_client
+        config, session_factory, secrets, run_background=True,
+        plex_factory=plex_client, engine=engine,
     )
     # Which document the config came from. create_app defaults this to
     # DEFAULT_CONFIG_PATH; rebinding it to the path this call actually read is
