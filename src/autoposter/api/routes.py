@@ -26,6 +26,7 @@ from autoposter.api.candidates import router as candidates_router
 from autoposter.api.collections_builders import router as collections_builders_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.facts_backfill import router as facts_backfill_router
+from autoposter.api.item_overrides import router as item_overrides_router
 from autoposter.api.jobs import _number, _text
 from autoposter.api.jobs import router as jobs_router
 from autoposter.api.logs import router as logs_router
@@ -229,6 +230,14 @@ router.include_router(version_router)
 # here" are one definition. Folding that into this module would put a second,
 # subtler kind of query beside the plain column listings.
 router.include_router(action_center_router)
+
+# Per-item metadata overrides (roadmap row 99): the values an operator has
+# declared for one item, which beat every provider source for that item. Its
+# own module because it is the only place in this API where an operator's
+# free text becomes a value written into Plex, and the two rules that makes
+# necessary -- never seed a row from a provider (the freezing hazard) and
+# never echo the value in a refusal (row 213) -- are the substance of it.
+router.include_router(item_overrides_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
