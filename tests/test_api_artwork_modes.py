@@ -20,6 +20,8 @@ from httpx import ASGITransport, AsyncClient
 from PIL import Image
 from sqlalchemy import select
 
+from conftest import decodable_png
+
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
@@ -38,7 +40,11 @@ POSTER_BYTES = b"\xff\xd8 poster bytes from plex"
 AGENT_KEY = "metadata://posters/tmdb_12345"
 AGENT_ART_KEY = "metadata://art/tmdb_12345"
 LOGO_URL = "https://provider.example/logo.png"
-LOGO_BYTES = b"\x89PNG\r\n\x1a\n the clearlogo bytes"
+# A genuinely decodable PNG, not a placeholder: the logo updater now decodes
+# every body it keeps (``render/artwork_fetch._validate_image``), so a
+# placeholder would send the pool-paused pin down the refusal path instead of
+# the behaviour it is about.
+LOGO_BYTES = decodable_png()
 # What Plex keys our clearlogo upload under, and therefore the revert marker.
 OUR_LOGO_KEY = "upload://clearLogos/ours-7f3c9a"
 
