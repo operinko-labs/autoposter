@@ -44,8 +44,20 @@ SEASON = ResolvedItem(
     season_number=1, episode_number=None, root_folder="A Show (1999)",
     file_path=None, art_url=None, tmdb_id=1399, tvdb_id=None, imdb_id=None,
 )
+EPISODE = ResolvedItem(
+    rating_key="e1", library="TV Shows", kind="episode", title="An Episode", year=1999,
+    season_number=1, episode_number=1, root_folder="A Show (1999)",
+    file_path=None, art_url=None, tmdb_id=1399, tvdb_id=None, imdb_id=None,
+)
+ITEMS = {"movie": MOVIE, "season": SEASON, "episode": EPISODE}
 MOVIE_INTENT = RenderIntent(kind="movie", title="A Movie", tmdb_id=550)
 SEASON_INTENT = RenderIntent(kind="season", title="A Show", tmdb_id=1399, season_number=1)
+EPISODE_INTENT = RenderIntent(
+    kind="episode", title="An Episode", tmdb_id=1399, season_number=1, episode_number=1
+)
+# One intent per ART_KINDS_FOR key that has a distinct art kind: the four
+# render kinds, on three items, so every kind is driven through process_item.
+INTENTS = (MOVIE_INTENT, SEASON_INTENT, EPISODE_INTENT)
 
 
 def _config(tmp_path):
@@ -68,7 +80,7 @@ class _Plex:
     so nothing may fetch a live Plex object."""
 
     async def resolve(self, intent):
-        return MOVIE if intent.kind == "movie" else SEASON
+        return ITEMS[intent.kind]
 
     async def fetch_item(self, rating_key):
         raise AssertionError(
@@ -116,14 +128,15 @@ def _stub_compositor(monkeypatch):
     return composites
 
 
-async def _pass(session, config) -> dict[str, tuple[str, str | None]]:
-    """One process_item over the movie and the season.
+async def _pass(session, config, *intents) -> dict[str, tuple[str, str | None]]:
+    """One process_item over each intent -- all three unless told otherwise.
 
-    Answers {art_kind: (fingerprint, detail)} -- the three rows the two
-    intents imply, keyed by art kind because no two of them share one.
+    Answers {art_kind: (fingerprint, detail)} for EVERY stored row, keyed by
+    art kind because no two of the four share one; a pass over a subset of
+    the intents still reports the rows the others left behind.
     """
     async with _http() as http:
-        for intent in (MOVIE_INTENT, SEASON_INTENT):
+        for intent in intents or INTENTS:
             await process_item(session, config, http, _Plex(), [_Provider()], intent)
     rows = (await session.execute(select(Render))).scalars().all()
     return {row.art_kind: (row.fingerprint, row.detail) for row in rows}
@@ -134,17 +147,19 @@ async def test_a_season_poster_edit_moves_only_the_season_s_stored_fingerprint(
 ):
     """THE ROW, at the only place it is observable.
 
-    Before row 111 all three fingerprints moved on this edit and the whole
+    Before row 111 all four fingerprints moved on this edit and the whole
     library re-rendered. `render_version_for` reaches `compute_fingerprint`'s
     element 0 through `render_artifact`, so now the season's moves and the
-    movie's two are byte-identical -- and the movie's renders report
+    other three are byte-identical -- and those renders report
     `detail == "unchanged"`, which is the pipeline saying it did no work
-    rather than the test inferring it.
+    rather than the test inferring it. The recorder says it a second way:
+    the movie and the episode are walked first, alone, and not one `magick`
+    argv is recorded before the season's own pass records some.
     """
-    _stub_compositor(monkeypatch)
+    composites = _stub_compositor(monkeypatch)
     config = _config(tmp_path)
     before = await _pass(session, config)
-    assert set(before) == {"poster", "background", "season_poster"}
+    assert set(before) == {"poster", "background", "season_poster", "title_card"}
 
     config.artwork.season_poster.text.max_point_size += 1
     # `build_config` is the only production path that derives this; a test
@@ -152,12 +167,15 @@ async def test_a_season_poster_edit_moves_only_the_season_s_stored_fingerprint(
     # grandfather (Task 4) reads it.
     config.version = render_version(config)
 
-    after = await _pass(session, config)
+    composites.clear()
+    await _pass(session, config, MOVIE_INTENT, EPISODE_INTENT)
+    assert composites == [], "a kind the edit never touched composited"
+    after = await _pass(session, config, SEASON_INTENT)
+    assert composites, "the season the edit touched did not composite"
     assert after["season_poster"][0] != before["season_poster"][0]
-    assert after["poster"][0] == before["poster"][0]
-    assert after["background"][0] == before["background"][0]
-    assert after["poster"][1] == "unchanged"
-    assert after["background"][1] == "unchanged"
+    for art_kind in ("poster", "background", "title_card"):
+        assert after[art_kind][0] == before[art_kind][0], art_kind
+        assert after[art_kind][1] == "unchanged", art_kind
 
 
 async def test_a_global_input_edit_moves_every_kind_s_stored_fingerprint(
@@ -174,6 +192,7 @@ async def test_a_global_input_edit_moves_every_kind_s_stored_fingerprint(
     _stub_compositor(monkeypatch)
     config = _config(tmp_path)
     before = await _pass(session, config)
+    assert set(before) == {"poster", "background", "season_poster", "title_card"}
 
     config.artwork.output_quality = "88%"
     config.version = render_version(config)

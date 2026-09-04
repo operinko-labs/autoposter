@@ -459,6 +459,34 @@ def test_render_version_for_is_stable_across_two_loads_of_identical_content(tmp_
         assert render_version_for(kind, a) == render_version_for(kind, b), kind
 
 
+# The four values the shipped example config hashes to, captured from the tree
+# in the test container. Linux path spelling: `_shared_render_inputs` dumps the
+# roots through `str(Path)`, which is what the pod and CI compute.
+EXAMPLE_PER_KIND_VERSIONS = {
+    "poster": "4ac64b5874ce0ff3",
+    "season_poster": "056434d7e3ab6d49",
+    "background": "9ae9ab3b95ae68ec",
+    "title_card": "31f00cfe0ef31fba",
+}
+
+
+def test_the_example_config_s_four_per_kind_versions_are_pinned_literally():
+    """The one ABSOLUTE pin in a file of relative ones.
+
+    Every other test here says "this kind moved, that one did not", which is
+    blind to a change that moves all four the same way -- a payload key
+    renamed, a field dumped in a new shape, a root spelled differently. Any
+    of those re-renders a whole library on deploy while every relative pin
+    stays green. When one of these moves on purpose (an `artwork` field added
+    is the ordinary case, and it moves production the same way), the commit
+    that moves it re-captures it and says why.
+    """
+    config = load_config(EXAMPLE)
+    assert {
+        kind: render_version_for(kind, config) for kind in RENDER_ART_KINDS
+    } == EXAMPLE_PER_KIND_VERSIONS
+
+
 def test_a_non_render_edit_moves_no_kind_s_version():
     """The same posture `config.version` has held since it stopped being a
     hash of the file's bytes: a cadence tweak cannot change a pixel."""
