@@ -139,18 +139,23 @@ Practical consequences:
     gravity: the offset is ADDED under a south* gravity (case-insensitive —
     `South`/`SOUTHEAST` both count) and clears the season block's FITTED
     point size, not its configured maximum — the show-title block's own
-    `text_offset` is IGNORED once the gate is on; the stacking rule owns the
-    position. The shipped example deliberately ships
-    `show_title.text_offset: "+120"` against the season block's `"+300"`
-    (Posterizarr gives both the same `"+300"`, which would overlap) so the
-    wiring is exercised by two different numbers rather than one that
-    happens to agree. **Limitation:** the clearance is one fitted point
-    size, not the season block's rendered height, so a season title that
-    wraps to two lines is only cleared past its bottom line. For an episode,
-    the impact preview's show title is always `None` — episodes carry
-    `title_card` rows only, and `season_poster` rows are always seasons. No
-    test for this feature carries `@pytest.mark.imagemagick`; the
-    compositor is stubbed throughout.
+    `text_offset` AND `gravity` are IGNORED once the gate is on; the
+    stacking rule owns the position AND the anchor, so the show title is
+    always drawn at the season block's own gravity regardless of what the
+    show-title block itself is set to. The shipped example deliberately
+    ships `show_title.text_offset: "+120"` against the season block's
+    `"+300"` (Posterizarr gives both the same `"+300"`, which would overlap)
+    so the wiring is exercised by two different numbers rather than one that
+    happens to agree. Both ignored fields are live again on the one path
+    where there is no season text to stack above — a blanked season for that
+    show under `artwork.title_card.season_name_overrides`. **Limitation:**
+    the clearance is one fitted point size, not the season block's rendered
+    height, so a season title that wraps to two lines is only cleared past
+    its bottom line. For an episode, the impact preview's show title is
+    always `None` — episodes carry `title_card` rows only, and
+    `season_poster` rows are always seasons. No test for this feature
+    carries `@pytest.mark.imagemagick`; the compositor is stubbed
+    throughout.
 
 ## Secrets
 

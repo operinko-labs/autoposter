@@ -1034,13 +1034,18 @@ async def compose_styled(
                 ),
             )
         # Row 78: the show title is drawn one line above the season text, so
-        # it is composited at a DERIVED offset rather than its configured one.
-        # A copy, never a mutation: `settings` is the live config object the
-        # holder serves to every other reader.
+        # it is composited at a DERIVED offset AND the season block's own
+        # gravity, rather than its configured ones -- the stacking rule owns
+        # the position AND the anchor, so the two blocks agree on which edge
+        # "above" is measured from. A copy, never a mutation: `settings` is
+        # the live config object the holder serves to every other reader.
         draw_style = style
         if style is show_title_style and primary_point_size is not None:
             draw_style = style.model_copy(
-                update={"text_offset": stacked_above(settings.text, primary_point_size)}
+                update={
+                    "text_offset": stacked_above(settings.text, primary_point_size),
+                    "gravity": settings.text.gravity,
+                }
             )
         await asyncio.to_thread(
             compositor.run,

@@ -307,6 +307,47 @@ async def test_the_gate_on_draws_the_show_title_as_a_second_block(
     assert drawn[1] == ("SEVERANCE", "south", "+0+430")
 
 
+async def test_the_gate_on_draws_the_show_title_at_the_season_blocks_gravity(
+    config, tmp_path, monkeypatch,
+):
+    """I1 (branch review): the derived offset's SIGN comes from the season
+    block's gravity (``stacked_above``), so the drawn caption's ANCHOR must
+    come from the same place or the sign and the anchor disagree -- an
+    operator who moves the season text to a non-bottom gravity without
+    touching the show-title block would otherwise get a title drawn hundreds
+    of pixels from where the derived offset assumed it would land.
+
+    The season block is retargeted to ``north``/``+300``; the show-title
+    block keeps the example's own ``south`` UNCHANGED, so a fix that copies
+    ``text_offset`` but not ``gravity`` would still draw this caption at
+    "south" and this assertion would catch it.
+    """
+    config.artwork.season_poster.text.gravity = "north"
+    config.artwork.season_poster.show_title.add_text = True
+    assert config.artwork.season_poster.show_title.gravity == "south", (
+        "the show-title block's OWN gravity is untouched -- proving the "
+        "drawn gravity below comes from the SEASON block, not a coincidence"
+    )
+    calls = _stub_magick(monkeypatch, point_size=120)
+    working = tmp_path / "season.jpg"
+    working.write_bytes(b"base")
+    primary, secondary = title_text_for("season_poster", _season(), config)
+
+    await compose_styled(
+        config, "season_poster", working,
+        primary_text=primary, secondary_text=secondary,
+        draw_text=True, logo_path=None,
+    )
+
+    drawn = _captions(calls)
+    assert drawn[0] == ("SEASON 2", "north", "+0+300")
+    # "north" is not bottom-anchored, so `stacked_above` SUBTRACTS:
+    # 300 - (120 fitted + 10 gutter) = 170. The show title must draw at
+    # "north" too -- the SEASON block's gravity -- not its own configured
+    # "south".
+    assert drawn[1] == ("SEVERANCE", "north", "+0+170")
+
+
 def test_the_show_title_stacks_one_line_above_the_season_text(config):
     """The layout adjudication, pinned as computed offsets rather than pixels.
 
@@ -499,15 +540,16 @@ def test_a_season_name_override_renames_the_season_posters_own_text(config):
 async def test_a_blank_season_override_leaves_the_show_title_at_its_own_offset(
     config, tmp_path, monkeypatch,
 ):
-    """The one path on which the show title's OWN ``text_offset`` is live.
+    """The one path on which the show title's OWN ``text_offset`` AND
+    ``gravity`` are live.
 
     A blanked ``season_name_overrides`` entry blanks the season text (pinned
     above); ``compose_styled``'s loop then skips that block entirely
     (``if style is None or not text: continue``), so ``primary_point_size``
     stays ``None`` and the ``style is show_title_style and primary_point_size
     is not None`` guard never fires. The show title draws at its own
-    CONFIGURED offset instead of a derived one -- defensible, since there is
-    no season text left to overlap, but unpinned until now.
+    CONFIGURED offset and gravity instead of derived ones -- defensible,
+    since there is no season text left to overlap, but unpinned until now.
     """
     config.artwork.title_card.season_name_overrides = {"2": ""}
     config.artwork.season_poster.show_title.add_text = True
@@ -525,8 +567,8 @@ async def test_a_blank_season_override_leaves_the_show_title_at_its_own_offset(
     )
 
     # Only ONE caption: a blank season text means "nothing to draw", not
-    # "draw an empty caption" -- and the show title's geometry is its own
-    # configured "+120", not a derived value.
+    # "draw an empty caption" -- and the show title's gravity and geometry
+    # are its own configured "south"/"+120", not derived values.
     assert _captions(calls) == [("SEVERANCE", "south", "+0+120")]
 
 
