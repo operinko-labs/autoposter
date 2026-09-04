@@ -11,9 +11,16 @@ scopes for that reason (`audio_language`, `resolution`'s movie-only kind,
 `duplicate`, `network`) do not bind here -- the recon's own table, adjudication
 A3b answered by construction rather than by relaxing a column. That is a
 `kinds`-column fact only, not an accessor one (T1 review finding L-2):
-`audio_language`, `duplicate` and `network` still have no accessor on this
-view and are refused the same way they always were. `versions` (sub-phase
-C2a) is the first attribute this view has genuinely gained since C1.
+`duplicate` and `network` still have no accessor on this view and are
+refused the same way they always were. `versions` (sub-phase C2a) was the
+first attribute this view genuinely gained since C1; sub-phase C2b added
+three more -- `aspect` (shared verbatim with `PlexItemView`) and the two
+stream-language rows, which this view answers from the `MediaInfo` the badge
+pass already built rather than from the collections engine's batched
+enrichment. `audio_language` is therefore no longer an example of an
+attribute this view cannot supply; it is an example of the two views
+answering the same question from two different reads, which is what the
+verdict-level agreement pins below exist for.
 
 What DOES bind, and is pinned below: wherever the two views both answer, they
 must answer identically. A disagreement would be the same-name-different-filter
@@ -23,6 +30,7 @@ import pytest
 
 from autoposter.badges.values import media_info_from_plex
 from autoposter.collections.filter_values import PlexItemView
+from autoposter.collections.filters import evaluate, predicates as predicates_of
 from autoposter.overlays.selection import (
     OVERLAY_ATTRIBUTES,
     AttributeNotOnItem,
@@ -32,6 +40,7 @@ from autoposter.overlays.selection import (
     select,
 )
 from autoposter.overlays.schema import OverlayDefinition
+from autoposter.plex.client import ItemTags
 
 # `compiled_condition`, `parse_condition` and `select` are imported below, in
 # Step 9 -- Step 6 (next) writes only the view half of this module, so
@@ -41,19 +50,37 @@ from autoposter.overlays.schema import OverlayDefinition
 
 
 class _Media:
-    def __init__(self, resolution):
+    def __init__(self, resolution, aspect=None, audio=(), subtitles=()):
         self.videoResolution = resolution
+        self.aspectRatio = aspect
         self.audioCodec = "eac3"
         self.audioChannels = 6
-        self.parts = []
+        streams = [
+            type("S", (), {"streamType": 2, "languageCode": code})() for code in audio
+        ] + [
+            type("S", (), {"streamType": 3, "languageCode": code})() for code in subtitles
+        ]
+        self.parts = [type("P", (), {"file": "/movies/X/X.mkv", "streams": streams})()]
 
 
 class _Item:
     """A plexapi-shaped stand-in. Plain attributes, so
-    `object.__getattribute__` (which PlexItemView uses) reaches them."""
+    `object.__getattribute__` (which PlexItemView uses) reaches them.
 
-    def __init__(self, resolutions=("1080",), content_rating="PG-13"):
-        self.media = [_Media(r) for r in resolutions]
+    `aspects`, `audio` and `subtitles` are per-VERSION lists so a
+    multi-version item can be shaped: `_Item(resolutions=("1080", "4k"),
+    aspects=(None, 2.35))` is the unanalysed-first-version case adjudication
+    A-2's rule answers."""
+
+    def __init__(
+        self, resolutions=("1080",), content_rating="PG-13",
+        aspects=(), audio=("eng",), subtitles=(),
+    ):
+        padded = tuple(aspects) + (None,) * (len(resolutions) - len(aspects))
+        self.media = [
+            _Media(r, padded[i], audio if i == 0 else (), subtitles if i == 0 else ())
+            for i, r in enumerate(resolutions)
+        ]
         self.contentRating = content_rating
         self.duration = 4845912
         self.seasonNumber = None
@@ -80,7 +107,10 @@ def _view(item, facts=None):
 
 
 def test_the_vocabulary_is_exactly_what_this_slice_supplies():
-    assert OVERLAY_ATTRIBUTES == ("content_rating", "resolution", "versions")
+    assert OVERLAY_ATTRIBUTES == (
+        "content_rating", "resolution", "versions",
+        "aspect", "audio_language", "subtitle_language",
+    )
 
 
 def test_content_rating_comes_from_plex_not_from_item_facts():
@@ -112,7 +142,8 @@ def test_an_attribute_outside_the_vocabulary_raises_rather_than_answering_none()
     """None means "this item has no value", which the table turns into a
     defined match result. Answering None for something we simply cannot read
     would be indistinguishable from a real answer -- the same discipline
-    `filter_values.AttributeNotInListing` holds."""
+    `filter_values.AttributeNotInListing` holds. `genre` is still outside
+    after C2b; `audio_language` no longer is."""
     with pytest.raises(AttributeNotOnItem) as caught:
         _view(_Item()).get("genre")
     assert "content_rating" in str(caught.value)
@@ -185,12 +216,6 @@ def test_a_condition_parses_through_the_shared_grammar():
     assert written[0].operator == "regex"
 
 
-def predicates_of(group):
-    from autoposter.collections.filters import predicates as _predicates
-
-    return _predicates(group)
-
-
 def test_an_attribute_outside_the_overlay_vocabulary_is_refused_at_parse():
     """Global Constraint 10. `genre` is a perfectly good COLLECTIONS filter
     attribute; this view cannot supply it, so an operator gets told, at load,
@@ -211,7 +236,9 @@ def test_an_attribute_no_filter_vocabulary_has_is_refused_by_the_shared_parser()
 
 
 def test_an_operator_the_type_does_not_carry_is_refused():
-    """`content_rating` is a `tag`; `tag` takes eq/not/regex and nothing else."""
+    """`content_rating` is a `tag`; `tag` takes eq/not/regex and, since
+    sub-phase C2b, the four `count_*` modifiers -- and nothing else.
+    `.contains` is a `str` operator and stays refused."""
     with pytest.raises(ValueError) as caught:
         parse_condition({"content_rating.contains": "PG"})
     assert "content_rating" in str(caught.value)
@@ -270,3 +297,154 @@ def test_outcomes_keep_the_configured_order_not_a_sorted_one():
     second = OverlayDefinition(name="a", condition={"resolution": "1080"})
     _, outcomes = select([first, second], _view(_Item(resolutions=("1080",))))
     assert outcomes == [("z", False), ("a", True)]
+
+
+# --- Concern E: aspect and the stream languages, and their agreement pins --
+
+
+def test_aspect_answers_the_media_aspect_ratio():
+    assert _view(_Item(aspects=(1.78,))).get("aspect") == 1.78
+
+
+def test_aspect_walks_the_versions_the_same_way_resolution_does():
+    """Adjudication A-2 on the overlay side: the FIRST version carrying the
+    attrib, because a `float` cannot answer the tuple `resolution` does."""
+    item = _Item(resolutions=("1080", "4k"), aspects=(None, 2.35))
+    assert _view(item).get("aspect") == 2.35
+
+
+def test_an_unanalysed_item_has_no_aspect():
+    """Plex omits `aspectRatio` until it has analysed the file. Missing, not
+    0.0 -- the float missing-value rule then excludes it under every
+    operator, so the item draws no aspect badge rather than the wrong one."""
+    assert _view(_Item()).get("aspect") is None
+
+
+def test_the_two_views_agree_on_aspect_raw_and_by_verdict():
+    """`aspect` is the ONE C2b attribute whose agreement is structural: both
+    views call the same `_aspect` function object, imported rather than
+    copied, the way `resolution` and `versions` already are. So this is the
+    one place a RAW pin is legitimate (L-1's rule is that a raw pin is a
+    stronger claim than the engine needs -- not that it is always false)."""
+    band = parse_condition({"aspect.gt": 1.77, "aspect.lt": 1.79})
+    for aspects, resolutions in (
+        ((1.78,), ("1080",)),
+        ((None, 2.35), ("1080", "4k")),
+        ((), ("1080",)),
+    ):
+        item = _Item(resolutions=resolutions, aspects=aspects)
+        assert _view(item).get("aspect") == PlexItemView(item).get("aspect")
+        assert evaluate(band, _view(item)) == evaluate(band, PlexItemView(item))
+
+
+def test_the_stream_languages_come_from_the_media_info_the_badge_pass_built():
+    """NOT from the collections view's batched enrichment: the badge pass
+    already walked `part.streams` in `media_info_from_plex`, so the values
+    are in hand and cost nothing.
+
+    The value handed on is Kometa's own -- EVERY stream, across every
+    `<Media>`, NOT deduplicated (`modules/plex.py:2915-2922`) -- which is
+    what `MediaInfo.audio_stream_languages` /
+    `MediaInfo.subtitle_stream_languages` carry. The distinct-language field
+    beside them (`MediaInfo.audio_languages`, the flag badge's input) is
+    deliberately NOT what this view answers, and that is pinned here rather
+    than left to whichever field a reader's eye lands on first: the third
+    item below has two English tracks and must answer two."""
+    item = _Item(audio=("eng", "fin"), subtitles=("eng", "swe", "fin"))
+    assert _view(item).get("audio_language") == ("en", "fi")
+    assert _view(item).get("subtitle_language") == ("en", "sv", "fi")
+
+    repeats = _Item(audio=("eng", "eng"), subtitles=("eng", "eng", "dan"))
+    assert _view(repeats).get("audio_language") == ("en", "en")
+    assert _view(repeats).get("subtitle_language") == ("en", "en", "da")
+    assert media_info_from_plex(repeats).audio_languages == ("en",), (
+        "the distinct field is unchanged; this view just does not read it"
+    )
+
+
+def test_an_item_with_no_streams_answers_empty_tuples_not_none():
+    """`()` is what `MediaInfo` carries and what this view hands on
+    unchanged. `filters._is_missing` reads an empty sequence as missing for a
+    `tag`, and the `.count_*` operators reduce `()` and `None` alike to zero
+    above that rule (Kometa's own `plex.py:2931-2932`), so the two are
+    verdict-identical either way -- which is exactly why the next test pins
+    VERDICTS rather than raw values."""
+    item = _Item(audio=(), subtitles=())
+    assert _view(item).get("audio_language") == ()
+    assert _view(item).get("subtitle_language") == ()
+
+
+def test_the_two_views_agree_by_verdict_on_distinct_languages_and_diverge_on_repeats():
+    """**L-1, met here** (roadmap row 100's C2b sentence, reworded per the C1
+    branch review). The two views source these from genuinely different
+    reads -- this one from the `MediaInfo` the badge pass built off
+    `part.streams`, the collections one from the batched metadata endpoint's
+    `ItemTags` -- so they cannot share a function object the way `aspect`
+    does. And their RAW answers differ by construction on the empty case:
+    `PlexItemView` appends `or None`, this view does not. On an item whose
+    stream languages are DISTINCT they are nonetheless verdict-equivalent
+    under every operator, which is the claim the engine actually needs.
+
+    **AND THE DIVERGENCE IS RECORDED, not papered over.** On an item with
+    REPEATED languages the two genuinely disagree under `.count_*`, because
+    `plex/client.py::_stream_languages` ends in `_uniq` while this view
+    carries Kometa's undeduplicated list. Kometa's own answer is this view's
+    (`plex.py:2915-2922`); the collections side's dedupe is pre-existing,
+    predates C2b by two phases, is out of this sub-phase's Files block, and
+    affects only the four operators C2b introduces -- so it ships as a NAMED
+    divergence with a failing-if-it-changes pin rather than as a silent
+    inconsistency. Closing it means widening `plex/client.py`, which is a
+    separate adjudication.
+    """
+    for audio in (("eng", "fin"), ("eng",), ()):
+        item = _Item(audio=audio)
+        codes = tuple(code[:2].lower() for code in audio)
+        tags = ItemTags(
+            genres=(), labels=(), collections=(),
+            audio_languages=codes, subtitle_languages=(),
+        )
+        for condition in (
+            {"audio_language.count_gte": 2},
+            {"audio_language.count_gte": 2, "audio_language.count_lt": 3},
+            {"audio_language": "en"},
+        ):
+            group = parse_condition(condition)
+            assert evaluate(group, _view(item)) == evaluate(
+                group, PlexItemView(item, tags=tags)
+            ), (audio, condition)
+
+    repeats = _Item(audio=("eng", "eng"))
+    deduped = ItemTags(
+        genres=(), labels=(), collections=(),
+        audio_languages=("en",), subtitle_languages=(),
+    )
+    dual = parse_condition({"audio_language.count_gte": 2})
+    assert evaluate(dual, _view(repeats)) is True, "Kometa counts both tracks"
+    assert evaluate(dual, PlexItemView(repeats, tags=deduped)) is False, (
+        "the collections view's ItemTags are deduped upstream in "
+        "plex/client.py::_stream_languages -- a recorded, pre-existing "
+        "divergence, not something sub-phase C2b introduced or may fix here"
+    )
+
+
+def test_a_condition_can_now_name_aspect_and_the_count_modifiers():
+    for condition, attribute, operator in (
+        ({"aspect.gt": 1.77}, "aspect", "gt"),
+        ({"audio_language.count_gte": 2}, "audio_language", "count_gte"),
+        ({"subtitle_language.count_lt": 3}, "subtitle_language", "count_lt"),
+    ):
+        [written] = predicates_of(parse_condition(condition))
+        assert (written.attribute.name, written.operator) == (attribute, operator)
+
+
+def test_an_attribute_still_outside_the_vocabulary_is_refused_naming_the_six():
+    """The narrowing did not become a free-for-all: `genre` is a perfectly
+    good collections filter this view still cannot supply, and the refusal
+    now names all six attributes it CAN."""
+    with pytest.raises(ValueError) as caught:
+        parse_condition({"genre": "Horror"})
+    message = str(caught.value)
+    assert "genre" in message
+    for available in ("content_rating", "resolution", "versions",
+                      "aspect", "audio_language", "subtitle_language"):
+        assert available in message

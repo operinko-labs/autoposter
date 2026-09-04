@@ -33,11 +33,15 @@ about the `kinds` COLUMN specifically -- `resolution`'s `kinds=("movie",)` is
 the one restriction this view has ever genuinely relaxed, because
 `parse_filters` never consults `kinds` at all (verified by reading the whole
 parse path). It says nothing about which attributes have an ACCESSOR:
-`audio_language`, `duplicate` and `network` have none on this view and are
-refused by `OVERLAY_ATTRIBUTES` membership, a wholly different mechanism, and
-stay refused regardless of `kinds`. `versions` is the first attribute
-genuinely newly unlocked since C1 -- a real `filters.py` row, a real
-accessor, both dialects proven.
+`duplicate` and `network` have none on this view and are refused by
+`OVERLAY_ATTRIBUTES` membership, a wholly different mechanism, and stay
+refused regardless of `kinds`. `versions` was the first attribute genuinely
+newly unlocked since C1 -- a real `filters.py` row, a real accessor, both
+dialects proven -- and sub-phase C2b added three more the same way: `aspect`
+(its own row, its own shared accessor, both dialects proven) and the two
+stream-language rows, which were already real `filters.py` rows and gained
+an accessor HERE without gaining one on the collections view, because the
+two views read them from different places.
 `plex_item` is still very likely PARTIAL, though -- the badge path never
 copies it -- so this view's own accessors read it the same load-bearing way
 `filter_values.py`'s do (`object.__getattribute__`, imported directly rather
@@ -54,7 +58,12 @@ family that is off.
 import json
 from functools import lru_cache
 
-from autoposter.collections.filter_values import _listing_value, _resolutions, _versions
+from autoposter.collections.filter_values import (
+    _aspect,
+    _listing_value,
+    _resolutions,
+    _versions,
+)
 from autoposter.collections.filters import (
     FilterGroup,
     evaluate,
@@ -87,10 +96,44 @@ __all__ = [
 #   `filter_values.PlexItemView` via the same `_versions` function object,
 #   so Global Constraint 9's agreement is structural rather than merely
 #   tested.
+# - `aspect` (sub-phase C2b): the `<Media aspectRatio=...>` float, which is
+#   what the eight `aspect` bands compare. Adjudication A11's row, and
+#   shared the same structural way `versions` is -- one `_aspect` function
+#   object, imported rather than copied. Its multi-version rule is A-2's:
+#   the same whole-list walk `resolution` makes, narrowed to the first
+#   version carrying the attrib, because a `float` cannot answer a tuple.
+# - `audio_language`, `subtitle_language` (sub-phase C2b): the item's
+#   stream languages as Kometa itself reads them -- EVERY stream, across
+#   every `<Media>`, NOT deduplicated (`modules/plex.py:2915-2922`) --
+#   which is what `language_count`'s Dual/Multi bands count with Kometa's
+#   own `.count_*` modifiers. These two are the FIRST attributes this view
+#   answers from the `MediaInfo` rather than from `plex_item`, and
+#   deliberately so: `media_info_from_plex` already walked `part.streams`
+#   for this item before the view was built, so the values are in hand,
+#   while `filter_values.PlexItemView` reads the same two from the
+#   collections engine's batched metadata enrichment -- a different read,
+#   which no shared function object could span. Their agreement is therefore
+#   pinned at the VERDICT level (finding L-1), not on the raw values: this
+#   view answers `()` for an item with no streams where `PlexItemView`
+#   answers `None`, and the two are identical under every operator (the tag
+#   missing-value rule for the value operators, and the `.count_*` reduction
+#   to zero above it for the four count ones).
+#
+#   ONE DIVERGENCE, RECORDED RATHER THAN HIDDEN: on an item with REPEATED
+#   stream languages the two views disagree under `.count_*`, because
+#   `plex/client.py::_stream_languages` ends in `_uniq` while this view
+#   carries Kometa's undeduplicated list. Kometa's answer is this view's; the
+#   collections side's dedupe predates sub-phase C2b by two phases and lives
+#   in a module C2b does not touch. It affects only the four operators C2b
+#   introduces, it is pinned in `tests/test_overlay_selection.py` so it
+#   cannot drift unnoticed, and closing it is a separate adjudication.
 #
 # Later slices append; each addition owes a source note here and an agreement
 # pin against `filter_values.PlexItemView` if that view supplies it too.
-OVERLAY_ATTRIBUTES: tuple[str, ...] = ("content_rating", "resolution", "versions")
+OVERLAY_ATTRIBUTES: tuple[str, ...] = (
+    "content_rating", "resolution", "versions",
+    "aspect", "audio_language", "subtitle_language",
+)
 
 
 class AttributeNotOnItem(LookupError):
@@ -146,6 +189,40 @@ class OverlayItemView:
             return _resolutions(self._plex_item)
         if attribute == "versions":
             return _versions(self._plex_item)
+        if attribute == "aspect":
+            return _aspect(self._plex_item)
+        # The two stream-language rows read the MediaInfo, not `plex_item`:
+        # `media_info_from_plex` walked `part.streams` for this item before
+        # this view existed, so the answer is already in hand and reading
+        # `plex_item` again would be a second walk of the same data. `media`
+        # is None only for a caller that built this view by hand (several
+        # fingerprint pins do); answering None there is correct -- it means
+        # "no value", which the tag missing-value rule handles.
+        #
+        # Handed on as the bare tuple, `()` included, rather than
+        # `PlexItemView`'s `or None`: the two are verdict-identical
+        # (`filters._is_missing` reads an empty sequence as missing for a
+        # tag, and `.count_*` reduces both to zero above that rule), and
+        # this view's contract is to hand on what `MediaInfo` carries
+        # without reshaping it. See finding L-1 and the verdict-level
+        # agreement pins.
+        #
+        # The `*_stream_languages` fields, NOT `audio_languages`: the former
+        # are Kometa's own filter value (every stream, every `<Media>`, no
+        # dedupe -- `modules/plex.py:2915-2922`), the latter is the distinct
+        # set the flag badge draws from. Reading the wrong one here would
+        # make `audio_language.count_gte: 2` miss a film with two English
+        # tracks, which upstream badges as Dual.
+        if attribute == "audio_language":
+            return (
+                self._media.audio_stream_languages
+                if self._media is not None else None
+            )
+        if attribute == "subtitle_language":
+            return (
+                self._media.subtitle_stream_languages
+                if self._media is not None else None
+            )
         raise AttributeNotOnItem(
             f"{attribute!r} is not an attribute an overlay condition can "
             "read on this service. Available: " + ", ".join(OVERLAY_ATTRIBUTES)
