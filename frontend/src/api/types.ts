@@ -744,10 +744,15 @@ export interface ConfigSaveResponse {
  * `affected` is an over-estimate by construction -- see that module's
  * docstring -- so it renders with a "~".
  *
- * `by_art_kind` is not evidence that an edit picked those kinds. `config.version`
- * hashes the whole artwork section, so any artwork edit invalidates every
- * fingerprinted row and the breakdown is simply the shape of the library. Only
- * a gate (a disabled kind, `skip_tba`) can make the kinds differ.
+ * `by_art_kind` IS evidence about which kinds an edit touched. The render
+ * version is computed per art kind (`config/loader.py`'s
+ * `render_version_for`), so an edit to one kind's settings invalidates that
+ * kind's rows and leaves the others alone. A shared input -- an asset root,
+ * `library_folders`, `artwork.use_original_title`, the global
+ * `artwork.disable_online_asset_fetch`, `artwork.output_quality` -- is a
+ * member of every kind's payload and still reaches every row; that is the
+ * edit being global, not the breakdown failing to discriminate. A gate (a
+ * disabled kind, `skip_tba`) can also narrow it.
  */
 export interface ConfigImpact {
   affected: number;

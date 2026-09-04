@@ -875,11 +875,10 @@ describe("Settings preview", () => {
     expect(within(panel).getByText("title_card: 1")).toBeInTheDocument();
   });
 
-  it("does not claim the gated breakdown's kinds are the shape of the library", async () => {
-    // `affected` below `of_total` only happens through a gate (a disabled
-    // kind, or `skip_tba`), and a gate is a real signal about what the edit
-    // touched -- unlike the whole-library case, where every kind is
-    // affected regardless of what the edit was.
+  it("names the kinds a gated breakdown says the edit touched", async () => {
+    // `affected` below `of_total` happens through a gate (a disabled kind, or
+    // `skip_tba`) or, since row 111, through an edit that simply reached
+    // fewer kinds than were examined. Both make the breakdown a real signal.
     stubEditor({
       responses: {
         "/api/config/preview": previewBody({
@@ -897,15 +896,16 @@ describe("Settings preview", () => {
     await click("Preview");
 
     const panel = pendingPanel();
-    // The gate half holds regardless of whether the edit was gated or not.
     expect(
       within(panel).getByText(
         /a kind missing from the breakdown was excluded by a gate/i,
       ),
     ).toBeInTheDocument();
-    // The "singled out" sentence is only true in the whole-library case; a
-    // gated preview's kinds are a real signal, so it must not be there.
-    expect(panel.textContent).not.toMatch(/singled out/i);
+    expect(
+      within(panel).getByText(
+        /a kind counted below is one this edit actually touched/i,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("carries the API's own approximation caveat, verbatim, as the count's tooltip", async () => {
@@ -941,11 +941,11 @@ describe("Settings preview", () => {
     );
   });
 
-  it("says plainly that an artwork edit re-renders everything, rather than implying it picked rows", async () => {
-    // `config.version` hashes the whole artwork section, so any artwork edit
-    // invalidates every fingerprinted row and `affected` equals the whole
-    // examined population. A breakdown presented without this reads as though
-    // the edit selected those kinds; it did not.
+  it("says an every-kind count is the edit reaching every kind, not the artwork section being one hash", async () => {
+    // Before row 111 `affected === of_total` was what EVERY artwork edit
+    // looked like, and the copy said so. Now it means a genuinely shared
+    // input -- an asset root, use_original_title, output_quality -- and the
+    // sentence must not go back to blaming the artwork section.
     stubEditor({
       responses: {
         "/api/config/preview": previewBody({
@@ -964,20 +964,67 @@ describe("Settings preview", () => {
 
     const panel = pendingPanel();
     expect(
-      within(panel).getByText(
-        /any artwork change re-renders the whole library — ~9 of 9 artwork renders/i,
-      ),
+      within(panel).getByText(/this edit reaches every examined row — ~9 of 9 artwork renders/i),
     ).toBeInTheDocument();
-    // In the whole-library case the breakdown really is just the shape of the
-    // library, so both halves of the note apply.
+    expect(panel.textContent).not.toMatch(/re-renders the whole library/i);
     expect(
       within(panel).getByText(
-        /a kind counted below is not one the edit singled out/i,
+        /a kind counted below is one this edit actually touched/i,
       ),
     ).toBeInTheDocument();
+  });
+
+  it("no longer claims a counted kind is not one the edit singled out", async () => {
+    // The published promise row 111 inverts. Asserted as an ABSENCE, and on
+    // the whole-library fixture -- the arm where the old sentence used to be
+    // rendered -- so restoring the constant anywhere turns this red rather
+    // than passing vacuously on a fixture that never showed it.
+    stubEditor({
+      responses: {
+        "/api/config/preview": previewBody({
+          affected: 9,
+          by_art_kind: { poster: 5, title_card: 4 },
+          of_total: 9,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Preview");
+
+    const panel = pendingPanel();
+    expect(panel.textContent).not.toMatch(/singled out/i);
+    expect(panel.textContent).not.toMatch(/covers the whole artwork section/i);
+  });
+
+  it("carries the per-kind note in the partial arm too", async () => {
+    // The note is true in BOTH arms now, which is the whole inversion: it
+    // used to be rendered only where `affected === of_total`, because that
+    // was the only case it described.
+    stubEditor({
+      responses: {
+        "/api/config/preview": previewBody({
+          affected: 1,
+          by_art_kind: { title_card: 1 },
+          of_total: 5,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Preview");
+
+    const panel = pendingPanel();
+    expect(within(panel).getByText(/~1 of 5 artwork renders are out of date/)).toBeInTheDocument();
     expect(
       within(panel).getByText(
-        /a kind missing from the breakdown was excluded by a gate/i,
+        /a kind counted below is one this edit actually touched/i,
       ),
     ).toBeInTheDocument();
   });
