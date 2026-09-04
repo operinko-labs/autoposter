@@ -32,7 +32,7 @@ from pathlib import Path
 import httpx
 from conftest import decodable_png
 
-from autoposter.config.loader import load_config
+from autoposter.config.loader import load_config, render_version_for
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
@@ -323,7 +323,8 @@ async def test_a_healthy_row_keeps_the_exact_fingerprint_it_has_today(
         config, item(), "poster", draw_text=False, logo_sha=png_sha,
     )
     assert render.fingerprint == compute_fingerprint(
-        config.version, "poster", POSTER_URL, png_sha, text_inputs, asset_hashes
+        render_version_for("poster", config), "poster", POSTER_URL, png_sha,
+        text_inputs, asset_hashes,
     )
     assert len(logo_calls) == 1
     assert len(_logo_requests(provider)) == 1, (

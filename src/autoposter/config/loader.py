@@ -205,6 +205,27 @@ def render_version_for(art_kind: str, config: Config) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def moved_kinds(before: Config, after: Config) -> set[str]:
+    """Which art kinds an edit invalidates.
+
+    Option (b)'s one useful half, taken as a plain helper rather than as a
+    field on ``Config``. A ``config.versions`` map would grow
+    ``api/routes.COMPUTED_PATHS``, would make ``GET /api/config`` serve a
+    mapping where the editor renders a scalar, would turn
+    ``ConfigSaveResponse.version_before``/``version_after`` into a four-way
+    display, and would need a story for a computed ``dict[str, str]`` in both
+    the descriptions walk and the example-config guard. This buys the
+    exactness without touching any of that.
+
+    Answers a set so a caller can say "nothing" (an empty set is falsy) as
+    well as "which".
+    """
+    return {
+        art_kind for art_kind in RENDER_ART_KINDS
+        if render_version_for(art_kind, before) != render_version_for(art_kind, after)
+    }
+
+
 def read_config_document(path: Path) -> dict:
     """The YAML file as a plain dict, unvalidated.
 

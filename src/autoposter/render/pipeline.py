@@ -24,6 +24,7 @@ from autoposter.badges.values import (
     plex_native_ratings,
     video_format_text,
 )
+from autoposter.config.loader import render_version_for
 from autoposter.config.schema import Config
 from autoposter.db.models import EventLog, ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
@@ -58,7 +59,10 @@ logger = logging.getLogger(__name__)
 
 # Mirrored in frontend/src/artKind.ts, which shows each kind's first entry as
 # the item's primary art. A kind added here must be added there too, or its
-# pages fall back to `poster` and 404.
+# pages fall back to `poster` and 404. The flat list of art kinds -- the one a
+# render version is computed against -- lives in config/loader.py's
+# RENDER_ART_KINDS (roadmap row 111); a kind added here must be added there
+# too, or it silently gets no version of its own.
 ART_KINDS_FOR = {
     "movie": ["poster", "background"],
     "show": ["poster", "background"],
@@ -436,8 +440,13 @@ def adopted_fingerprint(
     provider URL produced it, so the comparison drops ``source_url`` on both
     sides rather than guessing at it.
     """
+    # render_version_for, not config.version: roadmap row 111 confines an
+    # invalidation to the kinds an edit touches. config.version is still the
+    # wholesale hash and is still what the dual-read grandfather below accepts
+    # from a row written before that row landed.
     return compute_fingerprint(
-        config.version, art_kind, None, base_sha256, text_inputs, asset_hashes
+        render_version_for(art_kind, config), art_kind, None, base_sha256,
+        text_inputs, asset_hashes,
     )
 
 
@@ -1258,8 +1267,12 @@ async def render_artifact(
             suppress_styling=suppress_styling,
         )
 
+        # render_version_for, not config.version (roadmap row 111): this art
+        # kind's own settings plus the shared roots, so retuning one kind's
+        # text block leaves the other three kinds' fingerprints byte-identical.
         fingerprint = compute_fingerprint(
-            config.version, art_kind, source_url, base_sha, text_inputs, asset_hashes
+            render_version_for(art_kind, config), art_kind, source_url, base_sha,
+            text_inputs, asset_hashes,
         )
         # target.exists() offloaded (it's a stat() against assets_root, which
         # can be an NFS mount) — only reached once the fingerprint already
