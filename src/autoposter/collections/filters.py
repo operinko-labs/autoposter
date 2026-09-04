@@ -1284,6 +1284,42 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         search_field=None, show_search_field=None,
         search_kinds=(), filterable=True,
     ),
+    FilterAttribute(
+        "aspect", "float", _BOTH, "listing",
+        "The `<Media aspectRatio=...>` float (plexapi casts it, `Media."
+        "_loadData`), which Kometa reads through the same attribute "
+        "(`plex.py:200`) and puts in `float_attributes` (`builder.py:474`, "
+        "`plex.float_attributes + ['aspect', 'tmdb_vote_average']`) -- so it "
+        "is a CLIENT-SIDE `filters:` comparison and never a Plex search: the "
+        "second of the 44 filter-only names to arrive under a table row, "
+        "after `versions`. ADJUDICATION A11 (raised in the phase-C recon, "
+        "ruled by sub-phase C2b). `listing`: the section listing carries "
+        "`<Media>` in full and un-truncated (9a's probe, recorded on the "
+        "`resolution` row above), which is the same read that row and "
+        "`versions` already rely on. KINDS: both, and that is Kometa's own "
+        "scoping rather than an inference -- `aspect` sits in "
+        "`builder.py:278-308`'s `filters_by_type[\"movie_show_season_"
+        "episode\"]`, and `filters` (`builder.py:350-356`) is built by "
+        "substring test, so both `filters[\"movie\"]` and `filters[\"show\"]` "
+        "carry it. A show has no `<Media>` and is excluded by the float "
+        "missing-value rule anyway, so the column costs nothing either way; "
+        "it is set to what upstream sets. MULTI-VERSION RULE (adjudication A-2): "
+        "a `float` cannot answer a tuple the way `resolution`'s `tag` type "
+        "does, so `filter_values._aspect` walks every `<Media>` child in "
+        "listing order -- the SAME selection `_resolutions` makes -- and "
+        "answers the FIRST that carries the attrib; the production "
+        "histogram on the `resolution` row ({1: 1905, 2: 46, 3: 4}) is why "
+        "that is the single-version answer for almost every item. CAVEAT an "
+        "operator needs: Kometa's own aspect bands are open at BOTH ends "
+        "(`.gt`/`.lt`, never `.gte`/`.lte`), so a 1.90 aspect matches none "
+        "of them -- transcribed, not corrected. An item Plex has not "
+        "analysed carries no `aspectRatio` at all and the `float` "
+        "missing-value rule excludes it under every operator, `.not` "
+        "included, which is what keeps an unanalysed file un-badged rather "
+        "than wrongly badged.",
+        search_field=None, show_search_field=None,
+        search_kinds=(), filterable=True,
+    ),
 )
 
 BY_NAME: dict[str, FilterAttribute] = {row.name: row for row in FILTER_ATTRIBUTES}

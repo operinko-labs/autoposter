@@ -126,6 +126,7 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "duplicate",
         "unmatched",
         "versions",
+        "aspect",
     ]
 
 
@@ -173,7 +174,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "tag": 13,
         "str": 3,
         "int": 4,
-        "float": 3,
+        "float": 4,
         "date": 3,
         "duration": 1,
         "bool": 7,
@@ -192,6 +193,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "last_played",
         "user_rating",
         "versions",
+        "aspect",
     ]
     assert by_source["tier2-batched"] == [
         "genre",
@@ -283,7 +285,7 @@ def test_item_kinds_are_movie_show_or_both():
         "unplayed", "writer",
     ]
     assert show_only == ["network"]
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 21
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 22
 
 
 def test_versions_is_filterable_with_the_int_operators():
@@ -306,6 +308,42 @@ def test_versions_is_not_searchable_and_the_refusal_says_where_it_lives():
         parse_filters({"versions.gt": 1}, searching=True)
     message = str(error.value)
     assert "versions" in message
+    assert "no search field" in message
+    assert "filters:" in message
+
+
+def test_aspect_is_filterable_with_the_float_operators():
+    """Dialect 1 of A11's both-dialect pin: `aspect.gt`/`aspect.lt` in a
+    `filters:` block, the way the aspect overlay family (T2) selects on it.
+    The bands are open at BOTH ends upstream (`.gt`/`.lt`, never the
+    inclusive forms), which is why the family transcribes 1.32/1.34 around a
+    nominal 1.33 rather than 1.325/1.335."""
+    band = {"aspect.gt": 1.32, "aspect.lt": 1.34}
+    assert evaluate(parse_filters(band), _view("aspect", 1.33)) is True
+    assert evaluate(parse_filters(band), _view("aspect", 1.32)) is False
+    assert evaluate(parse_filters(band), _view("aspect", 1.34)) is False
+    assert evaluate(parse_filters(band), _view("aspect", 1.90)) is False
+
+
+def test_an_item_with_no_aspect_is_excluded_by_every_operator():
+    """The `float` half of the missing-value rule, which is what makes an
+    UNANALYSED item draw no aspect badge rather than a wrong one: Plex omits
+    `aspectRatio` on a file it has not analysed, and `_is_missing` excludes a
+    missing float under every operator, `.not` included."""
+    assert evaluate(parse_filters({"aspect.gt": 1.0}), _view("aspect", None)) is False
+    assert evaluate(parse_filters({"aspect.not": 1.78}), _view("aspect", None)) is False
+
+
+def test_aspect_is_not_searchable_and_the_refusal_says_where_it_lives():
+    """Dialect 2 of A11's both-dialect pin, the same shape `versions` already
+    has: `aspect` is one of the 44 Kometa filter names with no Plex search
+    field at all -- `builder.py:474` puts it in `float_attributes`, a
+    CLIENT-SIDE comparison, and `plex.searches` has no entry for it -- so a
+    `plex_search:` use is refused naming the `filters:` block instead."""
+    with pytest.raises(ValueError) as error:
+        parse_filters({"aspect.gt": 1.77}, searching=True)
+    message = str(error.value)
+    assert "aspect" in message
     assert "no search field" in message
     assert "filters:" in message
 
@@ -384,7 +422,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 24, ("movie",): 8, ("show",): 1, (): 1,
+        ("movie", "show"): 24, ("movie",): 8, ("show",): 1, (): 2,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -392,27 +430,31 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     assert BY_NAME["duration"].search_kinds == ("movie",)
 
 
-def test_every_row_but_versions_is_searchable_and_twentysix_are_filterable():
-    """C2a's `versions` row (adjudication A14) is the table's first
-    filterable-but-not-searchable row: it has no Plex search field at all
-    (Kometa's own `versions` filter has none -- the search-side spelling is
-    the separate, unfilterable `duplicate` row). Every other row remains
-    both, unchanged."""
+def test_only_versions_and_aspect_are_unsearchable_and_twentyseven_are_filterable():
+    """`versions` (C2a, A14) was the table's first filterable-but-not-
+    searchable row; `aspect` (C2b, A11) is the second, and for the same
+    reason -- Kometa's own `aspect` filter is a client-side `float_attributes`
+    comparison (`builder.py:474`) and `plex.searches` spells no search field
+    for it. Every other row remains both, unchanged."""
     from autoposter.collections.filters import (
         FILTERABLE_ATTRIBUTES,
         FILTER_ATTRIBUTES,
         SEARCHABLE_ATTRIBUTES,
     )
 
-    assert all(row.searchable for row in FILTER_ATTRIBUTES if row.name != "versions")
+    assert all(
+        row.searchable for row in FILTER_ATTRIBUTES
+        if row.name not in ("versions", "aspect")
+    )
     assert BY_NAME["versions"].searchable is False
+    assert BY_NAME["aspect"].searchable is False
     assert len(SEARCHABLE_ATTRIBUTES) == 33
-    assert len(FILTERABLE_ATTRIBUTES) == 26
+    assert len(FILTERABLE_ATTRIBUTES) == 27
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
         "unplayed", "progress", "decade",
         "hdr", "dovi", "trash", "duplicate", "unmatched",
     }
-    assert set(FILTERABLE_ATTRIBUTES) - set(SEARCHABLE_ATTRIBUTES) == {"versions"}
+    assert set(FILTERABLE_ATTRIBUTES) - set(SEARCHABLE_ATTRIBUTES) == {"versions", "aspect"}
 
 
 def test_the_show_search_field_rescoping_is_transcribed():
@@ -1752,19 +1794,22 @@ def test_a_relative_window_refuses_an_unknown_unit_naming_all_seven():
 
 
 def test_an_attribute_no_row_names_is_refused_with_the_right_vocabulary():
-    """Two vocabularies, two lists. ``aspect`` is one of the 44 Kometa filter
-    names with no Plex search field, and no row names it yet, so both blocks
-    answer "unknown" -- but each names ITS OWN vocabulary, not the table."""
+    """Two vocabularies, two lists. ``height`` is one of row 96's 44 Kometa
+    filter-only names, and no row names it yet (``aspect`` -- the row this
+    test originally used as its example -- graduated into the table in
+    sub-phase C2b, so the example moved rather than the assertion), so both
+    blocks answer "unknown" -- but each names ITS OWN vocabulary, not the
+    table."""
     with pytest.raises(ValueError) as error:
-        parse_filters({"aspect": "1.78"}, searching=True)
+        parse_filters({"height": "1000"}, searching=True)
     message = str(error.value)
-    assert "aspect" in message
+    assert "height" in message
     assert "plex_search" in message
     assert "unplayed" in message        # a searchable name is offered
     assert "plays" in message
 
     with pytest.raises(ValueError) as error:
-        parse_filters({"aspect": "1.78"})
+        parse_filters({"height": "1000"})
     message = str(error.value)
     assert "filters:" in message
     assert "unplayed" not in message    # search-only names are NOT offered

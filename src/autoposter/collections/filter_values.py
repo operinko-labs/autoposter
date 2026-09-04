@@ -224,6 +224,45 @@ def _versions(item: object) -> int | None:
     return len(media)
 
 
+def _aspect(item: object) -> float | None:
+    """The item's aspect ratio -- Kometa's `aspect` filter, which reads the
+    same `<Media aspectRatio=...>` attrib (`plex.py:200`) and compares it
+    client-side (`builder.py:474` puts `aspect` in `float_attributes`).
+
+    ADJUDICATION A-2, the one question the C2b recon left open. A
+    multi-version item has no single aspect ratio, and `aspect` is a `float`
+    -- it cannot answer a tuple the way `resolution`'s `tag` type does. The
+    rule is the SAME media-selection walk `_resolutions` above makes -- every
+    `<Media>` child, in listing order, reload-free -- narrowed to a scalar by
+    taking the FIRST version that carries the attrib. A single-version item
+    (1905 of the production library's 1955 movies, per the histogram recorded
+    on the `resolution` row) therefore answers its only version, and a scope
+    original beside an open-matte re-encode answers the original, which is
+    the version Plex lists first and the one an operator means by "the"
+    version.
+
+    No cast: plexapi's `Media._loadData` already runs `utils.cast(float, ...)`
+    over this attrib, exactly as it does for the ratings and `year` in
+    `_LISTING_ATTRIBS` above, so the value arrives typed and an absent attrib
+    arrives as None.
+
+    Answers None -- missing, never 0.0 -- for an item with no `<Media>` at
+    all AND for one whose versions carry no `aspectRatio`, which is the
+    common unanalysed-file case: Plex omits the attrib until it has analysed
+    the file. `filters._is_missing` excludes a missing `float` under EVERY
+    operator, `.not` included, so an unanalysed item draws no aspect badge
+    rather than a wrong one.
+    """
+    media = _listing_value(item, "media")
+    if not media:
+        return None
+    for one in media:
+        value = getattr(one, "aspectRatio", None)
+        if value is not None:
+            return value
+    return None
+
+
 def _passthrough(attrib: str):
     """The accessor for a row that is just a listing attrib under another name."""
     return lambda item: _listing_value(item, attrib)
@@ -233,6 +272,7 @@ _ACCESSORS = {name: _passthrough(attrib) for name, attrib in _LISTING_ATTRIBS.it
 _ACCESSORS["duration"] = _duration_minutes
 _ACCESSORS["resolution"] = _resolutions
 _ACCESSORS["versions"] = _versions
+_ACCESSORS["aspect"] = _aspect
 
 # Derived from the table, not restated: a row whose source tier the probe moved
 # changes these, and ``tests/test_collection_filter_values.py`` fails until the
