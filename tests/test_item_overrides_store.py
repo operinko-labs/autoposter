@@ -112,6 +112,7 @@ from types import SimpleNamespace  # noqa: E402
 from autoposter.plex.item_overrides import (  # noqa: E402
     BADGE_FACTS_FIELDS,
     OverrideValueError,
+    TEXT_MAX_LENGTH,
     canonical_value,
     load_overrides,
     overlaid_badge_facts,
@@ -214,6 +215,25 @@ async def test_a_non_string_value_is_refused_by_its_own_shape():
         parse_override("title", 5)
     assert "cannot be empty" not in str(caught.value)
     assert "int" in str(caught.value)
+
+
+def test_an_oversized_text_value_is_refused_without_echoing_it():
+    """MIN-1's close. Unbounded, an oversized text override rides
+    ``writer.py``'s single batched ``item.edit()`` call and can cost that item
+    every other metadata write, every pass, if Plex refuses it on size. The
+    cap is cheap and sits beside the other text-field refusals; the refusal
+    itself follows row 213's served-string law -- it names the field and the
+    length, never the value."""
+    oversized = "x" * (TEXT_MAX_LENGTH + 1)
+    with pytest.raises(OverrideValueError) as caught:
+        parse_override("summary", oversized)
+    assert oversized not in str(caught.value)
+    assert str(TEXT_MAX_LENGTH) in str(caught.value)
+
+
+def test_a_text_value_exactly_at_the_cap_is_accepted():
+    at_cap = "x" * TEXT_MAX_LENGTH
+    assert parse_override("summary", at_cap) == at_cap
 
 
 async def test_the_loader_returns_typed_values_keyed_by_our_field_names(session):

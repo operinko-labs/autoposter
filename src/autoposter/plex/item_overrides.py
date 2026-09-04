@@ -55,6 +55,7 @@ __all__ = [
     "OverrideValueError",
     "RATING_FIELDS",
     "TEXT_FIELDS",
+    "TEXT_MAX_LENGTH",
     "canonical_value",
     "load_overrides",
     "overlaid_badge_facts",
@@ -86,6 +87,15 @@ TEXT_FIELDS = frozenset({
 RATING_FIELDS = frozenset({"critic_rating", "audience_rating", "user_rating"})
 DATE_FIELDS = frozenset({"originally_available"})
 LIST_FIELDS = frozenset({"genres"})
+
+# A cheap ceiling on a text override. Unbounded, an oversized value rides
+# ``writer.py``'s single batched ``item.edit()`` call alongside that item's
+# provider-sourced writes and its row-87 verb edits -- a value Plex refuses on
+# size takes the whole payload with it, costing that item every other
+# metadata write, every pass, until the override is cleared. 1024 is well past
+# anything a title, tagline or summary needs and is cheap to check before the
+# value ever reaches Plex.
+TEXT_MAX_LENGTH = 1024
 
 # The ONLY three facts values ``render/pipeline.py::apply_badges`` reads off
 # the facts object: ``critic_rating`` and ``audience_rating`` directly, and
@@ -124,6 +134,8 @@ def parse_override(field: str, raw: str) -> object:
             raise OverrideValueError(
                 f"{field} cannot be empty; clear the override instead"
             )
+        if len(text) > TEXT_MAX_LENGTH:
+            raise OverrideValueError(f"{field} is too long (max {TEXT_MAX_LENGTH} characters)")
         return text
     if field in RATING_FIELDS:
         try:
