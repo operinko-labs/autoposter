@@ -45,6 +45,33 @@ async def test_transport_error_marks_unhealthy():
         assert health.last_error is not None
 
 
+async def test_a_transport_error_is_held_as_its_class_name_only(caplog):
+    """last_error is not served by anything today, and is kept
+    class-name-only so that stays true the day something serves it: an
+    httpx error's str() embeds the request URL. The transition WARNING
+    keeps the message -- the pod log, the trusted sink."""
+
+    async def handler(request):
+        raise httpx.ConnectError(
+            "[Errno 111] Connection refused to http://plex.internal:32400/identity",
+            request=request,
+        )
+
+    async with _fake_http(handler) as http:
+        health = PlexHealth(url="https://plex.example.com", token="tok", http=http)
+        with caplog.at_level("WARNING"):
+            await health.check_liveness()
+
+    assert health.healthy is False
+    assert health.last_error == "ConnectError"
+    assert "plex.internal" not in health.last_error
+    assert "32400" not in health.last_error
+    assert (
+        "is unreachable: ConnectError: [Errno 111] Connection refused to "
+        "http://plex.internal:32400/identity"
+    ) in caplog.text
+
+
 async def test_recovery_flips_state_back():
     calls = {"n": 0}
 
