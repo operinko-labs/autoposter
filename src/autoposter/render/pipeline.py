@@ -35,6 +35,7 @@ from autoposter.overlays.selection import select as select_overlay_definitions
 from autoposter.overlays.sources import OverlaySourceError, resolve_image_path
 from autoposter.plex.artwork import generated_title_card_url, upload_artwork
 from autoposter.plex.client import ResolvedItem
+from autoposter.plex.item_overrides import load_overrides, overlaid_badge_facts
 from autoposter.plex.writer import apply_facts, exemption_reason
 from autoposter.providers import base as art
 from autoposter.providers.ladder import language_rank, normalise_language, select_artwork
@@ -1431,6 +1432,19 @@ async def apply_metadata(
     )
     await persist_facts(session, media_item_id, facts)
 
+    # Row 99. Loaded AFTER persist_facts and never before it: ``item_facts``
+    # is the PROVIDER's record -- never-overwrite-with-absent, per-field
+    # COALESCE, merged ``sources`` provenance -- and writing an operator's
+    # value into it would lose the provider's own reading and stop the row
+    # tracking the provider at all. The override layers BETWEEN the store and
+    # the write, and never into the store.
+    #
+    # The gate short-circuits ahead of the query, so a deployment that never
+    # turns this on pays no read at all.
+    overrides: dict[str, object] = {}
+    if config.operations.item_overrides_enabled:
+        overrides = await load_overrides(session, media_item_id)
+
     # Row 85. Only fetched when config enables it, so a deployment that never
     # turns this on pays no request and gets today's behaviour exactly.
     parental_categories = None
@@ -1441,13 +1455,17 @@ async def apply_metadata(
     # provider facts are empty -- ``facts.is_empty()`` alone would otherwise
     # skip apply_facts (and every verb with it) on an item no provider has
     # anything to say about. Row 85's fetched categories are the same shape
-    # of "the only thing this pass has to write."
+    # of "the only thing this pass has to write." So is a row-99 override,
+    # and for the sharpest version of the reason: the four text fields have
+    # NO provider source at all, so a title-only override on an item TMDb has
+    # nothing for would never be written without this term.
     has_verbs = bool(config.operations.field_verbs)
     has_parental = parental_categories is not None
+    has_overrides = bool(overrides)
     if (
         config.operations.write_to_plex
         and plex_item is not None
-        and (not facts.is_empty() or has_verbs or has_parental)
+        and (not facts.is_empty() or has_verbs or has_parental or has_overrides)
     ):
         # Row 35. Checked here, at the facts/write seam, and not earlier: the
         # facts above are still gathered and persisted for an exempt item,
@@ -1460,7 +1478,9 @@ async def apply_metadata(
         if exempt is not None:
             logger.info("plex: skipped writing %s: %s", item.rating_key, exempt)
         else:
-            await apply_facts(plex_item, facts, config.operations, parental_categories)
+            await apply_facts(
+                plex_item, facts, config.operations, parental_categories, overrides,
+            )
     return facts
 
 
@@ -1551,6 +1571,31 @@ async def apply_badges(
     # carry `.media`, so that is not a rare path. On the event loop it stalls
     # the liveness probe and every other worker.
     media = await asyncio.to_thread(media_info_from_plex, plex_item)
+
+    # Row 99's C4, at the single seam that reads facts for a badge. The
+    # placement is code-true rather than assumed: ``process_item`` discards
+    # ``apply_metadata``'s return value and re-reads the PERSISTED
+    # ``ItemFacts`` row before calling this function, so laying the override
+    # on inside ``apply_metadata`` would never reach the badge. Here it
+    # reaches every caller of this function.
+    #
+    # A READ-ONLY view, never a mutation: ``facts`` is usually the ORM row
+    # this session is tracking, and mutating it would be flushed into
+    # ``item_facts`` by the next commit -- the provider's own record poisoned
+    # by accident. With no overrides ``overlaid_badge_facts`` returns the very
+    # object it was handed, so gate-off is indistinguishable from before this
+    # row even by identity.
+    #
+    # What it costs: this item's ``badge_values`` move, so its
+    # ``badge_fingerprint`` moves ONCE and it re-badges ONCE. Nothing here
+    # touches ``_definitions_digest``, ``_outcomes_digest``,
+    # ``_rating_values_digest`` or ``config.version``, so no other item moves
+    # at all.
+    if config.operations.item_overrides_enabled:
+        facts = overlaid_badge_facts(
+            facts, await load_overrides(session, item.id)
+        )
+
     critic_rating = getattr(facts, "critic_rating", None)
     audience_rating = getattr(facts, "audience_rating", None)
     ratings: dict[str, float | None] = dict(plex_native_ratings(plex_item))
