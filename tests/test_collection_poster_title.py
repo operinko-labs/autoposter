@@ -30,7 +30,7 @@ from autoposter.config.schema import CollectionPosterTitleConfig
 BUNDLED = "Inter-Medium.ttf"
 
 
-def _poster(width: int = 2000, height: int = 3000, colour: str = "navy") -> bytes:
+def _poster(width: int = 200, height: int = 300, colour: str = "navy") -> bytes:
     """A plain JPEG poster of a given size. Plain rather than noisy so that
     "some pixels changed" is unambiguously the text and not the encoder."""
     buffer = io.BytesIO()
@@ -185,14 +185,18 @@ def test_a_composite_draws_into_the_lower_band_and_stays_a_jpeg():
     assert out != source
     image = Image.open(io.BytesIO(out))
     assert image.format == "JPEG"
-    assert image.size == (2000, 3000)
+    assert image.size == (200, 300)
 
     rows = _changed_rows(source, out)
     assert rows, "the composite drew nothing at all"
-    # gravity south with a +300 title offset and a +120 line offset: nothing
-    # may land in the top half, and nothing below the poster's own edge.
-    assert min(rows) > 1500
-    assert max(rows) < 3000
+    # gravity south, +300 title offset, +120 line offset, scaled to this
+    # 200-wide poster (0.1x): the fixed line's own box bottom is exactly
+    # 300 - round(120*0.1) = 288, which nothing may draw below -- the real
+    # south bound, not the tautological "< height" the poster size gives for
+    # free. The lower bound is tightened to the measured band (240) rather
+    # than the loose half-image split the un-scaled assertion used to allow.
+    assert min(rows) > 235
+    assert max(rows) < 288
 
 
 def test_the_same_inputs_give_byte_identical_output():
@@ -221,6 +225,53 @@ def test_a_long_title_is_clamped_rather_than_refused(caplog):
 
     assert out != source
     assert any("clamped" in record.message for record in caplog.records)
+    # MED-2: the clamp must stay inside its own box -- see
+    # test_a_very_long_title_is_clamped_inside_its_own_box for the tight pin;
+    # this reuses the same real south bound as the short-title composite.
+    rows = _changed_rows(source, out)
+    assert min(rows) >= 220
+    assert max(rows) < 288
+
+
+def test_a_very_long_title_is_clamped_inside_its_own_box(caplog):
+    """MED-2: an unbounded clamp would erase the poster's art and push the
+    fixed 'COLLECTION' line off the bottom edge. 800 characters is well past
+    what any hard-wrapped floor-size block could hold in the title's 190x50
+    box, so this proves the ellipsis-truncation path, not just the point-size
+    floor the shorter clamp test above already covers.
+    """
+    source = _poster()
+    title = ("The Extraordinarily Long Collection Of Films " * 20)[:800]
+
+    # Isolate the title block: the changed rows must land ONLY inside its own
+    # box, not spill into (or past) where the fixed line lives.
+    title_only = _settings()
+    title_only.collection_line.add_text = False
+    with caplog.at_level("WARNING"):
+        out = compose_collection_title(title_only, None, source, title)
+
+    rows = _changed_rows(source, out)
+    # The title block's own box: south, +300 offset, 500 max_height, scaled to
+    # this 200-wide poster (0.1x) -- box_bottom = 300 - 30 = 270, box_top =
+    # box_bottom - 50 = 220. A clamped block must land inside it; the small
+    # margin below 270 is antialiasing bleed, well under one line (13px at
+    # the 10pt floor) -- no slack larger than that.
+    assert min(rows) >= 220
+    assert max(rows) < 273
+    assert any(
+        "clamped" in record.message and "ellipsis" in record.message
+        for record in caplog.records
+    )
+
+    # And with both blocks on, the fixed second line -- which never reads the
+    # title -- is untouched: pixel-identical to the short-title composite. A
+    # comfortably interior slice of its own box, clear of either title's ink.
+    baseline = compose_collection_title(_settings(), None, source, "A Collection")
+    both = compose_collection_title(_settings(), None, source, title)
+    region = (0, 275, 200, 286)
+    baseline_line = Image.open(io.BytesIO(baseline)).convert("RGB").crop(region)
+    long_title_line = Image.open(io.BytesIO(both)).convert("RGB").crop(region)
+    assert baseline_line.tobytes() == long_title_line.tobytes()
 
 
 def test_the_operators_own_font_beats_the_bundled_face(tmp_path):
@@ -245,14 +296,14 @@ def test_the_boxes_scale_with_the_poster_actually_fetched():
     The assertion is proportional, not absolute: on a half-size poster the
     text must land in the same FRACTION of the image as on a full-size one.
     """
-    full = _poster(2000, 3000)
-    half = _poster(1000, 1500)
+    full = _poster(200, 300)
+    half = _poster(100, 150)
     full_rows = _changed_rows(full, compose_collection_title(_settings(), None, full, "A Collection"))
     half_rows = _changed_rows(half, compose_collection_title(_settings(), None, half, "A Collection"))
 
     assert full_rows and half_rows
-    assert abs(min(full_rows) / 3000 - min(half_rows) / 1500) < 0.05
-    assert abs(max(full_rows) / 3000 - max(half_rows) / 1500) < 0.05
+    assert abs(min(full_rows) / 300 - min(half_rows) / 150) < 0.05
+    assert abs(max(full_rows) / 300 - max(half_rows) / 150) < 0.05
 
 
 def test_the_fixed_second_line_can_be_switched_off():
@@ -297,5 +348,21 @@ def test_a_north_gravity_draws_at_the_top():
 
     rows = _changed_rows(source, compose_collection_title(settings, None, source, "A Collection"))
     assert rows
-    assert min(rows) >= 100
-    assert max(rows) < 1500
+    assert min(rows) >= 10
+    assert max(rows) < 150
+
+
+def test_a_center_gravity_draws_in_the_middle():
+    """LOW-3: ``_COLLECTION_GRAVITIES`` admits three anchors; only ``south``
+    (the default) and ``north`` were proven positionally before this."""
+    source = _poster()
+    settings = _settings()
+    settings.title.gravity = "center"
+    settings.title.text_offset = "+0"
+    settings.collection_line.add_text = False
+
+    rows = _changed_rows(source, compose_collection_title(settings, None, source, "A Collection"))
+    assert rows
+    assert min(rows) > 100
+    assert max(rows) < 200
+    assert abs((min(rows) + max(rows)) / 2 - 150) < 30

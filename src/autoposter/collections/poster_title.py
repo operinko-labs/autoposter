@@ -42,8 +42,11 @@ retried. That argument does not transfer. A divider's label is one of ten
 short words this service chooses; a collection title is whatever the operator
 named their collection, and the title box here is narrower than the divider's.
 So a title that will not fit is drawn at the floor with a WARNING naming it --
-which is what Posterizarr does. The ONE refusal is an empty title, which has
-nothing to draw.
+which is what Posterizarr does. If the floor's own hard-wrapped block is
+still taller than ``max_height``, the block itself is cut down and its last
+surviving line ellipsized: the clamp stays INSIDE its box, the same way
+ImageMagick's ``caption:`` never draws outside the box it was given. The ONE
+refusal is an empty title, which has nothing to draw.
 
 **Determinism.** Same poster bytes + same font file + same settings + same
 Pillow build => the same output bytes, which ``apply_poster``'s sha-compare
@@ -215,6 +218,34 @@ def _block_height(font: ImageFont.FreeTypeFont, lines: list[str], line_spacing: 
     return len(lines) * (ascent + descent) + line_spacing * max(0, len(lines) - 1)
 
 
+def _ellipsize_to_box(
+    font: ImageFont.FreeTypeFont,
+    lines: list[str],
+    width: int,
+    height: int,
+    line_spacing: int,
+) -> list[str]:
+    """Cut ``lines`` down to however many fit ``height``, ellipsizing the last.
+
+    Reached only when the floor point size's hard-wrapped block is STILL
+    taller than its box: the point size can shrink no further, so the only
+    way left to stay inside ``max_height`` is to draw fewer lines.
+    ImageMagick's ``caption:``, which the transcribed box sizes were measured
+    against, never draws outside the box it was given -- an operator-chosen
+    title that will not fit even at the floor should lose its tail, not push
+    the poster's own 'COLLECTION' line off the bottom edge.
+    """
+    ascent, descent = font.getmetrics()
+    pitch = ascent + descent + line_spacing
+    max_lines = max(1, (height + line_spacing) // pitch)
+    kept = lines[:max_lines]
+    last = kept[-1]
+    while last and font.getlength(last + "…") > width:
+        last = last[:-1]
+    kept[-1] = f"{last.rstrip()}…" if last else "…"
+    return kept
+
+
 def _fit(
     font_path: Path,
     text: str,
@@ -222,7 +253,7 @@ def _fit(
     line_spacing: int,
     floor: int,
     ceiling: int,
-) -> tuple[ImageFont.FreeTypeFont, list[str], FitResult]:
+) -> tuple[ImageFont.FreeTypeFont, list[str], FitResult, bool]:
     """The largest point size in ``[floor, ceiling]`` whose block fits ``box``.
 
     A binary search rather than a scan: both the wrapped line count and each
@@ -230,11 +261,14 @@ def _fit(
     monotone predicate and the search finds exactly what a 150-step descending
     scan would, with eight ``truetype`` loads instead of 150.
 
-    Returns the fitted face, its lines, and a ``FitResult`` -- the same
+    Returns the fitted face, its lines, a ``FitResult`` -- the same
     ``truncated`` vocabulary ``render/textfit.fit_point_size`` uses, so a
-    reader of either is reading one contract. Unlike that function's callers
-    this module DRAWS a truncated fit rather than abandoning it; ``truncated``
-    is what the caller's WARNING is keyed off.
+    reader of either is reading one contract -- and whether the lines were
+    further ellipsized. Unlike that function's callers this module DRAWS a
+    truncated fit rather than abandoning it; ``truncated`` is what the
+    caller's WARNING is keyed off. Even at the floor the block must stay
+    INSIDE ``box``: a hard-wrapped block still taller than ``height`` is cut
+    down and its last surviving line ellipsized, never drawn overflowing.
     """
     width, height = box
     best: tuple[int, ImageFont.FreeTypeFont, list[str]] | None = None
@@ -250,13 +284,13 @@ def _fit(
             high = mid - 1
     if best is not None:
         size, font, lines = best
-        return font, lines, FitResult(point_size=size, truncated=False)
+        return font, lines, FitResult(point_size=size, truncated=False), False
     font = ImageFont.truetype(str(font_path), floor)
-    return (
-        font,
-        _wrap(font, text, width, hard=True) or [text],
-        FitResult(point_size=floor, truncated=True),
-    )
+    lines = _wrap(font, text, width, hard=True) or [text]
+    overflowed = _block_height(font, lines, line_spacing) > height
+    if overflowed:
+        lines = _ellipsize_to_box(font, lines, width, height, line_spacing)
+    return font, lines, FitResult(point_size=floor, truncated=True), overflowed
 
 
 def _draw(
@@ -277,7 +311,7 @@ def _draw(
     """
     box = (_scaled(style.max_width, scale), _scaled(style.max_height, scale))
     line_spacing = _scaled(style.line_spacing, scale) if style.line_spacing else 0
-    font, lines, fit = _fit(
+    font, lines, fit, overflowed = _fit(
         font_path,
         text,
         box,
@@ -286,10 +320,15 @@ def _draw(
         _scaled(style.max_point_size, scale),
     )
     if fit.truncated:
+        detail = (
+            " and still overflowed it, so the text was truncated with an ellipsis"
+            if overflowed
+            else ""
+        )
         logger.warning(
             "%s for %r does not fit its %dx%d box above %dpt; drawing it clamped "
-            "at the floor",
-            block_name, title, box[0], box[1], fit.point_size,
+            "at the floor%s",
+            block_name, title, box[0], box[1], fit.point_size, detail,
         )
 
     block = _block_height(font, lines, line_spacing)
