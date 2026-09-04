@@ -91,7 +91,8 @@ badges:
   # aspect draws the film's ratio (1.33 ... 2.77) as text, and only for an
   # item Plex has already analysed -- an unanalysed file carries no
   # aspectRatio and draws nothing rather than a wrong band. language_count
-  # draws Dual for exactly two audio TRACKS and Multi for three or more.
+  # draws Dual for exactly two audio TRACKS and Multi for two or more --
+  # at exactly two, Dual wins by weight, so Multi shows from three.
   # Tracks, not distinct languages: that is how Kometa counts, so a film
   # with an English track plus an English commentary track is Dual. It also
   # shares its slot with direct_play, which is upstream's own arrangement --

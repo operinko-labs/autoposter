@@ -399,9 +399,20 @@ def test_the_two_views_agree_by_verdict_on_distinct_languages_and_diverge_on_rep
     divergence with a failing-if-it-changes pin rather than as a silent
     inconsistency. Closing it means widening `plex/client.py`, which is a
     separate adjudication.
+
+    `subtitle_language` rides the same `audio` fixture and the same
+    `{"subtitle_language.count_gte": 2}` condition below -- `selection.py`'s
+    `subtitle_language` row is a byte-symmetric copy of the `audio_language`
+    row two lines above it, reading the sibling `MediaInfo` field, so the two
+    cannot diverge independently. Unlike a typical RED-first test this one is
+    expected to pass immediately with no production change; that is still
+    worth pinning, per this branch's own convention that every
+    `OVERLAY_ATTRIBUTES` addition owes an agreement pin against
+    `filter_values.PlexItemView`. The `("swe",)` case exercises a `swe`
+    subtitle stream and confirms both views land on `sv`.
     """
     for audio in (("eng", "fin"), ("eng",), ("swe",), ()):
-        item = _Item(audio=audio)
+        item = _Item(audio=audio, subtitles=audio)
         # `base_language_code`, not a `[:2]` slice: `plex/client.py`'s real
         # `_stream_languages` reads `languageTag` (already ISO 639-1), and
         # `base_language_code` is the same `langcodes`-backed reduction
@@ -412,12 +423,13 @@ def test_the_two_views_agree_by_verdict_on_distinct_languages_and_diverge_on_rep
         codes = tuple(base_language_code(code) for code in audio)
         tags = ItemTags(
             genres=(), labels=(), collections=(),
-            audio_languages=codes, subtitle_languages=(),
+            audio_languages=codes, subtitle_languages=codes,
         )
         for condition in (
             {"audio_language.count_gte": 2},
             {"audio_language.count_gte": 2, "audio_language.count_lt": 3},
             {"audio_language": "en"},
+            {"subtitle_language.count_gte": 2},
         ):
             group = parse_condition(condition)
             assert evaluate(group, _view(item)) == evaluate(
