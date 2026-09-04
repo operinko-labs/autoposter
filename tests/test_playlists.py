@@ -1777,10 +1777,19 @@ async def test_the_delete_cap_excludes_dry_run_reported_user_copies(
 async def test_the_delete_cap_still_refuses_the_whole_plan_with_the_user_gate_on(
     session, config_factory
 ):
-    """The other half of the same fix: when the per-user gate IS applied, the
+    """The other half of I-1's fix: when the per-user gate IS applied, the
     six user copies are real deletions this pass would perform, so they must
     still count toward the cap and the whole plan -- admin playlist
-    included -- still refuses."""
+    included -- still refuses.
+
+    Adjusted for I-3: ``max_deletes`` is now checked ONLY against the exact
+    post-walk count (a pre-walk estimate of it, tried in the first fix round,
+    could refuse a plan forever once unreachable rows piled up -- see the two
+    tests below). With ``max_users`` at its default of 25, six distinct
+    stale-row users do not trip the read-cost pre-check, so this scenario now
+    pays for the walk -- every listing gets read -- before the unchanged
+    combined-cap message refuses. That IS the fix: only a `max_users` breach
+    may skip the reads; a `max_deletes` breach alone may not."""
     _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
     names = ["alice", "bob", "carol", "dave", "erin", "frank"]
     tokens = ["tok-%s" % name for name in names]
@@ -1814,14 +1823,132 @@ async def test_the_delete_cap_still_refuses_the_whole_plan_with_the_user_gate_on
 
     assert admin.deleted is False
     assert all(copy.deleted is False for copy in copies)
-    # The point of the fix, not just its message: the six stale rows alone
-    # already bust the cap, so this pass must refuse before minting a single
-    # token or reading a single listing -- not merely before a single delete.
+    # Every one of the six users' listings was read this pass -- the walk
+    # was NOT skipped, because nothing here breaches max_users.
     assert {
         token: server.listings for token, server in servers.items()
-    } == listings_after_first_pass
+    } == {token: count + 1 for token, count in listings_after_first_pass.items()}
     assert run.actions == [
         "refusing to delete 7 unconfigured playlist(s), 6 of them user "
         "copies: more than the max_deletes cap of 5; nothing was deleted "
         "and everything else was reconciled"
+    ]
+
+
+async def test_i3_unreachable_stale_rows_never_deadlock_the_admin_delete(
+    session, config_factory
+):
+    """I-3: a stale row's object may already be gone, or its user
+    unreachable, and neither is ever a deletion nor ever retired -- so
+    counting the ROW toward ``max_deletes`` (the first fix round's pre-check)
+    could refuse the same admin playlist forever. Five of six fanned-out
+    users lose their token before the delete pass; only the sixth (alice)
+    still has a live, reachable copy. Cap 5, default max_users: the admin
+    deletion this pass is authorised to make must proceed, and the one live
+    user copy goes with it -- the five unreachable rows are only reported."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    names = ["alice", "bob", "carol", "dave", "erin", "frank"]
+    tokens = ["tok-%s" % name for name in names]
+    account = FakeAccount([
+        FakeUser(i + 1, name, token=token)
+        for i, (name, token) in enumerate(zip(names, tokens))
+    ])
+    connect, servers = _user_servers(tokens)
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=names)],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    admin = first.created[0]
+    copies = {name: servers[token].created[0] for name, token in zip(names, tokens)}
+
+    # Five of the six lose their token before the delete pass -- gone from
+    # the share, revoked, whatever the reason. ``alice`` keeps hers.
+    unreachable_account = FakeAccount([
+        FakeUser(1, "alice", token="tok-alice"),
+        *(
+            FakeUser(user_id, name, token=None)
+            for user_id, name in zip(range(2, 7), names[1:])
+        ),
+    ])
+    gone = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        delete_unconfigured=True, definitions=[],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[admin]), gone,
+        sources=_sources(unreachable_account), connect_user=connect,
+    )
+
+    assert admin.deleted is True
+    assert copies["alice"].deleted is True
+    assert all(not copies[name].deleted for name in names[1:])
+    assert (
+        "deleted 'Timeline': no playlist definition builds it any more"
+        in run.actions
+    )
+    assert (
+        "deleted 'Timeline' in the account of 'alice': no playlist "
+        "definition syncs it to them any more" in run.actions
+    )
+    unreachable_lines = [
+        a for a in run.actions
+        if "this pass cannot reach" in a
+    ]
+    assert len(unreachable_lines) == 5
+
+
+async def test_the_read_cost_precheck_refuses_before_any_fetch_past_max_users(
+    session, config_factory
+):
+    """The pre-check now bounds the READ cost, not the delete count: six
+    distinct stale-row users past a max_users cap of five must refuse the
+    per-user walk before minting a single token or reading a single listing.
+    It is a READ-cost refusal, not a delete-cap refusal, so the admin
+    playlist this pass is authorised to delete is still reconciled as
+    usual."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    names = ["alice", "bob", "carol", "dave", "erin", "frank"]
+    tokens = ["tok-%s" % name for name in names]
+    account = FakeAccount([
+        FakeUser(i + 1, name, token=token)
+        for i, (name, token) in enumerate(zip(names, tokens))
+    ])
+    connect, servers = _user_servers(tokens)
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=names)],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    admin = first.created[0]
+    copies = [servers[token].created[0] for token in tokens]
+    listings_after_first_pass = {
+        token: server.listings for token, server in servers.items()
+    }
+
+    gone = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        delete_unconfigured=True, max_users=5, definitions=[],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[admin]), gone,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert admin.deleted is True
+    assert all(copy.deleted is False for copy in copies)
+    assert {
+        token: server.listings for token, server in servers.items()
+    } == listings_after_first_pass
+    assert run.actions == [
+        "refusing to check 6 user(s) for playlist copies no configuration "
+        "asks for any more: more than the max_users cap of 5; nothing was "
+        "read and the admin playlists were reconciled as usual",
+        "deleted 'Timeline': no playlist definition builds it any more",
     ]

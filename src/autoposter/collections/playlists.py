@@ -966,9 +966,9 @@ def _sweep_name(row, playlist) -> str:
 
 
 def _delete_cap_message(total: int, user_count: int, cap: int) -> str:
-    """The delete sweep's cap-refusal sentence, one place so two evaluations
-    of the cap -- the pre-walk estimate below and the post-walk exact count --
-    can never say it differently.
+    """The delete sweep's ``max_deletes`` refusal sentence, evaluated once,
+    against the exact post-walk count -- see ``_sweep_playlists`` for why a
+    pre-walk estimate of this same cap turned out to be unsafe (I-3).
 
     Two wordings, not one: a pass with no per-user copies in the blast radius
     (98a's own shape, and every pre-98c caller of this sweep) gets the exact
@@ -1039,12 +1039,19 @@ async def _sweep_playlists(
     gate off must still be able to delete the admin playlists it IS
     authorised to delete, undelayed by copies it was never going to touch.
 
-    And when the gate IS applied, ``max_deletes`` is consulted BEFORE
-    ``user_sweep_candidates`` walks a single row -- on ``stale_user_rows``'
-    pure-DB count, the same two-pass shape ``plan_user_sync`` uses for
-    ``max_users``/``max_user_writes`` and for the same reason: "refused
-    entirely" has to mean before the first plex.tv request, not merely before
-    the first delete.
+    And when the gate IS applied, the READ cost is bounded before
+    ``user_sweep_candidates`` walks a single row: ``stale_user_rows`` cannot
+    know whether a row's object still exists or its user is even reachable
+    any more (both are exactly what the walk exists to find out), so a count
+    of ROWS is not a count of deletions -- a defunct or unreachable row never
+    retires, and treating it as if it counted toward ``max_deletes`` can
+    refuse the same admin playlist forever, on every pass, for a delete the
+    pass was always allowed to make. What IS knowable for free is how many
+    DISTINCT users the walk is about to mint a token and read a listing for,
+    so that is checked against ``max_users`` instead -- the same two-pass
+    shape ``plan_user_sync`` uses, and the cap the recon's own
+    ~1,700-request argument was written against. ``max_deletes`` is left to
+    the exact post-walk count below, unchanged from 98a.
     """
     # Through the same composition the pass runs, never
     # ``config.playlists.definitions`` alone: a preset's playlist would
@@ -1060,28 +1067,36 @@ async def _sweep_playlists(
     cap = config.playlists.max_deletes
     user_candidates: list = []
     unreachable: list = []
-    if sync is not None:
-        if config.playlists.delete_unconfigured and not user_dry_run:
-            # Pass one, ``plan_user_sync``'s own two-pass shape: the stale-row
-            # count is pure over the DB and the cached user list -- no plex.tv
-            # call and no PMS listing -- so a cap already blown by it ALONE
-            # must refuse before pass two (``user_sweep_candidates``) mints a
-            # single token or reads a single listing, not merely before a
-            # single delete. Some stale rows will turn out not to be live
-            # candidates once their listing is read, so this can only
-            # over-estimate the eventual total, never under -- the safe
-            # direction, and never a false "under the cap".
-            stale = await stale_user_rows(session, sync, definitions)
-            estimated_total = len(candidates) + len(stale)
-            if estimated_total > cap:
-                return [_swept(
-                    SWEEP_TITLE,
-                    _delete_cap_message(estimated_total, len(stale), cap),
-                )]
-        user_candidates, unreachable = await user_sweep_candidates(
-            session, sync, definitions
-        )
     results: list[PlaylistResult] = []
+    if sync is not None:
+        skip_walk = False
+        if config.playlists.delete_unconfigured and not user_dry_run:
+            # Pass one, ``plan_user_sync``'s own two-pass shape -- but this
+            # bounds the READ cost, not the delete count (I-3): a stale row's
+            # object may already be gone, or its user unreachable, and
+            # neither is ever a deletion or ever retired, so a count of ROWS
+            # is not a safe stand-in for ``max_deletes`` -- it can refuse the
+            # same admin playlist forever. What IS free to know is how many
+            # DISTINCT users pass two is about to mint a token and read a
+            # listing for, so that is what gets capped, against
+            # ``max_users``; ``max_deletes`` is left entirely to the exact
+            # post-walk count below.
+            stale = await stale_user_rows(session, sync, definitions)
+            distinct_users = len({row.plex_user_id for row in stale})
+            max_users = config.playlists.max_users
+            if distinct_users > max_users:
+                skip_walk = True
+                results.append(_swept(SWEEP_TITLE, (
+                    "refusing to check %d user(s) for playlist copies no "
+                    "configuration asks for any more: more than the "
+                    "max_users cap of %d; nothing was read and the admin "
+                    "playlists were reconciled as usual"
+                    % (distinct_users, max_users)
+                )))
+        if not skip_walk:
+            user_candidates, unreachable = await user_sweep_candidates(
+                session, sync, definitions
+            )
     for row in unreachable:
         # Not a candidate -- ownership is unverifiable, and nothing is deleted
         # on a guess -- but named, because a row nobody can account for is
@@ -1118,10 +1133,11 @@ async def _sweep_playlists(
     # below only REPORTS "would delete" -- it writes nothing -- so counting
     # those copies here can refuse a deletion the pass is allowed to make
     # (the admin playlist) over copies it was never going to touch this pass.
-    # Normally moot when the estimate above already ran (a user copy can
-    # never outnumber the stale rows it was drawn from, so if that pass one
-    # was under the cap this exact count is too) -- kept as the only check at
-    # all when ``sync is None`` or ``user_dry_run`` skipped pass one.
+    # THE ``max_deletes`` check, on the exact post-walk count -- see the
+    # docstring for why an earlier draft tried to evaluate this cap before
+    # the walk too, and why that was wrong (I-3): ``user_candidates`` here is
+    # never a guess, only what the walk actually confirmed is a live,
+    # deletable copy.
     deletable_user_candidates = 0 if user_dry_run else len(user_candidates)
     total = len(candidates) + deletable_user_candidates
     if total > cap:
