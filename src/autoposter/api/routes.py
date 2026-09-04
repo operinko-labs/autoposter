@@ -54,7 +54,7 @@ from autoposter.config.live import (
     is_inert,
     swap_config,
 )
-from autoposter.config.loader import build_config, read_config_document
+from autoposter.config.loader import build_config, moved_kinds, read_config_document
 from autoposter.config.overrides import (
     OVERRIDES_ROW_ID,
     document_paths,
@@ -1702,12 +1702,25 @@ def _render_affecting(before: Config, after: Config) -> bool:
     must see "no re-renders", not "~40 items".
 
     Enumerated rather than guessed. The walk reads exactly two things off the
-    config: ``version`` -- which by construction covers ``artwork``, the asset
-    roots and ``library_folders`` (config/loader.py's ``render_version``) --
-    and ``skip_tba``, which gates title cards and is deliberately *not* in the
-    version. Nothing else it touches can move without one of those moving.
+    config: the render version -- which by construction covers ``artwork``,
+    the asset roots and ``library_folders`` (config/loader.py's
+    ``render_version``/``render_version_for``) -- and ``skip_tba``, which
+    gates title cards and is deliberately *not* in the version. Nothing else
+    it touches can move without one of those moving.
+
+    Since roadmap row 111 the version is computed PER ART KIND, so "the
+    version moved" is "some kind's version moved". ``config.version`` is
+    retained as the wholesale hash and is kept here as the cheap
+    short-circuit: it covers a strict superset of every per-kind payload, so
+    an edit that leaves it alone cannot have moved a single kind and the eight
+    per-kind hashes are skipped entirely. An operator retuning ``scheduler``
+    cadences pays two dict dumps, exactly as before.
     """
-    return after.version != before.version or after.skip_tba != before.skip_tba
+    if after.skip_tba != before.skip_tba:
+        return True
+    if after.version == before.version:
+        return False
+    return bool(moved_kinds(before, after))
 
 
 # The refusal the Custom collections panel makes in copy (`FILE_ROWS_NOTE`),

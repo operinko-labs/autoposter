@@ -108,10 +108,17 @@ Practical consequences:
   `config / overrides_updated` with the version movement, never the
   contents.
 - Editing `artwork:` settings (or repointing a root) from the UI carries
-  the same weight the cutover note below gives the file: `config.version`
-  is derived from the render-affecting settings as a whole, so ANY artwork
-  edit re-renders the library. The editor's preview says exactly how many
-  renders that is before you commit to it.
+  the same weight the cutover note below gives the file — but since roadmap
+  row 111 it carries it **per art kind**. The render version is computed
+  separately for each of `poster`, `season_poster`, `background` and
+  `title_card` (`config/loader.py`'s `render_version_for`), so retuning one
+  kind's text block re-renders that kind and leaves the others' stored
+  fingerprints byte-identical. What still reaches everything is a genuinely
+  shared input: any of the asset/font/overlay roots, `library_folders`,
+  `artwork.use_original_title`, the global `artwork.disable_online_asset_fetch`
+  and `artwork.output_quality` are members of every kind's payload by
+  construction. The editor's preview says exactly how many renders that is,
+  and which kinds, before you commit to it.
 
 ## Secrets
 
@@ -1475,14 +1482,33 @@ Run the cutover in this order:
    unchanged from the dry run; if they differ, something in the library or
    asset tree changed between the two runs.
 
-   Flipping this setting is safe for the rows just written. `config.version`,
-   which is the first component of every render fingerprint, is derived from
-   the *render-affecting* settings only — the `artwork:` block,
+   Flipping this setting is safe for the rows just written. The render
+   version, which is the first component of every render fingerprint, is
+   derived from the *render-affecting* settings only — the `artwork:` block,
    `library_folders`, and the asset/font/overlay roots — so editing `adopt`,
    `scheduler`, `cleanup`, `collections`, `operations`, `badges`, worker or
    connection settings, or adding a comment, leaves every adopted fingerprint
    valid. Editing anything under `artwork:` or repointing a root does not, and
-   will re-render the library; make those changes *before* adopting, not after.
+   will re-render — though since roadmap row 111 only the art kinds the edit
+   actually reaches (see the editor note above). Make those changes *before*
+   adopting, not after.
+
+   **Upgrading across row 111.** That release changed which version string
+   goes into element 0, so every fingerprint already stored was computed a
+   different way. Nothing has to be done about it: both compare sites accept
+   the old value as well as the new one and rewrite the row to the new one on
+   a match, with **no composite, no asset write and no Plex upload**. Rows
+   migrate forward on the passes that would have run anyway, and the config
+   editor's preview grandfathers identically so it does not report a whole
+   library for a change that re-renders nothing.
+
+   **One thing to know about the window.** The old value is only recognised
+   while the render settings themselves have not moved since those rows were
+   written. So on the release that lands row 111, **hold every edit under
+   `artwork:` and every root repoint until the pod has completed one full
+   pass** — an artwork edit made first re-renders whatever has not yet
+   migrated, once. The backwards-compatible arm is removed a release later
+   (the roadmap's follow-up row), once every deployment has had that pass.
 3. **Repoint the Radarr and Sonarr webhooks** at this service (see below) and
    **stop the old tools** (Posterizarr, Kometa) so they stop writing to the
    same asset tree and Plex fields this service now owns.

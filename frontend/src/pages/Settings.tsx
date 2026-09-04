@@ -61,21 +61,26 @@ export const IMPACT_CAVEAT =
   "undercount, of the text and version changes the operator is actually " +
   "asking about.";
 
-/** What the breakdown does and does not mean.
+/** What the breakdown means.
  *
- * `config.version` hashes the whole artwork section (config/loader.py's
- * `render_version`), so *any* artwork edit invalidates every fingerprinted
- * row -- the per-kind numbers are then the shape of the library, not a set of
- * rows the edit selected. That is only true when the edit reached the whole
- * examined population, though: in a gated preview (a disabled art kind, or
- * `skip_tba` skipping title cards), the surviving kinds *are* a true signal
- * about what the edit touched, and saying otherwise would be the misleading
- * half. The other half -- that a kind missing from the breakdown was excluded
- * by a gate -- holds either way. */
-const IMPACT_BREAKDOWN_WHOLE_LIBRARY_NOTE =
-  "The render version covers the whole artwork section, so an artwork edit " +
-  "reaches every fingerprinted row. A kind counted below is not one the edit " +
-  "singled out.";
+ * The render version is computed per art kind (`config/loader.py`'s
+ * `render_version_for`), so a kind counted below is one whose stored
+ * fingerprint the edit moved -- not, without qualification, one the edit
+ * touched: a poster with a composited logo is counted for any
+ * render-affecting edit, because the walk cannot see the logo it was built
+ * with (see `IMPACT_CAVEAT`). That distinction aside, this is still the
+ * exact inverse of what this note said while one wholesale hash covered the
+ * whole artwork section, and it is the user-visible half of roadmap row 111.
+ * A shared input -- an asset root, `use_original_title`, `output_quality` --
+ * is a member of every kind's payload and still reaches all four; that is
+ * the edit being global rather than the breakdown failing to discriminate,
+ * and it is why the note holds in both arms below. The other half -- that a
+ * kind missing from the breakdown was excluded by a gate -- is unchanged. */
+const IMPACT_BREAKDOWN_PER_KIND_NOTE =
+  "The render version is per art kind, so a kind counted below is one " +
+  "whose stored fingerprint this edit moves; a poster with a composited " +
+  "logo is counted for any render-affecting edit, because the walk cannot " +
+  "see the logo it was built with.";
 const IMPACT_BREAKDOWN_GATE_NOTE =
   "A kind missing from the breakdown was excluded by a gate — disabled, or " +
   "skipped by rule.";
@@ -543,18 +548,20 @@ function ImpactReport({
     );
   }
 
-  // Every examined row affected is what an artwork edit always looks like, so
-  // the copy says that outright rather than presenting the number as though
-  // the edit had picked rows out of the library.
-  const wholeLibrary = impact.of_total > 0 && impact.affected === impact.of_total;
+  // Every examined row affected no longer means "any artwork edit looks like
+  // this" -- since row 111 it means the edit really did reach every kind,
+  // which is what a shared input (an asset root, use_original_title,
+  // output_quality) does. So the sentence says that rather than blaming the
+  // artwork section.
+  const everyExaminedRow = impact.of_total > 0 && impact.affected === impact.of_total;
   const renders = `~${impact.affected} of ${impact.of_total} artwork renders`;
   const kinds = Object.entries(impact.by_art_kind);
 
   return (
     <div className="config-impact">
       <p className="config-impact-count" title={IMPACT_CAVEAT}>
-        {wholeLibrary
-          ? `Any artwork change re-renders the whole library — ${renders}.`
+        {everyExaminedRow
+          ? `This edit reaches every examined row — ${renders}.`
           : `${renders} are out of date.`}
       </p>
       {kinds.length > 0 && (
@@ -565,9 +572,7 @@ function ImpactReport({
             ))}
           </ul>
           <p className="muted config-impact-note">
-            {wholeLibrary
-              ? `${IMPACT_BREAKDOWN_WHOLE_LIBRARY_NOTE} ${IMPACT_BREAKDOWN_GATE_NOTE}`
-              : IMPACT_BREAKDOWN_GATE_NOTE}
+            {`${IMPACT_BREAKDOWN_PER_KIND_NOTE} ${IMPACT_BREAKDOWN_GATE_NOTE}`}
           </p>
         </>
       )}

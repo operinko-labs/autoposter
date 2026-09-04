@@ -24,6 +24,7 @@ from autoposter.badges.values import (
     plex_native_ratings,
     video_format_text,
 )
+from autoposter.config.loader import render_version_for
 from autoposter.config.schema import Config
 from autoposter.db.models import EventLog, ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
@@ -58,7 +59,10 @@ logger = logging.getLogger(__name__)
 
 # Mirrored in frontend/src/artKind.ts, which shows each kind's first entry as
 # the item's primary art. A kind added here must be added there too, or its
-# pages fall back to `poster` and 404.
+# pages fall back to `poster` and 404. The flat list of art kinds -- the one a
+# render version is computed against -- lives in config/loader.py's
+# RENDER_ART_KINDS (roadmap row 111); a kind added here must be added there
+# too, or it silently gets no version of its own.
 ART_KINDS_FOR = {
     "movie": ["poster", "background"],
     "show": ["poster", "background"],
@@ -436,8 +440,14 @@ def adopted_fingerprint(
     provider URL produced it, so the comparison drops ``source_url`` on both
     sides rather than guessing at it.
     """
+    # render_version_for, not config.version: roadmap row 111 confines an
+    # invalidation to the kinds an edit touches. config.version is still the
+    # wholesale hash and is still what render_artifact's dual-read grandfather
+    # (its `legacy_candidate` in the adopted arm and `legacy_fingerprint` in
+    # the live compare) accepts from a row written before that row landed.
     return compute_fingerprint(
-        config.version, art_kind, None, base_sha256, text_inputs, asset_hashes
+        render_version_for(art_kind, config), art_kind, None, base_sha256,
+        text_inputs, asset_hashes,
     )
 
 
@@ -1029,6 +1039,17 @@ async def render_artifact(
         adopted_candidate = adopted_fingerprint(
             config, art_kind, render.base_sha256, text_inputs, asset_hashes
         )
+        # Roadmap row 111's dual-read grandfather. Rows written before that row
+        # landed carry element 0 = the WHOLESALE config.version, and four
+        # per-kind payloads cannot all hash to that one value except by
+        # collision -- so without this arm the first deploy would strand every
+        # adopted row in the library. One extra sha256 over a joined string,
+        # and NO extra I/O: text_inputs and asset_hashes are already in hand.
+        # Removed one release later, once the pod has completed a full pass
+        # (roadmap follow-up row).
+        legacy_candidate = compute_fingerprint(
+            config.version, art_kind, None, render.base_sha256, text_inputs, asset_hashes
+        )
         # Re-hash rather than merely stat. Between the adoption run and the
         # moment the old tools are actually stopped (step 3 of the cutover in
         # deploy/README.md) they are still writing into the same asset tree, so
@@ -1038,9 +1059,14 @@ async def render_artifact(
         # one hash the adopted pass is meant to cost. _file_sha256 answers ""
         # for a file that is gone, so a deleted asset fails the comparison and
         # re-renders without needing a separate exists() check.
-        if adopted_candidate == render.fingerprint:
+        if render.fingerprint in (adopted_candidate, legacy_candidate):
             current_sha = await asyncio.to_thread(_file_sha256, target)
             if current_sha == render.base_sha256:
+                # The write-back, and it is the whole migration: a legacy row
+                # leaves this branch carrying the per-kind value, so the next
+                # pass matches outright. `detail` stays "adopted" -- no new
+                # served string is invented to make the migration visible.
+                render.fingerprint = adopted_candidate
                 render.status = "rendered"
                 render.detail = "adopted"
                 await session.commit()
@@ -1258,13 +1284,28 @@ async def render_artifact(
             suppress_styling=suppress_styling,
         )
 
+        # render_version_for, not config.version (roadmap row 111): this art
+        # kind's own settings plus the shared roots, so retuning one kind's
+        # text block leaves the other three kinds' fingerprints byte-identical.
         fingerprint = compute_fingerprint(
+            render_version_for(art_kind, config), art_kind, source_url, base_sha,
+            text_inputs, asset_hashes,
+        )
+        # Roadmap row 111's dual-read grandfather; see the adopted arm above
+        # for why it exists and when it goes.
+        legacy_fingerprint = compute_fingerprint(
             config.version, art_kind, source_url, base_sha, text_inputs, asset_hashes
         )
         # target.exists() offloaded (it's a stat() against assets_root, which
-        # can be an NFS mount) — only reached once the fingerprint already
+        # can be an NFS mount) — only reached once a fingerprint already
         # matches, so the short-circuit still skips it entirely otherwise.
-        if render.fingerprint == fingerprint and await asyncio.to_thread(target.exists):
+        if render.fingerprint in (fingerprint, legacy_fingerprint) and await asyncio.to_thread(
+            target.exists
+        ):
+            # The write-back. On a legacy match this is the migration: no
+            # composite, no asset write, no Plex upload -- the ladder and the
+            # download above already ran and would have run anyway.
+            render.fingerprint = fingerprint
             render.status = "rendered"
             render.detail = "unchanged"
             await session.commit()

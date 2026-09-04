@@ -8,7 +8,7 @@ import pytest
 from conftest import decodable_png
 from sqlalchemy import select
 
-from autoposter.config.loader import load_config
+from autoposter.config.loader import load_config, render_version_for
 from autoposter.db.models import MediaItem, Render
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
@@ -421,7 +421,7 @@ async def test_show_two_seasons_and_two_episodes_produce_five_distinct_rows(
             )
             primary, secondary = title_text_for(art_kind, resolved, config)
             fingerprint = compute_fingerprint(
-                config.version, art_kind, None, None,
+                render_version_for(art_kind, config), art_kind, None, None,
                 [t for t in (primary, secondary) if t],
             )
             render = await _get_or_create_render(s, media_item, art_kind, target)
@@ -802,8 +802,8 @@ async def test_the_poster_fingerprint_carries_the_override_logos_own_sha(
         config, resolved, "poster", draw_text=False, logo_sha=logo_sha,
     )
     assert render.fingerprint == compute_fingerprint(
-        config.version, "poster", render.source_url, render.base_sha256,
-        text_inputs, asset_hashes,
+        render_version_for("poster", config), "poster", render.source_url,
+        render.base_sha256, text_inputs, asset_hashes,
     )
 
 
