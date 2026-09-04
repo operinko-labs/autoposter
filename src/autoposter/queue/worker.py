@@ -65,7 +65,7 @@ async def run_once(
 
     # Captured up front: since claim() commits, a rollback() below is not
     # guaranteed to expire this ORM object's attributes (see queue/jobs.py's
-    # fail_job comment) -- but relying on attribute access either way needs IO
+    # fail() comment) -- but relying on attribute access either way needs IO
     # that isn't safe to trigger on an AsyncSession, so the id is captured
     # regardless.
     job_id = job.id

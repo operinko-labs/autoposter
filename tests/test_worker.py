@@ -155,6 +155,8 @@ async def test_path_mismatch_parks_instead_of_deferring_forever(session, session
         # mask claim()'s raw-SQL state/attempts writes between iterations.
         async with session_factory() as attempt_session:
             await _make_due_now(attempt_session, job_id)
+            # Explicit, not reliant on the ``job`` local's refcount lifetime to evict it.
+            attempt_session.expire_all()
             await run_once(attempt_session, "worker-1", _only_process_item(handler))
 
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
@@ -323,6 +325,8 @@ async def test_a_generic_failure_still_parks(session, session_factory):
         # PlexPathMismatch test above.
         async with session_factory() as attempt_session:
             await _make_due_now(attempt_session, job_id)
+            # Explicit, not reliant on the ``job`` local's refcount lifetime to evict it.
+            attempt_session.expire_all()
             await run_once(attempt_session, "worker-1", _only_process_item(generic_handler))
 
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
@@ -350,6 +354,8 @@ async def test_plex_connection_error_survives_more_attempts_than_a_generic_failu
         # PlexPathMismatch test above.
         async with session_factory() as attempt_session:
             await _make_due_now(attempt_session, job_id)
+            # Explicit, not reliant on the ``job`` local's refcount lifetime to evict it.
+            attempt_session.expire_all()
             await run_once(
                 attempt_session, "worker-1", _only_process_item(connection_error_handler)
             )
