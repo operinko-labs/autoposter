@@ -249,3 +249,20 @@ async def test_the_key_never_reaches_the_log_buffer(app, client, session_headers
     assert response.status_code == 200
     assert any(line["message"] == "marker line" for line in response.json()["lines"])
     assert FAKE_KEY not in response.text
+
+
+# --- the two places an operator looks ---
+
+
+def test_the_secret_is_documented_in_both_places_an_operator_looks():
+    """``.env.example`` is the compose path and ``deploy/README.md`` is the
+    Kubernetes one (the tests/test_builder_tracearr.py rule). A soft secret
+    documented in neither is a feature nobody can turn on -- and this one's
+    README entry is also where the header-not-URL rule is written down."""
+    env_example = Path(".env.example").read_text(encoding="utf-8")
+    readme = Path("deploy/README.md").read_text(encoding="utf-8")
+
+    assert "AUTOPOSTER_API_KEY" in env_example
+    assert "AUTOPOSTER_API_KEY" in readme
+    assert "X-API-Key" in readme
+    assert "customapi" in readme
