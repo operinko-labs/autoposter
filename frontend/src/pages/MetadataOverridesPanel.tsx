@@ -6,6 +6,10 @@ import type {
   MetadataOverrideWriteResponse,
   MetadataOverridesResponse,
 } from "../api/types";
+// `.mode-confirm` and `.primary` are Modes.tsx's two-step confirm idiom --
+// reused rather than duplicated. `.primary` lives in the globally-imported
+// theme.css; `.mode-confirm` is modes.css's, hence the explicit import.
+import "./modes.css";
 
 /** Why this panel exists (roadmap row 99): the operator declares, for THIS
  * item, the value a metadata field must hold. It beats every provider source
@@ -66,6 +70,11 @@ export function MetadataOverridesPanel({ itemId }: { itemId: number }) {
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // The panel's own confirm IS the consent (see `plex/item_overrides.py`'s
+  // module docstring) -- so it has to actually exist. One armed field+action
+  // at a time, Modes.tsx's idiom: the button that would mutate asks a
+  // question first, and only the question's own answer fires the request.
+  const [armed, setArmed] = useState<{ field: string; action: "save" | "clear" } | null>(null);
 
   // A ref rather than an effect-local `cancelled`: a save's continuation
   // lands outside any effect -- the neighbouring panels' idiom.
@@ -219,22 +228,69 @@ export function MetadataOverridesPanel({ itemId }: { itemId: number }) {
                   />
                 </td>
                 <td>
-                  <button
-                    type="button"
-                    disabled={readOnly || busy !== null || (drafts[field] ?? "") === ""}
-                    onClick={() => void save(field)}
-                  >
-                    Save
-                  </button>
-                  {current !== undefined && (
+                  {armed?.field === field && armed.action === "save" ? (
+                    <>
+                      <span className="mode-confirm" role="alert">
+                        {`Write ${field} to Plex and lock it? Value: “${drafts[field] ?? ""}”.`}
+                      </span>
+                      <button
+                        type="button"
+                        className="primary"
+                        autoFocus
+                        disabled={busy !== null}
+                        onClick={() => {
+                          setArmed(null);
+                          void save(field);
+                        }}
+                      >
+                        Confirm save
+                      </button>
+                      <button type="button" onClick={() => setArmed(null)}>
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
                     <button
                       type="button"
-                      disabled={readOnly || busy !== null}
-                      onClick={() => void clear(field)}
+                      disabled={readOnly || busy !== null || (drafts[field] ?? "") === ""}
+                      onClick={() => setArmed({ field, action: "save" })}
                     >
-                      Clear {field}
+                      Save
                     </button>
                   )}
+                  {current !== undefined &&
+                    (armed?.field === field && armed.action === "clear" ? (
+                      <>
+                        <span className="mode-confirm" role="alert">
+                          {`Clear ${field}? Plex is unlocked; a sourced field is rewritten ` +
+                            "next pass, an unsourced one keeps the current value until Plex " +
+                            "refreshes."}
+                        </span>
+                        <button
+                          type="button"
+                          className="primary"
+                          autoFocus
+                          disabled={busy !== null}
+                          onClick={() => {
+                            setArmed(null);
+                            void clear(field);
+                          }}
+                        >
+                          Confirm clear
+                        </button>
+                        <button type="button" onClick={() => setArmed(null)}>
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={readOnly || busy !== null}
+                        onClick={() => setArmed({ field, action: "clear" })}
+                      >
+                        Clear {field}
+                      </button>
+                    ))}
                 </td>
               </tr>
             );

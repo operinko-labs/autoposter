@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MetadataOverridesPanel } from "./MetadataOverridesPanel";
@@ -88,7 +88,8 @@ describe("MetadataOverridesPanel", () => {
 
     const row = screen.getByTestId("override-studio");
     fireEvent.change(row.querySelector("input")!, { target: { value: "A24" } });
-    fireEvent.click(row.querySelector("button")!);
+    fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Confirm save" }));
 
     await waitFor(() => {
       const calls = fetchMock.mock.calls.map(
@@ -97,6 +98,50 @@ describe("MetadataOverridesPanel", () => {
       expect(calls).toContain("PUT /api/items/7/metadata-overrides/studio");
       expect(calls.filter((c) => c === "GET /api/items/7/metadata-overrides")).toHaveLength(2);
     });
+  });
+
+  it("arms Save on the first click but sends nothing until confirmed", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/items/7/metadata-overrides": ENABLED,
+      "PUT /api/items/7/metadata-overrides/studio": {
+        status: "saved", field: "studio", value: "A24", queued: true,
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MetadataOverridesPanel itemId={7} />);
+    await screen.findByText("A crime saga");
+
+    const row = screen.getByTestId("override-studio");
+    fireEvent.change(row.querySelector("input")!, { target: { value: "A24" } });
+    fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+
+    // The mutation proof. With the gate removed, Save posts here and this
+    // assertion reds: only the initial listing fetch may have gone out.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/items/7/metadata-overrides");
+
+    const confirm = within(row).getByRole("alert");
+    expect(confirm).toHaveTextContent("Write studio to Plex and lock it?");
+    expect(confirm).toHaveTextContent("A24");
+    expect(within(row).getByRole("button", { name: "Confirm save" })).toHaveFocus();
+  });
+
+  it("cancels a Save without sending a request", async () => {
+    const fetchMock = mockFetch({ "GET /api/items/7/metadata-overrides": ENABLED });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MetadataOverridesPanel itemId={7} />);
+    await screen.findByText("A crime saga");
+
+    const row = screen.getByTestId("override-studio");
+    fireEvent.change(row.querySelector("input")!, { target: { value: "A24" } });
+    fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Cancel" }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(within(row).queryByRole("button", { name: "Confirm save" })).toBeNull();
+    expect(within(row).getByRole("button", { name: "Save" })).toBeInTheDocument();
   });
 
   it("clears an override and says what Plex does next, both halves", async () => {
@@ -112,9 +157,50 @@ describe("MetadataOverridesPanel", () => {
     await screen.findByText("A crime saga");
 
     fireEvent.click(screen.getByRole("button", { name: /clear tagline/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
 
     expect(await screen.findByRole("status")).toHaveTextContent(/unlocked/i);
     expect(screen.getByRole("status")).toHaveTextContent(/until Plex itself refreshes/i);
+  });
+
+  it("arms Clear on the first click but sends nothing until confirmed", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/items/7/metadata-overrides": ENABLED,
+      "DELETE /api/items/7/metadata-overrides/tagline": {
+        status: "cleared", field: "tagline", unlocked: true, queued: true,
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MetadataOverridesPanel itemId={7} />);
+    await screen.findByText("A crime saga");
+
+    fireEvent.click(screen.getByRole("button", { name: /clear tagline/i }));
+
+    // The mutation proof. With the gate removed, Clear posts here and this
+    // assertion reds: only the initial listing fetch may have gone out.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/items/7/metadata-overrides");
+
+    const confirm = screen.getByRole("alert");
+    expect(confirm).toHaveTextContent("Clear tagline?");
+    expect(confirm).toHaveTextContent("Plex is unlocked");
+    expect(screen.getByRole("button", { name: "Confirm clear" })).toHaveFocus();
+  });
+
+  it("cancels a Clear without sending a request", async () => {
+    const fetchMock = mockFetch({ "GET /api/items/7/metadata-overrides": ENABLED });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MetadataOverridesPanel itemId={7} />);
+    await screen.findByText("A crime saga");
+
+    fireEvent.click(screen.getByRole("button", { name: /clear tagline/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Confirm clear" })).toBeNull();
+    expect(screen.getByRole("button", { name: /clear tagline/i })).toBeInTheDocument();
   });
 
   it("says Plex was not touched when clearing an exempt item's override", async () => {
@@ -135,6 +221,7 @@ describe("MetadataOverridesPanel", () => {
     await screen.findByText("A crime saga");
 
     fireEvent.click(screen.getByRole("button", { name: /clear tagline/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
 
     const note = await screen.findByRole("status");
     expect(note).toHaveTextContent(/not touched/i);
@@ -160,7 +247,8 @@ describe("MetadataOverridesPanel", () => {
 
     const row = screen.getByTestId("override-critic_rating");
     fireEvent.change(row.querySelector("input")!, { target: { value: "eleven" } });
-    fireEvent.click(row.querySelector("button")!);
+    fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Confirm save" }));
 
     const message = await screen.findByText(/critic_rating: value not accepted/i);
     expect(message).toHaveTextContent("OverrideValueError");
@@ -177,6 +265,7 @@ describe("MetadataOverridesPanel", () => {
     await screen.findByText("A crime saga");
 
     fireEvent.click(screen.getByRole("button", { name: /clear tagline/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
 
     expect(await screen.findByText(/Plex write failed \(OSError\)/)).toBeInTheDocument();
   });
