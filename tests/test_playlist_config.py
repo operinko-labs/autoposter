@@ -281,6 +281,12 @@ def test_all_mixed_with_named_users_is_always_refused():
     message = str(error.value)
     assert "sync_to_users" in message
     assert "all" in message
+    assert "mixes" in message
+    # The refusal sentence itself, not pydantic's wrapper -- str(error.value)
+    # also echoes the raw input dict for debug context, which would make this
+    # assertion fail on the fixture's own "someone" regardless of what our
+    # validator wrote. The raised message is the one served surface here.
+    assert "someone" not in error.value.errors()[0]["msg"]
 
 
 def test_the_section_defaults_leave_every_user_untouched():
