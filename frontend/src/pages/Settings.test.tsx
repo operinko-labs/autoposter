@@ -903,7 +903,7 @@ describe("Settings preview", () => {
     ).toBeInTheDocument();
     expect(
       within(panel).getByText(
-        /a kind counted below is one this edit actually touched/i,
+        /a kind counted below is one whose stored fingerprint this edit moves/i,
       ),
     ).toBeInTheDocument();
   });
@@ -969,7 +969,7 @@ describe("Settings preview", () => {
     expect(panel.textContent).not.toMatch(/re-renders the whole library/i);
     expect(
       within(panel).getByText(
-        /a kind counted below is one this edit actually touched/i,
+        /a kind counted below is one whose stored fingerprint this edit moves/i,
       ),
     ).toBeInTheDocument();
   });
@@ -1024,7 +1024,7 @@ describe("Settings preview", () => {
     expect(within(panel).getByText(/~1 of 5 artwork renders are out of date/)).toBeInTheDocument();
     expect(
       within(panel).getByText(
-        /a kind counted below is one this edit actually touched/i,
+        /a kind counted below is one whose stored fingerprint this edit moves/i,
       ),
     ).toBeInTheDocument();
   });

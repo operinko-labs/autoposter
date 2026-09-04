@@ -64,18 +64,23 @@ export const IMPACT_CAVEAT =
 /** What the breakdown means.
  *
  * The render version is computed per art kind (`config/loader.py`'s
- * `render_version_for`), so a kind counted below IS a kind the edit touched.
- * This is the exact inverse of what this note said while one wholesale hash
- * covered the whole artwork section, and it is the user-visible half of
- * roadmap row 111. A shared input -- an asset root, `use_original_title`,
- * `output_quality` -- is a member of every kind's payload and still reaches
- * all four; that is the edit being global rather than the breakdown failing
- * to discriminate, and it is why the note holds in both arms below. The other
- * half -- that a kind missing from the breakdown was excluded by a gate --
- * is unchanged. */
+ * `render_version_for`), so a kind counted below is one whose stored
+ * fingerprint the edit moved -- not, without qualification, one the edit
+ * touched: a poster with a composited logo is counted for any
+ * render-affecting edit, because the walk cannot see the logo it was built
+ * with (see `IMPACT_CAVEAT`). That distinction aside, this is still the
+ * exact inverse of what this note said while one wholesale hash covered the
+ * whole artwork section, and it is the user-visible half of roadmap row 111.
+ * A shared input -- an asset root, `use_original_title`, `output_quality` --
+ * is a member of every kind's payload and still reaches all four; that is
+ * the edit being global rather than the breakdown failing to discriminate,
+ * and it is why the note holds in both arms below. The other half -- that a
+ * kind missing from the breakdown was excluded by a gate -- is unchanged. */
 const IMPACT_BREAKDOWN_PER_KIND_NOTE =
-  "The render version is per art kind, so a kind counted below is one this " +
-  "edit actually touched.";
+  "The render version is per art kind, so a kind counted below is one " +
+  "whose stored fingerprint this edit moves; a poster with a composited " +
+  "logo is counted for any render-affecting edit, because the walk cannot " +
+  "see the logo it was built with.";
 const IMPACT_BREAKDOWN_GATE_NOTE =
   "A kind missing from the breakdown was excluded by a gate — disabled, or " +
   "skipped by rule.";
@@ -548,14 +553,14 @@ function ImpactReport({
   // which is what a shared input (an asset root, use_original_title,
   // output_quality) does. So the sentence says that rather than blaming the
   // artwork section.
-  const wholeLibrary = impact.of_total > 0 && impact.affected === impact.of_total;
+  const everyExaminedRow = impact.of_total > 0 && impact.affected === impact.of_total;
   const renders = `~${impact.affected} of ${impact.of_total} artwork renders`;
   const kinds = Object.entries(impact.by_art_kind);
 
   return (
     <div className="config-impact">
       <p className="config-impact-count" title={IMPACT_CAVEAT}>
-        {wholeLibrary
+        {everyExaminedRow
           ? `This edit reaches every examined row — ${renders}.`
           : `${renders} are out of date.`}
       </p>

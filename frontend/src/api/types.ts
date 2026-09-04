@@ -744,15 +744,19 @@ export interface ConfigSaveResponse {
  * `affected` is an over-estimate by construction -- see that module's
  * docstring -- so it renders with a "~".
  *
- * `by_art_kind` IS evidence about which kinds an edit touched. The render
- * version is computed per art kind (`config/loader.py`'s
+ * `by_art_kind` is evidence about the kinds whose stored fingerprints an
+ * edit moves -- not, without qualification, which kinds it touched. The
+ * render version is computed per art kind (`config/loader.py`'s
  * `render_version_for`), so an edit to one kind's settings invalidates that
  * kind's rows and leaves the others alone. A shared input -- an asset root,
  * `library_folders`, `artwork.use_original_title`, the global
  * `artwork.disable_online_asset_fetch`, `artwork.output_quality` -- is a
  * member of every kind's payload and still reaches every row; that is the
  * edit being global, not the breakdown failing to discriminate. A gate (a
- * disabled kind, `skip_tba`) can also narrow it.
+ * disabled kind, `skip_tba`) can also narrow it. And a poster with a
+ * composited logo is counted for any render-affecting edit, because
+ * `affected`'s approximation means the walk cannot see the logo it was
+ * built with, whichever kind moved.
  */
 export interface ConfigImpact {
   affected: number;
