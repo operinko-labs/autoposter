@@ -51,6 +51,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections import groups
+from autoposter.collections.poster_title import poster_title_parts
 from autoposter.collections.posters import apply_poster, posters_enabled
 from autoposter.collections.reconcile import (
     LIBTYPES,
@@ -213,7 +214,7 @@ def update_smart_collection(section, collection, url: str) -> None:
     )
 
 
-def smart_definition_hash(url: str, summary: str | None, settings=None) -> str:
+def smart_definition_hash(url: str, summary: str | None, settings=None, config=None) -> str:
     """The desired state, hashed -- what an unchanged pass short-circuits on.
 
     Over the BUILT URI (C10), never over the ``content`` attribute Plex echoes
@@ -232,10 +233,17 @@ def smart_definition_hash(url: str, summary: str | None, settings=None) -> str:
     second edge into that same cycle for no gain. Settings contribute nothing at
     their defaults, so a definition that sets none hashes to the same string it
     would have without this term.
+
+    ``config`` folds ``collections.poster_title`` in the same way and one term
+    further along -- see ``poster_title.poster_title_parts``, which is where
+    the reason and the gate-off byte-identity live. It is last in the payload
+    and contributes NOTHING while the gate is off, so every hash already stored
+    still matches. Defaulted, like ``settings``, so every existing caller and
+    every existing test keeps its current call and its current digest.
     """
     from autoposter.collections.lists import _settings_parts
 
-    payload = "\x1f".join([url, summary or "", *_settings_parts(settings)])
+    payload = "\x1f".join([url, summary or "", *_settings_parts(settings), *poster_title_parts(config)])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -363,7 +371,7 @@ async def reconcile_smart_collection(
         )
     ).scalar_one_or_none()
 
-    wanted = smart_definition_hash(url, summary, settings)
+    wanted = smart_definition_hash(url, summary, settings, config)
     posters_on = posters_enabled(config, http)
     definition_current = (
         collection is not None and record is not None and record.definition_hash == wanted

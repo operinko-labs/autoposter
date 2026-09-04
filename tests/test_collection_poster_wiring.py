@@ -6,7 +6,9 @@ called after ``resolve_collision`` has approved the collection, not before
 -- so the tests here assert it directly, on both the smart-collection path
 (``reconcile.py``) and the list-collection path (``lists.py``).
 """
+import hashlib
 import io
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -16,11 +18,14 @@ from plexapi.exceptions import NotFound
 from sqlalchemy import select
 
 from autoposter.collections import groups
-from autoposter.collections.lists import reconcile_list_collection
+from autoposter.collections.buckets import Bucket
+from autoposter.collections.lists import _members_hash, reconcile_list_collection
 from autoposter.collections.posters import DEFAULT_IMAGES_BASE, hosted_poster_url
-from autoposter.collections.reconcile import reconcile_content_ratings
+from autoposter.collections.reconcile import definition_hash, reconcile_content_ratings
+from autoposter.collections.smart import smart_definition_hash
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ManagedCollection
+from autoposter.overlays.assets import INTER_BOLD
 
 LABEL = "autoposter"
 
@@ -981,3 +986,411 @@ def test_the_universe_poster_keys_survive_the_category_move():
     assert len(refs) == 11
     unmapped = [ref for ref in refs if ref not in UNIVERSE_CODES]
     assert unmapped == ["fa11en82/in-association-with-dc"]
+
+
+# --- the collection-title composite (roadmap row 105) -------------------------
+#
+# Every test here drives a REAL reconciler -- ``reconcile_content_ratings`` or
+# ``engine._separators`` through ``_separator_pass`` -- and never
+# ``apply_poster`` or ``compose_collection_title`` in isolation. A helper test
+# would prove the composite can be computed and say nothing about whether the
+# shipped path uses it, which is exactly how a gated feature has twice passed
+# its own tests in this tree.
+
+
+def _enable_title(config):
+    """Turn row 105's gate on, leaving every other knob at its shipped default."""
+    config.collections.poster_title.enabled = True
+    return config
+
+
+def _poster_bytes(colour: str = "navy") -> bytes:
+    """A 200x300 poster -- big enough that the composite really draws glyphs.
+
+    This file's own ``_jpeg_bytes`` (:52-55) is **4x4**, and 4/2000 scales every
+    box, offset and point size in this section to the module's 1px floor: the
+    title box becomes 4x1 at 1pt, every test here would emit the clamp WARNING,
+    and ``uploaded[0] != data`` would go green because the module re-encodes at
+    ``quality=100, subsampling=0`` while the fixture was saved at Pillow's
+    default 75 -- not because anything was drawn. At 200x300 the title block
+    gets a 190x50 box at 10-25pt and the fixed line a 120x15 box at 4-9pt, which
+    is real text and needs no clamping. Plain colour rather than noise, so "these
+    pixels moved" is unambiguously the glyphs.
+    """
+    buffer = io.BytesIO()
+    Image.new("RGB", (200, 300), colour).save(buffer, format="JPEG", quality=100)
+    return buffer.getvalue()
+
+
+def _moved_pixels(before: bytes, after: bytes, top: int, bottom: int) -> int:
+    """How many pixels between rows ``top`` and ``bottom`` moved.
+
+    A count rather than a boolean so a test can say "the text band moved a great
+    deal more than an untouched band did", which holds whether or not a flat
+    region round-trips a JPEG re-encode exactly.
+    """
+    original = Image.open(io.BytesIO(before)).convert("RGB")
+    composited = Image.open(io.BytesIO(after)).convert("RGB")
+    assert original.size == composited.size
+    return sum(
+        original.getpixel((x, y)) != composited.getpixel((x, y))
+        for y in range(top, bottom)
+        for x in range(original.width)
+    )
+
+
+async def test_the_gate_off_uploads_the_fetched_bytes_untouched(
+    session, config_factory, tmp_path
+):
+    """The default, and the whole no-storm argument: off is byte-identical."""
+    section = RatingSection({"17"})
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    assert config.collections.poster_title.enabled is False
+    data = _poster_bytes()
+
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+
+    assert section._existing["Age 17+ Movies"].uploaded_bytes == [data]
+
+
+async def test_the_gate_on_composites_the_title_onto_a_managed_poster(
+    session, config_factory, tmp_path
+):
+    """Through the real reconciler, so the wiring is what is proven.
+
+    And proven by PIXELS inside the text band rather than by
+    ``uploaded[0] != data``: the module re-encodes at ``quality=100,
+    subsampling=0``, so any call at all changes the bytes of a fixture saved at
+    Pillow's default quality. "The bytes differ" would stay green with the
+    drawing removed. What is asserted instead is that the bottom third moved a
+    great deal and the top half did not.
+    """
+    section = RatingSection({"17"})
+    config = _enable_title(config_factory(assets_root=str(tmp_path)))
+    config.collections.apply_to_plex = True
+    data = _poster_bytes()
+
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+
+    uploaded = section._existing["Age 17+ Movies"].uploaded_bytes
+    assert len(uploaded) == 1
+    composited = Image.open(io.BytesIO(uploaded[0]))
+    assert composited.format == "JPEG"
+    assert composited.size == (200, 300)
+
+    # gravity south, a +300 title offset and a +120 line offset, all at the
+    # 200/2000 scale: the glyphs land in the bottom third and nowhere else.
+    drawn = _moved_pixels(data, uploaded[0], 200, 300)
+    untouched = _moved_pixels(data, uploaded[0], 0, 150)
+    assert drawn > 100, "the composite drew nothing into the title band"
+    assert drawn > 20 * untouched
+
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 == hashlib.sha256(uploaded[0]).hexdigest()
+
+
+async def test_the_gate_on_re_uploads_each_managed_poster_exactly_once(
+    session, config_factory, tmp_path
+):
+    """Adjudication A-9's arithmetic, proven rather than asserted in prose.
+
+    THE RULE, in two digests. The poster_title settings are PART of the bytes
+    hashed into ``poster_sha256``, because the compose step sits ABOVE that
+    digest (``posters.py:481``) -- so the gate-on pass uploads a poster whose
+    bytes differ from the pre-gate upload. And they are PART of
+    ``definition_hash`` too, as ``poster_title_parts``' suffix term -- so that
+    pass is the very NEXT one, not whichever later pass happens to move the
+    definition for some other reason. A-9 promised "gate-on re-uploads each
+    managed poster once", instantly; this is the whole of it.
+
+    NOTHING IS NULLED HERE, AND THAT IS THE TEST. An earlier revision of this
+    plan reached ``apply_poster`` by setting ``row.poster_sha256 = None``
+    between the passes. That would go green while proving only the caller's
+    documented NULL-sha fall-through -- every caller short-circuits on
+    ``definition_current and not (posters_on and record.poster_sha256 is
+    None)`` (``reconcile.py:1124``, ``smart.py:375``, ``lists.py:305``), which
+    this file's own
+    ``test_a_third_pass_over_an_unchanged_collection_uploads_nothing`` (:389)
+    already documents -- and would say nothing at all about the roll-out an
+    operator actually gets. Pass 2 below reaches ``apply_poster`` because the
+    gate flip moved ``definition_hash``, which IS the production roll-out. Drop
+    the suffix term and this test goes red at ``len(uploaded) == 2``.
+
+    Pass 3 settles at the CALLER's short-circuit, on both digests at once. The
+    in-process determinism that makes the CONTENT compare settle too is pinned
+    separately, by Task 1's ``test_the_same_inputs_give_byte_identical_output``;
+    this test does not claim to prove it.
+    """
+    section = RatingSection({"17"})
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    data = _poster_bytes()
+
+    # Pass 1, gate off: the fetched bytes go up untouched, and both digests
+    # land -- the content one and the definition one.
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    uploaded = section._existing["Age 17+ Movies"].uploaded_bytes
+    assert uploaded == [data]
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    gate_off_definition = row.definition_hash
+    assert gate_off_definition
+
+    # The operator turns the gate on, and NOTHING else is touched: no sha is
+    # nulled, no definition is edited, no row is deleted.
+    _enable_title(config)
+
+    # Pass 2, gate on: the definition hash moved, so this pass -- the very next
+    # one -- reaches apply_poster. Exactly one more upload, and its pixels
+    # differ.
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    assert len(uploaded) == 2, "the gate flip did not move definition_hash"
+    assert row.definition_hash != gate_off_definition
+    assert uploaded[1] != uploaded[0]
+    assert _moved_pixels(uploaded[0], uploaded[1], 200, 300) > 100
+    assert row.poster_sha256 == hashlib.sha256(uploaded[1]).hexdigest()
+
+    # Pass 3, gate still on and both digests stored: nothing at all.
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    assert len(uploaded) == 2
+
+
+async def test_a_changed_text_knob_re_uploads_each_managed_poster_exactly_once(
+    session, config_factory, tmp_path
+):
+    """A-9's third property: an edit made while the gate is ALREADY on.
+
+    Same two digests, same arithmetic. The knob is inside the model dump that
+    ``poster_title_parts`` folds into ``definition_hash``, so the next pass
+    reaches ``apply_poster``; and it changes the glyphs, so ``poster_sha256``
+    moves and exactly one upload follows. The pass after that short-circuits.
+
+    ``collection_line_text`` rather than a box size, so the assertion does not
+    depend on a 200x300 fixture rendering two point sizes distinguishably: a
+    different word is different glyphs at any size.
+    """
+    section = RatingSection({"17"})
+    config = _enable_title(config_factory(assets_root=str(tmp_path)))
+    config.collections.apply_to_plex = True
+    data = _poster_bytes()
+
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    uploaded = section._existing["Age 17+ Movies"].uploaded_bytes
+    assert len(uploaded) == 1
+
+    config.collections.poster_title.collection_line_text = "SERIES"
+
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    assert len(uploaded) == 2, "the knob did not move definition_hash"
+    assert uploaded[1] != uploaded[0]
+
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    assert len(uploaded) == 2
+
+
+def test_the_gate_off_leaves_every_definition_hash_byte_identical(config_factory):
+    """A-9's second property, on all three hash functions at once.
+
+    ``config=None`` is not a contrivance: it is literally the signature every
+    caller in the base suite still uses, so "equal to the ``config=None``
+    payload" IS "equal to the digest already stored on the live server". What
+    makes it byte-identical rather than merely equal-at-the-defaults is that
+    ``poster_title_parts`` refuses on ``settings.enabled`` before it dumps
+    anything -- so the boxes are retuned below with the gate off and the three
+    digests do not move.
+
+    ``separator_hash`` is absent on purpose: it never gets the term, because a
+    divider is never captioned (A-3).
+
+    Not driven through a reconciler because there is nothing wired to drive --
+    these three functions ARE the mechanism, and Global Constraint 9's real
+    entry point is covered by the two tests above, which reach them through
+    ``reconcile_content_ratings``.
+    """
+    config = config_factory()
+    assert config.collections.poster_title.enabled is False
+    config.collections.poster_title.title.max_width = 111
+    config.collections.poster_title.collection_line_text = "SET"
+
+    bucket = Bucket(key="17", title="Age 17+ Movies", summary="s", values=("17",))
+    assert definition_hash(bucket, None, "u", config) == definition_hash(bucket, None, "u")
+    assert smart_definition_hash("u", "s", None, config) == smart_definition_hash("u", "s")
+    assert _members_hash([], "s", "sync", None, config) == _members_hash([], "s", "sync")
+
+    # And the gate ON moves all three, which is what makes the roll-out instant
+    # rather than lazy.
+    config.collections.poster_title.enabled = True
+    assert definition_hash(bucket, None, "u", config) != definition_hash(bucket, None, "u")
+    assert smart_definition_hash("u", "s", None, config) != smart_definition_hash("u", "s")
+    assert _members_hash([], "s", "sync", None, config) != _members_hash([], "s", "sync")
+
+
+async def test_an_operators_own_poster_file_passes_through_untouched(
+    session, config_factory, tmp_path
+):
+    """Adjudication A-2. The local rung is also where api/manual.py's poster
+    endpoint writes, so this covers the manual surface too: a file the operator
+    supplied is theirs, and restyling it is a stronger claim than this service
+    makes anywhere else."""
+    section = RatingSection({"17"})
+    config = _enable_title(config_factory(assets_root=str(tmp_path)))
+    config.collections.apply_to_plex = True
+    theirs = _poster_bytes("green")
+    folder = tmp_path / "Movies" / "Age 17+ Movies"
+    folder.mkdir(parents=True)
+    (folder / "poster.jpg").write_bytes(theirs)
+
+    async with _client(_refusing_handler()) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+
+    assert section._existing["Age 17+ Movies"].uploaded_bytes == [theirs]
+
+
+async def test_a_divider_is_never_captioned_twice(session, config_factory, tmp_path):
+    """Adjudication A-3, on the kind rather than on the ordering.
+
+    A divider's art already carries the group's name -- baked in by
+    separator_art._render for the generated ones, and printed by upstream on
+    the fetched ``separators/<style>/<stem>.jpg``. Compositing on top would
+    print the title twice.
+    """
+    section = RatingSection(())
+    config = _enable_title(config_factory(assets_root=str(tmp_path)))
+    config.collections.apply_to_plex = True
+    data = _poster_bytes()
+
+    async with _client(_serving_handler(data, [])) as http:
+        await _separator_pass(session, section, http, config)
+
+    assert section._existing[SEPARATOR_TITLE].uploaded_bytes == [data]
+
+
+async def test_a_font_that_resolves_nowhere_reports_a_skip_and_uploads_nothing(
+    session, config_factory, tmp_path
+):
+    """Adjudication A-4's tail. The action names the FONT -- the string the
+    operator wrote -- and nothing else; poster_sha256 is left NULL so the next
+    pass retries, exactly as an unfetchable hosted default is."""
+    section = RatingSection({"17"})
+    config = _enable_title(config_factory(assets_root=str(tmp_path)))
+    config.collections.apply_to_plex = True
+    config.fonts_root = str(tmp_path / "fonts")
+    config.collections.poster_title.title.font = "NoSuchFace.ttf"
+
+    async with _client(_serving_handler(_poster_bytes(), [])) as http:
+        actions = await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+
+    assert section._existing["Age 17+ Movies"].uploaded_bytes == []
+    assert any("NoSuchFace.ttf" in action for action in actions)
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is None
+
+
+async def test_a_font_refusal_on_an_existing_poster_is_retried_once_the_font_resolves(
+    session, config_factory, tmp_path
+):
+    """review I-1: a refusal must not freeze ``definition_hash`` at ``wanted``.
+
+    Unlike the fresh-collection case above, this collection already has a
+    non-NULL ``poster_sha256`` when the font breaks -- the common shape on any
+    live server, and the one ``test_a_font_that_resolves_nowhere_...`` cannot
+    catch, because its NULL-sha fall-through rescues the retry regardless of
+    whether ``definition_hash`` was correctly left stale.
+
+    Pass 2 refuses with the font unresolved and the config UNCHANGED between
+    passes 2 and 3 -- only the file appearing under ``fonts_root`` differs --
+    so ``wanted`` is identical both times. If pass 2 had stamped
+    ``definition_hash = wanted`` regardless of the refusal, pass 3 would
+    short-circuit on ``definition_current`` forever, exactly as adjudicated:
+    "the operator mounts the font. Nothing happens. Ever."
+    """
+    section = RatingSection({"17"})
+    config = _enable_title(config_factory(assets_root=str(tmp_path)))
+    config.collections.apply_to_plex = True
+    config.fonts_root = str(tmp_path / "fonts")
+    data = _poster_bytes()
+
+    # Pass 1: a working (bundled) font composites and uploads once, so the
+    # collection already carries a non-NULL poster_sha256 going into the
+    # refusal -- the A-9 roll-out shape, not a fresh collection.
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    uploaded = section._existing["Age 17+ Movies"].uploaded_bytes
+    assert len(uploaded) == 1
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is not None
+
+    # The operator points at a font that is not yet mounted -- a typo, or the
+    # fonts volume is not there yet. definition_hash moves (the font name is
+    # part of the suffix term), so this pass reaches apply_poster and refuses.
+    config.collections.poster_title.title.font = "Colus-Regular.ttf"
+
+    async with _client(_serving_handler(data, [])) as http:
+        actions = await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    assert len(uploaded) == 1, "the refusal must not upload anything"
+    assert any("Colus-Regular.ttf" in action for action in actions)
+
+    # The operator mounts the font -- nothing about the config changes, so
+    # ``wanted`` is byte-identical to what pass 2 already computed. A bundled
+    # face other than pass 1's default, so its glyphs -- and therefore the
+    # composited digest -- differ from pass 1's upload: otherwise the
+    # sha-compare at ``posters.py:551`` would correctly skip a re-upload of
+    # identical pixels and this test would not be able to tell "skipped
+    # because unchanged" from "skipped because never retried".
+    fonts_dir = Path(config.fonts_root)
+    fonts_dir.mkdir(parents=True, exist_ok=True)
+    (fonts_dir / "Colus-Regular.ttf").write_bytes(INTER_BOLD.read_bytes())
+
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    assert len(uploaded) == 2, "the mounted font was never retried"
+    assert uploaded[1] != uploaded[0]
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 == hashlib.sha256(uploaded[1]).hexdigest()

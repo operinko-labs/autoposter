@@ -760,6 +760,14 @@ export interface ConfigImpact {
  * not "zero items", it is "the question does not apply". */
 export interface ConfigPreviewResponse extends ConfigSaveResponse {
   impact: ConfigImpact | null;
+  /** How many managed collection posters a `collections.poster_title` edit
+   * would re-composite and re-upload, once. Separate from `impact` because
+   * `config/impact.py` walks the `renders` table and a collection has no row
+   * there -- so this number is real precisely when `impact` is null. Optional
+   * because an older server does not send it, and an OVER-estimate when it
+   * does (a poster the operator placed themselves passes through untouched),
+   * so render it with a "~". */
+  collection_posters?: number;
 }
 
 /** One row of GET /api/config/snapshots -- metadata only. The documents are

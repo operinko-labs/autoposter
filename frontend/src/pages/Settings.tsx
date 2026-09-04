@@ -512,13 +512,34 @@ function ConfigSections({
  * `impact: null` is not "zero items": it is the server saying the edit cannot
  * change a rendered image at all, so the walk was never run (routes.py's
  * `_render_affecting`). Rendering it as a count of zero would invite the
- * operator to compare it against a real one. */
-function ImpactReport({ impact }: { impact: ConfigPreviewResponse["impact"] }) {
+ * operator to compare it against a real one.
+ *
+ * Collection posters are counted separately and are NOT part of `impact`:
+ * `config/impact.py` walks the `renders` table, which has no row for a
+ * collection, so a `collections.poster_title` edit shows "no re-renders"
+ * beside a real collection-poster cost. Both sentences are true at once. */
+function ImpactReport({
+  impact,
+  collectionPosters,
+}: {
+  impact: ConfigPreviewResponse["impact"];
+  collectionPosters: number;
+}) {
+  const posters =
+    collectionPosters > 0 ? (
+      <p className="muted config-impact-note">
+        {`~${collectionPosters} managed collection posters would be re-composited and re-uploaded, once.`}
+      </p>
+    ) : null;
+
   if (impact === null) {
     return (
-      <p className="config-impact none">
-        No re-renders — this change does not affect rendered artwork.
-      </p>
+      <>
+        <p className="config-impact none">
+          No re-renders — this change does not affect rendered artwork.
+        </p>
+        {posters}
+      </>
     );
   }
 
@@ -550,6 +571,7 @@ function ImpactReport({ impact }: { impact: ConfigPreviewResponse["impact"] }) {
           </p>
         </>
       )}
+      {posters}
     </div>
   );
 }
@@ -806,7 +828,10 @@ export function Settings() {
             ))}
           {preview !== null && (
             <>
-              <ImpactReport impact={preview.impact} />
+              <ImpactReport
+                impact={preview.impact}
+                collectionPosters={preview.collection_posters ?? 0}
+              />
               {preview.restart_required.length > 0 && (
                 <p className="config-restart">
                   {`Restart required to apply: ${preview.restart_required.join(", ")}`}

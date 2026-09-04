@@ -34,7 +34,7 @@ from autoposter.config.overrides import (
     OVERRIDES_INSERT_LOCK_KEY,
 )
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ConfigOverride, EventLog, Job, MediaItem, Render
+from autoposter.db.models import ConfigOverride, EventLog, Job, ManagedCollection, MediaItem, Render
 from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue
 from autoposter.render.pipeline import compute_fingerprint, gather_fingerprint_inputs
@@ -611,6 +611,33 @@ async def test_a_preview_of_api_docs_enabled_reports_it_as_inert_not_restart_req
     body = response.json()
     assert "api_docs_enabled" not in body["restart_required"]
     assert body["inert"] == ["api_docs_enabled"]
+
+
+async def test_a_preview_counts_the_collection_posters_a_row_105_edit_moves(
+    client, auth_headers, session, app
+):
+    """Row 105's honesty row, through the endpoint that serves it.
+
+    A collections edit moves no render fingerprint -- ``render_version``
+    excludes the whole section -- so ``impact`` is null here, which is exactly
+    the case the count exists for: null impact beside a real cost.
+    """
+    session.add(
+        ManagedCollection(
+            library="Movies", title="A Collection", kind="smart",
+            definition_hash="d" * 64,
+        )
+    )
+    await session.commit()
+
+    response = await client.post(
+        "/api/config/preview", headers=auth_headers,
+        json={"document": {"collections": {"poster_title": {"enabled": True}}}},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["impact"] is None
+    assert body["collection_posters"] == 1
 
 
 # --- apply ---
