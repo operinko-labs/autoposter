@@ -22,6 +22,15 @@ from sqlalchemy import select
 
 from autoposter.api.auth import require_session
 from autoposter.collections.playlists import library_scope, reconcile_playlists
+# The MODULE, not its names. ``BY_TITLE`` is a table a test may swap
+# (``tests/test_playlists.py``'s ``a_preset`` monkeypatches the module
+# attribute), and a ``from … import BY_TITLE`` here would bind the original
+# dict at import time and quietly ignore the patch. The functions read the
+# module globals at call time and would have been safe either way; one import
+# for all three keeps the rule visible instead of split -- and it keeps
+# ``playlist_definitions`` (the composition) unambiguous next to
+# ``playlist_definitions`` (this module's own handler, same name).
+from autoposter.collections import playlist_presets
 from autoposter.config.overrides import load_overrides_document
 from autoposter.db.models import EventLog, ManagedPlaylist
 from autoposter.db.models import Session as SessionModel
@@ -96,6 +105,19 @@ async def playlist_definitions(
     ``libraries`` is the section's own scope -- what a create form offers as
     scope checkboxes, in the order a definition would search them.
 
+    ``provenance`` has a third value the collections listing has no analogue
+    for: ``"preset"``, for a row ``playlists.presets`` expands into. A preset
+    row is stored in no document at all, so it is neither editable nor
+    removable through the overrides layer -- it is switched off by removing its
+    key, which the settings page's ``string[]`` editor already does.
+    ``preset_key`` names that key and is null on every other row.
+
+    ``preset_conflicts`` is A6's report: a switched-on preset whose title an
+    operator definition already builds is DROPPED from the expansion (one
+    playlist title is one playlist, so two definitions on it would flap the
+    members hash forever) and named here instead, so the panel can say which
+    key stopped building and why.
+
     Not behind ``_enabled``, for the catalog's reason.
     """
     config = request.app.state.config_holder.current
@@ -110,19 +132,84 @@ async def playlist_definitions(
     section = stored.get("playlists")
     overridden = isinstance(section, dict) and "definitions" in section
     provenance = "override" if overridden else "file"
+
+    def _row(definition, source: str, preset_key: str | None) -> dict:
+        """One definition as the panel reads it.
+
+        ``summary``, ``limit`` and ``schedule`` are here and were not in 98a
+        (L-7): the collections listing omits the same three, which made it
+        parity at the time and makes it a blocker now -- the edit form cannot
+        show a field the listing does not carry, and it must never rebuild an
+        entry from this projection anyway (that is the freezing hazard
+        ``api/overrides.ts`` opens with). These are for DISPLAY; the write is
+        always seeded from the stored overrides document.
+
+        Nothing here can carry a URL or a token: every value is a title, a
+        builder key, a library name, a count, a literal from a closed set, or
+        the definition's own ``params`` -- which the collections listing has
+        served verbatim since row 137, no registered builder's params model
+        carrying a URL, key or token field.
+        """
+        return {
+            "title": definition.title,
+            "builder": definition.builder,
+            "params": definition.params,
+            "libraries": definition.libraries,
+            "summary": definition.summary,
+            "limit": definition.limit,
+            # The WHOLE model, defaults included: a definition whose YAML says
+            # ``schedule: {every_n_runs: 3}`` is served as
+            # ``{"every_n_runs": 3, "months": null}``.
+            # There is no exclude-anything precedent to copy
+            # -- the collections listing serves no ``schedule`` at all, and the
+            # one place this codebase puts a nested config model on a response
+            # is ``GET /api/config``, which does a plain
+            # ``config.model_dump(mode="json")`` (``api/routes.py``). Same call
+            # here, so the served shape is the schema's shape and the frontend
+            # type does not have to guess which keys survive.
+            "schedule": (
+                None if definition.schedule is None
+                else definition.schedule.model_dump(mode="json")
+            ),
+            "sync_mode": definition.sync_mode,
+            "builder_level": definition.builder_level,
+            "provenance": source,
+            "preset_key": preset_key,
+        }
+
+    # THE SAME COMPOSITION THE PASS AND THE SWEEP RUN, not a third one. This
+    # handler could re-expand the presets and append
+    # ``config.playlists.definitions`` itself; it would agree with
+    # ``playlist_definitions`` today and be free to drift tomorrow, and the
+    # panel's ``overrideOrdinal`` maps a listing row back to its stored entry
+    # by counting the "override" rows before it -- which is only correct while
+    # the two orders are the same list. So the list is composed once, here as
+    # everywhere, and this handler's only extra job is per-row provenance.
+    #
+    # ``playlist_definitions`` appends the operator's definitions to the
+    # presets (its docstring, and ``test_presets_come_first_and_operator_
+    # definitions_are_appended``), so the last ``len(config.playlists.
+    # definitions)`` rows are theirs and everything before them expanded from
+    # ``playlists.presets``. Counting the boundary is what keeps the split
+    # honest without re-deriving either half.
+    composed = playlist_presets.playlist_definitions(config)
+    boundary = len(composed) - len(config.playlists.definitions)
     return {
         "libraries": library_scope(config),
         "definitions": [
-            {
-                "title": definition.title,
-                "builder": definition.builder,
-                "params": definition.params,
-                "libraries": definition.libraries,
-                "sync_mode": definition.sync_mode,
-                "builder_level": definition.builder_level,
-                "provenance": provenance,
-            }
-            for definition in config.playlists.definitions
+            # Every row before the boundary came out of ``preset_definitions``,
+            # so its title is a key of the table by construction -- this
+            # subscript cannot raise, and reaching the table THROUGH the module
+            # is what keeps a swapped table (a test's, and one day a wider one)
+            # reaching this half too.
+            _row(definition, "preset", playlist_presets.BY_TITLE[definition.title].key)
+            if index < boundary
+            else _row(definition, provenance, None)
+            for index, definition in enumerate(composed)
+        ],
+        "preset_conflicts": [
+            {"key": key, "title": shadowed}
+            for key, shadowed in playlist_presets.preset_conflicts(config)
         ],
     }
 

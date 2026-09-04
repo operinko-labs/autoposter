@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, apiFetch } from "../api/client";
-// The overrides document and its helpers are shared with the settings page
-// and the sibling panels -- see `api/overrides.ts` for why a second copy of
-// the seeding rule would be a bug rather than a duplication.
+// The overrides document and its helpers are shared with the settings page and
+// the sibling panels -- see `api/overrides.ts` for why a second copy of the
+// seeding rule would be a bug rather than a duplication. Nothing in this file
+// is added to that module: every helper it needs is already path-agnostic.
 import {
   documentFromConfig,
   fieldErrors,
@@ -15,67 +16,60 @@ import {
   withPath,
   withoutPath,
 } from "../api/overrides";
-import { COLLECTION_DEFINITIONS, DefinitionEditor } from "./DefinitionEditor";
+import { DefinitionEditor, PLAYLIST_DEFINITIONS } from "./DefinitionEditor";
 import type {
-  ConfigPreviewResponse,
   ConfigResponse,
   ConfigSaveResponse,
-  DefinitionsListingResponse,
-  DefinitionSummary,
   OverridesDocument,
   ParsedSourceResponse,
+  PlaylistDefinitionSummary,
+  PlaylistDefinitionsListingResponse,
 } from "../api/types";
+// The sibling panel's stylesheet, deliberately: this panel is that panel's
+// shape with one path changed, so a second copy of its rules would be two
+// files to keep in step for no visual difference.
 import "./custom-collections.css";
 
 /** Where every write here lands. The overrides layer replaces a list
  * WHOLESALE, so this panel always writes the complete override list -- and
  * builds it only from `overrideList` below, never from the whole config and
- * never from the server's listing rows (the freezing hazard
- * `api/overrides.ts` opens with: the listing is a seven-field projection of
- * a definition that carries a dozen more, so an entry rebuilt from it would
- * drop `summary`, `limit`, `schedule` and the rest -- and an entry the
- * mounted file supplies would be pinned at today's YAML values against every
- * future edit of that file). */
-const DEFINITIONS_PATH = "collections.definitions";
+ * never from the server's listing rows. The listing is a projection; a
+ * playlist entry rebuilt from it would drop the `schedule` the form does not
+ * show, and an entry the mounted file supplies would be pinned at today's YAML
+ * values against every future edit of that file. */
+const DEFINITIONS_PATH = "playlists.definitions";
 
-/** The id the guard's sentence carries, so the disabled Create button can
- * point a screen reader at the reason it is disabled. */
-const GUARD_ID = "custom-file-guard";
+const GUARD_ID = "playlists-file-guard";
 
-/** Facts C2: what Read URL, Check and Create actually verify -- shape,
- * never existence. */
+/** What Read URL actually verifies -- shape, never existence. The endpoint is
+ * the collections one on purpose: `source_urls.parse_source` names no config
+ * section, so a second copy for playlists would be a second parser to keep in
+ * step with MDBList's and IMDb's URL shapes. */
 const SHAPE_ONLY_NOTE =
   "The URL is checked for shape only — whether the list exists is discovered " +
   "when the reconcile pass next runs it, and a source that fails leaves its " +
-  "collection untouched rather than emptying it.";
+  "playlist untouched rather than emptying it.";
 
-/** Facts C3: the orphan story on remove, one honest sentence. */
 const REMOVE_NOTE =
-  "Removing a definition only stops the pass building it — the collection " +
-  "already in Plex follows collections.delete_unconfigured: reported as an " +
+  "Removing a definition only stops the pass building it — the playlist " +
+  "already in Plex follows playlists.delete_unconfigured: reported as an " +
   "orphan by default, deleted only when that setting says so.";
 
-/** What Edit reaches, and what it deliberately does not (roadmap row 138).
- *
- * The builder and its params are shown and not edited: a builder is a registry
- * key, and a params dict is shaped by the builder that reads it, so no generic
- * widget round-trips one safely. Renaming gets the same sentence Remove gets,
- * because it has the same consequence. */
 const EDIT_NOTE =
   "Edit changes a definition's own fields. The builder and its parameters are " +
   "not editable — change those by removing the definition and creating it " +
-  "again from a URL. Renaming leaves the collection already in Plex under its " +
-  "old title, which collections.delete_unconfigured then treats as an orphan.";
+  "again from a URL. Renaming leaves the playlist already in Plex under its " +
+  "old title, which playlists.delete_unconfigured then treats as an orphan.";
 
-/** The HARD GUARD (facts Addendum), and the whole of its explanation.
- *
- * Not a warning beside a working button: while the listing carries a
- * file-provenance row, creating here is refused. The two layers cannot
- * coexist -- an overrides list replaces the file's wholesale, and copying the
- * file's rows into the write is the freezing hazard -- so the honest answer
- * is to refuse and name the two modes that do work. Read URL stays live under
- * the guard on purpose: resolving a paste to its builder and params is
- * exactly what an operator managing definitions in YAML needs from this page. */
+/** What a preset row is, and what it is not. Said here rather than left to the
+ * missing buttons, because a row with no controls otherwise reads as a bug. */
+const PRESET_NOTE =
+  "Preset rows come from playlists.presets and are stored in no document, so " +
+  "they cannot be edited or removed here — switch one off by removing its key " +
+  "from playlists.presets on the settings page. To customise one instead, " +
+  "create a definition below with the same title: yours is built and the " +
+  "preset stands aside.";
+
 const FILE_ROWS_NOTE =
   "Creating here is refused while any definition below comes from the mounted " +
   "config file: the file's definitions do not merge with definitions created " +
@@ -86,21 +80,15 @@ const FILE_ROWS_NOTE =
   "and params to write there), or move those rows into this form once and " +
   "empty the file's definitions list.";
 
-/** CatalogPanel's precedent, for a save from this panel. */
 const APPLIES_NOTE =
-  "The change is live in the running process, and the collection itself " +
-  "appears at the next reconcile — use Diff now above to run one immediately.";
+  "The change is live in the running process, and the playlist itself appears " +
+  "at the next reconcile — the playlists pass runs with the collections one.";
 
-/** The stored override list, as seeded from the served config (the served
- * value IS the stored one -- an override wins the merge). Absent exactly
- * when the mounted file's list is in force, which is when nothing may be
- * copied in. */
 function overrideList(stored: OverridesDocument): unknown[] {
   const value = readPath(stored, DEFINITIONS_PATH);
   return Array.isArray(value) ? value : [];
 }
 
-/** The stored document plus one created entry, list written whole. */
 function documentForCreate(
   stored: OverridesDocument,
   entry: Record<string, unknown>,
@@ -108,11 +96,10 @@ function documentForCreate(
   return withPath(stored, DEFINITIONS_PATH, [...overrideList(stored), entry]);
 }
 
-/** The stored document minus the override entry at `ordinal`.
- *
- * Removing the last entry drops the key instead of writing `[]`: the key
- * going away is the overrides contract's revert, and it hands the decision
- * back to whatever the mounted file lists. */
+/** The stored document minus the override entry at `ordinal`. Removing the
+ * last entry drops the key instead of writing `[]`: the key going away is the
+ * overrides contract's revert, and it hands the decision back to whatever the
+ * mounted file lists. */
 function documentForRemove(
   stored: OverridesDocument,
   ordinal: number,
@@ -123,12 +110,9 @@ function documentForRemove(
     : withPath(stored, DEFINITIONS_PATH, remaining);
 }
 
-/** The stored document with the entry at `ordinal` REPLACED.
- *
- * A splice, never a rebuild: the entries either side are the same object
+/** A splice, never a rebuild: the entries either side are the same object
  * references that came out of `overrideList`, so an edit cannot perturb a
- * sibling even by accident. The key is never dropped — an edit always leaves
- * at least the entry it edited. */
+ * sibling even by accident. */
 function documentForEdit(
   stored: OverridesDocument,
   ordinal: number,
@@ -139,23 +123,19 @@ function documentForEdit(
 }
 
 /** A listing row's position within the stored override list: its index among
- * the override-provenance rows. Provenance is uniform today (the wholesale
- * replace makes the supplying layer single-valued), so this equals the raw
- * index -- counting keeps the mapping right regardless. */
-function overrideOrdinal(definitions: DefinitionSummary[], index: number): number {
+ * the override-provenance rows. Preset and file rows are skipped by the same
+ * count, which is why this counts rather than using the raw index -- a preset
+ * row genuinely sits in the listing ahead of every stored entry. */
+function overrideOrdinal(
+  definitions: PlaylistDefinitionSummary[],
+  index: number,
+): number {
   return (
     definitions.slice(0, index + 1).filter((row) => row.provenance === "override")
       .length - 1
   );
 }
 
-/** A parse refusal, in whichever of the endpoint's two 422 shapes it arrives.
- *
- * The handler's own refusal is a string `detail`, which `api/client.ts` hands
- * over as the error's message. A body FastAPI's request validator rejects is
- * a list of `{loc, msg}` entries instead, and the message is then the generic
- * "request failed with 422" -- so the sentences are dug out of the detail
- * rather than rendering an object. */
 function refusalMessage(caught: unknown): string {
   if (caught instanceof ApiError && Array.isArray(caught.detail)) {
     const messages = Object.values(fieldErrors(caught.detail));
@@ -164,67 +144,49 @@ function refusalMessage(caught: unknown): string {
   return (caught as Error).message;
 }
 
-/** The config-defined collection definitions, and the form that creates one
- * from a pasted list URL.
+function badgeLabel(provenance: PlaylistDefinitionSummary["provenance"]): string {
+  if (provenance === "file") return "config file";
+  if (provenance === "preset") return "preset";
+  return "override";
+}
+
+/** The config-defined playlist definitions, and the form that creates one from
+ * a pasted list URL.
  *
- * The config surface, deliberately apart from the DefinitionsPanel above it:
- * that panel runs a real, Plex-touching dry run over these same definitions,
- * while everything here is config reads and config writes -- so this panel
- * renders on a replica where the Plex-touching panels report 503, the same
- * posture as the catalog and groups panels.
+ * `CustomCollectionsPanel`'s shape, one section along, and copied rather than
+ * abstracted: there is no existing abstraction over "a list-of-objects config
+ * section with a CRUD panel", and the codebase's own rule is to extract only
+ * when a third such section appears (recon 2.4). What IS shared is everything
+ * that would be a bug in duplicate: the overrides protocol (`api/overrides.ts`)
+ * and the edit form (`DefinitionEditor`, parameterised rather than copied).
  *
- * Two refusals shape it, and they are not the same refusal. Create is refused
- * outright while any listed row comes from the mounted file (the guard above,
- * facts Addendum). And whatever is written is built from the STORED overrides
- * document, never from the listing -- the listing supplies display, provenance
- * and the stored ordinal, nothing else.
- *
- * Remove exists only for override-provenance rows -- create's undo (facts
- * C3). A file row renders with a badge and no control.
- */
-export function CustomCollectionsPanel() {
-  const [listing, setListing] = useState<DefinitionsListingResponse | null>(null);
-  // The overrides the server already holds. Kept whole rather than reduced
-  // to the one path: a save here must not drop an override another page
-  // stored.
+ * Three provenances, three postures. An `override` row is this panel's to edit
+ * and remove. A `file` row is rendered with a badge and no controls, and its
+ * presence disables Create outright -- an overrides list replaces the file's
+ * wholesale. A `preset` row is config the server expands: stored nowhere, so
+ * nothing here can splice it, and switched off by name on the settings page. */
+export function PlaylistsPanel() {
+  const [listing, setListing] = useState<PlaylistDefinitionsListingResponse | null>(
+    null,
+  );
   const [stored, setStored] = useState<OverridesDocument>({});
-  // The revision `stored` was seeded from, sent with every write so a save
-  // composed against a document another page has since moved is refused
-  // rather than silently overwriting it.
   const [storedRevision, setStoredRevision] = useState<string | null>(null);
-  // The schema's own per-field text, served by `GET /api/config` under a `[]`
-  // segment (`collections.definitions[].limit`). Row 138's own text said these
-  // were waiting for a row to hang on; the edit form is that row.
   const [descriptions, setDescriptions] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // The create form.
   const [title, setTitle] = useState("");
   const [url, setUrl] = useState("");
   const [parsed, setParsed] = useState<ParsedSourceResponse | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [chosen, setChosen] = useState<Record<string, boolean>>({});
 
-  // One busy key for whichever request is in flight ("parsing", "checking",
-  // "saving", or "removing-<n>"), so only one write races nothing.
   const [busy, setBusy] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
-  // Separate from `saveError` on purpose: a re-read that fails after the
-  // store succeeded did not unsave anything, and reporting it as a save
-  // failure would put a red error beside "Saved."
   const [reloadError, setReloadError] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [checked, setChecked] = useState<ConfigPreviewResponse | null>(null);
   const [result, setResult] = useState<ConfigSaveResponse | null>(null);
-
-  // Which override ordinal is open in the edit form, or null. The ORDINAL, not
-  // the entry: the entry is read from `stored` at render time, so a re-read
-  // after somebody else's save cannot leave the form editing a stale copy.
   const [editing, setEditing] = useState<number | null>(null);
 
-  // A ref rather than an effect-local `cancelled`: the save handler's
-  // continuation lands outside any effect, the same reasoning the
-  // neighbouring panels use.
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
@@ -234,7 +196,7 @@ export function CustomCollectionsPanel() {
   }, []);
 
   const adopt = useCallback(
-    (definitions: DefinitionsListingResponse, config: ConfigResponse) => {
+    (definitions: PlaylistDefinitionsListingResponse, config: ConfigResponse) => {
       setListing(definitions);
       setStored(documentFromConfig(config));
       setStoredRevision(revisionFromConfig(config));
@@ -246,13 +208,11 @@ export function CustomCollectionsPanel() {
             )
           : {},
       );
-      // Scope starts as "every library": all boxes checked, which the entry
-      // builder writes as NO `libraries` key at all.
       setChosen(
         Object.fromEntries(definitions.libraries.map((name) => [name, true])),
       );
-      // A fresh listing may renumber the ordinals; an open form pointing at
-      // the old numbering would write the edit into the wrong entry.
+      // A fresh listing may renumber the ordinals; an open form pointing at the
+      // old numbering would write the edit into the wrong entry.
       setEditing(null);
     },
     [],
@@ -260,7 +220,7 @@ export function CustomCollectionsPanel() {
 
   const reload = useCallback(async () => {
     const [definitions, config] = await Promise.all([
-      apiFetch<DefinitionsListingResponse>("/api/collections/definitions"),
+      apiFetch<PlaylistDefinitionsListingResponse>("/api/playlists/definitions"),
       apiFetch<ConfigResponse>("/api/config"),
     ]);
     if (live.current) adopt(definitions, config);
@@ -275,7 +235,7 @@ export function CustomCollectionsPanel() {
   if (loadError !== null) {
     return (
       <section className="panel custom-collections-panel">
-        <h2>Custom collections</h2>
+        <h2>Playlists</h2>
         <p className="page-error">{loadError}</p>
       </section>
     );
@@ -284,27 +244,21 @@ export function CustomCollectionsPanel() {
   if (listing === null) {
     return (
       <section className="panel custom-collections-panel">
-        <h2>Custom collections</h2>
+        <h2>Playlists</h2>
         <p className="muted">Loading…</p>
       </section>
     );
   }
 
   const fileRows = listing.definitions.some((row) => row.provenance === "file");
+  const presetRows = listing.definitions.some((row) => row.provenance === "preset");
   const chosenNames = listing.libraries.filter((name) => chosen[name]);
   const allChosen = chosenNames.length === listing.libraries.length;
   const complete = parsed !== null && title.trim() !== "" && chosenNames.length > 0;
-  // Check as well as Create: Check asks whether the server would accept the
-  // very document the guard refuses to send, so answering "checks out" under
-  // the guard would be an offer this panel will not honour.
   const ready = complete && !fileRows;
 
-  /** Any edit invalidates what a previous Check or save reported (the
-   * CatalogPanel posture: a 422 pinned to a definition nobody is proposing
-   * any more is a refusal of nothing). */
   function touch() {
     setResult(null);
-    setChecked(null);
     setReloadError(null);
     setErrors({});
     setSaveError(null);
@@ -316,8 +270,8 @@ export function CustomCollectionsPanel() {
       builder: parsed!.builder,
       params: parsed!.params,
       // All boxes checked = the key omitted = the definition's own "every
-      // configured library" default (`None`). An explicit full list would
-      // freeze today's library names into the definition.
+      // library in the playlists scope" default (`None`). An explicit full list
+      // would freeze today's library names into the definition.
       ...(allChosen ? {} : { libraries: chosenNames }),
     };
   }
@@ -328,52 +282,25 @@ export function CustomCollectionsPanel() {
     setParseError(null);
     touch();
     try {
+      // The collections endpoint, deliberately: it is builder-agnostic. A
+      // paste that resolves to a builder a PLAYLIST cannot use is not refused
+      // here -- it is refused by the schema on save, and the 422 lands in the
+      // error list below against the path it names.
       const response = await apiFetch<ParsedSourceResponse>(
         "/api/collections/parse-source",
         { method: "POST", body: JSON.stringify({ url }) },
       );
       if (live.current) setParsed(response);
     } catch (caught) {
-      // The refusal -- the params model's own error string, or the trakt
-      // fence -- lands here verbatim; see `refusalMessage` for the other
-      // shape the same status can arrive in.
       if (live.current) setParseError(refusalMessage(caught));
     } finally {
       if (live.current) setBusy(null);
     }
   }
 
-  async function check() {
-    setBusy("checking");
-    touch();
-    try {
-      const response = await apiFetch<ConfigPreviewResponse>(
-        "/api/config/preview",
-        {
-          method: "POST",
-          // The same body shape the save sends: the preview accepts the token
-          // and ignores it, so the three arms never drift apart.
-          body: saveBody(documentForCreate(stored, entry()), storedRevision),
-        },
-      );
-      if (live.current) setChecked(response);
-    } catch (caught) {
-      if (live.current) {
-        if (caught instanceof ApiError && caught.status === 422) {
-          setErrors(fieldErrors(caught.detail));
-          setSaveError("The server rejected this definition.");
-        } else {
-          setSaveError((caught as Error).message);
-        }
-      }
-    } finally {
-      if (live.current) setBusy(null);
-    }
-  }
-
-  /** One PUT for create and remove -- the sibling panels' idiom verbatim:
-   * store, then re-read OUTSIDE the try, because a failed re-read after a
-   * successful store is staleness, not an unsaved change. */
+  /** One PUT for create, edit and remove -- the sibling panels' idiom
+   * verbatim: store, then re-read OUTSIDE the try, because a failed re-read
+   * after a successful store is staleness, not an unsaved change. */
   async function put(document: OverridesDocument, key: string) {
     setBusy(key);
     touch();
@@ -389,9 +316,6 @@ export function CustomCollectionsPanel() {
     } catch (caught) {
       if (live.current) {
         if (caught instanceof ApiError && caught.status === 409) {
-          // Not retried: re-read, and say what happened. `stale` makes the
-          // re-read below run even though nothing was saved -- the panel is
-          // showing a document that is no longer true.
           setSaveError(STALE_SAVE_NOTE);
           stale = true;
         } else if (caught instanceof ApiError && caught.status === 422) {
@@ -403,11 +327,7 @@ export function CustomCollectionsPanel() {
       }
     }
     if (saved || stale) {
-      // Still gated on `saved`, never on `stale`: a save that did not happen
-      // must not clear the form the operator would otherwise have to re-type.
       if (live.current && saved && key === "saving") {
-        // The created definition is stored; a form still holding it would
-        // invite a duplicate-title 422 on the very next click.
         setTitle("");
         setUrl("");
         setParsed(null);
@@ -418,10 +338,6 @@ export function CustomCollectionsPanel() {
       } catch (caught) {
         if (live.current) {
           setReloadError(
-            // Branching rather than one sentence: this block runs for a save
-            // that happened AND for a 409 that saved nothing, and telling an
-            // operator "Saved, but..." about a write the server refused is the
-            // one thing this whole phase exists to stop.
             `${saved ? "Saved, but" : "Nothing was saved, and"} the panel ` +
               `could not be re-read (${(caught as Error).message}). ` +
               "What is shown may be stale — reload the page.",
@@ -434,16 +350,31 @@ export function CustomCollectionsPanel() {
 
   return (
     <section className="panel custom-collections-panel">
-      <h2>Custom collections</h2>
+      <h2>Playlists</h2>
 
       <p className="muted custom-note">
-        The config's own <span className="mono">collections.definitions</span> —
-        what the pass builds beyond the built-ins and the catalog's presets.
-        Create one from a list URL below; it is stored as a config override,
-        like the settings page's edits.
+        The config's own <span className="mono">playlists.definitions</span> —
+        what the playlists pass builds beyond the presets. Create one from a
+        list URL below; it is stored as a config override, like the settings
+        page's edits.
       </p>
       <p className="muted custom-note">{REMOVE_NOTE}</p>
       <p className="muted custom-note">{EDIT_NOTE}</p>
+      {presetRows && <p className="muted custom-note">{PRESET_NOTE}</p>}
+      {listing.preset_conflicts.length > 0 && (
+        <p
+          className="muted custom-note"
+          role="status"
+          aria-label="Displaced presets"
+        >
+          {"Not built, because a definition below already builds the same " +
+            "title: "}
+          {listing.preset_conflicts
+            .map((conflict) => `${conflict.key} (${conflict.title})`)
+            .join("; ")}
+          {". Remove the key from playlists.presets to stop it being reported."}
+        </p>
+      )}
       {fileRows && (
         <p className="muted custom-note custom-file-note" id={GUARD_ID}>
           {FILE_ROWS_NOTE}
@@ -451,7 +382,7 @@ export function CustomCollectionsPanel() {
       )}
 
       {listing.definitions.length === 0 ? (
-        <p className="empty">No definitions are configured — create one below.</p>
+        <p className="empty">No playlists are configured — create one below.</p>
       ) : (
         <div className="table-scroll">
           <table>
@@ -476,16 +407,16 @@ export function CustomCollectionsPanel() {
                   </td>
                   <td>
                     <span className={`custom-badge custom-${row.provenance}`}>
-                      {row.provenance === "file" ? "config file" : "override"}
+                      {badgeLabel(row.provenance)}
                     </span>
+                    {row.preset_key !== null && (
+                      <span className="mono"> {row.preset_key}</span>
+                    )}
                   </td>
                   <td className="custom-row-actions">
-                    {/* Edit and Remove exist only for rows the overrides
-                        document supplies. A file row's missing controls ARE
-                        the freezing guard made visible: this panel never
-                        writes file entries anywhere. Provenance is uniform, so
-                        a listing carrying a file row has no override row at
-                        all and neither control can appear. */}
+                    {/* Only override rows. A file row's missing controls are
+                        the freezing guard made visible; a preset row's are the
+                        plain truth that there is no stored entry to splice. */}
                     {row.provenance === "override" && (
                       <>
                         <button
@@ -527,14 +458,12 @@ export function CustomCollectionsPanel() {
 
       {editing !== null && overrideList(stored)[editing] !== undefined && (
         <DefinitionEditor
-          // Remounts when the ordinal changes, so the draft is re-seeded from
-          // the entry being edited rather than carrying the previous one's.
           key={editing}
           entry={overrideList(stored)[editing] as Record<string, unknown>}
           libraries={listing.libraries}
           descriptions={descriptions}
           busy={busy !== null}
-          kind={COLLECTION_DEFINITIONS}
+          kind={PLAYLIST_DEFINITIONS}
           onSave={(entry) =>
             void put(documentForEdit(stored, editing, entry), "editing")
           }
@@ -551,7 +480,7 @@ export function CustomCollectionsPanel() {
           <input
             type="text"
             value={title}
-            aria-label="Collection title"
+            aria-label="Playlist title"
             onChange={(event) => {
               touch();
               setTitle(event.target.value);
@@ -573,9 +502,6 @@ export function CustomCollectionsPanel() {
             }}
           />
         </label>
-        {/* Live under the guard: an operator who must keep managing
-            definitions in YAML still needs a paste turned into a builder and
-            params, and reading a URL stores nothing. */}
         <button
           type="button"
           disabled={busy !== null || url.trim() === ""}
@@ -591,7 +517,11 @@ export function CustomCollectionsPanel() {
         </p>
       )}
       {parsed !== null && (
-        <p className="custom-parsed" role="status">
+        // Named, like the displaced-presets note above it: a builder name is
+        // not unique on this page -- a listing row renders the same string in
+        // its Builder column -- so a test waiting for the parse must be able
+        // to scope to this region rather than to the text.
+        <p className="custom-parsed" role="status" aria-label="Parsed source">
           Builder: <span className="mono">{parsed.builder}</span>
           {" — "}
           {parsed.display_note}
@@ -600,7 +530,7 @@ export function CustomCollectionsPanel() {
 
       <fieldset className="custom-libraries">
         <legend className="muted">
-          Libraries — all checked applies it to every configured library
+          Libraries — all checked resolves members from every configured library
         </legend>
         {listing.libraries.map((name) => (
           <label key={name} className="custom-library">
@@ -625,17 +555,6 @@ export function CustomCollectionsPanel() {
           type="button"
           disabled={busy !== null || !ready}
           aria-describedby={fileRows ? GUARD_ID : undefined}
-          onClick={() => void check()}
-        >
-          {busy === "checking" ? "Checking…" : "Check"}
-        </button>
-        <button
-          type="button"
-          disabled={busy !== null || !ready}
-          // A disabled control whose reason sits four paragraphs above it is
-          // a dead end for a screen reader; the guard's own sentence is the
-          // description.
-          aria-describedby={fileRows ? GUARD_ID : undefined}
           onClick={() => void put(documentForCreate(stored, entry()), "saving")}
         >
           {busy === "saving" ? "Creating…" : "Create"}
@@ -654,17 +573,9 @@ export function CustomCollectionsPanel() {
         </ul>
       )}
 
-      {checked !== null && (
-        <p className="custom-checked" role="status">
-          {`Checks out — the server would accept this definition (config ` +
-            `${checked.version_before} → ${checked.version_after}). Nothing was stored.`}
-        </p>
-      )}
-
       {/* Outside the `result` gate, not inside it: a refused save never sets
-          `result`, so a re-read failure reported in there would be invisible
-          on exactly the path where the panel is most misleading -- showing
-          settings it failed to refresh, under a note promising it did. */}
+          `result`, so a re-read failure reported in there would be invisible on
+          exactly the path where the panel is most misleading. */}
       {reloadError !== null && <p className="custom-stale">{reloadError}</p>}
 
       {result !== null && (

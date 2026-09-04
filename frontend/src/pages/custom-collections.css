@@ -31,6 +31,15 @@
   border-color: var(--warn);
 }
 
+/* The third provenance. `.custom-badge` already draws the pill; this only
+   says which kind it is. Muted rather than `--warn`, because a preset row is
+   not a warning -- nothing is wrong with it, there is simply nothing here to
+   edit. (`.custom-override` is deliberately still unstyled: it has been the
+   plain badge since row 138 and changing it is not this phase's business.) */
+.custom-preset {
+  color: var(--text-muted);
+}
+
 .custom-form-title {
   margin: 16px 0 4px;
 }

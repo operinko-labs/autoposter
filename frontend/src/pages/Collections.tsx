@@ -17,6 +17,7 @@ import { CatalogPanel } from "./CatalogPanel";
 import { CustomCollectionsPanel } from "./CustomCollectionsPanel";
 import { FactsBackfillPanel } from "./FactsBackfillPanel";
 import { GroupsPanel } from "./GroupsPanel";
+import { PlaylistsPanel } from "./PlaylistsPanel";
 import { ScheduledRunStatusPill } from "./ScheduledRunStatus";
 // dashboard.css, not duplicated: the reconcile bar shows the same job state
 // the dashboard does, now through the same pill component -- see
@@ -592,6 +593,8 @@ export function Collections() {
           writes only, so it renders on a replica where the Plex-touching
           panels report 503. */}
       <CustomCollectionsPanel />
+
+      <PlaylistsPanel />
 
       {/* The catalog sits below the definitions it adds to: an operator reads
           what is built today, then picks what else to build. It is the only

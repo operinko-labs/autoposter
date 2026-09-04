@@ -95,6 +95,11 @@ from autoposter.collections.builders.base import (
 )
 from autoposter.collections.engine import _due
 from autoposter.collections.lists import _enforce_order, _members_hash, member_diff
+from autoposter.collections.playlist_presets import (
+    playlist_definitions,
+    preset_conflicts,
+    presets_needing_mdblist,
+)
 from autoposter.collections.resolve import build_owned_index, resolve_external_across
 from autoposter.collections.service import LIBRARY_TYPES
 from autoposter.config.schema import PlaylistDefinition
@@ -256,11 +261,34 @@ async def reconcile_playlists(
     run = PlaylistRun()
 
     definitions = [
-        definition for definition in config.playlists.definitions
+        definition for definition in playlist_definitions(config)
         if title is None or definition.title == title
     ]
     if not definitions and not (sweep and title is None):
         return run
+
+    # A6's report: a switched-on preset an operator definition displaced. Only
+    # on a whole pass -- against a single-title run every other definition is
+    # out of play, so a conflict line about one of them would be noise.
+    if title is None:
+        for key, shadowed in preset_conflicts(config):
+            run.actions.append(
+                "the %r preset is not built: an operator definition already "
+                "builds %r" % (key, shadowed)
+            )
+        # And the other reason a switched-on preset produces nothing: two of
+        # the nine sit on ``mdblist_list``, which raises before any request
+        # when no MDBList API key is configured. Contained one layer down and
+        # reported there as "source returned no items" -- true of the builder,
+        # useless to the operator, and the same wrong blame the empty-scope
+        # guard below fixes. ``sources.mdblist`` rather than a config read,
+        # because the bundle is what the builder itself checks.
+        if sources is None or sources.mdblist is None:
+            for key in presets_needing_mdblist(config):
+                run.actions.append(
+                    "the %r preset is skipped: no mdblist key is configured "
+                    "for this deployment, so its list cannot be fetched" % key
+                )
 
     # One section object and one owned index per (library, level), built lazily
     # and shared by every definition in the pass. Lazily because a pass with no
@@ -352,6 +380,23 @@ async def _reconcile_one(
 
     if not _due(definition, run_index, now):
         outcome.skipped = True
+        return outcome
+
+    # L-6: an empty EFFECTIVE scope. ``_libraries_must_not_be_blank`` refuses
+    # the explicitly empty list on a definition; this is the inherited one --
+    # ``collections.libraries`` has no minimum length, so a definition that
+    # omits ``libraries:`` can inherit nothing at all. Contained and named
+    # here, rather than reaching ``libraries[0]`` and reporting
+    # "failed (IndexError)", which is true and useless.
+    if not libraries:
+        outcome.failed = True
+        outcome.skipped = True
+        outcome.actions.append(
+            "%r has no library to resolve its members from: the playlists "
+            "section's scope is empty. Name libraries on this playlist, set "
+            "playlists.libraries, or configure collections.libraries"
+            % definition.title
+        )
         return outcome
 
     # A7's real refusal point, and it is here rather than at config load
@@ -706,7 +751,11 @@ async def _sweep_playlists(
     needed: a playlist with no row of ours is never a candidate in the first
     place, which is the same outcome by a different route.
     """
-    managed = {definition.title for definition in config.playlists.definitions}
+    # Through the same composition the pass runs, never
+    # ``config.playlists.definitions`` alone: a preset's playlist would
+    # otherwise be created by one half of this module and called an orphan by
+    # the other, on the very next pass.
+    managed = {definition.title for definition in playlist_definitions(config)}
     rows = (await session.execute(select(ManagedPlaylist))).scalars().all()
     candidates = [
         (row, by_key[row.plex_rating_key])
