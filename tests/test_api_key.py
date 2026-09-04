@@ -266,3 +266,6 @@ def test_the_secret_is_documented_in_both_places_an_operator_looks():
     assert "AUTOPOSTER_API_KEY" in readme
     assert "X-API-Key" in readme
     assert "customapi" in readme
+    assert (
+        readme.count('X-API-Key: "{{HOMEPAGE_VAR_AUTOPOSTER_API_KEY}}"') == 1
+    )
