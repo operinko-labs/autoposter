@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +9,7 @@ from autoposter.collections.__main__ import CONFIG_PATH as COLLECTIONS_CONFIG_PA
 from autoposter.config.loader import (
     DEFAULT_CONFIG_PATH,
     RENDER_ART_KINDS,
+    _shared_render_inputs,
     build_config,
     load_config,
     read_config_document,
@@ -336,6 +339,17 @@ _PARTITION = {
 # test below.
 _PROJECTED_FIELDS = {"library_language_overrides"}
 
+# The mutation half of `_PROJECTED_FIELDS`, kept separately because "which
+# kinds move" isn't a single answer for this field -- see
+# `test_a_library_language_override_moves_only_the_kind_it_names`. Reused by
+# the superset test below (M3) so that test's SUPERSET claim isn't checked
+# for `_PARTITION` alone.
+_PROJECTED_MUTATIONS = {
+    "library_language_overrides": lambda c: setattr(
+        c.artwork, "library_language_overrides", {"Movies": {"title_card": ["fi"]}}
+    ),
+}
+
 # Global render inputs that do not live under `artwork` at all. They decide
 # where every kind reads its inputs and writes its output (render/naming.py:105),
 # and scheduler/jobs.py:792,818 already treats a root repoint as a
@@ -391,6 +405,48 @@ def test_a_global_render_input_moves_every_kind(name):
     assert _moved(_GLOBAL_INPUTS[name]) == _ALL_KINDS
 
 
+def test_render_version_reconstructs_from_shared_inputs_and_wholesale_artwork():
+    """I1's drift guard.
+
+    `_shared_render_inputs` hand-duplicates `render_version`'s non-artwork
+    inputs (the four roots, `library_folders`) as a literal list of five
+    names. Nothing before this test pinned the two together: a root added to
+    `render_version`'s own `relevant` dict but missed in
+    `_shared_render_inputs` would leave every existing test green (the
+    wholesale hash still moves, `ArtworkConfig.model_fields` is unchanged, and
+    `_GLOBAL_INPUTS` above never names the new root) while no kind's version
+    moved for that edit -- silent under-invalidation.
+
+    This reconstructs `render_version`'s exact payload from
+    `_shared_render_inputs` plus the wholesale `artwork` dump, using the
+    identical json.dumps/hash recipe `render_version` uses, and checks it
+    against the real thing. `_shared_render_inputs`'s three `artwork.*`
+    projected keys are dropped from the reconstruction first -- they are
+    already inside the wholesale `artwork` dump, so keeping them would double
+    them up rather than reconstruct anything. If a root is ever added to
+    `render_version` without a matching addition to `_shared_render_inputs`,
+    the reconstructed payload is missing that root's key and this fails.
+    """
+    def reconstruct(config: Config) -> str:
+        shared = _shared_render_inputs(config)
+        payload_from_shared = {
+            key: value for key, value in shared.items() if not key.startswith("artwork.")
+        }
+        payload_from_shared["artwork"] = config.artwork.model_dump(mode="json")
+        payload = json.dumps(payload_from_shared, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    example = load_config(EXAMPLE)
+    assert reconstruct(example) == render_version(example)
+
+    every_root_and_library_folders_changed = load_config(EXAMPLE)
+    for mutate in _GLOBAL_INPUTS.values():
+        mutate(every_root_and_library_folders_changed)
+    assert reconstruct(every_root_and_library_folders_changed) == render_version(
+        every_root_and_library_folders_changed
+    )
+
+
 def test_render_version_for_is_stable_across_two_loads_of_identical_content(tmp_path):
     """C7's no-behaviour-change guard. If any kind's value were derived from
     anything but the validated model -- a dict iteration order, a `str(Path)`
@@ -439,8 +495,16 @@ def test_the_wholesale_version_still_moves_for_every_partitioned_edit():
     cheap short-circuit in Task 2 (`if after.version == before.version:
     return False`). If an edit could move a kind's version without moving the
     wholesale one, that short-circuit would swallow a real re-render.
+
+    M3: folded in are the projected field (`_PROJECTED_MUTATIONS`,
+    `library_language_overrides`) and the five `_GLOBAL_INPUTS` roots -- both
+    hold the same SUPERSET claim, and Task 2's short-circuit would swallow a
+    real re-render just as badly if either stopped holding.
     """
-    for field, (mutate, expected) in _PARTITION.items():
+    mutations: dict = dict(_PARTITION)
+    mutations.update((field, (mutate, None)) for field, mutate in _PROJECTED_MUTATIONS.items())
+    mutations.update((name, (mutate, None)) for name, mutate in _GLOBAL_INPUTS.items())
+    for field, (mutate, _expected) in mutations.items():
         before = load_config(EXAMPLE)
         after = load_config(EXAMPLE)
         mutate(after)

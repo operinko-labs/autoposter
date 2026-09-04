@@ -73,7 +73,7 @@ def render_version(config: Config) -> str:
 #
 # It lives here, and not in pipeline.py, for an import reason: this module
 # imports `config.schema` and nothing else, while `render/pipeline.py` pulls in
-# httpx, PIL, the provider ladder, the badge stack and the Plex client. Putting
+# httpx, the provider ladder, the badge stack and the Plex client. Putting
 # the canonical list there would make every consumer of a config version import
 # the whole render stack to hash a dict.
 RENDER_ART_KINDS: tuple[str, ...] = ("poster", "season_poster", "background", "title_card")
@@ -181,10 +181,10 @@ def render_version_for(art_kind: str, config: Config) -> str:
             f"{art_kind!r} is not a render art kind: expected one of "
             f"{', '.join(RENDER_ART_KINDS)}"
         )
+    artwork_json = config.artwork.model_dump(mode="json")
     relevant: dict = {
         "art_kind": art_kind,
-        **_shared_render_inputs(config),
-        f"artwork.{art_kind}": getattr(config.artwork, art_kind).model_dump(mode="json"),
+        f"artwork.{art_kind}": artwork_json[art_kind],
         "artwork.library_language_overrides": {
             library: by_kind[art_kind]
             for library, by_kind in config.artwork.library_language_overrides.items()
@@ -193,9 +193,14 @@ def render_version_for(art_kind: str, config: Config) -> str:
     }
     if art_kind == "poster":
         for field in _LOGO_FIELDS:
-            relevant[f"artwork.{field}"] = getattr(config.artwork, field)
+            relevant[f"artwork.{field}"] = artwork_json[field]
     if art_kind in _TEMPLATE_KINDS:
-        relevant["artwork.season_episode_templates"] = config.artwork.season_episode_templates
+        relevant["artwork.season_episode_templates"] = artwork_json["season_episode_templates"]
+    # Literal keys first, the shared block spread last: the two key sets are
+    # disjoint today (the "artwork." prefix above makes a collision unlikely),
+    # but this ordering is the cheap insurance against a silent overwrite if
+    # that ever stops being true.
+    relevant = {**relevant, **_shared_render_inputs(config)}
     payload = json.dumps(relevant, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
