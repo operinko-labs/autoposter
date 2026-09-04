@@ -8,6 +8,7 @@ called after ``resolve_collision`` has approved the collection, not before
 """
 import hashlib
 import io
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -24,6 +25,7 @@ from autoposter.collections.reconcile import definition_hash, reconcile_content_
 from autoposter.collections.smart import smart_definition_hash
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ManagedCollection
+from autoposter.overlays.assets import INTER_BOLD
 
 LABEL = "autoposter"
 
@@ -1320,3 +1322,75 @@ async def test_a_font_that_resolves_nowhere_reports_a_skip_and_uploads_nothing(
     assert any("NoSuchFace.ttf" in action for action in actions)
     row = (await session.execute(select(ManagedCollection))).scalars().one()
     assert row.poster_sha256 is None
+
+
+async def test_a_font_refusal_on_an_existing_poster_is_retried_once_the_font_resolves(
+    session, config_factory, tmp_path
+):
+    """review I-1: a refusal must not freeze ``definition_hash`` at ``wanted``.
+
+    Unlike the fresh-collection case above, this collection already has a
+    non-NULL ``poster_sha256`` when the font breaks -- the common shape on any
+    live server, and the one ``test_a_font_that_resolves_nowhere_...`` cannot
+    catch, because its NULL-sha fall-through rescues the retry regardless of
+    whether ``definition_hash`` was correctly left stale.
+
+    Pass 2 refuses with the font unresolved and the config UNCHANGED between
+    passes 2 and 3 -- only the file appearing under ``fonts_root`` differs --
+    so ``wanted`` is identical both times. If pass 2 had stamped
+    ``definition_hash = wanted`` regardless of the refusal, pass 3 would
+    short-circuit on ``definition_current`` forever, exactly as adjudicated:
+    "the operator mounts the font. Nothing happens. Ever."
+    """
+    section = RatingSection({"17"})
+    config = _enable_title(config_factory(assets_root=str(tmp_path)))
+    config.collections.apply_to_plex = True
+    config.fonts_root = str(tmp_path / "fonts")
+    data = _poster_bytes()
+
+    # Pass 1: a working (bundled) font composites and uploads once, so the
+    # collection already carries a non-NULL poster_sha256 going into the
+    # refusal -- the A-9 roll-out shape, not a fresh collection.
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    uploaded = section._existing["Age 17+ Movies"].uploaded_bytes
+    assert len(uploaded) == 1
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is not None
+
+    # The operator points at a font that is not yet mounted -- a typo, or the
+    # fonts volume is not there yet. definition_hash moves (the font name is
+    # part of the suffix term), so this pass reaches apply_poster and refuses.
+    config.collections.poster_title.title.font = "Colus-Regular.ttf"
+
+    async with _client(_serving_handler(data, [])) as http:
+        actions = await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    assert len(uploaded) == 1, "the refusal must not upload anything"
+    assert any("Colus-Regular.ttf" in action for action in actions)
+
+    # The operator mounts the font -- nothing about the config changes, so
+    # ``wanted`` is byte-identical to what pass 2 already computed. A bundled
+    # face other than pass 1's default, so its glyphs -- and therefore the
+    # composited digest -- differ from pass 1's upload: otherwise the
+    # sha-compare at ``posters.py:551`` would correctly skip a re-upload of
+    # identical pixels and this test would not be able to tell "skipped
+    # because unchanged" from "skipped because never retried".
+    fonts_dir = Path(config.fonts_root)
+    fonts_dir.mkdir(parents=True, exist_ok=True)
+    (fonts_dir / "Colus-Regular.ttf").write_bytes(INTER_BOLD.read_bytes())
+
+    async with _client(_serving_handler(data, [])) as http:
+        await reconcile_content_ratings(
+            session, section, "Movies", "Movie", LABEL, dry_run=False,
+            http=http, config=config,
+        )
+    assert len(uploaded) == 2, "the mounted font was never retried"
+    assert uploaded[1] != uploaded[0]
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 == hashlib.sha256(uploaded[1]).hexdigest()

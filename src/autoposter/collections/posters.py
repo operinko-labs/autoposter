@@ -513,7 +513,18 @@ async def apply_poster(
     #
     # A failure here uploads nothing and leaves ``poster_sha256`` where it was,
     # so the next pass retries -- a missing poster is cosmetic and must never
-    # fail the surrounding pass.
+    # fail the surrounding pass. The caller stamps ``record.definition_hash =
+    # wanted`` before this function is ever reached, so on its own that would
+    # only rescue the retry for a collection whose ``poster_sha256`` is still
+    # NULL: a collection that already has a poster keeps
+    # ``definition_hash == wanted`` and the caller's short-circuit
+    # (``definition_current and not (posters_on and poster_sha256 is None)``)
+    # never calls back in, even after the operator fixes the font. Blanking
+    # ``definition_hash`` here undoes that stamp so the very next pass sees
+    # ``definition_current`` as False regardless of ``poster_sha256`` -- the
+    # same sentinel the caller already uses for "settings did not apply".
+    # Guarded by ``not dry_run``, matching ``poster_sha256`` above: a dry run
+    # composites to check reachability but persists nothing.
     styling = config.collections.poster_title
     if styling.enabled and composable and kind != SEPARATOR_KIND:
         try:
@@ -525,6 +536,8 @@ async def apply_poster(
             logger.warning(
                 "did not draw a title onto the poster for %r: %s", record.title, exc
             )
+            if not dry_run:
+                record.definition_hash = ""
             return "did not draw a title onto the poster for %r: %s" % (
                 record.title, exc,
             )
@@ -533,6 +546,8 @@ async def apply_poster(
             # action string. The log carries the traceback; the report carries
             # a sentence.
             logger.exception("failed to draw a title onto the poster for %r", record.title)
+            if not dry_run:
+                record.definition_hash = ""
             return "failed to draw a title onto the poster for %r" % record.title
         source = "%s, with the collection title drawn on" % source
 
