@@ -24,6 +24,7 @@ of this existed.
 
 import hashlib
 import io
+import logging
 import random
 import shutil
 import struct
@@ -197,31 +198,48 @@ async def test_the_refusal_names_the_reason_and_the_stage(
     assert "decode" in message
 
 
-async def test_a_corrupt_clearlogo_is_refused_and_says_so(
-    session, tmp_path, monkeypatch
+async def test_a_corrupt_clearlogo_is_skipped_and_the_poster_renders_without_one(
+    session, tmp_path, monkeypatch, caplog
 ):
-    """The logo is a second download, and it is the one that actually failed.
-
-    Its refusal has to name the clearlogo rather than the poster, or the pod
-    log points an operator at the wrong file.
+    """The logo is a second download, and it is the one that fails -- but a
+    logo failing no longer refuses the whole poster (Task 1, ``_pick_logo``):
+    the ladder is re-asked, this provider has nothing else to offer, and the
+    poster renders WITHOUT a logo rather than being refused. The refusal
+    still names the clearlogo rather than the poster -- just in a WARNING
+    now, not in the outcome, which is what still points an operator at the
+    right file.
     """
     config = _config(tmp_path)
     assert config.artwork.use_logo is True
-    _stub_out_imagemagick(monkeypatch)
+    calls = _stub_out_imagemagick(monkeypatch)
+    monkeypatch.setattr(
+        pipeline_module.compositor, "build_logo_argv",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("no logo should have been composited")
+        ),
+    )
     healthy = decodable_png()
     broken = corrupt_png()
 
     async def handler(request):
         return httpx.Response(200, content=broken if "logo" in str(request.url) else healthy)
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        with pytest.raises(SourceRefused) as caught:
-            await render_artifact(
+    with caplog.at_level(logging.WARNING):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            render = await render_artifact(
                 session, config, http, _item(), "poster",
                 [_Provider(logo_url="https://img/logo.png")],
             )
 
-    assert "clearlogo" in str(caught.value)
+    assert render.status == "rendered"
+    assert calls != [], "the poster itself must still be composited"
+    refusal = next(
+        record.getMessage() for record in caplog.records
+        if "clearlogo candidate refused" in record.getMessage()
+    )
+    assert "clearlogo" in refusal
+    assert "decode" in refusal
+    assert "https://" not in refusal
 
 
 def test_the_refusal_serves_its_full_reason_class_prefixed():
@@ -427,32 +445,49 @@ async def test_an_svg_clearlogo_is_not_refused(session, tmp_path, monkeypatch):
     assert any("-density" in call for call in calls)
 
 
-async def test_a_corrupt_body_at_an_svg_url_is_still_refused(
-    session, tmp_path, monkeypatch
+async def test_a_corrupt_body_at_an_svg_clearlogo_url_is_skipped_not_composited(
+    session, tmp_path, monkeypatch, caplog
 ):
     """SVG-ness is decided by the bytes, not by a substring of the provider's
     URL (H1). Job 40478, the incident this whole guard exists for, was a
     clearlogo -- so any body a provider serves at a URL ending ``.svg`` must
     still be decoded and refused if it is not an SVG document, rather than
     skipping validation on the strength of a filename the provider chose.
+
+    A refused clearlogo no longer refuses the poster (Task 1): it is skipped,
+    the ladder has nothing else to offer, and the poster renders without a
+    logo -- so ``calls`` is no longer empty, only free of a logo composite.
     """
     config = _config(tmp_path)
     calls = _stub_out_imagemagick(monkeypatch)
+    monkeypatch.setattr(
+        pipeline_module.compositor, "build_logo_argv",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("no logo should have been composited")
+        ),
+    )
     healthy = decodable_png()
     broken = corrupt_png()
 
     async def handler(request):
         return httpx.Response(200, content=broken if "logo" in str(request.url) else healthy)
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        with pytest.raises(SourceRefused) as caught:
-            await render_artifact(
+    with caplog.at_level(logging.WARNING):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            render = await render_artifact(
                 session, config, http, _item(), "poster",
                 [_Provider(logo_url="https://img/logo.svg")],
             )
 
-    assert "clearlogo" in str(caught.value)
-    assert calls == []
+    assert render.status == "rendered"
+    assert calls != [], "the poster itself must still be composited"
+    refusal = next(
+        record.getMessage() for record in caplog.records
+        if "clearlogo candidate refused" in record.getMessage()
+    )
+    assert "clearlogo" in refusal
+    assert "decode" in refusal
+    assert "https://" not in refusal
 
 
 # --- the fingerprint law ------------------------------------------------------
