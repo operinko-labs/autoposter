@@ -377,14 +377,25 @@ async def test_a_hung_snapshot_build_times_out_and_the_loop_tries_again(
     """A poll that hangs without raising -- a stuck DB call through the
     greenlet bridge -- must not block the loop (and the connection it
     borrowed) forever. Bounded by asyncio.timeout, logged, and the next tick
-    tries again rather than staying stuck."""
+    tries again rather than staying stuck.
+
+    Driven by an ``asyncio.Event`` rather than a real sleep: the first call
+    blocks on an event nobody ever sets (asyncio.timeout cancels it, the same
+    as it would a genuinely stuck DB call), and the second call sets an event
+    of its own before returning, which is what the test waits on -- not a
+    real-time race between the injected hang and the outer bound.
+    """
     attempts = []
     real_build = None
+    never_set = asyncio.Event()
+    retried = asyncio.Event()
 
     async def flaky_build():
         attempts.append(1)
         if len(attempts) == 1:
-            await asyncio.sleep(3600)
+            await never_set.wait()
+        else:
+            retried.set()
         return await real_build()
 
     broadcaster = StatusBroadcaster(
@@ -396,7 +407,10 @@ async def test_a_hung_snapshot_build_times_out_and_the_loop_tries_again(
 
     _, queue = broadcaster.subscribe()
     with caplog.at_level(logging.WARNING):
-        snapshot = await asyncio.wait_for(queue.get(), timeout=10)
+        # Bounded generously: this only guards against a genuine hang, not
+        # the timing of the retry itself -- that is what `retried` is for.
+        await asyncio.wait_for(retried.wait(), timeout=5)
+        snapshot = await asyncio.wait_for(queue.get(), timeout=5)
 
     assert len(attempts) >= 2, "the loop did not try again after the timeout"
     assert "status" in snapshot and "events" in snapshot
