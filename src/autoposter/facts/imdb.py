@@ -245,6 +245,15 @@ async def _fetch_dataset(
     """
     wanted_hash = _wanted_hash(wanted_ids)
     state = await _get_dataset_state(session, dataset) if track_state else None
+    # Copied into locals before the commit below, rather than relying on the
+    # session factory's expire_on_commit=False (as claim() and persist_facts
+    # do): this site dereferences state's attributes AFTER that commit, and a
+    # caller using a default expire_on_commit=True session would otherwise
+    # hit an implicit refresh on an AsyncSession here, which raises
+    # MissingGreenlet.
+    state_last_modified = state.last_modified if state is not None else None
+    state_etag = state.etag if state is not None else None
+    state_wanted_hash = state.wanted_hash if state is not None else None
     if track_state:
         # That read autobegan a transaction, and download_tsv below streams a
         # gzipped dataset (title.episode.tsv.gz is ~54 MB gzip / ~500 MB
@@ -261,10 +270,10 @@ async def _fetch_dataset(
         await session.commit()
 
     headers: dict[str, str] = {}
-    if state is not None and state.last_modified and state.wanted_hash == wanted_hash:
-        headers["If-Modified-Since"] = state.last_modified
-        if state.etag:
-            headers["If-None-Match"] = state.etag
+    if state is not None and state_last_modified and state_wanted_hash == wanted_hash:
+        headers["If-Modified-Since"] = state_last_modified
+        if state_etag:
+            headers["If-None-Match"] = state_etag
 
     status, resp_headers, lines = await download_tsv(http, url, headers=headers or None)
 

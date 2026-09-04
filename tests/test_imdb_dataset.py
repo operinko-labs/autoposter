@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from autoposter.db.models import ImdbRating, MediaItem
 from autoposter.facts import imdb as imdb_module
@@ -602,6 +603,24 @@ async def test_304_with_unchanged_id_set_skips_the_parse_and_stores_nothing_new(
     )
     rows = (await session.execute(select(ImdbRating))).scalars().all()
     assert {row.tconst for row in rows} == {"tt0111161"}
+
+
+async def test_second_refresh_survives_an_expire_on_commit_session(engine):
+    """``_fetch_dataset``'s commit (imdb.py) sits between loading the stored
+    dataset state and dereferencing its last_modified/etag/wanted_hash on the
+    second refresh. Every caller in this codebase happens to use
+    expire_on_commit=False (db/base.py's factory; this file's own ``session``
+    fixture), which is the only reason that ordering has never mattered here.
+    A session built the ordinary SQLAlchemy way -- expire_on_commit=True is
+    the library's own default -- must not hit MissingGreenlet on that read."""
+    expiring = async_sessionmaker(engine, expire_on_commit=True)
+    server = _ConditionalServer()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as http, expiring() as session:
+        await refresh(session, http, {"tt0111161"}, set())
+        await refresh(session, http, {"tt0111161"}, set())
+
+    assert len(server.requests) == 2
+    assert server.requests[1].headers["if-modified-since"] == server.last_modified[RATINGS_URL]
 
 
 async def test_304_with_a_changed_id_set_still_downloads_and_parses(session):
