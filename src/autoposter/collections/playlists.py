@@ -1048,9 +1048,11 @@ async def _sweep_playlists(
         for row, _playlist, target in user_candidates:
             results.append(_swept(
                 row.definition_key,
-                "%s: no playlist definition syncs it to them any more; set "
-                "playlists.delete_unconfigured to delete it"
-                % _user_sweep_name(row, target),
+                redact_urls(
+                    "%s: no playlist definition syncs it to them any more; "
+                    "set playlists.delete_unconfigured to delete it"
+                    % _user_sweep_name(row, target)
+                ),
                 users=_user_swept(row, target, deleting=0),
             ))
         return results
@@ -1139,8 +1141,10 @@ async def _sweep_playlists(
         if user_dry_run:
             results.append(_swept(
                 row.definition_key,
-                "would delete %s: no playlist definition syncs it to them any "
-                "more" % named,
+                redact_urls(
+                    "would delete %s: no playlist definition syncs it to "
+                    "them any more" % named
+                ),
                 deleting=1,
                 users=_user_swept(row, target),
             ))
@@ -1157,7 +1161,7 @@ async def _sweep_playlists(
             )
             results.append(_swept(
                 row.definition_key,
-                "failed to delete %s: see logs for detail" % named,
+                redact_urls("failed to delete %s: see logs for detail" % named),
                 failed=True,
                 users=_user_swept(row, target, deleting=0, failed=True),
             ))
@@ -1181,7 +1185,10 @@ async def _sweep_playlists(
         await session.flush()
         results.append(_swept(
             row.definition_key,
-            "deleted %s: no playlist definition syncs it to them any more" % named,
+            redact_urls(
+                "deleted %s: no playlist definition syncs it to them any "
+                "more" % named
+            ),
             deleting=1,
             users=_user_swept(row, target),
         ))

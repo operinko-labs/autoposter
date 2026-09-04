@@ -205,7 +205,10 @@ class FakeUserServer:
 
     def playlists(self, **kwargs):
         self.listings += 1
-        return list(self._playlists)
+        # A deleted playlist no longer shows up in the account's own listing
+        # -- the real server's behaviour, and what a compensating delete's
+        # effect on the NEXT pass depends on being tested against.
+        return [p for p in self._playlists if not p.deleted]
 
     def createPlaylist(self, title, items=None, **kwargs):
         playlist = FakeUserPlaylist(8000 + len(self.created), title, items or [])
@@ -908,6 +911,108 @@ async def test_a_failure_against_one_user_does_not_stop_the_next(session):
     assert [r.failed for r in plan.results["Timeline"]] == [True, False]
     rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
     assert [(r.plex_user_id, r.plex_user_title) for r in rows] == [(2, "bob")]
+
+
+async def test_a_stamp_failure_after_a_create_deletes_the_copy_and_continues(
+    session, monkeypatch,
+):
+    """A copy must never exist without its row. The Plex-side create can
+    succeed and the DB write that records it can still fail -- a concurrent
+    pass's unique constraint, a transient DB error -- and if that failure
+    left the copy standing, the next pass's same-title stranger check would
+    refuse to ever adopt it: a permanently unmanaged copy in that user's
+    account. So a stamp/commit failure right after a CREATE is compensated:
+    the just-created copy is deleted from that user's account, and the pass
+    continues to the next entry rather than losing the whole loop to it."""
+    from autoposter.collections import playlist_users as pu_module
+
+    connector = Connector()
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN), FakeUser(2, "bob", token="tok-b")],
+        connector=connector, config=config,
+    )
+    plan = await plan_user_sync(
+        session, sync, config, [_definition(sync_to_users=["alice", "bob"])],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    real_stamp = pu_module._stamp
+
+    def exploding_stamp(session, entry, playlist, added, removed):
+        if entry.target.title == "alice":
+            raise RuntimeError("db exploded")
+        return real_stamp(session, entry, playlist, added, removed)
+
+    monkeypatch.setattr(pu_module, "_stamp", exploding_stamp)
+
+    actions = await apply_user_sync(session, plan)
+
+    alices_copy = connector.servers[TOKEN].created[0]
+    assert alices_copy.deleted is True
+    assert connector.servers["tok-b"].created[0].deleted is False
+    assert actions == [
+        "'Timeline' -> 'alice': failed (RuntimeError)",
+        "'Timeline' -> 'bob': created with 2 item(s)",
+    ]
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert [(r.plex_user_id, r.plex_user_title) for r in rows] == [(2, "bob")]
+
+
+async def test_a_second_pass_after_a_partial_failure_recreates_only_the_failed_entry(
+    session, monkeypatch,
+):
+    """The property the compensation exists for. Without it, the leftover
+    copy in alice's account is a stranger to the next pass's same-title check
+    and refused forever. With it, the next pass finds no row and no stray
+    copy for alice and recreates cleanly -- while bob, whose row and copy
+    both survived the first pass, is not written to again at all."""
+    from autoposter.collections import playlist_users as pu_module
+
+    connector = Connector()
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN), FakeUser(2, "bob", token="tok-b")],
+        connector=connector, config=config,
+    )
+    definition = _definition(sync_to_users=["alice", "bob"])
+    plan = await plan_user_sync(
+        session, sync, config, [definition],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    real_stamp = pu_module._stamp
+
+    def exploding_stamp(session, entry, playlist, added, removed):
+        if entry.target.title == "alice":
+            raise RuntimeError("db exploded")
+        return real_stamp(session, entry, playlist, added, removed)
+
+    monkeypatch.setattr(pu_module, "_stamp", exploding_stamp)
+    await apply_user_sync(session, plan)
+    monkeypatch.undo()
+
+    # A fresh ``UserSync`` for the second pass, exactly as a real second
+    # ``reconcile_playlists`` run builds one -- ``UserSync``'s per-user
+    # listing cache is scoped to one pass's lifetime, so reusing the first
+    # pass's would read its stale, pre-write listing instead of a real
+    # second PMS read. The connector is reused because IT is what stands in
+    # for the servers themselves persisting across passes.
+    sync2, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN), FakeUser(2, "bob", token="tok-b")],
+        connector=connector, config=config,
+    )
+    plan2 = await plan_user_sync(
+        session, sync2, config, [definition],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+    actions2 = await apply_user_sync(session, plan2)
+
+    assert actions2 == ["'Timeline' -> 'alice': created with 2 item(s)"]
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert sorted((r.plex_user_id, r.plex_user_title) for r in rows) == [
+        (1, "alice"), (2, "bob"),
+    ]
 
 
 # --- the caps refuse entirely ------------------------------------------------

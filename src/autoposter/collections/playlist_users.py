@@ -799,9 +799,14 @@ async def apply_user_sync(session: AsyncSession, plan: UserSyncPlan) -> list[str
     another person's account, so the law is asserted where the writes are and
     not only where the decision was made.
 
-    Failures are contained PER USER and the flush is per entry, for the delete
-    sweep's stated reason: a later user's failure must not cost the record of
-    one that already succeeded.
+    Failures are contained PER USER and the write is COMMITTED per entry,
+    immediately after each successful create or update: a copy must never
+    exist without its row, because the next pass's same-title stranger check
+    (see the module docstring) treats a rowless copy as somebody else's and
+    refuses to ever adopt it. If the stamp/commit itself raises right after a
+    CREATE, the just-created copy is deleted from that user's account
+    (best-effort) so the entry is clean for a retry rather than stranded; an
+    UPDATE needs no such compensation, since its copy already had a row.
     """
     actions: list[str] = []
 
@@ -814,25 +819,47 @@ async def apply_user_sync(session: AsyncSession, plan: UserSyncPlan) -> list[str
         return actions
     for entry in plan.plans:
         if entry.result is None:
-            _stamp(session, entry, entry.playlist, 0, 0)
-            await session.flush()
+            try:
+                _stamp(session, entry, entry.playlist, 0, 0)
+                await session.flush()
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logger.exception(
+                    "could not re-stamp the playlist %r for the user %r",
+                    entry.definition_title, entry.target.title,
+                )
             continue
+        created = False
+        playlist = None
         try:
             if entry.playlist is None:
                 playlist = _create_copy(entry)
+                created = True
                 added, removed = len(entry.items), 0
-                _action(
-                    "%r -> %r: created with %d item(s)",
-                    entry.definition_title, entry.target.title, added,
-                )
             else:
                 playlist = entry.playlist
                 added, removed = _update_copy(entry)
-                _action(
-                    "%r -> %r: updated +%d -%d",
-                    entry.definition_title, entry.target.title, added, removed,
-                )
+            entry.result.added, entry.result.removed = added, removed
+            _stamp(session, entry, playlist, added, removed)
+            await session.flush()
+            await session.commit()
         except Exception as error:
+            await session.rollback()
+            if created:
+                # The row never landed, so without this the copy this pass
+                # just created in THEIR account is a stranger to every future
+                # pass -- the same-title check at plan time refuses to ever
+                # re-adopt it. Best-effort: a failure deleting it is logged
+                # and swallowed, never allowed to shadow the entry's own.
+                try:
+                    playlist.delete()
+                except Exception:
+                    logger.exception(
+                        "could not delete the just-created copy of %r for "
+                        "%r after a failed stamp",
+                        entry.definition_title, entry.target.title,
+                    )
             # Class name only, for the reason the whole subsystem repeats: a
             # plexapi failure's message carries the base URL and this string is
             # SERVED. The traceback goes to the log whole -- row 207 rules
@@ -853,9 +880,16 @@ async def apply_user_sync(session: AsyncSession, plan: UserSyncPlan) -> list[str
                 type(error).__name__,
             )
             continue
-        entry.result.added, entry.result.removed = added, removed
-        _stamp(session, entry, playlist, added, removed)
-        await session.flush()
+        if created:
+            _action(
+                "%r -> %r: created with %d item(s)",
+                entry.definition_title, entry.target.title, added,
+            )
+        else:
+            _action(
+                "%r -> %r: updated +%d -%d",
+                entry.definition_title, entry.target.title, added, removed,
+            )
     return actions
 
 
