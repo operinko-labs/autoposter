@@ -1718,3 +1718,101 @@ async def test_the_delete_cap_counts_admin_playlists_and_user_copies_together(
         "more than the max_deletes cap of 2; nothing was deleted and "
         "everything else was reconciled"
     ]
+
+
+async def test_the_delete_cap_excludes_dry_run_reported_user_copies(
+    session, config_factory
+):
+    """``user_dry_run`` (the caller's ``dry_run or not sync_to_users_apply``)
+    means the per-user loop only REPORTS "would delete" -- it writes nothing.
+    Counting those toward ``max_deletes`` blocked a deletion the pass was
+    actually authorised to perform: the advertised state
+    (``sync_to_users_apply: false``, ``delete_unconfigured: true``) removed a
+    definition fanned out to six users, and the default cap of five refused
+    the admin playlist too, forever, because 1 admin + 6 reported user
+    copies is 7. Only deletions this pass will actually perform count."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    names = ["alice", "bob", "carol", "dave", "erin", "frank"]
+    tokens = ["tok-%s" % name for name in names]
+    account = FakeAccount([
+        FakeUser(i + 1, name, token=token)
+        for i, (name, token) in enumerate(zip(names, tokens))
+    ])
+    connect, servers = _user_servers(tokens)
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=names)],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    admin = first.created[0]
+    copies = [servers[token].created[0] for token in tokens]
+
+    gone = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=False,
+        delete_unconfigured=True, definitions=[],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[admin]), gone,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert admin.deleted is True
+    assert all(copy.deleted is False for copy in copies)
+    assert run.actions[0] == (
+        "deleted 'Timeline': no playlist definition builds it any more"
+    )
+    user_actions = run.actions[1:]
+    assert len(user_actions) == 6
+    for name in names:
+        assert any(
+            "would delete 'Timeline' in the account of %r: no playlist "
+            "definition syncs it to them any more" % name == a
+            for a in user_actions
+        )
+
+
+async def test_the_delete_cap_still_refuses_the_whole_plan_with_the_user_gate_on(
+    session, config_factory
+):
+    """The other half of the same fix: when the per-user gate IS applied, the
+    six user copies are real deletions this pass would perform, so they must
+    still count toward the cap and the whole plan -- admin playlist
+    included -- still refuses."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    names = ["alice", "bob", "carol", "dave", "erin", "frank"]
+    tokens = ["tok-%s" % name for name in names]
+    account = FakeAccount([
+        FakeUser(i + 1, name, token=token)
+        for i, (name, token) in enumerate(zip(names, tokens))
+    ])
+    connect, servers = _user_servers(tokens)
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=names)],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    admin = first.created[0]
+    copies = [servers[token].created[0] for token in tokens]
+
+    gone = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        delete_unconfigured=True, definitions=[],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[admin]), gone,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert admin.deleted is False
+    assert all(copy.deleted is False for copy in copies)
+    assert run.actions == [
+        "refusing to delete 7 unconfigured playlist(s), 6 of them user "
+        "copies: more than the max_deletes cap of 5; nothing was deleted "
+        "and everything else was reconciled"
+    ]

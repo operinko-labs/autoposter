@@ -330,7 +330,7 @@ playlists:
   max_deletes: 5 # past this many orphans one sweep refuses entirely and reports the numbers
   sync_to_users_apply: false # copy playlists into other people's accounts; off reports what each would receive
   sync_all_users: false # allow `sync_to_users: all` on a definition below
-  exclude_users: [] # users `all` never resolves to, by the display title Plex shows
+  exclude_users: [] # users a playlist never syncs to, by the display title Plex shows -- whether `all` resolved to them or a definition named them explicitly
   max_users: 25 # past this many resolved users the whole fan-out refuses and reports the numbers
   max_user_writes: 50 # past this many writes across every user copy, likewise
   # A playlist is ours if and only if a managed_playlists row's rating key

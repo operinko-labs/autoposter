@@ -2446,8 +2446,9 @@ class PlaylistsConfig(BaseModel):
     exclude_users: list[str] = Field(
         default_factory=list,
         description=(
-            "Users that sync_to_users: all never resolves to, named by the "
-            "display title Plex shows for each of them."
+            "Users a playlist never syncs to, named by the display title "
+            "Plex shows for each of them -- whether sync_to_users: all "
+            "resolved to them or a definition named them explicitly."
         ),
     )
     # The fan-out's WIDTH. An `all` that suddenly resolves to two hundred

@@ -998,15 +998,20 @@ async def _sweep_playlists(
     is a candidate on the same rule as an admin playlist with the listing
     scoped to that user (``playlist_users.user_sweep_candidates``),
     ``delete_unconfigured`` authorises it, and ``max_deletes`` counts admin
-    playlists and user copies TOGETHER -- so removing a definition that fanned
-    out to seventeen people blows a cap of five, deliberately: that IS the
-    blast radius the cap exists to make an operator look at.
+    playlists and user copies TOGETHER, when this pass is authorised to
+    delete both -- so removing a definition that fanned out to seventeen
+    people, with the per-user gate applied, blows a cap of five, deliberately:
+    that IS the blast radius the cap exists to make an operator look at.
 
     ``user_dry_run`` is separate from ``dry_run`` because deleting in somebody
     else's account is a per-user write and needs the per-user gate; the caller
     passes ``dry_run or not playlists.sync_to_users_apply``. ``sync`` is None
     when the pass never built a per-user context, and then this behaves
-    exactly as it did in 98a.
+    exactly as it did in 98a. When ``user_dry_run`` is true the per-user loop
+    below only REPORTS "would delete" rather than deleting, so those copies
+    are not counted toward ``max_deletes`` either: a pass with the per-user
+    gate off must still be able to delete the admin playlists it IS
+    authorised to delete, undelayed by copies it was never going to touch.
     """
     # Through the same composition the pass runs, never
     # ``config.playlists.definitions`` alone: a preset's playlist would
@@ -1058,19 +1063,25 @@ async def _sweep_playlists(
         return results
 
     cap = config.playlists.max_deletes
-    total = len(candidates) + len(user_candidates)
+    # A user copy counts toward the cap only when this pass is actually
+    # authorised to delete it. On a ``user_dry_run`` pass the per-user loop
+    # below only REPORTS "would delete" -- it writes nothing -- so counting
+    # those copies here can refuse a deletion the pass is allowed to make
+    # (the admin playlist) over copies it was never going to touch this pass.
+    deletable_user_candidates = 0 if user_dry_run else len(user_candidates)
+    total = len(candidates) + deletable_user_candidates
     if total > cap:
         # Two wordings, not one: a pass with no per-user copies in the blast
         # radius (98a's own shape, and every pre-98c caller of this sweep)
         # gets the exact sentence it always has -- ``test_past_the_cap_the_
         # sweep_refuses_entirely`` pins it byte for byte -- and only a cap
         # blown WITH user copies present says so.
-        if user_candidates:
+        if deletable_user_candidates:
             message = (
                 "refusing to delete %d unconfigured playlist(s), %d of them "
                 "user copies: more than the max_deletes cap of %d; nothing "
                 "was deleted and everything else was reconciled"
-                % (total, len(user_candidates), cap)
+                % (total, deletable_user_candidates, cap)
             )
         else:
             message = (

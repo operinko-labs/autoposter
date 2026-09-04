@@ -794,10 +794,11 @@ async def apply_user_sync(session: AsyncSession, plan: UserSyncPlan) -> list[str
     listing this function does not re-read, which is what makes a cap a
     REFUSAL rather than a budget spent halfway.
 
-    The refusal guard is the second lock on the same door as the caller's own
-    gate check: this is the only function in the service that writes into
-    another person's account, so the law is asserted where the writes are and
-    not only where the decision was made.
+    The refusal guard below re-checks ``plan.refusal`` -- the same flag the
+    caller's own gate check already inspected -- rather than asserting a
+    second, independent lock of its own; it exists so this function, the only
+    one in the service that writes into another person's account, cannot be
+    reached with a refused plan by some future caller that forgets to check.
 
     Failures are contained PER USER and the write is COMMITTED per entry,
     immediately after each successful create or update: a copy must never
