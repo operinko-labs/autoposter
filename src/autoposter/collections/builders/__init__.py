@@ -56,6 +56,7 @@ from autoposter.collections.builders.simple_ids import (
     TmdbShowBuilder,
 )
 from autoposter.collections.builders.smart_filter import SmartFilterBuilder
+from autoposter.collections.builders.smart_url import SmartUrlBuilder
 from autoposter.collections.builders.text_file import TextFileBuilder
 from autoposter.collections.builders.tmdb import (
     TmdbChartBuilder,
@@ -98,6 +99,11 @@ register(PlexSearchBuilder())
 # SmartBuilder half of the pair, and the second implementation of that escape
 # hatch (``cs_bucket`` is the first). See ``builders/smart_filter.py``.
 register(SmartFilterBuilder())
+# The same collection again, from a query PLEX built: paste the URL out of Plex
+# Web instead of writing the search out (roadmap row 184). One extractor plus
+# the reconciler above -- no second query grammar
+# (``builders/smart_url.py``).
+register(SmartUrlBuilder())
 register(TmdbMovieBuilder())
 register(TmdbShowBuilder())
 register(TextFileBuilder())
