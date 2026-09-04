@@ -105,8 +105,13 @@ cannot be counted before its owner's membership is read.
 """
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from autoposter.collections.lists import member_diff
+from autoposter.db.models import ManagedPlaylistUser
 from autoposter.redact import redact_urls
 
 logger = logging.getLogger(__name__)
@@ -449,3 +454,533 @@ class UserSync:
             )
             return ""
         return getattr(switched, "authenticationToken", "") or ""
+
+
+@dataclass
+class _Planned:
+    """One (definition, user) pair this pass intends to act on.
+
+    ``result`` is None for a pair that needs no write: the hash gate covered
+    it, or the hash moved for a reason this pass does not act on (an order
+    change, which it does not enforce). Either way the row is still stamped, so
+    ``last_reconciled_at`` reads as "this copy was confirmed" rather than "this
+    copy last changed", and nothing is reported -- the admin pass's own gated
+    branch appends no action for the same reason.
+
+    ``server`` is excluded from the repr deliberately: a real ``PlexServer``
+    holds ``_token``, and this dataclass's repr reaches every log line and
+    exception context that formats a plan.
+    """
+
+    definition_title: str
+    target: UserTarget
+    server: object = field(repr=False)
+    row: ManagedPlaylistUser | None
+    playlist: object | None
+    items: list
+    summary: str | None
+    sync_mode: str
+    wanted_hash: str
+    adding: list = field(default_factory=list)
+    removing: list = field(default_factory=list)
+    writes: int = 0
+    result: PlaylistUserResult | None = None
+
+
+@dataclass
+class UserSyncPlan:
+    """Everything the fan-out would do, before any of it is done.
+
+    ``results`` is keyed by definition title and holds the per-user rows the
+    preview response serves. ``targets`` is the distinct fan-out width the
+    ``max_users`` cap is measured against and ``writes`` is the total the
+    ``max_user_writes`` cap is measured against. ``refusal``, when set, is the
+    one line that replaces all of it.
+
+    **``actions`` and ``previews`` are two lists on purpose.** ``actions``
+    holds what is true whatever the gate says -- every skip, by name. It is
+    reported on every pass. ``previews`` holds the "would create"/"would
+    update" lines, which are reported only when the pass is NOT going to write:
+    a pass that applies reports what it did, and emitting both would tell an
+    operator the same event twice in two tenses. The admin half gets the same
+    effect from its ``if dry_run:`` early return, which this stage has no
+    equivalent of because it must plan before it knows whether it may write.
+    """
+
+    plans: list = field(default_factory=list)
+    results: dict = field(default_factory=dict)
+    actions: list = field(default_factory=list)
+    previews: list = field(default_factory=list)
+    targets: dict = field(default_factory=dict)
+    writes: int = 0
+    refusal: str | None = None
+
+    def report(self, template: str, *args) -> None:
+        """One always-reported line. Redacted at the seam that builds it."""
+        self.actions.append(redact_urls(template % args))
+
+    def preview(self, template: str, *args) -> None:
+        """One "would" line. Redacted at the seam that builds it."""
+        self.previews.append(redact_urls(template % args))
+
+
+def _summary_differs(playlist, summary: str | None) -> bool:
+    """Whether this copy's summary is not the definition's. Empty is None."""
+    return (getattr(playlist, "summary", None) or None) != (summary or None)
+
+
+def _cap_refusal(users: int, writes: int, config) -> str | None:
+    """The one sentence that replaces a whole fan-out, or None.
+
+    Both caps in one function because both are evaluated twice -- once before
+    any token is minted and once on the exact counts -- and two copies of a
+    refusal sentence is two chances for them to drift apart.
+    """
+    if users > config.playlists.max_users:
+        return redact_urls(
+            "refusing the user fan-out: %d user(s) resolved, more than the "
+            "max_users cap of %d; nothing was written to any user and the "
+            "admin playlists were reconciled"
+            % (users, config.playlists.max_users)
+        )
+    if writes > config.playlists.max_user_writes:
+        return redact_urls(
+            "refusing the user fan-out: %d write(s) planned, more than the "
+            "max_user_writes cap of %d; nothing was written to any user and "
+            "the admin playlists were reconciled"
+            % (writes, config.playlists.max_user_writes)
+        )
+    return None
+
+
+def _estimated_writes(fanout, rows) -> int:
+    """What the fan-out would write, from the STORED rows alone.
+
+    Everything this reads is already in memory: each definition's ``title``
+    and ``summary``, the targets pass one already resolved, and one
+    ``managed_playlist_users`` query -- not the resolved item lists
+    themselves, which this estimate never opens. No plex.tv call, no PMS
+    listing, no token. That is the whole reason it exists -- ``max_user_writes``
+    gets a number to refuse on before the fan-out has spent anything.
+
+    It is EXACT for a create -- an absent or hash-stale row is exactly one
+    write, two if the definition has a summary -- and an ESTIMATE everywhere
+    else, wrong in the two ways stated here rather than discovered:
+
+    - a stale row is counted as ONE write, and the copy may need many: each
+      removal is its own DELETE, and how many there are lives in that user's
+      own membership. So this UNDER-counts, which is why ``plan_user_sync``
+      evaluates the cap a second time on the exact counts once the listings
+      are in;
+    - a stale row whose only change was ORDER needs no write at all, and this
+      counts one. So it can also OVER-count by one per such copy, which errs
+      towards refusing early -- the same direction the summary term errs in
+      below, and the safe one.
+    """
+    total = 0
+    for definition, _items, digest, targets in fanout:
+        # A create is one POST, plus one PUT if the definition sets a summary.
+        per_copy = 1 + (1 if definition.summary else 0)
+        for target in targets:
+            row = rows.get((definition.title, target.user_id))
+            if row is None or row.definition_hash != digest:
+                total += per_copy
+    return total
+
+
+async def plan_user_sync(
+    session: AsyncSession, sync: UserSync, config, definitions, resolved, hashes
+) -> UserSyncPlan:
+    """Every write the fan-out would make, computed before any of it is made.
+
+    ``resolved`` maps a definition title to the ordered items the admin half
+    already resolved, and ``hashes`` maps it to the desired-state digest that
+    half already computed. Both are handed down rather than recomputed: the
+    resolution is the expensive part of a pass, and a second computation of the
+    hash would be a second definition of what "current" means.
+
+    A definition absent from ``resolved`` gets no fan-out at all. That covers
+    every way the admin half declined to act -- a refusal, a schedule gate, an
+    empty source -- and the last of those is the important one: the
+    empty-result law is the same law one level down, and here it protects
+    seventeen accounts at once rather than one playlist.
+
+    **Two passes, and the split is the point.** The FIRST resolves who every
+    definition reaches, from the cached ``account.users()`` list and
+    ``exclude_users`` and nothing else -- ``targets_for`` is pure, its own
+    docstring says "no plex.tv call happens here at all" -- and evaluates both
+    caps. Only if neither refuses does the SECOND pass open a session per user
+    and read a listing.
+
+    Doing it the other way round -- filling ``targets`` and reading each
+    listing in one loop, then evaluating the caps at the end -- keeps the
+    LETTER of C13 A6, because nothing is written either way. It loses the
+    point: a ``sync_to_users: all`` that suddenly resolves to two hundred
+    accounts would mint two hundred tokens and issue two hundred PMS listings
+    before refusing, which is most of the cost the caps were written against
+    (the recon's "17 x ... ~ 1,700 PMS requests in one pass"). "Refused
+    entirely" has to mean before the first REQUEST, not merely before the
+    first write.
+
+    ``max_user_writes`` is therefore evaluated twice, on two different numbers,
+    and both evaluations are the same law: ``_estimated_writes`` from the
+    stored rows before anything is opened, and ``plan.writes`` exactly once the
+    listings are in. See ``_estimated_writes`` for which way each is wrong.
+    """
+    plan = UserSyncPlan()
+    rows = {
+        (row.definition_key, row.plex_user_id): row
+        for row in (
+            await session.execute(select(ManagedPlaylistUser))
+        ).scalars().all()
+    }
+
+    # --- pass one: the fan-out's shape, with no plex.tv call at all ---------
+    fanout: list[tuple[object, list, str, list]] = []
+    for definition in definitions:
+        if not definition.sync_to_users:
+            continue
+        items = resolved.get(definition.title)
+        if not items:
+            continue
+        digest = hashes[definition.title]
+        outcomes = plan.results.setdefault(definition.title, [])
+        targets, skips = sync.targets_for(definition)
+        for skip in skips:
+            outcomes.append(PlaylistUserResult(
+                title=skip.title, skipped=True, reason=skip.reason
+            ))
+            plan.report(
+                "%r -> %r: skipped: %s",
+                definition.title, skip.title, skip.reason,
+            )
+        for target in targets:
+            plan.targets[target.user_id] = target
+        fanout.append((definition, items, digest, targets))
+
+    plan.refusal = _cap_refusal(
+        len(plan.targets), _estimated_writes(fanout, rows), config
+    )
+    if plan.refusal is not None:
+        # Nothing below this line has run, which is the assertion the two cap
+        # tests make with FakeUser.token_reads and Connector.calls.
+        return plan
+
+    # --- pass two: one session and one listing per user ---------------------
+    for definition, items, digest, targets in fanout:
+        outcomes = plan.results[definition.title]
+        for target in targets:
+            listing = sync.playlists_for(target)
+            if listing is None:
+                _unused, reason = sync.server_for(target)
+                outcomes.append(PlaylistUserResult(
+                    title=target.title, user_id=target.user_id,
+                    skipped=True, reason=reason,
+                ))
+                plan.report(
+                    "%r -> %r: skipped: %s",
+                    definition.title, target.title, reason,
+                )
+                continue
+            server, _reason = sync.server_for(target)
+            row = rows.get((definition.title, target.user_id))
+            playlist = (
+                listing.get(row.plex_rating_key) if row is not None else None
+            )
+            entry = _Planned(
+                definition_title=definition.title, target=target, server=server,
+                row=row, playlist=playlist, items=items,
+                summary=definition.summary, sync_mode=definition.sync_mode,
+                wanted_hash=digest,
+            )
+
+            if playlist is not None and row.definition_hash == digest:
+                # Gated. The ownership LISTING was read -- there is no way to
+                # answer "is this copy ours" without it -- and the MEMBERSHIP
+                # was not. That is the whole cost argument: a steady-state pass
+                # over seventeen users reads seventeen listings and nothing
+                # else. Still planned, so the row records the confirmation.
+                plan.plans.append(entry)
+                continue
+
+            if playlist is None:
+                stranger = next(
+                    (p for p in listing.values() if p.title == definition.title),
+                    None,
+                )
+                if stranger is not None:
+                    # The admin pass's refusal one level down, with a sharper
+                    # reason: a playlist somebody made in their OWN account
+                    # under our title is theirs. Plex permits duplicate titles,
+                    # so creating ours beside it was available and is refused.
+                    reason = (
+                        "a playlist titled %r already exists in this account "
+                        "and is not ours" % definition.title
+                    )
+                    outcomes.append(PlaylistUserResult(
+                        title=target.title, user_id=target.user_id,
+                        skipped=True, reason=reason,
+                    ))
+                    plan.report(
+                        "%r -> %r: skipped: %s",
+                        definition.title, target.title, reason,
+                    )
+                    continue
+                entry.adding = list(items)
+                # A create is one POST; the summary, when the definition sets
+                # one, is one PUT after it.
+                entry.writes = 1 + (1 if definition.summary else 0)
+                entry.result = PlaylistUserResult(
+                    title=target.title, user_id=target.user_id,
+                    creating=len(items),
+                )
+                plan.preview(
+                    "%r -> %r: would create with %d item(s)",
+                    definition.title, target.title, len(items),
+                )
+            else:
+                adding, removing = member_diff(
+                    playlist, items, definition.sync_mode
+                )
+                entry.adding, entry.removing = adding, removing
+                # An add BATCH is one PUT (addItems groups by the ITEM's
+                # server, and every item here is the admin server's), each
+                # removal is one DELETE (removeItems issues one per item), and
+                # a summary edit is one PUT. The summary term can over-count by
+                # one when the copy's summary is unlocked and the clear
+                # declines to write -- deliberate, because a cap that errs
+                # towards refusing early errs in the safe direction.
+                entry.writes = (
+                    (1 if adding else 0)
+                    + len(removing)
+                    + (1 if _summary_differs(playlist, definition.summary) else 0)
+                )
+                if entry.writes:
+                    entry.result = PlaylistUserResult(
+                        title=target.title, user_id=target.user_id,
+                        adding=len(adding), removing=len(removing),
+                    )
+                    plan.preview(
+                        "%r -> %r: would update +%d -%d",
+                        definition.title, target.title,
+                        len(adding), len(removing),
+                    )
+                # Otherwise the hash moved but nothing this pass writes did --
+                # an order change, under a mode this pass does not reorder in
+                # (see the module docstring). The row is re-stamped below so
+                # the next pass gates on the new digest instead of re-reading
+                # this membership forever, and nothing is reported.
+            if entry.result is not None:
+                # The create/update result belongs in the SAME per-definition
+                # list the skips above append to -- ``plan.results`` is what
+                # the preview response and the applier's failure-marking loop
+                # both read, and a result that never landed there would be
+                # invisible to each.
+                outcomes.append(entry.result)
+            plan.writes += entry.writes
+            plan.plans.append(entry)
+
+    # The same law on the exact number. ``max_users`` cannot have changed --
+    # pass two adds no target -- but it is re-checked for free rather than
+    # split across two functions.
+    plan.refusal = _cap_refusal(len(plan.targets), plan.writes, config)
+    return plan
+
+
+async def apply_user_sync(session: AsyncSession, plan: UserSyncPlan) -> list[str]:
+    """Write the planned fan-out. Nothing here re-decides anything.
+
+    Every add, removal and create was computed by ``plan_user_sync`` against a
+    listing this function does not re-read, which is what makes a cap a
+    REFUSAL rather than a budget spent halfway.
+
+    The refusal guard is the second lock on the same door as the caller's own
+    gate check: this is the only function in the service that writes into
+    another person's account, so the law is asserted where the writes are and
+    not only where the decision was made.
+
+    Failures are contained PER USER and the flush is per entry, for the delete
+    sweep's stated reason: a later user's failure must not cost the record of
+    one that already succeeded.
+    """
+    actions: list[str] = []
+
+    def _action(template: str, *args) -> None:
+        """The applier's report seam. Same rule as ``UserSyncPlan.report``:
+        one place a served string is built, so one place it is redacted."""
+        actions.append(redact_urls(template % args))
+
+    if plan.refusal is not None:
+        return actions
+    for entry in plan.plans:
+        if entry.result is None:
+            _stamp(session, entry, entry.playlist, 0, 0)
+            await session.flush()
+            continue
+        try:
+            if entry.playlist is None:
+                playlist = _create_copy(entry)
+                added, removed = len(entry.items), 0
+                _action(
+                    "%r -> %r: created with %d item(s)",
+                    entry.definition_title, entry.target.title, added,
+                )
+            else:
+                playlist = entry.playlist
+                added, removed = _update_copy(entry)
+                _action(
+                    "%r -> %r: updated +%d -%d",
+                    entry.definition_title, entry.target.title, added, removed,
+                )
+        except Exception as error:
+            # Class name only, for the reason the whole subsystem repeats: a
+            # plexapi failure's message carries the base URL and this string is
+            # SERVED. The traceback goes to the log whole -- row 207 rules
+            # stdout the trusted sink and wants it there.
+            logger.exception(
+                "could not sync the playlist %r to the user %r",
+                entry.definition_title, entry.target.title,
+            )
+            entry.result.failed = True
+            entry.result.skipped = True
+            # Assigned rather than constructed, so ``__post_init__``'s
+            # redaction does not run: a class name cannot carry a URL, and
+            # writing it through ``redact_urls`` here would say it could.
+            entry.result.reason = type(error).__name__
+            _action(
+                "%r -> %r: failed (%s)",
+                entry.definition_title, entry.target.title,
+                type(error).__name__,
+            )
+            continue
+        entry.result.added, entry.result.removed = added, removed
+        _stamp(session, entry, playlist, added, removed)
+        await session.flush()
+    return actions
+
+
+def _create_copy(entry: _Planned):
+    """One user's copy, created under THEIR token.
+
+    ``server.createPlaylist`` is ``Playlist.create`` is ``Playlist._create``,
+    which POSTs ``/playlists`` on whatever server object it is handed -- the
+    user's -- and builds its uri from that server's own ``_uriRoot()``, naming
+    the same machine the items came from. Admin-fetched item objects are
+    therefore the correct things to pass, not an accident that happens to work.
+
+    The copy is created IN the definition's order, which is the whole of the
+    ordering this phase provides (see the module docstring).
+    """
+    playlist = entry.server.createPlaylist(
+        title=entry.definition_title, items=entry.items
+    )
+    if entry.summary:
+        playlist.editSummary(entry.summary)
+    return playlist
+
+
+def _update_copy(entry: _Planned) -> tuple[int, int]:
+    """Settle the summary, add, remove. Never delete and recreate.
+
+    ``reload()`` before ``removeItems`` is mandatory and it is the admin path's
+    own reason: ``removeItems`` turns each item into a playlist-scoped id
+    through ``_getPlaylistItemID``, which walks the CACHED ``items()`` -- a
+    snapshot the ``addItems`` above left in place.
+    """
+    playlist = entry.playlist
+    if entry.summary:
+        if _summary_differs(playlist, entry.summary):
+            playlist.editSummary(entry.summary)
+    elif _summary_differs(playlist, None):
+        # Imported at call time rather than module scope:
+        # ``collections/playlists.py`` imports THIS module for the per-user
+        # stage, so a module-scope import the other way would close the cycle
+        # every validator in ``config/schema.py`` documents. The helper is
+        # shared rather than copied because the narrowing it encodes -- an
+        # UNLOCKED summary was never ours and is left alone -- matters more in
+        # somebody else's account, not less.
+        from autoposter.collections.playlists import _clear_playlist_summary
+
+        _clear_playlist_summary(playlist)
+    if entry.adding:
+        playlist.addItems(entry.adding)
+    if entry.removing:
+        playlist.reload()
+        playlist.removeItems(entry.removing)
+    return len(entry.adding), len(entry.removing)
+
+
+def _stamp(session: AsyncSession, entry: _Planned, playlist, added: int, removed: int):
+    """Record what this copy now holds, creating the row on first sight."""
+    row = entry.row
+    if row is None:
+        row = ManagedPlaylistUser(
+            definition_key=entry.definition_title,
+            plex_user_id=entry.target.user_id,
+        )
+        session.add(row)
+        entry.row = row
+    # Refreshed every pass: a user who renamed themselves in Plex keeps their
+    # id, and the report should read the name they use now.
+    row.plex_user_title = entry.target.title
+    row.plex_rating_key = str(playlist.ratingKey)
+    row.definition_hash = entry.wanted_hash
+    row.member_count = len(entry.items)
+    row.last_added = added
+    row.last_removed = removed
+    row.last_reconciled_at = func.now()
+
+
+async def user_sweep_candidates(
+    session: AsyncSession, sync: UserSync, definitions
+) -> tuple[list, list]:
+    """``(candidates, unreachable)`` -- user copies no configuration asks for.
+
+    C13 A2: three removal events, ONE predicate. A row is a candidate when its
+    ``(definition_key, plex_user_id)`` pair is not in the set this
+    configuration resolves to -- which covers a user dropped from
+    ``sync_to_users``, a definition deleted outright, and a definition that
+    stopped naming anybody -- AND its ``plex_rating_key`` names a playlist
+    currently in THAT USER'S listing.
+
+    A row whose object is already gone is not a candidate, exactly as one level
+    up: there is nothing to delete, and reporting it as deletable would invite
+    an operator to authorise a deletion that cannot happen.
+
+    A row whose user cannot be reached at all -- gone from the account,
+    ``protected``, or no token -- is not a candidate either, because ownership
+    is unverifiable and nothing is deleted on a guess. Those rows come back
+    separately so the caller can REPORT them: a row that silently accumulated
+    would be a copy in somebody's account that nobody could account for.
+
+    Calling ``targets_for`` again costs nothing: it is pure over the cached
+    user list, and the servers and listings it leads to are the ones the plan
+    already opened.
+    """
+    wanted: set[tuple[str, int]] = set()
+    for definition in definitions:
+        if not definition.sync_to_users:
+            continue
+        targets, _skips = sync.targets_for(definition)
+        for target in targets:
+            wanted.add((definition.title, target.user_id))
+
+    candidates: list = []
+    unreachable: list = []
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    for row in rows:
+        if (row.definition_key, row.plex_user_id) in wanted:
+            continue
+        target = sync.target_for_id(row.plex_user_id)
+        if target is None:
+            unreachable.append(row)
+            continue
+        listing = sync.playlists_for(target)
+        if listing is None:
+            unreachable.append(row)
+            continue
+        playlist = listing.get(row.plex_rating_key)
+        if playlist is None:
+            continue
+        candidates.append((row, playlist, target))
+    return candidates, unreachable

@@ -24,8 +24,16 @@ import io
 import logging
 from types import SimpleNamespace
 
-from autoposter.collections.playlist_users import UserSync
+from sqlalchemy import select
+
+from autoposter.collections.playlist_users import (
+    UserSync,
+    apply_user_sync,
+    plan_user_sync,
+    user_sweep_candidates,
+)
 from autoposter.config.schema import PlaylistDefinition, PlaylistsConfig
+from autoposter.db.models import ManagedPlaylistUser
 
 MACHINE = "abc123machine"
 BASEURL = "http://plex.example:32400"
@@ -624,3 +632,499 @@ def test_nothing_the_resolver_writes_or_serves_carries_a_user_token():
         assert TOKEN not in skip.reason
     assert TOKEN not in repr(targets)
     assert TOKEN not in repr(sync)
+
+
+# --- planning the fan-out ----------------------------------------------------
+
+
+def _row(session, *, user_id=1, title="alice", rating_key="7001", digest="old"):
+    row = ManagedPlaylistUser(
+        definition_key="Timeline", plex_user_id=user_id, plex_user_title=title,
+        plex_rating_key=rating_key, definition_hash=digest,
+    )
+    session.add(row)
+    return row
+
+
+async def test_a_user_with_no_row_is_planned_as_a_create(session):
+    """No row means no copy, whatever is in that account: ownership is the
+    row, never the title."""
+    connector = Connector()
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+    definition = _definition(sync_to_users=["alice"])
+
+    plan = await plan_user_sync(
+        session, sync, config, [definition],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    assert plan.refusal is None
+    assert [e.playlist for e in plan.plans] == [None]
+    assert plan.writes == 1
+    # ``previews`` are the "would" lines and ``actions`` the skips: a pass that
+    # APPLIES reports what it did, not both.
+    assert plan.actions == []
+    assert plan.previews == ["'Timeline' -> 'alice': would create with 2 item(s)"]
+    assert plan.results["Timeline"][0].creating == 2
+    # Planning writes nothing. That is the property the caps depend on.
+    assert connector.servers[TOKEN].created == []
+
+
+async def test_a_user_whose_copy_is_behind_is_planned_as_a_diff(session):
+    """The 98a subtraction, unchanged, one level down: member rating keys are
+    server-wide, so an admin-fetched desired list compares correctly against a
+    user-fetched membership."""
+    copy = FakeUserPlaylist(7001, "Timeline", [ITEM_A, ITEM_C])
+    connector = Connector(servers={TOKEN: FakeUserServer(TOKEN, [copy])})
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+    _row(session)
+    await session.commit()
+
+    plan = await plan_user_sync(
+        session, sync, config, [_definition(sync_to_users=["alice"])],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    entry = plan.plans[0]
+    assert [i.ratingKey for i in entry.adding] == ["12"]
+    assert [i.ratingKey for i in entry.removing] == ["13"]
+    # One add BATCH plus one DELETE: removeItems issues one request per item.
+    assert plan.writes == 2
+    assert plan.actions == []
+    assert plan.previews == ["'Timeline' -> 'alice': would update +1 -1"]
+    assert copy.writes == []
+
+
+async def test_a_user_whose_copy_is_current_costs_no_membership_read(session):
+    """The gate that makes a steady-state pass cheap. The user's LISTING is
+    read -- that is the ownership map and there is no way around it -- and
+    their membership is not."""
+
+    class Counting(FakeUserPlaylist):
+        membership_reads = 0
+
+        def items(self, libtype=None):
+            type(self).membership_reads += 1
+            return super().items(libtype)
+
+    Counting.membership_reads = 0
+    copy = Counting(7001, "Timeline", [ITEM_A, ITEM_B])
+    connector = Connector(servers={TOKEN: FakeUserServer(TOKEN, [copy])})
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+    _row(session, digest="hash-1")
+    await session.commit()
+
+    plan = await plan_user_sync(
+        session, sync, config, [_definition(sync_to_users=["alice"])],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    assert plan.actions == []
+    assert plan.previews == []
+    assert plan.writes == 0
+    assert [e.result for e in plan.plans] == [None]
+    assert Counting.membership_reads == 0
+
+
+async def test_a_same_title_playlist_in_a_users_account_is_never_ours(session):
+    """The admin pass's refusal one level down, with a sharper reason: a
+    playlist somebody made in their OWN account under our title is theirs.
+    Plex permits duplicate titles, so creating ours beside it was available
+    and is refused -- nobody's account should sprout a second playlist of the
+    same name."""
+    stranger = FakeUserPlaylist(5555, "Timeline", [ITEM_C])
+    connector = Connector(servers={TOKEN: FakeUserServer(TOKEN, [stranger])})
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+
+    plan = await plan_user_sync(
+        session, sync, config, [_definition(sync_to_users=["alice"])],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    assert plan.plans == []
+    assert plan.writes == 0
+    assert plan.actions == [
+        "'Timeline' -> 'alice': skipped: a playlist titled 'Timeline' already "
+        "exists in this account and is not ours"
+    ]
+    assert stranger.writes == []
+
+
+async def test_an_empty_desired_list_plans_nothing_for_anybody(session):
+    """The empty-result law, one level down and for a bigger reason: a failed
+    source returning nothing would, taken literally, empty seventeen people's
+    playlists at once."""
+    connector = Connector()
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+
+    plan = await plan_user_sync(
+        session, sync, config, [_definition(sync_to_users=["alice"])],
+        {}, {},
+    )
+
+    assert plan.plans == []
+    assert plan.actions == []
+    assert plan.previews == []
+    assert connector.calls == []
+
+
+# --- applying it -------------------------------------------------------------
+
+
+async def test_applying_creates_the_copy_under_that_users_own_server(session):
+    connector = Connector()
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+    plan = await plan_user_sync(
+        session, sync, config, [_definition(sync_to_users=["alice"])],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    actions = await apply_user_sync(session, plan)
+
+    created = connector.servers[TOKEN].created
+    assert len(created) == 1
+    assert created[0].title == "Timeline"
+    assert [i.ratingKey for i in created[0].items()] == ["11", "12"]
+    assert actions == ["'Timeline' -> 'alice': created with 2 item(s)"]
+
+    row = (await session.execute(select(ManagedPlaylistUser))).scalar_one()
+    assert row.definition_key == "Timeline"
+    assert row.plex_user_id == 1
+    assert row.plex_user_title == "alice"
+    assert row.plex_rating_key == str(created[0].ratingKey)
+    assert row.definition_hash == "hash-1"
+    assert row.member_count == 2
+    assert row.last_added == 2
+    assert row.last_removed == 0
+
+
+async def test_applying_diffs_rather_than_recreating_and_reloads_before_removing(
+    session,
+):
+    """A8, one level down. The reload is mandatory: ``removeItems`` resolves
+    each item through ``_getPlaylistItemID``, which walks the CACHED
+    ``items()`` that the ``addItems`` above left in place."""
+    copy = FakeUserPlaylist(7001, "Timeline", [ITEM_A, ITEM_C])
+    connector = Connector(servers={TOKEN: FakeUserServer(TOKEN, [copy])})
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+    _row(session)
+    await session.commit()
+    plan = await plan_user_sync(
+        session, sync, config, [_definition(sync_to_users=["alice"])],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    actions = await apply_user_sync(session, plan)
+
+    assert connector.servers[TOKEN].created == []
+    assert copy.writes == [("add", ["12"]), ("remove", ["13"])]
+    assert copy.reloads == 1
+    assert copy.deleted is False
+    assert actions == ["'Timeline' -> 'alice': updated +1 -1"]
+
+
+async def test_a_user_copy_is_never_reordered(session):
+    """The declared gap. The copy holds exactly the desired members in the
+    wrong order and the definition is in sync mode, so the admin path would
+    issue moves here; this one issues nothing, re-stamps the row so the next
+    pass gates on the new hash instead of re-reading membership forever, and
+    reports nothing -- exactly as the admin pass's own gated branch does."""
+    copy = FakeUserPlaylist(7001, "Timeline", [ITEM_B, ITEM_A])
+    connector = Connector(servers={TOKEN: FakeUserServer(TOKEN, [copy])})
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+    row = _row(session)
+    await session.commit()
+    plan = await plan_user_sync(
+        session, sync, config,
+        [_definition(sync_to_users=["alice"], sync_mode="sync")],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    actions = await apply_user_sync(session, plan)
+
+    assert copy.moves == []
+    assert copy.writes == []
+    assert actions == []
+    assert plan.actions == []
+    assert plan.previews == []
+    assert row.definition_hash == "hash-1"
+
+
+async def test_a_failure_against_one_user_does_not_stop_the_next(session):
+    """Contained per user, and the row of the one that succeeded survives --
+    which is why the flush is per entry rather than once at the end. The
+    action names the exception's CLASS and nothing from its message, because
+    a plexapi failure's message carries the URL and sometimes the token."""
+
+    class Exploding(FakeUserServer):
+        def createPlaylist(self, title, items=None, **kwargs):
+            raise RuntimeError("https://plex.example/playlists?X-Plex-Token=SECRET")
+
+    connector = Connector(servers={
+        "tok-a": Exploding("tok-a"), "tok-b": FakeUserServer("tok-b"),
+    })
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token="tok-a"), FakeUser(2, "bob", token="tok-b")],
+        connector=connector, config=config,
+    )
+    plan = await plan_user_sync(
+        session, sync, config,
+        [_definition(sync_to_users=["alice", "bob"])],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    actions = await apply_user_sync(session, plan)
+
+    assert actions == [
+        "'Timeline' -> 'alice': failed (RuntimeError)",
+        "'Timeline' -> 'bob': created with 2 item(s)",
+    ]
+    assert "SECRET" not in " ".join(actions)
+    assert [r.failed for r in plan.results["Timeline"]] == [True, False]
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert [(r.plex_user_id, r.plex_user_title) for r in rows] == [(2, "bob")]
+
+
+# --- the caps refuse entirely ------------------------------------------------
+
+
+async def test_past_the_user_cap_nothing_is_minted_at_all(session):
+    """The fan-out's WIDTH, and the load-bearing half is WHEN it is measured.
+
+    An ``all`` that suddenly resolves to two hundred accounts must refuse
+    before it has minted two hundred tokens and issued two hundred PMS
+    listings. Nothing would have been WRITTEN either way -- but the recon's
+    cost model is what the caps were written against, and spending most of it
+    and then refusing keeps the letter of C13 A6 while losing its point. So
+    ``max_users`` is evaluated against the union of every definition's targets,
+    resolved from the cached ``account.users()`` list alone, before a single
+    ``get_token`` call.
+
+    The three counters are the whole assertion: ``token_reads`` is bumped by
+    ``FakeUser.get_token``, ``connector.calls`` by every session opened, and
+    ``account.user_reads`` proves the one read that IS made is the cached one.
+    """
+    connector = Connector()
+    config = _config(sync_to_users_apply=True, max_users=3)
+    users = [FakeUser(i, "u%d" % i, token="tok-%d" % i) for i in range(1, 5)]
+    sync, account = _sync(users, connector=connector, config=config)
+    plan = await plan_user_sync(
+        session, sync, config,
+        [_definition(sync_to_users=["u1", "u2", "u3", "u4"])],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    actions = await apply_user_sync(session, plan)
+
+    assert plan.refusal == (
+        "refusing the user fan-out: 4 user(s) resolved, more than the "
+        "max_users cap of 3; nothing was written to any user and the "
+        "admin playlists were reconciled"
+    )
+    assert actions == []
+    # Not one token minted, not one session opened, not one listing read.
+    assert [user.token_reads for user in users] == [0, 0, 0, 0]
+    assert connector.calls == []
+    assert connector.servers == {}
+    assert account.user_reads == 1
+    assert (await session.execute(select(ManagedPlaylistUser))).scalars().all() == []
+
+
+async def test_past_the_write_cap_the_stored_rows_refuse_before_any_mint(session):
+    """The fan-out's DEPTH, refused at the same point and from the same
+    materials: the stored rows alone -- not the admin half's resolved items,
+    which ``_estimated_writes`` never opens.
+
+    Two users with no row is two creates whatever their accounts hold, so the
+    estimate is exact here and the refusal costs nothing -- not a token, not a
+    listing. Refusing ENTIRELY rather than spending the budget is
+    ``cleanup.max_orphans``' rule: writing "the first one" of four would be the
+    same accident spread over four passes.
+    """
+    connector = Connector()
+    config = _config(sync_to_users_apply=True, max_user_writes=1)
+    users = [FakeUser(1, "alice", token="tok-a"), FakeUser(2, "bob", token="tok-b")]
+    sync, _ = _sync(users, connector=connector, config=config)
+    plan = await plan_user_sync(
+        session, sync, config, [_definition(sync_to_users=["alice", "bob"])],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    actions = await apply_user_sync(session, plan)
+
+    assert plan.refusal == (
+        "refusing the user fan-out: 2 write(s) planned, more than the "
+        "max_user_writes cap of 1; nothing was written to any user and the "
+        "admin playlists were reconciled"
+    )
+    assert actions == []
+    assert [user.token_reads for user in users] == [0, 0]
+    assert connector.calls == []
+
+
+async def test_a_fan_out_the_stored_rows_underestimate_still_refuses_on_the_exact_count(
+    session,
+):
+    """The write cap's SECOND evaluation, and why there are two.
+
+    The pre-mint estimate is built from the stored rows alone -- it never
+    reads the admin half's resolved item list, only whether a row is present
+    and hash-fresh. It counts ONE write for a copy whose row is stale and
+    cannot know how many REMOVALS that copy needs, because each removal is
+    its own DELETE and how many there are lives only in that user's own
+    membership. So the estimate
+    under-counts here, the fan-out proceeds past the cheap gate, and the exact
+    count taken from the listing is what refuses.
+
+    One user, one stale row, a copy holding three items where the definition
+    now resolves to one: estimate 1, which does not exceed a cap of 1; exact 2
+    -- two DELETEs -- which does. And nothing is written, which is the half
+    that makes it a refusal rather than a budget.
+    """
+    copy = FakeUserPlaylist(7001, "Timeline", [ITEM_A, ITEM_B, ITEM_C])
+    connector = Connector(servers={TOKEN: FakeUserServer(TOKEN, [copy])})
+    config = _config(sync_to_users_apply=True, max_user_writes=1)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+    _row(session, digest="stale")
+    await session.commit()
+
+    plan = await plan_user_sync(
+        session, sync, config, [_definition(sync_to_users=["alice"])],
+        {"Timeline": [ITEM_A]}, {"Timeline": "hash-1"},
+    )
+
+    actions = await apply_user_sync(session, plan)
+
+    assert plan.writes == 2
+    assert plan.refusal == (
+        "refusing the user fan-out: 2 write(s) planned, more than the "
+        "max_user_writes cap of 1; nothing was written to any user and the "
+        "admin playlists were reconciled"
+    )
+    assert actions == []
+    # The listing WAS read -- that is what the cheap gate let through -- and
+    # the copy was not touched, which is what the expensive one prevented.
+    assert connector.calls == [(BASEURL, TOKEN)]
+    assert copy.writes == []
+
+
+# --- the token stays out of everything, part two -----------------------------
+
+
+async def test_no_user_token_is_ever_persisted(session):
+    """A full create is applied with the sentinel as the user's token. It must
+    appear in no column of the row this pass wrote, in no action string, and
+    in no repr of the plan the pass carried around."""
+    connector = Connector()
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+    plan = await plan_user_sync(
+        session, sync, config, [_definition(sync_to_users=["alice"])],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    actions = await apply_user_sync(session, plan)
+
+    row = (await session.execute(select(ManagedPlaylistUser))).scalar_one()
+    for column in row.__table__.columns.keys():
+        assert TOKEN not in str(getattr(row, column))
+    assert TOKEN not in " ".join(actions)
+    assert TOKEN not in repr(plan)
+
+
+# --- what the sweep may consider -------------------------------------------
+
+
+async def test_a_row_no_configuration_asks_for_whose_object_is_live_is_a_candidate(
+    session,
+):
+    """C13 A2's one predicate. This exercises the "user dropped from
+    sync_to_users" event; the definition still exists and still syncs, just
+    not to this person."""
+    copy = FakeUserPlaylist(7001, "Timeline", [ITEM_A])
+    connector = Connector(servers={TOKEN: FakeUserServer(TOKEN, [copy])})
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN), FakeUser(2, "bob", token=TOKEN)],
+        connector=connector, config=config,
+    )
+    _row(session)
+    await session.commit()
+
+    candidates, unreachable = await user_sweep_candidates(
+        session, sync, [_definition(sync_to_users=["bob"])]
+    )
+
+    assert unreachable == []
+    assert [(row.plex_user_title, playlist is copy) for row, playlist, _t in candidates] == [
+        ("alice", True)
+    ]
+    assert copy.deleted is False
+
+
+async def test_a_row_whose_object_is_already_gone_is_not_a_candidate(session):
+    """One level up's rule verbatim: there is nothing to delete, and reporting
+    it as deletable would invite an operator to authorise a deletion that
+    cannot happen."""
+    connector = Connector(servers={TOKEN: FakeUserServer(TOKEN, [])})
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN)], connector=connector, config=config
+    )
+    _row(session)
+    await session.commit()
+
+    candidates, unreachable = await user_sweep_candidates(session, sync, [])
+
+    assert candidates == []
+    assert unreachable == []
+
+
+async def test_a_row_whose_user_is_unreachable_is_reported_rather_than_swept(
+    session,
+):
+    """Ownership is unverifiable, so nothing is deleted on a guess -- and the
+    row is returned separately so the caller can name it, because a row that
+    silently accumulated would be a copy nobody could ever account for."""
+    connector = Connector()
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=None)], connector=connector, config=config
+    )
+    _row(session)
+    await session.commit()
+
+    candidates, unreachable = await user_sweep_candidates(session, sync, [])
+
+    assert candidates == []
+    assert [row.plex_user_title for row in unreachable] == ["alice"]
+    assert connector.calls == []
