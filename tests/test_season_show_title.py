@@ -83,7 +83,8 @@ def test_the_show_title_block_is_off_by_default():
 
 
 def test_the_example_config_ships_the_upstream_values_with_the_gate_off():
-    """Posterizarr's ShowTitleOnSeasonPosterPart, transcribed.
+    """Posterizarr's ShowTitleOnSeasonPosterPart, transcribed -- with one
+    deliberate exception.
 
     Twelve of its thirteen keys map 1:1 onto TextStyle and the thirteenth
     (AddShowTitletoSeason) is add_text. All thirteen are restated explicitly
@@ -94,6 +95,15 @@ def test_the_example_config_ships_the_upstream_values_with_the_gate_off():
     TextStyle's own identical defaults. ``font`` is OURS -- the upstream
     part carries no font key at all -- and matches the season block it sits
     above.
+
+    ``text_offset`` is NOT transcribed verbatim: upstream ships ``"+300"``,
+    the same value as the season block it sits above (which is why the
+    stacking rule ignores this block's own offset entirely -- see
+    ``stacked_above``). The shipped example instead ships ``"+120"`` here,
+    a deliberate departure so that
+    ``test_the_gate_on_draws_the_show_title_as_a_second_block`` can tell a
+    correctly-derived stacked offset from a wiring bug that reads this
+    block's own value: with a shared ``"+300"`` the two would coincide.
     """
     block = _document()["artwork"]["season_poster"]["show_title"]
     assert block == {
@@ -279,15 +289,21 @@ async def test_the_gate_on_draws_the_show_title_as_a_second_block(
     drawn = _captions(calls)
     assert [d[0] for d in drawn] == ["SEASON 2", "SEVERANCE"]
     assert drawn[0][1:] == ("south", "+0+300")
-    # The DERIVED offset, not the configured "+300", and this assertion is the
+    # The DERIVED offset, not the show-title block's OWN configured "+120"
+    # (see the example's ships-"+120" note above), and this assertion is the
     # point of the test. `stacked_above` is pinned as a pure function below,
     # but a pure pin cannot see whether `compose_styled` actually APPLIES it:
-    # drop the `model_copy` override from the loop and every other test in this
-    # plan stays green while the two blocks composite at +0+300 and land on top
-    # of each other -- the exact defect the C5 adjudication exists to prevent,
-    # and the exact helper-passes-but-the-wiring-differs class this ledger has
-    # been burned by three times. The stub fits the season block at 120pt, so
-    # the show title is composited at 300 + 120 + 10 = 430.
+    # drop the `model_copy` override from the loop and every other test in
+    # this plan stays green while the show title composites at its own
+    # configured +0+120 instead of the derived +0+430 -- the exact
+    # helper-passes-but-the-wiring-differs class this ledger has been burned
+    # by three times. Before the fix round's I2 correction the example gave
+    # both blocks the same "+300", so this drop would have silently landed
+    # the two blocks on top of each other (300 == 300) rather than reddening
+    # this assertion; shipping "+120" here is what makes the wiring bug
+    # visible as a wrong NUMBER rather than a coincidentally-right one. The
+    # stub fits the season block at 120pt, so the derived offset is
+    # season's own "+300" + 120 (fitted size) + 10 (gutter) = 430.
     assert drawn[1] == ("SEVERANCE", "south", "+0+430")
 
 
