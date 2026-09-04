@@ -7,6 +7,7 @@ byte-identical to the recorded pre-swap baseline.
 """
 import hashlib
 import io
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -1484,5 +1485,245 @@ async def test_a_family_this_config_does_not_name_costs_nothing(
     await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
     first = render.badge_fingerprint
     await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert render.badge_fingerprint == first
+    assert plex_item.uploads == 1
+
+
+# --- sub-phase C2c: the `status` family, through the real apply_badges -----
+
+
+class _StatusFacts(_Facts):
+    """`item_facts` as `facts/tmdb_facts.py::parse_show_facts` writes it after
+    sub-phase C2c. Subclasses this file's own `_Facts` so the three rating
+    fields keep their existing values and no OTHER badge moves between the
+    baseline and the fires case -- if the critic/audience ratings differed,
+    the pixel comparison would fail for a reason that has nothing to do with
+    the status band."""
+
+    def __init__(self, tmdb_status=None, last_episode_aired=None):
+        self.tmdb_status = tmdb_status
+        self.last_episode_aired = last_episode_aired
+
+
+def _days_ago(days):
+    return date.today() - timedelta(days=days)
+
+
+async def test_status_fires_on_a_returning_show_and_is_silent_without_facts(
+    session, config_with_badges
+):
+    """The entry-point law for the first FACTS-backed family: through the real
+    `apply_badges`, which is where the persisted `ItemFacts` row is loaded and
+    handed to the view. The silent half is the one that matters most -- an
+    item whose facts carry no status (a movie, or a show not yet re-gathered)
+    must draw the gate-off pixels rather than a wrong band."""
+    config_with_badges.badges.families = []
+    base_returning = await _badged(
+        session, config_with_badges, _FakePlexItem(), "st-base-1",
+        facts=_StatusFacts(tmdb_status="returning"),
+    )
+    base_none = await _badged(
+        session, config_with_badges, _FakePlexItem(), "st-base-2",
+        facts=_StatusFacts(),
+    )
+
+    config_with_badges.badges.families = ["status"]
+    fires = await _badged(
+        session, config_with_badges, _FakePlexItem(), "st-1",
+        facts=_StatusFacts(tmdb_status="returning"),
+    )
+    silent = await _badged(
+        session, config_with_badges, _FakePlexItem(), "st-2",
+        facts=_StatusFacts(),
+    )
+
+    assert _sha(fires) != _sha(base_returning), "a returning show must draw RETURNING"
+    assert _sha(silent) == _sha(base_none), (
+        "an item with no status facts must draw the gate-off pixels"
+    )
+
+
+async def test_airing_fires_inside_the_window_and_is_silent_outside_it(
+    session, config_with_badges
+):
+    """Adjudication A-1's band, end to end. The window is relative to the run
+    moment, so the fixture dates are computed from `date.today()` rather than
+    written as literals -- a hardcoded 2026 date would pass for a fortnight
+    and then start failing for a reason that has nothing to do with the
+    code."""
+    config_with_badges.badges.families = []
+    base = await _badged(
+        session, config_with_badges, _FakePlexItem(), "air-base",
+        facts=_StatusFacts(last_episode_aired=_days_ago(3)),
+    )
+    base_old = await _badged(
+        session, config_with_badges, _FakePlexItem(), "air-base-2",
+        facts=_StatusFacts(last_episode_aired=_days_ago(200)),
+    )
+
+    config_with_badges.badges.families = ["status"]
+    fires = await _badged(
+        session, config_with_badges, _FakePlexItem(), "air-1",
+        facts=_StatusFacts(last_episode_aired=_days_ago(3)),
+    )
+    silent = await _badged(
+        session, config_with_badges, _FakePlexItem(), "air-2",
+        facts=_StatusFacts(last_episode_aired=_days_ago(200)),
+    )
+
+    assert _sha(fires) != _sha(base), "an episode 3 days old must draw AIRING"
+    assert _sha(silent) == _sha(base_old), (
+        "an episode 200 days old is outside the 14-day window and draws nothing"
+    )
+
+
+async def test_a_null_status_column_draws_nothing_rather_than_a_wrong_band(
+    session, config_with_badges
+):
+    """**The upgrade's own initial condition, pinned (adjudication A-4).**
+    C2c ships no backfill job, so on the pass that follows the migration
+    EVERY row in the library has both columns NULL. That must draw the
+    gate-off pixels for every item -- not a band, and not an error -- until
+    each row is re-gathered. It is also what a `GatheredFacts()` fallback
+    looks like when `operations.enabled` is off and there is no persisted row
+    at all, which is the same shape and the same answer."""
+    from autoposter.facts.models import GatheredFacts
+
+    config_with_badges.badges.families = []
+    base = await _badged(
+        session, config_with_badges, _FakePlexItem(), "null-base",
+        facts=GatheredFacts(),
+    )
+
+    config_with_badges.badges.families = ["status"]
+    after = await _badged(
+        session, config_with_badges, _FakePlexItem(), "null-1",
+        facts=GatheredFacts(),
+    )
+    assert _sha(after) == _sha(base)
+
+
+async def test_only_the_highest_weighted_status_band_is_drawn(
+    session, config_with_badges
+):
+    """Adjudication A-5 through the real entry point, on the case a real
+    library actually produces: a show whose finale aired 8 days ago and which
+    TMDb has already marked `Ended` matches AIRING (40) and ENDED (10).
+    Proven by comparing against the SAME item badged with a config carrying
+    the AIRING definition ALONE -- if both had drawn, the two would differ."""
+    from autoposter.overlays.families import FAMILIES
+
+    bands = {d.name: d for d in FAMILIES["status"]}
+    facts = _StatusFacts(tmdb_status="ended", last_episode_aired=_days_ago(8))
+
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = [bands["text(AIRING)"]]
+    winner_only = await _badged(
+        session, config_with_badges, _FakePlexItem(), "st-w-1", facts=facts
+    )
+
+    config_with_badges.badges.definitions = []
+    config_with_badges.badges.families = ["status"]
+    both_match = await _badged(
+        session, config_with_badges, _FakePlexItem(), "st-w-2", facts=facts
+    )
+    assert _sha(both_match) == _sha(winner_only), (
+        "ENDED must lose the group to AIRING rather than drawing over it"
+    )
+
+
+async def test_the_status_text_draws_in_the_bundled_face_through_the_real_entry_point(
+    session, config_with_badges, tmp_path
+):
+    """C2b's A-4 rung, inherited and re-proven for this family: the operator's
+    `fonts_root` is a mount that does NOT contain Inter-Medium, which is the
+    normal case. Without the bundled rung the definition would be skipped by
+    name here and `fires` would come back identical to `baseline`."""
+    config_with_badges.fonts_root = tmp_path
+    config_with_badges.badges.families = []
+    facts = _StatusFacts(tmdb_status="ended")
+    baseline = await _badged(
+        session, config_with_badges, _FakePlexItem(), "st-font-0", facts=facts
+    )
+
+    config_with_badges.badges.families = ["status"]
+    fires = await _badged(
+        session, config_with_badges, _FakePlexItem(), "st-font-1", facts=facts
+    )
+    assert _sha(fires) != _sha(baseline)
+
+
+async def test_enabling_the_status_family_re_badges_once_and_the_second_pass_is_unchanged(
+    session, config_with_badges
+):
+    """**The digest-evolution law, both directions, through the real entry
+    point** (Global Constraint 7), stated as what the mechanism DOES:
+
+    1. gate-off, the item badges once;
+    2. enabling the family re-badges it ONCE -- and for EVERY already-badged
+       item, matched or not, because `apply_badges` hashes the WHOLE
+       `all_definitions()` list rather than the matched subset. That is the
+       one-time re-badge roadmap row 100's cell already discloses; what the
+       VERDICT decides is what gets DRAWN (the fires/silent pins above);
+    3. a second pass over the same config uploads nothing -- the fingerprint
+       is stable again, which is what makes (2) one-time rather than a storm;
+    4. disabling reverts the fingerprint EXACTLY, which is the property that
+       proves nothing else moved."""
+    item, render = await _render(session, rating_key="c2c-storm")
+    plex_item = _FakePlexItem()
+    facts = _StatusFacts(tmdb_status="returning")
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = []
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, facts)
+    assert plex_item.uploads == 1
+    gate_off_fingerprint = render.badge_fingerprint
+
+    config_with_badges.badges.families = ["status"]
+    await apply_badges(session, config_with_badges, render, item, plex_item, facts)
+    assert plex_item.uploads == 2, "enabling a family must re-badge an already-uploaded item"
+    enabled_fingerprint = render.badge_fingerprint
+    assert enabled_fingerprint != gate_off_fingerprint
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, facts)
+    assert plex_item.uploads == 2, "the second pass must upload nothing"
+    assert render.badge_fingerprint == enabled_fingerprint
+
+    config_with_badges.badges.families = []
+    await apply_badges(session, config_with_badges, render, item, plex_item, facts)
+    assert plex_item.uploads == 3
+    assert render.badge_fingerprint == gate_off_fingerprint, (
+        "disabling the family must revert the fingerprint exactly"
+    )
+
+
+async def test_the_family_list_gaining_status_moves_no_fingerprint_for_a_config_without_it(
+    session, config_with_badges
+):
+    """The other end of the same law: `FAMILIES` gaining an eleventh key must
+    not move a fingerprint for a config that does not name it.
+    `BadgesConfig.all_definitions()` expands only NAMED families, so a
+    C1/C2a/C2b config is byte-identical across this sub-phase -- and so is
+    the empty one, which is what the two pinned literals at the top of this
+    file (`576f88e5...` and `PRE_SEAM_ONE_DEFINITION_FINGERPRINT`) guard
+    unmodified. Neither literal is edited by C2c."""
+    from autoposter.config.schema import BadgesConfig
+
+    assert BadgesConfig().all_definitions() == []
+    assert BadgesConfig(families=["direct_play"]).all_definitions() == list(
+        FAMILIES["direct_play"]
+    )
+
+    item, render = await _render(session, rating_key="c2c-untouched")
+    plex_item = _FakePlexItem()
+    config_with_badges.badges.families = ["direct_play"]
+    config_with_badges.badges.definitions = []
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _StatusFacts()
+    )
+    first = render.badge_fingerprint
+    await apply_badges(
+        session, config_with_badges, render, item, plex_item, _StatusFacts()
+    )
     assert render.badge_fingerprint == first
     assert plex_item.uploads == 1
