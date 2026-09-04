@@ -1134,6 +1134,55 @@ describe("Settings preview", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  it("counts the collection posters an edit would re-composite, beside a null impact", async () => {
+    // The row-105 case exactly: `collections` is excluded from render_version,
+    // so the server reports no re-renders AND a real collection-poster cost.
+    // Both sentences are true and both have to be on the page.
+    stubEditor({
+      responses: {
+        "/api/config/preview": json({
+          version_before: "abc123",
+          version_after: "abc123",
+          restart_required: [],
+          impact: null,
+          collection_posters: 41,
+        }),
+      },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Preview");
+
+    const panel = pendingPanel();
+    expect(
+      within(panel).getByText(/No re-renders/),
+    ).toBeInTheDocument();
+    // "~", never "41": a poster the operator placed themselves passes through
+    // untouched and the server cannot know which those are.
+    expect(
+      within(panel).getByText(/~41 managed collection posters/),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing about collection posters when there are none to re-composite", async () => {
+    stubEditor({
+      responses: { "/api/config/preview": previewBody(null, "abc123") },
+    });
+    await renderSettings();
+
+    fireEvent.change(screen.getByLabelText("artwork.poster.text.min_point_size"), {
+      target: { value: "24" },
+    });
+    await click("Preview");
+
+    expect(
+      within(pendingPanel()).queryByText(/managed collection posters/),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("Settings apply", () => {
