@@ -130,7 +130,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-import langcodes
+from autoposter.lang import base_language_code
 
 __all__ = [
     "BY_NAME",
@@ -2250,26 +2250,10 @@ def _is_missing(value: object, value_type: str) -> bool:
 _LANGUAGE_FOLD_ATTRIBUTES = frozenset({"audio_language", "subtitle_language"})
 
 
-def base_language_code(value: str) -> str:
-    """A language value in any common form, reduced to its base ISO 639-1 code.
-
-    Transcribed from Kometa's ``base_language_code`` (modules/plex.py:141-151),
-    including its fallback: a value that cannot be parsed comes back unchanged,
-    so an unrecognised code targets itself rather than nothing. ``langcodes``
-    is the same library Kometa uses -- see the phase-9b Task 4 Step 0 decision
-    record for why it was added rather than transcribed. It lived in
-    ``builders/plex_search.py`` until the location-names phase and moved HERE
-    because ``_matches_one``'s language fold (row 204) needs it and the model
-    layer must not import a builder; ``plex_search`` imports it back. Its
-    ``LanguageTagError`` is a ``ValueError`` subclass, which is what makes the
-    fallback below catch it.
-    """
-    if not value:
-        return value
-    try:
-        return langcodes.Language.get(str(value)).language or value
-    except ValueError:
-        return value
+# ``base_language_code`` moved to ``autoposter/lang.py`` and is imported at the
+# top of this module. It is re-exported here (it is in ``__all__``) so every
+# existing importer is unchanged; it moved because ``badges/values.py``'s flag
+# badge needs the same reduction and ``badges/`` must not import this module.
 
 
 def _matches_one(

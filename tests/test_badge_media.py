@@ -6,6 +6,8 @@ filename silently renders the wrong badge.
 """
 import pytest
 
+from autoposter.assets import asset_path
+from autoposter.badges.compose import BadgeInputs, badge_fingerprint, badge_values
 from autoposter.badges.values import (
     MediaInfo,
     audio_codec_image,
@@ -228,3 +230,133 @@ def test_a_path_without_an_hdr10_plus_marker_gets_no_plus_flag():
     info = media_info_from_plex(_item_with_path("/m/X/X.HDR10.2160p.mkv"))
     assert "plus" not in info.hdr_flags
     assert resolution_image(info) == "1080phdr"
+
+
+# --- Plex's ISO 639-2 languageCode, reduced to the flag table's key ---------
+#
+# `languages.json` is keyed by ISO 639-1 and its entries name a COUNTRY, which
+# is what `images/flag/round/<country>.png` is called. Plex hands us ISO 639-2.
+# The hop between them used to be `[:2]`, which is a truncation and not a
+# conversion: right for `eng`, wrong for `swe`, and absent for `ger`.
+
+
+def _audio_only_item(*codes):
+    """A plexapi-shaped stand-in carrying one audio stream per `languageCode`
+    and nothing else -- no resolution, no codec, no duration, no file path --
+    so `badge_values` below yields the `languages` key and NOTHING else. That
+    is what makes the literal digests in the two fingerprint tests readable:
+    every other input to `badge_fingerprint` is a literal in the call."""
+    streams = [FakeStream(2, languageCode=code) for code in codes]
+    return FakeItem([FakeMedia([FakePart(streams)])])
+
+
+@pytest.mark.parametrize(
+    "code,expected_reduced,expected_slots",
+    [
+        # The 639-2/B forms whose first two letters are not their 639-1 code.
+        # `swe` is the dangerous one: `sw` is a REAL key (Swahili), so the
+        # badge drew a Tanzanian flag on a Swedish track rather than no flag.
+        ("swe", "sv", [("se", "SV")]),
+        ("ger", "de", [("de", "DE")]),
+        ("cze", "cs", [("cz", "CS")]),
+        ("dut", "nl", [("nl", "NL")]),
+        ("gre", "el", [("gr", "EL")]),
+        ("ice", "is", [("is", "IS")]),
+        ("chi", "zh", [("cn", "ZH")]),
+        # The three "no language here" tags. `langcodes` answers `und` with
+        # None and the other two with themselves, so all three keep their raw
+        # tag -- and none is a `languages.json` key, so all three draw NO
+        # flag, exactly as before. The slice reached the same no-flag outcome
+        # for the wrong reason (`und` -> `un`), which is why the reduced code
+        # is asserted alongside the slots.
+        ("und", "und", []),
+        ("mis", "mis", []),
+        ("qaa", "qaa", []),
+    ],
+)
+def test_a_three_letter_code_reaches_its_own_flag_not_a_two_letter_neighbour(
+    code, expected_reduced, expected_slots
+):
+    info = media_info_from_plex(_audio_only_item(code))
+    assert info.audio_languages == (expected_reduced,)
+    assert language_slots(info) == expected_slots
+
+
+def test_every_flag_this_fix_now_names_is_actually_vendored():
+    """`compose.py::_draw_languages` skips a missing flag file with a bare
+    `continue` -- no error, no fallback, no log line. A country stem with no
+    PNG behind it would therefore look exactly like the bug being fixed here.
+    All seven are vendored; this asserts it rather than trusting it."""
+    for country in ("se", "de", "cz", "nl", "gr", "is", "cn"):
+        path = asset_path("badges", "images", "flag", "round", "%s.png" % country)
+        assert path.exists(), "no vendored flag for %r" % country
+
+
+def test_an_already_correct_code_keeps_its_badge_fingerprint_to_the_byte():
+    """The other half of the storm guard. `badge_values`' `languages` string
+    is a `badge_fingerprint` input, so this change re-badges and re-uploads
+    every item it moves. It must move NOTHING else: `eng` reduced to `en`
+    under the old slice and reduces to `en` now, so this digest is a literal
+    -- computed from the pre-fix code path -- and it must survive the fix
+    unchanged. If it moves, the change is re-rendering the whole library."""
+    info = media_info_from_plex(_audio_only_item("eng"))
+    values = badge_values("poster", BadgeInputs(media=info))
+    assert values == {"languages": "us:EN"}
+    assert badge_fingerprint("base-fp", "poster", values, "manifest-sha") == (
+        "0b2c79c1a0a7e7457ce682f226ea5856584f48f57c211ace5c9d743972e1dbdb"
+    )
+
+
+def test_a_swedish_track_moves_the_badge_fingerprint_off_the_swahili_one():
+    """The movement, stated honestly and pinned in both directions. Every
+    item with a Swedish audio track re-badges and re-uploads ONCE after this
+    lands -- it is currently serving a Tanzanian flag, which is the reason
+    for the change. `render/pipeline.py`'s gate compares the new digest to
+    the stored one, so the old literal below is what is in the database
+    today and the new one is what replaces it. Only the badge layer redraws:
+    `badge_fingerprint` is deliberately separate from the base `fingerprint`,
+    so no source art is re-fetched and no base is re-composited."""
+    info = media_info_from_plex(_audio_only_item("swe"))
+    values = badge_values("poster", BadgeInputs(media=info))
+    assert values == {"languages": "se:SV"}
+    assert badge_fingerprint("base-fp", "poster", values, "manifest-sha") == (
+        "2ea31fff79ac563243bcc593554f8e6da1f67d3a2ea3194af7d9039ba3e85611"
+    )
+    assert badge_fingerprint(
+        "base-fp", "poster", {"languages": "tz:SW"}, "manifest-sha"
+    ) == "2dfb76dff72106d30eb948df88fc8344d23ae9081427781a7768f1d5454ff0cd"
+
+
+def test_norwegian_bokmal_loses_its_flag_and_that_is_a_decision_not_an_accident():
+    """The one regression this fix causes, pinned so it cannot happen
+    quietly. `nob` reduces to `nb`, and `languages.json` carries `no` but
+    neither `nb` nor `nn` -- so a track tagged `nob` draws no flag, where the
+    `[:2]` slice gave it a Norwegian one by accident. 26 other codes also lose
+    a flag the slice gave them (`arm` drew Egypt's, `fij` drew Finland's,
+    `jav` drew Japan's); those were WRONG, so losing them is the fix. This one
+    was right, which is what makes it the exception. `nor`, the far commoner
+    tag, reduces to `no` and is untouched (asserted below as the contrast).
+    `langcodes` 3.5.1 offers no way back to a table key:
+    `broader_tags()` returns `["nb", "und"]`, neither of which
+    `languages.json` carries either. The two remedies are the
+    operator's call and are filed on the roadmap row, not taken here: adding
+    `nb`/`nn` to `languages.json` would move `MANIFEST.sha256`, which is a
+    `badge_fingerprint` input, and re-render the WHOLE library."""
+    assert language_slots(media_info_from_plex(_audio_only_item("nob"))) == []
+    assert language_slots(media_info_from_plex(_audio_only_item("nor"))) == [("no", "NO")]
+
+
+def test_the_flag_loop_and_the_filter_walk_share_one_converter():
+    """DRY, asserted rather than intended. Before this change the tree held
+    three spellings of the same reduction: `base_language_code` in
+    `collections/filters.py`, a copy of its body inlined in C2b's per-stream
+    walk, and a `[:2]` slice in the flag loop five lines above it -- which is
+    how the two loops in ONE function came to disagree about `swe`. Imported
+    inside the test rather than at module scope so that the RED run reports
+    THIS test as the only failure for the missing module."""
+    from autoposter import lang
+    from autoposter.badges import values as badge_values_module
+    from autoposter.collections import filters
+
+    assert filters.base_language_code is lang.base_language_code
+    assert badge_values_module.base_language_code is lang.base_language_code

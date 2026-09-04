@@ -12,9 +12,8 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
-import langcodes
-
 from autoposter.assets import asset_path
+from autoposter.lang import base_language_code
 
 @lru_cache(maxsize=1)
 def _languages() -> dict[str, dict]:
@@ -182,7 +181,19 @@ def media_info_from_plex(item) -> MediaInfo:
                 elif trc == "arib-std-b67":
                     flags.add("hlg")
             elif stream.streamType == 2:
-                code = (getattr(stream, "languageCode", None) or "")[:2].lower()
+                # `base_language_code`, not the two-character slice of
+                # `languageCode` this replaces. Plex's code is ISO 639-2 and
+                # `languages.json` is keyed by ISO 639-1, and truncation is
+                # not a conversion between them:
+                # `swe` sliced to `sw`, which is a REAL key -- Swahili -- so a
+                # Swedish track drew a Tanzanian flag, while `ger`, `cze`,
+                # `dut`, `gre`, `ice` and `chi` sliced to nothing the table
+                # holds and lost their flag entirely. The reduction is shared
+                # with the walk below and with `collections/filters.py`'s
+                # language fold; a code it cannot reduce comes back unchanged
+                # and simply is not a table key, which is the same no-flag
+                # outcome Plex's `und` had before, reached honestly.
+                code = base_language_code(getattr(stream, "languageCode", None) or "").lower()
                 if code and code not in languages:
                     languages.append(code)
 
@@ -208,27 +219,20 @@ def media_info_from_plex(item) -> MediaInfo:
     for version in getattr(item, "media", []) or []:
         for part in getattr(version, "parts", []) or []:
             for stream in getattr(part, "streams", []) or []:
-                # `langcodes` (the same library `collections/filters.py`'s
-                # `base_language_code` reduces a language value with) rather
-                # than a bare `[:2]` slice of `languageCode`: the stream's
-                # code is ISO 639-2 (three letters) and a handful of common
-                # languages do not truncate to their ISO 639-1 form --
-                # Swedish's `swe` is `sv`, not `sw` (Swahili). The width
-                # policy is "ISO 639-1 when known, else the raw tag": a code
-                # `langcodes` cannot map -- Plex's own `und` ("undetermined")
-                # among them -- passes through UNCHANGED rather than through
-                # a `raw[:2]` slice, which would have turned `und` into the
-                # real-looking but wrong code `un`. Absent code falls back to
-                # the empty string, matching "no language" rather than a
-                # guess.
-                raw = getattr(stream, "languageCode", None) or ""
-                if raw:
-                    try:
-                        code = (langcodes.Language.get(raw).language or raw).lower()
-                    except ValueError:
-                        code = raw.lower()
-                else:
-                    code = ""
+                # `base_language_code` (the tree's one normaliser, shared with
+                # the flag loop above and with `collections/filters.py`'s
+                # language fold) rather than the bare two-character slice of
+                # `languageCode` this replaces: the stream's code is ISO
+                # 639-2 and a handful of common languages do not truncate to
+                # their ISO 639-1 form -- Swedish's `swe` is `sv`, not `sw`
+                # (Swahili). The width policy is "ISO 639-1 when known, else
+                # the raw tag": a code the library cannot map -- Plex's own
+                # `und` ("undetermined") among them -- passes through
+                # UNCHANGED rather than through the same kind of two-character
+                # slice, which would have turned `und` into the
+                # real-looking but wrong code `un`. An absent code reduces to
+                # the empty string, matching "no language" rather than a guess.
+                code = base_language_code(getattr(stream, "languageCode", None) or "").lower()
                 if stream.streamType == 2:
                     audio_streams.append(code)
                 elif stream.streamType == 3:
