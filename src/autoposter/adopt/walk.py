@@ -55,6 +55,13 @@ class AdoptionReport:
     # built from -- see ``naming.missing_number``. Counted separately so the
     # operator sees them: neither a gap on disk nor a deliberate config choice.
     unnumbered: int = 0
+    # Row 122: a rerun over an already-adopted library used to report the
+    # same `renders` number as the first run, so an operator watching it
+    # could not tell a resumed pass made progress. `renders` stays the sum
+    # of both, for compatibility with anything already reading it; these two
+    # are the split.
+    adopted: int = 0
+    reconfirmed: int = 0
 
 
 @dataclass
@@ -69,6 +76,8 @@ class _Counters:
     unnumbered: int = 0
     hashed: int = 0
     by_kind: dict[str, int] = field(default_factory=dict)
+    adopted: int = 0
+    reconfirmed: int = 0
 
 
 def _as_int(value: str | None) -> int | None:
@@ -279,6 +288,15 @@ async def _adopt_item(
         fingerprint = adopted_fingerprint(config, art_kind, base_sha, text_inputs, asset_hashes)
 
         counters.renders += 1
+        # `existing is None` is a brand new item; `existing is not None and
+        # existing.adopted` (the only other way execution reaches here -- the
+        # branch above already returned for a real, non-adopted render) is a
+        # prior run's adoption being re-hashed and re-stamped by this one.
+        # `renders` stays their sum either way, for compatibility.
+        if existing is None:
+            counters.adopted += 1
+        else:
+            counters.reconfirmed += 1
         counters.by_kind[art_kind] = counters.by_kind.get(art_kind, 0) + 1
 
         if dry_run:
@@ -313,4 +331,5 @@ async def adopt_library(
         missing_assets=counters.missing_assets, skipped=counters.skipped,
         skipped_by_config=counters.skipped_by_config, unnumbered=counters.unnumbered,
         by_kind=counters.by_kind,
+        adopted=counters.adopted, reconfirmed=counters.reconfirmed,
     )

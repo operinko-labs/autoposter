@@ -520,3 +520,39 @@ async def test_a_tba_titled_episode_title_card_is_not_counted_as_a_missing_asset
     # title card is one render_artifact would refuse to make at all.
     assert report.missing_assets == 3
     assert report.skipped_by_config == 1
+
+
+async def test_a_rerun_splits_newly_adopted_from_re_confirmed(session, tmp_path):
+    """Row 122: a rerun over an already-adopted library reported the same
+    ``renders`` count as the first run, so an operator watching the number
+    could not tell a resumed pass made progress -- or reasonably suspected it
+    made none. One walk, one of each: a brand new item alongside one a prior
+    run already adopted.
+    """
+    config = _config(tmp_path)
+    library_root = tmp_path / "Movies"
+    new_path = str(library_root / "Dune (2024)" / "movie.mkv")
+    old_path = str(library_root / "Arrival (2016)" / "movie.mkv")
+    section = FakeSection("Movies", [str(library_root)], [
+        FakeMovie("1", "Dune: Part Two", new_path),
+        FakeMovie("2", "Arrival", old_path, year=2016),
+    ])
+    new_poster = naming.asset_path(config, "Movies", "Dune (2024)", "poster")
+    old_poster = naming.asset_path(config, "Movies", "Arrival (2016)", "poster")
+    _write(new_poster, b"poster-bytes")
+    _write(old_poster, b"poster-bytes")
+
+    already_adopted = MediaItem(rating_key="2", library="Movies", kind="movie", title="Arrival")
+    session.add(already_adopted)
+    await session.flush()
+    session.add(Render(
+        item_id=already_adopted.id, art_kind="poster", asset_path=str(old_poster),
+        status="rendered", fingerprint="a-stale-fingerprint", adopted=True,
+    ))
+    await session.commit()
+
+    report = await adopt_library(session, config, section, dry_run=False)
+
+    assert report.adopted == 1
+    assert report.reconfirmed == 1
+    assert report.renders == 2  # the old total: still both, for compatibility
