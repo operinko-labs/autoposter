@@ -758,3 +758,24 @@ async def test_an_uncancelled_job_still_reschedules_after_a_failure(session):
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
     assert job.state == "pending"
+
+
+async def test_a_cancel_requested_mid_attempt_is_still_honoured(session):
+    # Every test above sets cancel_requested *before* run_once, so claim()'s
+    # own SELECT reads it fresh either way. Production's actual ordering is
+    # the opposite: the operator's cancel is a concurrent request that can
+    # land any time between claim() (which hands run_once a Job it holds for
+    # the whole attempt) and fail() recording the outcome. This simulates
+    # that ordering directly, from inside the handler.
+    async def handler(session_, intent):
+        await _cancel_requested(session_, job_id)
+        raise RuntimeError("provider exploded")
+
+    intent = RenderIntent(kind="movie", title="Dune", tmdb_id=55)
+    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+
+    await run_once(session, "worker-1", _only_process_item(handler))
+
+    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(job)
+    assert job.state == "dismissed"

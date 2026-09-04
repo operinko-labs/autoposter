@@ -385,6 +385,15 @@ async def fail(
     # there. The race costs the cancel one extra attempt; it never loses the
     # cancel. Locking here was reviewed and judged not worth it for that.
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    # claim()'s own commit (see its comment) is what used to keep this SELECT
+    # honest: every failure branch's rollback() was a real rollback that
+    # expired every attribute, so this reload always hit the database. Now
+    # that claim() leaves nothing open, a caller holding a strong reference to
+    # this same Job across the attempt (run_once's local) keeps it alive in
+    # the identity map, and the ORM hands back that claim-time cached instance
+    # here instead of the row this SELECT just re-fetched. cancel_requested is
+    # refreshed explicitly so a cancel requested mid-attempt is still seen.
+    await session.refresh(job, attribute_names=["cancel_requested"])
     job.last_error = error
     job.claimed_by = None
     job.claimed_at = None
