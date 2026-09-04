@@ -6,14 +6,18 @@ implement (and does not need: the recon's cut emits flat definitions), so
 every number here is the RESOLVED value, transcribed from the pinned
 v2.4.8 tree -- the same image digest `assets/badges/PROVENANCE.md` records.
 
-Five families ship: `direct_play` and the six content-rating regionals (C1),
+Six families ship: `direct_play` and the six content-rating regionals (C1),
 `versions` (C2a, adjudication A14 ruled -- the `collections/filters.py` row
-it needed now exists), and `aspect` + `language_count` (C2b, adjudications
-A11 and A-1 ruled the same way). The last two are the first families whose
+it needed now exists), `aspect` + `language_count` (C2b, adjudications A11
+and A-1 ruled the same way), and `status` (C2c, adjudications A-1/A-2/A-3 --
+two new `item_facts` columns, a migration, and a new `facts` source tier so
+the two rows it needs can exist). The last three are the families whose
 CORRECTNESS depends on group/weight resolution rather than merely benefiting
-from it: `aspect`'s 1.65 and 1.66 bands overlap, and `language_count`'s Dual
-and Multi both match a 2-language item, so each list carries an explicit
-`group` and descending `weight` and the tie-breaks are pinned.
+from it: `aspect`'s 1.65 and 1.66 bands overlap, `language_count`'s Dual and
+Multi both match a 2-language item, and `status`'s AIRING both matches and
+outranks ENDED on a show whose finale aired inside the window -- so each list
+carries an explicit `group` and descending `weight` and the tie-breaks are
+pinned.
 
 Each family is opt-in through `config.badges.families`, and a family that is
 not named costs nothing: no definition, no fingerprint movement, no asset
@@ -827,6 +831,116 @@ LANGUAGE_COUNT: list[OverlayDefinition] = [
     ),
 ]
 
+# Probe section 4.7 and `/defaults/overlays/status.yml`, read in full out of
+# the pinned v2.4.8 image (84 lines). FOUR TEXT definitions, ZERO ASSETS: the
+# file names no image key anywhere, and `final_name:
+# text(<<text_<<key>>>>)` (`:40`) with `text_<<key>>: <<text>>` (`:11`) makes
+# the drawn string the overlay's OWN NAME. So these definitions take
+# `resolve_image_path`'s name-keyed fallback rung, find nothing, and draw
+# text alone -- the case `ASPECT` reached first. `OVERLAY-MANIFEST.sha256`
+# does not move, `manifest_sha()` does not move, and no already-badged item
+# re-renders for art: sub-phase C2c is the first family slice in row 100 that
+# vendors nothing at all.
+#
+# THE SLOT IS left/15, top/330, AND THE 330 IS NOT A TYPO. `status.yml:13-15`
+# sets `default: {horizontal_align: left, vertical_align: top}` -- which
+# supplies the ALIGNMENT without making the variable "exist" -- so the
+# `vertical_offset` conditional's FIRST condition is the one that fires:
+# `vertical_align.exists: false -> 330` (`:20-21`). The `vertical_align: top
+# -> 15` branch below it (`:24-25`) is for an operator who sets the alignment
+# explicitly, and this module emits flat RESOLVED definitions rather than
+# implementing the template resolver, so the no-operator-input resolution is
+# the one that ships. `horizontal_offset` resolves to 15 the same way
+# (`:33-34`).
+#
+# `font_size: 50` (`:35`), `back_color: "#00000099"` (`:36`), `back_width:
+# 305` / `back_height: 105` (`:37-38`), `group: status` (`:12`). `font`,
+# `font_color` and `back_radius` are NOT in `status.yml`: they inherit from
+# the un-vendored `templates.yml`'s `standard` template (`external_templates:
+# default: templates`, `:8-9`, pulled by each overlay's `template: [name:
+# standard, name: status]`) -- `font: fonts/Inter-Medium.ttf` (`:5`),
+# `font_color: "#FFFFFF"` (`:7`), `back_radius: 30` (`:8`), with that file's
+# `font_size: 55` overridden to 50 by `status.yml:35`. `font_color` is left
+# unset below because `OverlayDefinition`'s own default is already `#FFFFFF`:
+# the same value, written once.
+#
+# THE FONT SPELLING DIVERGENCE IS C2b'S, RE-DECLARED because a reader
+# comparing the two files deserves it in both places: `templates.yml:5`
+# writes `fonts/Inter-Medium.ttf`, a PATH relative to Kometa's own config
+# tree; this service writes the bare filename, because
+# `overlays/sources.py::resolve_font_path`'s bundled rung is an exact-NAME
+# lookup on `BUNDLED_FONTS` and the path would both miss it AND resolve under
+# `_confined` to `<fonts_root>/fonts/Inter-Medium.ttf`, which no operator has
+# -- so transcribing the path literally would skip every status badge for
+# everyone. Same face, same pixels, different spelling.
+#
+# `allowed_libraries: show` (`:39`) IS ACHIEVED BY CONSTRUCTION, not by a new
+# `OverlayDefinition` field, and this is the same "answered by construction"
+# argument C1's A3b made for the `kinds` column. A movie's `item_facts` row
+# can never carry `tmdb_status` -- `facts/tmdb_facts.py::parse_movie_facts`
+# has no such field to write; a season has no facts row at all
+# (`facts/gather.py` returns empty for seasons); an episode's row carries
+# only `audience_rating`. All three answer None, which the tag and date
+# missing-value rules exclude under every operator. A movie with the family
+# enabled draws nothing, and it draws nothing because there is no value, not
+# because a library check said so.
+#
+# ONE BAND IS NOT A `tmdb_status` AT ALL, AND THAT IS THIS SUB-PHASE'S ONE
+# REAL SEMANTIC CALL (adjudication A-1, ruled). Upstream selects AIRING with
+# `plex_search: {any: {episode_air_date: 14}}` (`status.yml:61-63` with
+# `last: 14` at `:71`) -- a server-side Plex search over the LIBRARY's
+# episode rows -- and `episode_air_date` is absent from
+# `builder.filters_by_type` entirely (`/modules/builder.py:278-350`), so
+# NEITHER system can name it in a `filters:`/`condition:` block. That is
+# `duplicate`/`versions` (A14) verbatim, and the remedy is the one Kometa
+# itself supplies: `last_episode_aired`, a real Kometa show filter over
+# TMDb's `last_air_date` (`/modules/tmdb.py:694-705`) whose bare integer
+# already means "in the last N days" in both systems (`/modules/util.py:
+# 601-604`; `/modules/builder.py:4222-4233`).
+#
+#   THE DIVERGENCE, DECLARED: upstream asks "does the LIBRARY hold an episode
+#   that aired in the last 14 days"; this asks "did the SHOW air an episode in
+#   the last 14 days, per TMDb". They differ when the library lags broadcast
+#   (upstream draws nothing, this draws AIRING) and when Plex's own episode
+#   dates are wrong. The alternative was to defer the AIRING band and ship
+#   three; adjudication A-5 ruled all four.
+#
+# GROUP AND WEIGHT ARE LOAD-BEARING, the third family in a row for which that
+# is true (C2b's A-5) and the most realistic case yet: a show whose finale
+# aired eight days ago and which TMDb has already marked `Ended` matches
+# AIRING (40) AND ENDED (10); a mid-season show matches AIRING and RETURNING
+# (30). Unlike `aspect`'s overlapping bands there is no arithmetic that could
+# separate them -- the two conditions are over DIFFERENT attributes -- so
+# upstream's own group and descending weights are the entire tie-break.
+# `select` still records BOTH outcomes, which over-covers the fingerprint and
+# can never under-cover it.
+#
+# THREE OF THE SIX `discover_status` TOKENS DRAW NOTHING, upstream and here:
+# `planned`, `production` and `pilot` have no overlay in `status.yml`. A show
+# TMDb calls "In Production" draws no status badge in Kometa and must draw
+# none here. And a status TMDb spells outside all six is stored verbatim by
+# `facts/tmdb_facts.py::_show_status` and matches nothing, where upstream
+# raises `KeyError` (`/modules/tmdb.py:685`) -- the same drawn outcome
+# without the crash.
+STATUS: list[OverlayDefinition] = [
+    OverlayDefinition(
+        name=f"text({text})",
+        condition=condition,
+        group="status", weight=weight,
+        horizontal_align="left", horizontal_offset=15,
+        vertical_align="top", vertical_offset=330,
+        back_width=305, back_height=105,
+        back_color="#00000099", back_radius=30,
+        font="Inter-Medium.ttf", font_size=50,
+    )
+    for text, condition, weight in (
+        ("AIRING", {"last_episode_aired": 14}, 40),
+        ("RETURNING", {"tmdb_status": "returning"}, 30),
+        ("CANCELED", {"tmdb_status": "canceled"}, 20),
+        ("ENDED", {"tmdb_status": "ended"}, 10),
+    )
+]
+
 FAMILIES: dict[str, list[OverlayDefinition]] = {
     "direct_play": DIRECT_PLAY,
     "content_rating_au": CONTENT_RATING_AU,
@@ -838,6 +952,7 @@ FAMILIES: dict[str, list[OverlayDefinition]] = {
     "versions": VERSIONS,
     "aspect": ASPECT,
     "language_count": LANGUAGE_COUNT,
+    "status": STATUS,
 }
 
 __all__ = ["FAMILIES"]

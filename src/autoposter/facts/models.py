@@ -33,6 +33,20 @@ class GatheredFacts:
     tmdb_origin_country: list[str] = field(default_factory=list)
     tmdb_original_language: str | None = None
     tmdb_collection_id: int | None = None
+    # Roadmap row 100 sub-phase C2c, and the FIRST facts fields named for
+    # Kometa's own FILTER vocabulary rather than "ours" (the three prefetch
+    # fields above). That is not a break with row 156's law but its condition
+    # being met: those three are enumeration-only because a facts-backed
+    # filter needs a `facts` source tier, and C2c adds one
+    # (`collections/filters.py::SOURCE_TIERS`) -- refusal-only on the
+    # collections side, readable by an overlay `condition:`. Both carry
+    # exactly the value space Kometa's filter compares in --
+    # `tmdb_status` the `discover_status` TOKEN (`returning`, never
+    # "Returning Series"; see `tmdb_facts.TMDB_SHOW_STATUS`) and
+    # `last_episode_aired` TMDb's `last_air_date` -- so the name promises
+    # what the field holds, which is the only thing row 156 ever asked for.
+    tmdb_status: str | None = None
+    last_episode_aired: date | None = None
     sources: dict[str, str] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
@@ -49,5 +63,7 @@ class GatheredFacts:
                 self.tmdb_origin_country,
                 self.tmdb_original_language,
                 self.tmdb_collection_id is not None,
+                self.tmdb_status,
+                self.last_episode_aired,
             )
         )

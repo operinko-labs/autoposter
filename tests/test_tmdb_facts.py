@@ -331,3 +331,133 @@ async def test_a_collection_summary_is_served_from_the_cache(session):
 
     assert first == second == "The whole saga."
     assert len(calls) == 1
+
+
+# --- roadmap row 100, sub-phase C2c: the two status fields ------------------
+
+
+def test_show_facts_carry_the_status_token_and_the_last_air_date():
+    """The whole data seam in one assertion pair. Both keys come off the SAME
+    `/tv/{id}` payload `parse_show_facts` is already handed -- zero new HTTP,
+    zero new endpoints (`/modules/tmdb.py:272-273` reads both in one
+    `_load_data` block upstream, which is where the claim that they travel
+    together comes from).
+
+    The stored status is Kometa's TOKEN, not TMDb's string: `discover_status`
+    (`/modules/tmdb.py:108`) maps one onto the other, and the token is what an
+    operator writes and what `check_value` is compared as
+    (`/modules/tmdb.py:685-693`)."""
+    facts = parse_show_facts({
+        "status": "Returning Series",
+        "last_air_date": "2026-08-20",
+    })
+    assert facts.tmdb_status == "returning"
+    assert facts.last_episode_aired == date(2026, 8, 20)
+
+
+@pytest.mark.parametrize("tmdb_spelling,token", [
+    ("Returning Series", "returning"),
+    ("Planned", "planned"),
+    ("In Production", "production"),
+    ("Ended", "ended"),
+    ("Canceled", "canceled"),
+    ("Pilot", "pilot"),
+])
+def test_every_tmdb_status_maps_to_kometas_own_token(tmdb_spelling, token):
+    """`discover_status`, transcribed entry for entry
+    (`/modules/tmdb.py:108`). A dropped or mistyped entry is not a crash: it
+    is a show that silently stops matching its band, which is exactly the
+    failure a transcription checksum exists to catch. Three of the six draw
+    nothing in any shipped family -- `planned`, `production` and `pilot` have
+    no overlay in `status.yml` -- and they are pinned anyway, because the
+    VOCABULARY is the transcription even where the ART is not."""
+    assert parse_show_facts({"status": tmdb_spelling}).tmdb_status == token
+
+
+def test_a_status_outside_the_six_is_kept_verbatim_rather_than_dropped():
+    """A DECLARED DIVERGENCE, kinder in one direction only. Upstream's
+    `discover_status[item.status]` is a bare subscript with no guard
+    (`/modules/tmdb.py:685`), so a seventh TMDb status raises `KeyError`
+    there. Here it is stored as TMDb spelled it: it matches none of the four
+    bands (which name `returning`/`canceled`/`ended` only), so the drawn
+    outcome is upstream's minus the crash -- and, unlike `None`, it stays
+    distinguishable from 'TMDb has not told us', which is what the NULL
+    column means and what the enumeration and drift stories both depend on
+    being able to tell apart."""
+    facts = parse_show_facts({"status": "Rebooted"})
+    assert facts.tmdb_status == "Rebooted"
+
+
+def test_a_show_payload_without_the_two_keys_leaves_both_absent():
+    """The shared fixture is a hand-trimmed capture of `/tv/95396` and carries
+    NEITHER key; this plan deliberately does not edit it, so it is the pin for
+    the absence path. Absent must read as None, not as an empty string and
+    not as a guessed default: None is what the nullable column means, and
+    what the missing-value rule turns into 'this item draws no status
+    badge'."""
+    facts = parse_show_facts(load("tmdb_show.json"))
+    assert facts.tmdb_status is None
+    assert facts.last_episode_aired is None
+
+
+@pytest.mark.parametrize("payload", [
+    {"status": 7, "last_air_date": 7},
+    {"status": "", "last_air_date": ""},
+    {"status": "   ", "last_air_date": "not-a-date"},
+    {"status": None, "last_air_date": None},
+])
+def test_malformed_status_fields_are_absent_rather_than_raising(payload):
+    """The `_genres`/`_countries` discipline, one field pair along: a value of
+    the wrong shape is read as ABSENT, never coerced into a plausible wrong
+    one and never allowed to raise out of a parse that has already produced
+    good values for every other field. `_as_date` already returns None for an
+    unparseable string, so `last_air_date` needs no new guard -- this pins
+    that it does not."""
+    facts = parse_show_facts(payload)
+    assert facts.tmdb_status is None
+    assert facts.last_episode_aired is None
+
+
+def test_the_two_status_fields_record_tmdb_as_their_source():
+    """`sources` is 'which provider supplied each field, so a later source
+    change is traceable' (`db/models.py::ItemFacts.sources`). Both new fields
+    join the same loop every other TMDb-sourced field is in; leaving them out
+    would make the one column an operator most wants provenance for the one
+    column that has none."""
+    facts = parse_show_facts({
+        "status": "Ended",
+        "last_air_date": "2024-05-01",
+    })
+    assert facts.sources["tmdb_status"] == "tmdb"
+    assert facts.sources["last_episode_aired"] == "tmdb"
+
+
+def test_a_movie_payload_never_carries_a_show_status():
+    """`allowed_libraries: show` (`status.yml:39`) is achieved by
+    CONSTRUCTION rather than by a new field, and this is the first half of
+    that argument: `parse_movie_facts` has no status field to write, so a
+    movie's `item_facts` row can never carry one, so every `tmdb_status`
+    condition answers None for a movie and the tag missing-value rule
+    excludes it. The payload here deliberately CARRIES both keys -- a movie
+    endpoint would not, but proving the movie parser ignores them even when
+    present is what makes the by-construction claim hold rather than
+    coincide."""
+    facts = parse_movie_facts({
+        "status": "Released",
+        "last_air_date": "2026-08-20",
+        "title": "X",
+    })
+    assert facts.tmdb_status is None
+    assert facts.last_episode_aired is None
+
+
+def test_a_gather_whose_only_fact_is_a_status_is_not_empty():
+    """Established facts item **z**, decided rather than defaulted.
+    `is_empty()` gates `persist_facts` entirely: if a status-only gather read
+    as empty, `persist_facts` would short-circuit before its own branches ran
+    and the column would never be written for a show TMDb has nothing else
+    for. Every field with an `item_facts` column is in `is_empty()`; these
+    two join them."""
+    assert parse_show_facts({"status": "Ended"}).is_empty() is False
+    assert parse_show_facts({"last_air_date": "2024-05-01"}).is_empty() is False
+    assert parse_show_facts({}).is_empty() is True

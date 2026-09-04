@@ -100,3 +100,38 @@ def test_is_empty_true_for_default_instance():
 def test_is_empty_true_when_only_sources_populated():
     """sources is provenance, not a fact, so it must not count toward emptiness."""
     assert GatheredFacts(sources={"critic_rating": "imdb"}).is_empty() is True
+
+
+async def test_the_two_status_columns_round_trip(session):
+    """Roadmap row 100 sub-phase C2c. The stored status is Kometa's TOKEN --
+    `facts/tmdb_facts.py::TMDB_SHOW_STATUS` maps TMDb's string to it at the
+    edge -- so this column and a `tmdb_status:` filter value are the same
+    value space, which is the condition row 156 set for a facts-backed
+    filter name."""
+    item = await _item(session, "status")
+    session.add(ItemFacts(
+        item_id=item.id,
+        tmdb_status="returning",
+        last_episode_aired=date(2026, 8, 20),
+    ))
+    await session.commit()
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.tmdb_status == "returning"
+    assert row.last_episode_aired == date(2026, 8, 20)
+
+
+async def test_the_two_status_columns_are_null_until_a_gather_fills_them(session):
+    """NULL means "TMDb has not told us", which is a DIFFERENT statement from
+    any value -- the rule `alembic/versions/80f7d7e25a0c_tmdb_facts_widening.py`
+    already records for `tmdb_original_language`, and the reason neither
+    column takes a server-side default. It is also the state EVERY existing
+    row is in on upgrade (adjudication A-4: no backfill job; the columns fill
+    on the next facts refresh, and `api/facts_backfill.py` is the operator's
+    fast path), so a show badges no status until its row is re-gathered --
+    which is a disclosure, not a defect."""
+    item = await _item(session, "status-null")
+    session.add(ItemFacts(item_id=item.id))
+    await session.commit()
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.tmdb_status is None
+    assert row.last_episode_aired is None

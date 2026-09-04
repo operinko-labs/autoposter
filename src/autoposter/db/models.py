@@ -320,6 +320,35 @@ class ItemFacts(Base):
     # ``belongs_to_collection.id``. The NAME is not stored: see
     # ``facts/tmdb_facts._collection_id``.
     tmdb_collection_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    # Roadmap row 100 sub-phase C2c, and the first two columns here that ARE
+    # `filters:`-vocabulary names. The three prefetch fields above are
+    # enumeration-only because a facts-backed filter needs a `facts` source
+    # tier; C2c adds one (`collections/filters.py::SOURCE_TIERS`) and it is
+    # REFUSAL-ONLY for a collection, readable by an overlay `condition:`. So
+    # row 156's fence is named, not opened, and these two columns carry
+    # exactly the value spaces Kometa's own filters compare in.
+    #
+    # Nullable with NO server-side default, the `80f7d7e25a0c` rule: NULL
+    # means "TMDb has not told us", a distinct statement from any value, and
+    # `persist_facts` never writes a field the gather did not populate, so a
+    # pass that found nothing leaves whatever the row had. It is also the
+    # state every existing row is in on upgrade -- adjudication A-4 ships no
+    # backfill job; the columns fill on the next facts refresh, and
+    # `api/facts_backfill.py` (roadmap row 206) is the operator's fast path.
+    #
+    # String(32): the value is one of `discover_status`'s six tokens (longest
+    # `production`, 10) or, for a status TMDb spells outside them, TMDb's own
+    # string (longest of the six, "Returning Series", 16). 32 leaves room
+    # without inviting a free-text column -- the same reasoning
+    # `tmdb_original_language`'s 16 records.
+    tmdb_status: Mapped[str | None] = mapped_column(String(32))
+    # TMDb's `last_air_date` -- the show's MOST RECENT episode. Deliberately
+    # NOT `originally_available` above, which for a show is TMDb's
+    # `first_air_date` (`facts/tmdb_facts.py::parse_show_facts`): the two are
+    # opposite ends of the same show and conflating them would badge a
+    # long-ended series as AIRING for the fourteen days after its premiere
+    # anniversary.
+    last_episode_aired: Mapped[date | None] = mapped_column(Date)
     # Which provider supplied each field, so a later source change is traceable.
     sources: Mapped[dict] = mapped_column(JSONB, default=dict)
     fetched_at: Mapped[datetime] = mapped_column(
