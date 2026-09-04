@@ -403,6 +403,65 @@ class ItemCredit(Base):
     person: Mapped[str] = mapped_column(String(255), primary_key=True)
 
 
+class ItemMetadataOverride(Base):
+    """One metadata field an operator declared the value of, for ONE item.
+
+    Roadmap row 99. This is the operator's word, not a provider's: nothing in
+    this service ever writes a row here from a gathered fact, a Plex value or
+    a served response. That prohibition is the freezing hazard
+    (``frontend/src/api/overrides.ts``) in this row's own vocabulary -- a
+    "seed this item's overrides from what Plex currently says" convenience
+    would store today's values as overrides and freeze them against every
+    future provider change -- and it is pinned by a named test rather than
+    left to discipline.
+
+    **Keyed on ``media_items.id``, never on ``rating_key``.** The 2026-09-03
+    identity re-key mutates ``rating_key`` IN PLACE when Plex re-keys an item
+    (``render/pipeline.py``'s ``_rekey_by_identity``), precisely so that
+    children keyed on ``id`` survive the move. A rating-key-keyed override
+    table would detach silently on every re-key -- the exact defect that era
+    spent three tasks closing -- so an override survives a re-key here for
+    free, and ``scheduler/merge.py`` carries one across a twin merge.
+
+    ``ON DELETE CASCADE`` like every other child of ``media_items``:
+    ``scheduler/prune.py`` hard-deletes item rows, and an override must not
+    outlive the item it is about.
+
+    ``field`` is OUR field name -- ``plex/writer.py``'s vocabulary
+    (``critic_rating``, ``originally_available``), never Plex's attribute and
+    never Kometa's spelling. ``value`` is TEXT holding the CANONICAL string
+    form the writer compares against: a rating parses as a float in 0-10 and
+    is stored rounded to the one decimal the writer compares on, a date as
+    ``YYYY-MM-DD``, a list as JSON. One column rather than a typed column per
+    shape, because the set of shapes is the writer's and would otherwise have
+    to be mirrored here every time it grows.
+
+    One row per ``(item_id, field)`` rather than one JSONB blob per item: the
+    delete-is-revert contract then falls out of the row going away, and each
+    field carries its own ``updated_at`` for the panel to show.
+    """
+
+    __tablename__ = "item_metadata_overrides"
+    __table_args__ = (
+        UniqueConstraint(
+            "item_id", "field", name="uq_item_metadata_override_item_field"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    item_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"), index=True
+    )
+    field: Mapped[str] = mapped_column(String(32))
+    value: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ImdbRating(Base):
     """One IMDb title rating, from the bulk dataset.
 
