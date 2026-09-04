@@ -18,6 +18,7 @@ from autoposter.badges.compose import badge_fingerprint, compose
 from autoposter.config.schema import BadgesConfig
 from autoposter.db.models import MediaItem, Render
 from autoposter.overlays.assets import FONTS
+from autoposter.overlays.families import FAMILIES
 from autoposter.overlays.schema import OverlayDefinition
 from autoposter.render.pipeline import apply_badges
 # Bare module import, not `tests.test_overlay_engine_golden`: this repo has no
@@ -1236,3 +1237,252 @@ async def test_enabling_no_family_moves_no_fingerprint(
     assert plex_item.uploads == 1
     await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
     assert plex_item.uploads == 1, "an unchanged config must not re-badge"
+
+
+class _FakePlexItemShot(_FakePlexItem):
+    """One `<Media>` carrying an `aspectRatio` -- what the eight bands
+    compare. `1.655` is the deliberate overlap case (A-5): it satisfies the
+    1.65 band AND the 1.66 band."""
+
+    def __init__(self, aspect=2.35):
+        super().__init__()
+        self.media[0].aspectRatio = aspect
+
+
+class _FakePlexItemLanguages(_FakePlexItem):
+    """Audio streams on the one `<Media>`'s one `<Part>` -- what
+    `media_info_from_plex` walks and `language_count` counts."""
+
+    def __init__(self, *codes):
+        super().__init__()
+        self.media[0].parts = [type("P", (), {
+            "file": None,
+            "streams": [
+                type("S", (), {"streamType": 2, "languageCode": code})()
+                for code in codes
+            ],
+        })()]
+
+
+async def test_aspect_fires_on_a_shot_item_and_is_silent_on_an_unanalysed_one(
+    session, config_with_badges
+):
+    """The entry-point law for the first TEXT family: through the real
+    `apply_badges`, not `compose()` alone. The silent half is the one that
+    matters most here -- an item Plex has not analysed carries no
+    `aspectRatio`, and the float missing-value rule must drop it rather than
+    drawing a wrong band."""
+    config_with_badges.badges.families = []
+    base_shot = await _badged(session, config_with_badges, _FakePlexItemShot(), "asp-base-1")
+    base_none = await _badged(session, config_with_badges, _FakePlexItem(), "asp-base-2")
+
+    config_with_badges.badges.families = ["aspect"]
+    fires = await _badged(session, config_with_badges, _FakePlexItemShot(), "asp-1")
+    silent = await _badged(session, config_with_badges, _FakePlexItem(), "asp-2")
+
+    assert _sha(fires) != _sha(base_shot), "a 2.35 item must actually draw its band"
+    assert _sha(silent) == _sha(base_none), "an unanalysed item must draw the gate-off pixels"
+
+
+async def test_the_aspect_text_draws_in_the_bundled_face_through_the_real_entry_point(
+    session, config_with_badges, tmp_path
+):
+    """A-4 end to end, and the reason the rung exists: `config.fonts_root` is
+    an operator mount that does NOT contain Inter-Medium, which is the normal
+    case. Before the bundled rung the definition was skipped here and this
+    test's `fires` came back identical to `baseline`."""
+    config_with_badges.fonts_root = tmp_path
+    config_with_badges.badges.families = []
+    baseline = await _badged(session, config_with_badges, _FakePlexItemShot(), "asp-font-0")
+
+    config_with_badges.badges.families = ["aspect"]
+    fires = await _badged(session, config_with_badges, _FakePlexItemShot(), "asp-font-1")
+    assert _sha(fires) != _sha(baseline)
+
+
+async def test_only_the_highest_weighted_overlapping_band_is_drawn(
+    session, config_with_badges
+):
+    """A-5 through the real entry point. A 1.655 item matches the 1.65 band
+    AND the 1.66 band; group resolution draws only 1.65. Proven by comparing
+    against the SAME item badged with a config that carries the 1.65
+    definition alone -- if both had drawn, the two would differ."""
+    from autoposter.overlays.families import FAMILIES
+
+    bands = {d.name: d for d in FAMILIES["aspect"]}
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = [bands["text(1.65)"]]
+    winner_only = await _badged(
+        session, config_with_badges, _FakePlexItemShot(1.655), "asp-w-1"
+    )
+
+    config_with_badges.badges.definitions = []
+    config_with_badges.badges.families = ["aspect"]
+    both_match = await _badged(
+        session, config_with_badges, _FakePlexItemShot(1.655), "asp-w-2"
+    )
+    assert _sha(both_match) == _sha(winner_only), (
+        "1.66 must lose the group to 1.65 rather than drawing over it"
+    )
+
+
+async def test_language_count_fires_dual_on_two_and_multi_on_three(
+    session, config_with_badges
+):
+    """Both halves of A-5's second case, through `apply_badges`: a
+    2-language item matches Dual and Multi and must draw DUAL (weight 20 >
+    10); a 3-language item matches Multi alone. The two must therefore differ
+    from each other AND both differ from a 1-language item, which matches
+    neither."""
+    config_with_badges.badges.families = []
+    base_one = await _badged(
+        session, config_with_badges, _FakePlexItemLanguages("eng"), "lc-base-1"
+    )
+    base_two = await _badged(
+        session, config_with_badges, _FakePlexItemLanguages("eng", "fin"), "lc-base-2"
+    )
+    base_three = await _badged(
+        session, config_with_badges,
+        _FakePlexItemLanguages("eng", "fin", "swe"), "lc-base-3",
+    )
+
+    config_with_badges.badges.families = ["language_count"]
+    one = await _badged(session, config_with_badges, _FakePlexItemLanguages("eng"), "lc-1")
+    two = await _badged(
+        session, config_with_badges, _FakePlexItemLanguages("eng", "fin"), "lc-2"
+    )
+    three = await _badged(
+        session, config_with_badges,
+        _FakePlexItemLanguages("eng", "fin", "swe"), "lc-3",
+    )
+
+    assert _sha(one) == _sha(base_one), "one language matches neither band"
+    assert _sha(two) != _sha(base_two), "two languages must draw dual_audio"
+    assert _sha(three) != _sha(base_three), "three languages must draw multi_audio"
+    assert _sha(two) != _sha(three), "dual and multi must be different art"
+
+
+async def test_three_english_subtitle_tracks_are_three_subtitle_streams(
+    session, config_with_badges
+):
+    """**Kometa's counting rule, end to end through the real entry point**
+    rather than only at `media_info_from_plex`. `subtitle_language.count_gte:
+    2` MUST fire on a film whose three English subtitle tracks are full, SDH
+    and forced, because upstream's value is a flat `extend`-ed list of
+    streams with no dedupe (`modules/plex.py:2915-2922`) and `.count_*` is
+    `len()` of it (`plex.py:2931-2932`).
+
+    This plan's first draft asserted the opposite -- that the three collapse
+    to one language and the badge stays silent -- and it was wrong; the
+    pinned image settled it. The test is inverted rather than deleted
+    because it is the one place the whole `MediaInfo` -> view -> `_matches`
+    -> `compose` chain is exercised on the repeat case, and a regression to
+    a deduped read anywhere along it lands here.
+
+    Written as a hand-configured definition because the subtitle FAMILY does
+    not ship (adjudication A-3) while the attribute and the operators do.
+    The one-language control is the second half: it must stay silent, which
+    is what proves the fire above is the COUNT and not just "any subtitle
+    stream at all"."""
+    item = _FakePlexItemLanguages("eng")
+    item.media[0].parts[0].streams += [
+        type("S", (), {"streamType": 3, "languageCode": code})()
+        for code in ("eng", "eng", "eng")
+    ]
+    one = _FakePlexItemLanguages("eng")
+    one.media[0].parts[0].streams += [
+        type("S", (), {"streamType": 3, "languageCode": "eng"})()
+    ]
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = []
+    baseline_three = await _badged(session, config_with_badges, item, "subs-base-3")
+    baseline_one = await _badged(session, config_with_badges, one, "subs-base-1")
+
+    config_with_badges.badges.definitions = [
+        OverlayDefinition(
+            name="subs", builtin="multi_audio",
+            condition={"subtitle_language.count_gte": 2},
+            horizontal_align="center", horizontal_offset=0,
+            vertical_align="top", vertical_offset=0,
+        ),
+    ]
+    fires = await _badged(session, config_with_badges, item, "subs-3")
+    silent = await _badged(session, config_with_badges, one, "subs-1")
+    assert _sha(fires) != _sha(baseline_three), (
+        "three English tracks are THREE subtitle-language entries, the way "
+        "Kometa counts them"
+    )
+    assert _sha(silent) == _sha(baseline_one), "one track is one, and stays silent"
+
+
+async def test_enabling_a_c2b_family_re_badges_once_and_the_second_pass_is_unchanged(
+    session, config_with_badges
+):
+    """**The digest-evolution law, both directions, through the real entry
+    point** (Global Constraint 6). Three properties, and the middle one is
+    the honest reading of "re-renders exactly the items whose verdict is
+    true":
+
+    1. gate-off, the item badges once;
+    2. enabling the family re-badges it ONCE -- and it does so for EVERY
+       already-badged item, matched or not, because `apply_badges` hashes the
+       WHOLE `all_definitions()` list, not the matched subset. That is the
+       one-time re-badge roadmap row 100's cell already discloses; what the
+       VERDICT decides is what gets DRAWN (the fires/silent pins above), not
+       whether the fingerprint moves;
+    3. a second pass over the same config uploads nothing -- the fingerprint
+       is stable again, which is the property that makes (2) one-time rather
+       than a storm."""
+    item, render = await _render(session, rating_key="c2b-storm")
+    plex_item = _FakePlexItemShot()
+    config_with_badges.badges.families = []
+    config_with_badges.badges.definitions = []
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 1
+    gate_off_fingerprint = render.badge_fingerprint
+
+    config_with_badges.badges.families = ["aspect"]
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2, "enabling a family must re-badge an already-uploaded item"
+    enabled_fingerprint = render.badge_fingerprint
+    assert enabled_fingerprint != gate_off_fingerprint
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 2, "the second pass must upload nothing"
+    assert render.badge_fingerprint == enabled_fingerprint
+
+    config_with_badges.badges.families = []
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert plex_item.uploads == 3
+    assert render.badge_fingerprint == gate_off_fingerprint, (
+        "disabling the family must revert the fingerprint exactly"
+    )
+
+
+async def test_a_family_this_config_does_not_name_costs_nothing(
+    session, config_with_badges
+):
+    """The other end of the same law: `FAMILIES` gaining two keys must not
+    move a fingerprint for a config that names neither.
+    `BadgesConfig.all_definitions()` expands only NAMED families, so a
+    C1/C2a config is byte-identical across this sub-phase -- and so is the
+    empty one, which is what the two pinned literals at the top of this file
+    (`576f88e5...` and `PRE_SEAM_ONE_DEFINITION_FINGERPRINT`) guard
+    unmodified."""
+    from autoposter.config.schema import BadgesConfig
+
+    assert BadgesConfig().all_definitions() == []
+    assert BadgesConfig(families=["direct_play"]).all_definitions() == list(
+        FAMILIES["direct_play"]
+    )
+
+    item, render = await _render(session, rating_key="c2b-untouched")
+    plex_item = _FakePlexItemShot()
+    config_with_badges.badges.families = ["direct_play"]
+    config_with_badges.badges.definitions = []
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    first = render.badge_fingerprint
+    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    assert render.badge_fingerprint == first
+    assert plex_item.uploads == 1
