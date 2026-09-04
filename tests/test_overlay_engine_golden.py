@@ -32,11 +32,13 @@ ORACLE = Path("tests/fixtures/oracle")
 # rather than imported: this file must keep measuring what it measured at
 # Task 1 even if that file's fixtures are ever re-tuned.
 ALL_SOULS = BadgeInputs(
-    media=MediaInfo("1080", "eac3", 6, 4845912, ("en",), frozenset(), None, None),
+    media=MediaInfo(("1080",), ("English (EAC3 5.1)",), 6, 4845912, ("en",),
+                   frozenset(), None, None),
     critic_rating=4.9, audience_rating=6.3, content_rating="17", video_format="WEB",
 )
 EPISODE = BadgeInputs(
-    media=MediaInfo("480", "aac", 2, 1380000, ("en",), frozenset(), 1, 1),
+    media=MediaInfo(("480",), ("English (AAC Stereo)",), 2, 1380000, ("en",),
+                   frozenset(), 1, 1),
     critic_rating=None, audience_rating=10.0, content_rating=None, video_format="SDTV",
 )
 

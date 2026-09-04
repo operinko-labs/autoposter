@@ -96,30 +96,30 @@ def test_ratings_are_suppressed_when_zero(fn):
 
 
 @pytest.mark.parametrize(
-    "path,expected",
+    "paths,expected",
     [
-        ("/m/Dune (2021)/Dune.2021.BluRay.REMUX.2160p.mkv", "REMUX"),
-        ("/m/Heat (1995)/Heat.1995.Blu-Ray.1080p.mkv", "BLU-RAY"),
-        ("/m/Heat (1995)/Heat.1995.BD.1080p.mkv", "BLU-RAY"),
-        ("/m/Heat (1995)/Heat.1995.HD-DVD.1080p.mkv", "BLU-RAY"),
-        ("/m/Show/S01E01 - WEBDL-1080p.mkv", "WEB"),
-        ("/m/Show/S01E01.WEBRip.720p.mkv", "WEB"),
-        ("/m/Show/S01E01.HDTV.720p.mkv", "HDTV"),
-        ("/m/Show/S01E01.HD-TV.720p.mkv", "HDTV"),
-        ("/m/Old (1974)/Old.1974.DVD.480p.mkv", "DVD"),
-        ("/m/Show/S01E01.SDTV.mkv", "SDTV"),
-        ("/m/Cam (2018)/Cam.2018.TELESYNC.mkv", "TELESYNC"),
-        ("/m/Cam (2018)/Cam.2018.HDCAM.mkv", "CAM"),
-        ("/m/Show/S01E01.mkv", None),
-        ("", None),
-        (None, None),
+        (("/m/Dune (2021)/Dune.2021.BluRay.REMUX.2160p.mkv",), "REMUX"),
+        (("/m/Heat (1995)/Heat.1995.Blu-Ray.1080p.mkv",), "BLU-RAY"),
+        (("/m/Heat (1995)/Heat.1995.BD.1080p.mkv",), "BLU-RAY"),
+        (("/m/Heat (1995)/Heat.1995.HD-DVD.1080p.mkv",), "BLU-RAY"),
+        (("/m/Show/S01E01 - WEBDL-1080p.mkv",), "WEB"),
+        (("/m/Show/S01E01.WEBRip.720p.mkv",), "WEB"),
+        (("/m/Show/S01E01.HDTV.720p.mkv",), "HDTV"),
+        (("/m/Show/S01E01.HD-TV.720p.mkv",), "HDTV"),
+        (("/m/Old (1974)/Old.1974.DVD.480p.mkv",), "DVD"),
+        (("/m/Show/S01E01.SDTV.mkv",), "SDTV"),
+        (("/m/Cam (2018)/Cam.2018.TELESYNC.mkv",), "TELESYNC"),
+        (("/m/Cam (2018)/Cam.2018.HDCAM.mkv",), "CAM"),
+        (("/m/Show/S01E01.mkv",), None),
+        (("",), None),
+        ((), None),
     ],
 )
-def test_video_format_text_reproduces_kometas_filepath_regexes(path, expected):
+def test_video_format_text_reproduces_kometas_filepath_regexes(paths, expected):
     """Straight from `video_format.yml`: eight `filepath.regex` filters, the
-    overlay key displayed verbatim, and `ignore_blank_results: true` meaning a
-    path matching nothing draws no badge at all."""
-    info = MediaInfo(None, None, None, None, (), frozenset(), None, None, path)
+    overlay key displayed verbatim, and `ignore_blank_results: true` meaning
+    paths matching nothing draw no badge at all."""
+    info = MediaInfo((), (), None, None, (), frozenset(), None, None, paths)
     assert video_format_text(info) == expected
 
 
@@ -127,8 +127,8 @@ def test_video_format_prefers_the_higher_weighted_overlay():
     """All eight share `group: quality`, so only one is ever drawn -- the one
     with the highest weight. A remux of a Blu-ray matches both patterns and
     Kometa awards it to REMUX (60) over BLU-RAY (50)."""
-    info = MediaInfo(None, None, None, None, (), frozenset(), None, None,
-                     "/m/Dune (2021)/Dune.2021.BluRay.REMUX.2160p.mkv")
+    info = MediaInfo((), (), None, None, (), frozenset(), None, None,
+                     ("/m/Dune (2021)/Dune.2021.BluRay.REMUX.2160p.mkv",))
     assert video_format_text(info) == "REMUX"
 
 
@@ -328,17 +328,20 @@ def test_the_distinct_audio_languages_field_is_untouched_and_still_deduplicates(
     assert info.audio_languages == ("en", "fi")
     assert info.audio_stream_languages == ("en", "en", "fi")
     assert language_slots(info) == language_slots(
-        MediaInfo("1080", "eac3", 6, 4845912, ("en", "fi"), frozenset(), None, None)
+        MediaInfo(("1080",), ("English (EAC3 5.1)",), 6, 4845912, ("en", "fi"),
+                 frozenset(), None, None)
     )
 
 
 def test_the_new_fields_are_defaulted_so_positional_construction_still_works():
-    """`MediaInfo` is frozen and every construction site predating this phase
-    passes the first nine fields positionally (`tests/test_badge_parity.py`,
-    `tests/test_overlay_engine_golden.py`'s ALL_SOULS/EPISODE among them, and
-    they are parity-pin files this plan may not edit -- Global Constraint 8).
-    A non-defaulted tenth or eleventh field would be a TypeError in all of
-    them."""
-    info = MediaInfo("1080", "eac3", 6, 4845912, ("en",), frozenset(), None, None)
+    """`MediaInfo` is frozen and every construction site predating sub-phase
+    C2b passes the first nine fields positionally
+    (`tests/test_badge_parity.py`, `tests/test_overlay_engine_golden.py`'s
+    ALL_SOULS/EPISODE among them). A non-defaulted tenth or eleventh field
+    would be a TypeError in all of them. Roadmap row 106 changed three of
+    those nine fields' TYPES in place -- scalars to item-level tuples -- and
+    deliberately changed neither the count nor the order, for this reason."""
+    info = MediaInfo(("1080",), ("English (EAC3 5.1)",), 6, 4845912, ("en",),
+                     frozenset(), None, None)
     assert info.audio_stream_languages == ()
     assert info.subtitle_stream_languages == ()
