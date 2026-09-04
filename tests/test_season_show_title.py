@@ -27,7 +27,7 @@ from autoposter.config.schema import SeasonPosterConfig, TextStyle
 from autoposter.plex.client import ResolvedItem
 from autoposter.render import pipeline as pipeline_module
 from autoposter.render.pipeline import (
-    SHOW_TITLE_GUTTER, compose_styled, show_title_for, stacked_above, title_text_for,
+    SHOW_TITLE_GUTTER, compose_styled, stacked_above, title_text_for,
 )
 from autoposter.render.textfit import FitResult
 

@@ -72,6 +72,12 @@ SAMPLE_TITLES: dict[str, str] = {
 SAMPLE_SEASON = 2
 SAMPLE_EPISODE = 5
 
+# The show name the season-poster sample draws above its season text (roadmap
+# row 78). Fixed, like the sample titles, so two configs can be compared on the
+# same string -- and non-empty, because the sample sheet is where an operator
+# checks the stacking before turning the block on for a real library.
+SAMPLE_SHOW_TITLE = "The Sample Show"
+
 # A fixed placeholder fill. The exact shade is not load-bearing -- only that the
 # canvas is a solid generated colour rather than a real image; the tool being
 # replaced uses a pink for the same purpose.
@@ -91,14 +97,16 @@ class SampleRequest(BaseModel):
 
 
 def _sample_item(length: str) -> ResolvedItem:
-    """A synthetic item carrying only what ``title_text_for`` reads: the title
-    and, for the title card, the season and episode numbers."""
+    """A synthetic item carrying only what ``title_text_for`` reads: the title,
+    the show title for the season poster's second block, and, for the title
+    card, the season and episode numbers."""
     return ResolvedItem(
         rating_key="sample", library="sample", kind="movie",
         title=SAMPLE_TITLES[length], year=None,
         season_number=SAMPLE_SEASON, episode_number=SAMPLE_EPISODE,
         root_folder="sample", file_path=None, art_url=None,
         tmdb_id=None, tvdb_id=None, imdb_id=None,
+        show_title=SAMPLE_SHOW_TITLE,
     )
 
 

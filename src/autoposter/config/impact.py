@@ -38,6 +38,13 @@ A third input is now in the same position: with
 title this walk cannot know (``renders`` stores no title at all), so such an
 item is reported as affected whatever the edit was. Overcount, never
 undercount, exactly like the logo case above.
+
+Roadmap row 78 added a fourth input of the same shape and deliberately did NOT
+join this list: a season poster draws the show's own title, and the walk
+reaches it through a ``MediaItem.parent_id`` self-join rather than declaring
+every season_poster row affected forever. A season whose parent row does not
+exist yet -- ``parent_id`` null -- still falls into the overcount above, which
+is exactly what the OUTER join preserves.
 """
 import asyncio
 import hashlib
@@ -46,6 +53,7 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from autoposter.config.loader import RENDER_ART_KINDS, render_version_for
 from autoposter.config.schema import Config
@@ -165,6 +173,13 @@ async def _fingerprint_inputs(
         font_hashes.append(
             await _cached_sha(cache, Path(config.fonts_root) / settings.episode_text.font)
         )
+    # Row 78's block. The mirror of `gather_fingerprint_inputs`' own season
+    # branch, minus `draw_text` -- this module runs at the adoption defaults,
+    # where draw_text is True (see the module docstring).
+    if art_kind == "season_poster" and settings.show_title is not None and secondary_text:
+        font_hashes.append(
+            await _cached_sha(cache, Path(config.fonts_root) / settings.show_title.font)
+        )
     # The trailing "" is logo_sha: see this module's docstring, and
     # render/pipeline.py:161-163 for where that default comes from.
     return text_inputs, [overlay_hash, *font_hashes, ""]
@@ -199,6 +214,18 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
     nothing enters the session's identity map and there is nothing for a later
     autoflush to write back.
     """
+    # Roadmap row 78: a season poster now draws the SHOW's title, and this walk
+    # builds its ResolvedItem from the join below rather than from Plex. The
+    # parent link exists (`db/models.py`'s MediaItem.parent_id) and
+    # `render/pipeline.py` populates it for every season it processes, so one
+    # OUTER join makes the preview exact for this kind. The alternative -- a
+    # third entry in this module's docstring's list of honest overcounts --
+    # would report every season_poster row as affected whatever the edit was,
+    # permanently. An orphan row (parent_id null, which the pipeline leaves
+    # only when the show has not been processed yet) still lands in that
+    # overcount, and that is the outer join's whole purpose: it degrades to
+    # today's behaviour instead of dropping the row.
+    parent = aliased(MediaItem)
     rows = (
         await session.execute(
             select(
@@ -217,8 +244,10 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
                 MediaItem.tvdb_id,
                 MediaItem.imdb_id,
                 MediaItem.rating_key,
+                parent.title.label("parent_title"),
             )
             .join(MediaItem, Render.item_id == MediaItem.id)
+            .outerjoin(parent, MediaItem.parent_id == parent.id)
             .where(Render.fingerprint.is_not(None))
             .order_by(Render.id)
         )
@@ -256,6 +285,7 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
             tmdb_id=row.tmdb_id,
             tvdb_id=row.tvdb_id,
             imdb_id=row.imdb_id,
+            show_title=row.parent_title,
         )
         if _should_skip_title(config, item, art_kind):
             continue

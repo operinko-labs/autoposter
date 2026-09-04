@@ -475,11 +475,14 @@ def test_render_version_for_is_stable_across_two_loads_of_identical_content(tmp_
 # roots through `str(Path)`, which is what the pod and CI compute.
 EXAMPLE_PER_KIND_VERSIONS = {
     "poster": "4ac64b5874ce0ff3",
-    # Moved once, on purpose, by roadmap row 78: artwork.season_poster gained
-    # its show_title block. The other three did not move -- that is the
-    # partition doing its job, and tests/test_season_show_title.py pins them
-    # against the values measured before the key existed.
-    "season_poster": "baaaedafa0987323",
+    # Moved TWICE, on purpose, by roadmap row 78: artwork.season_poster gained
+    # its show_title block, and render_version_for then gained a second,
+    # unconditional projection of artwork.title_card.season_name_overrides
+    # into this kind's payload (row 43's gap, co-delivered). The other three
+    # did not move -- that is the partition doing its job, and
+    # tests/test_season_show_title.py pins them against the values measured
+    # before the key existed.
+    "season_poster": "3ac29ec40facbe8c",
     "background": "9ae9ab3b95ae68ec",
     "title_card": "31f00cfe0ef31fba",
 }
