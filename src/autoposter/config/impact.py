@@ -33,6 +33,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.config.loader import RENDER_ART_KINDS
 from autoposter.config.schema import Config
 from autoposter.db.models import ManagedCollection, MediaItem, Render
 from autoposter.intake.arr import RenderIntent
@@ -46,8 +47,11 @@ from autoposter.render.pipeline import (
 
 # The art kinds ArtworkConfig actually carries a section for. A renders row
 # holding anything else -- a kind removed from ART_KINDS_FOR, a hand-written
-# row -- is skipped rather than crashing the preview on getattr.
-_ART_KINDS = frozenset({"poster", "season_poster", "background", "title_card"})
+# row -- is skipped rather than crashing the preview on getattr. Derived from
+# config/loader.py's RENDER_ART_KINDS rather than re-typed: roadmap row 111
+# made that list the input to a hash, and two lists that quietly disagreed
+# would confine an invalidation to a kind this walk never examines.
+_ART_KINDS = frozenset(RENDER_ART_KINDS)
 
 
 @dataclass(frozen=True)

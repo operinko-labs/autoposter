@@ -6,11 +6,14 @@ from autoposter.adopt.__main__ import CONFIG_PATH as ADOPT_CONFIG_PATH
 from autoposter.collections.__main__ import CONFIG_PATH as COLLECTIONS_CONFIG_PATH
 from autoposter.config.loader import (
     DEFAULT_CONFIG_PATH,
+    RENDER_ART_KINDS,
     build_config,
     load_config,
     read_config_document,
+    render_version,
+    render_version_for,
 )
-from autoposter.config.schema import Secrets
+from autoposter.config.schema import ArtworkConfig, Config, Secrets
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -258,3 +261,188 @@ def test_changing_an_asset_root_does_change_the_version(tmp_path):
         "overlays_root: /app/assets/overlays-v2",
     )
     assert changed.version != load_config(EXAMPLE).version
+
+
+# --- the per-art-kind render version (roadmap row 111) -----------------------
+#
+# `config.version` above stays the WHOLESALE hash and every assertion above
+# still holds: `render_version_for` is a derived function beside it, not a
+# replacement. What it buys is confinement -- an operator retuning
+# `artwork.season_poster.text.max_point_size` moves one kind's version and
+# leaves the other three byte-identical, so the ~16,000-row storm shrinks to
+# the season posters the edit actually reaches.
+#
+# The table below IS the partition. It is exhaustive over `ArtworkConfig` by
+# assertion, not by hope: `test_the_partition_table_covers_every_artwork_field`
+# fails the moment a field is added to the model without a ruling here, which
+# is the failure mode that would otherwise ship a field silently confined to
+# nothing.
+
+_ALL_KINDS = frozenset(RENDER_ART_KINDS)
+
+
+def _moved(mutate) -> set[str]:
+    """Which kinds' versions a mutation of the example config moves.
+
+    Two independently loaded configs rather than one deep-copied model: a copy
+    that shared a nested object with its source would report "nothing moved"
+    for every mutation and the whole file would pass vacuously.
+    """
+    before = load_config(EXAMPLE)
+    after = load_config(EXAMPLE)
+    mutate(after)
+    return {
+        kind for kind in RENDER_ART_KINDS
+        if render_version_for(kind, before) != render_version_for(kind, after)
+    }
+
+
+# field name -> (a mutation away from the example's value, the kinds it must move)
+_PARTITION = {
+    # Each kind's own `artwork.<kind>` subsection, confined to that kind.
+    "poster": (lambda c: setattr(c.artwork.poster, "border_width", 31), {"poster"}),
+    "season_poster": (lambda c: setattr(c.artwork.season_poster, "add_border", True), {"season_poster"}),
+    "background": (lambda c: setattr(c.artwork.background, "overlay_file", "other-overlay.png"), {"background"}),
+    "title_card": (lambda c: setattr(c.artwork.title_card, "season_label", "Kausi"), {"title_card"}),
+    # The five logo fields. There is no `logo` art kind and no renders row for
+    # one; a logo is an ingredient of POSTERS only, gated at
+    # render/pipeline.py:1202's `if art_kind == "poster" and use_logo`.
+    "use_logo": (lambda c: setattr(c.artwork, "use_logo", False), {"poster"}),
+    "logo_language_order": (lambda c: setattr(c.artwork, "logo_language_order", ["fi"]), {"poster"}),
+    "logo_text_fallback": (lambda c: setattr(c.artwork, "logo_text_fallback", True), {"poster"}),
+    "use_clearart": (lambda c: setattr(c.artwork, "use_clearart", True), {"poster"}),
+    "logo_flat_color": (lambda c: setattr(c.artwork, "logo_flat_color", "#ffffff"), {"poster"}),
+    # Names a template file for a season poster or a title card and nothing
+    # else (render/pipeline.py:242, :258).
+    "season_episode_templates": (
+        lambda c: setattr(c.artwork, "season_episode_templates", True),
+        {"season_poster", "title_card"},
+    ),
+    # Genuinely global: read on every kind's path.
+    "use_original_title": (lambda c: setattr(c.artwork, "use_original_title", True), _ALL_KINDS),
+    "disable_online_asset_fetch": (
+        lambda c: setattr(c.artwork, "disable_online_asset_fetch", True), _ALL_KINDS,
+    ),
+    # `build_base_argv` (render/pipeline.py:855) runs for every kind and
+    # `build_text_argv` (:905) for every kind that draws text, so this is the
+    # one shared field a text-drawing kind reads -- and it reaches all four.
+    # The recon's field table omits it; it is here because the compositor's
+    # own readers put it there.
+    "output_quality": (lambda c: setattr(c.artwork, "output_quality", "88%"), _ALL_KINDS),
+}
+
+# The one field the table cannot rule on with a single mutation, because WHICH
+# kinds it moves depends on what the operator wrote inside it. It has its own
+# test below.
+_PROJECTED_FIELDS = {"library_language_overrides"}
+
+# Global render inputs that do not live under `artwork` at all. They decide
+# where every kind reads its inputs and writes its output (render/naming.py:105),
+# and scheduler/jobs.py:792,818 already treats a root repoint as a
+# library-wide event -- confining them would be a real bug.
+_GLOBAL_INPUTS = {
+    "assets_root": lambda c: setattr(c, "assets_root", Path("/assets-v2")),
+    "manual_assets_root": lambda c: setattr(c, "manual_assets_root", Path("/manual-v2")),
+    "fonts_root": lambda c: setattr(c, "fonts_root", Path("/fonts-v2")),
+    "overlays_root": lambda c: setattr(c, "overlays_root", Path("/overlays-v2")),
+    "library_folders": lambda c: setattr(c, "library_folders", False),
+}
+
+
+def test_the_partition_table_covers_every_artwork_field():
+    """Exhaustiveness, by assertion rather than by review.
+
+    A field added to `ArtworkConfig` with no ruling here would otherwise be
+    silently confined to nothing: it would enter no kind's payload, an
+    operator's edit to it would move no version, and the library would keep
+    serving art the config no longer describes. This test is the alarm.
+    """
+    assert set(_PARTITION) | _PROJECTED_FIELDS == set(ArtworkConfig.model_fields)
+
+
+@pytest.mark.parametrize("field", sorted(_PARTITION))
+def test_an_artwork_field_moves_exactly_the_kinds_the_partition_says(field):
+    """Exactly -- both directions in one assertion.
+
+    An over-wide payload (every field in every kind) passes a "did it move"
+    test and delivers nothing; an under-wide one (a field in no kind) passes a
+    "did the others hold still" test and strands the library.
+    """
+    mutate, expected = _PARTITION[field]
+    assert _moved(mutate) == set(expected)
+
+
+def test_a_library_language_override_moves_only_the_kind_it_names():
+    """`artwork.library_language_overrides` is already keyed by art kind
+    (render/pipeline.py:160, validator config/schema.py:689-695), so it is
+    PROJECTED into each kind's payload rather than included wholesale. An
+    override naming `title_card` for one library must not move a poster."""
+    def mutate(config: Config) -> None:
+        config.artwork.library_language_overrides = {"Movies": {"title_card": ["fi"]}}
+
+    assert _moved(mutate) == {"title_card"}
+
+
+@pytest.mark.parametrize("name", sorted(_GLOBAL_INPUTS))
+def test_a_global_render_input_moves_every_kind(name):
+    """The shared block is a literal member of all four payloads, so these
+    edits keep costing the whole library -- and that is correct, not a
+    failure of the partition."""
+    assert _moved(_GLOBAL_INPUTS[name]) == _ALL_KINDS
+
+
+def test_render_version_for_is_stable_across_two_loads_of_identical_content(tmp_path):
+    """C7's no-behaviour-change guard. If any kind's value were derived from
+    anything but the validated model -- a dict iteration order, a `str(Path)`
+    that differed by platform, an `id()` -- every fingerprint in the library
+    would move on a restart that changed nothing."""
+    copy = tmp_path / "copy.yaml"
+    copy.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    a, b = load_config(EXAMPLE), load_config(copy)
+    for kind in RENDER_ART_KINDS:
+        assert render_version_for(kind, a) == render_version_for(kind, b), kind
+
+
+def test_a_non_render_edit_moves_no_kind_s_version():
+    """The same posture `config.version` has held since it stopped being a
+    hash of the file's bytes: a cadence tweak cannot change a pixel."""
+    assert _moved(lambda c: setattr(c.scheduler, "drift_batch_size", 250)) == set()
+
+
+def test_two_kinds_with_identical_settings_still_get_distinct_versions():
+    """The art kind's own name is in the payload, deliberately.
+
+    `art_kind` is already fingerprint element 1, so this is belt-and-braces
+    rather than load-bearing -- but it means the four values are readable as
+    four in a log, and a future kind whose defaults happen to match another's
+    cannot silently share a version.
+    """
+    config = load_config(EXAMPLE)
+    config.artwork.background = config.artwork.poster.model_copy(deep=True)
+    assert render_version_for("poster", config) != render_version_for("background", config)
+
+
+def test_render_version_for_refuses_an_unknown_art_kind():
+    """Named by the kind, so a caller that grew a fifth artifact type without
+    a partition ruling is told which one -- rather than getting a payload
+    silently missing its subsection through a getattr default."""
+    with pytest.raises(ValueError) as excinfo:
+        render_version_for("logo", load_config(EXAMPLE))
+    assert "'logo'" in str(excinfo.value)
+
+
+def test_the_wholesale_version_still_moves_for_every_partitioned_edit():
+    """C1, pinned rather than assumed.
+
+    `config.version` stays the wholesale hash and stays a strict SUPERSET of
+    every per-kind payload -- which is what lets `_render_affecting` keep its
+    cheap short-circuit in Task 2 (`if after.version == before.version:
+    return False`). If an edit could move a kind's version without moving the
+    wholesale one, that short-circuit would swallow a real re-render.
+    """
+    for field, (mutate, expected) in _PARTITION.items():
+        before = load_config(EXAMPLE)
+        after = load_config(EXAMPLE)
+        mutate(after)
+        after.version = render_version(after)
+        assert after.version != before.version, field
