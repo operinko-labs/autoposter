@@ -39,7 +39,8 @@ def _region_error(a: np.ndarray, b: np.ndarray, box) -> float:
 
 
 ALL_SOULS = BadgeInputs(
-    media=MediaInfo("1080", "eac3", 6, 4845912, ("en",), frozenset(), None, None),
+    media=MediaInfo(("1080",), ("English (EAC3 5.1)",), 6, 4845912, ("en",),
+                   frozenset(), None, None),
     critic_rating=4.9, audience_rating=6.3, content_rating="17", video_format="WEB",
 )
 
@@ -78,7 +79,8 @@ def test_non_badge_area_is_untouched():
 # Read off the oracle output itself: it shows "480P SD", the AAC logo, "SDTV",
 # "Runtime: 0h 23m" and a TMDB badge reading "100%".
 EPISODE = BadgeInputs(
-    media=MediaInfo("480", "aac", 2, 1380000, ("en",), frozenset(), 1, 1),
+    media=MediaInfo(("480",), ("English (AAC Stereo)",), 2, 1380000, ("en",),
+                   frozenset(), 1, 1),
     critic_rating=None, audience_rating=10.0, content_rating=None, video_format="SDTV",
 )
 

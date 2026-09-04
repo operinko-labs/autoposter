@@ -197,7 +197,7 @@ async def test_the_video_format_badge_is_derived_from_the_media_file_path(
     plex_item = FakePlexItem(file="/media/Movies/Dune (2021)/Dune.2021.REMUX-2160p.mkv")
     await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
     assert [i.video_format for i in seen] == ["REMUX"]
-    assert seen[0].media.file_path.endswith("Dune.2021.REMUX-2160p.mkv")
+    assert seen[0].media.file_paths == ("/media/Movies/Dune (2021)/Dune.2021.REMUX-2160p.mkv",)
 
 
 async def test_a_successful_upload_survives_a_later_rollback(

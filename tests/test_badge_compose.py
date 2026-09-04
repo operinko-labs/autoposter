@@ -19,7 +19,8 @@ ORACLE = Path("tests/fixtures/oracle")
 
 def _inputs(**over):
     base = dict(
-        media=MediaInfo("1080", "eac3", 6, 4845912, ("en",), frozenset(), 1, 1),
+        media=MediaInfo(("1080",), ("English (EAC3 5.1)",), 6, 4845912, ("en",),
+                       frozenset(), 1, 1),
         critic_rating=4.9, audience_rating=6.3, content_rating="17", video_format="WEB",
     )
     base.update(over)
