@@ -1358,6 +1358,61 @@ async def test_the_preview_refuses_the_unwrapped_body_the_same_way(
     assert response.status_code == 422
 
 
+# --- the request-body 422 does not echo the body back (C1) ------------------
+#
+# FastAPI's default handler returns `jsonable_encoder(exc.errors())`, and
+# pydantic puts the rejected `input` in every entry -- for the `missing` arm
+# that input is the WHOLE body, so one refused paste hands back every
+# credential-capable field the operator had in the document. `GET /api/config`
+# reduces `notifications.url` to its host; this 422 used to hand the same class
+# of value back in full. The handler in `app.py` keeps `type`/`loc`/`msg` (what
+# `fieldErrors` renders) and drops the rest.
+
+A_TOKEN_BEARING_DOCUMENT = {
+    "plex": {"url": "http://plex.lan:32400/?X-Plex-Token=SEKRIT"},
+    "scheduler": {},
+}
+
+
+async def test_an_unwrapped_body_is_refused_without_echoing_the_document(
+    client, auth_headers
+):
+    """The incident's own body shape, carrying a token. The refusal must still
+    name the missing field and the extras -- that is what the editor renders --
+    without repeating one character of the document."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json=A_TOKEN_BEARING_DOCUMENT
+    )
+
+    assert response.status_code == 422
+    assert "SEKRIT" not in response.text, "the 422 handed the operator's token back"
+    detail = response.json()["detail"]
+    locs = [entry["loc"] for entry in detail]
+    assert ["body", "document"] in locs, response.text
+    assert ["body", "plex"] in locs, response.text
+    assert all(entry["msg"] for entry in detail)
+    assert all("input" not in entry for entry in detail)
+    assert all("url" not in entry for entry in detail)
+
+
+async def test_a_string_document_is_refused_without_echoing_the_paste(
+    client, auth_headers
+):
+    """The second repro: `document` sent as pasted YAML rather than an object.
+    One entry, whose `input` was the whole paste."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": "plex:\n  url: http://plex.lan:32400/?X-Plex-Token=SEKRIT\n"},
+    )
+
+    assert response.status_code == 422
+    assert "SEKRIT" not in response.text
+    detail = response.json()["detail"]
+    assert detail[0]["loc"] == ["body", "document"]
+    assert "valid dictionary" in detail[0]["msg"]
+    assert "input" not in detail[0]
+
+
 async def test_emptying_a_non_empty_store_needs_confirm(
     client, auth_headers, session, app
 ):

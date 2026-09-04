@@ -9,10 +9,11 @@ from datetime import UTC, datetime
 import httpx
 import requests
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from plexapi.server import PlexServer
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import func, select
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from autoposter.api.auth import LoginRateLimiter
 from autoposter.artwork_modes.base import WorkerPause
@@ -59,6 +60,46 @@ from autoposter.scheduler.merge import make_merge_job
 from autoposter.scheduler.prune import make_prune_job
 
 logger = logging.getLogger(__name__)
+
+
+async def _validation_error_without_input(_request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's request-body 422, minus the operator's own paste.
+
+    The default handler serves ``jsonable_encoder(exc.errors())``, and pydantic
+    puts the rejected value in every entry's ``input``. For the ``missing`` arm
+    of ``OverridesBody`` that value is the ENTIRE body -- so a document sent
+    bare (what a hand-written fetch produces, and the 2026-09-01 incident's own
+    shape) came back carrying ``plex.url``'s token, ``notifications.url``'s path
+    token and all three ``*.base_url`` values in one response. A self-echo to
+    the session that sent it, but one that lands in reverse-proxy logs, a HAR
+    export and the frontend's retained ``ApiError.detail``.
+
+    Kept: ``type``, ``loc``, ``msg`` -- ``loc`` and ``msg`` are what
+    ``fieldErrors`` (``frontend/src/api/overrides.ts``) renders, and ``type`` is
+    what a client would branch on. Dropped: ``input`` (the paste) and ``url``
+    (pydantic's docs link, which no caller uses). ``ctx`` is dropped too rather
+    than filtered: it carries a raw value for some error types (``ctx.error``
+    wraps a ValueError's message), and an allow-list of three keys is a rule
+    that stays true as pydantic adds error types.
+
+    Registered once, on the app object, so it covers every endpoint -- including
+    ones added after this -- rather than each request model separately. Logs
+    nothing: the refusal is the operator's own mistake, and the value it carries
+    is exactly what must not be written down.
+    """
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": [
+                {
+                    "type": error["type"],
+                    "loc": list(error["loc"]),
+                    "msg": error["msg"],
+                }
+                for error in exc.errors()
+            ],
+        },
+    )
 
 
 def create_app(
@@ -580,6 +621,10 @@ def create_app(
         session_factory, app.state.config_holder, app.state.scheduler_intervals,
         started_at=app.state.started_at,
     )
+    # Before the routers, though order does not matter to starlette: this is a
+    # property of the application, not of any one endpoint. See the handler's
+    # own docstring for what it drops and why.
+    app.add_exception_handler(RequestValidationError, _validation_error_without_input)
     app.include_router(router)
     app.include_router(api_router)
 
