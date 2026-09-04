@@ -126,7 +126,17 @@ def build() -> FastAPI:
 
 
 def main() -> None:
-    uvicorn.run(build(), host="0.0.0.0", port=8080)
+    # Bounded, rather than uvicorn's default of waiting forever: the
+    # dashboard's /api/dashboard/stream connection never ends on its own (its
+    # generator's `finally` -- the only thing that unsubscribes it -- runs on
+    # disconnect, not on a timer), so uvicorn's graceful shutdown would sit at
+    # "Waiting for connections to close" for the whole pod lifetime with any
+    # dashboard tab left open. That leaves the lifespan's `finally`
+    # (task cancellation, http.aclose(), engine.dispose()) unreached until
+    # kubelet's SIGKILL at the 30s grace period, which is exactly the
+    # dropped-connection symptom this bounds: at 10s uvicorn forces the
+    # remaining connections closed and the lifespan's shutdown runs instead.
+    uvicorn.run(build(), host="0.0.0.0", port=8080, timeout_graceful_shutdown=10)
 
 
 if __name__ == "__main__":
