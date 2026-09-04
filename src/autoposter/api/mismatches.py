@@ -52,7 +52,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from autoposter.api.auth import require_session
 from autoposter.arr.client import RADARR, SONARR, ArrClient, ArrKind
 from autoposter.arr.paths import map_path
-from autoposter.arr.sync import ArrSyncRefused, norm_path, shares_tree, source_path
+from autoposter.arr.sync import (
+    ArrSyncRefused,
+    norm_path,
+    root_folder_refusal,
+    shares_tree,
+    source_path,
+)
 from autoposter.db.models import Session as SessionModel
 from autoposter.plex.client import SectionItem
 
@@ -219,11 +225,15 @@ async def _compare(
 
     arr_root = norm_path(service_cfg.arr_path)
     if not any(shares_tree(arr_root, folder) for folder in root_folders):
-        raise ArrSyncRefused(
-            f"configured arr path {service_cfg.arr_path!r} shares no tree with any root "
-            f"folder {service} manages ({root_folders or 'none reported'}) -- probably "
-            f"the wrong instance or a bad base_url; nothing was compared for this library"
+        # Served as refused[<service>] on the response and rendered verbatim
+        # by Mismatches.tsx, so the sentence is arr/sync.py's counts-only
+        # one; the paths themselves go here, to the pod log.
+        logger.warning(
+            "id-mismatches: %s refused -- configured arr path %r shares no tree with "
+            "any root folder it manages (%r)",
+            service, service_cfg.arr_path, root_folders,
         )
+        raise ArrSyncRefused(root_folder_refusal(service, root_folders))
 
     items = await plex.list_items(PLEX_TYPE[service])
 

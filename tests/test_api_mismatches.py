@@ -584,11 +584,39 @@ async def test_an_arr_instance_managing_a_different_tree_is_refused(
     body = await get(client, auth_headers)
 
     assert "radarr" in body["refused"]
-    assert "/mnt/media/Movies" in body["refused"]["radarr"]
+    # Row 213's rule on an HTTP body: the served refusal names the service
+    # and a count, never the configured path or the instance's root folders
+    # (the next test pins the sentence and the log line that keeps them).
+    assert "/mnt/media/Movies" not in body["refused"]["radarr"]
     assert body["counts"]["mismatched"] == 0
     assert body["counts"]["arr_only"] == 0
     assert body["counts"]["plex_only"] == 0
     assert body["total"] == 0
+
+
+async def test_a_refusal_serves_no_path_and_logs_both(client, auth_headers, wire, caplog):
+    """Through the app: GET /api/id-mismatches' `refused` entry is rendered
+    verbatim by the Mismatches page, and it carried the operator's arr_path
+    and every root folder Radarr reports. The shared sentence from
+    arr/sync.py now; both paths on this module's WARNING, the pod log."""
+    wire(
+        movies=[movie(tmdb="438631")],
+        radarr=[{"title": "Dune", "path": "/mnt/media/Movies/Dune (2021)", "tmdbId": 438631}],
+        radarr_roots=["/data/films"],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="autoposter.api.mismatches"):
+        body = await get(client, auth_headers)
+
+    assert body["refused"]["radarr"] == (
+        "the configured arr path shares no tree with any root folder radarr manages "
+        "(1 root folder(s) reported) -- probably the wrong instance or a bad base_url; "
+        "nothing was compared"
+    )
+    assert "/data/films" not in body["refused"]["radarr"]
+    assert "/mnt/media/Movies" not in body["refused"]["radarr"]
+    assert "/data/films" in caplog.text
+    assert "/mnt/media/Movies" in caplog.text
 
 
 async def test_an_arr_instance_that_overlaps_is_not_refused(client, auth_headers, wire):
