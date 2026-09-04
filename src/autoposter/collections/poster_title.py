@@ -448,6 +448,12 @@ def compose_collection_title(
     line_text = prepare_text(settings.collection_line_text, settings.collection_line)
     if settings.collection_line.add_text and line_text.strip():
         blocks.append((settings.collection_line, line_text, "the collection line"))
+    if not blocks:
+        # Nothing to draw -- return the input untouched rather than a
+        # decode/re-encode that would move poster_sha256 for no visible
+        # change and silently transcode a fetched PNG/WebP poster to JPEG,
+        # discarding its alpha.
+        return data
     fonts = [_font(fonts_root, style.font) for style, _, _ in blocks]
 
     try:

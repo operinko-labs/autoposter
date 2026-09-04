@@ -395,3 +395,16 @@ def test_a_center_gravity_draws_in_the_middle():
     assert min(rows) > 100
     assert max(rows) < 200
     assert abs((min(rows) + max(rows)) / 2 - 150) < 30
+
+
+def test_both_blocks_off_returns_the_input_bytes_unchanged():
+    """N-4: with nothing to draw, re-encoding would still move
+    ``poster_sha256`` for a composite that changed nothing, and would
+    silently transcode a fetched PNG/WebP poster to JPEG, discarding its
+    alpha. Returning ``data`` untouched closes both."""
+    settings = _settings()
+    settings.title.add_text = False
+    settings.collection_line.add_text = False
+    source = _poster()
+
+    assert compose_collection_title(settings, None, source, "A Collection") is source
