@@ -49,6 +49,26 @@ class ArrSyncRefused(RuntimeError):
     configured for. Nothing is compared and nothing is added."""
 
 
+def root_folder_refusal(service: str, root_folders: list[str]) -> str:
+    """The SERVED sentence for "this instance manages a different tree".
+
+    Shared by ``sync_section`` (whose refusal reaches
+    ``scheduled_runs.last_detail`` through ``scheduler/jobs.py``) and
+    ``api/mismatches.py`` (whose refusal is an HTTP body rendered verbatim
+    by the Mismatches page). Counts and the service name only: the
+    configured ``arr_path`` and the root folders themselves are the
+    operator's and the instance's filesystem layouts, and they stay on the
+    raise sites' own log lines -- the pod log, the trusted sink (roadmap
+    rows 207 and 213).
+    """
+    reported = f"{len(root_folders)} root folder(s)" if root_folders else "no root folders"
+    return (
+        f"the configured arr path shares no tree with any root folder {service} "
+        f"manages ({reported} reported) -- probably the wrong instance or a bad "
+        "base_url; nothing was compared"
+    )
+
+
 @dataclass(frozen=True)
 class ArrSyncSettings:
     """How to register a new item. Mirrors the tool being replaced:
@@ -221,11 +241,14 @@ async def sync_section(
     arr_root = norm_path(settings.arr_root)
     root_folders = [norm_path(path) for path in await client.root_folders()]
     if not any(shares_tree(arr_root, folder) for folder in root_folders):
-        raise ArrSyncRefused(
-            f"configured arr path {settings.arr_root!r} shares no tree with any root "
-            f"folder {kind.name} manages ({root_folders or 'none reported'}) -- probably "
-            f"the wrong instance or a bad base_url; nothing was compared or added"
+        # The paths go here, to the pod log; the refusal's message is served
+        # (see root_folder_refusal) and carries counts only.
+        logger.error(
+            "arr_sync: %s refused -- configured arr path %r shares no tree with any "
+            "root folder it manages (%r)",
+            kind.name, settings.arr_root, root_folders,
         )
+        raise ArrSyncRefused(root_folder_refusal(kind.name, root_folders))
 
     entries = await client.listing()
     if not entries and len(items) > _EMPTY_LISTING_MAX_TRIVIAL_ITEMS:

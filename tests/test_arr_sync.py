@@ -7,6 +7,7 @@ a release. ``test_radarr_add_options_search_flag_is_false`` and
 disappears, for both kinds.
 """
 import json
+import logging
 
 import httpx
 import pytest
@@ -503,8 +504,42 @@ async def test_a_service_managing_a_different_tree_is_refused_before_anything_is
         with pytest.raises(ArrSyncRefused) as raised:
             await sync_section(client, [dune], RADARR, RADARR_SETTINGS, dry_run=False)
 
-    assert "/data/films" in str(raised.value)
+    # The served message names no path (row 213's rule; the next test pins
+    # the exact sentence and the log line that keeps the paths).
+    assert "/data/films" not in str(raised.value)
     assert seen == [("GET", "/api/v3/rootfolder")]
+
+
+async def test_a_different_tree_refusal_serves_no_path_and_logs_both(caplog):
+    """ArrSyncRefused's message is SERVED -- scheduler/jobs.py puts it in
+    scheduled_runs.last_detail and api/mismatches.py raises the same
+    sentence into an HTTP body -- and it used to carry the operator's
+    arr_path and every root folder the instance manages: two systems'
+    filesystem layouts. Counts and the service name only now; the paths
+    stay on the raise site's own ERROR line (the pod log, row 207)."""
+    dune = FakeItem("Dune", ["tmdb://438631"], ["/mnt/Media/Movies/Dune (2021)/Dune.mkv"])
+
+    async def handler(request):
+        if request.url.path.endswith("/rootfolder"):
+            return httpx.Response(200, json=[{"id": 1, "path": "/data/films"}])
+        raise AssertionError(f"nothing else may be requested: {request.method} {request.url}")
+
+    async with _fake_http(handler) as http:
+        client = ArrClient(http, "https://radarr.example", "key", RADARR)
+        with caplog.at_level(logging.ERROR, logger="autoposter.arr.sync"):
+            with pytest.raises(ArrSyncRefused) as raised:
+                await sync_section(client, [dune], RADARR, RADARR_SETTINGS, dry_run=False)
+
+    message = str(raised.value)
+    assert message == (
+        "the configured arr path shares no tree with any root folder radarr manages "
+        "(1 root folder(s) reported) -- probably the wrong instance or a bad base_url; "
+        "nothing was compared"
+    )
+    assert "/data/films" not in message
+    assert "/mnt/media/Movies" not in message
+    assert "/data/films" in caplog.text
+    assert "/mnt/media/Movies" in caplog.text
 
 
 async def test_a_service_reporting_no_root_folders_at_all_is_refused():
