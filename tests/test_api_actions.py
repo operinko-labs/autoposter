@@ -12,6 +12,7 @@ from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.db.models import Job, MediaItem
 from autoposter.queue.jobs import fail
+from autoposter.api.routes import TWIN_NOTE
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -449,6 +450,133 @@ async def test_reprocessing_twice_still_queues_once(client, auth_headers, sessio
 async def test_reprocessing_an_unknown_item_is_404(client, auth_headers):
     response = await client.post("/api/items/999999/reprocess", headers=auth_headers)
     assert response.status_code == 404
+
+
+# --- the identity-twin note on POST /api/items/{item_id}/reprocess ---
+#
+# The gap these close: with the fork stop in place
+# (render/pipeline.py's FORK_EVENT/FORK_OUTCOME), re-running a row whose live
+# twin already holds its own media_items row completes the job having done
+# nothing at all -- and writes nothing to job.last_error, so the Jobs page
+# shows a job that simply finished. The only record is a pod-log WARNING and
+# an events_log row whose payload /api/events never serves. These pin the one
+# surface that CAN say something at the moment the operator clicks.
+
+
+async def _twin_pair(session):
+    """A stale row and its live twin: one identity, two rating keys.
+
+    The two rows agree on everything the re-key pairs on -- kind, library,
+    the season/episode coordinates and the tmdb id -- and disagree only on
+    the rating key, which is exactly the shape a Plex re-match leaves behind.
+    Returns the STALE row's id (the one an operator would press Re-run on),
+    re-selected after the commit rather than read off the instance -- the same
+    shape every other test in this file uses, so it cannot depend on whether
+    this session expires on commit.
+    """
+    session.add_all([
+        MediaItem(
+            rating_key="7001", library="TV", kind="episode",
+            title="The Pirate Solution", tmdb_id=64677,
+            season_number=3, episode_number=4,
+        ),
+        MediaItem(
+            rating_key="7002", library="TV", kind="episode",
+            title="The Pirate Solution", tmdb_id=64677,
+            season_number=3, episode_number=4,
+        ),
+    ])
+    await session.commit()
+    return (await session.execute(
+        select(MediaItem).where(MediaItem.rating_key == "7001")
+    )).scalars().one().id
+
+
+async def test_reprocess_notes_an_identity_twin_under_another_key(
+    client, auth_headers, session
+):
+    """The job is still queued -- the note is diagnosis, not a refusal."""
+    item_id = await _twin_pair(session)
+
+    response = await client.post(f"/api/items/{item_id}/reprocess", headers=auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["queued"] is True
+    assert body["job_id"] is not None
+    assert body["note"] == TWIN_NOTE
+
+
+async def test_reprocess_sends_a_null_note_when_the_row_has_no_twin(
+    client, auth_headers, session
+):
+    """The shipped case. `note` is always present and null, never absent: a
+    key that comes and goes makes the client type optional and invites a
+    non-null assertion on it."""
+    session.add(MediaItem(
+        rating_key="rk-solo", library="Movies", kind="movie", title="A", tmdb_id=555,
+    ))
+    await session.commit()
+    item_id = (await session.execute(
+        select(MediaItem).where(MediaItem.rating_key == "rk-solo")
+    )).scalars().one().id
+
+    body = (await client.post(
+        f"/api/items/{item_id}/reprocess", headers=auth_headers
+    )).json()
+
+    assert body["queued"] is True
+    assert "note" in body
+    assert body["note"] is None
+
+
+async def test_another_season_of_the_same_show_is_not_a_twin(
+    client, auth_headers, session
+):
+    """The coordinate half of the predicate, which is not decoration: every
+    season of one show carries the show's ids, so without
+    season_number/episode_number every season in a library would report a
+    twin and the note would be noise on every episode there."""
+    session.add_all([
+        MediaItem(
+            rating_key="8001", library="TV", kind="episode", title="Ep 4",
+            tmdb_id=64677, season_number=3, episode_number=4,
+        ),
+        MediaItem(
+            rating_key="8002", library="TV", kind="episode", title="Ep 5",
+            tmdb_id=64677, season_number=3, episode_number=5,
+        ),
+    ])
+    await session.commit()
+    item_id = (await session.execute(
+        select(MediaItem).where(MediaItem.rating_key == "8001")
+    )).scalars().one().id
+
+    body = (await client.post(
+        f"/api/items/{item_id}/reprocess", headers=auth_headers
+    )).json()
+
+    assert body["note"] is None
+
+
+async def test_the_twin_note_names_no_key_title_library_or_path(
+    client, auth_headers, session
+):
+    """Roadmap rows 136/188/209/213: a served surface carries class-name-only
+    strings. This one interpolates nothing at all, and this test is what keeps
+    it that way -- a later 'helpful' edit that named the twin's rating key or
+    title would redden here rather than ship a served identifier."""
+    item_id = await _twin_pair(session)
+
+    note = (await client.post(
+        f"/api/items/{item_id}/reprocess", headers=auth_headers
+    )).json()["note"]
+
+    assert note is not None
+    for forbidden in ("7001", "7002", "The Pirate Solution", "TV", "64677"):
+        assert forbidden not in note
+    assert "http" not in note
+    assert "/" not in note
 
 
 # --- GET /api/config ---
