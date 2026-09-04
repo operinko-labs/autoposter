@@ -53,6 +53,7 @@ from autoposter.db.models import (
     EventLog,
     ItemCredit,
     ItemFacts,
+    ItemMetadataOverride,
     MediaItem,
     Render,
 )
@@ -205,6 +206,14 @@ class MergeOutcome:
     children_repointed: int
     parents_carried: int
     facts_repointed: int
+    # Roadmap row 99. Counted separately from facts because they are a
+    # different KIND of thing: ``item_facts`` is what a provider said and
+    # there is at most one row of it, while these are what an operator
+    # declared and there are as many as they typed. An operator reading a
+    # merge summary needs to know their own declarations were carried, not
+    # just that "some children moved".
+    overrides_repointed: int
+    overrides_dropped: int
     logos_carried: int
     skipped: int
 
@@ -662,11 +671,19 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
     and the survivor is scored where the stale row was not. That is the
     dismissal contract -- it holds only while the facts hold -- and the
     summary says so rather than hiding it.
+
+    A per-item metadata override (roadmap row 99) is carried the same way and
+    for the same reason: it is a child of ``media_items`` and the delete below
+    cascades. When both twins declare the same field the survivor's value is
+    kept -- it is the row every write since the fork has landed on -- and the
+    stale one is dropped with an INFO naming the items and the field, never
+    the value.
     """
     merged: list[tuple[str, str]] = []
     renders_repointed = renders_dropped = 0
     dismissals_repointed = dismissals_dropped = 0
     children_repointed = parents_carried = facts_repointed = logos_carried = 0
+    overrides_repointed = overrides_dropped = 0
     skipped = 0
 
     for plan in plans:
@@ -793,6 +810,55 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
             .execution_options(synchronize_session=False)
         )
 
+        # Roadmap row 99's C2 carry rule. Read AFTER the lock rather than off
+        # the plan, for the reason the dismissal block above states: the PUT
+        # endpoint writes an override row without touching ``media_items``,
+        # so the (id, updated_at) guard cannot see one that arrived in the
+        # scan-to-lock window, and a scan-time set would leave it for the
+        # CASCADE delete below to take silently.
+        #
+        # Conflict rule: when BOTH twins carry the same field the SURVIVOR's
+        # row wins and the stale one is dropped -- UNIQUE(item_id, field)
+        # forbids two rows on the survivor, and the survivor is the row every
+        # write since the fork has been landing on. Logged at INFO with the
+        # item ids and the field name and NOTHING ELSE: an override's value is
+        # operator-typed free text (roadmap row 213).
+        override_fields: dict[int, set[str]] = {stale.id: set(), survivor.id: set()}
+        for item_id, field in (
+            await session.execute(
+                select(ItemMetadataOverride.item_id, ItemMetadataOverride.field)
+                .where(ItemMetadataOverride.item_id.in_((stale.id, survivor.id)))
+            )
+        ).all():
+            override_fields[item_id].add(field)
+        overrides_drop = sorted(
+            override_fields[stale.id] & override_fields[survivor.id]
+        )
+        overrides_repoint = sorted(
+            override_fields[stale.id] - override_fields[survivor.id]
+        )
+        for field in overrides_drop:
+            logger.info(
+                "merge: items %s and %s both override %s; the survivor's "
+                "value is kept and the stale row's is dropped",
+                stale.id, survivor.id, field,
+            )
+        if overrides_drop:
+            await session.execute(
+                delete(ItemMetadataOverride)
+                .where(ItemMetadataOverride.item_id == stale.id)
+                .where(ItemMetadataOverride.field.in_(overrides_drop))
+                .execution_options(synchronize_session=False)
+            )
+        if overrides_repoint:
+            await session.execute(
+                update(ItemMetadataOverride)
+                .where(ItemMetadataOverride.item_id == stale.id)
+                .where(ItemMetadataOverride.field.in_(overrides_repoint))
+                .values(item_id=survivor.id)
+                .execution_options(synchronize_session=False)
+            )
+
         # Decided off the LOCKED values, not off the plan's: the plan is the
         # dry run's preview, read before the lock, and a logo marker the
         # survivor has acquired since then must not be overwritten. The plan's
@@ -891,6 +957,8 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
                 "children_repointed": children_repointed_now,
                 "parent_id_carried": carried_parent,
                 "facts_repointed": plan.facts_repoint,
+                "overrides_repointed": overrides_repoint,
+                "overrides_dropped": overrides_drop,
                 "logo_upload_key_carried": carried_logo,
                 # Recorded unconditionally, prune.retire's precedent: when
                 # BOTH rows already hold a marker, carry_logo is False and the
@@ -914,6 +982,8 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
         children_repointed += children_repointed_now
         parents_carried += int(carry_parent)
         facts_repointed += int(plan.facts_repoint)
+        overrides_repointed += len(overrides_repoint)
+        overrides_dropped += len(overrides_drop)
         logos_carried += int(carry_logo)
 
     return MergeOutcome(
@@ -925,6 +995,8 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
         children_repointed=children_repointed,
         parents_carried=parents_carried,
         facts_repointed=facts_repointed,
+        overrides_repointed=overrides_repointed,
+        overrides_dropped=overrides_dropped,
         logos_carried=logos_carried,
         skipped=skipped,
     )
