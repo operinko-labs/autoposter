@@ -182,6 +182,34 @@ describe("Dashboard", () => {
     expect(screen.getByText("queued")).toBeInTheDocument();
   });
 
+  it("shows a fixed sentence, not the bytes, when the stream is not JSON", async () => {
+    stubFetch(undefined, undefined, (_path, init) => {
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c;
+          controller.enqueue(
+            new TextEncoder().encode("<html>502 Bad Gateway from edge.internal</html>\n"),
+          );
+        },
+      });
+      (init!.signal as AbortSignal).addEventListener("abort", () => {
+        controller.error(new DOMException("aborted", "AbortError"));
+      });
+      return Promise.resolve(
+        new Response(body, { status: 200, headers: { "Content-Type": "text/html" } }),
+      );
+    });
+
+    const { unmount } = render(<Dashboard />);
+
+    expect(
+      await screen.findByText("the server answered with something that was not JSON"),
+    ).toBeInTheDocument();
+    expect(document.body.textContent ?? "").not.toContain("edge.internal");
+    unmount();
+  });
+
   it("gives the deferred tile its own class, not the one failed and parked share", async () => {
     // A deferred job is waiting, not broken -- the tile is styled --warn in
     // dashboard.css, deliberately not the --error that .stat-failed and

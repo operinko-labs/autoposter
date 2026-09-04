@@ -1813,7 +1813,11 @@ against the configuration, and refuses the whole pass for that service
   under `add_existing` roughly 1,982 POSTs into the wrong instance.
 
 Both refusals are contained the same way a missing quality profile is: the
-other service's sync and the safety-net enqueue below still run.
+other service's sync and the safety-net enqueue below still run. The
+root-folder refusal's served text (`scheduled_runs.last_detail`, and the
+`refused` entry on `GET /api/id-mismatches`) names the service and
+how many root folders it reported; the configured `arr_path` and the root
+folders themselves are on the log line only.
 
 ### Two independent things run per Plex library
 

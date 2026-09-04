@@ -7,7 +7,9 @@ unconfigured must be a clean no-op for the registration half while the
 safety net still runs -- and a quality profile that cannot be resolved for
 one service must not take down the other service's sync or the safety net.
 """
+import asyncio
 import json
+import logging
 import threading
 
 import httpx
@@ -16,6 +18,8 @@ from sqlalchemy import select
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.schema import ArrSyncConfig, PlexConfig, RadarrConfig, SonarrConfig
 from autoposter.db.models import Job as QueuedJob
+from autoposter.db.models import ScheduledRun
+from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.jobs import make_arr_sync_job
 
 RADARR_SETTINGS = RadarrConfig(
@@ -317,6 +321,53 @@ async def test_a_service_that_reports_nothing_is_refused_and_the_safety_net_stil
     assert "Movies radarr: refused" in summary
     assert "Movies: enqueued 20 unknown item(s)" in summary
     assert len(await _pending_jobs(session)) == 20
+
+
+async def test_a_refused_service_reaches_last_detail_without_a_path(session_factory, caplog):
+    """The served surface itself: make_arr_sync_job's return value, written
+    by the real Scheduler to scheduled_runs.last_detail. The wrong-instance
+    refusal names the service and a count; the operator's arr_path and the
+    instance's root folders are on the pod log only."""
+    movie = FakeItem("60", "Dune", ["tmdb://60"], ["/mnt/Media/Movies/Dune/Dune.mkv"])
+    server = FakeServer([FakeSection("Movies", "movie", [movie])])
+    config = _config(radarr=RADARR_SETTINGS, sonarr=SonarrConfig(enabled=False))
+    transport = MultiplexTransport({
+        "radarr.example": _service_handler(
+            profiles_json=[{"id": 7, "name": "HD Bluray + WEB"}],
+            root_folders=[{"id": 1, "path": "/data/films", "accessible": True}],
+        ),
+    })
+
+    stop = asyncio.Event()
+    async with httpx.AsyncClient(transport=transport) as http:
+        job = make_arr_sync_job(ConfigHolder(config), lambda: server, http, _secrets())
+        scheduler = Scheduler(session_factory, [job], poll_seconds=0.01)
+        with caplog.at_level(logging.ERROR, logger="autoposter"):
+            task = asyncio.create_task(scheduler.run(stop))
+            try:
+                async with asyncio.timeout(5):
+                    while True:
+                        async with session_factory() as check:
+                            row = (
+                                await check.execute(select(ScheduledRun))
+                            ).scalar_one_or_none()
+                        if row is not None and row.last_status == "ok":
+                            break
+                        await asyncio.sleep(0.01)
+            finally:
+                stop.set()
+                await task
+
+    assert row.last_detail == (
+        "Movies radarr: refused, the configured arr path shares no tree with any root "
+        "folder radarr manages (1 root folder(s) reported) -- probably the wrong "
+        "instance or a bad base_url; nothing was compared; "
+        "Movies: enqueued 1 unknown item(s)"
+    )
+    assert "/data/films" not in row.last_detail
+    assert "/mnt/media" not in row.last_detail
+    assert "/data/films" in caplog.text
+    assert "/mnt/media" in caplog.text
 
 
 def _secrets():

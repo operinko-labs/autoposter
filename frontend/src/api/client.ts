@@ -224,7 +224,21 @@ export async function apiFetchNdjson(
       buffered = parts.pop() ?? "";
       for (const part of parts) {
         if (part.trim() === "") continue;
-        onValue(JSON.parse(part));
+        let value: unknown;
+        try {
+          value = JSON.parse(part);
+        } catch {
+          // A SyntaxError's message quotes an excerpt of the line that did
+          // not parse -- foreign bytes (a proxy's HTML error page, say) that
+          // the page's error state would otherwise render verbatim. The
+          // stream is scrubbed server-side; this is the one place a message
+          // that is not the server's could still reach the page.
+          throw new ApiError(
+            response.status,
+            "the server answered with something that was not JSON",
+          );
+        }
+        onValue(value);
       }
     }
   } catch (caught) {

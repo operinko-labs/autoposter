@@ -222,3 +222,22 @@ async def test_parse_source_resolves_and_refuses_through_the_pure_parser(
     )
     assert refused.status_code == 422
     assert "no trakt builder is shipped" in refused.json()["detail"]
+
+
+async def test_parse_source_refuses_an_unknown_host_without_echoing_it(
+    client, auth_headers
+):
+    """T1g narrowed ``parse_source``'s unknown-host refusal to a fixed
+    sentence; this pins the same guarantee through the real endpoint, not
+    just the pure parser, so a future route-level wrapper cannot reintroduce
+    the host."""
+    refused = await client.post(
+        "/api/collections/parse-source",
+        json={"url": "http://plex.internal:32400/library/sections/1"},
+        headers=auth_headers,
+    )
+    assert refused.status_code == 422
+    detail = refused.json()["detail"]
+    assert "that host is not a supported source" in detail
+    assert "plex.internal" not in detail
+    assert "32400" not in detail

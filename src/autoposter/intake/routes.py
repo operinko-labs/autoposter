@@ -41,7 +41,11 @@ async def _ingest(request: Request, source: str, parser) -> dict:
         if not isinstance(payload, dict):
             raise ValueError("payload is not a JSON object")
     except Exception as exc:
-        error = f"unparseable payload: {exc}"
+        # Class name only: this string is the 400 body sent back to the
+        # sender AND EventLog.outcome, served by /api/events. A decode
+        # error's own text quotes positions and bytes of the payload; the
+        # capped raw body kept on the row below is the evidence.
+        error = f"unparseable payload ({type(exc).__name__})"
         text = raw_body.decode("utf-8", errors="replace")
         if len(text) > _MAX_RAW_BODY_CHARS:
             text = text[:_MAX_RAW_BODY_CHARS] + "...(truncated)"
@@ -55,13 +59,15 @@ async def _ingest(request: Request, source: str, parser) -> dict:
             # A bug in our parser, not a malformed request from the sender.
             # Preserve the structured payload as evidence and commit it
             # before propagating, then let the exception surface as a 500.
+            # The outcome is served by /api/events, so it carries the class
+            # name only; the traceback reaches the pod log with the 500.
             async with session_factory() as session:
                 session.add(
                     EventLog(
                         source=source,
                         event_type=event_type,
                         payload=payload_for_log,
-                        outcome=f"parser error: {exc}",
+                        outcome=f"parser error ({type(exc).__name__})",
                     )
                 )
                 await session.commit()
