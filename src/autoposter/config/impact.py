@@ -24,6 +24,16 @@ A third input is now in the same position: with
 title this walk cannot know (``renders`` stores no title at all), so such an
 item is reported as affected whatever the edit was. Overcount, never
 undercount, exactly like the logo case above.
+
+**What the breakdown means, since roadmap row 111.** The first component of
+every fingerprint is now a PER-ART-KIND version
+(``config/loader.py::render_version_for``), so ``by_art_kind`` is evidence
+about which kinds an edit touched -- the exact inverse of the disclaimer this
+module and the Settings page both used to carry. A genuinely shared input (an
+asset root, ``library_folders``, ``artwork.use_original_title``, the global
+``artwork.disable_online_asset_fetch``, ``artwork.output_quality``) is a
+member of every kind's payload and still reaches every row; that is the edit
+being global, not the count failing to discriminate.
 """
 import asyncio
 import hashlib
@@ -33,7 +43,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.config.loader import RENDER_ART_KINDS
+from autoposter.config.loader import RENDER_ART_KINDS, render_version_for
 from autoposter.config.schema import Config
 from autoposter.db.models import ManagedCollection, MediaItem, Render
 from autoposter.intake.arr import RenderIntent
@@ -156,6 +166,28 @@ async def _fingerprint_inputs(
     return text_inputs, [overlay_hash, *font_hashes, ""]
 
 
+def _walk_version(art_kind: str, config: Config) -> str:
+    """Element 0 of every fingerprint this walk recomputes.
+
+    One line, and it is a NAMED one because of what it duplicates. The
+    pipeline's own producer is ``render_artifact``/``adopted_fingerprint``
+    (render/pipeline.py), and this module has always carried a second
+    implementation of the *other* two-thirds of a fingerprint for the sake of
+    a hash cache the pipeline must not have. Roadmap row 111 pulled the
+    version argument into that same hazard: a preview left on
+    ``config.version`` while the pipeline moved to ``render_version_for``
+    would report whole-library counts for every edit and every other test in
+    this suite would stay green, because this file's fixtures build their
+    stored fingerprints the same way this walk recomputes them.
+
+    So it is named, and
+    ``tests/test_config_impact.py::test_the_fingerprint_inputs_and_the_version_match_the_pipeline_s``
+    pins it against ``adopted_fingerprint`` -- implementation against
+    implementation, rather than an expression re-typed into a test.
+    """
+    return render_version_for(art_kind, config)
+
+
 async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
     """Every render row this config has an opinion about, and its verdict.
 
@@ -225,7 +257,7 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
         # adopted row's null source_url reproduces adopted_fingerprint's
         # dropped-URL comparison exactly.
         candidate = compute_fingerprint(
-            config.version, art_kind, row.source_url, row.base_sha256,
+            _walk_version(art_kind, config), art_kind, row.source_url, row.base_sha256,
             text_inputs, asset_hashes,
         )
         candidates.append(

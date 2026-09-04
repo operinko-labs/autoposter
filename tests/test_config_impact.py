@@ -6,13 +6,17 @@ zero. That is the only honest starting point: a walk that disagreed with
 render_artifact about an unchanged item would report the whole library
 affected by every edit, and the number would look plausible.
 
-Note what the fixture set proves and what it cannot. ``config.version`` is the
-first component of every fingerprint and is derived from the *whole* artwork
-section (config/loader.py's ``render_version``), so any artwork edit at all
-invalidates every stored fingerprint -- there is no such thing as a
-"title-card-only" artwork change. What does discriminate between rows is the
-gates: a disabled art kind and a skipped title are not counted, because
-render_artifact would not rebuild them either.
+Note what the fixture set proves and what it cannot. Since roadmap row 111 the
+first component of every fingerprint is a PER-ART-KIND version
+(config/loader.py's ``render_version_for``), so an edit to one kind's
+subsection invalidates that kind's rows and leaves the others alone -- and the
+breakdown below is evidence about what the edit touched, which is the exact
+inverse of what this file used to say. What ALSO discriminates between rows is
+the gates: a disabled art kind and a skipped title are not counted, because
+render_artifact would not rebuild them either. And a genuinely shared input --
+an asset root, ``use_original_title``, ``output_quality`` -- is a member of
+every kind's payload and still reaches every row, which is the edit being
+global rather than the walk failing to discriminate.
 """
 from pathlib import Path
 
@@ -22,11 +26,15 @@ import yaml
 from sqlalchemy import select
 
 from autoposter.config.impact import affected_items, count_affected, count_collection_posters
-from autoposter.config.loader import build_config
+from autoposter.config.loader import build_config, render_version_for
 from autoposter.config.overrides import merge_overrides
 from autoposter.db.models import Job, ManagedCollection, MediaItem, Render
 from autoposter.plex.client import ResolvedItem
-from autoposter.render.pipeline import compute_fingerprint, gather_fingerprint_inputs
+from autoposter.render.pipeline import (
+    adopted_fingerprint,
+    compute_fingerprint,
+    gather_fingerprint_inputs,
+)
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -114,7 +122,8 @@ async def _stored_fingerprint(config, item: ResolvedItem, art_kind: str, base_sh
     """What render_artifact would have written for this row, verbatim."""
     text_inputs, asset_hashes = await gather_fingerprint_inputs(config, item, art_kind)
     return compute_fingerprint(
-        config.version, art_kind, f"https://example/{art_kind}", base_sha, text_inputs, asset_hashes
+        render_version_for(art_kind, config), art_kind,
+        f"https://example/{art_kind}", base_sha, text_inputs, asset_hashes,
     )
 
 
@@ -171,33 +180,90 @@ async def test_an_unchanged_config_affects_nothing(session, seeded):
         ("title_card", _item("episode", "Pilot", 1399, season=1, episode=1)),
     ],
 )
-async def test_the_fingerprint_inputs_match_the_pipeline_s(config, art_kind, item):
+async def test_the_fingerprint_inputs_and_the_version_match_the_pipeline_s(
+    config, art_kind, item
+):
     """The one duplicated computation in this project, pinned to its original.
 
     ``impact._fingerprint_inputs`` reassembles what
     ``gather_fingerprint_inputs`` assembles, for the sake of a hash cache the
     pipeline must not have. Two implementations of one hash silently stop
     agreeing; this is what makes that loud.
+
+    Roadmap row 111 made the duplication DEEPER: the version argument joined
+    the input assembly, so the second assertion below pins element 0 as well.
+    It compares this module's own ``_walk_version`` -- the line ``_walk``
+    actually executes -- against ``adopted_fingerprint``, which is the
+    pipeline's own producer of that element. A preview left on
+    ``config.version`` turns it red instead of shipping whole-library counts
+    with every other test green.
     """
-    from autoposter.config.impact import _fingerprint_inputs
+    from autoposter.config.impact import _fingerprint_inputs, _walk_version
 
     expected = await gather_fingerprint_inputs(config, item, art_kind)
     assert await _fingerprint_inputs(config, item, art_kind, {}) == expected
+
+    text_inputs, asset_hashes = expected
+    assert compute_fingerprint(
+        _walk_version(art_kind, config), art_kind, None, "abc", text_inputs, asset_hashes
+    ) == adopted_fingerprint(config, art_kind, "abc", text_inputs, asset_hashes)
 
 
 # --- what an edit reaches ---
 
 
-async def test_an_artwork_text_change_affects_every_ungated_row(session, seeded, variant):
-    """A title-card label edit invalidates the whole library, not just cards.
+async def test_an_artwork_text_change_affects_only_the_kind_it_names(session, seeded, variant):
+    """THE ROW, in the preview. The exact inverse of what this pinned before.
 
-    Not a bug and not a rounding error: ``render_version`` hashes the entire
-    artwork section, and that value is the first component of every
-    fingerprint, so render_artifact really would rebuild all of these. The
-    preview's job is to say so before the operator finds out by watching
-    16,000 items re-render.
+    A title-card label edit used to invalidate the whole library, because
+    ``render_version`` hashed the entire artwork section and that value was
+    the first component of every fingerprint. Since row 111 it moves the title
+    card's version and nothing else, so the preview reports the one card the
+    operator actually asked about -- and the TBA card beside it stays excluded
+    by ``skip_words``, which is why this is 1 and not 2.
     """
     impact = await count_affected(session, variant({"artwork": {"title_card": {"season_label": "Kausi"}}}))
+    assert impact.affected == 1
+    assert impact.of_total == 5
+    assert impact.by_art_kind == {"title_card": 1}
+
+
+async def test_a_poster_overlay_change_affects_the_poster_rows_only(session, seeded, variant):
+    """Same rule from the other end. The overlay FILE NAME lives in
+    ``artwork.poster``, which is now in the poster's payload alone, so the two
+    poster rows in the fixture move and the background, the season poster and
+    the title card do not."""
+    impact = await count_affected(
+        session, variant({"artwork": {"poster": {"overlay_file": "other-overlay.png"}}})
+    )
+    assert impact.affected == 2
+    assert impact.by_art_kind == {"poster": 2}
+
+
+async def test_a_background_overlay_change_affects_only_the_background_rows(
+    session, seeded, variant
+):
+    """A third direction, and the one that would catch a partition leaking
+    into the shared block: the fixture has exactly one background row, so an
+    ``artwork.background`` edit that reported anything but 1 would mean either
+    the background's payload is too wide or another kind's is."""
+    impact = await count_affected(
+        session, variant({"artwork": {"background": {"add_border": True}}})
+    )
+    assert impact.affected == 1
+    assert impact.by_art_kind == {"background": 1}
+
+
+async def test_a_shared_input_still_affects_every_ungated_row(session, seeded, variant):
+    """The converse, and it must stay true.
+
+    ``artwork.output_quality`` reaches ``build_base_argv`` on every kind
+    (render/pipeline.py:855), so it is a member of all four payloads and the
+    whole examined population is genuinely out of date. Without this pin the
+    partition could quietly drop a shared input and the preview would under-
+    report -- the one direction this module is never allowed to err in.
+    """
+    impact = await count_affected(session, variant({"artwork": {"output_quality": "88%"}}))
     assert impact.affected == 5
     assert impact.of_total == 5
     assert impact.by_art_kind == {
@@ -205,23 +271,19 @@ async def test_an_artwork_text_change_affects_every_ungated_row(session, seeded,
     }
 
 
-async def test_a_poster_overlay_change_affects_every_ungated_row(session, seeded, variant):
-    """Same reason as above, from the other end: the overlay *file name* lives
-    in the artwork section too, so it moves the version with it."""
-    impact = await count_affected(
-        session, variant({"artwork": {"poster": {"overlay_file": "other-overlay.png"}}})
-    )
-    assert impact.affected == 5
-
-
 async def test_a_disabled_art_kind_is_counted_neither_way(session, seeded, variant):
-    """The gate render_artifact applies before it fingerprints anything."""
+    """The gate render_artifact applies before it fingerprints anything.
+
+    Since row 111 the poster rows would not have been counted here anyway --
+    the edit is a title-card edit -- so the gate is pinned through the
+    DENOMINATOR, which is the number it was always really about.
+    """
     impact = await count_affected(
         session,
         variant({"artwork": {"poster": {"enabled": False}, "title_card": {"season_label": "Kausi"}}}),
     )
     assert "poster" not in impact.by_art_kind
-    assert impact.affected == 3
+    assert impact.affected == 1
     assert impact.of_total == 3, "a disabled kind must leave the denominator too"
 
 
@@ -282,8 +344,8 @@ async def test_a_render_that_used_a_logo_reads_as_affected(session, config):
             item_id=row.id, art_kind=art_kind, asset_path="/assets/x.jpg", status="rendered",
             source_url="https://example/poster", base_sha256="a" * 64,
             fingerprint=compute_fingerprint(
-                config.version, art_kind, "https://example/poster", "a" * 64,
-                text_inputs, asset_hashes,
+                render_version_for(art_kind, config), art_kind,
+                "https://example/poster", "a" * 64, text_inputs, asset_hashes,
             ),
         )
     )
@@ -324,8 +386,14 @@ async def test_a_count_writes_nothing(session, seeded, variant):
 
 
 async def test_the_affected_items_are_the_distinct_items_not_the_rows(session, seeded, variant):
-    """A movie with a poster and a background is one process_item job."""
-    intents = await affected_items(session, variant({"artwork": {"title_card": {"season_label": "K"}}}))
+    """A movie with a poster and a background is one process_item job.
+
+    The property needs an edit that reaches more than one row of one item, so
+    it takes a SHARED input (``artwork.output_quality``, read by
+    ``build_base_argv`` on every kind) rather than the title-card edit it used
+    to take -- which since row 111 reaches exactly one row.
+    """
+    intents = await affected_items(session, variant({"artwork": {"output_quality": "88%"}}))
     keys = sorted(intent.dedupe_key for intent in intents)
     assert keys == sorted({intent.dedupe_key for intent in intents}), "duplicate intents"
     assert len(keys) == 4, keys
