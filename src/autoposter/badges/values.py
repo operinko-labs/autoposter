@@ -213,15 +213,20 @@ def media_info_from_plex(item) -> MediaInfo:
                 # than a bare `[:2]` slice of `languageCode`: the stream's
                 # code is ISO 639-2 (three letters) and a handful of common
                 # languages do not truncate to their ISO 639-1 form --
-                # Swedish's `swe` is `sv`, not `sw` (Swahili). An unparseable
-                # or absent code falls back to the empty string, matching
-                # "no language" rather than a wrong guess.
+                # Swedish's `swe` is `sv`, not `sw` (Swahili). The width
+                # policy is "ISO 639-1 when known, else the raw tag": a code
+                # `langcodes` cannot map -- Plex's own `und` ("undetermined")
+                # among them -- passes through UNCHANGED rather than through
+                # a `raw[:2]` slice, which would have turned `und` into the
+                # real-looking but wrong code `un`. Absent code falls back to
+                # the empty string, matching "no language" rather than a
+                # guess.
                 raw = getattr(stream, "languageCode", None) or ""
                 if raw:
                     try:
-                        code = (langcodes.Language.get(raw).language or raw[:2]).lower()
+                        code = (langcodes.Language.get(raw).language or raw).lower()
                     except ValueError:
-                        code = raw[:2].lower()
+                        code = raw.lower()
                 else:
                     code = ""
                 if stream.streamType == 2:

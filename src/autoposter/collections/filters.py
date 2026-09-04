@@ -108,7 +108,7 @@ Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
   search names have no filter (``unplayed``, ``progress``, ``hdr``,
   ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
 
-This table covers **33** of the 55 search names and **26** of the 70 filter
+This table covers **33** of the 55 search names and **27** of the 70 filter
 names. Both halves of the residue are real work, and they are different work:
 the 45 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
 ``plays``, ``last_played``, 10a's ``country``, phase B's four people rows and
@@ -219,7 +219,7 @@ OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
     # `audio_language_count`/`subtitle_language_count`. Those names are not
     # in Kometa's filter vocabulary at all, and `FilterAttribute`'s docstring
     # below makes `name` a promise: it is Kometa's own name and what an
-    # operator writes in YAML. Inventing two would have made the 26-of-70
+    # operator writes in YAML. Inventing two would have made the 27-of-70
     # arithmetic in this module's docstring untrue and handed an operator a
     # spelling Kometa refuses. The cost of the exact-parity form is that
     # these four are legal on EVERY tag row, which is Kometa's own scoping;
@@ -1887,11 +1887,11 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
     #
     # The FIRST of the two branches is reachable now, for real: ``versions``
     # (C2a, A14) is filterable but has no Plex search field, the first of the
-    # 44 filter-only attributes (``aspect``, ``height``, ``summary``, ... --
+    # 44 filter-only attributes (``height``, ``summary``, ``filepath``, ... --
     # roadmap row 96's residue) to arrive under a table row rather than a bare
     # KeyError. It was written and tested with a synthetic row since
     # search-tails-1, before any real row reached it; ``versions`` is now that
-    # real row.
+    # real row, and ``aspect`` (C2b, A11) has since become the second.
     if searching and not attribute.searchable:
         raise ValueError(
             f"{field}: {name!r} is a client-side filter attribute but Plex has "

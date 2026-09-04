@@ -298,6 +298,22 @@ def test_an_item_with_no_subtitle_streams_has_empty_tuples_not_none():
     assert info.audio_stream_languages == ("en",)
 
 
+@pytest.mark.parametrize("raw", ["und", "mis", "qaa"])
+def test_a_code_langcodes_cannot_resolve_passes_through_unchanged_not_truncated(raw):
+    """`langcodes.Language.get(raw).language` is `None` for `und` -- Plex's
+    own "undetermined" tag -- so the fallback that used to read `or raw[:2]`
+    yielded `"un"`: a real-looking but WRONG two-letter code, on the one
+    input where the library declines to answer. `mis`/`qaa` are ISO 639-2
+    codes `langcodes` already answers with themselves unchanged, pinning
+    that the non-broken path stays untouched. The honest rule for a code
+    `langcodes` cannot map to ISO 639-1 is the same one `base_language_code`
+    (`collections/filters.py:2253`) documents: keep the raw tag unchanged
+    rather than truncate it into a different code."""
+    item = _item_with_streams(audio=[(raw, 2)], subtitles=[])
+    info = media_info_from_plex(item)
+    assert info.audio_stream_languages == (raw,)
+
+
 def test_the_distinct_audio_languages_field_is_untouched_and_still_deduplicates():
     """The guard on the coexistence. `audio_languages` is the FLAG badge's
     input (`language_slots` below it) and wants distinct languages off the

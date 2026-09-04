@@ -30,7 +30,11 @@ import pytest
 
 from autoposter.badges.values import media_info_from_plex
 from autoposter.collections.filter_values import PlexItemView
-from autoposter.collections.filters import evaluate, predicates as predicates_of
+from autoposter.collections.filters import (
+    base_language_code,
+    evaluate,
+    predicates as predicates_of,
+)
 from autoposter.overlays.selection import (
     OVERLAY_ATTRIBUTES,
     AttributeNotOnItem,
@@ -396,9 +400,16 @@ def test_the_two_views_agree_by_verdict_on_distinct_languages_and_diverge_on_rep
     inconsistency. Closing it means widening `plex/client.py`, which is a
     separate adjudication.
     """
-    for audio in (("eng", "fin"), ("eng",), ()):
+    for audio in (("eng", "fin"), ("eng",), ("swe",), ()):
         item = _Item(audio=audio)
-        codes = tuple(code[:2].lower() for code in audio)
+        # `base_language_code`, not a `[:2]` slice: `plex/client.py`'s real
+        # `_stream_languages` reads `languageTag` (already ISO 639-1), and
+        # `base_language_code` is the same `langcodes`-backed reduction
+        # `audio_stream_languages` uses on this view's side -- a `[:2]` slice
+        # here would agree with the badge-side conversion by accident on
+        # `eng`/`fin` and diverge on a code like `swe` (`sw` vs `sv`),
+        # mis-deriving the fixture rather than the code under test.
+        codes = tuple(base_language_code(code) for code in audio)
         tags = ItemTags(
             genres=(), labels=(), collections=(),
             audio_languages=codes, subtitle_languages=(),
