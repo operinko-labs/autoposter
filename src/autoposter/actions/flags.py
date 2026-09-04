@@ -215,6 +215,47 @@ def _unscored(config: Config) -> ColumnElement[bool]:
     return and_(Render.status == "rendered", Render.quality_scored_at.is_(None))
 
 
+def excluded_library_predicate(config: Config) -> ColumnElement[bool]:
+    """Rows whose Plex library this service is configured never to touch.
+
+    Not a flag, and deliberately not in ``FLAGS``: it narrows the POPULATION
+    every flag is asked about rather than naming a reason one row wants
+    attention. It lives here because this is where the queue's SQL over
+    ``MediaItem`` is written (see this module's docstring), and because the
+    quality backfill's own queries need the SAME expression -- a second
+    hand-written ``NOT IN`` in ``api/action_center.py`` would be one more
+    place to forget it, and the counts and the listing would then disagree
+    about the same row.
+
+    ``plex.excluded_libraries`` gates the Plex WALK, not the database:
+    ``PlexClient._sections`` (``plex/client.py:316-328``) drops those sections
+    so nothing new is discovered there, but a row discovered BEFORE the
+    exclusion stays in ``media_items`` forever. Its ``process_item`` job does
+    not even park -- ``resolve()`` raises ``ItemNotFound`` and
+    ``queue/worker.py``'s branch defers it on an unbounded horizon -- so such a
+    row is never scored and never reads as ``blocked``, and without this
+    predicate it sits in the queue, the chip counts and the backfill's
+    denominator permanently. ``plex_prune`` retires the rows themselves; this
+    keeps the Action Center's population one an operator can finish in the
+    meantime.
+
+    The comparison is EXACT, never case-folded, because every other reader of
+    this setting is exact: ``plex/client.py:327`` tests
+    ``s.title not in self._excluded`` and ``api/mismatches.py:249`` tests
+    ``item.library in excluded_libraries``. A case-insensitive test here would
+    hide rows the resolver would still walk, which is worse than showing one
+    it will not.
+
+    An empty list is ``literal(True)`` rather than ``NOT IN ()`` -- the
+    ``_provider_miss`` precedent above: an empty configuration means the
+    predicate has nothing to say, not that every row fails it.
+    """
+    excluded = config.plex.excluded_libraries
+    if not excluded:
+        return literal(True)
+    return MediaItem.library.notin_(excluded)
+
+
 # --- the row details ---------------------------------------------------------
 
 

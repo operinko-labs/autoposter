@@ -88,6 +88,48 @@ def _dismissal_join():
     )
 
 
+def _undismissed(stmt):
+    """Attach the dismissal anti-join to a select over ``renders``.
+
+    The same two halves ``_scope`` applies -- ``_dismissal_join()`` as a LEFT
+    OUTER JOIN, then ``ActionDismissal.id.is_(None)`` as a WHERE term -- kept
+    in one call because they are only correct together: the join without the
+    null test hides nothing, and the null test without the join is an error
+    against a table that is not in the FROM list. It must stay OUTER: an
+    inner join here drops every row that was never dismissed, which is nearly
+    the whole library.
+
+    It exists because the quality backfill's queries do not go through
+    ``_scope`` and cannot -- they take no ``library``/``art_kind``, they
+    answer a population question rather than build a page, and one of them
+    selects ``MediaItem`` rather than ``Render``. They still have to give the
+    SAME answer about the SAME row: ``_backfill_state`` and
+    ``_select_backfill_batch`` queried ``renders`` and ``jobs`` with no
+    ``ActionDismissal`` join at all, so a dismissed unscored row sat inside
+    ``unscored_total`` and read as ``queued_for_scoring`` while the "Not yet
+    scored" chip and its listing showed nothing -- observed in production on
+    2026-09-04 as "0 of 2 unscored asset(s) queued for scoring" above a chip
+    reading 0.
+
+    A dismissal is the operator saying "leave this one", so dismissing an
+    unscored row MEANS stop counting it as unscored -- the chip's reading,
+    and now the header's. That is safe to do to a COUNT because the hiding
+    expires on its own: ``evidence_expression()`` hashes
+    ``quality_scored_at IS NOT NULL`` among the row's facts, so the day the
+    row is scored, or re-rendered into any other fact, this join stops
+    matching and the row returns to the header and the chip together.
+
+    ``UNIQUE(item_id, art_kind)`` on the dismissals table means the join can
+    never multiply a row, so a ``COUNT(*)`` through it stays a count of
+    ``renders`` rows -- the property ``_dismissal_join``'s own docstring
+    names for ``total``, and the reason ``done`` and ``unscored_count`` stay
+    comparable after this change.
+    """
+    return stmt.outerjoin(ActionDismissal, _dismissal_join()).where(
+        ActionDismissal.id.is_(None)
+    )
+
+
 def _reprocess_entries(items: list[MediaItem]) -> list[tuple[dict, str]]:
     """Build ``enqueue_batch``'s ``(payload, dedupe_key)`` entries for a list
     of items.
@@ -113,8 +155,17 @@ def _reprocess_entries(items: list[MediaItem]) -> list[tuple[dict, str]]:
     return entries
 
 
-def _scope(library: str | None, art_kind: str | None, include_dismissed: bool) -> list:
-    conditions = []
+def _scope(config, library: str | None, art_kind: str | None, include_dismissed: bool) -> list:
+    """The conditions every queue query shares.
+
+    It LEADS with the excluded-library predicate rather than offering it as an
+    option: a row in an excluded library is not a narrower view of the queue,
+    it is not part of the queue at all -- nothing can re-render it, so listing
+    it, counting it or enqueueing work for it is noise an operator cannot act
+    on. Applied here rather than at each endpoint so the listing, the chip
+    counts and the bulk re-search cannot disagree about the same row.
+    """
+    conditions = [flags.excluded_library_predicate(config)]
     if library is not None:
         conditions.append(MediaItem.library == library)
     if art_kind is not None:
@@ -150,7 +201,7 @@ async def list_actions(
     capped_limit = min(max(limit, 1), MAX_ACTIONS_LIMIT)
     capped_offset = max(offset, 0)
     conditions = [_flag_predicate(config, flag)]
-    conditions.extend(_scope(library, art_kind, include_dismissed))
+    conditions.extend(_scope(config, library, art_kind, include_dismissed))
 
     labelled = [
         entry.predicate(config).label(f"is_{code}") for code, entry in flags.FLAGS.items()
@@ -238,7 +289,7 @@ async def actions_summary(
     own that a new flag would silently fall out of.
     """
     config = request.app.state.config_holder.current
-    conditions = _scope(library, art_kind, include_dismissed)
+    conditions = _scope(config, library, art_kind, include_dismissed)
 
     counters = [
         func.sum(case((entry.predicate(config), 1), else_=0)).label(f"n_{code}")
@@ -456,7 +507,7 @@ async def bulk_rerender_action(
     """
     config = request.app.state.config_holder.current
     conditions = [_flag_predicate(config, body.flag)]
-    conditions.extend(_scope(body.library, body.art_kind, body.include_dismissed))
+    conditions.extend(_scope(config, body.library, body.art_kind, body.include_dismissed))
     batch_size = config.scheduler.drift_batch_size
 
     session_factory = request.app.state.session_factory
@@ -604,7 +655,7 @@ def _dedupe_key_for(item: MediaItem) -> str:
     ).dedupe_key
 
 
-async def _backfill_state(session) -> tuple[int, int, int, int]:
+async def _backfill_state(session, config) -> tuple[int, int, int, int]:
     """``(done, total, blocked, queued_for_scoring)`` over the rows this
     backfill can actually score, in one shared pass.
 
@@ -650,12 +701,41 @@ async def _backfill_state(session) -> tuple[int, int, int, int]:
     changing what "gone" means. The merge job's own scan CAN tell, and its
     summary reports the count. That is the right surface for it, one click
     away, rather than a fourth number on this panel.
+
+    Every one of the three population queries below carries
+    ``flags.excluded_library_predicate`` -- the SAME expression the listing
+    and the chip counts use. A row in an excluded library can never be
+    scored (its job defers forever rather than parking, so it is not
+    ``blocked`` either), and a denominator holding rows the button cannot
+    move is a progress bar that stops short of 100% for good.
+
+    Every population query below is ALSO anti-joined against
+    ``action_dismissals``, through ``_undismissed`` -- the same
+    ``_dismissal_join()`` plus ``ActionDismissal.id.is_(None)`` pair
+    ``_scope`` gives the listing and the chip counts. A dismissal is the
+    operator saying "leave this one", so a dismissed row is not in this
+    population at all: not in ``done``, not in ``total``, not in ``blocked``
+    and not in ``queued_for_scoring``. Without it, a dismissed unscored row
+    sat inside ``unscored_total`` and read as queued while the "Not yet
+    scored" chip showed 0 -- the header and the chip counting two different
+    populations of the same table (production, 2026-09-04). ``parked_keys``
+    and ``pending_keys`` stay unfiltered on purpose: they are only ever
+    tested against items that already came out of that anti-joined walk.
     """
+    excluded_rows = flags.excluded_library_predicate(config)
+
     done = (
         await session.execute(
-            select(func.count())
-            .select_from(Render)
-            .where(Render.status == "rendered", Render.quality_scored_at.isnot(None))
+            _undismissed(
+                select(func.count())
+                .select_from(Render)
+                .join(MediaItem, MediaItem.id == Render.item_id)
+                .where(
+                    Render.status == "rendered",
+                    Render.quality_scored_at.isnot(None),
+                    excluded_rows,
+                )
+            )
         )
     ).scalar_one()
 
@@ -678,9 +758,15 @@ async def _backfill_state(session) -> tuple[int, int, int, int]:
         unscored_items = (
             (
                 await session.execute(
-                    select(MediaItem)
-                    .join(Render, Render.item_id == MediaItem.id)
-                    .where(Render.status == "rendered", Render.quality_scored_at.is_(None))
+                    _undismissed(
+                        select(MediaItem)
+                        .join(Render, Render.item_id == MediaItem.id)
+                        .where(
+                            Render.status == "rendered",
+                            Render.quality_scored_at.is_(None),
+                            excluded_rows,
+                        )
+                    )
                 )
             )
             .scalars()
@@ -696,9 +782,16 @@ async def _backfill_state(session) -> tuple[int, int, int, int]:
     else:
         unscored_count = (
             await session.execute(
-                select(func.count())
-                .select_from(Render)
-                .where(Render.status == "rendered", Render.quality_scored_at.is_(None))
+                _undismissed(
+                    select(func.count())
+                    .select_from(Render)
+                    .join(MediaItem, MediaItem.id == Render.item_id)
+                    .where(
+                        Render.status == "rendered",
+                        Render.quality_scored_at.is_(None),
+                        excluded_rows,
+                    )
+                )
             )
         ).scalar_one()
 
@@ -706,7 +799,7 @@ async def _backfill_state(session) -> tuple[int, int, int, int]:
     return done, total, blocked, queued
 
 
-async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
+async def _select_backfill_batch(session, batch_size: int, config) -> list[Render]:
     """The next ``batch_size`` unscored, rendered rows to score -- skipping
     any row whose ITEM already has a pending or deferred ``process_item`` job,
     or whose most recent ``process_item`` job is ``parked``.
@@ -739,6 +832,17 @@ async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
     id-precedence chain as SQL. Paged rather than one large ``LIMIT``, since
     the in-flight set can itself be up to ``batch_size`` items and no fixed
     multiple over that is safe to assume.
+
+    The excluded-library predicate rides along for the same reason the
+    in-flight and parked exclusions do: enqueueing an item this service can
+    no longer resolve does not score it, it just mints another job that
+    defers on an unbounded horizon.
+
+    The dismissal anti-join rides along for a reason the in-flight and parked
+    exclusions cannot cover: a dismissed row typically has NO job at all, so
+    neither of those would skip it, and a press would clear the fingerprint
+    of an asset the operator has explicitly set aside and mint a real
+    re-render for it.
     """
     pending_keys = set(
         (
@@ -758,12 +862,15 @@ async def _select_backfill_batch(session, batch_size: int) -> list[Render]:
     while len(selected) < batch_size:
         page = (
             await session.execute(
-                select(Render, MediaItem)
-                .join(MediaItem, MediaItem.id == Render.item_id)
-                .where(
-                    Render.status == "rendered",
-                    Render.quality_scored_at.is_(None),
-                    Render.id > after_id,
+                _undismissed(
+                    select(Render, MediaItem)
+                    .join(MediaItem, MediaItem.id == Render.item_id)
+                    .where(
+                        Render.status == "rendered",
+                        Render.quality_scored_at.is_(None),
+                        Render.id > after_id,
+                        flags.excluded_library_predicate(config),
+                    )
                 )
                 .order_by(Render.id)
                 .limit(batch_size)
@@ -789,9 +896,10 @@ async def backfill_status(
 ) -> dict:
     """How much of the scorable population has been scored, and how much of
     what is left is already queued for it. Reads only."""
+    config = request.app.state.config_holder.current
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        done, total, blocked, queued_for_scoring = await _backfill_state(session)
+        done, total, blocked, queued_for_scoring = await _backfill_state(session, config)
 
     # Completion is derived FIRST, and by the POST's own rule: `done >= total`
     # <=> no unscored rendered row is left <=> the trigger selects 0. Testing
@@ -847,7 +955,7 @@ async def backfill_trigger(
 
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        batch = await _select_backfill_batch(session, batch_size)
+        batch = await _select_backfill_batch(session, batch_size, config)
 
         item_ids = []
         for render in batch:
@@ -870,7 +978,7 @@ async def backfill_trigger(
         # previous batch is still rendering (the live report this answers,
         # mid-run at 8214/17264) needs the depth this press just left behind,
         # not the depth it found.
-        done, total, blocked, queued_for_scoring = await _backfill_state(session)
+        done, total, blocked, queued_for_scoring = await _backfill_state(session, config)
         unscored_total = total - done
         if not batch:
             detail = f"complete: all {total} rendered asset(s) have been scored"
