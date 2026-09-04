@@ -10,6 +10,7 @@ are the transcription's checksum: what the art is, what each definition
 selects on, that every named image actually exists, and that adding the art
 moved no fingerprint.
 """
+import datetime as dt
 import hashlib
 
 import pytest
@@ -444,7 +445,126 @@ def test_dual_beats_multi_on_a_two_language_item():
     assert evaluate(parse_condition(multi.condition), three) is True
 
 
-def test_the_two_new_families_ship_and_no_more():
+# --- sub-phase C2c: the `status` family ------------------------------------
+
+STATUS_BANDS = [
+    ("AIRING", {"last_episode_aired": 14}, 40),
+    ("RETURNING", {"tmdb_status": "returning"}, 30),
+    ("CANCELED", {"tmdb_status": "canceled"}, 20),
+    ("ENDED", {"tmdb_status": "ended"}, 10),
+]
+
+
+def test_the_status_family_transcribes_all_four_bands():
+    """The transcription's checksum, in `status.yml`'s own order (`:70-84`),
+    which is also descending weight. A dropped band is not a crash; it is a
+    silently missing badge on every show in that state."""
+    definitions = FAMILIES["status"]
+    assert len(definitions) == 4
+    for definition, (text, condition, weight) in zip(
+        definitions, STATUS_BANDS, strict=True
+    ):
+        assert definition.name == f"text({text})", text
+        assert definition.condition == condition, text
+        assert (definition.group, definition.weight) == ("status", weight), text
+
+
+def test_the_status_family_draws_its_own_name_and_names_no_image():
+    """`final_name: text(<<text_<<key>>>>)` (`status.yml:40`) with
+    `text_<<key>>: <<text>>` (`:11`) -- resolved flat, the drawn string is
+    the overlay's own name, the literal `AIRING`, with no `<<variable>>`
+    token in it at all, so `render_text` has nothing to substitute and
+    `UnresolvedVariable` can never fire for this family.
+
+    ZERO ASSETS, and that is what keeps `OVERLAY-MANIFEST.sha256` and
+    therefore `manifest_sha()` from moving: `status.yml` names no image key
+    anywhere in its 84 lines, so C2c is the first family slice in row 100
+    that vendors nothing at all."""
+    for definition in FAMILIES["status"]:
+        literal = literal_of(definition.name)
+        assert literal is not None
+        assert tokens_in(literal) == [], definition.name
+        assert definition.builtin is None
+        assert definition.file is None
+        assert definition.url is None
+
+
+def test_the_status_family_shares_one_box_and_the_bundled_face():
+    """305x105 at LEFT/15, TOP/330 -- and the 330 is not a typo.
+    `status.yml:13-15` sets `default: {horizontal_align: left,
+    vertical_align: top}`, which supplies the ALIGNMENT without making the
+    variable 'exist', so the `vertical_offset` conditional's FIRST condition
+    fires: `vertical_align.exists: false -> 330` (`:20-21`). The
+    `vertical_align: top -> 15` branch below it (`:24-25`) is for an operator
+    who sets the alignment explicitly, and this service emits flat resolved
+    definitions rather than a template resolver.
+
+    `font`, `font_color` and `back_radius` are NOT in `status.yml`: they
+    inherit from the un-vendored `templates.yml`'s `standard` template
+    (`:5`, `:7`, `:8`), whose `font_size: 55` is overridden to 50 by
+    `status.yml:35`. `font_color` is left unset here because
+    `OverlayDefinition`'s own default is already `#FFFFFF`, the same value --
+    writing it would be a second spelling of one fact."""
+    for definition in FAMILIES["status"]:
+        assert (definition.back_width, definition.back_height) == (305, 105)
+        assert definition.back_color == "#00000099"
+        assert definition.back_radius == 30
+        assert (definition.horizontal_align, definition.horizontal_offset) == ("left", 15)
+        assert (definition.vertical_align, definition.vertical_offset) == ("top", 330)
+        assert definition.font == "Inter-Medium.ttf"
+        assert definition.font_size == 50
+        assert definition.font_color == "#FFFFFF"
+        assert definition.font in BUNDLED_FONTS
+
+
+def test_airing_and_ended_can_both_match_and_weight_resolves_it():
+    """**Adjudication A-5's third case, and the most realistic one yet.** A
+    show whose finale aired eight days ago and which TMDb has already marked
+    `Ended` matches AIRING (a 14-day window) AND ENDED (an exact-set status)
+    -- the two conditions are over DIFFERENT attributes, so unlike `aspect`'s
+    overlapping bands there is no arithmetic that could separate them. What
+    makes the answer well-defined is upstream's own group plus weights: 40
+    beats 10, AIRING draws, and `select` still records BOTH outcomes, which
+    over-covers the fingerprint and can never under-cover it. The same holds
+    for a mid-season show, which matches AIRING and RETURNING."""
+    bands = {literal_of(d.name): d for d in FAMILIES["status"]}
+    airing, ended, returning = bands["AIRING"], bands["ENDED"], bands["RETURNING"]
+    assert airing.group == ended.group == returning.group == "status"
+    assert airing.weight > returning.weight > ended.weight
+
+    now = dt.datetime(2026, 9, 5, 12, 0)
+    recent_finale_of_an_ended_show = {
+        "last_episode_aired": dt.date(2026, 8, 28),
+        "tmdb_status": "ended",
+    }
+    assert evaluate(parse_condition(airing.condition),
+                    recent_finale_of_an_ended_show, now=now) is True
+    assert evaluate(parse_condition(ended.condition),
+                    recent_finale_of_an_ended_show, now=now) is True
+    assert _resolve_definitions([airing, ended]) == [airing]
+    assert _resolve_definitions([ended, airing]) == [airing], (
+        "weight decides, not configured order"
+    )
+
+
+def test_three_of_the_six_tmdb_statuses_draw_nothing():
+    """`discover_status` has six values; `status.yml` ships bands for three.
+    `planned`, `production` and `pilot` have NO overlay upstream and must
+    have none here -- a show TMDb calls 'In Production' draws no status badge
+    in Kometa, and drawing one would be an invention rather than a
+    transcription. This is the pin that would fail if a well-meaning edit
+    'completed' the family."""
+    written = {
+        d.condition.get("tmdb_status")
+        for d in FAMILIES["status"]
+        if "tmdb_status" in d.condition
+    }
+    assert written == {"returning", "canceled", "ended"}
+    for absent in ("planned", "production", "pilot"):
+        assert absent not in written, absent
+
+
+def test_the_status_family_ships_and_no_more():
     assert sorted(FAMILIES) == [
         "aspect",
         "content_rating_au",
@@ -455,5 +575,6 @@ def test_the_two_new_families_ship_and_no_more():
         "content_rating_us_show",
         "direct_play",
         "language_count",
+        "status",
         "versions",
     ]
