@@ -12,11 +12,28 @@ const ENABLED = {
   ],
 };
 
+/** Tags a mocked response as a refusal, so `mockFetch` can answer `ok: false`
+ * with the server's own JSON shape (`{"detail": "..."}`) instead of a 200. */
+function errorResponse(status: number, detail: string) {
+  return { __error: true as const, status, detail };
+}
+
+function isErrorResponse(
+  value: unknown,
+): value is { __error: true; status: number; detail: string } {
+  return typeof value === "object" && value !== null && "__error" in value;
+}
+
 function mockFetch(responses: Record<string, unknown>) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     const key = `${init?.method ?? "GET"} ${url}`;
     const body = responses[key] ?? responses[`GET ${url}`];
     if (body === undefined) throw new Error(`unmocked ${key}`);
+    if (isErrorResponse(body)) {
+      return {
+        ok: false, status: body.status, json: async () => ({ detail: body.detail }),
+      } as unknown as Response;
+    }
     return {
       ok: true, status: 200, json: async () => body,
     } as unknown as Response;
@@ -98,6 +115,45 @@ describe("MetadataOverridesPanel", () => {
 
     expect(await screen.findByRole("status")).toHaveTextContent(/unlocked/i);
     expect(screen.getByRole("status")).toHaveTextContent(/until Plex itself refreshes/i);
+  });
+
+  it("labels a refused PUT with the field name, not the bare class name", async () => {
+    /* The server's 422 is deliberately class-name-only (`OverrideValueError`,
+     * never the value or a message naming the field) -- see
+     * `api/item_overrides.py`'s module docstring. The panel owes the operator
+     * the half the server left out. */
+    const fetchMock = mockFetch({
+      "GET /api/items/7/metadata-overrides": ENABLED,
+      "PUT /api/items/7/metadata-overrides/critic_rating": errorResponse(
+        422, "OverrideValueError",
+      ),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MetadataOverridesPanel itemId={7} />);
+    await screen.findByText("A crime saga");
+
+    const row = screen.getByTestId("override-critic_rating");
+    fireEvent.change(row.querySelector("input")!, { target: { value: "eleven" } });
+    fireEvent.click(row.querySelector("button")!);
+
+    const message = await screen.findByText(/critic_rating: value not accepted/i);
+    expect(message).toHaveTextContent("OverrideValueError");
+  });
+
+  it("labels a refused DELETE as a failed Plex write, naming the exception class", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/items/7/metadata-overrides": ENABLED,
+      "DELETE /api/items/7/metadata-overrides/tagline": errorResponse(503, "OSError"),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MetadataOverridesPanel itemId={7} />);
+    await screen.findByText("A crime saga");
+
+    fireEvent.click(screen.getByRole("button", { name: /clear tagline/i }));
+
+    expect(await screen.findByText(/Plex write failed \(OSError\)/)).toBeInTheDocument();
   });
 
   it("is read-only with a banner naming the key when the gate is off", async () => {

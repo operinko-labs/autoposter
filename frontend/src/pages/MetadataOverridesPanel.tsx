@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { apiFetch } from "../api/client";
+import { ApiError, apiFetch } from "../api/client";
 import type {
   MetadataOverride,
   MetadataOverrideWriteResponse,
@@ -32,6 +32,20 @@ const TITLE_NOTE =
   "one re-render, on the pass after the one that writes it to Plex.";
 
 const GATE = "operations.item_overrides_enabled";
+
+/** Labels a failed write. The server deliberately serves a class name (422,
+ * 503) or a fixed gate sentence (409) rather than echoing the value the
+ * operator typed -- see `api/item_overrides.py`'s module docstring -- so
+ * this panel supplies the half the server left out: which field, and that
+ * the write reached Plex at all. */
+function describeWriteError(caught: unknown, field: string): string {
+  if (caught instanceof ApiError) {
+    if (caught.status === 422) return `${field}: value not accepted (${caught.message})`;
+    if (caught.status === 409) return caught.message;
+    if (caught.status === 503) return `Plex write failed (${caught.message})`;
+  }
+  return caught instanceof Error ? caught.message : String(caught);
+}
 
 /** The per-item override panel: a field table, an inline edit per row, and
  * the gate's banner.
@@ -69,12 +83,21 @@ export function MetadataOverridesPanel({ itemId }: { itemId: number }) {
     );
     if (live.current) {
       setState(next);
-      // Drafts are cleared, never seeded from `next.overrides`: an input
-      // shows what the operator is typing, and the stored value is shown
-      // beside it as text.
-      setDrafts({});
     }
   }, [itemId]);
+
+  // The field just written clears its own draft on success; the others are
+  // left alone. Reload used to clear every draft, which meant typing into
+  // `tagline` while a `studio` save was in flight lost that text the instant
+  // the reload landed.
+  function clearDraft(field: string) {
+    setDrafts((all) => {
+      if (!(field in all)) return all;
+      const rest = { ...all };
+      delete rest[field];
+      return rest;
+    });
+  }
 
   useEffect(() => {
     reload().catch((caught: Error) => {
@@ -98,13 +121,11 @@ export function MetadataOverridesPanel({ itemId }: { itemId: number }) {
               ? "A re-run was queued."
               : "A re-run was already pending, so nothing new was added."),
         );
+        clearDraft(field);
       }
       await reload();
     } catch (caught) {
-      // Shown verbatim. This page is behind require_session, and the server
-      // deliberately serves a class name rather than the value that failed,
-      // so there is nothing here to leak.
-      if (live.current) setError((caught as Error).message);
+      if (live.current) setError(describeWriteError(caught, field));
     } finally {
       if (live.current) setBusy(null);
     }
@@ -128,7 +149,7 @@ export function MetadataOverridesPanel({ itemId }: { itemId: number }) {
       }
       await reload();
     } catch (caught) {
-      if (live.current) setError((caught as Error).message);
+      if (live.current) setError(describeWriteError(caught, field));
     } finally {
       if (live.current) setBusy(null);
     }
