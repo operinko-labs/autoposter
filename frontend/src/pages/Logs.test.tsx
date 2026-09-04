@@ -44,6 +44,23 @@ function ndjsonResponse(signal: AbortSignal, ...values: unknown[]): Response {
   });
 }
 
+/** The same stream, but of raw lines: what a proxy in front of the server
+ * answers with when it substitutes its own error page for the body. */
+function rawResponse(signal: AbortSignal, ...lines: string[]): Response {
+  let controller: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+      const encoder = new TextEncoder();
+      for (const line of lines) controller.enqueue(encoder.encode(line + "\n"));
+    },
+  });
+  signal.addEventListener("abort", () => {
+    controller.error(new DOMException("aborted", "AbortError"));
+  });
+  return new Response(body, { status: 200, headers: { "Content-Type": "text/html" } });
+}
+
 beforeEach(() => {
   setToken("a-session-token");
 });
@@ -116,6 +133,29 @@ describe("Logs", () => {
     const { unmount } = render(<Logs />);
 
     expect(await screen.findByText("boom")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("reconnecting…")).toBeInTheDocument());
+    unmount();
+  });
+
+  it("shows a fixed sentence, not the bytes, when the stream is not JSON", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) =>
+        Promise.resolve(
+          rawResponse(
+            init.signal as AbortSignal,
+            "<html>502 Bad Gateway from edge.internal</html>",
+          ),
+        ),
+      ),
+    );
+
+    const { unmount } = render(<Logs />);
+
+    expect(
+      await screen.findByText("the server answered with something that was not JSON"),
+    ).toBeInTheDocument();
+    expect(document.body.textContent ?? "").not.toContain("edge.internal");
     await waitFor(() => expect(screen.getByText("reconnecting…")).toBeInTheDocument());
     unmount();
   });
