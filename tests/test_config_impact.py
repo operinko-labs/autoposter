@@ -274,16 +274,18 @@ async def test_a_shared_input_still_affects_every_ungated_row(session, seeded, v
 async def test_a_disabled_art_kind_is_counted_neither_way(session, seeded, variant):
     """The gate render_artifact applies before it fingerprints anything.
 
-    Since row 111 the poster rows would not have been counted here anyway --
-    the edit is a title-card edit -- so the gate is pinned through the
-    DENOMINATOR, which is the number it was always really about.
+    The edit is `output_quality` -- a genuinely SHARED input that reaches
+    every kind's payload, poster included -- combined with disabling poster.
+    That makes "poster" absent from `by_art_kind` prove the `enabled` gate
+    rather than mere confinement: since row 111 a `title_card`-only edit
+    would exclude poster either way and prove nothing about the gate.
     """
     impact = await count_affected(
         session,
-        variant({"artwork": {"poster": {"enabled": False}, "title_card": {"season_label": "Kausi"}}}),
+        variant({"artwork": {"poster": {"enabled": False}, "output_quality": "88%"}}),
     )
-    assert "poster" not in impact.by_art_kind
-    assert impact.affected == 1
+    assert impact.by_art_kind == {"background": 1, "season_poster": 1, "title_card": 1}
+    assert impact.affected == 3
     assert impact.of_total == 3, "a disabled kind must leave the denominator too"
 
 
@@ -354,6 +356,73 @@ async def test_a_render_that_used_a_logo_reads_as_affected(session, config):
     assert (await count_affected(session, config)).affected == 1
 
 
+async def test_a_logo_poster_is_counted_by_an_edit_that_never_touches_poster(
+    session, config, variant
+):
+    """The overcount is not confined by the per-art-kind version.
+
+    `_walk_version` only moves the kinds an edit's own payload reaches
+    (`test_an_artwork_text_change_affects_only_the_kind_it_names` above), so a
+    `title_card`-only edit leaves a PLAIN poster row's fingerprint untouched.
+    A logo-composited poster is different: its stored fingerprint was built
+    with `draw_text=False` and a real `logo_sha` this walk can never
+    reproduce (the module docstring's approximation), so it mismatches under
+    every render-affecting edit -- including this one, which never reaches
+    `artwork.poster` at all. That is exactly the gap the "which kinds an edit
+    touched" phrasing cannot honestly cover on its own (roadmap row 111
+    follow-up), which is why the Settings/impact copy hedges rather than
+    promising confinement.
+    """
+    movie, poster_kind = FIXTURE_ROWS[0]
+    poster_row = MediaItem(
+        rating_key=movie.rating_key, library=movie.library, kind=movie.kind,
+        title=movie.title, year=movie.year, tmdb_id=movie.tmdb_id, root_folder=movie.root_folder,
+    )
+    session.add(poster_row)
+    await session.flush()
+    text_inputs, asset_hashes = await gather_fingerprint_inputs(
+        config, movie, poster_kind, draw_text=False, logo_sha="deadbeef"
+    )
+    session.add(
+        Render(
+            item_id=poster_row.id, art_kind=poster_kind, asset_path="/assets/poster.jpg",
+            status="rendered", source_url="https://example/poster", base_sha256="a" * 64,
+            fingerprint=compute_fingerprint(
+                render_version_for(poster_kind, config), poster_kind,
+                "https://example/poster", "a" * 64, text_inputs, asset_hashes,
+            ),
+        )
+    )
+
+    episode, title_card_kind = FIXTURE_ROWS[4]
+    episode_row = MediaItem(
+        rating_key=episode.rating_key, library=episode.library, kind=episode.kind,
+        title=episode.title, year=episode.year, tmdb_id=episode.tmdb_id,
+        season_number=episode.season_number, episode_number=episode.episode_number,
+        root_folder=episode.root_folder,
+    )
+    session.add(episode_row)
+    await session.flush()
+    session.add(
+        Render(
+            item_id=episode_row.id, art_kind=title_card_kind, asset_path="/assets/title_card.jpg",
+            status="rendered", source_url="https://example/title_card", base_sha256="b" * 64,
+            fingerprint=await _stored_fingerprint(config, episode, title_card_kind, "b" * 64),
+        )
+    )
+    await session.commit()
+
+    impact = await count_affected(
+        session, variant({"artwork": {"title_card": {"season_label": "Kausi"}}})
+    )
+    assert impact.by_art_kind["poster"] == 1, (
+        "the logo row must be counted by ANY render-affecting edit, not only "
+        "one that touches artwork.poster"
+    )
+    assert impact.by_art_kind["title_card"] == 1
+    assert impact.affected == 2
+
+
 # --- side-effect freedom ---
 
 
@@ -400,11 +469,20 @@ async def test_the_affected_items_are_the_distinct_items_not_the_rows(session, s
 
 
 async def test_the_affected_items_honour_the_same_gates(session, seeded, variant):
+    """The disabled-kind gate holds even under a genuinely shared edit.
+
+    `output_quality` reaches every kind's payload (the converse pin above),
+    so if the `enabled` gate in `_walk` were ever dropped, the show's poster
+    -- disabled here -- would move like everything else and "show" would
+    appear in `kinds` too. It does not: the gate is checked before a row's
+    version is even read.
+    """
     intents = await affected_items(
         session,
-        variant({"artwork": {"poster": {"enabled": False}, "title_card": {"season_label": "K"}}}),
+        variant({"artwork": {"poster": {"enabled": False}, "output_quality": "88%"}}),
     )
     kinds = {intent.kind for intent in intents}
+    assert kinds == {"movie", "season", "episode"}, kinds
     assert "show" not in kinds, "the show's only artifact is a disabled poster"
 
 

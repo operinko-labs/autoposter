@@ -19,21 +19,25 @@ value, so it is reported as affected *whatever the edit was*. That is an
 overcount, never an undercount, of the text and version changes the operator
 is actually asking about. The UI must therefore say "~N", not "N".
 
+**What the breakdown means, since roadmap row 111.** The first component of
+every fingerprint is now a PER-ART-KIND version
+(``config/loader.py::render_version_for``), so ``by_art_kind`` is evidence
+about the kinds whose stored fingerprints an edit moves -- the exact inverse
+of the disclaimer this module and the Settings page both used to carry. It is
+NOT, without qualification, evidence about which kinds the edit touched: a
+poster whose logo is composited into it is counted for any render-affecting
+edit, because -- per the approximation above -- this walk cannot see the
+logo it was built with. A genuinely shared input (an asset root,
+``library_folders``, ``artwork.use_original_title``, the global
+``artwork.disable_online_asset_fetch``, ``artwork.output_quality``) is a
+member of every kind's payload and still reaches every row; that is the edit
+being global, not the count failing to discriminate.
+
 A third input is now in the same position: with
 ``artwork.use_original_title`` on, the real render drew an original-language
 title this walk cannot know (``renders`` stores no title at all), so such an
 item is reported as affected whatever the edit was. Overcount, never
 undercount, exactly like the logo case above.
-
-**What the breakdown means, since roadmap row 111.** The first component of
-every fingerprint is now a PER-ART-KIND version
-(``config/loader.py::render_version_for``), so ``by_art_kind`` is evidence
-about which kinds an edit touched -- the exact inverse of the disclaimer this
-module and the Settings page both used to carry. A genuinely shared input (an
-asset root, ``library_folders``, ``artwork.use_original_title``, the global
-``artwork.disable_online_asset_fetch``, ``artwork.output_quality``) is a
-member of every kind's payload and still reaches every row; that is the edit
-being global, not the count failing to discriminate.
 """
 import asyncio
 import hashlib
@@ -221,6 +225,11 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
     ).all()
 
     cache: dict[str, str] = {}
+    # Element 0 of every fingerprint this walk recomputes, once per kind
+    # rather than once per row: _walk_version dumps the whole artwork config
+    # (loader.py's render_version_for), and a 16,000-row library has only
+    # four distinct values for it.
+    versions = {art_kind: _walk_version(art_kind, config) for art_kind in _ART_KINDS}
     candidates: list[_Candidate] = []
     for row in rows:
         art_kind = row.art_kind
@@ -257,7 +266,7 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
         # adopted row's null source_url reproduces adopted_fingerprint's
         # dropped-URL comparison exactly.
         candidate = compute_fingerprint(
-            _walk_version(art_kind, config), art_kind, row.source_url, row.base_sha256,
+            versions[art_kind], art_kind, row.source_url, row.base_sha256,
             text_inputs, asset_hashes,
         )
         candidates.append(
