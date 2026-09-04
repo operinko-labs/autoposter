@@ -62,11 +62,11 @@ def _flag_predicate(config, flag: str | None):
     try:
         return flags.predicate_for(flag, config)
     except KeyError:
+        # Names what this build has, never the value asked for: the query
+        # string would otherwise be reflected into a served body.
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"unknown flag {flag!r}; this build has: " + ", ".join(flags.FLAGS)
-            ),
+            detail="unknown flag; this build has: " + ", ".join(flags.FLAGS),
         ) from None
 
 

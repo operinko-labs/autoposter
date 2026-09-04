@@ -278,6 +278,9 @@ def parse_source(text: str) -> ParsedSource:
         # than falling into the bare shapes below and drawing MDBList's
         # error string about a value that was never an MDBList reference.
         raise SourceUrlRefused(
-            f"{host!r} is not a supported source -- supported: " + SUPPORTED
+            # The host is not echoed: this is the 422 detail
+            # collections_builders.py serves back, and the paste can be an
+            # intranet address the operator did not mean to publish.
+            "that host is not a supported source -- supported: " + SUPPORTED
         )
     return _parse_bare(value)
