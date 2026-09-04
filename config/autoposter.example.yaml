@@ -85,8 +85,8 @@ badges:
   # no change at all. Available: aspect, content_rating_au,
   # content_rating_de, content_rating_nz, content_rating_uk,
   # content_rating_us_movie, content_rating_us_show, direct_play,
-  # language_count, versions. An unknown or repeated name is refused at
-  # load, naming what is available.
+  # language_count, status, versions. An unknown or repeated name is
+  # refused at load, naming what is available.
   #
   # aspect draws the film's ratio (1.33 ... 2.77) as text, and only for an
   # item Plex has already analysed -- an unanalysed file carries no
@@ -100,6 +100,19 @@ badges:
   # recomputed from live Plex on every visit, so a re-analysis or a new
   # audio track shows up on the NEXT pass over that item -- there is no
   # watcher; the revisit cadence is the *arr intake and the drift sweep.
+  #
+  # status draws AIRING / RETURNING / CANCELED / ENDED for SHOWS, from
+  # TMDb's own airing status and last air date. Two caveats worth knowing
+  # before enabling it. First, the data is gathered rather than read live:
+  # both values are new item_facts columns, so every show is NULL until its
+  # next facts refresh and draws nothing in the meantime -- the drift sweep
+  # converges over weeks, and the facts-backfill trigger in the Action
+  # Center fills the whole library in a handful of presses. Second, AIRING
+  # means "TMDb says an episode aired in the last 14 days", which is not
+  # quite Kometa's question ("this library holds an episode that aired in
+  # the last 14 days") -- they differ when the library lags broadcast. A
+  # show can match AIRING and ENDED at once, in which case AIRING wins by
+  # weight, which is upstream's own arrangement.
   #
   # Enabling a family re-badges every item it already matches, once: the
   # first condition: this config ever carries -- from a family or from
