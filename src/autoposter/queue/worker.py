@@ -63,9 +63,11 @@ async def run_once(
     if job is None:
         return False
 
-    # Captured up front: a rollback() below expires every attribute on this ORM
-    # object, and re-loading one afterwards needs IO that isn't safe to trigger
-    # via plain attribute access on an AsyncSession.
+    # Captured up front: since claim() commits, a rollback() below is not
+    # guaranteed to expire this ORM object's attributes (see queue/jobs.py's
+    # fail_job comment) -- but relying on attribute access either way needs IO
+    # that isn't safe to trigger on an AsyncSession, so the id is captured
+    # regardless.
     job_id = job.id
 
     if pause is not None and pause.is_paused:

@@ -151,6 +151,31 @@ async def test_build_passes_a_plex_factory_that_builds_a_real_plex_client(
     assert isinstance(client, PlexClient)
 
 
+async def test_build_publishes_the_engine_for_the_lifespan_to_dispose(
+    _stub_build_dependencies,
+):
+    """``build()`` owns the only reference to the engine (``main.py``'s
+    ``make_engine`` call), and the lifespan is the only place that knows when
+    the process is going away. Without this hand-off there is no
+    ``dispose()`` anywhere in the served application, and every deploy leaves
+    Postgres logging "unexpected EOF on client connection with an open
+    transaction" for all 5 pooled connections instead of a clean terminate.
+
+    Deleting the keyword from ``main.py``'s ``create_app(...)`` call leaves
+    the rest of the suite green -- ``test_app.py``'s disposal test passes its
+    own fake engine rather than exercising ``build()``."""
+    calls = _stub_build_dependencies
+
+    app = main_module.build()
+
+    assert calls, "build() did not call create_app"
+    assert calls[0].get("engine") is not None, (
+        "build() did not pass its engine to create_app, so the lifespan has "
+        "nothing to dispose"
+    )
+    assert app.state.engine is calls[0]["engine"]
+
+
 async def test_build_wires_the_spa_into_the_returned_app():
     """The whole point: exercise `autoposter.main.build()`, not `create_app()`
     directly, and prove the SPA the production entrypoint actually returns is

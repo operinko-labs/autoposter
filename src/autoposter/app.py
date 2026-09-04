@@ -64,6 +64,7 @@ logger = logging.getLogger(__name__)
 def create_app(
     config: Config, session_factory, secrets: Secrets, run_background: bool = False,
     plex_factory: Callable[[Config], PlexClient] | None = None,
+    engine=None,
 ) -> FastAPI:
     """The application, built from ``config`` -- the *file* generation.
 
@@ -425,6 +426,16 @@ def create_app(
             )
             imdb_module.configure_miss_refresh(http, 0)
             await http.aclose()
+            if app.state.engine is not None:
+                # Last, and deliberately after the gather: dispose() closes
+                # every pooled connection, and a task still being cancelled
+                # has not yet returned its session to the pool. Without this
+                # the process simply exited and Postgres saw a socket close
+                # rather than a terminate -- "unexpected EOF on client
+                # connection with an open transaction", all 5 pooled
+                # connections, at every deploy. None for every application but
+                # main.build()'s, whose engine this is.
+                await app.state.engine.dispose()
             logging.getLogger().removeHandler(app.state.log_buffer)
 
     # The interactive docs enumerate every endpoint and its request shape to
@@ -475,6 +486,11 @@ def create_app(
     # built from a different file.
     app.state.config_path = DEFAULT_CONFIG_PATH
     app.state.session_factory = session_factory
+    # The engine behind that factory, so the lifespan can dispose() it on the
+    # way out -- see the `finally` above. None for every application but
+    # main.build()'s, exactly like plex_factory: a test app's engine belongs
+    # to the fixture that made it and must not be disposed here.
+    app.state.engine = engine
     app.state.secrets = secrets
     # ``(registry, project, repository)``, or None -- see api/version.py.
     # Read here, once, rather than through Secrets: it is not a credential,
