@@ -201,6 +201,29 @@ def document_paths(document: dict, path: str = "") -> list[str]:
     return paths
 
 
+def empty_leaf_paths(document: dict, path: str = "") -> list[str]:
+    """Every dotted path where the document sets an object to ``{}``.
+
+    Hand-crafted only -- no caller in this codebase can produce one -- but
+    ``document_paths`` cannot report it honestly: its own ``isinstance(value,
+    dict) and value`` check is false for an empty dict, so it falls through to
+    the leaf branch and reports the WHOLE section (``artwork``, not
+    ``artwork.<setting>``) as a single override. Saving that seeds the editor
+    into storing the section wholesale on the very next save. The write path
+    refuses these outright rather than silently reinterpreting them -- see
+    ``api/routes.py::_validated_generation``.
+    """
+    paths: list[str] = []
+    for key, value in document.items():
+        where = f"{path}.{key}" if path else str(key)
+        if isinstance(value, dict):
+            if value:
+                paths.extend(empty_leaf_paths(value, where))
+            else:
+                paths.append(where)
+    return paths
+
+
 def without_migrated_sections(document: dict) -> dict:
     """``document`` minus any ``MIGRATED_SECTIONS`` key, warning once per key.
 

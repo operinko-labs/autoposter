@@ -58,6 +58,7 @@ from autoposter.config.overrides import (
     OVERRIDES_ROW_ID,
     document_paths,
     document_revision,
+    empty_leaf_paths,
     load_overrides_document,
     merge_overrides,
     unknown_key_paths,
@@ -1791,6 +1792,21 @@ async def _validated_generation(request: Request, document: dict) -> tuple[dict,
         raise HTTPException(
             status_code=422,
             detail=[_error(path, "unknown setting") for path in sorted(unknown)],
+        )
+
+    empty = empty_leaf_paths(document)
+    if empty:
+        # {} is not a leaf document_paths can report honestly (its own
+        # isinstance(value, dict) and value check is false for it) -- it
+        # would report the WHOLE section as one override and seed the editor
+        # into storing it wholesale on the next save. No caller can produce
+        # this today; refusing it is the honest answer either way.
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                _error(path, "empty object -- remove the key instead of setting {}")
+                for path in sorted(empty)
+            ],
         )
 
     base = await asyncio.to_thread(read_config_document, request.app.state.config_path)

@@ -13,17 +13,16 @@ in this module.
 """
 import asyncio
 import logging
-import os
-from pathlib import Path
 
 from plexapi.server import PlexServer
 
 from autoposter.adopt.walk import adopt_library
+from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
 
-CONFIG_PATH = Path(os.environ.get("AUTOPOSTER_CONFIG", "/config/autoposter.yaml"))
+CONFIG_PATH = DEFAULT_CONFIG_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -59,28 +58,33 @@ async def main() -> None:
 
             total_items = total_renders = total_missing = total_skipped = 0
             total_by_config = total_unnumbered = 0
+            total_adopted = total_reconfirmed = 0
             for name in config.adopt.libraries:
                 section = await fetch_section(server, name)
                 report = await adopt_library(session, config, section, dry_run=dry_run)
                 logger.info(
-                    "%s: %d item(s), %d render(s), %d missing asset(s), %d skipped, "
-                    "%d not rendered by this config, %d unnumbered, by kind %s",
-                    name, report.items, report.renders, report.missing_assets,
-                    report.skipped, report.skipped_by_config, report.unnumbered,
-                    report.by_kind,
+                    "%s: %d item(s), %d render(s) (%d newly adopted, %d re-confirmed), "
+                    "%d missing asset(s), %d skipped, %d not rendered by this config, "
+                    "%d unnumbered, by kind %s",
+                    name, report.items, report.renders, report.adopted, report.reconfirmed,
+                    report.missing_assets, report.skipped, report.skipped_by_config,
+                    report.unnumbered, report.by_kind,
                 )
                 total_items += report.items
                 total_renders += report.renders
+                total_adopted += report.adopted
+                total_reconfirmed += report.reconfirmed
                 total_missing += report.missing_assets
                 total_skipped += report.skipped
                 total_by_config += report.skipped_by_config
                 total_unnumbered += report.unnumbered
 
             logger.info(
-                "total: %d item(s), %d render(s), %d missing asset(s), %d skipped, "
-                "%d not rendered by this config, %d unnumbered%s",
-                total_items, total_renders, total_missing, total_skipped, total_by_config,
-                total_unnumbered,
+                "total: %d item(s), %d render(s) (%d newly adopted, %d re-confirmed), "
+                "%d missing asset(s), %d skipped, %d not rendered by this config, "
+                "%d unnumbered%s",
+                total_items, total_renders, total_adopted, total_reconfirmed, total_missing,
+                total_skipped, total_by_config, total_unnumbered,
                 " (dry run -- nothing written)" if dry_run else "",
             )
     finally:

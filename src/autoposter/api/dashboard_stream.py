@@ -37,6 +37,14 @@ logger = logging.getLogger(__name__)
 # scale with viewers and does not need bounding by an operator.
 POLL_SECONDS = 2.0
 
+# The bound on one poll's _build_snapshot call -- a stuck DB call through the
+# greenlet bridge must not hold the loop (and the connection it borrowed)
+# forever. 15x POLL_SECONDS: long enough that ordinary load or a slow query
+# never trips it under normal conditions, short enough that a genuinely hung
+# call gives up well inside a single operator-visible tick rather than
+# joining the class of incident this sweep exists to close.
+SNAPSHOT_TIMEOUT_SECONDS = 30.0
+
 # Recent events carried with each snapshot -- the count the dashboard renders.
 EVENTS_LIMIT = 25
 
@@ -106,6 +114,7 @@ class StatusBroadcaster:
         started_at: datetime,
         interval_seconds: float = POLL_SECONDS,
         events_limit: int = EVENTS_LIMIT,
+        snapshot_timeout_seconds: float = SNAPSHOT_TIMEOUT_SECONDS,
     ):
         self._session_factory = session_factory
         # The holder, not the Config it currently holds: a config swap must
@@ -126,11 +135,17 @@ class StatusBroadcaster:
         self._started_at = started_at
         self._interval_seconds = interval_seconds
         self._events_limit = events_limit
+        self._snapshot_timeout_seconds = snapshot_timeout_seconds
         self._subscribers: set[asyncio.Queue] = set()
         self._task: asyncio.Task | None = None
         self._generation = 0
         self._latest: dict | None = None
         self._latest_encoded: str | None = None
+        # Which subscribers a full queue has already logged a WARNING for --
+        # a stalled reader's queue stays full for as long as it stays
+        # stalled, and logging one every tick would spam a WARNING every
+        # POLL_SECONDS for the rest of that reader's life. See _publish.
+        self._warned_full: set[asyncio.Queue] = set()
 
     def subscribe(self) -> tuple[dict | None, asyncio.Queue]:
         """The latest snapshot and a queue that receives every change after
@@ -138,13 +153,20 @@ class StatusBroadcaster:
         and this is where the poll task is created."""
         queue: asyncio.Queue = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_SIZE)
         self._subscribers.add(queue)
-        if self._task is None:
+        if self._task is None or self._task.done():
+            # A task that finished on its own -- an uncaught BaseException
+            # escaping _run -- left `_task` pointing at a dead task forever
+            # under the old `is None` guard, because only unsubscribe's own
+            # deliberate cancel ever cleared it. Every subscriber after that
+            # got heartbeats but no data, silently, for the rest of the
+            # process's life.
             self._generation += 1
             self._task = asyncio.create_task(self._run(self._generation))
         return self._latest, queue
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self._subscribers.discard(queue)
+        self._warned_full.discard(queue)
         if not self._subscribers and self._task is not None:
             self._task.cancel()
             self._task = None
@@ -161,19 +183,25 @@ class StatusBroadcaster:
                 # reference to this task.
                 return
             try:
-                snapshot = await self._build_snapshot()
+                async with asyncio.timeout(self._snapshot_timeout_seconds):
+                    snapshot = await self._build_snapshot()
                 if generation != self._generation:
                     # A newer loop owns the broadcaster now; this poll's
                     # result belongs to nobody.
                     return
                 self._publish(snapshot)
+            except TimeoutError as exc:
+                # A hung DB call through the greenlet bridge would otherwise
+                # block this loop -- and the connection it borrowed --
+                # forever. Bounded, logged, and the next tick tries again.
+                logger.warning("dashboard status poll timed out: %s", type(exc).__name__)
             except Exception:
                 # Never fatal while somebody is still watching: the next tick
                 # tries again. This covers the publish as well as the poll --
                 # an encoding failure that ended the loop would end it for
                 # good, because _task still points here and subscribe only
-                # starts a replacement when it is None. CancelledError is a
-                # BaseException and passes through here, which is how
+                # starts a replacement when the old one is gone. CancelledError
+                # is a BaseException and passes through here, which is how
                 # unsubscribe stops this loop.
                 logger.warning("dashboard status poll failed", exc_info=True)
             await asyncio.sleep(self._interval_seconds)
@@ -207,10 +235,29 @@ class StatusBroadcaster:
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(snapshot)
-            except asyncio.QueueFull:
+            except asyncio.QueueFull as exc:
                 # The stalled reader misses this snapshot and will get the
-                # next changed one -- see SUBSCRIBER_QUEUE_SIZE.
-                pass
+                # next changed one -- see SUBSCRIBER_QUEUE_SIZE. Logged once
+                # per subscriber, not once per tick: a stalled reader's queue
+                # stays full for as long as it stays stalled, and a WARNING
+                # every POLL_SECONDS for the rest of that reader's life would
+                # be noise, not a signal.
+                if queue not in self._warned_full:
+                    self._warned_full.add(queue)
+                    logger.warning(
+                        "dashboard snapshot dropped for a subscriber: %s", type(exc).__name__
+                    )
+            except Exception as exc:
+                # Any other put failure is also non-fatal to the fan-out: this
+                # subscriber misses the snapshot, and the loop moves on to
+                # broadcast to everyone else in the SAME tick rather than the
+                # whole poll aborting on one bad queue. Not throttled like
+                # QueueFull above -- an unexpected exception is not the
+                # steady-state condition a stalled reader is. CancelledError
+                # is a BaseException and is not caught here.
+                logger.warning(
+                    "dashboard snapshot dropped for a subscriber: %s", type(exc).__name__
+                )
 
 
 router = APIRouter()

@@ -22,16 +22,18 @@ import pytest
 import pytest_asyncio
 import yaml
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.api.auth import hash_password
-from autoposter.api.routes import KEEP_SENTINEL
+from autoposter.api.routes import KEEP_SENTINEL, _render_affecting
 from autoposter.app import create_app
-from autoposter.config.loader import build_config
+from autoposter.config.loader import build_config, read_config_document
 from autoposter.config.overrides import (
     EMPTY_DOCUMENT_REVISION,
     OVERRIDES_INSERT_LOCK_KEY,
+    merge_overrides,
 )
 from autoposter.config.schema import Secrets
 from autoposter.db.models import ConfigOverride, EventLog, Job, ManagedCollection, MediaItem, Render
@@ -376,6 +378,98 @@ async def test_an_unknown_top_level_key_is_a_422(client, auth_headers):
     )
     assert response.status_code == 422
     assert [e["path"] for e in response.json()["detail"]] == ["wrokers"]
+
+
+async def test_an_empty_object_override_is_a_422(client, auth_headers, session):
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {"artwork": {}}}
+    )
+    assert response.status_code == 422, (
+        "an empty object is not a leaf document_paths can report honestly -- "
+        "it would seed the editor into storing the whole artwork section "
+        "wholesale on the next save"
+    )
+    assert [e["path"] for e in response.json()["detail"]] == ["artwork"]
+    assert (await session.execute(select(ConfigOverride))).scalars().all() == []
+
+
+def _toggled_leaf(value):
+    """A same-typed, different value for one leaf, or ``None`` if this walk
+    does not know how to change the type safely (yields no candidate for the
+    caller to try)."""
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value + 1
+    if isinstance(value, str):
+        return value + "-drift-probe"
+    if isinstance(value, list) and value:
+        return value + [value[-1]]
+    return None
+
+
+def _document_leaves(value, path=""):
+    """Every (dotted_path, value) pair at a non-dict leaf, depth-first."""
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            where = f"{path}.{key}" if path else str(key)
+            yield from _document_leaves(sub, where)
+    else:
+        yield path, value
+
+
+def _nested_override(dotted_path: str, value):
+    """The minimal override document that sets exactly one dotted leaf."""
+    result = value
+    for part in reversed(dotted_path.split(".")):
+        result = {part: result}
+    return result
+
+
+def test_render_affecting_matches_render_versions_own_input_set():
+    """``_render_affecting`` is a hand-maintained enumeration -- its own
+    docstring says so -- of exactly what ``render_version`` hashes plus
+    ``skip_tba``. This does not repeat that enumeration by name: for every
+    top-level section the example config actually has, it changes one real
+    leaf and asks ``render_version`` itself whether that moved the hash, then
+    checks ``_render_affecting`` agrees. A future field that starts (or
+    stops) feeding either one without the other being updated fails here
+    instead of silently under- or over-reporting impact.
+
+    No behaviour change accompanies this test -- ``_render_affecting`` is
+    unedited. Confirmed to already hold for every one of the example
+    config's 29 top-level sections before this test existed: this is a
+    regression guard, not a bug fix.
+    """
+    base = read_config_document(EXAMPLE)
+    before = build_config(base)
+
+    checked = 0
+    for key, section in base.items():
+        for dotted, leaf in _document_leaves(section, key):
+            candidate = _toggled_leaf(leaf)
+            if candidate is None or candidate == leaf:
+                continue
+            try:
+                after = build_config(merge_overrides(base, _nested_override(dotted, candidate)))
+            except (ValidationError, ValueError):
+                continue
+            checked += 1
+            version_changed = before.version != after.version
+            expected = version_changed or key == "skip_tba"
+            assert _render_affecting(before, after) is expected, (
+                f"{dotted}: render_version changed={version_changed}, "
+                f"_render_affecting()={_render_affecting(before, after)}"
+            )
+            break  # one leaf is enough to place this section
+        else:
+            continue
+
+    assert checked == len(base), (
+        f"only {checked} of {len(base)} top-level sections had a leaf this "
+        "walk could safely mutate -- every section in the example config was "
+        "expected to have one"
+    )
 
 
 async def test_a_secrets_key_anywhere_is_refused(client, auth_headers, session):

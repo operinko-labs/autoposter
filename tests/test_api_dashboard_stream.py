@@ -207,6 +207,70 @@ async def test_a_full_subscriber_queue_drops_snapshots_rather_than_blocking(broa
     broadcaster.unsubscribe(queue)
 
 
+# --- a bad subscriber does not stop the fan-out to everyone else ----------
+
+
+async def test_a_full_subscriber_queue_is_logged_once_not_once_per_tick(broadcaster, caplog):
+    """A stalled reader's queue stays full for as long as it stays stalled.
+    Logging a WARNING every tick would spam one every POLL_SECONDS for the
+    rest of that reader's life -- once per subscriber says it happened
+    without flooding the log, and a healthy subscriber alongside it is still
+    reached in the same tick either way."""
+    _, stuck = broadcaster.subscribe()
+    for i in range(stuck.maxsize):
+        broadcaster._publish({"status": {"processed_last_24h": i}, "events": []})
+    assert stuck.qsize() == stuck.maxsize, "precondition: the first subscriber is full"
+
+    _, healthy = broadcaster.subscribe()
+    with caplog.at_level(logging.WARNING):
+        for value in (900, 901, 902):
+            broadcaster._publish({"status": {"processed_last_24h": value}, "events": []})
+
+    assert [healthy.get_nowait()["status"]["processed_last_24h"] for _ in range(3)] == [
+        900, 901, 902,
+    ], "the stuck subscriber's full queue blocked or skipped the fan-out to a healthy one"
+    assert caplog.text.count("QueueFull") == 1, (
+        f"expected exactly one drop WARNING across three full-queue ticks, "
+        f"got {caplog.text.count('QueueFull')}"
+    )
+
+    broadcaster.unsubscribe(stuck)
+    broadcaster.unsubscribe(healthy)
+
+
+async def test_a_raising_subscriber_is_dropped_and_the_loop_keeps_broadcasting(
+    broadcaster, caplog
+):
+    """A subscriber whose ``put_nowait`` raises anything else -- not just
+    ``QueueFull`` -- must not abort the fan-out before it reaches the rest of
+    the subscribers, and the process keeps broadcasting on the next tick too.
+    """
+
+    class RaisingQueue:
+        def put_nowait(self, item):
+            raise RuntimeError("boom")
+
+    raising = RaisingQueue()
+    broadcaster._subscribers.add(raising)
+    _, healthy = broadcaster.subscribe()
+
+    with caplog.at_level(logging.WARNING):
+        broadcaster._publish({"status": {"processed_last_24h": 1}, "events": []})
+    assert healthy.get_nowait()["status"]["processed_last_24h"] == 1, (
+        "a raising subscriber aborted the fan-out before it reached a healthy one"
+    )
+    assert "RuntimeError" in caplog.text
+
+    # The loop keeps broadcasting on the next tick too, not just this one.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        broadcaster._publish({"status": {"processed_last_24h": 2}, "events": []})
+    assert healthy.get_nowait()["status"]["processed_last_24h"] == 2
+
+    broadcaster.unsubscribe(healthy)
+    broadcaster._subscribers.discard(raising)
+
+
 # --- the subscriber-driven poll loop ---
 
 
@@ -236,6 +300,34 @@ async def test_the_poll_loop_runs_only_while_somebody_is_subscribed(broadcaster,
     assert [event["source"] for event in changed["events"]] == ["radarr"]
 
     broadcaster.unsubscribe(second)
+
+
+async def test_subscribe_restarts_a_task_that_finished_without_being_cancelled(broadcaster):
+    """A task that finished on its own -- an uncaught ``BaseException``
+    escaping ``_run``, modelled here by handing the broadcaster an
+    already-done task directly -- left ``_task`` pointing at a dead task
+    forever under the old ``self._task is None`` guard: only
+    ``unsubscribe``'s own deliberate cancel ever cleared it. Every future
+    subscriber got heartbeats but no data, silently, for the rest of the
+    process's life."""
+    async def _finished():
+        return None
+
+    dead_task = asyncio.ensure_future(_finished())
+    await dead_task
+    assert dead_task.done(), "precondition: the task already finished on its own"
+    broadcaster._task = dead_task
+
+    _, queue = broadcaster.subscribe()
+
+    assert broadcaster._task is not None and broadcaster._task is not dead_task, (
+        "subscribe reused a task that had already finished -- every future "
+        "subscriber would get heartbeats but no data, forever"
+    )
+    snapshot = await asyncio.wait_for(queue.get(), timeout=10)
+    assert "status" in snapshot and "events" in snapshot
+
+    broadcaster.unsubscribe(queue)
 
 
 async def test_unsubscribing_the_same_queue_twice_is_harmless(broadcaster):
@@ -275,6 +367,40 @@ async def test_a_failed_poll_does_not_end_the_loop(session_factory, config, capl
     assert len(attempts) >= 2, "the loop tried again after the failure"
     assert "status" in snapshot and "events" in snapshot
     assert "dashboard status poll failed" in caplog.text
+
+    await stop(broadcaster)
+
+
+async def test_a_hung_snapshot_build_times_out_and_the_loop_tries_again(
+    session_factory, config, caplog
+):
+    """A poll that hangs without raising -- a stuck DB call through the
+    greenlet bridge -- must not block the loop (and the connection it
+    borrowed) forever. Bounded by asyncio.timeout, logged, and the next tick
+    tries again rather than staying stuck."""
+    attempts = []
+    real_build = None
+
+    async def flaky_build():
+        attempts.append(1)
+        if len(attempts) == 1:
+            await asyncio.sleep(3600)
+        return await real_build()
+
+    broadcaster = StatusBroadcaster(
+        session_factory, ConfigHolder(config), {}, started_at=datetime.now(UTC),
+        interval_seconds=FAST_POLL, snapshot_timeout_seconds=0.05,
+    )
+    real_build = broadcaster._build_snapshot
+    broadcaster._build_snapshot = flaky_build
+
+    _, queue = broadcaster.subscribe()
+    with caplog.at_level(logging.WARNING):
+        snapshot = await asyncio.wait_for(queue.get(), timeout=10)
+
+    assert len(attempts) >= 2, "the loop did not try again after the timeout"
+    assert "status" in snapshot and "events" in snapshot
+    assert "dashboard status poll timed out" in caplog.text
 
     await stop(broadcaster)
 

@@ -16,21 +16,20 @@ before it needs Plex anyway.
 """
 import asyncio
 import logging
-import os
-from pathlib import Path
 
 import httpx
 from plexapi.server import PlexServer
 
 from autoposter.collections.playlists import reconcile_playlists
 from autoposter.collections.service import build_source_clients, reconcile_libraries
+from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
 from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.providers.cache import ProviderCache
 
-CONFIG_PATH = Path(os.environ.get("AUTOPOSTER_CONFIG", "/config/autoposter.yaml"))
+CONFIG_PATH = DEFAULT_CONFIG_PATH
 
 logger = logging.getLogger(__name__)
 

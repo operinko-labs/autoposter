@@ -2,7 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from autoposter.config.loader import build_config, load_config, read_config_document
+from autoposter.adopt.__main__ import CONFIG_PATH as ADOPT_CONFIG_PATH
+from autoposter.collections.__main__ import CONFIG_PATH as COLLECTIONS_CONFIG_PATH
+from autoposter.config.loader import (
+    DEFAULT_CONFIG_PATH,
+    build_config,
+    load_config,
+    read_config_document,
+)
 from autoposter.config.schema import Secrets
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -229,6 +236,19 @@ def test_load_config_and_build_config_are_one_construction_path():
     from_document = build_config(read_config_document(EXAMPLE))
     assert from_document.model_dump(mode="json") == from_file.model_dump(mode="json")
     assert from_document.version == from_file.version
+
+
+def test_default_config_path_is_one_object_across_both_clis():
+    """``DEFAULT_CONFIG_PATH`` had already drifted into two independently
+    re-spelled copies once (row 114) -- both CLIs now import the constant
+    itself rather than re-deriving it from ``AUTOPOSTER_CONFIG``, so a future
+    divergence is impossible rather than merely unlikely. ``is``, not ``==``:
+    two separately-constructed ``Path`` objects with the same string compare
+    equal but are not the same spelling-of-a-spelling this row exists to rule
+    out.
+    """
+    assert ADOPT_CONFIG_PATH is DEFAULT_CONFIG_PATH
+    assert COLLECTIONS_CONFIG_PATH is DEFAULT_CONFIG_PATH
 
 
 def test_changing_an_asset_root_does_change_the_version(tmp_path):
