@@ -35,6 +35,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from autoposter.collections.groups import SEPARATOR_STYLES
+from autoposter.collections.poster_title import (
+    CollectionTitleRefused,
+    compose_collection_title,
+)
 from autoposter.config.schema import Config
 from autoposter.db.models import ManagedCollection
 from autoposter.providers.tmdb import IMAGE_BASE
@@ -47,6 +51,13 @@ DEFAULT_IMAGES_BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Ima
 # imported by the builder that emits it, so the producer and the consumer cannot
 # drift into two spellings of one string.
 TMDB_PROFILE_KIND = "tmdb_profile"
+
+# The one kind whose art already carries its collection's name, whether this
+# service generated it (``separator_art.py`` bakes the divider's title in) or
+# fetched upstream's captioned ``separators/<style>/<stem>.jpg``. Named here
+# so the producer below and the row-105 composite cannot drift into two
+# spellings of one string.
+SEPARATOR_KIND = "separator"
 
 _LOCAL_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
 
@@ -142,7 +153,7 @@ def hosted_poster_url(kind: str, key: str) -> str | None:
         return f"{DEFAULT_IMAGES_BASE}/content_rating/cs/{key}.jpg"
     if kind == "content_rating_other":
         return f"{DEFAULT_IMAGES_BASE}/content_rating/cs/NR.jpg"
-    if kind == "separator":
+    if kind == SEPARATOR_KIND:
         # "<style>:<stem>", the award kinds' idiom one branch up. A stem
         # starting with '@' is GENERATED art (``separator_art.py``) and has no
         # hosted path; an unknown style is refused the same way -- a wrong URL
@@ -396,6 +407,12 @@ async def apply_poster(
     """
     data: bytes | None = None
     source = ""
+    # Whether row 105's composite may draw on whatever these rungs produce.
+    # Set on each rung rather than inferred afterwards: "an operator's own file
+    # is theirs" and "a divider is already captioned" are decisions, and a
+    # decision that falls out of the ordering is one a later edit can undo
+    # without noticing (adjudications A-2, A-3).
+    composable = False
     try:
         local = local_poster_path(config, library, record.title)
     except PosterPathRefused as exc:
@@ -444,6 +461,11 @@ async def apply_poster(
             if _is_image(candidate):
                 data = candidate
                 source = label
+                # ``generated`` is the caller's separator art, which already
+                # carries the divider's title (separator_art._render). A cached
+                # Default-Images family poster is a plain fetched image and may
+                # be drawn on.
+                composable = cached is not generated
             else:
                 logger.info(
                     "%s %s did not decode as an image; using whatever source "
@@ -477,6 +499,42 @@ async def apply_poster(
             if kind == TMDB_PROFILE_KIND
             else "the hosted default"
         )
+        composable = True
+
+    # Roadmap row 105, and this is the only line it costs: above the digest, so
+    # the composited bytes are what ``poster_sha256`` remembers and an
+    # unchanged pass still uploads nothing; below every source rung, so one
+    # call serves all of them.
+    #
+    # Two exclusions, both named above rather than incidental: an operator's
+    # own file is never restyled (``composable`` is False on the local rung,
+    # and api/manual.py's poster endpoint writes THROUGH that rung), and a
+    # divider is never captioned twice.
+    #
+    # A failure here uploads nothing and leaves ``poster_sha256`` where it was,
+    # so the next pass retries -- a missing poster is cosmetic and must never
+    # fail the surrounding pass.
+    styling = config.collections.poster_title
+    if styling.enabled and composable and kind != SEPARATOR_KIND:
+        try:
+            data = await asyncio.to_thread(
+                compose_collection_title,
+                styling, Path(config.fonts_root), data, record.title,
+            )
+        except CollectionTitleRefused as exc:
+            logger.warning(
+                "did not draw a title onto the poster for %r: %s", record.title, exc
+            )
+            return "did not draw a title onto the poster for %r: %s" % (
+                record.title, exc,
+            )
+        except Exception:
+            # Row 213: an unmarked exception's text never reaches a served
+            # action string. The log carries the traceback; the report carries
+            # a sentence.
+            logger.exception("failed to draw a title onto the poster for %r", record.title)
+            return "failed to draw a title onto the poster for %r" % record.title
+        source = "%s, with the collection title drawn on" % source
 
     digest = hashlib.sha256(data).hexdigest()
     if digest == record.poster_sha256:

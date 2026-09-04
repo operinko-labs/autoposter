@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autoposter.collections import groups
 from autoposter.collections.buckets import Bucket, derive_buckets
 from autoposter.collections.filters import parse_filters
+from autoposter.collections.poster_title import poster_title_parts
 from autoposter.collections.posters import apply_poster, posters_enabled
 from autoposter.collections.search_url import (
     SearchAttributeNotAvailable,
@@ -88,7 +89,7 @@ def separator_hash(
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
-def definition_hash(bucket: Bucket, settings=None, url: str = "") -> str:
+def definition_hash(bucket: Bucket, settings=None, url: str = "", config=None) -> str:
     """Hash the desired filter, summary, and ride-along settings.
 
     ``url`` is the BUILT query string this bucket's collection stores in Plex,
@@ -110,12 +111,21 @@ def definition_hash(bucket: Bucket, settings=None, url: str = "") -> str:
     from this module at load time, so a module-level import here would be a
     cycle. Settings contribute nothing at their defaults, so a definition that
     sets none hashes to the same string it would have without this term.
+
+    ``config`` folds ``collections.poster_title`` in the same way and one term
+    further along -- see ``poster_title.poster_title_parts``, which is where
+    the reason and the gate-off byte-identity live. It is last in the payload
+    and contributes NOTHING while the gate is off, so every hash already stored
+    still matches. Defaulted, like ``settings`` and ``url``, so every existing
+    caller and every existing test keeps its current call and its current
+    digest.
     """
     from autoposter.collections.lists import _settings_parts
 
     payload = "\x1f".join([
         bucket.title, bucket.summary, *bucket.values, url,
         *_settings_parts(settings),
+        *poster_title_parts(config),
     ])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -1111,7 +1121,7 @@ async def reconcile_content_ratings(
         bucket_settings = groups.with_derived_sort_title(
             settings, sort_prefix, bucket.title, groups.age_order(bucket.key)
         )
-        wanted = definition_hash(bucket, bucket_settings, url)
+        wanted = definition_hash(bucket, bucket_settings, url, config)
         record = stored.get(bucket.title)
         definition_current = (
             collection is not None and record is not None and record.definition_hash == wanted

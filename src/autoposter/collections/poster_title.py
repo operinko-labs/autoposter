@@ -69,6 +69,7 @@ The caller reports whichever fired and uploads nothing, leaving
 cosmetic and must never fail the surrounding pass.
 """
 import io
+import json
 import logging
 from pathlib import Path
 
@@ -100,6 +101,65 @@ class CollectionTitleRefused(Exception):
     a run-report action an operator reads (roadmap row 213). ``PosterPathRefused``
     in ``collections/posters.py`` is the same shape, one module along.
     """
+
+
+def poster_title_parts(config) -> list[str]:
+    """This section's contribution to a managed collection's definition hash.
+
+    It has to be there, for the reason ``lists._settings_parts`` gives about
+    the ride-along settings: a definition hash is what a reconcile pass
+    short-circuits on, so a collection that is already current would never be
+    revisited and the operator's edit would never be drawn -- a setting that
+    reads as saved and silently is not. Here that is the whole roll-out:
+    without this term, flipping the gate on leaves every stable managed
+    collection short-circuiting on ``definition_current`` and its poster is
+    re-composited only if something ELSE happens to move its definition. With
+    it, the very next pass re-composites each of them exactly once.
+
+    Folded as a SUFFIX by ``reconcile.definition_hash``,
+    ``smart.smart_definition_hash`` and ``lists._members_hash`` -- the last
+    element of the payload, in the same position ``_settings_parts`` already
+    occupies in all three.
+
+    ``reconcile.separator_hash`` deliberately does NOT fold it. A divider is
+    never captioned -- its art already carries the group's name -- so these
+    settings cannot move its bytes, and putting them in its hash would buy a
+    summary-and-sort-title re-write that changes nothing.
+
+    ``playlists.py:572``'s own call to ``lists._members_hash`` is left on the
+    new ``config=None`` default rather than widened to pass ``config``: a
+    playlist has no composited poster, so there is nothing for this term to
+    move, and ``poster_title_parts(None)`` is ``[]`` -- hash-safe by
+    construction, not merely unedited.
+
+    **Nothing is contributed while the gate is off**, and that is an explicit
+    ``if not settings.enabled`` rather than a hope about what the defaults dump
+    to. Every hash already stored on every live server has to keep matching,
+    byte for byte: otherwise merely SHIPPING this section, switched off, would
+    re-reconcile every managed collection in the library to write nothing. It
+    is the same guarantee ``_settings_parts``' defaults and ``_members_hash``'s
+    ``sync`` mode give, made structural instead of arithmetic.
+
+    Takes the whole ``Config`` rather than the sub-model, mirroring
+    ``posters.posters_enabled(config, http)``: all three call sites already
+    hold ``config`` for exactly that call, and one place knowing the attribute
+    path is one place to change if it ever moves. ``None`` is accepted for the
+    same reason ``posters_enabled`` accepts it -- a pass with no config
+    composites nothing.
+
+    ``sort_keys`` because a hash input must not move when pydantic field
+    ordering does, and ``mode="json"`` because a ``TextStyle`` holds only JSON
+    scalars and it is the dump ``config/loader.py::render_version`` already
+    takes of ``artwork``. The WHOLE sub-model is dumped, ``enabled`` included:
+    every knob in it changes the glyphs, so every knob has to reach the pass.
+    """
+    settings = getattr(getattr(config, "collections", None), "poster_title", None)
+    if settings is None or not settings.enabled:
+        return []
+    return [
+        "poster_title=%s"
+        % json.dumps(settings.model_dump(mode="json"), sort_keys=True)
+    ]
 
 
 def _scaled(value: int, scale: float) -> int:

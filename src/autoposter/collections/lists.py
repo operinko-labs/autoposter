@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.collections import groups
+from autoposter.collections.poster_title import poster_title_parts
 from autoposter.collections.posters import apply_poster, posters_enabled
 from autoposter.collections.reconcile import (
     _clear_collection_summary,
@@ -69,7 +70,7 @@ def _settings_parts(settings) -> list[str]:
 
 
 def _members_hash(
-    items: list, summary: str | None, sync_mode: str = "sync", settings=None
+    items: list, summary: str | None, sync_mode: str = "sync", settings=None, config=None
 ) -> str:
     """The desired state, hashed -- what an unchanged pass short-circuits on.
 
@@ -83,12 +84,20 @@ def _members_hash(
     still matches: the mode is the shipped behaviour, and making the upgrade
     itself look like an edit would re-reconcile every managed collection in the
     library for no change at all.
+
+    ``config`` folds ``collections.poster_title`` in the same way and one term
+    further along -- see ``poster_title.poster_title_parts``, which is where
+    the reason and the gate-off byte-identity live. It is last in the payload
+    and contributes NOTHING while the gate is off, so every hash already stored
+    still matches. Defaulted, like ``settings``, so every existing caller and
+    every existing test keeps its current call and its current digest.
     """
     payload = "\x1f".join([
         summary or "",
         *[str(i.ratingKey) for i in items],
         *([] if sync_mode == "sync" else [sync_mode]),
         *_settings_parts(settings),
+        *poster_title_parts(config),
     ])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -276,7 +285,7 @@ async def reconcile_list_collection(
         )
     ).scalar_one_or_none()
 
-    wanted = _members_hash(items, summary, sync_mode, settings)
+    wanted = _members_hash(items, summary, sync_mode, settings, config)
     # ``key`` is checked alongside ``kind``: one without the other would
     # interpolate the string "None" into a poster URL.
     posters_on = (
