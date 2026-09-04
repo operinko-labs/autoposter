@@ -148,6 +148,32 @@ def test_refusals_never_echo_the_pasted_credentials(text):
     assert "user:pass" not in str(excinfo.value)
 
 
+# The query string, which the `:`/`@` guard above misses. Three bare branches
+# hand the whole stripped paste to a params model that interpolates it, so
+# `abc/def?apikey=SECRET` came back with the key in the 422 detail. The
+# URL-shaped branches were never exposed: they pass `urlsplit` path segments
+# only, discarding query and userinfo by construction.
+QUERY_PASTES = [
+    # `/` present, dotless head -> MdblistListParams.
+    "abc/def?apikey=SECRET",
+    # `ls…` -> ImdbListParams.
+    "ls123?token=SECRET",
+    # `ur…` -> ImdbWatchlistParams.
+    "ur99?token=SECRET",
+    # A fragment, for the same reason: everything after `#` is operator text
+    # this parser has no reading for.
+    "abc/def#SECRET",
+]
+
+
+@pytest.mark.parametrize("text", QUERY_PASTES)
+def test_a_query_or_fragment_paste_is_refused_without_echoing_it(text):
+    with pytest.raises(SourceUrlRefused) as excinfo:
+        parse_source(text)
+
+    assert "SECRET" not in str(excinfo.value)
+
+
 def test_an_unknown_host_refusal_does_not_echo_the_host():
     """The unknown-host refusal is the 422 detail collections_builders.py
     serves back; the pasted host can be an intranet address the operator
