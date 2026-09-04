@@ -959,6 +959,54 @@ async def test_a_stamp_failure_after_a_create_deletes_the_copy_and_continues(
     assert [(r.plex_user_id, r.plex_user_title) for r in rows] == [(2, "bob")]
 
 
+async def test_a_failing_summary_put_after_a_create_deletes_the_copy_too(session):
+    """A create is two Plex writes, not one: the POST that makes the
+    playlist and, when the definition sets a summary, a PUT after it. The
+    compensation has to see a copy stranded by the SECOND write exactly as it
+    sees one stranded by the stamp -- ``created`` and ``playlist`` must
+    already be bound by the time the PUT can fail, or this is the same
+    permanently-unmanaged-copy outcome the stamp compensation exists to
+    prevent, reached by a different write."""
+    class ExplodingSummaryServer(FakeUserServer):
+        def createPlaylist(self, title, items=None, **kwargs):
+            playlist = super().createPlaylist(title, items, **kwargs)
+
+            def exploding_edit_summary(summary, locked=True):
+                raise RuntimeError(
+                    "https://plex.example/playlists/1?X-Plex-Token=SECRET"
+                )
+
+            playlist.editSummary = exploding_edit_summary
+            return playlist
+
+    connector = Connector(servers={
+        TOKEN: ExplodingSummaryServer(TOKEN), "tok-b": FakeUserServer("tok-b"),
+    })
+    config = _config(sync_to_users_apply=True)
+    sync, _ = _sync(
+        [FakeUser(1, "alice", token=TOKEN), FakeUser(2, "bob", token="tok-b")],
+        connector=connector, config=config,
+    )
+    plan = await plan_user_sync(
+        session, sync, config,
+        [_definition(sync_to_users=["alice", "bob"], summary="a summary")],
+        {"Timeline": [ITEM_A, ITEM_B]}, {"Timeline": "hash-1"},
+    )
+
+    actions = await apply_user_sync(session, plan)
+
+    alices_copy = connector.servers[TOKEN].created[0]
+    assert alices_copy.deleted is True
+    assert connector.servers["tok-b"].created[0].deleted is False
+    assert actions == [
+        "'Timeline' -> 'alice': failed (RuntimeError)",
+        "'Timeline' -> 'bob': created with 2 item(s)",
+    ]
+    assert "SECRET" not in " ".join(actions)
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert [(r.plex_user_id, r.plex_user_title) for r in rows] == [(2, "bob")]
+
+
 async def test_a_second_pass_after_a_partial_failure_recreates_only_the_failed_entry(
     session, monkeypatch,
 ):

@@ -823,24 +823,40 @@ async def apply_user_sync(session: AsyncSession, plan: UserSyncPlan) -> list[str
                 _stamp(session, entry, entry.playlist, 0, 0)
                 await session.flush()
                 await session.commit()
-            except Exception:
+            except Exception as error:
                 await session.rollback()
                 logger.exception(
                     "could not re-stamp the playlist %r for the user %r",
                     entry.definition_title, entry.target.title,
+                )
+                # No ``PlaylistUserResult`` exists for a gated entry -- there
+                # is nothing to write, only a re-stamp -- but a swallowed
+                # failure here is still a failure: reported by name rather
+                # than left for ``last_reconciled_at`` to go silently stale.
+                _action(
+                    "%r -> %r: failed (%s)",
+                    entry.definition_title, entry.target.title,
+                    type(error).__name__,
                 )
             continue
         created = False
         playlist = None
         try:
             if entry.playlist is None:
+                # Bound to the object THIS call minted, and ``created`` set
+                # immediately after -- before the summary PUT below, which is
+                # its own Plex write and can fail on its own. Everything from
+                # here to the stamp is inside one try, so any of it failing
+                # leaves ``created`` and ``playlist`` naming exactly the copy
+                # to compensate.
                 playlist = _create_copy(entry)
                 created = True
+                if entry.summary:
+                    playlist.editSummary(entry.summary)
                 added, removed = len(entry.items), 0
             else:
                 playlist = entry.playlist
                 added, removed = _update_copy(entry)
-            entry.result.added, entry.result.removed = added, removed
             _stamp(session, entry, playlist, added, removed)
             await session.flush()
             await session.commit()
@@ -874,12 +890,17 @@ async def apply_user_sync(session: AsyncSession, plan: UserSyncPlan) -> list[str
             # redaction does not run: a class name cannot carry a URL, and
             # writing it through ``redact_urls`` here would say it could.
             entry.result.reason = type(error).__name__
+            # ``added``/``removed`` are left at their construction-time 0:
+            # on a compensated create nothing survived, and serving a count
+            # for a copy that was just deleted would be worse than serving
+            # none.
             _action(
                 "%r -> %r: failed (%s)",
                 entry.definition_title, entry.target.title,
                 type(error).__name__,
             )
             continue
+        entry.result.added, entry.result.removed = added, removed
         if created:
             _action(
                 "%r -> %r: created with %d item(s)",
@@ -894,7 +915,7 @@ async def apply_user_sync(session: AsyncSession, plan: UserSyncPlan) -> list[str
 
 
 def _create_copy(entry: _Planned):
-    """One user's copy, created under THEIR token.
+    """One user's copy, created under THEIR token. The POST only.
 
     ``server.createPlaylist`` is ``Playlist.create`` is ``Playlist._create``,
     which POSTs ``/playlists`` on whatever server object it is handed -- the
@@ -904,13 +925,15 @@ def _create_copy(entry: _Planned):
 
     The copy is created IN the definition's order, which is the whole of the
     ordering this phase provides (see the module docstring).
+
+    The summary PUT, when the definition sets one, is deliberately NOT issued
+    here: it is the caller's second write against this same object, made
+    after the caller has already bound ``created = True`` to it, so a PUT
+    that fails leaves the compensation able to see and delete the copy this
+    call minted. Folding it into this function would let that failure unwind
+    before the caller ever learns which object to compensate.
     """
-    playlist = entry.server.createPlaylist(
-        title=entry.definition_title, items=entry.items
-    )
-    if entry.summary:
-        playlist.editSummary(entry.summary)
-    return playlist
+    return entry.server.createPlaylist(title=entry.definition_title, items=entry.items)
 
 
 def _update_copy(entry: _Planned) -> tuple[int, int]:
