@@ -29,8 +29,10 @@ necessary are the substance of the module:
    shape, reaches the pod log instead -- the trusted sink under row 207 -- and
    the panel labels its own error because it already knows which field it
    asked about. The field name from the URL path therefore never reaches a
-   response at all. The one served string built from something non-constant --
-   a Plex failure's message -- goes through ``redact_urls``.
+   response at all. The DELETE's Plex-failure 503 is class-name-only for the
+   same reason (row 213's ruling), not a redacted message: ``redact_urls``
+   only matches a URL scheme, and the commonest Plex failure -- a connection
+   error -- has none, so it would serve the internal host and port verbatim.
 
    **The residual, stated rather than papered over:** FastAPI validates the
    body before this handler runs, and its own 422 echoes the submitted input.
@@ -62,8 +64,7 @@ from autoposter.plex.item_overrides import (
     parse_override,
     writable_fields,
 )
-from autoposter.plex.writer import _PLEX_FIELD_NAMES
-from autoposter.redact import redact_urls
+from autoposter.plex.writer import _locked_in_plex, _PLEX_FIELD_NAMES, exemption_reason
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +247,14 @@ async def delete_metadata_override(
     ordering law verbatim: if the first write fails, nothing else happens. A
     deleted row and a still-locked field would be this endpoint claiming to
     have cleared something it did not.
+
+    **Row 35's exemption gates this write too.** ``exemption_reason`` is the
+    single gate on every Plex metadata write this service makes
+    (``render/pipeline.py``'s two ``apply_facts`` call sites); an exempt item
+    gets the same treatment here -- the row is still deleted, but the Plex
+    write is skipped rather than sent, and the response says so
+    (``plex: "skipped (exempt)"``) instead of claiming an unlock that did not
+    happen.
     """
     _require_enabled(request)
     session_factory = request.app.state.session_factory
@@ -260,6 +269,14 @@ async def delete_metadata_override(
         ).scalar_one_or_none()
         if row is None:
             raise HTTPException(status_code=404, detail="no override for this field")
+        if field not in _PLEX_FIELD_NAMES:
+            # Reachable from a stale row (a kind change or a future narrowing
+            # of the map), not from the panel: the PUT that could have made
+            # this row goes through ``writable_fields``, which is already
+            # intersected with this map. ``load_overrides`` skips the same
+            # drift with a warning rather than raising; this matches that
+            # posture instead of a 500 on an unguarded subscript below.
+            raise HTTPException(status_code=404, detail="no override for this field")
 
         plex = request.app.state.plex
         if plex is None:
@@ -270,30 +287,45 @@ async def delete_metadata_override(
                 status_code=503, detail="this instance is not connected to Plex"
             )
         _attribute, plex_field = _PLEX_FIELD_NAMES[field]
+        exempt = None
         try:
             plex_item = await plex.fetch_item(item.rating_key)
-            await asyncio.to_thread(_unlock, plex_item, plex_field)
+            exempt = exemption_reason(
+                request.app.state.config_holder.current.operations,
+                item.rating_key, item.imdb_id,
+                getattr(plex_item, "labels", None),
+            )
+            if exempt is None:
+                await asyncio.to_thread(_unlock, plex_item, plex_field)
         except Exception as exc:
-            # ``redact_urls`` earns its place here and nowhere else in this
-            # module: a plexapi failure carries the server URL, and the token
-            # rides in the query string of some of them. The whole URL goes,
-            # not just the credential -- a partial redaction is how a
-            # credential nested in another URL's query value survives.
+            # Row 213's ruling extends to this 503 too: the class name only,
+            # never ``str(exc)``. A plexapi connection failure carries the
+            # internal Plex host and port, and ``redact_urls`` -- scheme-
+            # anchored -- does not touch that shape, so serving the message
+            # would leak it to whoever called this endpoint.
             logger.warning(
                 "could not unlock %s on %s: %s", field, item.rating_key, exc,
             )
             raise HTTPException(
-                status_code=503, detail=redact_urls(str(exc))
+                status_code=503, detail=type(exc).__name__
             ) from None
+
+        if exempt is not None:
+            logger.info(
+                "plex: skipped clearing %s on %s: %s",
+                field, item.rating_key, exempt,
+            )
 
         await session.delete(row)
         await session.commit()
 
         job_id = await _reprocess(request, session, item)
-    return {
-        "status": "cleared", "field": field, "unlocked": True,
-        "queued": job_id is not None,
-    }
+    result = {"status": "cleared", "field": field, "queued": job_id is not None}
+    if exempt is None:
+        result["unlocked"] = True
+    else:
+        result["plex"] = "skipped (exempt)"
+    return result
 
 
 def _unlock(plex_item, plex_field: str) -> None:
@@ -303,7 +335,13 @@ def _unlock(plex_item, plex_field: str) -> None:
     ``batchEdits()``/``saveEdits()`` block ``plex/writer.apply_facts`` uses, so
     an operator reading a Plex access log sees one request of a familiar
     shape rather than a second, different way this service edits an item.
+
+    Skipped when Plex already reports the field unlocked, matching
+    ``plex/writer.py``'s own ``unlock`` verb (``_locked_in_plex(...) is not
+    False``) rather than writing unconditionally.
     """
+    if _locked_in_plex(plex_item, plex_field) is False:
+        return
     plex_item.batchEdits()
     plex_item.edit(**{f"{plex_field}.locked": 0})
     plex_item.saveEdits()

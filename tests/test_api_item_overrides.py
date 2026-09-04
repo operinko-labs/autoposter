@@ -13,7 +13,9 @@ The two rules most of this file is about:
   named test rather than a convention.
 * **no refusal echoes what the operator typed.** A value may be anything --
   a summary with a URL in it, a pasted token -- so a 422 serves the exception
-  CLASS NAME and a 503 goes through ``redact_urls``.
+  CLASS NAME. The DELETE's Plex-failure 503 is class-name-only for the same
+  reason (row 213's ruling): ``redact_urls`` only matches a URL scheme, and
+  the commonest Plex failure -- a connection error -- carries none.
 """
 from pathlib import Path
 
@@ -35,10 +37,11 @@ PASSWORD = "correct horse battery staple"
 class RecordingPlexItem:
     """The minimum plexapi surface the DELETE's unlock touches."""
 
-    def __init__(self, raises=None):
+    def __init__(self, raises=None, labels=None):
         self.edits = []
         self.saved = 0
         self._raises = raises
+        self.labels = labels or []
 
     def batchEdits(self):
         pass
@@ -447,15 +450,22 @@ async def test_a_plex_failure_leaves_the_row_in_place(client, app, auth_headers,
     assert (await session.execute(select(ItemMetadataOverride))).scalars().all() != []
 
 
-async def test_a_plex_failure_detail_is_redacted(client, app, auth_headers, session):
-    """The one served string here built from something non-constant. A plexapi
-    error carries the server URL, and the token rides in the query string of
-    some of them."""
+async def test_a_plex_failure_detail_is_the_class_name_only(
+    client, app, auth_headers, session
+):
+    """Row 213's ruling, extended to this 503 too: the class name only, never
+    ``str(exc)``. ``redact_urls`` is scheme-anchored and would not have
+    caught this shape anyway -- the commonest Plex failure is a connection
+    error naming the internal host and port, not a URL string."""
     item_id = await _item(session)
     session.add(ItemMetadataOverride(item_id=item_id, field="studio", value="A24"))
     await session.commit()
     app.state.plex = FakePlex(RecordingPlexItem(
-        raises=OSError("cannot reach https://plex.example/library?X-Plex-Token=abcd1234")
+        raises=OSError(
+            "HTTPConnectionPool(host='plex.internal', port=32400): Max "
+            "retries exceeded with url: /library/metadata/12345 (Caused by "
+            "NewConnectionError('Failed to establish a new connection'))"
+        )
     ))
 
     response = await client.delete(
@@ -463,8 +473,37 @@ async def test_a_plex_failure_detail_is_redacted(client, app, auth_headers, sess
     )
 
     assert response.status_code == 503
-    assert "abcd1234" not in response.text
-    assert "<url>" in response.json()["detail"]
+    assert response.json()["detail"] == "OSError"
+    assert "plex.internal" not in response.text
+    assert "32400" not in response.text
+    assert "/library" not in response.text
+
+
+async def test_a_delete_on_an_exempt_item_skips_the_plex_write(
+    client, app, auth_headers, session
+):
+    """Row 35's ``exemption_reason`` is the single gate on every Plex
+    metadata write this service makes, and the DELETE's unlock is a write
+    like any other. An exempt item's row is still cleared, but nothing is
+    sent to Plex, and the response says so rather than claiming an unlock
+    that never happened."""
+    item_id = await _item(session)
+    session.add(ItemMetadataOverride(item_id=item_id, field="studio", value="A24"))
+    await session.commit()
+    app.state.config_holder.current.operations.ignore_labels = ["no-poster"]
+    plex_item = RecordingPlexItem(labels=["no-poster"])
+    app.state.plex = FakePlex(plex_item)
+
+    response = await client.delete(
+        f"/api/items/{item_id}/metadata-overrides/studio", headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    assert response.json()["plex"] == "skipped (exempt)"
+    assert "unlocked" not in response.json()
+    assert plex_item.edits == []
+    assert plex_item.saved == 0
+    assert (await session.execute(select(ItemMetadataOverride))).scalars().all() == []
 
 
 async def test_a_delete_without_a_plex_connection_is_503_and_keeps_the_row(
