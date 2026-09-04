@@ -475,6 +475,78 @@ async def test_the_wired_artwork_probe_reads_provenance_for_one_plex_item(monkey
     ]
 
 
+async def test_handle_intent_passes_plex_generated_base_through_to_process_item():
+    """The plex-preview rung (roadmap row 241) is only useful if it is
+    actually wired: app.py builds the partial, _handle_intent has to carry
+    it through to process_item exactly like artwork_probe does."""
+    seen = {}
+
+    async def capture(*args, **kwargs):
+        seen.update(kwargs)
+
+    plex_generated_base = object()
+    config = load_config(EXAMPLE)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("autoposter.app.process_item", capture)
+        await _handle_intent(
+            None, RenderIntent(kind="movie", title="Dune", tmdb_id=1),
+            config_holder=ConfigHolder(config), http=None, plex=None, providers=[],
+            plex_generated_base=plex_generated_base,
+        )
+
+    assert seen["plex_generated_base"] is plex_generated_base
+
+
+async def test_the_wired_plex_generated_base_fetches_the_generated_frame_for_one_item(
+    tmp_path,
+):
+    """The shape app.py builds -- functools.partial(fetch_plex_generated_base,
+    http, plex, base_url=..., headers=...) -- must be callable with just the
+    rating key and a destination path, exactly as render_artifact calls it."""
+    import functools
+
+    from conftest import decodable_png
+
+    from autoposter.render.pipeline import fetch_plex_generated_base
+
+    class FakeEntry:
+        def __init__(self, rating_key, key):
+            self.ratingKey = rating_key
+            self.key = key
+
+    class FakePlexItem:
+        def posters(self):
+            return [
+                FakeEntry("upload://abc", "/library/metadata/1/file?url=upload..."),
+                FakeEntry(
+                    "media://5/x.bundle/Contents/Thumbnails/thumb1.jpg",
+                    "/library/metadata/1/file?url=media%3A%2F%2F5%2Fx.bundle...",
+                ),
+            ]
+
+    class FakePlex:
+        async def fetch_item(self, rating_key):
+            assert rating_key == "153736"
+            return FakePlexItem()
+
+    async def handler(request):
+        assert request.headers["X-Plex-Token"] == "tok"
+        return httpx.Response(200, content=decodable_png())
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    plex_generated_base = functools.partial(
+        fetch_plex_generated_base, http, FakePlex(),
+        base_url="http://plex.local", headers={"X-Plex-Token": "tok"},
+    )
+
+    destination = tmp_path / "base.jpg"
+    sha = await plex_generated_base("153736", destination, stage="the title_card source")
+
+    assert sha is not None
+    assert destination.exists()
+    await http.aclose()
+
+
 async def test_the_lifespan_wires_a_notifier_from_config(
     session, session_factory, secrets, stubbed_background_services
 ):

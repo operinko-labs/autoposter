@@ -106,6 +106,10 @@ def _show_fallback(config: Config) -> ColumnElement[bool]:
     return Render.source_mode == "show_fallback"
 
 
+def _plex_generated(config: Config) -> ColumnElement[bool]:
+    return Render.source_mode == "plex_generated"
+
+
 def _upload_failed(config: Config) -> ColumnElement[bool]:
     return Render.upload_status == "failed"
 
@@ -313,6 +317,21 @@ _REGISTRY: tuple[Flag, ...] = (
         instant=True,
         predicate=_show_fallback,
         detail=_plain("season art came from the show's poster"),
+    ),
+    Flag(
+        code="plex_generated",
+        label="Plex's own preview frame",
+        description=(
+            "No provider had a title card for this episode, so the frame Plex "
+            "generated from the media file was used as the base instead. On "
+            "by default: every row this fires on already fires missing "
+            "today, so the queue's population does not grow, only its "
+            "labelling improves."
+        ),
+        default_on=True,
+        instant=True,
+        predicate=_plex_generated,
+        detail=_plain("no title card on any provider; Plex's generated frame was used"),
     ),
     Flag(
         code="upload_failed",

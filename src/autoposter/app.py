@@ -44,7 +44,7 @@ from autoposter.providers.tmdb import TMDBClient
 from autoposter.providers.tvdb import TVDBClient
 from autoposter.queue.jobs import reclaim_stale
 from autoposter.queue.worker import run_workers
-from autoposter.render.pipeline import SourceRefused, process_item
+from autoposter.render.pipeline import SourceRefused, fetch_plex_generated_base, process_item
 from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.jobs import (
     make_arr_sync_job,
@@ -242,6 +242,19 @@ def create_app(
             base_url=config.plex.url,
             headers={"X-Plex-Token": secrets.plex_token},
         )
+        # The plex-preview fallback (roadmap row 241): when no provider has
+        # a title_card, ask Plex for the frame it derived from the media
+        # file itself (posters(), the media://-prefixed entry -- never our
+        # own upload:// or an agent guess, see
+        # plex/artwork.generated_title_card_url and the probe banked at
+        # docs/research/2026-09-03-plex-episode-posters-probe.md). Built
+        # here, once, so render_artifact never holds the token -- the same
+        # shape as artwork_probe just above.
+        plex_generated_base = functools.partial(
+            fetch_plex_generated_base, http, app.state.plex,
+            base_url=config.plex.url,
+            headers={"X-Plex-Token": secrets.plex_token},
+        )
         # config_holder, never the Config: this partial lives for the life of
         # the process, so a closured instance would pin every worker to the
         # generation that was current at boot. Handing it the holder makes
@@ -252,6 +265,7 @@ def create_app(
             plex=app.state.plex, providers=app.state.providers,
             tmdb_facts=app.state.tmdb_facts, mdblist=app.state.mdblist,
             artwork_probe=artwork_probe, imdb_parental=app.state.imdb_parental,
+            plex_generated_base=plex_generated_base,
         )
 
         # The dispatch map the worker pool runs. process_item is registered
@@ -603,7 +617,7 @@ def _build_mdblist(
 
 async def _handle_intent(
     session, intent, *, config_holder, http, plex, providers, tmdb_facts=None, mdblist=None,
-    artwork_probe=None, imdb_parental=None,
+    artwork_probe=None, imdb_parental=None, plex_generated_base=None,
 ):
     # Dereferenced once per job, at the top: process_item takes a config per
     # call already, so one read here is all it takes for a config swap to be
@@ -614,7 +628,7 @@ async def _handle_intent(
         await process_item(
             session, config, http, plex, providers, intent,
             tmdb_facts=tmdb_facts, mdblist=mdblist, artwork_probe=artwork_probe,
-            imdb_parental=imdb_parental,
+            imdb_parental=imdb_parental, plex_generated_base=plex_generated_base,
         )
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         # PlexHealth (see plex/health.py) gating run_worker's claiming is now
