@@ -154,7 +154,16 @@ class Notifier:
         payload = build_payload(self._mode, event, summary, detail)
         host = self._host if url == self._url else _host_of(url)
         attempts = 0
-        failure = "not attempted"
+        # `failure` is STORED -- EventLog.outcome and payload["error"], served
+        # by /api/events and the dashboard stream -- so it is the class name
+        # (or the status code, which is not a secret). `logged` is the same
+        # with the transport's own message appended, for the WARNING below
+        # only: the pod log is the trusted sink (roadmap row 207). Storing the
+        # exception's text used to rest on this method never calling
+        # raise_for_status() and the shared client having no event hooks --
+        # a property of this call site, not a contract, and HTTPStatusError's
+        # message embeds the full URL, token and all.
+        failure = logged = "not attempted"
         for attempt in range(self._retry_count):
             if attempt:
                 await _sleep(BACKOFF_BASE_SECONDS * 2 ** (attempt - 1))
@@ -165,16 +174,13 @@ class Notifier:
                 )
             except httpx.HTTPError as exc:
                 # Transport-level: the next attempt may find the host back.
-                # Leak-safety of logging/storing str(exc) rests on the shared
-                # client having no event hooks and this method never calling
-                # raise_for_status() -- HTTPStatusError's message embeds the
-                # full URL, token and all.
-                failure = f"{type(exc).__name__}: {exc}"
+                failure = type(exc).__name__
+                logged = f"{failure}: {exc}"
                 continue
             if response.is_success:
                 logger.debug("notification %r delivered to %s", event, host)
                 return True
-            failure = f"HTTP {response.status_code}"
+            failure = logged = f"HTTP {response.status_code}"
             if response.status_code < 500:
                 # A 4xx is a misconfiguration (wrong path, revoked token):
                 # retrying cannot help, so fail now.
@@ -184,7 +190,7 @@ class Notifier:
             event,
             host,
             attempts,
-            failure,
+            logged,
         )
         try:
             await self._record_failure(event, summary, host, attempts, failure)

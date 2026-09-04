@@ -47,15 +47,22 @@ class PlexHealth:
 
     async def check_liveness(self) -> None:
         """Poll the configured Plex server. Updates ``healthy`` and logs transitions."""
+        # ``error`` is what ``last_error`` holds -- a field nothing serves
+        # today, kept class-name-only so it is safe to serve later: an httpx
+        # error's str() embeds the request URL. ``logged`` carries the message
+        # too, for the transition WARNING below only (the pod log is the
+        # trusted sink, roadmap row 207).
         error: str | None = None
+        logged: str | None = None
         try:
             response = await self._http.get(f"{self._url}/identity")
             ok = response.is_success
             if not ok:
-                error = f"status {response.status_code}"
+                error = logged = f"status {response.status_code}"
         except httpx.HTTPError as exc:
             ok = False
-            error = str(exc)
+            error = type(exc).__name__
+            logged = f"{error}: {exc}"
 
         if ok:
             self.last_success = datetime.now(timezone.utc)
@@ -67,7 +74,7 @@ class PlexHealth:
         # Log transitions only, not every poll — an outage should produce two
         # log lines (down, then back up), not one per liveness interval.
         if was_healthy and not ok:
-            logger.warning("Plex server at %s is unreachable: %s", self._url, error)
+            logger.warning("Plex server at %s is unreachable: %s", self._url, logged)
         elif not was_healthy and ok:
             logger.info("Plex server at %s is reachable again", self._url)
 

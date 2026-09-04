@@ -98,6 +98,18 @@ async def test_an_unknown_flag_is_a_400_naming_the_flags_this_build_has(client, 
     assert "language_miss" in response.json()["detail"]
 
 
+async def test_an_unknown_flag_is_not_reflected_into_the_400(client, auth_headers):
+    """The 400 names what this build has, never the value it was asked for:
+    the query string would otherwise be echoed into a served body."""
+    response = await client.get("/api/actions?flag=lanugage_miss", headers=auth_headers)
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail.startswith("unknown flag; this build has: ")
+    assert "language_miss" in detail
+    assert "lanugage_miss" not in detail
+
+
 async def test_the_flag_filter_narrows_the_queue(client, auth_headers, session):
     missing, _ = await _seed(session, rating_key="1", status="no_art")
     await _seed(session, rating_key="2", status="rendered", upload_status="failed")

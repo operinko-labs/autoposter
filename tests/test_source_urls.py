@@ -148,6 +148,20 @@ def test_refusals_never_echo_the_pasted_credentials(text):
     assert "user:pass" not in str(excinfo.value)
 
 
+def test_an_unknown_host_refusal_does_not_echo_the_host():
+    """The unknown-host refusal is the 422 detail collections_builders.py
+    serves back; the pasted host can be an intranet address the operator
+    did not mean to publish, so the message teaches what IS supported and
+    names nothing from the paste."""
+    with pytest.raises(SourceUrlRefused) as excinfo:
+        parse_source("http://plex.internal:32400/library/x")
+
+    message = str(excinfo.value)
+    assert "is not a supported source" in message
+    assert "plex.internal" not in message
+    assert "32400" not in message
+
+
 def test_refusal_message_drops_pydantics_value_error_prefix():
     """A field_validator's ValueError comes back from pydantic as
     "Value error, <message>" -- that framing is pydantic's, not the model's

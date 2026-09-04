@@ -174,6 +174,43 @@ async def test_non_object_json_body_returns_400_and_is_logged(client, session):
     assert "_raw" in events[0].payload
 
 
+async def test_an_unparseable_body_is_reported_by_class_name_only(client, session):
+    """The 400 detail goes back to the sender and the same string is
+    EventLog.outcome, served by /api/events; a decode error's own text
+    quotes positions and bytes of the payload. Class name only on both --
+    the capped raw body on the row stays the evidence."""
+    response = await client.post(
+        "/webhook/radarr",
+        content=b'{"eventType": "Download", "movie": {"folderPath": "/mnt/media/Movies/Dune"',
+        headers={"X-Autoposter-Token": TOKEN, "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "unparseable payload (JSONDecodeError)"
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert len(events) == 1
+    assert events[0].outcome == "unparseable payload (JSONDecodeError)"
+    assert "/mnt/media/Movies/Dune" in events[0].payload["_raw"]
+
+
+async def test_a_parser_bug_is_recorded_by_class_name_only(session_factory, secrets, session):
+    """The parser-error outcome is served by /api/events too; the traceback
+    reaches the pod log when the re-raise surfaces as the 500."""
+    app = create_app(load_config(EXAMPLE), session_factory, secrets)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as broken_client:
+        response = await broken_client.post(
+            "/webhook/radarr",
+            json={"eventType": "Download", "movie": "not-an-object"},
+            headers={"X-Autoposter-Token": TOKEN},
+        )
+
+    assert response.status_code == 500
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert len(events) == 1
+    assert events[0].outcome == "parser error (AttributeError)"
+
+
 async def test_parser_bug_returns_500_and_logs_structured_payload(session_factory, secrets, session):
     # A well-formed JSON object whose shape our parser mishandles is our bug,
     # not the sender's: it must surface as a 500, and the EventLog row must

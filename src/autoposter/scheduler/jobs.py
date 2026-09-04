@@ -468,8 +468,14 @@ def make_maintenance_job(holder: ConfigHolder, server_factory: Callable[[], obje
             try:
                 await asyncio.to_thread(getattr(server.library, method))
             except Exception as error:
+                # The full message and traceback go to the pod log -- the
+                # trusted sink (roadmap row 207). The summary below is
+                # scheduled_runs.last_detail: served by /api/snapshots and the
+                # dashboard stream, carried in the notification payload -- and
+                # a plexapi/requests failure's str() embeds the host, port and
+                # URL it failed on. Class name only there (row 213's rule).
                 logger.warning("maintenance: %s failed", setting, exc_info=True)
-                failed.append(f"{setting} failed: {error}")
+                failed.append(f"{setting} failed ({type(error).__name__})")
             else:
                 ran.append(setting)
 

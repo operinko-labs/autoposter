@@ -322,4 +322,31 @@ describe("apiFetchNdjson", () => {
 
     await expect(promise).resolves.toBeUndefined();
   });
+
+  it("throws a fixed sentence, not the parser's excerpt, when a line is not JSON", async () => {
+    const { reader, push } = controllableReader();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        body: { getReader: () => reader },
+      }),
+    );
+    const onValue = vi.fn();
+
+    const promise = apiFetchNdjson("/api/logs/stream", onValue, new AbortController().signal);
+    await flush();
+    push("<html>502 Bad Gateway from edge.internal</html>\n");
+
+    // A SyntaxError's message quotes the bytes that did not parse; the page
+    // renders whatever message reaches it, so the reader owns the wording.
+    await expect(promise).rejects.toMatchObject({
+      name: "ApiError",
+      status: 200,
+      message: "the server answered with something that was not JSON",
+    });
+    expect(onValue).not.toHaveBeenCalled();
+    expect(reader.releaseLock).toHaveBeenCalledOnce();
+  });
 });
