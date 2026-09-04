@@ -692,3 +692,37 @@ def test_the_aspect_accessor_costs_no_plex_request():
     `PlexPartialObject.__getattribute__`'s reload branch for a naive
     `item.media` read."""
     assert PlexItemView(a_movie()).get("aspect") is None
+
+
+def test_a_facts_sourced_row_is_in_no_runtime_accessor_set(): 
+    """Sub-phase C2c's `facts` tier, from the collections side: the three
+    derived tuples are computed from `FILTER_ATTRIBUTES`' `source` column, so
+    a new tier lands in none of them WITHOUT any edit to this module -- which
+    is the whole reason the tier is a column rather than a hand-maintained
+    list. `SHIPPED_ATTRIBUTES` must be exactly as long as it was before C2c.
+
+    And the refusal `PlexItemView` already gives is already the right one: it
+    falls through to the generic branch and names the tier, so an operator
+    who somehow reaches evaluation gets 'its source tier is 'facts''
+    rather than a `KeyError`. No `filter_values.py` edit was needed for
+    either half."""
+    from autoposter.collections.filter_values import (
+        AttributeNotInListing,
+        BATCHED_ATTRIBUTES,
+        DEFERRED_ATTRIBUTES,
+        PlexItemView,
+        SHIPPED_ATTRIBUTES,
+        _ACCESSORS,
+    )
+
+    for name in ("tmdb_status", "last_episode_aired"):
+        assert name not in SHIPPED_ATTRIBUTES, name
+        assert name not in BATCHED_ATTRIBUTES, name
+        assert name not in DEFERRED_ATTRIBUTES, name
+        assert name not in _ACCESSORS, name
+        with pytest.raises(AttributeNotInListing, match="facts"):
+            PlexItemView(object()).get(name)
+
+    assert len(SHIPPED_ATTRIBUTES) == 14, (
+        "C2c adds no listing row; SHIPPED_ATTRIBUTES is C2b's fourteen"
+    )
