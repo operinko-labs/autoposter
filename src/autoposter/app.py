@@ -435,7 +435,10 @@ def create_app(
                 # connection with an open transaction", all 5 pooled
                 # connections, at every deploy. None for every application but
                 # main.build()'s, whose engine this is.
-                await app.state.engine.dispose()
+                try:
+                    await app.state.engine.dispose()
+                except Exception as exc:  # noqa: BLE001 - shutdown must not fail on cleanup
+                    logger.warning("engine dispose failed during shutdown: %s", type(exc).__name__)
             logging.getLogger().removeHandler(app.state.log_buffer)
 
     # The interactive docs enumerate every endpoint and its request shape to

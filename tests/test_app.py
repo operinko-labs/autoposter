@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -316,6 +317,37 @@ async def test_the_lifespan_disposes_the_engine_after_closing_the_http_client(
         "the engine was disposed zero times, more than once, or before the "
         f"shared http client was closed ({disposals!r})"
     )
+
+
+async def test_a_dispose_failure_does_not_fail_the_lifespan(
+    session_factory, secrets, stubbed_background_services, caplog
+):
+    """``dispose()`` must not be able to fail the shutdown it is part of --
+    an exception out of it would propagate out of the lifespan generator
+    (uvicorn reports ``Application shutdown failed`` and exits non-zero) and
+    skip the ``removeHandler`` call right after it, leaving the root logger
+    pointed at a teardown-stage buffer.
+    """
+
+    class _RaisingEngine:
+        async def dispose(self):
+            raise RuntimeError("pool already gone")
+
+    app = _background_app(
+        load_config(EXAMPLE), session_factory, secrets, engine=_RaisingEngine()
+    )
+
+    with caplog.at_level("WARNING"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert app.state.log_buffer not in logging.getLogger().handlers, (
+        "removeHandler was skipped because dispose() raised past it"
+    )
+    assert any(
+        "engine dispose failed" in record.message and "RuntimeError" in record.message
+        for record in caplog.records
+    ), "the dispose failure was swallowed silently instead of logged"
 
 
 async def test_the_lifespan_builds_the_plex_client_from_the_effective_config(
