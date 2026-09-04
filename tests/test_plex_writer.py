@@ -113,11 +113,17 @@ def test_zero_rating_is_written_rather_than_clearing_the_field():
     assert edits["rating.value"] == 0.0
 
 
-def test_seasons_accept_only_ratings():
-    # Roadmap row 32 added ``user_rating`` to every kind, season included --
-    # still a rating, so the set stays "ratings only".
+def test_seasons_accept_the_ratings_and_the_two_text_fields_plexapi_allows():
+    # Roadmap row 32 added ``user_rating`` to every kind, season included.
+    # Roadmap row 99 added ``title`` and ``summary`` -- and only those two:
+    # ``SeasonEditMixins`` (plexapi/mixins/__init__.py:55-61) carries no
+    # ``titleSort`` and no ``tagline``, which is also why Kometa's season
+    # branch (modules/meta.py:2050-2053) writes title, summary, user_rating
+    # and label and nothing else. Neither new field is ever written from
+    # provider facts: they exist so a per-item override can name them.
     assert WRITABLE_BY_KIND["season"] == {
         "critic_rating", "audience_rating", "user_rating",
+        "title", "summary",
     }
 
 

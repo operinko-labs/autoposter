@@ -150,7 +150,7 @@ def test_an_unknown_verb_is_a_config_load_error():
 
 def test_an_unknown_field_name_is_a_config_load_error():
     with pytest.raises(Exception):
-        OperationsConfig(field_verbs={"tagline": "unlock"})
+        OperationsConfig(field_verbs={"no_such_field": "unlock"})
 
 
 def test_every_writable_field_has_a_plex_field_name():

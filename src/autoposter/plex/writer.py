@@ -17,6 +17,20 @@ logger = logging.getLogger(__name__)
 # later phase that fills them in, rather than removed: shrinking this set
 # would mean re-adding entries later just to catch up with gather_facts,
 # instead of gather_facts simply growing into a map that already allows it.
+#
+# Roadmap row 99 is that later phase, and it arrives from the other side: the
+# four TEXT fields below (``title``, ``sort_title``, ``summary``, ``tagline``)
+# have NO provider source in this service at all and are never written from
+# ``GatheredFacts`` -- they exist here so that a per-item OVERRIDE can name
+# them. Their per-libtype placement is plexapi's own capability matrix
+# (``plexapi/mixins/__init__.py:35-70``), which is also what Kometa's
+# ``add_edit`` writes through: a season carries no ``titleSort`` and no
+# ``tagline``, and an episode carries no ``tagline``.
+#
+# TWO OTHER MODULES READ THIS MAP and both move when it grows, intentionally:
+# ``config/schema.py``'s ``field_verbs`` validator (so ``lock``/``unlock`` now
+# work on the four text fields), and ``metadata_backup.py::capture_item`` (so
+# row 86's backup file carries them and their lock flags).
 WRITABLE_BY_KIND: dict[str, set[str]] = {
     "movie": {
         "critic_rating", "audience_rating", "content_rating",
@@ -25,15 +39,22 @@ WRITABLE_BY_KIND: dict[str, set[str]] = {
         # carries originalTitle for movies and not for shows or episodes
         # (plex/client.py:59-61, row 44's finding).
         "user_rating", "original_title",
+        # Roadmap row 99, override-only.
+        "title", "sort_title", "summary", "tagline",
     },
     "show": {
         "critic_rating", "audience_rating", "content_rating",
         "genres", "studio", "originally_available",
         "user_rating",
+        "title", "sort_title", "summary", "tagline",
     },
-    "season": {"critic_rating", "audience_rating", "user_rating"},
+    "season": {
+        "critic_rating", "audience_rating", "user_rating",
+        "title", "summary",
+    },
     "episode": {"critic_rating", "audience_rating", "content_rating",
-                "originally_available", "user_rating"},
+                "originally_available", "user_rating",
+                "title", "sort_title", "summary"},
 }
 
 
@@ -51,6 +72,15 @@ _PLEX_FIELD_NAMES: dict[str, tuple[str, str]] = {
     "originally_available": ("originallyAvailableAt", "originallyAvailableAt"),
     "original_title": ("originalTitle", "originalTitle"),
     "genres": ("genres", "genre"),
+    # Roadmap row 99. Each is the same string twice, written out rather than
+    # special-cased for the reason the block above states. ``title``'s Plex
+    # attribute is ``title`` even though Kometa reaches it through
+    # ``editTitle``: that method is ``editField("title", ...)`` underneath and
+    # emits the same ``title.value``/``title.locked`` pair ``put()`` builds.
+    "title": ("title", "title"),
+    "sort_title": ("titleSort", "titleSort"),
+    "summary": ("summary", "summary"),
+    "tagline": ("tagline", "tagline"),
 }
 
 # Roadmap row 87's ``remove`` ships for these four and no others. A scalar's
@@ -117,6 +147,20 @@ def verb_edits(item, operations) -> dict[str, object]:
             # STOP-and-filed: see the module's _REMOVABLE_FIELDS comment.
             continue
         if verb == "remove" and field not in _REMOVABLE_FIELDS:
+            # Row 87's I1, applied to a set that row 99 just widened: an
+            # accepted-but-ignored verb is indistinguishable from a working
+            # one that has been switched off, so say so rather than pass
+            # silently. Not a config-load refusal: ``{critic_rating: remove}``
+            # has loaded and quietly done nothing since row 87 shipped, and
+            # turning a config that boots today into one that refuses to is a
+            # deployment risk this row has no mandate to take. The question is
+            # filed beside rows 229/230, which already own that family.
+            logger.warning(
+                "plex: operations.field_verbs asks to remove %r, which this "
+                "service does not clear; the verb is skipped (removable "
+                "fields are %s)",
+                field, ", ".join(sorted(_REMOVABLE_FIELDS)),
+            )
             continue
         if not applied.get(verb):
             logger.info(

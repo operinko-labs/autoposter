@@ -120,20 +120,11 @@ from autoposter.plex.item_overrides import (  # noqa: E402
 )
 
 
-@pytest.mark.xfail(
-    reason="T2 grows WRITABLE_BY_KIND; this is its advance RED", strict=True,
-)
 def test_writable_fields_is_the_kind_s_own_set_sorted():
     """C3's field set, per libtype, from ``WRITABLE_BY_KIND`` rather than a
     second list -- two lists of writable fields would silently stop agreeing,
     and the 422 an operator gets for an unwritable field would then depend on
-    which one the request happened to reach.
-
-    The xfail is deliberate and STRICT, and T2 Step 5 removes it: this file
-    is where the function lives, so its pin is written here, but the season
-    set it asserts only becomes true when T2 grows ``WRITABLE_BY_KIND``.
-    ``strict=True`` so an un-removed marker becomes a FAILURE the moment T2
-    lands rather than a silent pass."""
+    which one the request happened to reach."""
     assert writable_fields("season") == [
         "audience_rating", "critic_rating", "summary", "title", "user_rating",
     ]
