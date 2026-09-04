@@ -414,6 +414,140 @@ class TitleCardConfig(ArtKindConfig):
     )
 
 
+# The three vertical anchors ``collections/poster_title.py`` can honour.
+# ``TextStyle.gravity`` is an ImageMagick vocabulary shared with the render
+# pipeline, which composites through ``magick`` and takes all nine; the
+# collection-poster composite draws with Pillow and centres horizontally, so
+# it anchors vertically only. Named here rather than in the drawing module so
+# the refusal happens when the operator SAVES, not when a pass runs.
+_COLLECTION_GRAVITIES = frozenset({"north", "center", "south"})
+
+
+class CollectionPosterTitleConfig(BaseModel):
+    """A styled title, plus a fixed second line, drawn onto a managed
+    collection's poster before it is uploaded (roadmap row 105).
+
+    **Where this lives is the whole safety argument.** ``config/loader.py``'s
+    ``render_version`` hashes ``config.artwork.model_dump(mode="json")``
+    wholesale and its docstring names ``collections`` among the sections it
+    excludes, so a key here cannot move ``config.version`` and cannot strand a
+    single stored render fingerprint -- while the same key under ``artwork``
+    would strand roughly 16,000 of them at its own default value.
+
+    **A sibling of ``ArtKindConfig``, not a subclass.** ``language_order``,
+    ``min_width``/``min_height``, ``skip_local_text_add``,
+    ``disable_online_asset_fetch`` and ``skip_add_text_when_with_text`` mean
+    nothing for a collection poster, and this model is walked by
+    ``config/descriptions.py`` into the map the Settings page renders -- so
+    subclassing would advertise six settings that do nothing.
+
+    **Styled after Posterizarr's parts, not byte-matched to them.** The
+    defaults are the operator's own Posterizarr values
+    (``CollectionPosterOverlayPart`` for the title block,
+    ``CollectionTitlePosterPart`` for the fixed line's colour, stroke, caps and
+    wording), written against a 2000-pixel-wide poster and scaled at draw time
+    to whatever poster is actually fetched. No captured Posterizarr output
+    exists anywhere, so there is no oracle to prove parity against and none is
+    claimed. Three defaults are OURS and are called out on their fields: the
+    font name, and the fixed line's offset and box.
+
+    ``AddBorder`` and ``AddOverlay`` from ``CollectionPosterOverlayPart`` are
+    not implemented and deliberately have no key here.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Draw the collection's title, plus the fixed collection_line_text, "
+            "onto every managed collection poster this service fetches, before "
+            "uploading it. Off is byte-identical to not having this feature. "
+            "Turning it on re-uploads each affected collection's poster once, "
+            "on the next pass, and then settles; a poster you placed yourself, "
+            "a divider's art and any collection this service does not manage "
+            "are never touched."
+        ),
+    )
+    title: TextStyle = Field(
+        default_factory=lambda: TextStyle(
+            font="Inter-Medium.ttf",
+            all_caps=True,
+            font_color="white",
+            min_point_size=100,
+            max_point_size=250,
+            max_width=1900,
+            max_height=500,
+            text_offset="+300",
+            gravity="south",
+            line_spacing=0,
+            add_text=True,
+            add_stroke=False,
+            stroke_color="black",
+            stroke_width=6,
+        ),
+        description=(
+            "The collection's own title block. Its sizes and offsets are in "
+            "pixels against a 2000-pixel-wide poster and are scaled to the "
+            "poster actually fetched. The default font is a bundled face, not "
+            "Posterizarr's Colus-Regular.ttf, which this service does not ship "
+            "-- put your own copy under fonts_root and name it here to use it."
+        ),
+    )
+    collection_line: TextStyle = Field(
+        default_factory=lambda: TextStyle(
+            font="Inter-Medium.ttf",
+            all_caps=True,
+            font_color="white",
+            min_point_size=40,
+            max_point_size=90,
+            max_width=1200,
+            max_height=150,
+            text_offset="+120",
+            gravity="south",
+            line_spacing=0,
+            add_text=True,
+            add_stroke=False,
+            stroke_color="black",
+            stroke_width=6,
+        ),
+        description=(
+            "The fixed second line's own block. Its colour, stroke, caps and "
+            "line spacing are Posterizarr's; its offset and box are ours, "
+            "because Posterizarr gives both of its parts the same offset -- "
+            "they are two poster types there, not two blocks on one image, so "
+            "copying both would draw this line through the title. Set add_text "
+            "false to draw the title alone."
+        ),
+    )
+    collection_line_text: str = Field(
+        default="COLLECTION",
+        description=(
+            "The fixed second line printed with every collection title, "
+            "Posterizarr's CollectionTitle. Empty draws no second line at all."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _gravities_must_be_drawable(self) -> "CollectionPosterTitleConfig":
+        """Refuse a gravity the Pillow composite cannot anchor.
+
+        A saved config with ``southeast`` here would otherwise draw every
+        collection's title somewhere the operator did not ask for, on every
+        managed collection, and be discovered by looking at Plex.
+        """
+        for name, style in (
+            ("title", self.title),
+            ("collection_line", self.collection_line),
+        ):
+            if style.gravity not in _COLLECTION_GRAVITIES:
+                raise ValueError(
+                    f"collections.poster_title.{name}.gravity {style.gravity!r} is "
+                    "not one of 'north', 'center', 'south': the collection-poster "
+                    "composite draws with Pillow and anchors its blocks "
+                    "vertically only"
+                )
+        return self
+
+
 class ArtworkConfig(BaseModel):
     poster: ArtKindConfig = Field(
         description="Movie/show poster art: whether it is built, its sources and its text block.",
@@ -1809,6 +1943,18 @@ class CollectionsConfig(BaseModel):
     posters: bool = Field(
         default=True,
         description="Give every collection this service manages a poster: a local override if the operator placed one, otherwise a hosted default.",
+    )
+    # Roadmap row 105. A sibling sub-model, and deliberately here rather than
+    # under `artwork`: render_version hashes the artwork section wholesale
+    # (config/loader.py:48-55) and excludes `collections`, so nothing in here
+    # can move a stored render fingerprint. Off by default; see the model.
+    poster_title: CollectionPosterTitleConfig = Field(
+        default_factory=CollectionPosterTitleConfig,
+        description=(
+            "Draw a styled collection title, plus a fixed second line, onto "
+            "every managed collection poster this service fetches, before "
+            "uploading it. Off by default."
+        ),
     )
     # Preset collections switched on by key, from the catalog
     # (``collections/catalog.py``). A key rather than a copy of the
