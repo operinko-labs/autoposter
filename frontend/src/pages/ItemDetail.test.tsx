@@ -62,6 +62,15 @@ const MOVIE = {
  * apart. Asserted below to be plain text. */
 const OVERRIDE_PATH = "/manualassets/Movies/Ghostbusters (1984)/poster.jpg";
 
+/** The server's exact words, held verbatim. The page must render what the
+ * server sent and must not own a copy of this sentence -- a client-side
+ * rewrite would drift from the constant `api/routes.py` actually serves, and
+ * an operator would be reading two different explanations of one condition. */
+const TWIN_NOTE =
+  "another row carries this item's identity under a different Plex rating " +
+  "key, so this re-run may complete without changing anything; the " +
+  "plex_merge job is what reconciles such a pair";
+
 /** The same movie with both of its art kinds rendered, one of them from a
  * hand-placed override file. Listed poster-first on purpose: the panes are
  * specified as ordered by art kind, so a page that simply followed the array
@@ -592,6 +601,99 @@ describe("ItemDetail", () => {
     // An error, not an outcome: a page showing both would be saying the
     // re-run failed and was queued at once.
     expect(document.querySelector(".item-outcome")).toBeNull();
+  });
+
+  it("shows the server's twin note beside the queued outcome", async () => {
+    // The fork stop's whole visible symptom: the job is queued, completes,
+    // and does nothing. The note is the only thing on any served surface that
+    // says why -- job.last_error is deliberately null and /api/events never
+    // serves the payload that would tie its audit row to this item.
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/reprocess": () =>
+          json({ queued: true, job_id: 412, note: TWIN_NOTE }),
+      }),
+    );
+
+    await renderItem();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-run" }));
+
+    await waitFor(() =>
+      expect(document.querySelector(".item-twin-note")?.textContent).toBe(TWIN_NOTE),
+    );
+    // Its own line, not folded into the outcome: the outcome is about this
+    // click, the note is about the row, and blurring them would have the page
+    // claim the queueing itself was doubtful.
+    expect(document.querySelector(".item-outcome")?.textContent).toBe(
+      "Queued as job #412.",
+    );
+  });
+
+  it("shows the twin note on a de-duplicated re-run too", async () => {
+    // The note is a property of the ROW, not of whether this particular click
+    // inserted a job. A page that gated it on `queued` would go silent exactly
+    // when an operator is clicking twice because nothing appeared to happen.
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/reprocess": () =>
+          json({ queued: false, job_id: null, note: TWIN_NOTE }),
+      }),
+    );
+
+    await renderItem();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-run" }));
+
+    await waitFor(() =>
+      expect(document.querySelector(".item-outcome")?.textContent).toBe(
+        "Already queued — nothing new was added.",
+      ),
+    );
+    expect(document.querySelector(".item-twin-note")?.textContent).toBe(TWIN_NOTE);
+  });
+
+  it("shows no twin note when the server sends none", async () => {
+    // The shipped case, and the one that must stay quiet: a note on every
+    // re-run would be wallpaper an operator learns to ignore.
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/reprocess": () => json({ queued: true, job_id: 412, note: null }),
+      }),
+    );
+
+    await renderItem();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-run" }));
+
+    await waitFor(() =>
+      expect(document.querySelector(".item-outcome")?.textContent).toBe(
+        "Queued as job #412.",
+      ),
+    );
+    expect(document.querySelector(".item-twin-note")).toBeNull();
+  });
+
+  it("shows no twin note when the server omits the key entirely", async () => {
+    // An older API pod mid-rollout answers without a `note` key at all, so
+    // response.note is undefined rather than null. A strict `!== null` check
+    // would let that through and render an empty, textless paragraph.
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/reprocess": () => json({ queued: true, job_id: 412 }),
+      }),
+    );
+
+    await renderItem();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-run" }));
+
+    await waitFor(() =>
+      expect(document.querySelector(".item-outcome")?.textContent).toBe(
+        "Queued as job #412.",
+      ),
+    );
+    expect(document.querySelector(".item-twin-note")).toBeNull();
   });
 
   it("shows a labelled base+live pair for every art kind the item has rendered", async () => {

@@ -1733,6 +1733,13 @@ class CollectionDefinition(BaseModel):
         ``search-only`` row never reaches this loop at all -- ``parse_filters``
         refuses it one layer up, with the message that names ``plex_search``.
 
+        Sub-phase C2c added a fourth outcome without adding a collections
+        capability: a ``facts`` row -- a value this service holds in its own
+        ``item_facts`` table -- refuses HERE, naming row 156, and is readable
+        only by an overlay ``condition:``. The tier exists so the badge path
+        can read ``item_facts``; it deliberately does not make a collection
+        filterable on it.
+
         Checked against ``SHIPPED_ATTRIBUTES`` and ``BATCHED_ATTRIBUTES`` --
         the tier-derived sets (rows in ``FILTER_ATTRIBUTES`` whose ``source``
         is ``"listing"`` / ``"tier2-batched"``), not against the runtime
@@ -1762,7 +1769,30 @@ class CollectionDefinition(BaseModel):
             row = predicate.attribute
             if row.name in SHIPPED_ATTRIBUTES or row.source == "tier2-batched":
                 continue
-            if row.source == "tier2-deferred":
+            if row.source == "facts":
+                # ADJUDICATION A-2 (roadmap row 100, sub-phase C2c). NOT the
+                # `unprobed` sentence below -- that one claims a missing PROBE
+                # verdict, and there is no Plex listing that could ever carry
+                # a TMDb field, so it would be false rather than cautious.
+                # And not the `tier2-deferred` one -- nothing is deferred
+                # here, the value is held, in this service's own database.
+                # What is missing is the sparsity story, and row 156 owns it
+                # by name.
+                why = (
+                    "this service holds that value in its own item_facts row "
+                    "rather than reading it from Plex, and a facts-backed "
+                    "COLLECTION filter is not shipped: an item_facts column "
+                    "is NULL both for 'the provider has nothing for this "
+                    "title' and for 'this item has not been gathered yet', "
+                    "so a collection built on one would silently shrink to "
+                    "whatever the facts layer has caught up with -- roadmap "
+                    "row 156 owns that question and this service will not "
+                    "pre-empt it. The same attribute IS available to an "
+                    "overlay `condition:` (badges.definitions, "
+                    "badges.families), where the verdict is per item and a "
+                    "missing value simply draws no badge"
+                )
+            elif row.source == "tier2-deferred":
                 # NOT the pre-phase-B sentence, which cited the listing's
                 # incompleteness: the batched read answers that for the five
                 # rows it moved, so repeating it here would send an operator

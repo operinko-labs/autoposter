@@ -108,7 +108,7 @@ Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
   search names have no filter (``unplayed``, ``progress``, ``hdr``,
   ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
 
-This table covers **33** of the 55 search names and **27** of the 70 filter
+This table covers **33** of the 55 search names and **29** of the 70 filter
 names. Both halves of the residue are real work, and they are different work:
 the 45 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
 ``plays``, ``last_played``, 10a's ``country``, phase B's four people rows and
@@ -197,8 +197,37 @@ ITEM_KINDS = ("movie", "show")
 #   a row triggers one batched fetch for its resolved set, and an item the
 #   batch did not answer for REFUSES the definition rather than evaluating
 #   with a silently-missing value.
+#
+# Sub-phase C2c (roadmap row 100) added the fourth, and it is the first that
+# describes no Plex read at all:
+#
+# - ``facts``: the value lives in this service's own ``item_facts`` row,
+#   gathered from a provider. **REFUSAL-ONLY on the COLLECTIONS side** --
+#   ``config/schema.py``'s ``filters:`` gate has its own ``why`` branch for
+#   it, naming roadmap row 156 -- because making a facts-backed value
+#   collection-filterable needs the sparsity story row 156 owns (an
+#   ``item_facts`` column is NULL both for "the provider has nothing" and
+#   for "this item has not been gathered yet", and a collection built on one
+#   would silently shrink to whatever the facts layer has caught up with).
+#   This tier NAMES that fence rather than opening it.
+#
+#   It is deliberately NOT ``unprobed``: that tier means "9a never probed
+#   whether the Plex section listing carries it", and there is no Plex
+#   listing that could ever carry a TMDb field, so claiming a missing probe
+#   verdict would be a false statement rather than a cautious one. And not
+#   ``tier2-deferred`` either: nothing is deferred, the value is held.
+#
+#   The OVERLAY side supplies these rows through
+#   ``overlays/selection.py::OVERLAY_ATTRIBUTES``, which is a wholly separate
+#   mechanism over a different view -- one that is handed the ``ItemFacts``
+#   row directly. ``filter_values``'s ``SHIPPED_ATTRIBUTES`` /
+#   ``BATCHED_ATTRIBUTES`` / ``DEFERRED_ATTRIBUTES`` are all tier-DERIVED, so
+#   a ``facts`` row lands in none of them and needs no collections accessor;
+#   ``PlexItemView.get`` falls through to its generic branch and refuses by
+#   naming the tier, which is already the right sentence.
 SOURCE_TIERS = (
-    "listing", "probe", "tier2-batched", "tier2-deferred", "unprobed", "search-only",
+    "listing", "probe", "tier2-batched", "tier2-deferred", "unprobed",
+    "search-only", "facts",
 )
 
 # The operator vocabulary, per value type. These are internal names; the YAML
@@ -613,19 +642,26 @@ _BOTH = ("movie", "show")
 
 # --- THE TABLE ---------------------------------------------------------------
 #
-# Thirty-four rows: 9a's fifteen in the order the roadmap names them
+# Thirty-seven rows: 9a's fifteen in the order the roadmap names them
 # (roadmap.md:538-551), then 9b's four, 10a's two, phase B's five and
 # search-tails-1's seven appended rather than interleaved so the first
 # fifteen still read against the roadmap line they came from, plus C2a's
-# ``versions`` (A14) appended last. Column totals are asserted in
-# tests/test_collection_filters.py as the transcription's checksum:
-# 13 tag / 3 str / 4 int / 3 float / 3 date / 1 duration / 7 bool;
-# 13 listing / 5 tier2-batched / 1 tier2-deferred / 7 unprobed / 8 search-only;
-# 21 both-kinds / 12 movie-only / 1 show-only for ``kinds``, and
-# 24 / 8 / 1 / 1 for ``search_kinds`` (the fourth bucket, ``()``, is
-# ``versions``'s own: filterable but not searchable, so it lands in neither
-# kind), which is a different split and that is the point of the second
-# column.
+# ``versions`` (A14), C2b's ``aspect`` (A11) and C2c's ``tmdb_status`` and
+# ``last_episode_aired`` (A-1/A-2) appended last. Column totals are asserted
+# in tests/test_collection_filters.py as the transcription's checksum:
+# 14 tag / 3 str / 4 int / 4 float / 4 date / 1 duration / 7 bool;
+# 14 listing / 5 tier2-batched / 1 tier2-deferred / 7 unprobed /
+# 8 search-only / 2 facts;
+# 22 both-kinds / 12 movie-only / 3 show-only for ``kinds``, and
+# 24 / 8 / 1 / 4 for ``search_kinds`` (the fourth bucket, ``()``, is the
+# filterable-but-not-searchable one: ``versions``, ``aspect``,
+# ``tmdb_status`` and ``last_episode_aired``, which land in neither kind),
+# which is a different split and that is the point of the second column.
+# NOTE, recorded rather than silently fixed: this sentence read "Thirty-four
+# rows" and "24 / 8 / 1 / 1" until C2c, both of which stopped being true when
+# C2b appended ``aspect`` -- the TEST beside it already asserted ``(): 2``.
+# C2c corrects it while appending, and the arithmetic above is now the
+# post-C2c truth.
 #
 # Phase B appended FIVE: the four PEOPLE rows, which move the ``tag`` and
 # ``unprobed`` totals by four together -- ``actor`` on both kinds, and
@@ -1369,6 +1405,95 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "missing-value rule excludes it under every operator, `.not` "
         "included, which is what keeps an unanalysed file un-badged rather "
         "than wrongly badged.",
+        search_field=None, show_search_field=None,
+        search_kinds=(), filterable=True,
+    ),
+    FilterAttribute(
+        "tmdb_status", "tag", ("show",), "facts",
+        "TMDb's own `status` for the show, as KOMETA'S TOKEN rather than as "
+        "TMDb's string: `discover_status` maps the six TMDb spellings onto "
+        "`returning`/`planned`/`production`/`ended`/`canceled`/`pilot` "
+        "(`/modules/tmdb.py:108` in the pinned v2.4.8 image), Kometa "
+        "validates a written value against exactly those six as a "
+        "`commalist` (`/modules/builder.py:4369`) and then tests membership "
+        "of the written set outright -- `(modifier == '' and check_value not "
+        "in filter_data)` (`/modules/tmdb.py:685-693`). EXACT-SET "
+        "MEMBERSHIP, never substring, which is why this is a `tag` row and "
+        "not a `str` one: `str` defaults to CONTAINS, and that would make "
+        "`tmdb_status: end` match every ended show. `content_rating` is the "
+        "same shape one attribute along -- a `tag` filter over a single "
+        "string, read as a one-element list by `_as_tags`. SHOW-ONLY: "
+        "`filters_by_type[\"show\"]` carries it (`/modules/builder.py:334-345`) "
+        "and no other libtype does. TMDB, NEVER TVDB -- it is in "
+        "`tmdb_filters` (`builder.py:371`) and `tvdb_status` is a SEPARATE "
+        "name in `tvdb_filters` (`:375`) this service does not ship; that is "
+        "roadmap row 100's A12 correction, re-confirmed here by direct read. "
+        "`facts`: the value is `ItemFacts.tmdb_status`, written by "
+        "`facts/tmdb_facts.py::parse_show_facts` off the same `/tv/{id}` "
+        "payload the facts gather already fetches (zero new HTTP), and "
+        "MAPPED TO THE TOKEN AT THE PARSER so this column and a written "
+        "filter value share one value space -- the condition row 156 set. A "
+        "collection naming this row is refused at load; an overlay "
+        "`condition:` reads it through `overlays/selection.py::"
+        "OverlayItemView`. Row 100 sub-phase C2c, adjudication A-2. A row "
+        "whose column is still NULL -- every row in the library until its "
+        "next facts refresh, adjudication A-4 -- is excluded by the tag "
+        "missing-value rule under every positive operator, which matches "
+        "Kometa excluding an item it has no TMDb object for "
+        "(`/modules/builder.py:4700-4714`). GAP, DECLARED: the same rule "
+        "negates under `.not`, so `tmdb_status.not: ended` matches every "
+        "row whose column is still NULL -- the whole library until its "
+        "next facts refresh -- where Kometa excludes that item "
+        "regardless of modifier. DIVERGENCE, DECLARED: a status "
+        "TMDb spells outside the six is a bare `KeyError` upstream "
+        "(`/modules/tmdb.py:685`); here it is stored verbatim and matches "
+        "nothing, which is the same drawn outcome without the crash. THREE "
+        "OF THE SIX TOKENS DRAW NOTHING upstream and nothing here: "
+        "`status.yml` ships bands for `returning`, `canceled` and `ended` "
+        "only.",
+        search_field=None, show_search_field=None,
+        search_kinds=(), filterable=True,
+    ),
+    FilterAttribute(
+        "last_episode_aired", "date", ("show",), "facts",
+        "TMDb's `last_air_date` -- when the show's most recent episode aired "
+        "(`/modules/tmdb.py:699`, `tmdb_date = item.last_air_date`, compared "
+        "through `util.is_date_filter` at `:705`). DELIBERATELY NOT the "
+        "`release`/`originally_available` value, which for a show is TMDb's "
+        "`first_air_date`: the two are opposite ends of the same show, and "
+        "conflating them would badge a long-ended series as AIRING for the "
+        "fortnight after its premiere anniversary. SHOW-ONLY "
+        "(`/modules/builder.py:334-345`), TMDb (`tmdb_filters`, `:369`). THE "
+        "BARE FORM IS A WINDOW IN DAYS: `last_episode_aired: 14` means "
+        "'aired in the last 14 days', confirmed BOTH ways in the pinned "
+        "image and closing the datasources probe's open item 6 -- "
+        "`util.is_date_filter`'s blank-modifier branch is `value < "
+        "current_time - timedelta(days=data)`, rejecting what is older "
+        "(`/modules/util.py:601-604`), and the search half renders the same "
+        "window as `>>=-14d`, 'is in the last' "
+        "(`/modules/builder.py:4222-4233`). `_as_days` already reads it "
+        "identically. A show with no `last_air_date` is EXCLUDED under every "
+        "operator: `is_date_filter(None, ...)` returns True, which is a "
+        "rejection (`/modules/util.py:598-600`), and this table's own "
+        "`_MISSING_ALWAYS_EXCLUDES` reaches the same verdict for a `date` "
+        "row -- which is also the state of every row in the library on the "
+        "upgrade that ships this. `facts`: `ItemFacts.last_episode_aired`; "
+        "see the `tmdb_status` row above for what that tier means and why a "
+        "collection is refused. A DECLARED DIVERGENCE FROM UPSTREAM'S "
+        "`airing` BAND (adjudication A-1): `status.yml:61-63` selects AIRING "
+        "with `plex_search: {any: {episode_air_date: 14}}` -- a server-side "
+        "search over the LIBRARY's episode rows -- and `episode_air_date` is "
+        "absent from `filters_by_type` entirely "
+        "(`/modules/builder.py:278-350`), so no `filters:` block in EITHER "
+        "system can name it; this is `duplicate`/`versions` (A14) verbatim. "
+        "This row asks the question Kometa's own filter vocabulary does "
+        "supply -- 'did the SHOW air an episode in the last N days, per "
+        "TMDb' -- where upstream's search asks 'does the LIBRARY hold one'. "
+        "They differ when the library lags broadcast (upstream draws "
+        "nothing, this draws AIRING) or when Plex's own episode dates are "
+        "wrong. `last_episode_aired_or_never`, whose null-KEEPS-the-item "
+        "semantic (`/modules/tmdb.py:700-702`) is the interesting half, is a "
+        "SEPARATE Kometa name and is deliberately not shipped.",
         search_field=None, show_search_field=None,
         search_kinds=(), filterable=True,
     ),

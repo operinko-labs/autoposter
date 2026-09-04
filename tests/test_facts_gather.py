@@ -385,6 +385,62 @@ async def test_a_later_gather_without_them_does_not_blank_them(session):
     assert row.critic_rating == pytest.approx(4.9)
 
 
+# --- roadmap row 100 sub-phase C2c: the two status columns ------------------
+
+
+async def test_persist_writes_the_two_status_columns(session):
+    """The badge path reads the PERSISTED row, not a live gather
+    (`render/pipeline.py` selects `ItemFacts` and hands it to
+    `OverlayItemView`), so a value that never reaches this table never
+    reaches a status badge."""
+    media = MediaItem(rating_key="st1", library="Shows", kind="show", title="X")
+    session.add(media)
+    await session.flush()
+    await persist_facts(session, media.id, GatheredFacts(
+        tmdb_status="returning",
+        last_episode_aired=date(2026, 8, 20),
+        sources={"tmdb_status": "tmdb"},
+    ))
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.tmdb_status == "returning"
+    assert row.last_episode_aired == date(2026, 8, 20)
+
+
+async def test_a_later_gather_without_the_status_fields_does_not_blank_them(session):
+    """`persist_facts`'s never-blank law, one field pair along: a pass with no
+    `tmdb_id` -- or a TMDb 429 that skipped the show fetch -- must not erase
+    what a complete pass stored. This is the property that makes the drift
+    sweep safe to run against a partially-degraded provider."""
+    media = MediaItem(rating_key="st2", library="Shows", kind="show", title="X")
+    session.add(media)
+    await session.flush()
+    await persist_facts(session, media.id, GatheredFacts(
+        tmdb_status="ended", last_episode_aired=date(2024, 5, 1),
+    ))
+    await persist_facts(session, media.id, GatheredFacts(critic_rating=4.9))
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.tmdb_status == "ended"
+    assert row.last_episode_aired == date(2024, 5, 1)
+    assert row.critic_rating == pytest.approx(4.9)
+
+
+async def test_a_gather_whose_only_fact_is_a_status_still_writes_a_row(session):
+    """Established facts item **z**, proven through the real `persist_facts`
+    rather than only through `is_empty()`. Two gates would swallow this if
+    the decision had gone the other way: the `facts.is_empty()`
+    short-circuit, and the `len(values) == 1` guard for a gather whose only
+    results have no column. A show TMDb knows nothing about except that it
+    ended must still get its row, or `status` is a family that silently does
+    nothing for the sparsest shows in the library."""
+    media = MediaItem(rating_key="st3", library="Shows", kind="show", title="X")
+    session.add(media)
+    await session.flush()
+    await persist_facts(session, media.id, GatheredFacts(tmdb_status="canceled"))
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.tmdb_status == "canceled"
+    assert row.last_episode_aired is None
+
+
 async def test_an_empty_gather_still_records_that_we_looked(session):
     """C4, and the whole reason rows 189/192 can tell 'TMDb has nothing for
     this item' from 'nobody has asked yet'.

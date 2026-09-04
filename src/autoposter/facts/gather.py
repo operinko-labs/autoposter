@@ -297,6 +297,17 @@ async def persist_facts(
         values["tmdb_original_language"] = facts.tmdb_original_language
     if facts.tmdb_collection_id is not None:
         values["tmdb_collection_id"] = facts.tmdb_collection_id
+    # Roadmap row 100 sub-phase C2c. Same never-blank shape as every branch
+    # above: a field the gather did not populate is simply absent from
+    # `values`, so the ON CONFLICT SET clause does not name it and whatever
+    # the row already had survives. `last_episode_aired` is tested for
+    # truthiness rather than `is not None` to match `originally_available`
+    # two branches up; a `date` is always truthy when present, so the two
+    # spellings agree and the file keeps one idiom for dates.
+    if facts.tmdb_status:
+        values["tmdb_status"] = facts.tmdb_status
+    if facts.last_episode_aired:
+        values["last_episode_aired"] = facts.last_episode_aired
     if facts.sources:
         values["sources"] = facts.sources
 

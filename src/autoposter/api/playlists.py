@@ -14,7 +14,6 @@ live.
 """
 import asyncio
 import logging
-import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -34,21 +33,11 @@ from autoposter.collections import playlist_presets
 from autoposter.config.overrides import load_overrides_document
 from autoposter.db.models import EventLog, ManagedPlaylist
 from autoposter.db.models import Session as SessionModel
+from autoposter.redact import redact_urls
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Action strings are built by the pass, but not all of them are safe to echo: a
-# provider step reports the source it could not fetch, and provider URLs carry
-# credentials often enough that none of them reaches a response. The same rule
-# ``api/collections_builders.py`` applies, and the same one the engine applies
-# to a builder's exception one layer in.
-_URL = re.compile(r"https?://\S+")
-
-
-def _redact(action: str) -> str:
-    return _URL.sub("<url>", action)
 
 
 def _enabled(request: Request):
@@ -299,11 +288,11 @@ async def preview_playlists(
                 "unresolved": result.unresolved,
                 "failed": result.failed,
                 "skipped": result.skipped,
-                "actions": [_redact(action) for action in result.actions],
+                "actions": [redact_urls(action) for action in result.actions],
             }
             for result in run.playlists
         ],
-        "actions": [_redact(action) for action in run.actions],
+        "actions": [redact_urls(action) for action in run.actions],
     }
 
 

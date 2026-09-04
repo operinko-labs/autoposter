@@ -349,9 +349,9 @@ async def test_a_preview_action_never_carries_a_url(client, app, auth_headers):
     """The same redaction the collections preview applies: a poster or provider
     step reports the source it could not fetch, and provider URLs carry
     credentials often enough that none of them is echoed into a response."""
-    from autoposter.api.playlists import _redact
+    from autoposter.redact import redact_urls
 
-    assert _redact("failed to read https://x.example/l?apikey=SECRET now") == (
+    assert redact_urls("failed to read https://x.example/l?apikey=SECRET now") == (
         "failed to read <url> now"
     )
 

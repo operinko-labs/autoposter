@@ -151,9 +151,11 @@ def clear_logo(plex_item) -> None:
 
     The inverse of :func:`upload_logo`, and unlike the poster reset this really
     does remove the image rather than leaving it behind as an orphaned
-    ``upload://`` entry: Plex exposes a DELETE for the clearlogo field where it
-    exposes none for a poster. The unlock happens first so the agent is free to
-    fill the field on its own next pass.
+    ``upload://`` entry: Plex exposes a DELETE for the clearlogo field, but its
+    HTTP API cannot delete a single ``upload://`` poster entry (an
+    entry-addressed DELETE answers 404, verified 2026-09-05) -- ImageMaid
+    removes those by editing Plex's database directly. The unlock happens
+    first so the agent is free to fill the field on its own next pass.
 
     Never ``.refresh()``, which the project-wide AST guard forbids: it would have
     Plex re-pull from its agents and revert locked fields elsewhere.

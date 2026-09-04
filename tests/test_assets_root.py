@@ -86,5 +86,5 @@ def test_language_lookup_reads_from_the_configured_root(monkeypatch, tmp_path):
     values = importlib.import_module("autoposter.badges.values")
     values._languages.cache_clear()
 
-    info = values.MediaInfo(None, None, None, None, ("xx",), frozenset(), None, None, None)
+    info = values.MediaInfo((), (), None, None, ("xx",), frozenset(), None, None, ())
     assert values.language_slots(info) == [("xx", "XX")]

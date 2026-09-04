@@ -155,8 +155,10 @@ const MODES: ModeSpec[] = [
       "own agent artwork.",
     notes: [
       "It cannot delete the artwork it replaces. Those images stay on the Plex " +
-        "server as an orphaned upload:// image each, because Plex offers no API " +
-        "to remove one — the reset frees the field, not the disk space.",
+        "server as an orphaned upload:// image each, because Plex's HTTP API " +
+        "cannot delete a single upload:// entry (verified 2026-09-05) — ImageMaid " +
+        "removes them by editing Plex's database directly; the reset frees the " +
+        "field, not the disk space.",
       PAUSES_PIPELINE,
       CAP_REFUSAL,
       "Only fields still showing artwork this service uploaded are touched, told " +

@@ -22,9 +22,11 @@ recognise as ours. Each probe is a range read of a few kilobytes, not a
 download, and a field the item has no artwork in costs no request at all.
 
 **The orphaned upload is not deleted.** Selecting the agent's art leaves the
-image we uploaded on the Plex server as a dangling ``upload://`` entry; Plex
-exposes no API to remove one. The response says so (``ORPHANED_UPLOAD_NOTE``)
-so the operator is not left thinking the reset reclaimed the space.
+image we uploaded on the Plex server as a dangling ``upload://`` entry; Plex's
+HTTP API cannot delete a single ``upload://`` entry (an entry-addressed DELETE
+answers 404, verified 2026-09-05) -- ImageMaid removes them by editing Plex's
+database directly. The response says so (``ORPHANED_UPLOAD_NOTE``) so the
+operator is not left thinking the reset reclaimed the space.
 
 Dry run by default, with the shared plausibility cap and the empty-table guard,
 and the trigger endpoint raises the ``WorkerPause`` fence for an applied run.
@@ -69,7 +71,9 @@ RESET_ART_KINDS = {
 
 ORPHANED_UPLOAD_NOTE = (
     "the artwork this replaced stays on the Plex server as an orphaned "
-    "upload:// image -- Plex offers no API to delete one"
+    "upload:// image -- Plex's HTTP API cannot delete a single upload:// "
+    "entry (verified 2026-09-05); ImageMaid removes them by editing Plex's "
+    "database directly"
 )
 
 

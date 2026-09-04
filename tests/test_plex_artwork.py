@@ -5,7 +5,8 @@ import tempfile
 import pytest
 
 from autoposter.plex.artwork import (
-    GENERATED_ARTWORK_PREFIX, _generated_default, generated_title_card_url, upload_artwork,
+    GENERATED_ARTWORK_PREFIX, UPLOADED_ARTWORK_PREFIX, _agent_default, _generated_default,
+    generated_title_card_url, upload_artwork,
 )
 
 
@@ -121,9 +122,10 @@ def test_a_failing_write_closes_the_handle_before_the_file_is_unlinked(tmp_path,
 
 
 class FakePosterEntry:
-    def __init__(self, rating_key, key=""):
+    def __init__(self, rating_key, key="", selected=False):
         self.ratingKey = rating_key
         self.key = key
+        self.selected = selected
 
 
 def test_generated_artwork_prefix_is_media():
@@ -155,6 +157,36 @@ def test_generated_default_is_none_without_a_media_entry():
 
 def test_generated_default_skips_an_entry_with_no_rating_key():
     assert _generated_default([FakePosterEntry("", "/x")]) is None
+
+
+def test_neither_selector_ever_returns_a_selected_upload_entry():
+    """Regression pin for the selection safety law's clause 2
+    (.superpowers/sdd/p-upload-cleanup-recon.md Q3: "Never delete -- or
+    re-select -- the selected entry" if it is an ``upload://`` one, the
+    wrong-title-Jaws-poster case). This already holds on ``main``:
+    ``_agent_default`` skips every ``upload://``-prefixed ratingKey
+    regardless of ``selected`` (plex/artwork.py:195, which never reads
+    ``.selected`` at all) and ``_generated_default`` only ever returns a
+    ``media://``-prefixed entry (plex/artwork.py:223) -- so an ``upload://``
+    entry being Plex's current SELECTED choice cannot change either result.
+    Green against main; this pins the behaviour as a contract.
+    """
+    listing = [
+        FakePosterEntry("upload://abc", "/x", selected=True),
+        FakePosterEntry("com.plexapp.agents.themoviedb://1", "/y"),
+        FakePosterEntry("media://5/x.bundle/Contents/Thumbnails/thumb1.jpg", "/z"),
+    ]
+
+    agent_entry = _agent_default(listing)
+    assert agent_entry is not None
+    assert agent_entry.ratingKey == "com.plexapp.agents.themoviedb://1"
+
+    generated_entry = _generated_default(listing)
+    assert generated_entry is not None
+    assert generated_entry.ratingKey.startswith(GENERATED_ARTWORK_PREFIX)
+
+    for entry in (agent_entry, generated_entry):
+        assert not entry.ratingKey.startswith(UPLOADED_ARTWORK_PREFIX)
 
 
 async def test_generated_title_card_url_joins_the_entrys_key_to_base_url():

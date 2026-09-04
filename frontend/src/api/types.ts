@@ -626,10 +626,19 @@ export interface ItemDetailResponse {
 
 /** POST /api/items/{id}/reprocess. `queued` is false, with a null `job_id`,
  * when an identical job was already pending -- the endpoint de-duplicates on
- * the intent's dedupe_key rather than queueing a second one. */
+ * the intent's dedupe_key rather than queueing a second one.
+ *
+ * `note` is a fixed sentence the server sends when another `media_items` row
+ * carries this item's identity under a different Plex rating key -- the one
+ * condition under which the render pipeline's fork stop can complete the job
+ * having changed nothing. It is always present and null when there is no such
+ * row, never absent. Render it verbatim: the server owns the words, and it is
+ * deliberately a "may" rather than a "will", because the twin's existence is
+ * necessary for that stop and not sufficient. */
 export interface ReprocessResponse {
   queued: boolean;
   job_id: number | null;
+  note: string | null;
 }
 
 /** POST /api/items/{id}/renders/{art_kind}/clear-override.
