@@ -27,7 +27,7 @@ from autoposter.config.schema import SeasonPosterConfig, TextStyle
 from autoposter.plex.client import ResolvedItem
 from autoposter.render import pipeline as pipeline_module
 from autoposter.render.pipeline import (
-    SHOW_TITLE_GUTTER, compose_styled, stacked_above, title_text_for,
+    SHOW_TITLE_GUTTER, compose_styled, show_title_for, stacked_above, title_text_for,
 )
 from autoposter.render.textfit import FitResult
 
@@ -104,7 +104,7 @@ def test_the_example_config_ships_the_upstream_values_with_the_gate_off():
         "max_point_size": 300,
         "max_width": 1900,
         "max_height": 500,
-        "text_offset": "+300",
+        "text_offset": "+120",
         "gravity": "south",
         "add_text": False,
         "add_stroke": False,
@@ -175,7 +175,11 @@ def test_the_wholesale_render_version_moves_and_that_is_expected(config):
     # The post-row-78 wholesale hash, pinned absolutely rather than merely
     # proven to differ: measured on this branch with the show_title block
     # added and the gate off, exactly as the shipped example ships it.
-    assert render_version(config) == "e987fc3d42d6bac9"
+    # Moved a SECOND time (e987fc3d42d6bac9 -> 386ea7cf4844f52e) by the task-2
+    # fix round's I2 correction: the example's show_title.text_offset changed
+    # from "+300" to "+120" so the seam test can tell which block's offset
+    # the stacking rule actually reads (its own value is otherwise ignored).
+    assert render_version(config) == "386ea7cf4844f52e"
 
     off = render_version(config)
     on = load_config(EXAMPLE)
@@ -333,6 +337,27 @@ def test_a_non_bottom_gravity_stacks_by_subtracting(config):
     assert stacked_above(shallow, 120) == "-80"
 
 
+def test_stacked_above_treats_gravity_case_insensitively(config):
+    """``TextStyle.gravity`` carries no validator and no normalisation
+    (unlike the collection side's vocabulary check), and ImageMagick's own
+    ``-gravity`` argument matches case-insensitively -- "South" and
+    "SOUTHEAST" are both legal today and both render identically to "south".
+    A case-sensitive ``startswith`` would take the SUBTRACT branch for
+    either, landing the show title on top of the season text instead of
+    above it. Both spellings below must still ADD."""
+    capitalized = TextStyle(
+        min_point_size=100, max_point_size=250, max_width=1200,
+        max_height=485, text_offset="+300", gravity="South",
+    )
+    assert stacked_above(capitalized, 120) == "+430"
+
+    shouty = TextStyle(
+        min_point_size=100, max_point_size=250, max_width=1200,
+        max_height=485, text_offset="+300", gravity="SOUTHEAST",
+    )
+    assert stacked_above(shouty, 120) == "+430"
+
+
 async def test_the_show_title_is_not_drawn_when_draw_text_is_off(
     config, tmp_path, monkeypatch,
 ):
@@ -399,6 +424,33 @@ async def test_the_show_title_font_enters_the_asset_hashes_only_when_the_gate_is
     )
 
 
+def test_show_title_for_refuses_wrong_kind_missing_style_and_gate_off(config):
+    """``show_title_for``'s three documented refusals, pinned directly rather
+    than only transitively through ``title_text_for``, which never takes the
+    ``style is None`` arm (the example config always ships the block)."""
+    config.artwork.season_poster.show_title.add_text = True
+    season = _season()
+
+    assert show_title_for("title_card", season, config) is None, (
+        "every art kind but season_poster refuses, before it even looks at "
+        "the item"
+    )
+
+    unset = load_config(EXAMPLE)
+    unset.artwork.season_poster.show_title = None
+    assert show_title_for("season_poster", season, config=unset) is None, (
+        "an unset show_title block refuses"
+    )
+
+    config.artwork.season_poster.show_title.add_text = False
+    assert show_title_for("season_poster", season, config) is None, (
+        "the block's own gate off refuses"
+    )
+
+    config.artwork.season_poster.show_title.add_text = True
+    assert show_title_for("season_poster", season, config) == "Severance"
+
+
 # --- row 43's gap, co-delivered (facts C7) ----------------------------------
 
 
@@ -426,6 +478,40 @@ def test_a_season_name_override_renames_the_season_posters_own_text(config):
     # card alike, rather than silently falling back on one of them.
     config.artwork.title_card.season_name_overrides = {"2": ""}
     assert title_text_for("season_poster", _season(season_number=2), config)[0] == ""
+
+
+async def test_a_blank_season_override_leaves_the_show_title_at_its_own_offset(
+    config, tmp_path, monkeypatch,
+):
+    """The one path on which the show title's OWN ``text_offset`` is live.
+
+    A blanked ``season_name_overrides`` entry blanks the season text (pinned
+    above); ``compose_styled``'s loop then skips that block entirely
+    (``if style is None or not text: continue``), so ``primary_point_size``
+    stays ``None`` and the ``style is show_title_style and primary_point_size
+    is not None`` guard never fires. The show title draws at its own
+    CONFIGURED offset instead of a derived one -- defensible, since there is
+    no season text left to overlap, but unpinned until now.
+    """
+    config.artwork.title_card.season_name_overrides = {"2": ""}
+    config.artwork.season_poster.show_title.add_text = True
+    calls = _stub_magick(monkeypatch)
+    working = tmp_path / "season.jpg"
+    working.write_bytes(b"base")
+    primary, secondary = title_text_for("season_poster", _season(), config)
+    assert primary == "", "the blanked override reaches the season poster's own text"
+    assert secondary == "Severance"
+
+    await compose_styled(
+        config, "season_poster", working,
+        primary_text=primary, secondary_text=secondary,
+        draw_text=True, logo_path=None,
+    )
+
+    # Only ONE caption: a blank season text means "nothing to draw", not
+    # "draw an empty caption" -- and the show title's geometry is its own
+    # configured "+120", not a derived value.
+    assert _captions(calls) == [("SEVERANCE", "south", "+0+120")]
 
 
 def test_the_title_cards_second_line_is_unchanged(config):

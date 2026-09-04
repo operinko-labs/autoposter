@@ -637,11 +637,16 @@ artwork:
     # says which show it belongs to. Off, as upstream ships it.
     #
     # `font` is ours: the upstream part carries no font key and inherits a
-    # global one. `text_offset` is upstream's verbatim, and is the BASE the
-    # stacking is applied to -- the block is drawn one fitted line of the
-    # season text plus 10px above this value, which is our adjudication, not a
-    # transcription: upstream gives this block the same +300/south as the
-    # season text and the two would overlap.
+    # global one. `text_offset` below is IGNORED once the gate is on: the
+    # block is always drawn one fitted line of the SEASON text plus 10px
+    # above the SEASON block's own text_offset (render/pipeline.py's
+    # stacked_above) -- that is what "stacked above the season text" means,
+    # and it is our adjudication, not a transcription: upstream gives this
+    # block the same +300/south as the season text and the two would
+    # overlap. Shipped at +120 here, deliberately DIFFERENT from the season
+    # block's +300, so a config that swapped which block's offset feeds the
+    # stacking rule would draw at a visibly different position instead of
+    # matching by coincidence.
     #
     # Turning this on moves the season_poster art kind's render version, so
     # every season poster re-renders once through the provider ladder. Posters,
@@ -655,7 +660,7 @@ artwork:
       max_point_size: 300
       max_width: 1900
       max_height: 500
-      text_offset: "+300"
+      text_offset: "+120"
       gravity: south
       add_text: false
       add_stroke: false

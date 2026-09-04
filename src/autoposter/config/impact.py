@@ -185,6 +185,21 @@ async def _fingerprint_inputs(
     return text_inputs, [overlay_hash, *font_hashes, ""]
 
 
+def _show_title_for_row(kind: str, parent_title: str | None) -> str | None:
+    """``ResolvedItem.show_title`` for one walked row.
+
+    ``parent_title`` is the immediate parent's title from the outer self-join
+    below -- the SHOW for a season, but the SEASON for an episode
+    (``plex/client.py`` populates ``parent_id`` with the show's id for a
+    season and the season's id for an episode). Reaching the true grandparent
+    for an episode would need a second self-join; not worth it today, since
+    ``show_title_for`` reads this field only for ``season_poster`` rows and
+    those are always seasons -- so an episode gets ``None`` here rather than
+    its own season's title mislabelled as the show's.
+    """
+    return parent_title if kind == "season" else None
+
+
 def _walk_version(art_kind: str, config: Config) -> str:
     """Element 0 of every fingerprint this walk recomputes.
 
@@ -285,7 +300,7 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
             tmdb_id=row.tmdb_id,
             tvdb_id=row.tvdb_id,
             imdb_id=row.imdb_id,
-            show_title=row.parent_title,
+            show_title=_show_title_for_row(row.kind, row.parent_title),
         )
         if _should_skip_title(config, item, art_kind):
             continue

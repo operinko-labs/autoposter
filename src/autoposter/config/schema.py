@@ -590,22 +590,26 @@ class SeasonPosterConfig(ArtKindConfig):
     # the key draws precisely what it drew before this row -- the same
     # off-by-construction the title card's second block has always had.
     #
-    # The block's text_offset is upstream's, transcribed verbatim ("+300"),
-    # and it is NOT the offset the block is drawn at. Upstream gives this
-    # block the same "+300"/south as the season text it is supposed to sit
-    # ABOVE, which would land the two on top of each other; upstream's own
-    # toggle ships false, so those values were never tuned against a real
-    # render, and no captured output of this feature exists anywhere to match.
-    # render/pipeline.py::stacked_above raises it by one fitted line of the
-    # season text plus a 10px gutter, at the season block's own gravity. That
-    # raise is OURS, adjudicated, and said so wherever it is described.
+    # This block's OWN text_offset is IGNORED once the gate is on:
+    # render/pipeline.py::stacked_above always uses the SEASON TEXT block's
+    # text_offset as its base and raises it by one fitted line of the season
+    # text plus a 10px gutter, at the season block's own gravity -- that is
+    # what "stacked above the season text" means. Upstream gives this block
+    # the same "+300"/south as the season text it is supposed to sit ABOVE,
+    # which would land the two on top of each other; upstream's own toggle
+    # ships false, so those values were never tuned against a real render,
+    # and no captured output of this feature exists anywhere to match. The
+    # raise itself is OURS, adjudicated, and said so wherever it is described.
     show_title: TextStyle | None = Field(
         default=None,
         description=(
             "The show's own title, drawn as a second text block above the "
-            "season poster's season text -- font, sizing and positioning. "
-            "Unset means no show title is drawn. The season's own wording is "
-            "renamed by artwork.title_card.season_name_overrides."
+            "season poster's season text -- font and sizing. This block's "
+            "own text_offset is IGNORED here: position is decided entirely "
+            "by the stacking rule, which anchors above the season text "
+            "block's own text_offset. Unset means no show title is drawn. "
+            "The season's own wording is renamed by "
+            "artwork.title_card.season_name_overrides."
         ),
     )
 

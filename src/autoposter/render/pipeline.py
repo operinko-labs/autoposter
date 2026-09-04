@@ -242,7 +242,15 @@ def stacked_above(below: TextStyle, below_point_size: int) -> str:
     """
     raise_by = below_point_size + SHOW_TITLE_GUTTER
     base = int(below.text_offset)
-    value = base + raise_by if below.gravity.startswith("south") else base - raise_by
+    # `.lower()`: `TextStyle.gravity` is a free-form string with no validator
+    # (unlike the collection side's `_COLLECTION_GRAVITIES`, `config/schema.py`),
+    # and ImageMagick's own `-gravity` argument matches case-insensitively, so
+    # "South" and "SOUTHEAST" are both legal today and both render identically
+    # to "south". A case-sensitive compare here would take the wrong branch for
+    # either -- silently, since ImageMagick draws something regardless of sign.
+    value = (
+        base + raise_by if below.gravity.lower().startswith("south") else base - raise_by
+    )
     return f"+{value}" if value >= 0 else str(value)
 
 

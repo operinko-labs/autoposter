@@ -590,6 +590,21 @@ async def test_the_impact_walk_reads_the_shows_title_through_the_parent_join(
     assert impact.of_total == 1
 
 
+def test_show_title_for_row_is_the_parent_title_only_for_a_season():
+    """``MediaItem.parent_id`` means a different thing per kind: the SHOW for
+    a season, but the SEASON for an episode (``plex/client.py``). Harmless
+    today -- ``show_title_for`` reads this field only for ``season_poster``
+    rows, which are always seasons -- but the walk's whole contract is to say
+    digit for digit what the pipeline says, so an episode row must not get a
+    season's title mislabelled as the show's."""
+    from autoposter.config.impact import _show_title_for_row
+
+    assert _show_title_for_row("season", "A Show") == "A Show"
+    assert _show_title_for_row("episode", "Season 1") is None
+    assert _show_title_for_row("movie", "A Show") is None
+    assert _show_title_for_row("season", None) is None
+
+
 @pytest.mark.parametrize(
     "art_kind,item",
     [
