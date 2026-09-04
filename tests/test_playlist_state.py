@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from autoposter.db.models import ManagedPlaylist
+from autoposter.db.models import ManagedPlaylist, ManagedPlaylistUser
 
 
 def test_the_table_has_no_library_column():
@@ -78,3 +78,76 @@ async def test_a_row_round_trips_its_libraries_as_a_list(session):
     assert row.libraries == ["Movies", "TV Shows"]
     assert row.member_count is None
     assert row.last_reconciled_at is None
+
+
+async def test_a_user_copy_row_records_which_users_copy_it_names(session):
+    """The ownership predicate, one level down. ``plex_rating_key`` is THAT
+    USER'S playlist -- a different object from the admin one, with a different
+    rating key -- and ``definition_key`` is the definition's title, the same
+    value ``managed_playlists.title`` carries. Not a foreign key: a user copy
+    can exist with no admin playlist at all (``apply_to_plex`` off,
+    ``sync_to_users_apply`` on), and a NOT NULL FK would make that state
+    unrepresentable."""
+    session.add(ManagedPlaylistUser(
+        definition_key="Timeline", plex_user_id=4242, plex_user_title="alice",
+        plex_rating_key="7001", definition_hash="abc",
+    ))
+    await session.commit()
+
+    row = (await session.execute(select(ManagedPlaylistUser))).scalar_one()
+    assert row.definition_key == "Timeline"
+    assert row.plex_user_id == 4242
+    assert row.plex_user_title == "alice"
+    assert row.plex_rating_key == "7001"
+    assert row.definition_hash == "abc"
+    assert row.member_count is None
+    assert row.last_added is None
+    assert row.last_removed is None
+    assert row.last_reconciled_at is None
+
+
+async def test_one_copy_per_user_per_definition_is_enforced_by_the_database(session):
+    """Two rows for one pair would be two playlists this pass believes it owns
+    in one account, and the next pass would diff against whichever the query
+    happened to return first. The constraint says so in the schema rather than
+    in a comment."""
+    session.add(ManagedPlaylistUser(
+        definition_key="Timeline", plex_user_id=4242, plex_user_title="alice",
+        plex_rating_key="7001", definition_hash="abc",
+    ))
+    await session.commit()
+    session.add(ManagedPlaylistUser(
+        definition_key="Timeline", plex_user_id=4242, plex_user_title="alice",
+        plex_rating_key="7002", definition_hash="def",
+    ))
+
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+async def test_the_same_definition_reaches_two_users_and_two_definitions_one_user(
+    session,
+):
+    """The unique key is the PAIR, both ways round: one definition fans out to
+    many users, and one user receives many definitions."""
+    session.add_all([
+        ManagedPlaylistUser(
+            definition_key="Timeline", plex_user_id=1, plex_user_title="alice",
+            plex_rating_key="7001", definition_hash="abc",
+        ),
+        ManagedPlaylistUser(
+            definition_key="Timeline", plex_user_id=2, plex_user_title="bob",
+            plex_rating_key="7002", definition_hash="abc",
+        ),
+        ManagedPlaylistUser(
+            definition_key="Other", plex_user_id=1, plex_user_title="alice",
+            plex_rating_key="7003", definition_hash="xyz",
+        ),
+    ])
+    await session.commit()
+
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert sorted((r.definition_key, r.plex_user_id) for r in rows) == [
+        ("Other", 1), ("Timeline", 1), ("Timeline", 2),
+    ]
