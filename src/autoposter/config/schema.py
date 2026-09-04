@@ -904,6 +904,27 @@ class OperationsConfig(BaseModel):
         description="Actually apply the 'remove' verb to Plex; off only reports which fields it would clear.",
     )
 
+    # Roadmap row 99. The ONE gate for per-item metadata overrides, and there
+    # is deliberately no ``item_overrides_apply`` beside it -- see
+    # ``plex/item_overrides.py``'s module docstring for the asymmetry with
+    # row 87's three ``*_apply`` flags, which is that a verb is library-wide
+    # and an override is one item typed into a panel with its own confirm.
+    #
+    # Off means: the panel is read-only with a banner naming this key, and
+    # any existing rows are IGNORED by the writer rather than deleted -- so
+    # switching it back on restores the operator's work instead of finding it
+    # gone. Live: ``operations`` is absent from ``config/live.py``'s
+    # FROZEN_SECTIONS, and ``config/loader.py::render_version`` excludes the
+    # whole section, so this key moves no fingerprint and re-renders nothing.
+    item_overrides_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether per-item metadata overrides are written to Plex. Off "
+            "leaves any stored overrides in place and ignored, and makes the "
+            "item page's override panel read-only."
+        ),
+    )
+
     @field_validator("field_verbs")
     @classmethod
     def _known_fields_and_verbs(cls, value: dict[str, str]) -> dict[str, str]:

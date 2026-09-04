@@ -292,3 +292,29 @@
 .render-error {
   color: var(--error);
 }
+
+/* Roadmap row 99's override panel. Four columns: the field name, the stored
+   override, an empty input for a new value, and the buttons. The input is
+   empty by design -- see MetadataOverridesPanel.tsx on why it is never
+   pre-filled with what Plex currently holds. */
+.override-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.override-table th,
+.override-table td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.override-table input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.override-table button + button {
+  margin-left: 0.4rem;
+}

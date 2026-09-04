@@ -1047,3 +1047,44 @@ export interface QualityBackfillTrigger {
   blocked: number;
   detail: string;
 }
+
+/** GET /api/items/{id}/metadata-overrides -- roadmap row 99.
+ *
+ * `writable` is a list of field NAMES and nothing else. It is deliberately
+ * NOT a list of {field, current_value} pairs: serving what Plex or the facts
+ * row currently holds would put today's values one Save away from being
+ * frozen as overrides, which is the freezing hazard this document's own
+ * `overrides.ts` describes ("Round-tripping the config would store today's
+ * values as overrides, freezing them against every future change"). The panel
+ * renders an empty input for a field with no override, and that emptiness is
+ * the feature.
+ *
+ * `enabled` is `operations.item_overrides_enabled`, live. False does NOT hide
+ * the panel: existing overrides are kept and ignored, and an operator whose
+ * overrides silently stopped applying needs the panel to say so. */
+export interface MetadataOverride {
+  field: string;
+  value: string;
+  updated_at: string;
+}
+
+export interface MetadataOverridesResponse {
+  enabled: boolean;
+  kind: string;
+  writable: string[];
+  overrides: MetadataOverride[];
+}
+
+/** PUT and DELETE both answer this shape. `queued` is false when an identical
+ * reprocess was already pending -- the endpoint deduplicates on the intent's
+ * own key rather than queueing a second one. */
+export interface MetadataOverrideWriteResponse {
+  status: string;
+  field: string;
+  value?: string;
+  unlocked?: boolean;
+  /** DELETE only, and only when the item is exempt (roadmap row 35): the
+   * Plex write was skipped rather than sent, fixed at `"skipped (exempt)"`. */
+  plex?: string;
+  queued: boolean;
+}

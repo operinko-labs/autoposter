@@ -26,7 +26,8 @@ from sqlalchemy import func, select
 
 from autoposter.config.holder import ConfigHolder
 from autoposter.db.models import (
-    ActionDismissal, EventLog, ItemCredit, ItemFacts, Job, MediaItem, Render,
+    ActionDismissal, EventLog, ItemCredit, ItemFacts, ItemMetadataOverride,
+    Job, MediaItem, Render,
 )
 from autoposter.plex.client import ResolvedItem
 from autoposter.render.pipeline import _upsert_media_item
@@ -844,12 +845,17 @@ async def test_the_applied_summary_reports_repoints_and_drops_separately(session
     await _render(session, stale.id, "poster")
     await _render(session, stale.id, "background")
     await _render(session, survivor.id, "poster", scored=True)
+    session.add(ItemMetadataOverride(item_id=stale.id, field="tagline", value="x"))
+    session.add(ItemMetadataOverride(item_id=stale.id, field="studio", value="stale"))
+    session.add(ItemMetadataOverride(item_id=survivor.id, field="studio", value="kept"))
+    await session.commit()
 
     job = _job(_config(apply=True), FakePlex(live={"2"}))
     summary = await job.run(session)
 
     assert "repointed 1 render(s)" in summary
     assert "dropped 1" in summary
+    assert "repointed 1 override(s) and dropped 1" in summary
 
 
 async def test_intent_for_row_carries_the_rows_stored_key_and_ids(session):
@@ -970,3 +976,130 @@ async def test_the_named_fossils_are_capped_and_the_remainder_is_counted(session
     assert "21 row(s) whose kind and library disagree (fossils)" in summary
     assert summary.count("id=") == 20
     assert "and 1 more" in summary
+
+
+# --- roadmap row 99: the per-item metadata override carry ------------------
+
+
+async def test_an_override_the_survivor_lacks_is_repointed(session):
+    """C2's carry rule. ``media_items`` children cascade, so an override left
+    on the stale row dies with it -- silently, with no audit row and absent
+    from every count. That is exactly the defect the era's C1.2 carry rule
+    exists to prevent and already had to fix once for ``parent_id``."""
+    stale, survivor = await _pair(session)
+    session.add(ItemMetadataOverride(item_id=stale.id, field="tagline", value="x"))
+    await session.commit()
+    survivor_id = survivor.id
+    scan = await find_mergeable(session)
+
+    outcome = await merge(session, scan.plans)
+    await session.commit()
+
+    assert outcome.overrides_repointed == 1 and outcome.overrides_dropped == 0
+    session.expire_all()
+    row = (await session.execute(select(ItemMetadataOverride))).scalar_one()
+    assert row.item_id == survivor_id
+    assert row.value == "x"
+
+
+async def test_an_override_both_rows_hold_keeps_the_survivor_s(session):
+    """The conflict rule: the survivor's row wins and the stale row is
+    dropped. ``UNIQUE(item_id, field)`` forbids two rows on the survivor, and
+    the survivor is the row every write since the fork has been landing on."""
+    stale, survivor = await _pair(session)
+    session.add(ItemMetadataOverride(item_id=stale.id, field="studio", value="stale"))
+    session.add(ItemMetadataOverride(item_id=survivor.id, field="studio", value="kept"))
+    await session.commit()
+    survivor_id = survivor.id
+    scan = await find_mergeable(session)
+
+    outcome = await merge(session, scan.plans)
+    await session.commit()
+
+    assert outcome.overrides_dropped == 1 and outcome.overrides_repointed == 0
+    session.expire_all()
+    row = (await session.execute(select(ItemMetadataOverride))).scalar_one()
+    assert row.item_id == survivor_id
+    assert row.value == "kept"
+
+
+async def test_a_dropped_override_is_logged_by_field_and_never_by_value(
+    session, caplog
+):
+    """Row 213's law inside a log line rather than a response. An override's
+    value is operator-typed free text -- a summary, a tagline, anything -- so
+    the INFO that records a dropped one names the item and the field and
+    stops there.
+
+    The field is deliberately ``originally_available``, not a common English
+    word: a positive match on a generic word like "summary" would also pass
+    against an unrelated future INFO line, leaving only the negative half of
+    this test load-bearing."""
+    import logging
+
+    secret = "https://plex.example/x?X-Plex-Token=abcd1234"
+    stale, survivor = await _pair(session)
+    session.add(ItemMetadataOverride(
+        item_id=stale.id, field="originally_available", value=secret,
+    ))
+    session.add(ItemMetadataOverride(
+        item_id=survivor.id, field="originally_available", value="kept",
+    ))
+    await session.commit()
+    scan = await find_mergeable(session)
+
+    with caplog.at_level(logging.INFO):
+        await merge(session, scan.plans)
+    await session.commit()
+
+    expected = (
+        f"merge: items {stale.id} and {survivor.id} both override "
+        "originally_available; the survivor's value is kept and the stale "
+        "row's is dropped"
+    )
+    assert expected in caplog.text
+    assert secret not in caplog.text
+    assert "abcd1234" not in caplog.text
+
+
+async def test_an_override_inserted_between_scan_and_lock_is_repointed(session):
+    """The PUT endpoint writes an override row WITHOUT touching
+    ``media_items``, so the ``(id, updated_at)`` guard cannot see one that
+    lands in the scan-to-lock window -- the identical situation
+    ``action_dismissals`` is in, and the same fix: decide repoint-vs-drop off
+    a read taken under the lock, never off the scan."""
+    stale, survivor = await _pair(session)
+    survivor_id = survivor.id
+    scan = await find_mergeable(session)
+
+    session.add(ItemMetadataOverride(item_id=stale.id, field="tagline", value="late"))
+    await session.commit()
+
+    outcome = await merge(session, scan.plans)
+    await session.commit()
+
+    assert outcome.overrides_repointed == 1 and outcome.overrides_dropped == 0
+    session.expire_all()
+    assert (
+        await session.execute(select(ItemMetadataOverride))
+    ).scalar_one().item_id == survivor_id
+
+
+async def test_the_audit_row_records_the_carried_overrides(session):
+    stale, survivor = await _pair(session)
+    session.add(ItemMetadataOverride(item_id=stale.id, field="tagline", value="x"))
+    session.add(ItemMetadataOverride(item_id=stale.id, field="studio", value="A24"))
+    session.add(ItemMetadataOverride(item_id=survivor.id, field="studio", value="kept"))
+    await session.commit()
+    scan = await find_mergeable(session)
+
+    await merge(session, scan.plans)
+    await session.commit()
+
+    audit = (
+        await session.execute(
+            select(EventLog).where(EventLog.event_type == MERGE_EVENT)
+        )
+    ).scalar_one()
+    assert audit.payload["overrides_repointed"] == ["tagline"]
+    assert audit.payload["overrides_dropped"] == ["studio"]

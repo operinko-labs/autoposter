@@ -92,6 +92,23 @@ def test_remove_is_steady_on_an_already_empty_scalar():
     assert verb_edits(item, operations) == {}
 
 
+def test_removing_a_field_this_service_does_not_clear_logs_info_naming_it(caplog):
+    """Task-2 fix round 1, ruling on I-2: this fires once PER ITEM per pass
+    for a single library-wide config mistake -- the same per-item volume as
+    the sibling "would %s %s on %s" line, which is already INFO. WARNING
+    would cost one line per item, every pass, forever, for a 10k-item
+    library. No value in the message, only the field name; ``remove_apply``
+    need not be on -- the check runs before the apply-flag gate."""
+    item = LockableItem(tagline="Old words")
+    operations = OperationsConfig(field_verbs={"tagline": "remove"})
+    with caplog.at_level(logging.INFO):
+        edits = verb_edits(item, operations)
+    assert edits == {}
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelname == "INFO"
+    assert "tagline" in caplog.text
+
+
 def test_remove_on_genres_is_a_config_load_error():
     # I1 fix: previously loaded and silently no-opped. Now refused at load
     # time, matching the STOP-and-file posture instead of a silent switch-off.
@@ -150,7 +167,7 @@ def test_an_unknown_verb_is_a_config_load_error():
 
 def test_an_unknown_field_name_is_a_config_load_error():
     with pytest.raises(Exception):
-        OperationsConfig(field_verbs={"tagline": "unlock"})
+        OperationsConfig(field_verbs={"no_such_field": "unlock"})
 
 
 def test_every_writable_field_has_a_plex_field_name():

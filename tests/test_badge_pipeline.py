@@ -394,3 +394,182 @@ async def test_a_dry_run_never_probes_plex(session, config_badges_dry_run):
 
     assert calls == []
     assert render.upload_status == "skipped"
+
+
+# --- roadmap row 99: the badge reads the overlaid facts ---------------------
+
+
+async def test_the_badge_ignores_an_override_while_the_gate_is_off(
+    session, config_with_badges
+):
+    """Gate off is byte-identical to before this row.
+
+    One item, run twice: once with an override row present and once with it
+    gone. With the gate off the two runs must produce the same fingerprint
+    and the same single upload -- which is only true if the row had no effect
+    at all. (One item rather than two on purpose: ``_render`` hardcodes
+    ``rating_key="1"``, and ``media_items.rating_key`` is UNIQUE, so calling
+    it twice in one test is an IntegrityError rather than a second item.)
+
+    Note also that the row is still there to be deleted: gate-off IGNORES
+    existing overrides, it never removes them, so turning the gate back on
+    restores the operator's work rather than finding it gone."""
+    from sqlalchemy import delete as _delete
+
+    from autoposter.db.models import ItemMetadataOverride
+
+    item, render = await _render(session)
+    session.add(ItemMetadataOverride(
+        item_id=item.id, field="critic_rating", value="9.9",
+    ))
+    await session.commit()
+    config_with_badges.operations.item_overrides_enabled = False
+    plex_item = FakePlexItem()
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    with_row = render.badge_fingerprint
+
+    await session.execute(_delete(ItemMetadataOverride))
+    await session.commit()
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+
+    assert render.badge_fingerprint == with_row
+    assert plex_item.uploads == 1
+
+
+async def test_an_overridden_rating_moves_this_item_s_badge(
+    session, config_with_badges
+):
+    """C4's outcome, at the seam that actually reads facts for a badge: Plex
+    shows the operator's rating and so does the badge.
+
+    Measured on ONE item across the gate rather than between two items, for
+    the ``rating_key`` reason above: badge it with the gate off, then turn the
+    gate on with the row already in place. A moved fingerprint is the whole
+    claim -- the badge is now built from the operator's 9.9 and not from
+    ``Facts.critic_rating``'s 4.9.
+
+    "And nothing else moves" is proven elsewhere and deliberately not
+    re-proven here: ``config/loader.py::render_version`` excludes ``operations``
+    entirely (pinned in ``tests/test_item_overrides_store.py``), and nothing in
+    this row touches ``_definitions_digest``, ``_outcomes_digest`` or
+    ``_rating_values_digest`` (pinned by the untouched
+    ``tests/test_overlay_entrypoint.py`` literals)."""
+    from autoposter.db.models import ItemMetadataOverride
+
+    item, render = await _render(session)
+    session.add(ItemMetadataOverride(
+        item_id=item.id, field="critic_rating", value="9.9",
+    ))
+    await session.commit()
+    config_with_badges.operations.item_overrides_enabled = False
+    plex_item = FakePlexItem()
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    ungated = render.badge_fingerprint
+
+    config_with_badges.operations.item_overrides_enabled = True
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+
+    assert render.badge_fingerprint != ungated
+    assert plex_item.uploads == 2
+
+
+async def test_a_second_pass_over_an_overridden_item_re_badges_nothing(
+    session, config_with_badges
+):
+    """The steady state. The overlay is a function of the stored row, so the
+    same override produces the same fingerprint and the upload count does not
+    move -- which is what stops the upload bloat this stage exists to avoid."""
+    from autoposter.db.models import ItemMetadataOverride
+
+    item, render = await _render(session)
+    session.add(ItemMetadataOverride(
+        item_id=item.id, field="critic_rating", value="9.9",
+    ))
+    await session.commit()
+    config_with_badges.operations.item_overrides_enabled = True
+    plex_item = FakePlexItem()
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    first = render.badge_fingerprint
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+
+    assert render.badge_fingerprint == first
+    assert plex_item.uploads == 1
+
+
+async def test_an_exempt_item_s_badge_ignores_the_override_too(
+    session, config_with_badges
+):
+    """Task-2 fix round 1, ruling on m-2: row 35's exemption gates the Plex
+    WRITE (``apply_metadata``, tested elsewhere) and, as of this fix, the
+    badge overlay too -- an item Plex will never receive the override for
+    must not show it in the badge either, or the two visibly disagree.
+    ``ignore_ids`` stands in for all three exemption reasons; the write side
+    already shares this exact check (``exemption_reason``), not a duplicate.
+
+    Proven the way the gate-off test above is: with the override row
+    present, a run made exempt via ``ignore_ids`` must fingerprint identically
+    to a later run with the row gone and the item no longer exempt -- the
+    only way that holds is if the exempt run never saw the override."""
+    from sqlalchemy import delete as _delete
+
+    from autoposter.db.models import ItemMetadataOverride
+
+    item, render = await _render(session)
+    session.add(ItemMetadataOverride(
+        item_id=item.id, field="critic_rating", value="9.9",
+    ))
+    await session.commit()
+    config_with_badges.operations.item_overrides_enabled = True
+    config_with_badges.operations.ignore_ids = [item.rating_key]
+    plex_item = FakePlexItem()
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    exempt = render.badge_fingerprint
+
+    await session.execute(_delete(ItemMetadataOverride))
+    await session.commit()
+    config_with_badges.operations.ignore_ids = []
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+
+    assert render.badge_fingerprint == exempt
+    assert plex_item.uploads == 1
+
+
+async def test_the_overlay_never_writes_the_operator_s_value_into_item_facts(
+    session, config_with_badges
+):
+    """Global Constraint 13, proven rather than asserted. ``persist_facts`` is
+    the PROVIDER's record; an operator's value in it would be the freezing
+    hazard in database form -- the provider's own reading lost, and the row
+    no longer tracking the provider."""
+    from sqlalchemy import select as _select
+
+    from autoposter.db.models import ItemFacts, ItemMetadataOverride
+
+    item, render = await _render(session)
+    # Captured before ``session.expire_all()`` below: an AsyncSession cannot
+    # transparently refresh an expired attribute on synchronous access
+    # (``MissingGreenlet``), so the post-expire query below reads this rather
+    # than ``item.id`` directly.
+    item_id = item.id
+    session.add(ItemFacts(item_id=item_id, critic_rating=4.9))
+    session.add(ItemMetadataOverride(
+        item_id=item_id, field="critic_rating", value="9.9",
+    ))
+    await session.commit()
+    config_with_badges.operations.item_overrides_enabled = True
+
+    facts = (
+        await session.execute(_select(ItemFacts).where(ItemFacts.item_id == item_id))
+    ).scalar_one()
+    await apply_badges(session, config_with_badges, render, item, FakePlexItem(), facts)
+    await session.commit()
+    session.expire_all()
+
+    stored = (
+        await session.execute(_select(ItemFacts).where(ItemFacts.item_id == item_id))
+    ).scalar_one()
+    assert stored.critic_rating == 4.9

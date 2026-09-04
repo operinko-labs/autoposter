@@ -17,6 +17,20 @@ logger = logging.getLogger(__name__)
 # later phase that fills them in, rather than removed: shrinking this set
 # would mean re-adding entries later just to catch up with gather_facts,
 # instead of gather_facts simply growing into a map that already allows it.
+#
+# Roadmap row 99 is that later phase, and it arrives from the other side: the
+# four TEXT fields below (``title``, ``sort_title``, ``summary``, ``tagline``)
+# have NO provider source in this service at all and are never written from
+# ``GatheredFacts`` -- they exist here so that a per-item OVERRIDE can name
+# them. Their per-libtype placement is plexapi's own capability matrix
+# (``plexapi/mixins/__init__.py:35-70``), which is also what Kometa's
+# ``add_edit`` writes through: a season carries no ``titleSort`` and no
+# ``tagline``, and an episode carries no ``tagline``.
+#
+# TWO OTHER MODULES READ THIS MAP and both move when it grows, intentionally:
+# ``config/schema.py``'s ``field_verbs`` validator (so ``lock``/``unlock`` now
+# work on the four text fields), and ``metadata_backup.py::capture_item`` (so
+# row 86's backup file carries them and their lock flags).
 WRITABLE_BY_KIND: dict[str, set[str]] = {
     "movie": {
         "critic_rating", "audience_rating", "content_rating",
@@ -25,15 +39,22 @@ WRITABLE_BY_KIND: dict[str, set[str]] = {
         # carries originalTitle for movies and not for shows or episodes
         # (plex/client.py:59-61, row 44's finding).
         "user_rating", "original_title",
+        # Roadmap row 99, override-only.
+        "title", "sort_title", "summary", "tagline",
     },
     "show": {
         "critic_rating", "audience_rating", "content_rating",
         "genres", "studio", "originally_available",
         "user_rating",
+        "title", "sort_title", "summary", "tagline",
     },
-    "season": {"critic_rating", "audience_rating", "user_rating"},
+    "season": {
+        "critic_rating", "audience_rating", "user_rating",
+        "title", "summary",
+    },
     "episode": {"critic_rating", "audience_rating", "content_rating",
-                "originally_available", "user_rating"},
+                "originally_available", "user_rating",
+                "title", "sort_title", "summary"},
 }
 
 
@@ -51,6 +72,15 @@ _PLEX_FIELD_NAMES: dict[str, tuple[str, str]] = {
     "originally_available": ("originallyAvailableAt", "originallyAvailableAt"),
     "original_title": ("originalTitle", "originalTitle"),
     "genres": ("genres", "genre"),
+    # Roadmap row 99. Each is the same string twice, written out rather than
+    # special-cased for the reason the block above states. ``title``'s Plex
+    # attribute is ``title`` even though Kometa reaches it through
+    # ``editTitle``: that method is ``editField("title", ...)`` underneath and
+    # emits the same ``title.value``/``title.locked`` pair ``put()`` builds.
+    "title": ("title", "title"),
+    "sort_title": ("titleSort", "titleSort"),
+    "summary": ("summary", "summary"),
+    "tagline": ("tagline", "tagline"),
 }
 
 # Roadmap row 87's ``remove`` ships for these four and no others. A scalar's
@@ -87,7 +117,22 @@ def _locked_in_plex(item, plex_field: str) -> bool | None:
     return None
 
 
-def verb_edits(item, operations) -> dict[str, object]:
+def _ensure_locked(edits: dict[str, object], item, plex_field: str) -> None:
+    """Lock ``plex_field`` when an override's value already matches Plex's.
+
+    Task-2 fix round 1, ruling on I-1: ``override_edits`` diffs on VALUE, but
+    a field the operator pinned must end up locked even when there is
+    nothing to write -- an unlocked field Plex agrees with today is exactly
+    the one Plex's own agent is free to rewrite on its next refresh, before
+    a later pass would notice the drift and write-and-lock it. Emits nothing
+    when Plex already reports it locked, which is what keeps this a one-time
+    cost rather than a write every pass.
+    """
+    if _locked_in_plex(item, plex_field) is not True:
+        edits[f"{plex_field}.locked"] = 1
+
+
+def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
     """The lock/unlock/remove edits ``operations.field_verbs`` asks for (row 87).
 
     Each verb is dry-run-by-default behind its own apply flag: with the flag
@@ -99,6 +144,13 @@ def verb_edits(item, operations) -> dict[str, object]:
     Every verb is compared against what Plex currently reports, so a second
     pass over an item already in the wanted state writes nothing. That is what
     makes this steady-state rather than a rewrite every pass.
+
+    ``overridden`` is the set of fields this ITEM has a per-item override for
+    (roadmap row 99). A field in it is skipped here and logged once: a
+    library-wide verb says what happens to a field everywhere, a per-item
+    override says what happens to it HERE, and here wins. The log names the
+    rating key and the field and never the value, which is operator-typed
+    free text (row 213).
     """
     verbs = getattr(operations, "field_verbs", None) or {}
     if not verbs:
@@ -111,12 +163,42 @@ def verb_edits(item, operations) -> dict[str, object]:
     }
     edits: dict[str, object] = {}
     for field, verb in verbs.items():
+        # Checked before the collision log below (task-2 fix round 1, m-1):
+        # a field this KIND cannot carry, or with no Plex name at all, could
+        # never have collided with anything, so the log must not claim one.
         if field not in writable or field not in _PLEX_FIELD_NAMES:
+            continue
+        if field in overridden:
+            logger.info(
+                "plex: rating key %s has a per-item override for %s; the %r "
+                "verb is skipped for this item",
+                getattr(item, "ratingKey", None), field, verb,
+            )
             continue
         if verb == "reset":
             # STOP-and-filed: see the module's _REMOVABLE_FIELDS comment.
             continue
         if verb == "remove" and field not in _REMOVABLE_FIELDS:
+            # Row 87's I1, applied to a set that row 99 just widened: an
+            # accepted-but-ignored verb is indistinguishable from a working
+            # one that has been switched off, so say so rather than pass
+            # silently. Not a config-load refusal: ``{critic_rating: remove}``
+            # has loaded and quietly done nothing since row 87 shipped, and
+            # turning a config that boots today into one that refuses to is a
+            # deployment risk this row has no mandate to take. The question is
+            # filed beside rows 229/230, which already own that family.
+            #
+            # INFO, not WARNING (task-2 fix round 1, I-2): this fires once
+            # PER ITEM per pass, the same per-item volume as the sibling
+            # "would %s %s on %s" line ten lines below, which is INFO for the
+            # identical reason. A single library-wide config mistake would
+            # otherwise cost one WARNING line per item, every pass, forever.
+            logger.info(
+                "plex: operations.field_verbs asks to remove %r, which this "
+                "service does not clear; the verb is skipped (removable "
+                "fields are %s)",
+                field, ", ".join(sorted(_REMOVABLE_FIELDS)),
+            )
             continue
         if not applied.get(verb):
             logger.info(
@@ -327,8 +409,96 @@ def parental_label_edits(
     return {"labels.added": missing}
 
 
+def override_edits(item, overrides: dict) -> dict[str, object]:
+    """The edits this item's per-item metadata overrides ask for (row 99).
+
+    An override is a SOURCE, in exactly the sense row 87's comment in
+    ``plan_edits`` gives the word: a field an override names drops out of the
+    provider-value path entirely, so the two can never both touch it in one
+    payload. What that buys is inherited rather than rebuilt -- the diff
+    against what Plex currently reports (so a second pass writes nothing), the
+    lock on write (so Plex's own agent does not revert a value this tool
+    owns), and a place inside ``apply_facts``' single batched HTTP call.
+
+    ``overrides`` is ``{our field name: typed value}``, as
+    ``plex/item_overrides.load_overrides`` returns it -- already parsed, and
+    already in the canonical form the comparisons below are made in.
+
+    A field the item's kind cannot carry is SKIPPED rather than written. The
+    endpoint already refuses one with a 422, so this is belt and braces
+    against a hand-inserted row or an item whose kind changed under a stored
+    override; a plexapi object raises ``AttributeError`` for a field its type
+    does not have, and losing an item's whole write to that would be a poor
+    trade for a row nobody can see.
+    """
+    if not overrides:
+        return {}
+    writable = WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set())
+    edits: dict[str, object] = {}
+
+    def put(field: str, value: object) -> None:
+        edits[f"{field}.value"] = value
+        edits[f"{field}.locked"] = 1
+
+    # Sorted so the payload -- and any log or test reading it -- is stable
+    # across passes rather than dict-insertion ordered.
+    for field in sorted(overrides):
+        if field not in writable or field not in _PLEX_FIELD_NAMES:
+            continue
+        value = overrides[field]
+        attribute, plex_field = _PLEX_FIELD_NAMES[field]
+        if field == "genres":
+            # SYNC semantics: the override IS the list, so the plan is
+            # whatever additions and removals make Plex's genres exactly this.
+            # No ``_ensure_locked`` call here, unlike the scalar branches
+            # below: ``_genre_plan`` already computes a ``genres.locked`` key
+            # on every real change, but that key is pre-existing-broken --
+            # ``apply_facts`` filters every ``"genres."``-prefixed key out of
+            # the payload it sends, so the lock has never actually reached
+            # Plex, on the provider path or this one. That is a separate,
+            # already-disclosed bug (rows 32/33) outside this fix's mandate;
+            # adding a lock-only write here would paper over it rather than
+            # fix it.
+            current_genres = _current_genres(item)
+            if sorted(current_genres) != sorted(value):
+                edits.update(_genre_plan(current_genres, value))
+            continue
+        if field == "audience_rating":
+            if format_audience(getattr(item, attribute, None)) != format_audience(value):
+                put(plex_field, _one_decimal(value))
+            else:
+                _ensure_locked(edits, item, plex_field)
+            continue
+        if field in ("critic_rating", "user_rating"):
+            # Compared on the FORMATTED value for the reason ``plan_edits``
+            # gives: 8.65 and 8.7 both render the same thing to a viewer.
+            if format_critic(getattr(item, attribute, None)) != format_critic(value):
+                put(plex_field, _one_decimal(value))
+            else:
+                _ensure_locked(edits, item, plex_field)
+            continue
+        if field == "originally_available":
+            formatted = value.strftime("%Y-%m-%d")
+            current = getattr(item, attribute, None)
+            current_str = (
+                current.strftime("%Y-%m-%d") if hasattr(current, "strftime") else current
+            )
+            if current_str != formatted:
+                put(plex_field, formatted)
+            else:
+                _ensure_locked(edits, item, plex_field)
+            continue
+        # The seven plain text fields.
+        if getattr(item, attribute, None) != value:
+            put(plex_field, value)
+        else:
+            _ensure_locked(edits, item, plex_field)
+    return edits
+
+
 def plan_edits(
     item, facts: GatheredFacts, operations=None, parental_categories=None,
+    overrides=None,
 ) -> dict[str, object]:
     """Field/value pairs that differ from what Plex already holds.
 
@@ -341,12 +511,24 @@ def plan_edits(
     byte-identical to the pre-row-34 behaviour. ``parental_categories`` is the
     row-85 fetch's result -- ``None``/most callers, in which case this folds
     in nothing new.
+
+    ``overrides`` is roadmap row 99's per-item map -- ``None``/``{}`` for
+    every caller that has none, which is byte-identical to the behaviour
+    before that row. A field it names drops out of the value-write path for
+    the same reason a verbed field does, and is written by ``override_edits``
+    below instead.
     """
     verbs = getattr(operations, "field_verbs", None) or {}
-    # A field named in field_verbs drops out of the value-write path entirely:
-    # the verb replaces the source for that field, so the two can never both
-    # touch it in one payload.
-    writable = WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set()) - set(verbs)
+    overrides = overrides or {}
+    # A field named in field_verbs or in this item's overrides drops out of
+    # the value-write path entirely: the verb, or the operator, replaces the
+    # source for that field, so no two of them can ever touch it in one
+    # payload. (Row 87 wrote the first half of this sentence; row 99 wrote
+    # the second.)
+    writable = (
+        WRITABLE_BY_KIND.get(getattr(item, "type", "movie"), set())
+        - set(verbs) - set(overrides)
+    )
     edits: dict[str, object] = {}
 
     # Row 34: normalise once, here, so the mapped value is what the diff below
@@ -400,7 +582,8 @@ def plan_edits(
         if sorted(current_genres) != sorted(genres):
             edits.update(_genre_plan(current_genres, genres))
 
-    edits.update(verb_edits(item, operations))
+    edits.update(verb_edits(item, operations, overridden=frozenset(overrides)))
+    edits.update(override_edits(item, overrides))
     edits.update(parental_label_edits(item, parental_categories, operations))
 
     return edits
@@ -466,6 +649,7 @@ def _apply_label_edits(item, additions: list[str]) -> None:
 
 async def apply_facts(
     item, facts: GatheredFacts, operations=None, parental_categories=None,
+    overrides=None,
 ) -> dict[str, object]:
     """Write the changed fields in one HTTP call.
 
@@ -476,7 +660,7 @@ async def apply_facts(
     but still land inside the same ``batchEdits()``/``saveEdits()`` block, so
     it's still a single request.
     """
-    edits = plan_edits(item, facts, operations, parental_categories)
+    edits = plan_edits(item, facts, operations, parental_categories, overrides)
     if not edits:
         return {}
 
