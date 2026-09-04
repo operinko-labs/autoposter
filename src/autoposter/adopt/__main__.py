@@ -13,17 +13,16 @@ in this module.
 """
 import asyncio
 import logging
-import os
-from pathlib import Path
 
 from plexapi.server import PlexServer
 
 from autoposter.adopt.walk import adopt_library
+from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
 
-CONFIG_PATH = Path(os.environ.get("AUTOPOSTER_CONFIG", "/config/autoposter.yaml"))
+CONFIG_PATH = DEFAULT_CONFIG_PATH
 
 logger = logging.getLogger(__name__)
 
