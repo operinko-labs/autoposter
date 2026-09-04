@@ -899,7 +899,7 @@ export function ItemDetail() {
 
       {error !== null && <p className="page-error">{error}</p>}
       {outcome !== null && <p className="item-outcome">{outcome}</p>}
-      {twinNote !== null && <p className="item-twin-note">{twinNote}</p>}
+      {twinNote != null && <p className="item-twin-note">{twinNote}</p>}
 
       {/* One pair per art kind, each labelled: a movie has a poster AND a
         * background, and the page used to show only the poster -- so half of

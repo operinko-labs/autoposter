@@ -674,6 +674,28 @@ describe("ItemDetail", () => {
     expect(document.querySelector(".item-twin-note")).toBeNull();
   });
 
+  it("shows no twin note when the server omits the key entirely", async () => {
+    // An older API pod mid-rollout answers without a `note` key at all, so
+    // response.note is undefined rather than null. A strict `!== null` check
+    // would let that through and render an empty, textless paragraph.
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/reprocess": () => json({ queued: true, job_id: 412 }),
+      }),
+    );
+
+    await renderItem();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-run" }));
+
+    await waitFor(() =>
+      expect(document.querySelector(".item-outcome")?.textContent).toBe(
+        "Queued as job #412.",
+      ),
+    );
+    expect(document.querySelector(".item-twin-note")).toBeNull();
+  });
+
   it("shows a labelled base+live pair for every art kind the item has rendered", async () => {
     // A movie has both a poster and a background. Showing only the poster hid
     // half of what this page exists to compare, and there was no way to see a
