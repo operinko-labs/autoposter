@@ -1,8 +1,8 @@
 # Playlists — what the operator should know
 
-Written at the close of **98a** (admin playlists). Nothing here blocks what
-shipped; sections 1 and 2 record the state 98c (per-user playlist sync)
-builds on.
+Written at the close of **98a** and brought up to date at the close of **98c**
+(per-user playlist sync). Nothing here blocks what shipped. Section 1 is the
+one outstanding action.
 
 ## 1. `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` — set in production; rotate it
 
@@ -32,30 +32,72 @@ python -m autoposter.plex.auth
 Plex login on top of the same flow is filed under the first-start wizard
 (roadmap row 121).
 
-## 2. What 98c will do, and for whom — decided
+## 2. What per-user sync does, now that it has shipped
 
-Verified end to end in plexapi 4.18.2: `Playlist.copyToUser(user)` →
-`PlexServer.switchUser(user)` → `MyPlexUser.get_token(machineIdentifier)`,
-which reads `https://plex.tv/api/servers/{machineId}/shared_servers`.
-`switchUser` requires the admin account; `PlexServer.myPlexAccount()` builds
-the account from the server object's own token and requires the owner.
+A definition can name other Plex users, by the display title Plex shows for
+each of them:
 
-The operator answered the three questions this hinged on:
+```yaml
+playlists:
+  sync_to_users_apply: false   # OFF: report what each user would receive
+  definitions:
+    - title: Marvel Cinematic Universe
+      builder: imdb_list
+      params: {list: ls539646485}
+      sync_to_users: [alice, bob]
+```
 
- - The token is the **owner's** account token (above), so `shared_servers`
-   and `myPlexAccount()` both work. 98c still verifies ownership **before**
-   its first write rather than discovering a 401 mid-pass.
- - The audience is **both** kinds: about fifteen **shared** accounts (two
-   libraries each) reachable through `shared_servers`, plus three **Plex
-   Home** users (the owner, one adult, one "Kids" account), reachable through
-   `MyPlexAccount.switchHomeUser(user)`.
- - **None of the Home users is PIN-protected.** 98c syncs to PIN-less Home
-   users with the admin token; a PIN-protected Home user, should one appear,
-   is skipped with a named report line — this service never holds PINs.
+**Nothing is written into anybody's account until
+`playlists.sync_to_users_apply` is switched on.** It is a second switch, not a
+rename of `apply_to_plex`: with `apply_to_plex: true` and
+`sync_to_users_apply: false` the admin playlists are live and every user's copy
+is only reported. That is the recommended way to start.
 
-Per-playlist `sync_to_users` decides who receives what (which playlists the
-Kids account gets is the operator's call, per playlist). 98c ships with a
-dry-run/report pass before any per-user write.
+`sync_to_users: all` needs `playlists.sync_all_users: true` as well, and the
+config refuses to load otherwise — the refusal names the definition.
+`playlists.exclude_users` is the companion list `all` never resolves to.
+
+**Two caps, both refusing entirely rather than part-way.**
+`playlists.max_users` (25) caps how many people one pass may write to;
+`playlists.max_user_writes` (50) caps the total write operations across every
+copy. Past either, the whole fan-out refuses and reports the numbers, and the
+admin playlists are still reconciled. This matters because the expensive shape
+is real: seventeen accounts times a hundred-member playlist is a lot of
+requests, and "the first fifty" of four hundred is the same accident spread
+over eight passes.
+
+**What is skipped, always by name in the report:**
+
+- a **PIN-protected** user — this service never holds a Plex PIN, and the check
+  happens before any plex.tv call for that person;
+- a user plex.tv mints no access token for — treated as a refusal, never as a
+  reason to fall through to some other identity;
+- a user the configuration names who does not exist on this account (a renamed
+  account reads this way, which is intended: their copy then becomes a
+  *reported* sweep candidate rather than a silent deletion);
+- **you**, the owner — the admin playlist *is* that definition;
+- a user whose account already holds a playlist of that title that this service
+  did not create. It is theirs and is never touched, and no second one is made
+  beside it.
+
+**Removal.** A user dropped from `sync_to_users`, a definition deleted, and
+`playlists.delete_unconfigured` all go through one sweep: off means reported,
+on means deleted, and `playlists.max_deletes` counts admin playlists and user
+copies **together** — so removing a definition that fanned out to seventeen
+people needs a cap that admits eighteen deletions. That is deliberate: it is
+the blast radius, made visible. `POST /api/playlists/ops/delete` deletes the
+admin playlist and leaves the copies to that sweep, telling you how many remain.
+
+**Two things it does not do.** A user's copy is created in the definition's
+order and is **not reordered** afterwards (the cost of enforcing order across
+every copy cannot be planned before it is spent, and this phase refuses what it
+cannot cap). And it does not pre-check per-library access: if somebody cannot
+see a library the playlist draws from, that copy fails and is reported by name.
+
+**Prerequisites.** `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` must be set and must be this
+server's **owner's** account token — the pass verifies that before its first
+write and refuses the whole stage with a named line if it is not. Section 1's
+rotation is still the outstanding action.
 
 ## 3. Not an ask, a disclosure: what 98a will and will not touch
 
@@ -71,5 +113,10 @@ dry-run/report pass before any per-user write.
 - The pass deletes no playlist unless `playlists.delete_unconfigured` is
   switched on, and even then never more than `playlists.max_deletes` in one
   pass: past that the sweep refuses entirely and reports the numbers.
-- Nothing in 98a writes to any account but the admin's. Per-user sync is 98c
-  (section 2 above).
+- Nothing writes to any account but the admin's unless
+  `playlists.sync_to_users_apply` is switched on — including the preview
+  endpoint, which forces a dry run and therefore cannot reach anybody's
+  account whatever the switches say.
+- A playlist in somebody else's account is ours only while a
+  `managed_playlist_users` row names its rating key. One they made themselves,
+  or one Kometa made, is never modified and never deleted, whatever its title.

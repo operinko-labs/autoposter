@@ -2403,6 +2403,26 @@ class PlaylistDefinition(BaseModel):
             "their seasons, or their episodes."
         ),
     )
+    # Named by TITLE, because it is the only field both kinds of user carry:
+    # MyPlexAccount.user() matches a Home user on ``title`` alone -- its own
+    # comment says "Home users don't have email, username etc." -- and only
+    # the shared branch can use username/email/id. A title is renameable, so
+    # the ROW stores MyPlexUser.id and this stores what the operator reads in
+    # the Plex UI; the intended consequence is that a renamed user reads as
+    # "gone from the configuration" and their copy becomes a REPORTED sweep
+    # candidate rather than a silent deletion.
+    #
+    # "all" is behind playlists.sync_all_users, refused at config load rather
+    # than skipped at pass time (PlaylistsConfig._all_users_needs_its_own_gate).
+    sync_to_users: list[str] | Literal["all"] | None = Field(
+        default=None,
+        description=(
+            "Which other Plex users this playlist is also copied to, named by "
+            "the display title Plex shows for each of them; 'all' means every "
+            "user this account shares with, and needs playlists.sync_all_users. "
+            "Omitted, the default, copies it to nobody."
+        ),
+    )
     limit: int | None = Field(
         default=None, ge=1,
         description="A cap on the playlist's member count, applied after resolution.",
@@ -2511,6 +2531,34 @@ class PlaylistDefinition(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _the_list_form_of_all_means_the_same_thing(self) -> "PlaylistDefinition":
+        """``sync_to_users: [all]`` (the YAML list form) must mean the same
+        thing as ``sync_to_users: all``.
+
+        Without this, ``["all"]`` is a one-element ``list[str]`` as far as the
+        union at this field's declaration is concerned -- it never reaches
+        ``PlaylistsConfig._all_users_needs_its_own_gate``, and later resolves
+        against a user literally titled "all", which does not exist, so the
+        playlist silently reaches nobody. Matched case-sensitively, the same
+        word the gate refuses.
+
+        A list that mixes "all" with named users is neither meaning and is
+        refused outright here, unconditionally: there is no gate that could
+        make sense of it.
+        """
+        if isinstance(self.sync_to_users, list):
+            if self.sync_to_users == ["all"]:
+                self.sync_to_users = "all"
+            elif "all" in self.sync_to_users:
+                raise ValueError(
+                    f"playlist {self.title!r} sync_to_users mixes 'all' with "
+                    "named users: 'all' means every user this server shares "
+                    "with and cannot be combined with names. List users "
+                    "explicitly, or use 'all' alone"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _libraries_must_not_be_blank(self) -> "PlaylistDefinition":
         """Kometa's own rule, and its reasoning holds here unchanged
         (modules/builder.py:710-718): an OMITTED ``libraries`` means every
@@ -2548,6 +2596,63 @@ class PlaylistsConfig(BaseModel):
     apply_to_plex: bool = Field(
         default=False,
         description="Actually write playlist changes to Plex; off only reports what reconciliation would do.",
+    )
+    # The SECOND gate, and it is second because it authorises a different
+    # thing: apply_to_plex authorises writing to this account, and this
+    # authorises writing into other people's. The combination
+    # ``apply_to_plex: true`` + ``sync_to_users_apply: false`` -- admin
+    # playlists live, user copies reported -- is the deliberate sequencing
+    # state, so one switch could not have carried both. The precedents are
+    # collections.mdblist_sync_apply and collections.arr_tag_apply, which
+    # guard the same shape of second-party write.
+    sync_to_users_apply: bool = Field(
+        default=False,
+        description=(
+            "Actually copy playlists into the accounts of the users a "
+            "definition's sync_to_users names; off only reports what each of "
+            "them would receive."
+        ),
+    )
+    # A gate on the MEANING OF A WORD, checked below at config load.
+    sync_all_users: bool = Field(
+        default=False,
+        description=(
+            "Allow a playlist definition to say sync_to_users: all, which "
+            "resolves to every user this Plex account shares with."
+        ),
+    )
+    exclude_users: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Users a playlist never syncs to, named by the display title "
+            "Plex shows for each of them -- whether sync_to_users: all "
+            "resolved to them or a definition named them explicitly."
+        ),
+    )
+    # The fan-out's WIDTH. An `all` that suddenly resolves to two hundred
+    # accounts should refuse rather than run.
+    max_users: int = Field(
+        default=25,
+        ge=0,
+        description=(
+            "The most users one pass may copy playlists to. Past this the "
+            "whole user fan-out refuses and reports the numbers instead; 0 "
+            "means it is opted in and copies to nobody."
+        ),
+    )
+    # The fan-out's DEPTH, counted over write operations across every
+    # (user, playlist) pair in the pass. Past it the fan-out refuses ENTIRELY,
+    # for cleanup.max_orphans' reason: writing "the first fifty" of four
+    # hundred would be the same accident spread over eight passes.
+    max_user_writes: int = Field(
+        default=50,
+        ge=0,
+        description=(
+            "The most write operations one pass may issue across every user "
+            "copy it manages. Past this the whole user fan-out refuses and "
+            "reports the numbers instead; 0 means it is opted in and writes "
+            "nothing."
+        ),
     )
     # None rather than a second copy of ["Movies", "TV Shows"]: two lists to
     # keep in step is two chances to disagree, and Kometa's own default for a
@@ -2652,6 +2757,35 @@ class PlaylistsConfig(BaseModel):
                 raise ValueError(
                     f"unknown playlist preset {key!r}: the shipped keys are "
                     + ", ".join(sorted(BY_KEY))
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _all_users_needs_its_own_gate(self) -> "PlaylistsConfig":
+        """``sync_to_users: all`` needs ``sync_all_users`` switched on.
+
+        Refused here rather than skipped at pass time, for
+        ``_params_must_satisfy_the_builders_own_model``'s stated reason: the
+        operator learns at the moment of the edit instead of finding a report
+        line six hours later. This validator can make the check because the
+        SECTION sees both the flag and every definition; neither half can see
+        the other alone.
+
+        The scan is complete over what can carry the word: a preset expands
+        from a frozen table that sets no ``sync_to_users`` at all
+        (``playlist_presets``), so ``self.definitions`` is the whole
+        population, and ``test_a_preset_never_carries_sync_to_users`` pins
+        that rather than leaving it to be believed.
+        """
+        if self.sync_all_users:
+            return self
+        for definition in self.definitions:
+            if definition.sync_to_users == "all":
+                raise ValueError(
+                    f"playlist {definition.title!r} says sync_to_users: all, "
+                    "which copies it into every account this server shares "
+                    "with. Set playlists.sync_all_users to true to allow that "
+                    "word, or name the users explicitly"
                 )
         return self
 

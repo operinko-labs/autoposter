@@ -100,11 +100,21 @@ from autoposter.collections.playlist_presets import (
     preset_conflicts,
     presets_needing_mdblist,
 )
+from autoposter.collections.playlist_users import (
+    PlaylistUserResult,
+    UserSync,
+    apply_user_sync,
+    connect_as_user,
+    plan_user_sync,
+    stale_user_rows,
+    user_sweep_candidates,
+)
 from autoposter.collections.resolve import build_owned_index, resolve_external_across
 from autoposter.collections.service import LIBRARY_TYPES
 from autoposter.config.schema import PlaylistDefinition
-from autoposter.db.models import EventLog, ManagedPlaylist
+from autoposter.db.models import EventLog, ManagedPlaylist, ManagedPlaylistUser
 from autoposter.providers.cache import ProviderCache
+from autoposter.redact import redact_urls
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +167,10 @@ class PlaylistResult:
     failed: bool = False
     skipped: bool = False
     actions: list[str] = field(default_factory=list)
+    # Per-user outcomes, one entry per (this playlist, one user). Empty on
+    # every definition that names no users -- which is every definition on a
+    # deployment that has not opted into per-user sync at all.
+    users: list = field(default_factory=list)
 
 
 @dataclass
@@ -225,6 +239,7 @@ async def reconcile_playlists(
     now: datetime | None = None,
     sweep: bool = True,
     title: str | None = None,
+    connect_user=None,
 ) -> PlaylistRun:
     """Reconcile every configured playlist, committing after each one.
 
@@ -244,6 +259,12 @@ async def reconcile_playlists(
 
     ``title`` narrows the pass to one definition; the sweep is then skipped,
     because against a subset every definition left out looks unaccounted for.
+
+    ``connect_user`` is how a per-user session is opened -- ``(baseurl, token)
+    -> PlexServer`` -- and it is injected for the reason ``server`` itself is:
+    the per-user stage's whole risk is which identity a write goes out under,
+    so a test has to be able to assert that no session was opened at all.
+    Defaults to ``playlist_users.connect_as_user``.
 
     ``run_index`` and ``now`` drive schedule gating and are injected rather than
     read here, so a gate is testable without waiting a month.
@@ -313,12 +334,19 @@ async def reconcile_playlists(
     live = server.playlists()
     by_key = {str(playlist.ratingKey): playlist for playlist in live}
 
+    # What the per-user stage needs from the admin half: the ordered items each
+    # definition resolved to, and the digest it hashed them to. Recorded rather
+    # than recomputed -- the resolution is the expensive part of a pass, and a
+    # second hash would be a second definition of what "current" means.
+    resolved: dict[str, list] = {}
+    hashes: dict[str, str] = {}
+
     for definition in definitions:
         try:
             result = await _reconcile_one(
                 session, server, definition, config, by_key,
                 section_for, index_for, http, sources, cache,
-                run_index, now, dry_run,
+                run_index, now, dry_run, resolved, hashes,
             )
             await session.commit()
         except Exception as error:
@@ -338,9 +366,29 @@ async def reconcile_playlists(
         run.playlists.append(result)
         run.actions += result.actions
 
+    # The per-user stage sits BETWEEN the definition loop and the sweep, and
+    # both positions are load-bearing. After the loop, because it needs every
+    # definition's resolved items and its caps are per PASS: the whole fan-out
+    # is planned before any of it is written, so past a cap the refusal is
+    # entire rather than a budget spent on whichever definition ran first.
+    # Before the sweep, because the sweep reuses its resolved-user context and
+    # its per-user caches -- which is what lets both halves of a removal go
+    # through one gate and one cap instead of two postures.
+    sync = None
+    if await _users_are_in_play(session, definitions, sweep and title is None):
+        user_actions, sync = await _sync_users(
+            session, server, config, definitions, resolved, hashes, run,
+            sources, dry_run, connect_user,
+        )
+        run.actions += user_actions
+
     if sweep and title is None:
         try:
-            swept = await _sweep_playlists(session, config, by_key, dry_run)
+            swept = await _sweep_playlists(
+                session, config, by_key, dry_run,
+                sync=sync, definitions=definitions,
+                user_dry_run=dry_run or not config.playlists.sync_to_users_apply,
+            )
             await session.commit()
         except Exception:
             await session.rollback()
@@ -373,6 +421,8 @@ async def _reconcile_one(
     run_index: int,
     now: datetime,
     dry_run: bool,
+    resolved_out: dict,
+    hashes: dict,
 ) -> PlaylistResult:
     """One playlist: gate, refuse, build, resolve, diff, apply."""
     libraries = _libraries_for(config, definition)
@@ -570,6 +620,13 @@ async def _reconcile_one(
         )
 
     wanted = _members_hash(items, definition.summary, definition.sync_mode, None)
+    # Recorded BEFORE the hash short-circuit below, deliberately: a definition
+    # whose admin playlist is already current still has to reach a user who has
+    # no copy yet. That is exactly why the resolved user set does not enter the
+    # members hash (C13 A5) -- the gate that matters for a user is their own
+    # row, and a new user has none.
+    resolved_out[definition.title] = list(items)
+    hashes[definition.title] = wanted
     if playlist is not None and row is not None and row.definition_hash == wanted:
         # Unchanged. The pass still CONFIRMED the membership, so the row records
         # the observation with a zero delta -- the collections side stamps the
@@ -709,6 +766,189 @@ def _clear_playlist_summary(playlist) -> bool:
     return True
 
 
+async def _users_are_in_play(session: AsyncSession, definitions, sweeping: bool) -> bool:
+    """Whether this pass has per-user work, answered without paying plex.tv.
+
+    A deployment that syncs to nobody must make no plex.tv call at all, and
+    building a ``UserSync`` costs an account construction and an ownership read
+    before it can answer anything. There are two ways to be in play: a
+    definition asks for a fan-out, or a SWEEPING pass holds rows left by a
+    definition that used to. The second is a COUNT, the cheapest question the
+    database answers, and it is asked only on a sweeping pass because against a
+    single-title run every other definition is out of play anyway.
+    """
+    if any(definition.sync_to_users for definition in definitions):
+        return True
+    if not sweeping:
+        return False
+    return bool((await session.execute(
+        select(func.count()).select_from(ManagedPlaylistUser)
+    )).scalar())
+
+
+async def _sync_users(
+    session: AsyncSession, server, config, definitions, resolved, hashes, run,
+    sources, dry_run: bool, connect_user,
+) -> tuple[list[str], object | None]:
+    """Plan the whole fan-out, then refuse it or apply it, and report either.
+
+    Returns the action lines and the ``UserSync`` the sweep reuses, so the
+    per-user half of a removal runs through the same context -- and the same
+    caches -- this stage already paid for.
+
+    **The one gate.** Nothing here writes to any account unless
+    ``playlists.sync_to_users_apply`` is on AND the pass is not a dry run. The
+    second half matters as much as the first: the preview endpoint forces
+    ``dry_run=True``, and a preview that wrote into seventeen accounts because
+    a setting happened to be on is the one thing an operator pressing preview
+    must never discover.
+
+    Every failure here is contained and reported rather than raised. The pass
+    contract is unchanged -- a failure is contained to its unit and carried in
+    ``PlaylistRun`` -- and the unit here is the whole stage, because a
+    credential that does not work does not work for anybody.
+    """
+    factory = getattr(sources, "plex_account", None) if sources is not None else None
+    if factory is None:
+        # Reported by name, never silently inert -- the MDBList-preset report
+        # is the precedent. One layer down this surfaces as an authentication
+        # error naming nothing an operator can act on.
+        return ([
+            "the per-user playlist sync is configured but no plex.tv account "
+            "token is: set AUTOPOSTER_PLEX_ACCOUNT_TOKEN, which must be this "
+            "server's OWNER's account token. Nothing was written to any user"
+        ], None)
+
+    try:
+        account = factory()
+        sync = UserSync(
+            account, server, config, connect=connect_user or connect_as_user
+        )
+        refusal = sync.owner_refusal()
+    except Exception as error:
+        # The traceback goes to stdout whole (row 207's trusted sink); the
+        # SERVED line is the class name, through the one redaction seam.
+        logger.exception("could not reach plex.tv for the per-user playlist sync")
+        return ([redact_urls(
+            "the per-user playlist sync could not reach plex.tv (%s); nothing "
+            "was written to any user" % type(error).__name__
+        )], None)
+    if refusal is not None:
+        return ([refusal], None)
+
+    try:
+        plan = await plan_user_sync(
+            session, sync, config, definitions, resolved, hashes
+        )
+    except Exception as error:
+        await session.rollback()
+        logger.exception("could not plan the per-user playlist sync")
+        return ([redact_urls(
+            "the per-user playlist sync could not be planned (%s); nothing was "
+            "written to any user" % type(error).__name__
+        )], None)
+
+    if plan.refusal is not None:
+        # The refusal REPLACES the plan's own lines rather than trailing them:
+        # past a cap the number that matters is the total, and four hundred
+        # "would create" lines above it would bury it. The per-user results are
+        # not attached either -- counts describing writes that will not happen
+        # are worse than no counts. ``None`` rather than ``sync`` -- exactly
+        # the owner-refusal shape above -- so the sweep never runs under a
+        # refusal that says nothing was written to any user: a cap refusal is
+        # a refusal, not half a pass.
+        return ([plan.refusal], None)
+
+    actions = list(plan.actions)
+    if config.playlists.sync_to_users_apply and not dry_run:
+        try:
+            actions += await apply_user_sync(session, plan)
+            await session.commit()
+        except Exception as error:
+            await session.rollback()
+            logger.exception("the per-user playlist sync failed")
+            actions.append(redact_urls(
+                "the per-user playlist sync failed (%s); see logs for detail"
+                % type(error).__name__
+            ))
+    else:
+        actions += plan.previews
+        if not dry_run and any(entry.result is not None for entry in plan.plans):
+            # Only when there was something to report, and only on a pass that
+            # is otherwise writing: on a dry run the "would" lines already say
+            # it, and on a pass where every copy is current there is nothing to
+            # say.
+            actions.append(
+                "the per-user playlist sync is report-only: set "
+                "playlists.sync_to_users_apply to write the copies above"
+            )
+
+    # Attach the per-user rows to the playlist they belong to, and let a
+    # per-user failure fail the DEFINITION -- without that ``PlaylistRun.
+    # failures`` stays empty, the job raises nothing, and
+    # ``scheduled_runs.last_status`` records ``ok`` for a pass in which a write
+    # into somebody's account errored. ``service.reconcile_libraries``'
+    # per-library handler is the precedent one subsystem along.
+    by_title = {result.title: result for result in run.playlists}
+    for definition_title, outcomes in plan.results.items():
+        result = by_title.get(definition_title)
+        if result is None:
+            continue
+        result.users = outcomes
+        if any(outcome.failed for outcome in outcomes):
+            result.failed = True
+    return actions, sync
+
+
+def _user_sweep_name(row, target) -> str:
+    """How a swept user copy is named. Both names when they differ.
+
+    ``_sweep_name``'s reasoning one level down. The row holds the title that
+    user had when their copy was written and ``target.title`` is the one they
+    use now, and they differ exactly when somebody renamed themselves -- which
+    is also, because ``sync_to_users`` names people by title, the very thing
+    that made their copy a candidate. Naming one of them for an irreversible
+    action would name a person the operator may not recognise.
+    """
+    if row.plex_user_title == target.title:
+        return "%r in the account of %r" % (row.definition_key, row.plex_user_title)
+    return "%r in the account of %r (now titled %r)" % (
+        row.definition_key, row.plex_user_title, target.title
+    )
+
+
+def _user_swept(
+    row, target, *, deleting: int = 1, failed: bool = False
+) -> list:
+    """The per-user row a swept copy reports, as a one-element list.
+
+    A module-level function rather than a closure inside the sweep's ``for``.
+    A closure over the loop variables would be the late-binding shape a reader
+    has to stop and check, and this repo's ruff selection is ``E4,E7,E9,F`` --
+    no ``flake8-bugbear``, so nothing would flag it. Not relying on a linter
+    we do not run is the point.
+
+    ``deleting`` follows ``_swept``'s own convention exactly: **1 when this
+    pass deleted the copy or would delete it under the authorisation it
+    actually has, 0 otherwise** -- so the report-only branch (no
+    ``delete_unconfigured``) is 0, because telling a preview reader "1 to
+    delete" for something nobody has authorised is the opposite of what the
+    two-switch design is for; and a delete that RAISED is 0 too, because it
+    did not happen, with ``failed`` carrying that it was attempted.
+
+    This is the only place in this service that writes
+    ``PlaylistUserResult.deleting``, which is why T2 pins it here and T3 pins
+    it served.
+    """
+    return [PlaylistUserResult(
+        title=target.title,
+        user_id=row.plex_user_id,
+        deleting=deleting,
+        skipped=True,
+        failed=failed,
+    )]
+
+
 def _sweep_name(row, playlist) -> str:
     """How a swept playlist is named in a report and in its audit row.
 
@@ -725,8 +965,34 @@ def _sweep_name(row, playlist) -> str:
     return "%r (titled %r in Plex)" % (row.title, playlist.title)
 
 
+def _delete_cap_message(total: int, user_count: int, cap: int) -> str:
+    """The delete sweep's ``max_deletes`` refusal sentence, evaluated once,
+    against the exact post-walk count -- see ``_sweep_playlists`` for why a
+    pre-walk estimate of this same cap turned out to be unsafe (I-3).
+
+    Two wordings, not one: a pass with no per-user copies in the blast radius
+    (98a's own shape, and every pre-98c caller of this sweep) gets the exact
+    sentence it always has -- ``test_past_the_cap_the_sweep_refuses_entirely``
+    pins it byte for byte -- and only a cap blown WITH user copies present
+    says so.
+    """
+    if user_count:
+        return (
+            "refusing to delete %d unconfigured playlist(s), %d of them "
+            "user copies: more than the max_deletes cap of %d; nothing "
+            "was deleted and everything else was reconciled"
+            % (total, user_count, cap)
+        )
+    return (
+        "refusing to delete %d unconfigured playlist(s): more than "
+        "the max_deletes cap of %d; nothing was deleted and "
+        "everything else was reconciled" % (total, cap)
+    )
+
+
 async def _sweep_playlists(
-    session: AsyncSession, config, by_key: dict, dry_run: bool
+    session: AsyncSession, config, by_key: dict, dry_run: bool,
+    sync=None, definitions=(), user_dry_run: bool = True,
 ) -> list[PlaylistResult]:
     """Playlists this service owns that no definition builds any more.
 
@@ -750,6 +1016,42 @@ async def _sweep_playlists(
     There is no protected-label check because there is no label, and none is
     needed: a playlist with no row of ours is never a candidate in the first
     place, which is the same outcome by a different route.
+
+    **Widened in 98c to user copies, through ONE gate and ONE cap.** C13 A2: a
+    user dropped from ``sync_to_users``, a definition deleted outright, and
+    ``delete_unconfigured`` are three events with one predicate, and making
+    them three postures is exactly the mistake that rule forbids. A user's copy
+    is a candidate on the same rule as an admin playlist with the listing
+    scoped to that user (``playlist_users.user_sweep_candidates``),
+    ``delete_unconfigured`` authorises it, and ``max_deletes`` counts admin
+    playlists and user copies TOGETHER, when this pass is authorised to
+    delete both -- so removing a definition that fanned out to seventeen
+    people, with the per-user gate applied, blows a cap of five, deliberately:
+    that IS the blast radius the cap exists to make an operator look at.
+
+    ``user_dry_run`` is separate from ``dry_run`` because deleting in somebody
+    else's account is a per-user write and needs the per-user gate; the caller
+    passes ``dry_run or not playlists.sync_to_users_apply``. ``sync`` is None
+    when the pass never built a per-user context, and then this behaves
+    exactly as it did in 98a. When ``user_dry_run`` is true the per-user loop
+    below only REPORTS "would delete" rather than deleting, so those copies
+    are not counted toward ``max_deletes`` either: a pass with the per-user
+    gate off must still be able to delete the admin playlists it IS
+    authorised to delete, undelayed by copies it was never going to touch.
+
+    And when the gate IS applied, the READ cost is bounded before
+    ``user_sweep_candidates`` walks a single row: ``stale_user_rows`` cannot
+    know whether a row's object still exists or its user is even reachable
+    any more (both are exactly what the walk exists to find out), so a count
+    of ROWS is not a count of deletions -- a defunct or unreachable row never
+    retires, and treating it as if it counted toward ``max_deletes`` can
+    refuse the same admin playlist forever, on every pass, for a delete the
+    pass was always allowed to make. What IS knowable for free is how many
+    DISTINCT users the walk is about to mint a token and read a listing for,
+    so that is checked against ``max_users`` instead -- the same two-pass
+    shape ``plan_user_sync`` uses, and the cap the recon's own
+    ~1,700-request argument was written against. ``max_deletes`` is left to
+    the exact post-walk count below, unchanged from 98a.
     """
     # Through the same composition the pass runs, never
     # ``config.playlists.definitions`` alone: a preset's playlist would
@@ -762,7 +1064,49 @@ async def _sweep_playlists(
         for row in rows
         if row.title not in managed and row.plex_rating_key in by_key
     ]
+    cap = config.playlists.max_deletes
+    user_candidates: list = []
+    unreachable: list = []
     results: list[PlaylistResult] = []
+    if sync is not None:
+        skip_walk = False
+        if config.playlists.delete_unconfigured and not user_dry_run:
+            # Pass one, ``plan_user_sync``'s own two-pass shape -- but this
+            # bounds the READ cost, not the delete count (I-3): a stale row's
+            # object may already be gone, or its user unreachable, and
+            # neither is ever a deletion or ever retired, so a count of ROWS
+            # is not a safe stand-in for ``max_deletes`` -- it can refuse the
+            # same admin playlist forever. What IS free to know is how many
+            # DISTINCT users pass two is about to mint a token and read a
+            # listing for, so that is what gets capped, against
+            # ``max_users``; ``max_deletes`` is left entirely to the exact
+            # post-walk count below.
+            stale = await stale_user_rows(session, sync, definitions)
+            distinct_users = len({row.plex_user_id for row in stale})
+            max_users = config.playlists.max_users
+            if distinct_users > max_users:
+                skip_walk = True
+                results.append(_swept(SWEEP_TITLE, (
+                    "refusing to check %d user(s) for playlist copies no "
+                    "configuration asks for any more: more than the "
+                    "max_users cap of %d; nothing was read and the admin "
+                    "playlists were reconciled as usual"
+                    % (distinct_users, max_users)
+                )))
+        if not skip_walk:
+            user_candidates, unreachable = await user_sweep_candidates(
+                session, sync, definitions
+            )
+    for row in unreachable:
+        # Not a candidate -- ownership is unverifiable, and nothing is deleted
+        # on a guess -- but named, because a row nobody can account for is
+        # worse than a row an operator was told about.
+        results.append(_swept(
+            row.definition_key,
+            "%r has a copy in %r's account this pass cannot reach, so its "
+            "ownership cannot be verified and nothing was deleted"
+            % (row.definition_key, row.plex_user_title),
+        ))
 
     if not config.playlists.delete_unconfigured:
         for row, playlist in candidates:
@@ -772,15 +1116,34 @@ async def _sweep_playlists(
                 "playlists.delete_unconfigured to delete it"
                 % _sweep_name(row, playlist),
             ))
+        for row, _playlist, target in user_candidates:
+            results.append(_swept(
+                row.definition_key,
+                redact_urls(
+                    "%s: no playlist definition syncs it to them any more; "
+                    "set playlists.delete_unconfigured to delete it"
+                    % _user_sweep_name(row, target)
+                ),
+                users=_user_swept(row, target, deleting=0),
+            ))
         return results
 
-    cap = config.playlists.max_deletes
-    if len(candidates) > cap:
-        results.append(_swept(SWEEP_TITLE, (
-            "refusing to delete %d unconfigured playlist(s): more than the "
-            "max_deletes cap of %d; nothing was deleted and everything else was "
-            "reconciled" % (len(candidates), cap)
-        )))
+    # A user copy counts toward the cap only when this pass is actually
+    # authorised to delete it. On a ``user_dry_run`` pass the per-user loop
+    # below only REPORTS "would delete" -- it writes nothing -- so counting
+    # those copies here can refuse a deletion the pass is allowed to make
+    # (the admin playlist) over copies it was never going to touch this pass.
+    # THE ``max_deletes`` check, on the exact post-walk count -- see the
+    # docstring for why an earlier draft tried to evaluate this cap before
+    # the walk too, and why that was wrong (I-3): ``user_candidates`` here is
+    # never a guess, only what the walk actually confirmed is a live,
+    # deletable copy.
+    deletable_user_candidates = 0 if user_dry_run else len(user_candidates)
+    total = len(candidates) + deletable_user_candidates
+    if total > cap:
+        results.append(_swept(
+            SWEEP_TITLE, _delete_cap_message(total, deletable_user_candidates, cap)
+        ))
         return results
 
     for row, playlist in candidates:
@@ -837,11 +1200,69 @@ async def _sweep_playlists(
             "deleted %s: no playlist definition builds it any more" % named,
             deleting=1,
         ))
+
+    for row, playlist, target in user_candidates:
+        named = _user_sweep_name(row, target)
+        if user_dry_run:
+            results.append(_swept(
+                row.definition_key,
+                redact_urls(
+                    "would delete %s: no playlist definition syncs it to "
+                    "them any more" % named
+                ),
+                deleting=1,
+                users=_user_swept(row, target),
+            ))
+            continue
+        try:
+            playlist.delete()
+        except Exception:
+            # Contained per candidate, ``failed=True``, message not echoed --
+            # the admin loop above states all three reasons and they hold
+            # verbatim one level down.
+            logger.exception(
+                "could not delete the user copy of the playlist %r",
+                row.definition_key,
+            )
+            results.append(_swept(
+                row.definition_key,
+                redact_urls("failed to delete %s: see logs for detail" % named),
+                failed=True,
+                users=_user_swept(row, target, deleting=0, failed=True),
+            ))
+            continue
+        await session.delete(row)
+        session.add(EventLog(
+            source="playlists",
+            event_type="playlist_user_copy_deleted",
+            # Identity only, and the USER is part of this identity: an audit
+            # row for an irreversible action in somebody else's account has to
+            # say whose account it was.
+            payload={
+                "title": row.definition_key,
+                "user": row.plex_user_title,
+                "rating_key": row.plex_rating_key,
+            },
+            outcome=(
+                "deleted; no playlist definition syncs it to this user any more"
+            ),
+        ))
+        await session.flush()
+        results.append(_swept(
+            row.definition_key,
+            redact_urls(
+                "deleted %s: no playlist definition syncs it to them any "
+                "more" % named
+            ),
+            deleting=1,
+            users=_user_swept(row, target),
+        ))
     return results
 
 
 def _swept(
-    title: str, action: str, deleting: int = 0, failed: bool = False
+    title: str, action: str, deleting: int = 0, failed: bool = False,
+    users: list | None = None,
 ) -> PlaylistResult:
     """One sweep outcome, in the same shape a definition reports -- so a
     would-be-deleted playlist renders as another row in the preview rather than
@@ -850,7 +1271,14 @@ def _swept(
     ``title`` is always the ROW's title, because that is this result's identity
     and what ``PlaylistRun.failures`` names. Which title(s) the operator READS
     is ``_sweep_name``'s answer, and it is already baked into ``action``.
+
+    ``users`` is set only by the per-user branch, and it is one
+    ``PlaylistUserResult`` naming the account this copy is leaving. The
+    action string already says so in prose; this is the same fact in the
+    shape ``/api/playlists/preview`` serves, so a caller counting deletions
+    per user does not have to parse a sentence.
     """
     return PlaylistResult(
-        title=title, deleting=deleting, skipped=True, failed=failed, actions=[action]
+        title=title, deleting=deleting, skipped=True, failed=failed,
+        actions=[action], users=list(users or []),
     )

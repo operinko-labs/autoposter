@@ -581,6 +581,84 @@ class ManagedPlaylist(Base):
     )
 
 
+class ManagedPlaylistUser(Base):
+    """One person's copy of a playlist this service owns.
+
+    ``ManagedPlaylist`` above answers "is this playlist on the server ours".
+    This answers the same question one level down, and it has to be a separate
+    row rather than a column on that one because **a copy is a new playlist
+    object in a different account with a different rating key**:
+    ``Playlist.create`` POSTs ``/playlists`` on whichever server session it is
+    handed and returns a brand-new object, and ``server.playlists()`` lists
+    only what the token holding that session can see. So the owner's listing
+    contains none of these, each user's listing contains only their own, and
+    the predicate is:
+
+    **a user's copy is ours if and only if a row's ``plex_rating_key`` names a
+    playlist currently in THAT USER'S ``server.playlists()``.**
+
+    Title matching is refused here for the reason it is refused one level up
+    (``engine._sweep``'s docstring), plus a sharper one: a playlist somebody
+    made in their own account under one of our titles is *theirs*, in a place
+    this service has no business tidying.
+
+    ``definition_key`` holds the definition's ``title`` -- a playlist belongs
+    to no library, so its title alone is its identity, which is why
+    ``managed_playlists.title`` is that table's unique key. It is deliberately
+    **not** a foreign key to that table: ``playlists.apply_to_plex`` off with
+    ``playlists.sync_to_users_apply`` on is a configuration an operator can
+    write, and in it user copies exist while no ``managed_playlists`` row does.
+    A NOT NULL foreign key would make that state unrepresentable, and a
+    cascading one would delete the only handle this service holds on a live
+    playlist in somebody else's account.
+
+    ``plex_user_id`` is ``MyPlexUser.id`` and is the stable identity;
+    ``plex_user_title`` is what the operator reads in Plex and what the report
+    names, and is never a key -- a title is renameable and an id is not. The
+    intended consequence of that split is that a RENAMED user reads as "gone
+    from the configuration", so their copy becomes a sweep candidate and is
+    *reported* long before ``delete_unconfigured`` could act on it.
+
+    ``definition_hash`` is the value the admin pass already computed for this
+    definition (``lists._members_hash``), stored per copy rather than per
+    definition: membership is per copy, so a user whose copy is current is
+    skipped without a membership read while a user who is behind is not. A
+    user newly added to ``sync_to_users`` has no row at all, so no hash gates
+    them -- which is why the resolved user set does not need to enter the hash.
+    """
+
+    __tablename__ = "managed_playlist_users"
+    __table_args__ = (
+        UniqueConstraint(
+            "definition_key", "plex_user_id", name="uq_managed_playlist_user"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # The definition's title. Indexed because the sweep and the delete
+    # endpoint both ask "which copies does this definition have".
+    definition_key: Mapped[str] = mapped_column(String(255), index=True)
+    plex_user_id: Mapped[int] = mapped_column(Integer)
+    # Report only, never a key -- see the class docstring.
+    plex_user_title: Mapped[str] = mapped_column(String(255))
+    # THE ownership predicate, one level down: str() of that user's playlist's
+    # ratingKey, which is what every comparison in
+    # collections/playlist_users.py goes through.
+    plex_rating_key: Mapped[str] = mapped_column(String(32), index=True)
+    definition_hash: Mapped[str] = mapped_column(String(64))
+    # What the last pass saw for THIS copy. NULL means no pass has stamped it.
+    member_count: Mapped[int | None] = mapped_column(Integer)
+    last_added: Mapped[int | None] = mapped_column(Integer)
+    last_removed: Mapped[int | None] = mapped_column(Integer)
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ImdbMissRefreshState(Base):
     """Rate-limit state for the miss-triggered refresh (see ``facts/imdb.py``).
 

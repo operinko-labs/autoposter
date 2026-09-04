@@ -17,7 +17,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from autoposter.api.auth import require_session
 from autoposter.collections.playlists import library_scope, reconcile_playlists
@@ -31,7 +31,7 @@ from autoposter.collections.playlists import library_scope, reconcile_playlists
 # ``playlist_definitions`` (this module's own handler, same name).
 from autoposter.collections import playlist_presets
 from autoposter.config.overrides import load_overrides_document
-from autoposter.db.models import EventLog, ManagedPlaylist
+from autoposter.db.models import EventLog, ManagedPlaylist, ManagedPlaylistUser
 from autoposter.db.models import Session as SessionModel
 from autoposter.redact import redact_urls
 
@@ -203,6 +203,64 @@ async def playlist_definitions(
     }
 
 
+def _playlist_row(result) -> dict:
+    """One ``PlaylistResult`` as the preview response serves it.
+
+    Its own function rather than a comprehension inside the handler because it
+    is now twelve keys with a nested list, and because that nesting is the one
+    part of this response worth testing on its own: driving a whole reconcile
+    against fake accounts to check a dict's keys would test the pass again and
+    the projection barely at all.
+
+    Nothing here can carry a credential. Every value is a title, a count, a
+    boolean, a Plex user id, or a ``reason`` this service built from a closed
+    set of sentences plus, at worst, an exception's CLASS name -- the pass
+    never lets a plexapi message reach a result, and
+    ``PlaylistUserResult.__post_init__`` has already run ``redact_urls`` over
+    every reason once. It goes through ``redact_urls`` here as well: the rule
+    on this surface is that nothing reaches a response unfiltered, the helper
+    is idempotent, and a rule with an exemption is a rule somebody widens.
+
+    A user's display TITLE is served deliberately. It is a name, not a
+    credential, and without it the report says a copy was skipped without
+    saying whose.
+    """
+    return {
+        "title": result.title,
+        "libraries": result.libraries,
+        "adding": result.adding,
+        "removing": result.removing,
+        "deleting": result.deleting,
+        "unresolved": result.unresolved,
+        "failed": result.failed,
+        "skipped": result.skipped,
+        "actions": [redact_urls(action) for action in result.actions],
+        # Present and EMPTY on every definition that names no users, so a
+        # reader never has to tell "no users" apart from "an older server".
+        "users": [
+            {
+                "title": user.title,
+                "user_id": user.user_id,
+                "creating": user.creating,
+                "adding": user.adding,
+                "removing": user.removing,
+                # Written only by the sweep's user branch (_user_swept): 1 for
+                # a copy this pass deleted or would delete under the
+                # authorisation it has, 0 otherwise.
+                "deleting": user.deleting,
+                "added": user.added,
+                "removed": user.removed,
+                "skipped": user.skipped,
+                "failed": user.failed,
+                "reason": (
+                    None if user.reason is None else redact_urls(user.reason)
+                ),
+            }
+            for user in result.users
+        ],
+    }
+
+
 class PreviewRequest(BaseModel):
     """Which definition to preview. Omitting it previews every one."""
 
@@ -278,20 +336,7 @@ async def preview_playlists(
         await session.rollback()
 
     return {
-        "playlists": [
-            {
-                "title": result.title,
-                "libraries": result.libraries,
-                "adding": result.adding,
-                "removing": result.removing,
-                "deleting": result.deleting,
-                "unresolved": result.unresolved,
-                "failed": result.failed,
-                "skipped": result.skipped,
-                "actions": [redact_urls(action) for action in result.actions],
-            }
-            for result in run.playlists
-        ],
+        "playlists": [_playlist_row(result) for result in run.playlists],
         "actions": [redact_urls(action) for action in run.actions],
     }
 
@@ -342,6 +387,19 @@ async def delete_playlist(
     below records an irreversible action taken against Plex, and a retire is
     bookkeeping about a row of ours describing an object somebody else already
     removed. The whole observable effect is the listing, which stops lying.
+
+    **The user copies this service holds are NOT deleted here, and the response
+    says so.** C13 A2 names three removal events -- a user dropped from
+    ``sync_to_users``, a definition deleted, and ``delete_unconfigured`` -- and
+    routes all three through ONE sweep, one gate and one cap. This endpoint is
+    not among them, deliberately: deleting the copies here would mean a plex.tv
+    round trip plus one blocking per-user session inside an HTTP handler, with
+    no ``max_deletes`` over any of it; and retiring the rows without deleting
+    the objects would strand the only handle this service holds on live
+    playlists in other people's accounts. Leaving the rows is what makes the
+    sweep able to finish the job: on the next pass no definition builds this
+    title, so every child row is a candidate. The count is served so an
+    operator knows the work is outstanding rather than done.
     """
     if not body.confirm:
         raise HTTPException(
@@ -363,6 +421,19 @@ async def delete_playlist(
                 detail="%r has no managed_playlists row, so it is not ours to delete"
                 % body.title,
             )
+
+        copies = (await session.execute(
+            select(func.count()).select_from(ManagedPlaylistUser)
+            .where(ManagedPlaylistUser.definition_key == body.title)
+        )).scalar() or 0
+        # The sentence appended to whichever of the two outcomes below runs.
+        # Built once because both need it and neither owns it.
+        outstanding = [] if not copies else [
+            "%d user cop%s of it remain and are not deleted here; the next "
+            "pass reports them, and deletes them when "
+            "playlists.delete_unconfigured and playlists.sync_to_users_apply "
+            "are both on" % (copies, "y" if copies == 1 else "ies")
+        ]
 
         try:
             live = await asyncio.to_thread(server.playlists)
@@ -386,8 +457,9 @@ async def delete_playlist(
                     "server, so nothing was deleted; retired the "
                     "managed_playlists row that named it"
                     % (body.title, row.plex_rating_key)
-                ],
+                ] + outstanding,
                 "retired_orphan": True,
+                "user_copies": copies,
             }
 
         await asyncio.to_thread(playlist.delete)
@@ -403,4 +475,8 @@ async def delete_playlist(
         ))
         await session.commit()
 
-    return {"actions": [action], "retired_orphan": False}
+    return {
+        "actions": [action] + outstanding,
+        "retired_orphan": False,
+        "user_copies": copies,
+    }

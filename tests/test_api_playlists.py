@@ -18,7 +18,7 @@ from autoposter.config.loader import load_config
 from autoposter.config.overrides import OVERRIDES_ROW_ID
 from autoposter.collections.playlist_presets import playlist_definitions
 from autoposter.config.schema import PlaylistsConfig, Secrets
-from autoposter.db.models import ConfigOverride, ManagedPlaylist
+from autoposter.db.models import ConfigOverride, ManagedPlaylist, ManagedPlaylistUser
 
 EXAMPLE = pathlib.Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -532,3 +532,224 @@ async def test_the_endpoints_answer_503_when_playlists_are_disabled(
         "/api/playlists/ops/delete",
         json={"title": "x", "confirm": True}, headers=auth_headers,
     )).status_code == 503
+
+
+# --- the preview's per-user rows ---------------------------------------------
+
+
+async def test_the_preview_serves_a_users_list_on_every_playlist(
+    client, app, auth_headers
+):
+    """Present and empty rather than absent, so a reader never has to tell "no
+    users" apart from "an older server". Every definition here names none."""
+    from test_playlists import FakeSection, FakeServer, MOVIE_A
+
+    app.state.plex_server_factory = lambda: FakeServer({
+        "Movies": FakeSection([MOVIE_A]),
+        "TV Shows": FakeSection([], section_type="show"),
+    })
+    _swap_playlists(app, definitions=[{
+        **A_DEFINITION, "builder": "tmdb_movie", "params": {"ids": ["1"]},
+    }])
+
+    body = (
+        await client.post("/api/playlists/preview", json={}, headers=auth_headers)
+    ).json()
+
+    assert body["playlists"][0]["users"] == []
+
+
+async def test_a_definition_naming_a_user_without_an_account_token_says_so(
+    client, app, auth_headers
+):
+    """Never silently inert. The deployment asked for a fan-out it holds no
+    credential for, and the endpoint is where an operator finds out -- naming
+    the environment variable, because "authentication failed" names nothing
+    anybody can act on."""
+    from test_playlists import FakeSection, FakeServer, MOVIE_A
+
+    app.state.plex_server_factory = lambda: FakeServer({
+        "Movies": FakeSection([MOVIE_A]),
+        "TV Shows": FakeSection([], section_type="show"),
+    })
+    _swap_playlists(app, sync_to_users_apply=True, definitions=[{
+        **A_DEFINITION, "builder": "tmdb_movie", "params": {"ids": ["1"]},
+        "sync_to_users": ["alice"],
+    }])
+
+    body = (
+        await client.post("/api/playlists/preview", json={}, headers=auth_headers)
+    ).json()
+
+    assert body["actions"][-1] == (
+        "the per-user playlist sync is configured but no plex.tv account "
+        "token is: set AUTOPOSTER_PLEX_ACCOUNT_TOKEN, which must be this "
+        "server's OWNER's account token. Nothing was written to any user"
+    )
+    assert body["playlists"][0]["users"] == []
+
+
+def test_the_served_row_carries_every_per_user_field():
+    """The projection, pinned field for field rather than through a pass: the
+    endpoint runs a real reconcile, and driving one that reaches seventeen
+    fake accounts to check a dict's keys would test the pass again and the
+    projection barely at all.
+
+    The third row is a SWEPT copy, and it is here so ``deleting`` is asserted
+    at a value something writes rather than only at its default. The sweep's
+    user branch (``_user_swept``) is the one place that sets it -- 1 for a copy
+    this pass deleted or would delete under the authorisation it has -- and
+    ``tests/test_playlists.py`` pins the writing end through the real pass.
+    Global Constraint 16 forbids a field added "ready for" a later slice;
+    this one is written, served and asserted in this phase, at both ends."""
+    from autoposter.api.playlists import _playlist_row
+    from autoposter.collections.playlist_users import PlaylistUserResult
+    from autoposter.collections.playlists import PlaylistResult
+
+    row = _playlist_row(PlaylistResult(
+        title="Timeline",
+        users=[
+            PlaylistUserResult(
+                title="alice", user_id=7, creating=3, added=3,
+            ),
+            PlaylistUserResult(
+                title="Kids", skipped=True,
+                reason="PIN-protected; this service never holds a Plex PIN",
+            ),
+            PlaylistUserResult(
+                title="bob", user_id=2, deleting=1, skipped=True,
+            ),
+        ],
+    ))
+
+    assert row["users"] == [
+        {
+            "title": "alice", "user_id": 7, "creating": 3, "adding": 0,
+            "removing": 0, "deleting": 0, "added": 3, "removed": 0,
+            "skipped": False, "failed": False, "reason": None,
+        },
+        {
+            "title": "Kids", "user_id": None, "creating": 0, "adding": 0,
+            "removing": 0, "deleting": 0, "added": 0, "removed": 0,
+            "skipped": True, "failed": False,
+            "reason": "PIN-protected; this service never holds a Plex PIN",
+        },
+        {
+            "title": "bob", "user_id": 2, "creating": 0, "adding": 0,
+            "removing": 0, "deleting": 1, "added": 0, "removed": 0,
+            "skipped": True, "failed": False, "reason": None,
+        },
+    ]
+
+
+def test_a_served_user_reason_is_redacted_like_every_other_string():
+    """Every reason this service builds is a sentence from a closed set or an
+    exception's class name, so nothing here can carry a URL today. It goes
+    through ``redact_urls`` anyway -- twice, in fact:
+    ``PlaylistUserResult.__post_init__`` runs it when the result is built and
+    ``_playlist_row`` runs it again on the way out. The helper is idempotent
+    and the rule on this surface is that nothing reaches a response unfiltered;
+    a rule with an exemption is a rule somebody will widen.
+
+    ``URL_PATTERN`` is ``https?://\\S+``, so the whole URL -- query string,
+    token and all -- becomes ``<url>`` in one substitution."""
+    from autoposter.api.playlists import _playlist_row
+    from autoposter.collections.playlist_users import PlaylistUserResult
+    from autoposter.collections.playlists import PlaylistResult
+
+    row = _playlist_row(PlaylistResult(
+        title="Timeline",
+        users=[PlaylistUserResult(
+            title="alice", failed=True,
+            reason="broke on https://plex.example/x?X-Plex-Token=SECRET",
+        )],
+    ))
+
+    assert row["users"][0]["reason"] == "broke on <url>"
+    assert "SECRET" not in row["users"][0]["reason"]
+
+
+# --- the delete leaves the copies, and says so -------------------------------
+
+
+async def test_the_delete_leaves_the_user_copies_and_says_so(
+    client, app, auth_headers, session_factory
+):
+    """C13 A2 has exactly three removal events and this endpoint is not one of
+    them: a user copy is removed by the sweep, through one gate and one cap.
+    Deleting them here would mean plex.tv plus one blocking session per user
+    inside an HTTP handler with no cap, and RETIRING the rows without deleting
+    the objects would strand the only handle this service holds on a live
+    playlist in somebody else's account. So the rows stay, and the response
+    says how many and what removes them."""
+    from test_playlists import FakeServer
+
+    async with session_factory() as session:
+        session.add(ManagedPlaylist(
+            title="Marvel Cinematic Universe", plex_rating_key="8001",
+            definition_hash="abc", libraries=["Movies"],
+        ))
+        session.add_all([
+            ManagedPlaylistUser(
+                definition_key="Marvel Cinematic Universe", plex_user_id=1,
+                plex_user_title="alice", plex_rating_key="9001",
+                definition_hash="abc",
+            ),
+            ManagedPlaylistUser(
+                definition_key="Marvel Cinematic Universe", plex_user_id=2,
+                plex_user_title="bob", plex_rating_key="9002",
+                definition_hash="abc",
+            ),
+        ])
+        await session.commit()
+
+    from test_playlists import FakePlaylist
+
+    app.state.plex_server_factory = lambda: FakeServer(
+        {}, playlists=[FakePlaylist(8001, "Marvel Cinematic Universe")]
+    )
+
+    body = (await client.post(
+        "/api/playlists/ops/delete",
+        json={"title": "Marvel Cinematic Universe", "confirm": True},
+        headers=auth_headers,
+    )).json()
+
+    assert body["user_copies"] == 2
+    assert body["actions"][-1] == (
+        "2 user copies of it remain and are not deleted here; the next pass "
+        "reports them, and deletes them when playlists.delete_unconfigured "
+        "and playlists.sync_to_users_apply are both on"
+    )
+    async with session_factory() as session:
+        rows = (
+            await session.execute(select(ManagedPlaylistUser))
+        ).scalars().all()
+    assert len(rows) == 2
+
+
+async def test_the_delete_says_nothing_about_copies_when_there_are_none(
+    client, app, auth_headers, session_factory
+):
+    """The line is worth reading only when there is something to read about."""
+    from test_playlists import FakePlaylist, FakeServer
+
+    async with session_factory() as session:
+        session.add(ManagedPlaylist(
+            title="Marvel Cinematic Universe", plex_rating_key="8001",
+            definition_hash="abc", libraries=["Movies"],
+        ))
+        await session.commit()
+
+    app.state.plex_server_factory = lambda: FakeServer(
+        {}, playlists=[FakePlaylist(8001, "Marvel Cinematic Universe")]
+    )
+
+    body = (await client.post(
+        "/api/playlists/ops/delete",
+        json={"title": "Marvel Cinematic Universe", "confirm": True},
+        headers=auth_headers,
+    )).json()
+
+    assert body["user_copies"] == 0
+    assert body["actions"] == ["deleted the playlist 'Marvel Cinematic Universe'"]

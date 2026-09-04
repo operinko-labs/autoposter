@@ -24,7 +24,7 @@ from sqlalchemy import select
 from autoposter.collections.builders.base import BuilderResult, REGISTRY
 from autoposter.collections.playlists import reconcile_playlists
 from autoposter.config.schema import PlaylistsConfig
-from autoposter.db.models import ManagedPlaylist
+from autoposter.db.models import ManagedPlaylist, ManagedPlaylistUser
 
 from autoposter.collections import playlist_presets
 from autoposter.collections.playlist_presets import PlaylistPreset
@@ -142,12 +142,20 @@ class FakeLibrary:
         return self._sections[name]
 
 
+MACHINE = "abc123machine"
+BASEURL = "http://plex.example:32400"
+
+
 class FakeServer:
     def __init__(self, sections, playlists=()):
         self.library = FakeLibrary(sections)
         self._playlists = list(playlists)
         self.created = []
         self.listings = 0
+        # What ``switchUser`` itself reads, and what the per-user stage builds
+        # each user's session from.
+        self.machineIdentifier = MACHINE
+        self._baseurl = BASEURL
 
     def playlists(self, **kwargs):
         self.listings += 1
@@ -158,6 +166,70 @@ class FakeServer:
         self.created.append(playlist)
         self._playlists.append(playlist)
         return playlist
+
+
+class FakeUser:
+    """``plexapi.myplex.MyPlexUser`` -- one row of ``account.users()``."""
+
+    def __init__(self, user_id, title, token=None, protected=False):
+        self.id = user_id
+        self.title = title
+        self.home = False
+        self.protected = protected
+        self.restricted = "0"
+        self._token = token
+
+    def get_token(self, machineIdentifier):
+        return self._token if machineIdentifier == MACHINE else None
+
+
+class FakeResource:
+    def __init__(self, client_identifier, owned=True):
+        self.clientIdentifier = client_identifier
+        self.owned = owned
+
+
+class FakeAccount:
+    """``plexapi.myplex.MyPlexAccount`` -- the owner's. Counts its own reads,
+    because "a deployment that syncs to nobody makes no plex.tv call" is a
+    property only a counter can prove."""
+
+    def __init__(self, users, owned=True):
+        self._users = list(users)
+        self._owned = owned
+        self.title = "owner"
+        self.username = "owner@example.com"
+        self.reads = 0
+
+    def users(self):
+        self.reads += 1
+        return list(self._users)
+
+    def resources(self):
+        self.reads += 1
+        return [FakeResource(MACHINE, self._owned)]
+
+
+def _user_servers(tokens):
+    """``(connect, {token: FakeServer})`` -- the injected per-user seam.
+
+    Each user's server is a ``FakeServer`` with its own empty section map: the
+    per-user stage never reads a library through it, only ``playlists()`` and
+    ``createPlaylist()``.
+    """
+    servers = {token: FakeServer({}) for token in tokens}
+
+    def connect(baseurl, token):
+        assert baseurl == BASEURL
+        return servers[token]
+
+    return connect, servers
+
+
+def _sources(account):
+    from autoposter.collections.builders.base import SourceClients
+
+    return SourceClients(plex_account=lambda: account)
 
 
 # --- the builder the definitions point at ------------------------------------
@@ -1269,4 +1341,614 @@ async def test_an_empty_library_scope_is_a_named_refusal_not_an_indexerror(
         "'Timeline' has no library to resolve its members from: the playlists "
         "section's scope is empty. Name libraries on this playlist, set "
         "playlists.libraries, or configure collections.libraries"
+    ]
+
+
+# --- the per-user stage: off, on, again --------------------------------------
+
+
+async def test_a_definition_with_no_sync_to_users_costs_no_plex_tv_call(
+    session, config_factory
+):
+    """The cost floor. Building the per-user context constructs an account and
+    reads the ownership resource before it can answer anything, so a
+    deployment that syncs to nobody must never reach it."""
+    _Ids.ids = [("tmdb", "1")]
+    account = FakeAccount([FakeUser(1, "alice", token="tok-a")])
+    config = _config(config_factory, apply_to_plex=True, definitions=[_definition()])
+
+    await reconcile_playlists(
+        session, _server(), config, sources=_sources(account)
+    )
+
+    assert account.reads == 0
+
+
+async def test_the_user_gate_off_reports_what_each_user_would_receive(
+    session, config_factory
+):
+    """``apply_to_plex: true`` with ``sync_to_users_apply: false`` -- admin
+    playlists live, user copies reported. The state the second gate exists to
+    make expressible."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    account = FakeAccount([FakeUser(1, "alice", token="tok-a")])
+    connect, servers = _user_servers(["tok-a"])
+    config = _config(
+        config_factory, apply_to_plex=True,
+        definitions=[_definition(sync_to_users=["alice"])],
+    )
+    server = _server()
+
+    run = await reconcile_playlists(
+        session, server, config, sources=_sources(account), connect_user=connect
+    )
+
+    assert len(server.created) == 1
+    assert servers["tok-a"].created == []
+    assert run.actions == [
+        "created 'Timeline' with 2 item(s)",
+        "'Timeline' -> 'alice': would create with 2 item(s)",
+        "the per-user playlist sync is report-only: set "
+        "playlists.sync_to_users_apply to write the copies above",
+    ]
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert rows == []
+
+
+async def test_the_user_gate_on_creates_each_users_copy_and_records_the_rows(
+    session, config_factory
+):
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    account = FakeAccount([
+        FakeUser(1, "alice", token="tok-a"), FakeUser(2, "bob", token="tok-b")
+    ])
+    connect, servers = _user_servers(["tok-a", "tok-b"])
+    config = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice", "bob"])],
+    )
+
+    run = await reconcile_playlists(
+        session, _server(), config, sources=_sources(account),
+        connect_user=connect,
+    )
+
+    for token in ("tok-a", "tok-b"):
+        assert len(servers[token].created) == 1
+        assert [i.ratingKey for i in servers[token].created[0].items()] == ["11", "12"]
+    assert run.actions == [
+        "created 'Timeline' with 2 item(s)",
+        "'Timeline' -> 'alice': created with 2 item(s)",
+        "'Timeline' -> 'bob': created with 2 item(s)",
+    ]
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert sorted((r.definition_key, r.plex_user_title) for r in rows) == [
+        ("Timeline", "alice"), ("Timeline", "bob"),
+    ]
+    assert run.playlists[0].users[0].added == 2
+
+
+async def test_a_second_pass_writes_nothing_to_any_user(
+    session, config_factory
+):
+    """The per-user hash gate, proved with a sentinel that cannot be
+    reproduced: the second pass is handed each user's copy with write methods
+    that would record any call, and the assertion is that none was made."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    account = FakeAccount([FakeUser(1, "alice", token="tok-a")])
+    connect, servers = _user_servers(["tok-a"])
+    config = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice"])],
+    )
+
+    first = _server()
+    await reconcile_playlists(
+        session, first, config, sources=_sources(account), connect_user=connect
+    )
+    copy = servers["tok-a"].created[0]
+    copy.writes.clear()
+    servers["tok-a"].created.clear()
+
+    second = _server(playlists=[first.created[0]])
+    run = await reconcile_playlists(
+        session, second, config, sources=_sources(account), connect_user=connect
+    )
+
+    assert servers["tok-a"].created == []
+    assert copy.writes == []
+    assert copy.moves == []
+    assert run.actions == []
+
+
+async def test_a_user_added_to_an_already_current_definition_still_gets_a_copy(
+    session, config_factory
+):
+    """C13 A5, proved through the real pass. The resolved user set is NOT in
+    the members hash, so the admin half short-circuits on the second pass --
+    and the new user still gets a copy, because the gate that matters for a
+    user is their OWN row and a new user has none."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    account = FakeAccount([
+        FakeUser(1, "alice", token="tok-a"), FakeUser(2, "bob", token="tok-b")
+    ])
+    connect, servers = _user_servers(["tok-a", "tok-b"])
+    first_config = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice"])],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, first_config, sources=_sources(account),
+        connect_user=connect,
+    )
+    admin = first.created[0]
+
+    second_config = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice", "bob"])],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[admin]), second_config,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert servers["tok-b"].created != []
+    assert run.actions == ["'Timeline' -> 'bob': created with 2 item(s)"]
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert sorted(r.plex_user_title for r in rows) == ["alice", "bob"]
+
+
+async def test_no_account_token_is_reported_by_name(session, config_factory):
+    """Never silently inert: the deployment asked for a fan-out it has no
+    credential for, and one layer down that surfaces as an authentication
+    error naming nothing an operator can act on."""
+    _Ids.ids = [("tmdb", "1")]
+    config = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice"])],
+    )
+
+    run = await reconcile_playlists(session, _server(), config)
+
+    assert run.actions[-1] == (
+        "the per-user playlist sync is configured but no plex.tv account "
+        "token is: set AUTOPOSTER_PLEX_ACCOUNT_TOKEN, which must be this "
+        "server's OWNER's account token. Nothing was written to any user"
+    )
+
+
+async def test_a_non_owner_token_refuses_the_fan_out_and_the_admin_pass_lands(
+    session, config_factory
+):
+    """C13 A9 through the real pass, and the second half of the assertion is
+    the point: the admin playlist is still reconciled. A refusal here is about
+    other people's accounts, not about this one."""
+    _Ids.ids = [("tmdb", "1")]
+    account = FakeAccount([FakeUser(1, "alice", token="tok-a")], owned=False)
+    connect, servers = _user_servers(["tok-a"])
+    config = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice"])],
+    )
+    server = _server()
+
+    run = await reconcile_playlists(
+        session, server, config, sources=_sources(account), connect_user=connect
+    )
+
+    assert len(server.created) == 1
+    assert servers["tok-a"].created == []
+    assert run.actions[-1].startswith("refusing the user fan-out:")
+    assert "not this server's owner" in run.actions[-1]
+
+
+# --- one sweep, one gate, one cap -------------------------------------------
+
+
+async def test_a_user_dropped_from_sync_to_users_is_reported_while_the_switch_is_off(
+    session, config_factory
+):
+    """C13 A2's first removal event. ``delete_unconfigured`` off means
+    REPORTED, exactly as it does for an admin playlist."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    account = FakeAccount([
+        FakeUser(1, "alice", token="tok-a"), FakeUser(2, "bob", token="tok-b")
+    ])
+    connect, servers = _user_servers(["tok-a", "tok-b"])
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice", "bob"])],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    bobs_copy = servers["tok-b"].created[0]
+
+    dropped = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice"])],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[first.created[0]]), dropped,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert bobs_copy.deleted is False
+    assert run.actions == [
+        "'Timeline' in the account of 'bob': no playlist definition syncs it "
+        "to them any more; set playlists.delete_unconfigured to delete it"
+    ]
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert len(rows) == 2
+    # Report-only, so no count: nothing WOULD be deleted while the switch is
+    # off, and a `deleting: 1` here would tell a preview reader an operator had
+    # already authorised something they have not.
+    swept = [r for r in run.playlists if r.title == "Timeline" and r.skipped]
+    assert [u.deleting for r in swept for u in r.users] == [0]
+
+
+async def test_a_dropped_user_copy_is_deleted_once_both_switches_are_on(
+    session, config_factory
+):
+    """Both, because a delete in somebody else's account is a per-user write:
+    ``delete_unconfigured`` authorises the sweep and ``sync_to_users_apply``
+    authorises writing there at all."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    account = FakeAccount([
+        FakeUser(1, "alice", token="tok-a"), FakeUser(2, "bob", token="tok-b")
+    ])
+    connect, servers = _user_servers(["tok-a", "tok-b"])
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice", "bob"])],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    bobs_copy = servers["tok-b"].created[0]
+
+    dropped = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        delete_unconfigured=True,
+        definitions=[_definition(sync_to_users=["alice"])],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[first.created[0]]), dropped,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert bobs_copy.deleted is True
+    assert run.actions == [
+        "deleted 'Timeline' in the account of 'bob': no playlist definition "
+        "syncs it to them any more"
+    ]
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert [r.plex_user_title for r in rows] == ["alice"]
+    # The sweep's own per-user row: the ONE place ``deleting`` is written, and
+    # what makes the preview say whose account a copy left rather than only
+    # that one did.
+    swept = [r for r in run.playlists if r.title == "Timeline" and r.skipped]
+    assert [(u.title, u.user_id, u.deleting) for r in swept for u in r.users] == [
+        ("bob", 2, 1)
+    ]
+
+
+async def test_a_cap_refusal_leaves_a_sweep_eligible_user_copy_untouched(
+    session, config_factory
+):
+    """A cap refusal must not let the sweep run. ``_sync_users`` reports
+    "nothing was written to any user" on a ``max_users`` refusal -- and a
+    delete IS a write. Before the fix the refusal handed the sweep the live
+    ``UserSync`` anyway, so a copy the sweep is otherwise authorised to
+    remove (dropped from ``sync_to_users``, ``delete_unconfigured`` on) could
+    be deleted in the very pass whose own message said nothing was written to
+    anybody."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    account = FakeAccount([
+        FakeUser(1, "alice", token="tok-a"), FakeUser(2, "bob", token="tok-b")
+    ])
+    connect, servers = _user_servers(["tok-a", "tok-b"])
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice", "bob"])],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    bobs_copy = servers["tok-b"].created[0]
+
+    capped = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        delete_unconfigured=True, max_users=0,
+        definitions=[_definition(sync_to_users=["alice"])],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[first.created[0]]), capped,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert bobs_copy.deleted is False
+    assert run.actions == [
+        "refusing the user fan-out: 1 user(s) resolved, more than the "
+        "max_users cap of 0; nothing was written to any user and the admin "
+        "playlists were reconciled"
+    ]
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert sorted(r.plex_user_title for r in rows) == ["alice", "bob"]
+
+
+async def test_the_delete_cap_counts_admin_playlists_and_user_copies_together(
+    session, config_factory
+):
+    """One cap, deliberately: a definition removed from a two-user fan-out
+    puts three objects on the block, and a cap of two must see three. That IS
+    the blast radius the cap exists to make an operator look at."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    account = FakeAccount([
+        FakeUser(1, "alice", token="tok-a"), FakeUser(2, "bob", token="tok-b")
+    ])
+    connect, servers = _user_servers(["tok-a", "tok-b"])
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice", "bob"])],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    admin = first.created[0]
+
+    gone = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        delete_unconfigured=True, max_deletes=2, definitions=[],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[admin]), gone,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert admin.deleted is False
+    assert all(s.created[0].deleted is False for s in servers.values())
+    assert run.actions == [
+        "refusing to delete 3 unconfigured playlist(s), 2 of them user copies: "
+        "more than the max_deletes cap of 2; nothing was deleted and "
+        "everything else was reconciled"
+    ]
+
+
+async def test_the_delete_cap_excludes_dry_run_reported_user_copies(
+    session, config_factory
+):
+    """``user_dry_run`` (the caller's ``dry_run or not sync_to_users_apply``)
+    means the per-user loop only REPORTS "would delete" -- it writes nothing.
+    Counting those toward ``max_deletes`` blocked a deletion the pass was
+    actually authorised to perform: the advertised state
+    (``sync_to_users_apply: false``, ``delete_unconfigured: true``) removed a
+    definition fanned out to six users, and the default cap of five refused
+    the admin playlist too, forever, because 1 admin + 6 reported user
+    copies is 7. Only deletions this pass will actually perform count."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    names = ["alice", "bob", "carol", "dave", "erin", "frank"]
+    tokens = ["tok-%s" % name for name in names]
+    account = FakeAccount([
+        FakeUser(i + 1, name, token=token)
+        for i, (name, token) in enumerate(zip(names, tokens))
+    ])
+    connect, servers = _user_servers(tokens)
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=names)],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    admin = first.created[0]
+    copies = [servers[token].created[0] for token in tokens]
+
+    gone = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=False,
+        delete_unconfigured=True, definitions=[],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[admin]), gone,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert admin.deleted is True
+    assert all(copy.deleted is False for copy in copies)
+    assert run.actions[0] == (
+        "deleted 'Timeline': no playlist definition builds it any more"
+    )
+    user_actions = run.actions[1:]
+    assert len(user_actions) == 6
+    for name in names:
+        assert any(
+            "would delete 'Timeline' in the account of %r: no playlist "
+            "definition syncs it to them any more" % name == a
+            for a in user_actions
+        )
+
+
+async def test_the_delete_cap_still_refuses_the_whole_plan_with_the_user_gate_on(
+    session, config_factory
+):
+    """The other half of I-1's fix: when the per-user gate IS applied, the
+    six user copies are real deletions this pass would perform, so they must
+    still count toward the cap and the whole plan -- admin playlist
+    included -- still refuses.
+
+    Adjusted for I-3: ``max_deletes`` is now checked ONLY against the exact
+    post-walk count (a pre-walk estimate of it, tried in the first fix round,
+    could refuse a plan forever once unreachable rows piled up -- see the two
+    tests below). With ``max_users`` at its default of 25, six distinct
+    stale-row users do not trip the read-cost pre-check, so this scenario now
+    pays for the walk -- every listing gets read -- before the unchanged
+    combined-cap message refuses. That IS the fix: only a `max_users` breach
+    may skip the reads; a `max_deletes` breach alone may not."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    names = ["alice", "bob", "carol", "dave", "erin", "frank"]
+    tokens = ["tok-%s" % name for name in names]
+    account = FakeAccount([
+        FakeUser(i + 1, name, token=token)
+        for i, (name, token) in enumerate(zip(names, tokens))
+    ])
+    connect, servers = _user_servers(tokens)
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=names)],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    admin = first.created[0]
+    copies = [servers[token].created[0] for token in tokens]
+    listings_after_first_pass = {
+        token: server.listings for token, server in servers.items()
+    }
+
+    gone = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        delete_unconfigured=True, definitions=[],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[admin]), gone,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert admin.deleted is False
+    assert all(copy.deleted is False for copy in copies)
+    # Every one of the six users' listings was read this pass -- the walk
+    # was NOT skipped, because nothing here breaches max_users.
+    assert {
+        token: server.listings for token, server in servers.items()
+    } == {token: count + 1 for token, count in listings_after_first_pass.items()}
+    assert run.actions == [
+        "refusing to delete 7 unconfigured playlist(s), 6 of them user "
+        "copies: more than the max_deletes cap of 5; nothing was deleted "
+        "and everything else was reconciled"
+    ]
+
+
+async def test_i3_unreachable_stale_rows_never_deadlock_the_admin_delete(
+    session, config_factory
+):
+    """I-3: a stale row's object may already be gone, or its user
+    unreachable, and neither is ever a deletion nor ever retired -- so
+    counting the ROW toward ``max_deletes`` (the first fix round's pre-check)
+    could refuse the same admin playlist forever. Five of six fanned-out
+    users lose their token before the delete pass; only the sixth (alice)
+    still has a live, reachable copy. Cap 5, default max_users: the admin
+    deletion this pass is authorised to make must proceed, and the one live
+    user copy goes with it -- the five unreachable rows are only reported."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    names = ["alice", "bob", "carol", "dave", "erin", "frank"]
+    tokens = ["tok-%s" % name for name in names]
+    account = FakeAccount([
+        FakeUser(i + 1, name, token=token)
+        for i, (name, token) in enumerate(zip(names, tokens))
+    ])
+    connect, servers = _user_servers(tokens)
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=names)],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    admin = first.created[0]
+    copies = {name: servers[token].created[0] for name, token in zip(names, tokens)}
+
+    # Five of the six lose their token before the delete pass -- gone from
+    # the share, revoked, whatever the reason. ``alice`` keeps hers.
+    unreachable_account = FakeAccount([
+        FakeUser(1, "alice", token="tok-alice"),
+        *(
+            FakeUser(user_id, name, token=None)
+            for user_id, name in zip(range(2, 7), names[1:])
+        ),
+    ])
+    gone = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        delete_unconfigured=True, definitions=[],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[admin]), gone,
+        sources=_sources(unreachable_account), connect_user=connect,
+    )
+
+    assert admin.deleted is True
+    assert copies["alice"].deleted is True
+    assert all(not copies[name].deleted for name in names[1:])
+    assert (
+        "deleted 'Timeline': no playlist definition builds it any more"
+        in run.actions
+    )
+    assert (
+        "deleted 'Timeline' in the account of 'alice': no playlist "
+        "definition syncs it to them any more" in run.actions
+    )
+    unreachable_lines = [
+        a for a in run.actions
+        if "this pass cannot reach" in a
+    ]
+    assert len(unreachable_lines) == 5
+
+
+async def test_the_read_cost_precheck_refuses_before_any_fetch_past_max_users(
+    session, config_factory
+):
+    """The pre-check now bounds the READ cost, not the delete count: six
+    distinct stale-row users past a max_users cap of five must refuse the
+    per-user walk before minting a single token or reading a single listing.
+    It is a READ-cost refusal, not a delete-cap refusal, so the admin
+    playlist this pass is authorised to delete is still reconciled as
+    usual."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    names = ["alice", "bob", "carol", "dave", "erin", "frank"]
+    tokens = ["tok-%s" % name for name in names]
+    account = FakeAccount([
+        FakeUser(i + 1, name, token=token)
+        for i, (name, token) in enumerate(zip(names, tokens))
+    ])
+    connect, servers = _user_servers(tokens)
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=names)],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    admin = first.created[0]
+    copies = [servers[token].created[0] for token in tokens]
+    listings_after_first_pass = {
+        token: server.listings for token, server in servers.items()
+    }
+
+    gone = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        delete_unconfigured=True, max_users=5, definitions=[],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[admin]), gone,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert admin.deleted is True
+    assert all(copy.deleted is False for copy in copies)
+    assert {
+        token: server.listings for token, server in servers.items()
+    } == listings_after_first_pass
+    assert run.actions == [
+        "refusing to check 6 user(s) for playlist copies no configuration "
+        "asks for any more: more than the max_users cap of 5; nothing was "
+        "read and the admin playlists were reconciled as usual",
+        "deleted 'Timeline': no playlist definition builds it any more",
     ]
