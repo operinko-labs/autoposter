@@ -707,6 +707,47 @@ async def test_a_probe_failure_takes_the_pass_down_rather_than_reading_as_gone(s
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 1
 
 
+async def test_the_session_is_not_idle_in_transaction_when_the_probe_runs(session):
+    """The direct analogue of ``plex_merge``'s guard (516af28,
+    tests/test_scheduler_merge_job.py's
+    ``test_the_session_is_not_idle_in_transaction_when_the_probe_runs``), for
+    the job that actually fired the alert.
+
+    ``refuse_if_empty``'s probe and ``find_prunable``'s full ``media_items``
+    read open a transaction, and the probe below is
+    ``PlexClient.exists_many`` -- one thread for the whole walk, 15,794
+    sequential HTTP round-trips, **797 seconds measured** on 2026-09-03, on a
+    pass that changed nothing. Idle-in-transaction for that whole window pins
+    a pooled connection and the vacuum horizon. One ``rollback()`` between the
+    candidate build and the probe closes it, and nothing is lost:
+    ``PruneCandidate`` is a frozen dataclass and ``retire()`` re-reads every
+    row anyway, deleting on ``(id, updated_at)`` precisely so a row that
+    changed under the pass survives.
+    """
+    await _add_item(session, "10")
+    await _add_item(session, "11")
+
+    seen = {}
+
+    class SpyingPlex(FakePlex):
+        async def exists_many(self, intents):
+            seen["in_transaction"] = session.in_transaction()
+            return await super().exists_many(intents)
+
+    # Through the real entry point, not find_prunable directly: the span the
+    # alert measured starts at refuse_if_empty's read inside job.run, one
+    # statement ABOVE find_prunable, so a test that called find_prunable alone
+    # would leave the job's own opening read uncovered.
+    job = _job(_config(apply=True), SpyingPlex(live={"10"}))
+
+    summary = await job.run(session)
+
+    assert seen == {"in_transaction": False}
+    # The rollback strands nothing: the scan still classifies both rows and
+    # retire() still opens its own transaction and deletes.
+    assert "pruned 1 of 2" in summary
+
+
 async def test_the_refusal_reaches_the_dashboard_whole(session, session_factory):
     """``PruneRefused.served_detail``'s end-to-end guard (roadmap row 209).
 

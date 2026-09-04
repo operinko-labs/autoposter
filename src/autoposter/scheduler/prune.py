@@ -273,6 +273,15 @@ async def find_prunable(
     if not candidates:
         return PruneScan(prunable=[], gone=0, held=0, total=0, excluded=0)
 
+    # The reads above (refuse_if_empty's probe and this full media_items
+    # read) opened a transaction the walk below would otherwise hold idle
+    # for its whole duration -- 13 minutes on a 15,794-row library,
+    # measured, pinning a pooled connection and the vacuum horizon for
+    # nothing. PruneCandidate is a frozen dataclass and retire() re-reads
+    # every row anyway, deleting on (id, updated_at) precisely so a row
+    # that changed under the pass survives.
+    await session.rollback()
+
     resolved_flags = await plex.exists_many([intent_for(c) for c in candidates])
     by_id = {candidate.id: candidate for candidate in candidates}
     # strict=True: a mismatched flags list would silently drop a live
