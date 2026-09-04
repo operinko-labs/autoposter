@@ -111,35 +111,74 @@ def test_a_text_override_is_written_and_locked():
     }
 
 
-def test_a_text_override_equal_to_plex_writes_nothing():
+def test_a_text_override_equal_to_plex_and_already_locked_writes_nothing():
     """The idempotence that makes this steady-state rather than a rewrite
-    every pass -- inherited from ``plan_edits``' own diff, not reinvented."""
-    item = FakeItem(tagline="Same")
+    every pass -- inherited from ``plan_edits``' own diff, not reinvented.
+    Genuinely nothing here: the value matches AND Plex already reports the
+    field locked, so there is nothing left for this override to ensure."""
+    item = LockableItem(tagline="Same", locks=[("tagline", True)])
+    assert override_edits(item, {"tagline": "Same"}) == {}
+
+
+def test_a_text_override_equal_to_plex_but_unlocked_still_writes_the_lock():
+    """Task-2 fix round 1, ruling on I-1: supersedes the brief's ``== {}``
+    expectation for this case. The value already matches, but the field is
+    NOT locked -- exactly the state Plex's own agent is free to rewrite on
+    its next refresh, clobbering the value the operator pinned before a
+    later pass would notice the drift and write-and-lock it. So the write
+    still happens, carrying the lock alone and no value key."""
+    item = LockableItem(tagline="Same", locks=[])
+    assert override_edits(item, {"tagline": "Same"}) == {"tagline.locked": 1}
+
+
+def test_the_lock_only_write_above_is_idempotent():
+    """Second pass, after the lock: Plex now reports ``tagline`` locked, so
+    this is back to genuinely nothing -- the fix costs one write, not one
+    every pass."""
+    item = LockableItem(tagline="Same", locks=[("tagline", True)])
     assert override_edits(item, {"tagline": "Same"}) == {}
 
 
 def test_a_rating_override_compares_on_the_formatted_value():
     """8.65 and 8.7 both render "8.7" to a viewer, so rewriting one as the
     other would churn Plex for no visible gain -- the same rule
-    ``plan_edits`` applies to a provider's rating."""
-    assert override_edits(FakeItem(rating=8.7), {"critic_rating": 8.7}) == {}
+    ``plan_edits`` applies to a provider's rating. Locked already, so the
+    equal case is genuinely nothing (the lock-ensure fix from I-1 only adds
+    a write when the field is unlocked -- pinned on the text field above)."""
+    locked = LockableItem(rating=8.7, locks=[("rating", True)])
+    assert override_edits(locked, {"critic_rating": 8.7}) == {}
     assert override_edits(FakeItem(rating=4.9), {"critic_rating": 8.7}) == {
         "rating.value": 8.7, "rating.locked": 1,
     }
 
 
+def test_a_rating_override_within_the_same_formatted_value_writes_no_value():
+    """Regression pin for I-3: replacing the FORMATTED compare with a raw
+    ``!=`` would treat Plex's 7.04 and the operator's 7.0 as different --
+    both render "7.0" -- and rewrite the same rating every pass. Locked
+    already, so the only observable outcome of the formatted-equal check is
+    the absence of ``rating.value`` (the lock rule from I-1 still applies:
+    an unlocked item here would instead get the lock-only edit, as pinned
+    for text above)."""
+    item = LockableItem(rating=7.04, locks=[("rating", True)])
+    assert override_edits(item, {"critic_rating": 7.0}) == {}
+
+
 def test_an_audience_rating_override_uses_the_audience_formatter():
-    assert override_edits(
-        FakeItem(audienceRating=6.3), {"audience_rating": 6.3}
-    ) == {}
+    locked = LockableItem(audienceRating=6.3, locks=[("audienceRating", True)])
+    assert override_edits(locked, {"audience_rating": 6.3}) == {}
     assert override_edits(
         FakeItem(audienceRating=6.3), {"audience_rating": 9.1}
     ) == {"audienceRating.value": 9.1, "audienceRating.locked": 1}
 
 
 def test_a_date_override_compares_on_the_iso_string():
+    locked = LockableItem(
+        originallyAvailableAt=date(1995, 12, 15),
+        locks=[("originallyAvailableAt", True)],
+    )
+    assert override_edits(locked, {"originally_available": date(1995, 12, 15)}) == {}
     item = FakeItem(originallyAvailableAt=date(1995, 12, 15))
-    assert override_edits(item, {"originally_available": date(1995, 12, 15)}) == {}
     assert override_edits(item, {"originally_available": date(1996, 1, 1)}) == {
         "originallyAvailableAt.value": "1996-01-01",
         "originallyAvailableAt.locked": 1,
@@ -200,8 +239,13 @@ def test_an_override_fires_when_the_provider_has_nothing_at_all():
 
 def test_a_second_pass_over_an_applied_override_writes_nothing():
     """Steady state through the real planner, not just through
-    ``override_edits``."""
-    item = FakeItem(tagline="x", rating=8.7)
+    ``override_edits`` -- on an item Plex already reports BOTH fields
+    locked, i.e. the state the first pass's write would have left behind
+    (I-1's lock-ensure fix; a second pass over an unlocked-but-equal item is
+    pinned separately, above, on ``override_edits`` directly)."""
+    item = LockableItem(
+        tagline="x", rating=8.7, locks=[("tagline", True), ("rating", True)],
+    )
     assert plan_edits(
         item, GatheredFacts(critic_rating=2.2),
         overrides={"tagline": "x", "critic_rating": 8.7},

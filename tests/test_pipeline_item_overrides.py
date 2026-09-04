@@ -34,7 +34,7 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.render.pipeline import process_item
 
 from test_mass_ops_fields import FakeTMDB, _item
-from test_mass_ops_verbs import RecordingPlexItem
+from test_mass_ops_verbs import FakeField, RecordingPlexItem
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -151,9 +151,15 @@ async def test_gate_on_writes_the_override_even_with_no_provider_facts(
 async def test_the_second_pass_over_an_applied_override_writes_nothing(
     session, config
 ):
-    """(c) SECOND PASS: steady state. Plex now holds the operator's value, so
-    the diff is empty and no second write happens -- which is what makes this
-    re-applied every pass without churning the server."""
+    """(c) SECOND PASS: steady state. Plex now holds the operator's value AND
+    reports it locked, so the diff is empty and no second write happens --
+    which is what makes this re-applied every pass without churning the
+    server. The lock matters as of task-2 fix round 1's I-1 ruling: an item
+    Plex reports as matching but NOT locked still gets a lock-only write
+    (pinned directly against ``override_edits`` in
+    ``tests/test_item_overrides_writer.py``), so this steady-state pass has
+    to simulate the locked state the first write would actually leave
+    behind, not just the matching value."""
     config.artwork.poster.enabled = False
     config.artwork.background.enabled = False
     config.operations.item_overrides_enabled = True
@@ -169,6 +175,7 @@ async def test_the_second_pass_over_an_applied_override_writes_nothing(
         )
         await _override(session, "tagline", "New words")
         plex_item.tagline = "New words"
+        plex_item.fields = [FakeField("tagline", True)]
         await process_item(
             session, config, http, FakePlexServer(_item(), plex_item), [],
             _intent(), tmdb_facts=FakeTMDB(GatheredFacts()),

@@ -117,6 +117,21 @@ def _locked_in_plex(item, plex_field: str) -> bool | None:
     return None
 
 
+def _ensure_locked(edits: dict[str, object], item, plex_field: str) -> None:
+    """Lock ``plex_field`` when an override's value already matches Plex's.
+
+    Task-2 fix round 1, ruling on I-1: ``override_edits`` diffs on VALUE, but
+    a field the operator pinned must end up locked even when there is
+    nothing to write -- an unlocked field Plex agrees with today is exactly
+    the one Plex's own agent is free to rewrite on its next refresh, before
+    a later pass would notice the drift and write-and-lock it. Emits nothing
+    when Plex already reports it locked, which is what keeps this a one-time
+    cost rather than a write every pass.
+    """
+    if _locked_in_plex(item, plex_field) is not True:
+        edits[f"{plex_field}.locked"] = 1
+
+
 def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
     """The lock/unlock/remove edits ``operations.field_verbs`` asks for (row 87).
 
@@ -426,6 +441,15 @@ def override_edits(item, overrides: dict) -> dict[str, object]:
         if field == "genres":
             # SYNC semantics: the override IS the list, so the plan is
             # whatever additions and removals make Plex's genres exactly this.
+            # No ``_ensure_locked`` call here, unlike the scalar branches
+            # below: ``_genre_plan`` already computes a ``genres.locked`` key
+            # on every real change, but that key is pre-existing-broken --
+            # ``apply_facts`` filters every ``"genres."``-prefixed key out of
+            # the payload it sends, so the lock has never actually reached
+            # Plex, on the provider path or this one. That is a separate,
+            # already-disclosed bug (rows 32/33) outside this fix's mandate;
+            # adding a lock-only write here would paper over it rather than
+            # fix it.
             current_genres = _current_genres(item)
             if sorted(current_genres) != sorted(value):
                 edits.update(_genre_plan(current_genres, value))
@@ -433,12 +457,16 @@ def override_edits(item, overrides: dict) -> dict[str, object]:
         if field == "audience_rating":
             if format_audience(getattr(item, attribute, None)) != format_audience(value):
                 put(plex_field, _one_decimal(value))
+            else:
+                _ensure_locked(edits, item, plex_field)
             continue
         if field in ("critic_rating", "user_rating"):
             # Compared on the FORMATTED value for the reason ``plan_edits``
             # gives: 8.65 and 8.7 both render the same thing to a viewer.
             if format_critic(getattr(item, attribute, None)) != format_critic(value):
                 put(plex_field, _one_decimal(value))
+            else:
+                _ensure_locked(edits, item, plex_field)
             continue
         if field == "originally_available":
             formatted = value.strftime("%Y-%m-%d")
@@ -448,10 +476,14 @@ def override_edits(item, overrides: dict) -> dict[str, object]:
             )
             if current_str != formatted:
                 put(plex_field, formatted)
+            else:
+                _ensure_locked(edits, item, plex_field)
             continue
         # The seven plain text fields.
         if getattr(item, attribute, None) != value:
             put(plex_field, value)
+        else:
+            _ensure_locked(edits, item, plex_field)
     return edits
 
 
