@@ -13,8 +13,16 @@ field set lands and once after `override_edits` does -- so an import for a
 symbol a later step introduces would fail lint at the first of those commits
 as well as failing collection at its RED.
 """
+from datetime import date
+
+from autoposter.config.schema import OperationsConfig
 from autoposter.facts.models import GatheredFacts
-from autoposter.plex.writer import _PLEX_FIELD_NAMES, WRITABLE_BY_KIND, plan_edits
+from autoposter.plex.writer import (
+    _PLEX_FIELD_NAMES,
+    WRITABLE_BY_KIND,
+    override_edits,
+    plan_edits,
+)
 
 from test_mass_ops_fields import FakeItem
 
@@ -67,4 +75,180 @@ def test_the_four_new_fields_have_no_provider_source_and_are_never_written_from_
     item = FakeItem(title="Old", titleSort="Old", summary="Old", tagline="Old")
     assert plan_edits(item, GatheredFacts(critic_rating=8.7)) == {
         "rating.value": 8.7, "rating.locked": 1,
+    }
+
+
+class LockableItem(FakeItem):
+    """A ``FakeItem`` that also reports Plex's per-field lock state.
+
+    The same shape ``tests/test_mass_ops_verbs.py`` defines for row 87's verb
+    tests, written out here rather than imported so this file reads on its
+    own and so a change to the verb suite's private double cannot silently
+    move row 99's precedence pins. The ATTRIBUTE half is still the one shared
+    ``FakeItem`` -- widened at Step 1 -- because that is the double three
+    modules already agree on.
+    """
+
+    def __init__(self, kind="movie", locks=(), **attrs):
+        super().__init__(kind, **attrs)
+        self.fields = [
+            type("F", (), {"name": name, "locked": locked})()
+            for name, locked in locks
+        ]
+
+
+# --- override_edits --------------------------------------------------------
+
+
+def test_no_overrides_produces_nothing():
+    assert override_edits(FakeItem(), {}) == {}
+
+
+def test_a_text_override_is_written_and_locked():
+    item = FakeItem(tagline="Old words")
+    assert override_edits(item, {"tagline": "New words"}) == {
+        "tagline.value": "New words", "tagline.locked": 1,
+    }
+
+
+def test_a_text_override_equal_to_plex_writes_nothing():
+    """The idempotence that makes this steady-state rather than a rewrite
+    every pass -- inherited from ``plan_edits``' own diff, not reinvented."""
+    item = FakeItem(tagline="Same")
+    assert override_edits(item, {"tagline": "Same"}) == {}
+
+
+def test_a_rating_override_compares_on_the_formatted_value():
+    """8.65 and 8.7 both render "8.7" to a viewer, so rewriting one as the
+    other would churn Plex for no visible gain -- the same rule
+    ``plan_edits`` applies to a provider's rating."""
+    assert override_edits(FakeItem(rating=8.7), {"critic_rating": 8.7}) == {}
+    assert override_edits(FakeItem(rating=4.9), {"critic_rating": 8.7}) == {
+        "rating.value": 8.7, "rating.locked": 1,
+    }
+
+
+def test_an_audience_rating_override_uses_the_audience_formatter():
+    assert override_edits(
+        FakeItem(audienceRating=6.3), {"audience_rating": 6.3}
+    ) == {}
+    assert override_edits(
+        FakeItem(audienceRating=6.3), {"audience_rating": 9.1}
+    ) == {"audienceRating.value": 9.1, "audienceRating.locked": 1}
+
+
+def test_a_date_override_compares_on_the_iso_string():
+    item = FakeItem(originallyAvailableAt=date(1995, 12, 15))
+    assert override_edits(item, {"originally_available": date(1995, 12, 15)}) == {}
+    assert override_edits(item, {"originally_available": date(1996, 1, 1)}) == {
+        "originallyAvailableAt.value": "1996-01-01",
+        "originallyAvailableAt.locked": 1,
+    }
+
+
+def test_a_genre_override_is_SYNC_and_not_an_add():
+    """The override IS the list. ``_genre_plan`` computes the additions and
+    the removals that make Plex's genres exactly this, which is upstream's
+    ``genre.sync`` rather than its bare ``genre``."""
+    # Plain STRINGS: ``FakeItem`` wraps each one in its own ``FakeGenre``
+    # (``self.genres = [FakeGenre(g) for g in attrs.pop("genres", [])]``), so
+    # passing pre-wrapped tag objects would double-wrap them and make
+    # ``_current_genres`` yield wrapper instances instead of names. Every
+    # existing genre test in that module passes strings for the same reason.
+    item = FakeItem(genres=["Drama", "Romance"])
+    plan = override_edits(item, {"genres": ["Crime", "Drama"]})
+    assert plan["genres.added"] == ["Crime"]
+    assert plan["genres.removed"] == ["Romance"]
+
+
+def test_a_genre_override_matching_plex_writes_nothing():
+    item = FakeItem(genres=["Drama", "Crime"])
+    assert override_edits(item, {"genres": ["Crime", "Drama"]}) == {}
+
+
+def test_a_field_the_kind_cannot_carry_is_skipped_rather_than_written():
+    """Belt and braces behind the endpoint's 422: a season row for
+    ``tagline`` (hand-inserted, or left behind by a kind change) must not
+    reach a Plex object that has no such attribute."""
+    assert override_edits(FakeItem(kind="season"), {"tagline": "x"}) == {}
+
+
+# --- precedence ------------------------------------------------------------
+
+
+def test_an_overridden_field_drops_out_of_the_provider_value_path():
+    """C4's one-line extension of row 87's seam: an override IS a source, so
+    the two can never both touch a field in one payload."""
+    item = FakeItem(rating=4.9, studio="MGM")
+    edits = plan_edits(
+        item,
+        GatheredFacts(critic_rating=2.2, studio="Warner"),
+        overrides={"critic_rating": 8.7},
+    )
+    assert edits["rating.value"] == 8.7          # the operator's, not 2.2
+    assert edits["studio.value"] == "Warner"     # untouched: no override
+
+
+def test_an_override_fires_when_the_provider_has_nothing_at_all():
+    """The whole point of the row. An item no provider has anything for still
+    gets the operator's value."""
+    item = FakeItem(tagline=None)
+    assert plan_edits(item, GatheredFacts(), overrides={"tagline": "x"}) == {
+        "tagline.value": "x", "tagline.locked": 1,
+    }
+
+
+def test_a_second_pass_over_an_applied_override_writes_nothing():
+    """Steady state through the real planner, not just through
+    ``override_edits``."""
+    item = FakeItem(tagline="x", rating=8.7)
+    assert plan_edits(
+        item, GatheredFacts(critic_rating=2.2),
+        overrides={"tagline": "x", "critic_rating": 8.7},
+    ) == {}
+
+
+def test_an_override_beats_a_verb_and_the_verb_is_skipped_for_that_item(caplog):
+    """C4's collision rule. Library-wide ``field_verbs`` say what happens to a
+    field everywhere; a per-item override says what happens to it HERE, and
+    here wins. Logged at INFO with the rating key and the field and nothing
+    else -- the value is operator-typed free text (row 213)."""
+    import logging
+
+    item = LockableItem(rating=4.9, locks=[("rating", True)], ratingKey="12345")
+    operations = OperationsConfig(
+        field_verbs={"critic_rating": "unlock"}, unlock_apply=True,
+    )
+    with caplog.at_level(logging.INFO):
+        edits = plan_edits(
+            item, GatheredFacts(), operations, overrides={"critic_rating": 8.7},
+        )
+
+    assert edits == {"rating.value": 8.7, "rating.locked": 1}
+    assert "rating.locked" in edits and edits["rating.locked"] == 1  # not the unlock's 0
+    assert "critic_rating" in caplog.text
+    assert "12345" in caplog.text
+    assert "8.7" not in caplog.text
+
+
+def test_a_verb_on_an_un_overridden_field_still_fires():
+    """The collision rule is per FIELD, not per item: overriding the tagline
+    must not disarm a studio verb."""
+    item = LockableItem(studio="Warner", locks=[("studio", False)], tagline=None)
+    operations = OperationsConfig(field_verbs={"studio": "lock"}, lock_apply=True)
+    edits = plan_edits(item, GatheredFacts(), operations, overrides={"tagline": "x"})
+    assert edits["studio.locked"] == 1
+    assert edits["tagline.value"] == "x"
+
+
+def test_the_default_call_is_byte_identical_to_before_this_row():
+    """Gate-off, and every existing caller: ``overrides`` defaults to None and
+    ``plan_edits`` then behaves exactly as it did, which is what makes this
+    row invisible to a deployment that never turns it on."""
+    item = FakeItem(rating=4.9, studio="MGM")
+    facts = GatheredFacts(critic_rating=8.7, studio="Warner")
+    assert plan_edits(item, facts) == plan_edits(item, facts, overrides={})
+    assert plan_edits(item, facts, overrides=None) == {
+        "rating.value": 8.7, "rating.locked": 1,
+        "studio.value": "Warner", "studio.locked": 1,
     }
