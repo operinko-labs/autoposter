@@ -91,6 +91,11 @@ def test_the_table_holds_exactly_the_tier_one_rows():
     (row 170, dual-vocabulary on unprobed) and the five media booleans
     (row 172, search-only; ``duplicate`` movie-only per
     ``movie_only_searches``).
+
+    Sub-phase C2c appended two more the same way: ``tmdb_status`` and
+    ``last_episode_aired``, the first rows on the ``facts`` source tier --
+    values this service holds in its own ``item_facts`` row rather than
+    reading from Plex.
     """
     assert [row.name for row in FILTER_ATTRIBUTES] == [
         "genre",
@@ -128,6 +133,8 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "unmatched",
         "versions",
         "aspect",
+        "tmdb_status",
+        "last_episode_aired",
     ]
 
 
@@ -172,11 +179,11 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     by_source = {t: [r.name for r in FILTER_ATTRIBUTES if r.source == t] for t in SOURCE_TIERS}
 
     assert {k: len(v) for k, v in by_type.items()} == {
-        "tag": 13,
+        "tag": 14,
         "str": 3,
         "int": 4,
         "float": 4,
-        "date": 3,
+        "date": 4,
         "duration": 1,
         "bool": 7,
     }
@@ -235,6 +242,11 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "unplayed", "progress", "decade",
         "hdr", "dovi", "trash", "duplicate", "unmatched",
     ]
+    # C2c's new tier, and the first that describes no Plex read at all: the
+    # value is in this service's own `item_facts` row. REFUSAL-ONLY on the
+    # collections side (`config/schema.py`'s filters gate names row 156);
+    # the overlay view supplies both through a separate mechanism.
+    assert by_source["facts"] == ["tmdb_status", "last_episode_aired"]
 
 
 def test_batched_attributes_reports_only_tier2_batched_predicates():
@@ -285,7 +297,7 @@ def test_item_kinds_are_movie_show_or_both():
         "edition", "producer", "progress", "resolution", "subtitle_language",
         "unplayed", "writer",
     ]
-    assert show_only == ["network"]
+    assert show_only == ["last_episode_aired", "network", "tmdb_status"]
     assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 22
 
 
@@ -423,13 +435,18 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     the server does the traversal for free. ``duration`` goes the other way:
     both-kinds client-side, movie-only as a search, because Kometa's
     ``movie_only_searches`` lists its four range modifiers (plex.py:441-444).
+
+    The ``()`` bucket is 'filterable but not searchable', and C2c doubled it:
+    ``tmdb_status`` and ``last_episode_aired`` join ``versions`` and
+    ``aspect`` there. Their ``kinds`` is ``("show",)`` while their
+    ``search_kinds`` is empty, which is a third way the two columns differ.
     """
     from collections import Counter
 
     from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 24, ("movie",): 8, ("show",): 1, (): 2,
+        ("movie", "show"): 24, ("movie",): 8, ("show",): 1, (): 4,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -437,7 +454,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     assert BY_NAME["duration"].search_kinds == ("movie",)
 
 
-def test_only_versions_and_aspect_are_unsearchable_and_twentyseven_are_filterable():
+def test_four_rows_are_unsearchable_and_twentynine_are_filterable():
     """`versions` (C2a, A14) was the table's first filterable-but-not-
     searchable row; `aspect` (C2b, A11) is the second, and for the same
     reason -- Kometa's own `aspect` filter is a client-side `float_attributes`
@@ -451,17 +468,21 @@ def test_only_versions_and_aspect_are_unsearchable_and_twentyseven_are_filterabl
 
     assert all(
         row.searchable for row in FILTER_ATTRIBUTES
-        if row.name not in ("versions", "aspect")
+        if row.name not in ("versions", "aspect", "tmdb_status", "last_episode_aired")
     )
     assert BY_NAME["versions"].searchable is False
     assert BY_NAME["aspect"].searchable is False
+    assert BY_NAME["tmdb_status"].searchable is False
+    assert BY_NAME["last_episode_aired"].searchable is False
     assert len(SEARCHABLE_ATTRIBUTES) == 33
-    assert len(FILTERABLE_ATTRIBUTES) == 27
+    assert len(FILTERABLE_ATTRIBUTES) == 29
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
         "unplayed", "progress", "decade",
         "hdr", "dovi", "trash", "duplicate", "unmatched",
     }
-    assert set(FILTERABLE_ATTRIBUTES) - set(SEARCHABLE_ATTRIBUTES) == {"versions", "aspect"}
+    assert set(FILTERABLE_ATTRIBUTES) - set(SEARCHABLE_ATTRIBUTES) == {
+        "versions", "aspect", "tmdb_status", "last_episode_aired"
+    }
 
 
 def test_the_show_search_field_rescoping_is_transcribed():
@@ -2213,3 +2234,125 @@ def test_the_count_modifiers_have_no_plexapi_equivalent_and_say_so():
     no "how many children" key at all."""
     for operator in ("count_gt", "count_gte", "count_lt", "count_lte"):
         assert PLEXAPI_EQUIVALENT[("tag", operator)] is None
+
+
+# --- roadmap row 100 sub-phase C2c: the two status rows on the `facts` tier -
+
+
+def test_tmdb_status_is_a_show_only_tag_row_on_the_facts_tier():
+    """EXACT-SET MEMBERSHIP, which is why this is `tag` and not `str`:
+    Kometa computes `check_value = discover_status[item.status]` and then
+    tests membership of the written set outright -- `(modifier == "" and
+    check_value not in filter_data)` (`/modules/tmdb.py:685-693` at the
+    pinned digest). A `str` row would default to CONTAINS and make
+    `tmdb_status: ended` match nothing and `tmdb_status: end` match
+    everything ended, which is the same-name-different-filter class this
+    module exists to refuse.
+
+    SHOW-ONLY because `filters_by_type["show"]` carries it and no other
+    libtype does (`/modules/builder.py:334-345`). TMDb, never TVDb:
+    `tmdb_filters` lists it (`:371`) and `tvdb_status` is a separate name in
+    `tvdb_filters` (`:375`) this service does not ship -- roadmap row 100's
+    A12 correction, re-confirmed by direct read of the pinned image."""
+    row = BY_NAME["tmdb_status"]
+    assert (row.type, row.kinds, row.source) == ("tag", ("show",), "facts")
+    assert row.filterable is True
+    assert row.searchable is False
+    assert row.operators == ("eq", "not", "regex",
+                             "count_gt", "count_gte", "count_lt", "count_lte")
+    assert row.default_operator == "eq"
+
+    view = {"tmdb_status": "returning"}
+    assert evaluate(parse_filters({"tmdb_status": "returning"}), view) is True
+    assert evaluate(parse_filters({"tmdb_status": "ended"}), view) is False
+    assert evaluate(
+        parse_filters({"tmdb_status": ["ended", "returning"]}), view
+    ) is True, "a list value means ANY-OF, which is how a multi-band config reads"
+    assert evaluate(parse_filters({"tmdb_status.not": "ended"}), view) is True
+
+
+def test_last_episode_aired_is_a_show_only_date_row_whose_bare_form_is_a_window():
+    """THE BARE INTEGER IS A WINDOW IN DAYS, confirmed BOTH ways in the
+    pinned image and closing the datasources probe's open item 6:
+    `util.is_date_filter`'s blank-modifier branch is `threshold_date =
+    current_time - timedelta(days=data)` rejecting `value < threshold_date`
+    (`/modules/util.py:601-604`), and the SEARCH half renders the same window
+    as `>>=-14d`, human-readable "is in the last"
+    (`/modules/builder.py:4222-4233`). `_as_days` already reads it
+    identically and cites the same lines, so this row needs no operator work
+    at all -- it is the first `date` row added since that reading was
+    settled."""
+    row = BY_NAME["last_episode_aired"]
+    assert (row.type, row.kinds, row.source) == ("date", ("show",), "facts")
+    assert row.filterable is True
+    assert row.searchable is False
+    assert row.operators == ("eq", "not", "before", "after")
+
+    now = dt.datetime(2026, 9, 5, 12, 0)
+    recent = {"last_episode_aired": dt.date(2026, 8, 30)}   # 6 days ago
+    stale = {"last_episode_aired": dt.date(2026, 7, 1)}     # 66 days ago
+    window = parse_filters({"last_episode_aired": 14})
+    assert evaluate(window, recent, now=now) is True
+    assert evaluate(window, stale, now=now) is False
+    absolute = parse_filters({"last_episode_aired.after": "2026-08-01"})
+    assert evaluate(absolute, recent, now=now) is True
+    assert evaluate(absolute, stale, now=now) is False
+
+
+def test_a_show_with_no_last_air_date_is_excluded_by_every_operator():
+    """Upstream and here reach the same verdict by different routes, and
+    both are worth stating because the plan's `airing` band rests on it.
+    Upstream: `is_date_filter` opens `if value is None: return True`, and
+    True is a REJECTION (`/modules/util.py:598-600`). Here:
+    `_MISSING_ALWAYS_EXCLUDES` contains `date`, so a missing value is
+    excluded under EVERY operator, `.not` included.
+
+    This is also the shape of every row in the library on the upgrade that
+    ships C2c -- both columns NULL until the next facts refresh -- so
+    "excluded" here is not an edge case, it is the initial condition."""
+    now = dt.datetime(2026, 9, 5, 12, 0)
+    empty = {"last_episode_aired": None}
+    for block in (
+        {"last_episode_aired": 14},
+        {"last_episode_aired.not": 14},
+        {"last_episode_aired.after": "2020-01-01"},
+        {"last_episode_aired.before": "2030-01-01"},
+    ):
+        assert evaluate(parse_filters(block), empty, now=now) is False, block
+
+
+def test_neither_status_row_is_searchable_and_the_refusal_says_where_it_lives():
+    """The third and fourth of the 44 filter-only names to arrive under a
+    table row, after `versions` (C2a) and `aspect` (C2b) -- and the first two
+    that are filter-only because the value is not Plex's at all rather than
+    because Plex spells no search field for a value it holds. The
+    cross-reference refusal must therefore still fire: a `plex_search:`
+    naming either is refused pointing at `filters:`."""
+    for name in ("tmdb_status", "last_episode_aired"):
+        with pytest.raises(ValueError) as caught:
+            parse_filters({name: "ended"}, searching=True)
+        assert "filters:" in str(caught.value), name
+        assert name in str(caught.value), name
+
+
+def test_a_collection_filtering_on_a_facts_row_is_refused_naming_row_156():
+    """ADJUDICATION A-2, the refusal-only half. The `facts` tier exists so
+    the OVERLAY side can read `item_facts`; it does NOT make a collection
+    filterable on it, and the refusal has to say that in a way an operator
+    can act on -- where the value is, that an overlay condition CAN use it,
+    and which roadmap row owns the question. Deliberately not the `unprobed`
+    sentence, which claims a missing PROBE verdict: there is no Plex listing
+    that could ever carry a TMDb field, so 'nobody probed the listing' would
+    be false rather than cautious."""
+    from autoposter.config.schema import CollectionDefinition
+
+    for name, value in (("tmdb_status", "ended"), ("last_episode_aired", 14)):
+        with pytest.raises(ValueError) as caught:
+            CollectionDefinition(
+                title="Ended Shows", builder="plex_all", filters={name: value},
+            )
+        message = str(caught.value)
+        assert name in message, name
+        assert "'facts'" in message, name
+        assert "row 156" in message, name
+        assert "condition:" in message, name
