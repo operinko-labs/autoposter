@@ -19,6 +19,20 @@ value, so it is reported as affected *whatever the edit was*. That is an
 overcount, never an undercount, of the text and version changes the operator
 is actually asking about. The UI must therefore say "~N", not "N".
 
+**What the breakdown means, since roadmap row 111.** The first component of
+every fingerprint is now a PER-ART-KIND version
+(``config/loader.py::render_version_for``), so ``by_art_kind`` is evidence
+about the kinds whose stored fingerprints an edit moves -- the exact inverse
+of the disclaimer this module and the Settings page both used to carry. It is
+NOT, without qualification, evidence about which kinds the edit touched: a
+poster whose logo is composited into it is counted for any render-affecting
+edit, because -- per the approximation above -- this walk cannot see the
+logo it was built with. A genuinely shared input (an asset root,
+``library_folders``, ``artwork.use_original_title``, the global
+``artwork.disable_online_asset_fetch``, ``artwork.output_quality``) is a
+member of every kind's payload and still reaches every row; that is the edit
+being global, not the count failing to discriminate.
+
 A third input is now in the same position: with
 ``artwork.use_original_title`` on, the real render drew an original-language
 title this walk cannot know (``renders`` stores no title at all), so such an
@@ -33,6 +47,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.config.loader import RENDER_ART_KINDS, render_version_for
 from autoposter.config.schema import Config
 from autoposter.db.models import ManagedCollection, MediaItem, Render
 from autoposter.intake.arr import RenderIntent
@@ -46,8 +61,11 @@ from autoposter.render.pipeline import (
 
 # The art kinds ArtworkConfig actually carries a section for. A renders row
 # holding anything else -- a kind removed from ART_KINDS_FOR, a hand-written
-# row -- is skipped rather than crashing the preview on getattr.
-_ART_KINDS = frozenset({"poster", "season_poster", "background", "title_card"})
+# row -- is skipped rather than crashing the preview on getattr. Derived from
+# config/loader.py's RENDER_ART_KINDS rather than re-typed: roadmap row 111
+# made that list the input to a hash, and two lists that quietly disagreed
+# would confine an invalidation to a kind this walk never examines.
+_ART_KINDS = frozenset(RENDER_ART_KINDS)
 
 
 @dataclass(frozen=True)
@@ -152,6 +170,28 @@ async def _fingerprint_inputs(
     return text_inputs, [overlay_hash, *font_hashes, ""]
 
 
+def _walk_version(art_kind: str, config: Config) -> str:
+    """Element 0 of every fingerprint this walk recomputes.
+
+    One line, and it is a NAMED one because of what it duplicates. The
+    pipeline's own producer is ``render_artifact``/``adopted_fingerprint``
+    (render/pipeline.py), and this module has always carried a second
+    implementation of the *other* two-thirds of a fingerprint for the sake of
+    a hash cache the pipeline must not have. Roadmap row 111 pulled the
+    version argument into that same hazard: a preview left on
+    ``config.version`` while the pipeline moved to ``render_version_for``
+    would report whole-library counts for every edit and every other test in
+    this suite would stay green, because this file's fixtures build their
+    stored fingerprints the same way this walk recomputes them.
+
+    So it is named, and
+    ``tests/test_config_impact.py::test_the_fingerprint_inputs_and_the_version_match_the_pipeline_s``
+    pins it against ``adopted_fingerprint`` -- implementation against
+    implementation, rather than an expression re-typed into a test.
+    """
+    return render_version_for(art_kind, config)
+
+
 async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
     """Every render row this config has an opinion about, and its verdict.
 
@@ -185,6 +225,11 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
     ).all()
 
     cache: dict[str, str] = {}
+    # Element 0 of every fingerprint this walk recomputes, once per kind
+    # rather than once per row: _walk_version dumps the whole artwork config
+    # (loader.py's render_version_for), and a 16,000-row library has only
+    # four distinct values for it.
+    versions = {art_kind: _walk_version(art_kind, config) for art_kind in _ART_KINDS}
     candidates: list[_Candidate] = []
     for row in rows:
         art_kind = row.art_kind
@@ -221,13 +266,24 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
         # adopted row's null source_url reproduces adopted_fingerprint's
         # dropped-URL comparison exactly.
         candidate = compute_fingerprint(
+            versions[art_kind], art_kind, row.source_url, row.base_sha256,
+            text_inputs, asset_hashes,
+        )
+        # Roadmap row 111's dual-read grandfather, mirrored here because
+        # render_artifact holds it: a row still carrying the pre-111 wholesale
+        # element 0 is accepted and rewritten by the next pass rather than
+        # re-rendered, so counting it as affected would report ~16,000 items
+        # for a change that re-renders nothing. It only bites while
+        # config.version itself has not moved -- which is exactly the case
+        # _render_affecting lets through on `skip_tba` alone.
+        legacy = compute_fingerprint(
             config.version, art_kind, row.source_url, row.base_sha256,
             text_inputs, asset_hashes,
         )
         candidates.append(
             _Candidate(
                 art_kind=art_kind,
-                affected=candidate != row.fingerprint,
+                affected=row.fingerprint not in (candidate, legacy),
                 kind=row.kind,
                 title=row.title,
                 tmdb_id=row.tmdb_id,

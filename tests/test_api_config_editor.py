@@ -29,7 +29,7 @@ from sqlalchemy.dialects.postgresql import insert
 from autoposter.api.auth import hash_password
 from autoposter.api.routes import KEEP_SENTINEL, _render_affecting
 from autoposter.app import create_app
-from autoposter.config.loader import build_config, read_config_document
+from autoposter.config.loader import build_config, read_config_document, render_version_for
 from autoposter.config.overrides import (
     EMPTY_DOCUMENT_REVISION,
     OVERRIDES_INSERT_LOCK_KEY,
@@ -140,8 +140,8 @@ async def _seed_library(session, config) -> None:
                 asset_path=f"/assets/{item.title}/{art_kind}.jpg",
                 source_url=f"https://example/{art_kind}", base_sha256="a" * 64,
                 fingerprint=compute_fingerprint(
-                    config.version, art_kind, f"https://example/{art_kind}", "a" * 64,
-                    text_inputs, asset_hashes,
+                    render_version_for(art_kind, config), art_kind,
+                    f"https://example/{art_kind}", "a" * 64, text_inputs, asset_hashes,
                 ),
             )
         )
@@ -177,8 +177,8 @@ async def _seed_logo_poster(session, config) -> None:
             asset_path="/assets/Logo Movie/poster.jpg",
             source_url="https://example/poster", base_sha256="a" * 64,
             fingerprint=compute_fingerprint(
-                config.version, "poster", "https://example/poster", "a" * 64,
-                text_inputs, asset_hashes,
+                render_version_for("poster", config), "poster",
+                "https://example/poster", "a" * 64, text_inputs, asset_hashes,
             ),
         )
     )
@@ -613,6 +613,10 @@ async def test_a_save_writes_one_audit_event_carrying_no_settings(
 
 
 async def test_a_preview_reports_the_affected_rows(client, auth_headers, session, app):
+    """Roadmap row 111 at the endpoint: a title-card edit reports the title
+    card, not the poster beside it. `of_total` stays 2 because the poster was
+    still EXAMINED -- it is in the population the operator is being told a
+    fraction of."""
     await _seed_library(session, app.state.config)
     response = await client.post(
         "/api/config/preview", headers=auth_headers, json={"document": TEXT_EDIT}
@@ -620,8 +624,8 @@ async def test_a_preview_reports_the_affected_rows(client, auth_headers, session
     assert response.status_code == 200
     impact = response.json()["impact"]
     assert impact["of_total"] == 2
-    assert impact["affected"] == 2
-    assert impact["by_art_kind"] == {"poster": 1, "title_card": 1}
+    assert impact["affected"] == 1
+    assert impact["by_art_kind"] == {"title_card": 1}
 
 
 async def test_a_preview_of_a_gated_off_kind_leaves_it_out(client, auth_headers, session, app):
@@ -746,7 +750,10 @@ async def test_an_apply_saves_swaps_and_enqueues_the_affected_items(
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["queued"] == 2 and body["skipped"] == 0
+    # Row 111: a title-card edit enqueues the episode and leaves the movie
+    # alone. Before it, this was 2 -- a poster re-render charged to an edit
+    # that could not touch a poster.
+    assert body["queued"] == 1 and body["skipped"] == 0
     assert body["version_after"] != body["version_before"]
 
     assert (await session.execute(select(ConfigOverride))).scalar_one().document == TEXT_EDIT
@@ -755,7 +762,6 @@ async def test_an_apply_saves_swaps_and_enqueues_the_affected_items(
     assert {job.kind for job in jobs} == {"process_item"}
     assert sorted(job.dedupe_key for job in jobs) == [
         "process_item:episode:tmdb1399:s01e01",
-        "process_item:movie:tmdb550",
     ]
     # Each row's own Plex rating key rides along, the same way the full pass
     # and reprocess carry it (api/routes.py) -- without it, an apply over
@@ -763,18 +769,25 @@ async def test_an_apply_saves_swaps_and_enqueues_the_affected_items(
     # external ids instead, exactly the incident fix/guid-type-collision fixed.
     assert {job.dedupe_key: job.payload["rating_key"] for job in jobs} == {
         "process_item:episode:tmdb1399:s01e01": "rk2",
-        "process_item:movie:tmdb550": "rk1",
     }
 
 
 async def test_an_apply_respects_the_pending_dedupe(client, auth_headers, session, app):
+    """The edit is a SHARED input (`artwork.output_quality`, read by
+    build_base_argv on every kind) rather than the title-card edit this used
+    to take: since row 111 a title-card edit no longer reaches the movie at
+    all, and the dedupe this pins is about an item that IS affected and is
+    already queued."""
     await _seed_library(session, app.state.config)
     await enqueue(
         session, "process_item", {"kind": "movie", "title": "A Movie", "tmdb_id": 550},
         dedupe_key="process_item:movie:tmdb550",
     )
     body = (
-        await client.post("/api/config/apply", headers=auth_headers, json={"document": TEXT_EDIT})
+        await client.post(
+            "/api/config/apply", headers=auth_headers,
+            json={"document": {"artwork": {"output_quality": "88%"}}},
+        )
     ).json()
     assert body["queued"] == 1, "the already-pending movie was queued a second time"
     assert body["skipped"] == 1

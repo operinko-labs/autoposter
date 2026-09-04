@@ -17,7 +17,7 @@ from conftest import decodable_png
 from plexapi.exceptions import NotFound as PlexNotFound
 
 from autoposter.adopt.walk import adopt_library
-from autoposter.config.loader import load_config
+from autoposter.config.loader import load_config, render_version_for
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import PlexClient, ResolvedItem
 from autoposter.providers.base import ArtCandidate
@@ -126,14 +126,20 @@ def _write_asset(target: Path, content: bytes = ADOPTED_BYTES) -> None:
 def test_adopted_fingerprint_is_compute_fingerprint_without_the_source_url(tmp_path):
     config = _config(tmp_path)
     assert adopted_fingerprint(config, "poster", "abc", ["DUNE"], ["ov", "font", ""]) == (
-        compute_fingerprint(config.version, "poster", None, "abc", ["DUNE"], ["ov", "font", ""])
+        compute_fingerprint(
+            render_version_for("poster", config), "poster", None, "abc",
+            ["DUNE"], ["ov", "font", ""],
+        )
     )
 
 
 def test_adopted_fingerprint_differs_from_one_taken_with_a_source_url(tmp_path):
     config = _config(tmp_path)
     assert adopted_fingerprint(config, "poster", "abc", ["DUNE"], [""]) != (
-        compute_fingerprint(config.version, "poster", "https://img/a.jpg", "abc", ["DUNE"], [""])
+        compute_fingerprint(
+            render_version_for("poster", config), "poster", "https://img/a.jpg", "abc",
+            ["DUNE"], [""],
+        )
     )
 
 
@@ -197,8 +203,8 @@ async def test_render_artifact_fingerprints_exactly_what_gather_returns(
     assert render.status == "rendered"
     text_inputs, asset_hashes = await gather_fingerprint_inputs(config, item(), "poster")
     assert render.fingerprint == compute_fingerprint(
-        config.version, "poster", render.source_url, render.base_sha256,
-        text_inputs, asset_hashes,
+        render_version_for("poster", config), "poster", render.source_url,
+        render.base_sha256, text_inputs, asset_hashes,
     )
 
 
