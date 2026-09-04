@@ -1591,10 +1591,23 @@ async def apply_badges(
     # touches ``_definitions_digest``, ``_outcomes_digest``,
     # ``_rating_values_digest`` or ``config.version``, so no other item moves
     # at all.
+    # Task-2 fix round 1, ruling on m-2: an item ``exemption_reason`` excludes
+    # from the Plex write (above, in ``apply_metadata``) must be excluded
+    # from the badge overlay too, or the two visibly disagree -- Plex still
+    # shows the provider's value, the badge shows the operator's. This checks
+    # the same gate ``apply_metadata`` does and, when exempt, skips the
+    # overlay AND the ``load_overrides`` read that would feed it -- the badge
+    # still renders, from the persisted provider facts, exactly as it does
+    # for an exempt item with no override at all.
     if config.operations.item_overrides_enabled:
-        facts = overlaid_badge_facts(
-            facts, await load_overrides(session, item.id)
+        exempt = exemption_reason(
+            config.operations, item.rating_key, item.imdb_id,
+            getattr(plex_item, "labels", None),
         )
+        if exempt is None:
+            facts = overlaid_badge_facts(
+                facts, await load_overrides(session, item.id)
+            )
 
     critic_rating = getattr(facts, "critic_rating", None)
     audience_rating = getattr(facts, "audience_rating", None)

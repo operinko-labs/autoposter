@@ -163,14 +163,17 @@ def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
     }
     edits: dict[str, object] = {}
     for field, verb in verbs.items():
+        # Checked before the collision log below (task-2 fix round 1, m-1):
+        # a field this KIND cannot carry, or with no Plex name at all, could
+        # never have collided with anything, so the log must not claim one.
+        if field not in writable or field not in _PLEX_FIELD_NAMES:
+            continue
         if field in overridden:
             logger.info(
                 "plex: rating key %s has a per-item override for %s; the %r "
                 "verb is skipped for this item",
                 getattr(item, "ratingKey", None), field, verb,
             )
-            continue
-        if field not in writable or field not in _PLEX_FIELD_NAMES:
             continue
         if verb == "reset":
             # STOP-and-filed: see the module's _REMOVABLE_FIELDS comment.
@@ -184,7 +187,13 @@ def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
             # turning a config that boots today into one that refuses to is a
             # deployment risk this row has no mandate to take. The question is
             # filed beside rows 229/230, which already own that family.
-            logger.warning(
+            #
+            # INFO, not WARNING (task-2 fix round 1, I-2): this fires once
+            # PER ITEM per pass, the same per-item volume as the sibling
+            # "would %s %s on %s" line ten lines below, which is INFO for the
+            # identical reason. A single library-wide config mistake would
+            # otherwise cost one WARNING line per item, every pass, forever.
+            logger.info(
                 "plex: operations.field_verbs asks to remove %r, which this "
                 "service does not clear; the verb is skipped (removable "
                 "fields are %s)",

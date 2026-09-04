@@ -499,6 +499,45 @@ async def test_a_second_pass_over_an_overridden_item_re_badges_nothing(
     assert plex_item.uploads == 1
 
 
+async def test_an_exempt_item_s_badge_ignores_the_override_too(
+    session, config_with_badges
+):
+    """Task-2 fix round 1, ruling on m-2: row 35's exemption gates the Plex
+    WRITE (``apply_metadata``, tested elsewhere) and, as of this fix, the
+    badge overlay too -- an item Plex will never receive the override for
+    must not show it in the badge either, or the two visibly disagree.
+    ``ignore_ids`` stands in for all three exemption reasons; the write side
+    already shares this exact check (``exemption_reason``), not a duplicate.
+
+    Proven the way the gate-off test above is: with the override row
+    present, a run made exempt via ``ignore_ids`` must fingerprint identically
+    to a later run with the row gone and the item no longer exempt -- the
+    only way that holds is if the exempt run never saw the override."""
+    from sqlalchemy import delete as _delete
+
+    from autoposter.db.models import ItemMetadataOverride
+
+    item, render = await _render(session)
+    session.add(ItemMetadataOverride(
+        item_id=item.id, field="critic_rating", value="9.9",
+    ))
+    await session.commit()
+    config_with_badges.operations.item_overrides_enabled = True
+    config_with_badges.operations.ignore_ids = [item.rating_key]
+    plex_item = FakePlexItem()
+
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    exempt = render.badge_fingerprint
+
+    await session.execute(_delete(ItemMetadataOverride))
+    await session.commit()
+    config_with_badges.operations.ignore_ids = []
+    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+
+    assert render.badge_fingerprint == exempt
+    assert plex_item.uploads == 1
+
+
 async def test_the_overlay_never_writes_the_operator_s_value_into_item_facts(
     session, config_with_badges
 ):
