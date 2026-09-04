@@ -303,6 +303,17 @@ def _moved(mutate) -> set[str]:
 # field name -> (a mutation away from the example's value, the kinds it must move)
 _PARTITION = {
     # Each kind's own `artwork.<kind>` subsection, confined to that kind.
+    #
+    # ONE exception, deliberate, since roadmap row 78: the key
+    # `artwork.title_card.season_name_overrides` also decides what a SEASON
+    # POSTER draws (render/pipeline.py's title_text_for), so
+    # `render_version_for` projects it into that kind's payload and an edit to
+    # it moves TWO kinds. This table cannot express that -- its mutations are
+    # keyed by ArtworkConfig field name and that key lives one level down, on
+    # TitleCardConfig -- so the pin lives at
+    # tests/test_season_show_title.py::test_a_season_name_override_moves_the_season_posters_version_too.
+    # The `title_card` entry below mutates `season_label`, which IS confined,
+    # so this table's own answers stay correct.
     "poster": (lambda c: setattr(c.artwork.poster, "border_width", 31), {"poster"}),
     "season_poster": (lambda c: setattr(c.artwork.season_poster, "add_border", True), {"season_poster"}),
     "background": (lambda c: setattr(c.artwork.background, "overlay_file", "other-overlay.png"), {"background"}),

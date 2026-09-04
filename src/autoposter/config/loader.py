@@ -164,7 +164,10 @@ def render_version_for(art_kind: str, config: Config) -> str:
       poster;
     * the five logo fields, for ``poster`` only -- see ``_LOGO_FIELDS``;
     * ``artwork.season_episode_templates``, for ``season_poster`` and
-      ``title_card`` only -- see ``_TEMPLATE_KINDS``.
+      ``title_card`` only -- see ``_TEMPLATE_KINDS``;
+    * ``artwork.title_card.season_name_overrides``, for ``season_poster`` as
+      well as for ``title_card``'s own dump -- roadmap row 78 made that table
+      an input to the season poster's text too; see the projection below;
 
     Fonts and overlay FILES are not covered here for the same reason
     ``render_version`` does not cover them: their bytes are hashed per render
@@ -196,6 +199,20 @@ def render_version_for(art_kind: str, config: Config) -> str:
             relevant[f"artwork.{field}"] = artwork_json[field]
     if art_kind in _TEMPLATE_KINDS:
         relevant["artwork.season_episode_templates"] = artwork_json["season_episode_templates"]
+    if art_kind == "season_poster":
+        # Roadmap row 78 co-delivers row 43's gap: since that row, a season
+        # poster's own text is renamed by
+        # `artwork.title_card.season_name_overrides`
+        # (`render/pipeline.py::title_text_for`). The key lives under
+        # title_card -- Posterizarr's OverrideSeasonName is in
+        # SeasonPosterOverlayPart, but row 43 landed it on the card -- so
+        # without this projection an operator's edit to it would move the
+        # title cards and leave every season poster serving text the config no
+        # longer describes. Projected, not moved: title_card's own wholesale
+        # dump still carries it, so a card edit is unaffected.
+        relevant["artwork.title_card.season_name_overrides"] = (
+            artwork_json["title_card"]["season_name_overrides"]
+        )
     # Literal keys first, the shared block spread last: the two key sets are
     # disjoint today (the "artwork." prefix above makes a collision unlikely),
     # but this ordering is the cheap insurance against a silent overwrite if
