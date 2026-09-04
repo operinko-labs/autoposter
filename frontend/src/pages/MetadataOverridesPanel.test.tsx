@@ -117,6 +117,31 @@ describe("MetadataOverridesPanel", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/until Plex itself refreshes/i);
   });
 
+  it("says Plex was not touched when clearing an exempt item's override", async () => {
+    /* N-1: the server skips the Plex write for an exempt item and answers
+     * `plex: "skipped (exempt)"` instead of `unlocked: true`. The ordinary
+     * "unlocked … rewritten on the next pass" claim is false for that item --
+     * the field stays locked and no provider write will ever reach it while
+     * the item stays exempt -- so the panel must say something different. */
+    const fetchMock = mockFetch({
+      "GET /api/items/7/metadata-overrides": ENABLED,
+      "DELETE /api/items/7/metadata-overrides/tagline": {
+        status: "cleared", field: "tagline", plex: "skipped (exempt)", queued: true,
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MetadataOverridesPanel itemId={7} />);
+    await screen.findByText("A crime saga");
+
+    fireEvent.click(screen.getByRole("button", { name: /clear tagline/i }));
+
+    const note = await screen.findByRole("status");
+    expect(note).toHaveTextContent(/not touched/i);
+    expect(note).toHaveTextContent(/exempt/i);
+    expect(note).not.toHaveTextContent(/unlocked/i);
+  });
+
   it("labels a refused PUT with the field name, not the bare class name", async () => {
     /* The server's 422 is deliberately class-name-only (`OverrideValueError`,
      * never the value or a message naming the field) -- see

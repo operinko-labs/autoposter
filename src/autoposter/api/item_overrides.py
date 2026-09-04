@@ -255,6 +255,19 @@ async def delete_metadata_override(
     write is skipped rather than sent, and the response says so
     (``plex: "skipped (exempt)"``) instead of claiming an unlock that did not
     happen.
+
+    This is the opposite call from the ``plex is None`` branch above, on
+    purpose: that branch keeps the row because nothing else would ever say
+    the field should be unlocked, but here the operator's own action (the
+    override) is the thing being withdrawn, and the row answers "is this
+    field overridden", not "is this field locked" -- keeping it around
+    would say something that is no longer true. The residual: a field this
+    service wrote and locked *before* the item became exempt stays locked
+    forever once its override is cleared this way, since the pipeline skips
+    an exempt item's writes entirely and nothing else in this service ever
+    unlocks a field. Bounded -- the field is still editable by hand in
+    Plex, it just stops taking agent updates -- and disclosed to the
+    operator by the response the panel renders (N-1), not silently.
     """
     _require_enabled(request)
     session_factory = request.app.state.session_factory

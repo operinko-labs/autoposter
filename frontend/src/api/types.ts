@@ -1083,5 +1083,8 @@ export interface MetadataOverrideWriteResponse {
   field: string;
   value?: string;
   unlocked?: boolean;
+  /** DELETE only, and only when the item is exempt (roadmap row 35): the
+   * Plex write was skipped rather than sent, fixed at `"skipped (exempt)"`. */
+  plex?: string;
   queued: boolean;
 }

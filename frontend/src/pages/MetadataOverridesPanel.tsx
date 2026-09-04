@@ -136,15 +136,21 @@ export function MetadataOverridesPanel({ itemId }: { itemId: number }) {
     setError(null);
     setNote(null);
     try {
-      await apiFetch<MetadataOverrideWriteResponse>(
+      const outcome = await apiFetch<MetadataOverrideWriteResponse>(
         `/api/items/${itemId}/metadata-overrides/${field}`,
         { method: "DELETE" },
       );
       if (live.current) {
+        // Row 35: an exempt item's Plex write is skipped, not sent (server's
+        // `plex: "skipped (exempt)"`) -- the field stays locked and no
+        // provider write will ever reach it while the item stays exempt, so
+        // the ordinary "unlocked … rewritten" claim would be false here.
         setNote(
-          `Cleared ${field} and unlocked it in Plex. If a provider supplies ` +
-            "this field it is rewritten on the next pass; if none does, the " +
-            "value you set stays until Plex itself refreshes it.",
+          outcome.plex !== undefined
+            ? `Cleared ${field}; Plex was not touched (item is exempt).`
+            : `Cleared ${field} and unlocked it in Plex. If a provider supplies ` +
+                "this field it is rewritten on the next pass; if none does, the " +
+                "value you set stays until Plex itself refreshes it.",
         );
       }
       await reload();
