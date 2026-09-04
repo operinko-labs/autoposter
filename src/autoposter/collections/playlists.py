@@ -845,15 +845,18 @@ async def _sync_users(
         return ([redact_urls(
             "the per-user playlist sync could not be planned (%s); nothing was "
             "written to any user" % type(error).__name__
-        )], sync)
+        )], None)
 
     if plan.refusal is not None:
         # The refusal REPLACES the plan's own lines rather than trailing them:
         # past a cap the number that matters is the total, and four hundred
         # "would create" lines above it would bury it. The per-user results are
         # not attached either -- counts describing writes that will not happen
-        # are worse than no counts.
-        return ([plan.refusal], sync)
+        # are worse than no counts. ``None`` rather than ``sync`` -- exactly
+        # the owner-refusal shape above -- so the sweep never runs under a
+        # refusal that says nothing was written to any user: a cap refusal is
+        # a refusal, not half a pass.
+        return ([plan.refusal], None)
 
     actions = list(plan.actions)
     if config.playlists.sync_to_users_apply and not dry_run:

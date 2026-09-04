@@ -1636,6 +1636,51 @@ async def test_a_dropped_user_copy_is_deleted_once_both_switches_are_on(
     ]
 
 
+async def test_a_cap_refusal_leaves_a_sweep_eligible_user_copy_untouched(
+    session, config_factory
+):
+    """A cap refusal must not let the sweep run. ``_sync_users`` reports
+    "nothing was written to any user" on a ``max_users`` refusal -- and a
+    delete IS a write. Before the fix the refusal handed the sweep the live
+    ``UserSync`` anyway, so a copy the sweep is otherwise authorised to
+    remove (dropped from ``sync_to_users``, ``delete_unconfigured`` on) could
+    be deleted in the very pass whose own message said nothing was written to
+    anybody."""
+    _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
+    account = FakeAccount([
+        FakeUser(1, "alice", token="tok-a"), FakeUser(2, "bob", token="tok-b")
+    ])
+    connect, servers = _user_servers(["tok-a", "tok-b"])
+    both = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        definitions=[_definition(sync_to_users=["alice", "bob"])],
+    )
+    first = _server()
+    await reconcile_playlists(
+        session, first, both, sources=_sources(account), connect_user=connect
+    )
+    bobs_copy = servers["tok-b"].created[0]
+
+    capped = _config(
+        config_factory, apply_to_plex=True, sync_to_users_apply=True,
+        delete_unconfigured=True, max_users=0,
+        definitions=[_definition(sync_to_users=["alice"])],
+    )
+    run = await reconcile_playlists(
+        session, _server(playlists=[first.created[0]]), capped,
+        sources=_sources(account), connect_user=connect,
+    )
+
+    assert bobs_copy.deleted is False
+    assert run.actions == [
+        "refusing the user fan-out: 1 user(s) resolved, more than the "
+        "max_users cap of 0; nothing was written to any user and the admin "
+        "playlists were reconciled"
+    ]
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    assert sorted(r.plex_user_title for r in rows) == ["alice", "bob"]
+
+
 async def test_the_delete_cap_counts_admin_playlists_and_user_copies_together(
     session, config_factory
 ):
