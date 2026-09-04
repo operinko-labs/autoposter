@@ -172,6 +172,7 @@ def test_a_query_or_fragment_paste_is_refused_without_echoing_it(text):
         parse_source(text)
 
     assert "SECRET" not in str(excinfo.value)
+    assert "query string or a fragment" in str(excinfo.value)
 
 
 def test_an_unknown_host_refusal_does_not_echo_the_host():
