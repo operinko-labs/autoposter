@@ -319,6 +319,70 @@ date — replacing Kometa's `mass_*_update`):
 
 See `config/autoposter.example.yaml` for the full block.
 
+### Per-item metadata overrides
+
+`operations.item_overrides_enabled` (default `false`, **live** — no restart)
+turns on the override panel on each item's page. An override says: for THIS
+item, this field holds this value. It is written to Plex, locked, and
+re-applied every pass, ahead of anything TMDb, IMDb, TVDb or MDBList says.
+
+What can be overridden depends on the item's kind, because Plex itself does
+not carry every field on every type:
+
+| field | movie | show | season | episode |
+|---|:-:|:-:|:-:|:-:|
+| `title` | yes | yes | yes | yes |
+| `sort_title` | yes | yes | — | yes |
+| `summary` | yes | yes | yes | yes |
+| `tagline` | yes | yes | — | — |
+| `critic_rating`, `audience_rating`, `user_rating` | yes | yes | yes | yes |
+| `content_rating` | yes | yes | — | yes |
+| `originally_available` | yes | yes | — | yes |
+| `studio` | yes | yes | — | — |
+| `genres` | yes | yes | — | — |
+| `original_title` | yes | — | — | — |
+
+`genres` is a JSON list and its semantics are **sync**: the override IS the
+list, so autoposter adds and removes tags until Plex's list is exactly what
+you typed. Ratings are numbers from 0 to 10 and are stored rounded to one
+decimal — the same rounding the writer compares on, so a second pass writes
+nothing. `originally_available` is an ISO date, `YYYY-MM-DD`.
+
+**Turning the setting off does not delete anything.** Existing overrides stay
+in the database and are ignored; turning it back on applies them again on the
+next pass. There is no separate apply flag, unlike the `field_verbs` in the
+section above: those are library-wide and want a dry run, while an override is
+one item you typed into a panel and confirmed there.
+
+**What clearing an override does.** The row is removed and autoposter makes
+ONE write to Plex unlocking that field — no value is written. After that:
+
+- a field a provider supplies (the ratings, content rating, studio, release
+  date, genres, original title) is rewritten from the provider and re-locked
+  on the item's next pass;
+- a field no provider supplies (`title`, `sort_title`, `summary`, `tagline`)
+  keeps the value you last set until Plex's own agent refreshes it.
+
+If Plex is unreachable, the unlock fails, the override is left in place and
+the request answers 503 — so pressing Clear again later retries a consistent
+state rather than leaving a locked field with nothing to explain it.
+
+**What an override costs in work.** One item's, and only one item's. Setting a
+rating override re-badges that item once, because the badge shows the same
+number Plex now shows. Setting a `title` override re-renders that item once,
+on the pass *after* the one that writes it — the title drawn on artwork comes
+from what Plex reported when the item was resolved, so the new one is picked
+up next time round. Nothing else in the library moves: the setting is in the
+`operations` section, which is excluded from the render fingerprint entirely.
+
+**What is not here.** Images are not overridden from this panel — that is the
+"Use file or URL" control on the same page, which has been there since the
+manual-assets work and carries an SSRF guard. Kometa's *advanced settings*
+(agent language, episode sorting, subtitle mode and the rest) are a different
+Plex API this service has never called and are not available. And there is no
+YAML import: autoposter never parses Kometa or Posterizarr files, by a
+long-standing project decision, so the panel is the way in.
+
 ## Badge overlays config
 
 The `badges:` block in `autoposter.yaml` controls the Phase 2b badge stage:
