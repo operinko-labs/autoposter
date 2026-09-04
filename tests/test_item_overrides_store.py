@@ -294,3 +294,41 @@ def test_the_overlay_never_mutates_what_it_was_handed():
     base = SimpleNamespace(critic_rating=4.9)
     overlaid_badge_facts(base, {"critic_rating": 8.7})
     assert base.critic_rating == 4.9
+
+
+# --- the gate --------------------------------------------------------------
+
+from pathlib import Path  # noqa: E402
+
+from autoposter.config.live import FROZEN_SECTIONS  # noqa: E402
+from autoposter.config.loader import load_config, render_version  # noqa: E402
+from autoposter.config.schema import OperationsConfig  # noqa: E402
+
+EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+
+
+def test_the_gate_defaults_off():
+    """A feature nobody has configured changes nothing. C8: default False."""
+    assert OperationsConfig().item_overrides_enabled is False
+
+
+def test_the_gate_is_live_rather_than_restart_only():
+    """``FROZEN_SECTIONS`` names four ``operations.*`` paths and no whole
+    ``operations`` prefix, so a new scalar there hot-swaps through
+    ``swap_config`` for free. Asserted as a standing guard rather than argued:
+    a later phase that froze this key would make the panel lie about when a
+    change takes effect."""
+    assert "operations" not in FROZEN_SECTIONS
+    assert "operations.item_overrides_enabled" not in FROZEN_SECTIONS
+
+
+def test_the_gate_does_not_move_the_render_version():
+    """The storm answer for the render side, asserted rather than argued.
+    ``config/loader.py::render_version`` hashes ``artwork`` +
+    ``library_folders`` + the four roots and names ``operations`` among the
+    sections it excludes, so two configs differing only in this key produce
+    the same version and turning the feature on re-renders NOTHING."""
+    off = load_config(EXAMPLE)
+    on = load_config(EXAMPLE)
+    on.operations.item_overrides_enabled = True
+    assert render_version(off) == render_version(on)
