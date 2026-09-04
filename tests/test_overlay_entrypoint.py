@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx
 import numpy as np
+import pytest
 from PIL import Image
 
 from autoposter.badges.compose import badge_fingerprint, compose
@@ -178,6 +179,109 @@ def test_a_font_path_that_leaves_fonts_root_is_refused_not_crashed():
     stamp = _text_stamp(font="../../../etc/passwd")
     data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp], fonts_root=FONTS)
     assert _sha(data) == POSTER_PIXELS_SHA
+
+
+def test_a_bundled_face_resolves_even_when_fonts_root_does_not_hold_it(tmp_path):
+    """**Adjudication A-4**, and the concrete blocker the C2b recon found:
+    the `aspect` family is the first shipped family that draws TEXT, and a
+    family definition's `font:` goes through `resolve_font_path`, which
+    confines the value strictly beneath the OPERATOR's `fonts_root`. The
+    bundled `Inter-Medium.ttf` lives under `assets/badges/fonts/` and is
+    reachable only by the builtin draw path, which never touches
+    `fonts_root` -- so before this rung existed, every aspect badge was
+    refused and skipped for every operator whose `fonts_root` did not happen
+    to contain Inter-Medium.
+
+    `tmp_path` here is an EMPTY fonts_root: a real operator mount with their
+    own faces in it and no Inter-Medium. The badge must still draw, in
+    Inter-Medium."""
+    stamp = _text_stamp(font="Inter-Medium.ttf", font_size=63)
+    data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp], fonts_root=tmp_path)
+    assert _sha(data) != POSTER_PIXELS_SHA, "the bundled face must draw, not be skipped"
+
+
+def test_the_operators_own_copy_of_a_bundled_name_wins_over_the_bundled_one(tmp_path):
+    """Precedence, pinned: the fallback is a FALLBACK. An operator who puts
+    their own `Inter-Medium.ttf` in `fonts_root` gets theirs -- the bundled
+    rung is consulted only when the confined path does not exist."""
+    (tmp_path / "Inter-Medium.ttf").write_bytes((FONTS / "Inter-Bold.ttf").read_bytes())
+    theirs = compose(BASE, "poster", ALL_SOULS, fonts_root=tmp_path,
+                     definitions=[_text_stamp(font="Inter-Medium.ttf", font_size=63)])
+    bundled = compose(BASE, "poster", ALL_SOULS, fonts_root=tmp_path / "empty",
+                      definitions=[_text_stamp(font="Inter-Medium.ttf", font_size=63)])
+    assert _sha(theirs) != _sha(bundled), (
+        "the operator's own file must be the one that draws"
+    )
+
+
+def test_a_bundled_face_resolves_with_no_fonts_root_configured_at_all():
+    """`compose`'s `fonts_root` defaults to None and several callers leave it
+    there. Before A-4 that short-circuited to a skip before
+    `resolve_font_path` was even called; now the bundled rung answers, which
+    is what makes the aspect family draw for a caller that passes no mount."""
+    stamp = _text_stamp(font="Inter-Medium.ttf", font_size=63)
+    data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp])
+    assert _sha(data) != POSTER_PIXELS_SHA
+
+
+def test_a_font_that_resolves_nowhere_is_reported_skipped_by_name(caplog):
+    """**A-4's other half: never silently.** A definition naming a face that
+    is neither under `fonts_root` nor bundled is skipped -- and the warning
+    names the DEFINITION, so an operator with twenty of them can find the one
+    that is wrong. The message deliberately carries the exception's class
+    name rather than its text, because the text may quote an operator-typed
+    path (the rule `overlays/sources.py` already holds itself to)."""
+    stamp = _text_stamp(name="text(BADFONT)", font="Helvetica-Neue.ttf")
+    with caplog.at_level("WARNING"):
+        data = compose(BASE, "poster", ALL_SOULS, definitions=[stamp], fonts_root=FONTS)
+    assert _sha(data) == POSTER_PIXELS_SHA, "the rest of the item is unaffected"
+    assert any(
+        "text(BADFONT)" in record.getMessage() and "font" in record.getMessage()
+        for record in caplog.records
+    ), "the skip must name the definition"
+
+
+def test_the_bundled_rung_is_an_exact_name_lookup_not_a_path_join():
+    """The containment property A-4 promises: the rung adds NO traversal
+    surface, because it is a constant-keyed dict lookup on the whole written
+    value, not a join of operator input onto a bundled directory. A value
+    with any path structure in it MISSES the table, and one that leaves the
+    root is still refused by `_confined` exactly as it was before.
+
+    On the three values below, and on why the obvious fourth and fifth are
+    NOT here: `FONTS` is `assets/badges/fonts` and it really contains
+    `Inter-Medium.ttf`, so `../fonts/Inter-Medium.ttf` and
+    `./Inter-Medium.ttf` NORMALISE BACK INSIDE the root --
+    `(root / value).resolve()` collapses both to
+    `assets/badges/fonts/Inter-Medium.ttf`, which passes `_confined` and
+    exists, so `resolve_font_path` legitimately returns rung 1's path for
+    them. That is correct behaviour, not a hole: a value that resolves back
+    inside the mount is not a traversal. Asserting a refusal for them would
+    have pinned a bug. The property they DO have is pinned below instead."""
+    from autoposter.overlays.sources import BUNDLED_FONTS, OverlaySourceError, resolve_font_path
+
+    assert set(BUNDLED_FONTS) == {"Inter-Bold.ttf", "Inter-Medium.ttf"}
+    assert all(path.is_absolute() and path.exists() for path in BUNDLED_FONTS.values())
+    for hostile in (
+        "fonts/Inter-Medium.ttf",   # confined, but no such file, and it is
+                                    # NOT the bundled key -- the table is
+                                    # keyed on the bare name
+        "../../../etc/passwd",      # leaves the root: _confined refuses
+        "/etc/passwd",              # absolute: `root / value` IS `value`,
+                                    # so it leaves the root too
+    ):
+        with pytest.raises(OverlaySourceError):
+            resolve_font_path(FONTS, hostile, "hostile")
+
+    # The normalisation property, asserted rather than assumed: a value that
+    # resolves back INSIDE the root resolves, and it resolves to rung 1's
+    # confined path -- never to the bundled table, which these strings do
+    # not key.
+    for inside in ("../fonts/Inter-Medium.ttf", "./Inter-Medium.ttf"):
+        assert inside not in BUNDLED_FONTS
+        assert resolve_font_path(FONTS, inside, "normalised") == (
+            FONTS / "Inter-Medium.ttf"
+        ).resolve(), inside
 
 
 # --- badge_fingerprint must cover `definitions` (Finding 1), without moving

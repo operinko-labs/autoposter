@@ -45,7 +45,7 @@ def test_the_builtin_manifest_did_not_grow_when_the_family_art_landed():
 def test_the_family_art_has_its_own_manifest_and_it_is_accurate():
     """Not just present -- correct. Every listed checksum is recomputed."""
     lines = OVERLAY_MANIFEST.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == CR_COUNT + 2  # + Direct-Play.png + versions.png
+    assert len(lines) == CR_COUNT + 4  # + Direct-Play, versions, dual_audio, multi_audio
     for line in lines:
         digest, _, relative = line.partition("  ")
         path = ASSETS / relative
