@@ -38,7 +38,6 @@ expose at all.
 """
 import asyncio
 import logging
-import re
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -66,20 +65,11 @@ from autoposter.collections.source_urls import SourceUrlRefused, parse_source
 from autoposter.config.overrides import load_overrides_document
 from autoposter.db.models import EventLog, ManagedCollection
 from autoposter.db.models import Session as SessionModel
+from autoposter.redact import redact_urls
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Action strings are built here, but not all of them: a poster step reports the
-# source it could not fetch, and that source is a URL. Provider URLs carry
-# credentials often enough that none of them is echoed into a response -- the
-# same rule the engine applies to a builder's exception, one layer out.
-_URL = re.compile(r"https?://\S+")
-
-
-def _redact(action: str) -> str:
-    return _URL.sub("<url>", action)
 
 
 def _enabled(request: Request):
@@ -366,9 +356,9 @@ async def preview_collections(
                     "filtered": result.filtered,
                     "failed": result.failed,
                     "skipped": result.skipped,
-                    "actions": [_redact(action) for action in result.actions],
+                    "actions": [redact_urls(action) for action in result.actions],
                 })
-            actions += [_redact(action) for action in run.actions]
+            actions += [redact_urls(action) for action in run.actions]
         # Never committed. A dry run writes nothing, but the rollback on the
         # way out of this block is what makes that structural rather than a
         # promise every branch below the engine has to keep.
