@@ -165,6 +165,60 @@ collections:
   # group_order: [awards, charts] # reorder the blocks; the rest follow
   # separator_style: orig # divider colour; one of upstream's 22 sep_style names. Changing it re-posters every divider once
   posters: true # give managed collections a poster
+  # Row 105. Draw a styled collection title, plus the fixed second line below,
+  # onto every managed collection poster this service FETCHES, before it is
+  # uploaded. Off by default, and off is byte-identical to not having it.
+  #
+  # Turning it on moves poster_sha256 for every affected collection ONCE, so
+  # each of their posters is re-uploaded once and then settles -- the compare
+  # is over content, not over a config hash. It happens on the NEXT pass, not
+  # eventually: these settings are also part of the definition hash a pass
+  # short-circuits on, so that pass re-writes each affected collection's own
+  # summary and sort title too, once, with the values already there. Settings'
+  # preview counts them before you commit. Nothing in this section can
+  # re-render a single library item: render_version excludes the whole
+  # collections section, and with this off nothing here reaches any hash at
+  # all -- retune every box below and no collection is revisited.
+  #
+  # NEVER drawn on: a poster you placed yourself under assets_root (which is
+  # also where the manual poster endpoint writes), a divider's art (it already
+  # carries the group's name), and any collection this service does not manage.
+  #
+  # STYLED AFTER Posterizarr's CollectionPosterOverlayPart and
+  # CollectionTitlePosterPart, NOT byte-matched to them: no captured
+  # Posterizarr output exists anywhere to render against, so the values below
+  # are transcribed from the INPUT side and nothing here is a parity proof.
+  # Three of them are ours rather than upstream's, and are marked. AddBorder
+  # and AddOverlay from that part are not implemented and have no key here.
+  #
+  # Sizes and offsets are pixels against a 2000-pixel-wide poster and are
+  # scaled to whatever poster is actually fetched. text_offset must carry an
+  # explicit sign; gravity is north, center or south.
+  #
+  # font: any file under fonts_root, or one of the bundled faces
+  # (Inter-Medium.ttf, Inter-Bold.ttf). Posterizarr's own Colus-Regular.ttf is
+  # not shipped -- drop your copy into fonts_root and name it here to use it.
+  # poster_title:
+  #   enabled: false
+  #   collection_line_text: COLLECTION # the fixed second line; empty draws none
+  #   title: # CollectionPosterOverlayPart, transcribed (except font)
+  #     font: Inter-Medium.ttf # ours: Colus-Regular.ttf is not vendored
+  #     min_point_size: 100
+  #     max_point_size: 250
+  #     max_width: 1900
+  #     max_height: 500
+  #     text_offset: "+300"
+  #     gravity: south
+  #   collection_line: # colour/stroke/caps from CollectionTitlePosterPart
+  #     font: Inter-Medium.ttf # ours, as above
+  #     min_point_size: 40 # ours: upstream's 83-250 is for a title, not a word
+  #     max_point_size: 90 # ours
+  #     max_width: 1200
+  #     max_height: 150 # ours
+  #     text_offset: "+120" # ours: upstream gives both parts +300 because they
+  #                         # are two poster TYPES there, not two blocks on one
+  #                         # image -- copying it would draw this through the title
+  #     gravity: south
   adopt: false # claim collections created by a tool being replaced; a Plex write, off by default
   adopt_from: # labels belonging to tools being replaced
     - Kometa
