@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
@@ -80,7 +80,7 @@ from autoposter.db.models import Session as SessionModel
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue, enqueue_batch
-from autoposter.render.pipeline import ART_KINDS_FOR, manual_override_path
+from autoposter.render.pipeline import ART_KINDS_FOR, _identity_clauses, manual_override_path
 
 logger = logging.getLogger(__name__)
 
@@ -741,6 +741,89 @@ async def dismiss_job(
     return {"id": job.id, "state": job.state}
 
 
+# The note POST /items/{item_id}/reprocess returns when the row being re-run
+# has an identity twin under another Plex rating key.
+#
+# WHY there is anything to say. The fork stop (render/pipeline.py's
+# FORK_EVENT/FORK_OUTCOME) makes process_item return [] when resolve() answers
+# a DIFFERENT rating key and a media_items row already holds it. Returning []
+# COMPLETES the job, so it is never retried, deferred or parked -- and
+# complete() writes job.last_error = None, deliberately: that module's comment
+# says "NOTHING IS SERVED". api/jobs.py:146 therefore has nothing to render,
+# and the job leaves the Jobs page entirely once it is done. The audit row the
+# stop does file cannot be tied back to this item by any served surface
+# either: events_snapshot (api/snapshots.py) never selects `payload`, because
+# that column holds whole webhook bodies and can carry a sending service's
+# token, and the FORK_EVENT row's rating keys live only there. Before this
+# note, an operator pressing Re-run on a stale row got {"queued": true} and a
+# job that finished having done nothing, with the whole explanation in a pod
+# log they cannot see.
+#
+# WHY it says "may" rather than "will". The twin's existence is NECESSARY for
+# the stop, not sufficient. If THIS row is the live one and the twin is the
+# fossil, resolve() answers this row's own key, `forked` is false, and the job
+# runs normally. Telling the operator the re-run will do nothing would be a
+# lie in that direction, and separating the two cases means asking Plex which
+# key is live -- the job's own work, not a request handler's.
+#
+# WHY it is a constant with no interpolation. Roadmap rows 136/188 -> 209 ->
+# 213: what a served surface carries is class-name-only. There is no value in
+# this string to redact -- no rating key, no title, no library, no path, no
+# URL, no token, not even a count. `plex_merge` is a scheduled job name
+# already served by GET /api/status (SCHEDULED_JOB_NAMES above), so naming it
+# discloses nothing new, and it is the thing an operator can actually DO about
+# the pair: POST /api/scheduled-runs/plex_merge/run.
+TWIN_NOTE = (
+    "another row carries this item's identity under a different Plex rating "
+    "key, so this re-run may complete without changing anything; the "
+    "plex_merge job is what reconciles such a pair"
+)
+
+
+async def _identity_twin_exists(session, item: MediaItem) -> bool:
+    """Whether another row carries ``item``'s identity under a different key.
+
+    The same predicate ``render/pipeline._identity_candidates`` pairs on --
+    same kind, same library, the same season/episode coordinates, at least one
+    external id in common, a different rating key -- and deliberately NOT that
+    same call. Two reasons, both load-bearing: it takes ``FOR UPDATE`` on every
+    row it returns, which is right for a worker about to re-key one of them and
+    wrong for a request handler that wants to know only whether the pair
+    exists; and it takes a ``ResolvedItem``, while this has the
+    ``media_items`` row itself.
+
+    ``_identity_clauses`` IS reused, because "never a title-only match" is the
+    half worth keeping in one place -- an id-less row produces no clauses and
+    therefore no twin, the same refusal the re-key makes -- and the three
+    attributes it reads (``tmdb_id``, ``tvdb_id``, ``imdb_id``) are columns on
+    ``MediaItem`` under exactly those names.
+
+    The coordinates are not decoration: every season of one show carries the
+    show's ids, so without them season 1's row matches season 2's and every
+    episode in the library would report a twin.
+
+    ``MediaItem.id`` and ``LIMIT 1``: the caller asks a yes/no question, and
+    nothing about the other row -- least of all its key or its title -- has any
+    business travelling back toward a served response.
+    """
+    clauses = _identity_clauses(item)
+    if not clauses:
+        return False
+    twin = (
+        await session.execute(
+            select(MediaItem.id)
+            .where(MediaItem.kind == item.kind)
+            .where(MediaItem.library == item.library)
+            .where(MediaItem.season_number.is_not_distinct_from(item.season_number))
+            .where(MediaItem.episode_number.is_not_distinct_from(item.episode_number))
+            .where(or_(*clauses))
+            .where(MediaItem.rating_key != item.rating_key)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return twin is not None
+
+
 async def _enqueue_reprocess(session, item: MediaItem) -> int | None:
     """Queue a process_item job for one item; the job id, or None if deduped.
 
@@ -777,7 +860,15 @@ async def reprocess_item(
 ) -> dict:
     """Enqueue a process_item job for one item, via the same enqueue()/dedupe_key
     convention every other intake path uses -- asking twice while the first
-    request is still pending queues nothing the second time."""
+    request is still pending queues nothing the second time.
+
+    ``note`` is ``TWIN_NOTE`` when this row has an identity twin under another
+    Plex rating key, and ``None`` otherwise; see that constant for what the
+    note is for and why it is only ever a "may". It is NOT gated on ``queued``
+    -- the fork condition is a property of the row, not of whether this
+    particular click inserted a job -- and it is always present in the body
+    rather than appearing only when set.
+    """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         item = (
@@ -786,8 +877,13 @@ async def reprocess_item(
         if item is None:
             raise HTTPException(status_code=404, detail="item not found")
 
+        # Before the enqueue, not after: enqueue() commits (queue/jobs.py), and
+        # a read taken before it rides in the same transaction rather than
+        # opening a second one. One indexed read, on a button click.
+        note = TWIN_NOTE if await _identity_twin_exists(session, item) else None
+
         job_id = await _enqueue_reprocess(session, item)
-    return {"queued": job_id is not None, "job_id": job_id}
+    return {"queued": job_id is not None, "job_id": job_id, "note": note}
 
 
 @router.post("/items/{item_id}/renders/{art_kind}/clear-override")
