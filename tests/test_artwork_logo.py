@@ -25,6 +25,8 @@ import pytest_asyncio
 from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import select
 
+from conftest import decodable_png
+
 from autoposter.artwork_modes.logo import LogoMode, LogoRevertMode
 from autoposter.config.loader import load_config
 from autoposter.db.models import MediaItem
@@ -36,7 +38,12 @@ PLEX_TOKEN = "plex-token"
 
 LOGO_URL = "https://provider.example/logo.png"
 SVG_LOGO_URL = "https://provider.example/logo.svg"
-LOGO_BYTES = b"\x89PNG\r\n\x1a\n the clearlogo bytes"
+# A genuinely decodable PNG, not a placeholder: the updater now decodes every
+# body it keeps (``render/artwork_fetch._validate_image``), so a placeholder
+# would send every test in this file down the refusal path instead of the
+# behaviour it is about. Shared from conftest so the suites that fake a
+# provider CDN cannot drift about what "an image" is.
+LOGO_BYTES = decodable_png()
 
 # What Plex keys an upload under -- ours and an operator's alike, which is
 # exactly why the marker records *which* upload key was ours.
@@ -843,3 +850,221 @@ async def test_revert_logs_a_missing_item_at_apply_at_info_not_warning(
 
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert warnings == []
+
+
+# --- the clearlogo guard (the #153 follow-up) --------------------------------
+#
+# Production, 2026-09-04: TMDB served a 32000x18839 clearlogo (602,848,000px)
+# for 'Inside Out 2'. ``providers/ladder.rank_key`` sorts on ``-pixels``, so
+# the bomb is the ladder's FIRST answer on every pass. #153 closed the render
+# path's door on it; the updater below was the second one -- it took that first
+# answer with no ceiling and no re-ask, and fetched it with a bare
+# ``http.get``, missing the byte cap and the decode validation entirely.
+#
+# Every test here drives ``LogoMode(...).run(session)`` -- the object
+# ``api/routes.run_artwork_logo`` constructs -- never ``_upload_one`` in
+# isolation: a helper test would prove the guard can be computed and say
+# nothing about whether the shipped path uses it, which is exactly how a gated
+# feature has twice passed its own tests in this tree.
+
+BOMB_URL = "https://provider.example/bomb.png"
+BOMB2_URL = "https://provider.example/bomb2.png"
+CORRUPT_URL = "https://provider.example/corrupt.png"
+
+# The production bomb's own dimensions: 32000 * 18839 = 602,848,000px, nearly
+# ten times ``render/artwork_fetch._ARTWORK_MAX_PIXELS`` (64,000,000).
+BOMB_WIDTH, BOMB_HEIGHT = 32000, 18839
+
+
+class ListProvider(FakeProvider):
+    """A rung answering LOGO with a fixed candidate list, ranked by the real ladder."""
+
+    def __init__(self, candidates):
+        super().__init__()
+        self._candidates = candidates
+
+    async def fetch(self, request):
+        self.requests.append(request)
+        if request.art_kind != LOGO:
+            return []
+        return list(self._candidates)
+
+
+def _candidate(url, *, width=800, height=310):
+    return ArtCandidate(
+        provider="Fake", url=url, language="en",
+        width=width, height=height, score=8.0,
+    )
+
+
+@pytest_asyncio.fixture
+async def recording():
+    """``serving``'s twin: answers a ``{url path: bytes}`` map AND records every
+    path it was asked for, so "never downloaded" is a provable assertion."""
+    clients = []
+
+    def install(by_path):
+        asked = []
+
+        def handler(request):
+            asked.append(request.url.path)
+            data = by_path.get(request.url.path)
+            if data is None:
+                return httpx.Response(404)
+            return httpx.Response(200, content=data)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        clients.append(http)
+        return http, asked
+
+    yield install
+    for http in clients:
+        await http.aclose()
+
+
+async def test_a_bomb_by_metadata_is_skipped_without_being_downloaded(
+    session, config, recording
+):
+    """The 'Inside Out 2' case. The bomb's provider-REPORTED dimensions are over
+    the ceiling, so it is never fetched at all -- the check reads the same
+    numbers the ladder ranked it by -- and the updater re-asks with that URL
+    excluded, uploading the next best instead."""
+    row = await _add_item(session, rating_key="rk1")
+    item = FakeItem(logo=None)
+    plex = FakePlexClient({"rk1": item})
+    provider = ListProvider([
+        _candidate(BOMB_URL, width=BOMB_WIDTH, height=BOMB_HEIGHT),
+        _candidate(LOGO_URL),
+    ])
+    http, asked = recording({"/logo.png": LOGO_BYTES})
+
+    result = await LogoMode(
+        config, plex, http, _headers(), [provider], apply=True
+    ).run(session)
+
+    assert (result.uploaded, result.failed) == (1, 0)
+    assert asked == ["/logo.png"]
+    assert item.uploaded == [LOGO_BYTES]
+    assert await _marker(session, row.id) == OUR_KEY
+
+
+async def test_a_candidate_that_does_not_decode_is_skipped_for_the_next(
+    session, config, recording
+):
+    """A body whose header parses and whose pixels do not is only found unusable
+    AFTER it has been downloaded. Until now the updater had no way to ask for
+    the next best, so one corrupt clearlogo cost the item its logo on every
+    run, forever."""
+    row = await _add_item(session, rating_key="rk1")
+    item = FakeItem(logo=None)
+    plex = FakePlexClient({"rk1": item})
+    provider = ListProvider([
+        # Ranked first: 1600*620 = 992,000px beats 800*310 = 248,000px.
+        _candidate(CORRUPT_URL, width=1600, height=620),
+        _candidate(LOGO_URL),
+    ])
+    http, asked = recording({
+        "/corrupt.png": b"\x89PNG\r\n\x1a\n not really a PNG",
+        "/logo.png": LOGO_BYTES,
+    })
+
+    result = await LogoMode(
+        config, plex, http, _headers(), [provider], apply=True
+    ).run(session)
+
+    assert (result.uploaded, result.failed) == (1, 0)
+    assert asked == ["/corrupt.png", "/logo.png"]
+    assert item.uploaded == [LOGO_BYTES]
+    assert await _marker(session, row.id) == OUR_KEY
+
+
+async def test_an_svg_candidate_is_skipped_for_the_next_raster_one(
+    session, config, recording
+):
+    """The render path can take an SVG clearlogo because ImageMagick rasterises
+    it while compositing; Plex's clearLogo field cannot. So the SVG is skipped
+    and the ladder re-asked, rather than costing the item its logo -- and what
+    decides SVG-ness is the BYTES (``_looks_like_svg``), not a suffix the
+    provider's URL merely claims."""
+    row = await _add_item(session, rating_key="rk1")
+    item = FakeItem(logo=None)
+    plex = FakePlexClient({"rk1": item})
+    provider = ListProvider([
+        _candidate(SVG_LOGO_URL, width=1600, height=620),
+        _candidate(LOGO_URL),
+    ])
+    http, asked = recording({"/logo.svg": b"<svg/>", "/logo.png": LOGO_BYTES})
+
+    result = await LogoMode(
+        config, plex, http, _headers(), [provider], apply=True
+    ).run(session)
+
+    assert (result.uploaded, result.failed) == (1, 0)
+    assert asked == ["/logo.svg", "/logo.png"]
+    assert item.uploaded == [LOGO_BYTES]
+    assert await _marker(session, row.id) == OUR_KEY
+
+
+async def test_one_item_whose_every_candidate_fails_does_not_stop_the_run(
+    session, config, recording, caplog
+):
+    """The op-level contract. An item whose whole logo set is over the ceiling
+    costs itself a logo and one WARNING naming it, never the run: the healthy
+    item beside it still uploads and still records its marker."""
+    good = await _add_item(session, rating_key="rk-good", tmdb_id=1)
+    bad = await _add_item(session, rating_key="rk-bad", tmdb_id=2)
+    good_item, bad_item = FakeItem(logo=None), FakeItem(logo=None)
+    plex = FakePlexClient({"rk-good": good_item, "rk-bad": bad_item})
+
+    class PerItemProvider(ListProvider):
+        async def fetch(self, request):
+            self.requests.append(request)
+            if request.tmdb_id == 1:
+                return [_candidate(LOGO_URL)]
+            return [
+                _candidate(BOMB_URL, width=BOMB_WIDTH, height=BOMB_HEIGHT),
+                _candidate(BOMB2_URL, width=BOMB_WIDTH, height=BOMB_HEIGHT - 1),
+            ]
+
+    http, asked = recording({"/logo.png": LOGO_BYTES})
+
+    with caplog.at_level(logging.WARNING):
+        result = await LogoMode(
+            config, plex, http, _headers(), [PerItemProvider([])], apply=True
+        ).run(session)
+
+    assert (result.uploaded, result.failed) == (1, 1)
+    assert good_item.uploaded == [LOGO_BYTES] and bad_item.uploaded == []
+    assert await _marker(session, good.id) == OUR_KEY
+    assert await _marker(session, bad.id) is None
+    # Neither bomb was fetched, and the run reached the healthy item.
+    assert asked == ["/logo.png"]
+    # Named by rating key, and by nothing else -- no URL (row 209).
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("rk-bad" in message for message in warnings)
+    assert not any(BOMB_URL in message for message in warnings)
+
+
+async def test_a_healthy_logo_is_uploaded_byte_identical_after_one_question(
+    session, config, recording
+):
+    """The storm pin, and the one test here that must pass BEFORE this change as
+    well as after. An item whose best clearlogo is under the ceiling asks the
+    ladder exactly once, picks exactly what it picked before the guard existed,
+    and uploads those bytes unchanged -- so the guard re-uploads for the
+    affected items only, and no library-wide re-push follows it."""
+    row = await _add_item(session, rating_key="rk1")
+    item = FakeItem(logo=None)
+    plex = FakePlexClient({"rk1": item})
+    provider = ListProvider([_candidate(LOGO_URL)])
+    http, asked = recording({"/logo.png": LOGO_BYTES})
+
+    result = await LogoMode(
+        config, plex, http, _headers(), [provider], apply=True
+    ).run(session)
+
+    assert (result.uploaded, result.failed) == (1, 0)
+    assert len(provider.requests) == 1
+    assert asked == ["/logo.png"]
+    assert item.uploaded == [LOGO_BYTES]
+    assert await _marker(session, row.id) == OUR_KEY

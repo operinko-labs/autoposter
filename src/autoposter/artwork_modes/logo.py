@@ -43,10 +43,10 @@ empty-table guard, and are run inline by the trigger endpoint, which raises the
 
 import asyncio
 import logging
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
 from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,7 +57,7 @@ from autoposter.plex.artwork import (
     clear_logo, has_clearlogo, selected_uploaded_logo_key, upload_logo,
 )
 from autoposter.providers import base as art
-from autoposter.providers.ladder import select_artwork
+from autoposter.render.artwork_fetch import pick_guarded_logo
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +70,6 @@ logger = logging.getLogger(__name__)
 # would this touch" has to be measured against the part of it the mode can act
 # on.
 LOGO_ITEM_KINDS = ("movie", "show")
-
-# The render path can take an SVG logo because ImageMagick rasterises it while
-# compositing (``render/compositor.py::build_logo_argv``). Plex's clearLogo
-# field takes a raster image, so an SVG pick is skipped here rather than pushed
-# to a server that would make nothing of it.
-UNUPLOADABLE_LOGO_SUFFIX = ".svg"
 
 
 @dataclass(frozen=True)
@@ -91,8 +85,10 @@ class LogoUpdateResult:
     an item has exactly one clearlogo, so the per-item and per-field tallies
     would be the same number twice. On an applied run ``uploaded`` and
     ``failed`` split ``items_missing_logo`` by outcome, and ``failed`` means
-    "the item still has no logo" whatever the cause -- no provider had one, the
-    only pick was an SVG, or the upload itself did not go through.
+    "the item still has no logo" whatever the cause -- no provider had one,
+    every candidate the ladder offered was unusable (over the pixel ceiling,
+    undecodable, or an SVG Plex's clearLogo field cannot take), or the upload
+    itself did not go through.
     """
 
     items: int
@@ -326,41 +322,66 @@ class LogoMode:
     async def _upload_one(self, row) -> tuple[bool, str | None]:
         """Fetch and push one item's logo: ``(succeeded, marker to record)``.
 
-        Every failure is this item's own: a provider that had nothing, a pick
-        Plex cannot use, a download that did not arrive, an upload that did not
-        go through. None of them may abort a run over a whole library.
+        Every failure is this item's own: a provider that had nothing, a set of
+        picks Plex cannot use, a download that did not arrive, an upload that
+        did not go through. None of them may abort a run over a whole library.
+
+        The fetch goes through ``render/artwork_fetch.pick_guarded_logo``, the
+        same guarded walk the render path uses, rather than the bare
+        ``http.get`` this method used to make. That bare GET was the second
+        door onto job 40478's 'Inside Out 2' clearlogo -- a 32000x18839 PNG
+        (602,848,000px) that ``providers/ladder.rank_key`` ranks FIRST because
+        it sorts on ``-pixels``. It missed the ``RENDER_MAX_BYTES`` cap and the
+        full-decode validation entirely, and took the ladder's first answer
+        with no ceiling and no way to ask for the next one, so a title whose
+        best logo was a bomb had that bomb pushed to Plex -- or, once it failed,
+        had nothing pushed on every run after that.
+
+        ``raster_only=True``: the render path composites an SVG clearlogo
+        happily (ImageMagick rasterises it), but Plex's ``clearLogo`` field
+        takes a raster image, so an SVG is skipped and the ladder re-asked.
+
+        The ``ArtRequest`` is byte-for-byte the one this method always built --
+        no ``prefer_clearart``, no season or episode numbers, which a movie or
+        show row has none of. That is deliberate: ``exclude_urls`` starts
+        empty, so an item whose best clearlogo is under the ceiling asks once
+        and gets exactly the pick it got before this guard existed. The guard
+        re-uploads for the affected items only; it does not move the library.
         """
-        selection = await select_artwork(
-            self._providers,
-            self._config.artwork.logo_language_order,
-            art.ArtRequest(
-                art_kind=art.LOGO,
-                is_movie=row.kind == "movie",
-                tmdb_id=row.tmdb_id,
-                tvdb_id=row.tvdb_id,
-                imdb_id=row.imdb_id,
-            ),
-        )
-        candidate = selection.candidate
-        if candidate is None:
-            logger.warning("logo: no clearlogo on any provider for %s", row.rating_key)
-            return False, None
-
-        suffix = Path(httpx.URL(candidate.url).path).suffix or ".png"
-        if suffix.lower() == UNUPLOADABLE_LOGO_SUFFIX:
-            logger.warning(
-                "logo: skipping %s for %s -- Plex's clearLogo field takes a "
-                "raster image", candidate.url, row.rating_key,
-            )
-            return False, None
-
         try:
-            plex_item = await self._plex.fetch_item(row.rating_key)
-            response = await self._http.get(candidate.url, follow_redirects=True)
-            response.raise_for_status()
-            marker = await asyncio.to_thread(
-                upload_logo, plex_item, response.content, suffix
-            )
+            with tempfile.TemporaryDirectory() as tmp:
+                logo_path, _sha, skipped = await pick_guarded_logo(
+                    self._http,
+                    self._providers,
+                    self._config.artwork.logo_language_order,
+                    art.ArtRequest(
+                        art_kind=art.LOGO,
+                        is_movie=row.kind == "movie",
+                        tmdb_id=row.tmdb_id,
+                        tvdb_id=row.tvdb_id,
+                        imdb_id=row.imdb_id,
+                    ),
+                    Path(tmp),
+                    rating_key=row.rating_key,
+                    raster_only=True,
+                )
+                if logo_path is None:
+                    # One line, naming the item and nothing else -- each
+                    # skipped candidate has already been logged with its own
+                    # reason by `pick_guarded_logo`, and neither line carries a
+                    # provider URL (row 209).
+                    logger.warning(
+                        "logo: no usable clearlogo for %s -- %d candidate(s) skipped",
+                        row.rating_key, skipped,
+                    )
+                    return False, None
+                # Read inside the temporary directory's scope: it is removed on
+                # the way out of this `with`, and `upload_logo` wants bytes.
+                data = logo_path.read_bytes()
+                plex_item = await self._plex.fetch_item(row.rating_key)
+                marker = await asyncio.to_thread(
+                    upload_logo, plex_item, data, logo_path.suffix
+                )
         except Exception:  # noqa: BLE001 - see the docstring
             logger.warning(
                 "logo: could not upload a clearlogo for %s", row.rating_key, exc_info=True
