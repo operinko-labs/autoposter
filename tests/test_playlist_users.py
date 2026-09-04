@@ -30,6 +30,7 @@ from autoposter.collections.playlist_users import (
     UserSync,
     apply_user_sync,
     plan_user_sync,
+    stale_user_rows,
     user_sweep_candidates,
 )
 from autoposter.config.schema import PlaylistDefinition, PlaylistsConfig
@@ -1280,4 +1281,31 @@ async def test_a_row_whose_user_is_unreachable_is_reported_rather_than_swept(
 
     assert candidates == []
     assert [row.plex_user_title for row in unreachable] == ["alice"]
+    assert connector.calls == []
+
+
+async def test_stale_user_rows_is_pure_over_the_db_and_the_cached_user_list(
+    session,
+):
+    """The delete sweep's cap (``max_deletes``) has to be consulted on the
+    stale-row count BEFORE ``user_sweep_candidates`` mints a token or reads a
+    listing for any of them -- ``plan_user_sync``'s own two-pass shape, one
+    function over. That is only possible if collecting the stale rows costs
+    no request at all, whatever their number."""
+    connector = Connector()
+    users = [FakeUser(n, "user-%d" % n, token=TOKEN) for n in range(1, 7)]
+    users.append(FakeUser(99, "wanted-still", token=TOKEN))
+    sync, _ = _sync(users, connector=connector)
+    for n in range(1, 7):
+        _row(session, user_id=n, title="user-%d" % n, rating_key="700%d" % n)
+    # A row still wanted by a live definition is not stale, exactly as
+    # ``user_sweep_candidates`` treats it.
+    _row(session, user_id=99, title="wanted-still", rating_key="7099")
+    await session.commit()
+
+    stale = await stale_user_rows(
+        session, sync, [_definition(sync_to_users=["wanted-still"])]
+    )
+
+    assert sorted(row.plex_user_id for row in stale) == [1, 2, 3, 4, 5, 6]
     assert connector.calls == []

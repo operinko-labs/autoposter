@@ -1799,6 +1799,9 @@ async def test_the_delete_cap_still_refuses_the_whole_plan_with_the_user_gate_on
     )
     admin = first.created[0]
     copies = [servers[token].created[0] for token in tokens]
+    listings_after_first_pass = {
+        token: server.listings for token, server in servers.items()
+    }
 
     gone = _config(
         config_factory, apply_to_plex=True, sync_to_users_apply=True,
@@ -1811,6 +1814,12 @@ async def test_the_delete_cap_still_refuses_the_whole_plan_with_the_user_gate_on
 
     assert admin.deleted is False
     assert all(copy.deleted is False for copy in copies)
+    # The point of the fix, not just its message: the six stale rows alone
+    # already bust the cap, so this pass must refuse before minting a single
+    # token or reading a single listing -- not merely before a single delete.
+    assert {
+        token: server.listings for token, server in servers.items()
+    } == listings_after_first_pass
     assert run.actions == [
         "refusing to delete 7 unconfigured playlist(s), 6 of them user "
         "copies: more than the max_deletes cap of 5; nothing was deleted "

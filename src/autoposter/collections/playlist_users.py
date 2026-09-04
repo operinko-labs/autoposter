@@ -989,6 +989,31 @@ def _stamp(session: AsyncSession, entry: _Planned, playlist, added: int, removed
     row.last_reconciled_at = func.now()
 
 
+async def stale_user_rows(session: AsyncSession, sync: UserSync, definitions) -> list:
+    """Stored ``managed_playlist_users`` rows no configuration asks for any more.
+
+    Pass one of ``user_sweep_candidates``' two-pass shape, split out so a
+    caller can consult ``max_deletes`` on the count before paying for pass
+    two. Pure over the DB and the cached user list -- no plex.tv call and no
+    PMS listing -- for the same reason ``plan_user_sync``'s own pass one is:
+    "refused entirely" has to mean before the first REQUEST. A stale row is
+    not yet a confirmed candidate; some will turn out to have no live object
+    once ``user_sweep_candidates`` reads that user's listing, so a count taken
+    here can only OVER-estimate the eventual candidates, never under -- the
+    same safe direction ``_estimated_writes`` documents for the same reason.
+    """
+    wanted: set[tuple[str, int]] = set()
+    for definition in definitions:
+        if not definition.sync_to_users:
+            continue
+        targets, _skips = sync.targets_for(definition)
+        for target in targets:
+            wanted.add((definition.title, target.user_id))
+
+    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
+    return [row for row in rows if (row.definition_key, row.plex_user_id) not in wanted]
+
+
 async def user_sweep_candidates(
     session: AsyncSession, sync: UserSync, definitions
 ) -> tuple[list, list]:
@@ -1014,21 +1039,15 @@ async def user_sweep_candidates(
     Calling ``targets_for`` again costs nothing: it is pure over the cached
     user list, and the servers and listings it leads to are the ones the plan
     already opened.
-    """
-    wanted: set[tuple[str, int]] = set()
-    for definition in definitions:
-        if not definition.sync_to_users:
-            continue
-        targets, _skips = sync.targets_for(definition)
-        for target in targets:
-            wanted.add((definition.title, target.user_id))
 
+    This walks every row ``stale_user_rows`` returns, minting a token and
+    reading a listing per distinct user it names. A caller that cares how
+    many rows that is before paying for it -- the delete sweep, against
+    ``max_deletes`` -- calls ``stale_user_rows`` itself first.
+    """
     candidates: list = []
     unreachable: list = []
-    rows = (await session.execute(select(ManagedPlaylistUser))).scalars().all()
-    for row in rows:
-        if (row.definition_key, row.plex_user_id) in wanted:
-            continue
+    for row in await stale_user_rows(session, sync, definitions):
         target = sync.target_for_id(row.plex_user_id)
         if target is None:
             unreachable.append(row)

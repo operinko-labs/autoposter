@@ -106,6 +106,7 @@ from autoposter.collections.playlist_users import (
     apply_user_sync,
     connect_as_user,
     plan_user_sync,
+    stale_user_rows,
     user_sweep_candidates,
 )
 from autoposter.collections.resolve import build_owned_index, resolve_external_across
@@ -964,6 +965,31 @@ def _sweep_name(row, playlist) -> str:
     return "%r (titled %r in Plex)" % (row.title, playlist.title)
 
 
+def _delete_cap_message(total: int, user_count: int, cap: int) -> str:
+    """The delete sweep's cap-refusal sentence, one place so two evaluations
+    of the cap -- the pre-walk estimate below and the post-walk exact count --
+    can never say it differently.
+
+    Two wordings, not one: a pass with no per-user copies in the blast radius
+    (98a's own shape, and every pre-98c caller of this sweep) gets the exact
+    sentence it always has -- ``test_past_the_cap_the_sweep_refuses_entirely``
+    pins it byte for byte -- and only a cap blown WITH user copies present
+    says so.
+    """
+    if user_count:
+        return (
+            "refusing to delete %d unconfigured playlist(s), %d of them "
+            "user copies: more than the max_deletes cap of %d; nothing "
+            "was deleted and everything else was reconciled"
+            % (total, user_count, cap)
+        )
+    return (
+        "refusing to delete %d unconfigured playlist(s): more than "
+        "the max_deletes cap of %d; nothing was deleted and "
+        "everything else was reconciled" % (total, cap)
+    )
+
+
 async def _sweep_playlists(
     session: AsyncSession, config, by_key: dict, dry_run: bool,
     sync=None, definitions=(), user_dry_run: bool = True,
@@ -1012,6 +1038,13 @@ async def _sweep_playlists(
     are not counted toward ``max_deletes`` either: a pass with the per-user
     gate off must still be able to delete the admin playlists it IS
     authorised to delete, undelayed by copies it was never going to touch.
+
+    And when the gate IS applied, ``max_deletes`` is consulted BEFORE
+    ``user_sweep_candidates`` walks a single row -- on ``stale_user_rows``'
+    pure-DB count, the same two-pass shape ``plan_user_sync`` uses for
+    ``max_users``/``max_user_writes`` and for the same reason: "refused
+    entirely" has to mean before the first plex.tv request, not merely before
+    the first delete.
     """
     # Through the same composition the pass runs, never
     # ``config.playlists.definitions`` alone: a preset's playlist would
@@ -1024,9 +1057,27 @@ async def _sweep_playlists(
         for row in rows
         if row.title not in managed and row.plex_rating_key in by_key
     ]
+    cap = config.playlists.max_deletes
     user_candidates: list = []
     unreachable: list = []
     if sync is not None:
+        if config.playlists.delete_unconfigured and not user_dry_run:
+            # Pass one, ``plan_user_sync``'s own two-pass shape: the stale-row
+            # count is pure over the DB and the cached user list -- no plex.tv
+            # call and no PMS listing -- so a cap already blown by it ALONE
+            # must refuse before pass two (``user_sweep_candidates``) mints a
+            # single token or reads a single listing, not merely before a
+            # single delete. Some stale rows will turn out not to be live
+            # candidates once their listing is read, so this can only
+            # over-estimate the eventual total, never under -- the safe
+            # direction, and never a false "under the cap".
+            stale = await stale_user_rows(session, sync, definitions)
+            estimated_total = len(candidates) + len(stale)
+            if estimated_total > cap:
+                return [_swept(
+                    SWEEP_TITLE,
+                    _delete_cap_message(estimated_total, len(stale), cap),
+                )]
         user_candidates, unreachable = await user_sweep_candidates(
             session, sync, definitions
         )
@@ -1062,34 +1113,21 @@ async def _sweep_playlists(
             ))
         return results
 
-    cap = config.playlists.max_deletes
     # A user copy counts toward the cap only when this pass is actually
     # authorised to delete it. On a ``user_dry_run`` pass the per-user loop
     # below only REPORTS "would delete" -- it writes nothing -- so counting
     # those copies here can refuse a deletion the pass is allowed to make
     # (the admin playlist) over copies it was never going to touch this pass.
+    # Normally moot when the estimate above already ran (a user copy can
+    # never outnumber the stale rows it was drawn from, so if that pass one
+    # was under the cap this exact count is too) -- kept as the only check at
+    # all when ``sync is None`` or ``user_dry_run`` skipped pass one.
     deletable_user_candidates = 0 if user_dry_run else len(user_candidates)
     total = len(candidates) + deletable_user_candidates
     if total > cap:
-        # Two wordings, not one: a pass with no per-user copies in the blast
-        # radius (98a's own shape, and every pre-98c caller of this sweep)
-        # gets the exact sentence it always has -- ``test_past_the_cap_the_
-        # sweep_refuses_entirely`` pins it byte for byte -- and only a cap
-        # blown WITH user copies present says so.
-        if deletable_user_candidates:
-            message = (
-                "refusing to delete %d unconfigured playlist(s), %d of them "
-                "user copies: more than the max_deletes cap of %d; nothing "
-                "was deleted and everything else was reconciled"
-                % (total, deletable_user_candidates, cap)
-            )
-        else:
-            message = (
-                "refusing to delete %d unconfigured playlist(s): more than "
-                "the max_deletes cap of %d; nothing was deleted and "
-                "everything else was reconciled" % (total, cap)
-            )
-        results.append(_swept(SWEEP_TITLE, message))
+        results.append(_swept(
+            SWEEP_TITLE, _delete_cap_message(total, deletable_user_candidates, cap)
+        ))
         return results
 
     for row, playlist in candidates:
