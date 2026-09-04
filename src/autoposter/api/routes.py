@@ -37,6 +37,8 @@ from autoposter.api.snapshots import events_snapshot, status_snapshot
 from autoposter.api.testing import router as testing_router
 from autoposter.api.version import router as version_router
 from autoposter.api.auth import (
+    ApiKeyPrincipal,
+    api_key_or_session,
     create_session,
     hash_password,
     prune_expired,
@@ -321,7 +323,7 @@ async def logout(
 
 @router.get("/status")
 async def status(
-    request: Request, _: SessionModel = Depends(require_session)
+    request: Request, _: SessionModel | ApiKeyPrincipal = Depends(api_key_or_session)
 ) -> dict:
     """Queue counts, worker count and the scheduled-job table.
 

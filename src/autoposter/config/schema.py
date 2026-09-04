@@ -150,6 +150,22 @@ class Secrets(BaseModel):
             "collections unavailable."
         ),
     )
+    # Soft secret, same reasoning as mdblist_apikey for booting and the same
+    # posture as admin_password_hash for refusing: unset means the key path
+    # is off and CLOSED -- every request presenting an X-API-Key is 401ed,
+    # exactly as it was before the key existed -- never open. This is the
+    # one INBOUND credential of the soft ones: it is compared against, not
+    # sent anywhere. Read from the X-API-Key header only, on the GET routes
+    # api.auth.ALLOWLIST names only; see api_key_or_session there.
+    api_key: str = Field(
+        default="",
+        description=(
+            "The read-only API key non-browser callers (a Homepage widget, a "
+            "script) present as X-API-Key on the allowlisted GET routes. A "
+            "deployment without one still runs, with every keyed request "
+            "refused."
+        ),
+    )
 
     @classmethod
     def from_env(cls) -> "Secrets":
@@ -166,6 +182,7 @@ class Secrets(BaseModel):
         values["harbor_token"] = os.environ.get("AUTOPOSTER_HARBOR_TOKEN", "")
         values["plex_account_token"] = os.environ.get("AUTOPOSTER_PLEX_ACCOUNT_TOKEN", "")
         values["tracearr_apikey"] = os.environ.get("AUTOPOSTER_TRACEARR_APIKEY", "")
+        values["api_key"] = os.environ.get("AUTOPOSTER_API_KEY", "")
         return cls(**values)
 
 
