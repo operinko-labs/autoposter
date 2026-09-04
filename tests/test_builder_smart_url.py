@@ -16,6 +16,9 @@ extractor plus 9c's reconciler, so the tests split the same way:
   acceptance criterion the phase brief wrote: the paste is a spelling of the
   query, never a second query grammar.
 """
+import logging
+import traceback
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse, urlsplit
 
@@ -32,10 +35,13 @@ from autoposter.collections.builders.smart_url import (
 from autoposter.collections.builders.base import LibraryTypeMismatch
 from autoposter.collections.builders.smart_filter import SmartFilterBuilder
 from autoposter.collections.engine import run_library
+from autoposter.collections.smart import smart_definition_hash
+from autoposter.config.loader import build_config, read_config_document
 from autoposter.config.schema import CollectionDefinition
 
 LABEL = "autoposter"
 SECTION_KEY = "2"
+_TOKEN = "SECRETSECRETSECRET01"
 
 # A real Plex Web smart-filter URL's shape: the interesting half is the
 # percent-encoded ``key`` parameter, whose value is itself a path plus a query.
@@ -54,6 +60,11 @@ _MOVIE_URL_WITH_YEAR = (
     "https://app.plex.tv/desktop/#!/server/abc123/com.plexapp.plugins.library"
     "?key=%2Flibrary%2Fsections%2F1%2Fall%3Ftype%3D1%26sort%3Dtitle%26year%3E%3D2000"
 )
+# ``_MOVIE_URL`` with a live session token on the end, exactly where Plex Web
+# puts it in the address bar. Used by the engine tests below (Global
+# Constraint 8's caplog/action-string proof), because ``_MOVIE_URL`` alone
+# never drove a token through ``run_library``.
+_MOVIE_URL_WITH_TOKEN = _MOVIE_URL + "&X-Plex-Token=" + _TOKEN
 
 
 def kometa_get_smart_filter_from_uri(uri):
@@ -100,20 +111,118 @@ def test_a_token_is_stripped_before_the_url_is_parsed():
     ``key``), so the ONLY thing the operator gets back is the refusal message
     -- which is exactly where a pasted ``X-Plex-Token`` would leak. Stripping
     happens before the parse, so the token cannot reach the message even
-    though the parse is what fails."""
+    though the parse is what fails. The host is an intranet address rather
+    than ``app.plex.tv``, because the fixed message text legitimately shows
+    an ``app.plex.tv`` URL as a TEMPLATE example -- what must not appear is
+    the OPERATOR's own host."""
     uri = (
-        "https://app.plex.tv/desktop/#!/server/abc123/com.plexapp.plugins.library"
-        "?source=1&X-Plex-Token=SECRETSECRETSECRET01"
+        "http://192.168.1.10:32400/web?source=1&X-Plex-Token=SECRETSECRETSECRET01"
     )
     with pytest.raises(SmartUrlNotAFilter) as caught:
         smart_query_from_uri(uri)
     assert "SECRETSECRETSECRET01" not in str(caught.value)
     assert "X-Plex-Token" not in str(caught.value)
-    # ...and the harmless half of the paste IS echoed, because a refusal that
-    # names nothing an operator recognises is not a diagnostic (row 213: the
-    # class-name-only rule is for THIRD-PARTY exception messages, not for
-    # config the operator typed).
-    assert "app.plex.tv" in str(caught.value)
+    # ...and neither is the pasted URL's HOST, aligned with
+    # ``source_urls.py``'s decision for its sibling refusal (8379eab): a paste
+    # can be an intranet address the operator did not mean to publish. The
+    # refusal names the ATTRIBUTE instead.
+    assert "192.168.1.10" not in str(caught.value)
+    assert "params.url" in str(caught.value)
+
+
+def test_a_field_name_that_merely_ends_in_token_is_not_stripped():
+    """The tightened name pattern (``X-Plex-Token`` or ``token``, exactly,
+    case-insensitively) rather than a suffix match: an earlier
+    ``[A-Za-z0-9_.-]*token`` also ate a hypothetical ``titletoken=`` field,
+    which carries no credential and is not this service's to remove."""
+    assert strip_plex_token("?type=1&titletoken=9&sort=title") == (
+        "?type=1&titletoken=9&sort=title"
+    )
+
+
+def test_a_value_ending_in_an_encoded_question_mark_survives_the_strip():
+    """The regression I1 pins: a title containing a literal ``?`` arrives at
+    the (already-once-decoded) query as a bare ``%3F`` inside its own value,
+    which the old unconditional ``_EMPTY_FIRST_TERM`` cleanup could not tell
+    apart from a stripped token's leftover ``?&`` -- and ate the ``&`` after
+    it, losing the ``sort=`` term with no token anywhere in the URL. Byte
+    identity here is the module's whole reason to exist."""
+    assert strip_plex_token("?type=1&title=Who%3F&sort=title") == (
+        "?type=1&title=Who%3F&sort=title"
+    )
+
+
+def test_str_validationerror_for_smarturlparams_names_no_token():
+    """C1(a): a pasted URL that is slightly wrong (the common ``.../web/
+    index.html#!/...`` mistake, Global Constraint 8's own scenario) but still
+    carries a live token must not put that token into ``str(ValidationError)``
+    -- not in the refusal message (already true) and not in pydantic-core's
+    own ``input_value=`` envelope around it (the gap C1 found: a ``mode=
+    "before"`` strip alone does not suppress that annotation without
+    ``hide_input_in_errors`` too, verified against pydantic 2.12.5)."""
+    bad_url_with_token = (
+        "http://192.168.1.10:32400/web/index.html#!/server/abc123/"
+        "com.plexapp.plugins.library?key=%2Flibrary%2Fsections%2F1%2Fall%3Ftype%3D1"
+        "&X-Plex-Token=" + _TOKEN
+    )
+    with pytest.raises(ValidationError) as caught:
+        SmartUrlParams(url=bad_url_with_token)
+    assert _TOKEN not in str(caught.value)
+    assert "X-Plex-Token=" not in str(caught.value)
+
+
+def test_a_valid_pasted_url_keeps_no_token_in_the_stored_params():
+    """The token-hygiene claim covers a SUCCESSFUL parse too: an operator's
+    address bar carries the token whether or not the paste happens to be
+    well-formed, and ``params.url`` is what ``GET /api/config``, a config
+    snapshot and ``/api/config/overrides/export`` all serve back verbatim."""
+    params = SmartUrlParams(url=_MOVIE_URL_WITH_TOKEN)
+    assert _TOKEN not in params.url
+    assert "X-Plex-Token" not in params.url
+    # ...and the query itself is unaffected -- the token rode outside the
+    # ``key`` parameter this builder actually stores.
+    args, libtype = smart_query_from_uri(params.url)
+    assert args == "?type=1&sort=random&genre=1138"
+    assert libtype == "movie"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "CollectionDefinition's own mode='after' validator (config/schema.py, "
+        "out of scope for this fix) echoes its WHOLE raw input dict -- title, "
+        "builder, params, token included -- in pydantic-core's own "
+        "input_value= whenever ANY of its checks fail, this one included. "
+        "Verified directly against build_config() in this session: str(exc) "
+        "and traceback.format_exc() both still carry the token. Closing it "
+        "needs config/schema.py's own hide_input_in_errors, or main.py "
+        "catching ValidationError and re-raising via "
+        "errors(include_input=False) -- neither is in scope here."
+    ),
+)
+def test_a_boot_shaped_config_load_over_a_token_bearing_url():
+    """C1(b), the named boot scenario: ``load_config``/``build_config`` is
+    uncaught at ``main.py:83``, so a config-load refusal's full exception
+    chain is what reaches the pod logs. ``SmartUrlParams``'s OWN validation is
+    fully clean now (see ``test_str_validationerror_for_smarturlparams_names_no_token``
+    above) -- what remains is entirely ``CollectionDefinition``'s own echo,
+    which this module cannot reach. See the module docstring's "What this
+    cannot reach"."""
+    data = read_config_document(
+        Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+    )
+    bad_url_with_token = (
+        "http://192.168.1.10:32400/web/index.html#!/server/abc123/"
+        "com.plexapp.plugins.library?key=%2Flibrary%2Fsections%2F1%2Fall%3Ftype%3D1"
+        "&X-Plex-Token=" + _TOKEN
+    )
+    data.setdefault("collections", {}).setdefault("definitions", []).append(
+        {"title": "Pasted", "builder": "smart_url", "params": {"url": bad_url_with_token}}
+    )
+    with pytest.raises(ValidationError) as caught:
+        build_config(data)
+    assert _TOKEN not in str(caught.value)
+    assert _TOKEN not in traceback.format_exc()
 
 
 def test_a_token_inside_the_key_parameter_never_reaches_the_stored_query():
@@ -339,55 +448,74 @@ def _stored_uri(section, title):
     raise AssertionError("no smart create POST for %r" % title)
 
 
-async def test_a_pasted_url_and_the_equivalent_smart_filter_store_one_filter(session):
+async def test_a_pasted_url_and_the_equivalent_smart_filter_store_one_filter(
+    session, caplog,
+):
     """THE acceptance criterion for row 184's ``smart_url`` half. The pasted
     URL names section 1 and the library is section 2 -- the stored uri uses
     OUR section key, which is Kometa's own behaviour (``build_smart_filter``
     interpolates ``self.key``, plex.py:1615-1616) and is what lets an operator
     paste a URL copied from any client. Everything else must be byte-identical
     to what ``smart_filter`` builds from the same query, or the paste would be
-    a second query grammar rather than a spelling of the one 9b proved."""
-    section = FakeSection()
-    definitions = [
-        CollectionDefinition(
-            title="Pasted Horror", builder="smart_url", params={"url": _MOVIE_URL},
-        ),
-        CollectionDefinition(
-            title="Written Horror",
-            builder="smart_filter",
-            params={"all": {"genre": "Horror"}},
-        ),
-    ]
+    a second query grammar rather than a spelling of the one 9b proved.
 
-    run = await run_library(
-        session, section, "Movies", "Movie", definitions, _config(),
+    The pasted URL carries a live ``X-Plex-Token`` (Global Constraint 8, I2):
+    ``_MOVIE_URL`` alone never drove a token through ``run_library``, so
+    neither the prior action-string log nor a caplog check ever exercised
+    ``apply``'s ``logger.debug`` with a credential in reach."""
+    section = FakeSection()
+    pasted = CollectionDefinition(
+        title="Pasted Horror", builder="smart_url", params={"url": _MOVIE_URL_WITH_TOKEN},
+    )
+    written = CollectionDefinition(
+        title="Written Horror",
+        builder="smart_filter",
+        params={"all": {"genre": "Horror"}},
     )
 
+    with caplog.at_level(logging.DEBUG):
+        run = await run_library(
+            session, section, "Movies", "Movie", [pasted, written], _config(),
+        )
+
     assert not any(result.failed for result in run.definitions)
-    assert _stored_uri(section, "Pasted Horror") == (
+    stored_uri = _stored_uri(section, "Pasted Horror")
+    assert stored_uri == (
         "server://abc123/com.plexapp.plugins.library"
         "/library/sections/2/all?type=1&sort=random&genre=1138"
     )
-    assert _stored_uri(section, "Pasted Horror") == _stored_uri(
-        section, "Written Horror"
+    assert stored_uri == _stored_uri(section, "Written Horror")
+    # I3: the hash the phase's storm guard short-circuits a pass on, not just
+    # the uri -- the two must be recognised as the SAME desired state.
+    assert smart_definition_hash(stored_uri, None, pasted, None) == smart_definition_hash(
+        stored_uri, None, written, None
     )
+    for record in caplog.records:
+        assert _TOKEN not in record.getMessage()
+    for action in run.actions:
+        assert _TOKEN not in action
 
 
 async def test_a_movie_url_on_a_show_library_is_refused_by_class_and_by_message(
-    session,
+    session, caplog,
 ):
     """The refusal the cell asks for that the extractor alone cannot make: the
     URL parses perfectly and is still wrong for THIS library. Contained to the
     one definition, reported as an action string, and it names the libtype the
-    URL asked for -- the operator's own value, per Global Constraint 7."""
+    URL asked for -- the operator's own value, per Global Constraint 7.
+
+    Also carries a live token (I2): the refusal's action string and the
+    engine's own ``logger.warning`` are exactly where a credential would leak
+    from a definition that fails AFTER a successful, token-bearing parse."""
     section = FakeSection()
     definition = CollectionDefinition(
-        title="Pasted Horror", builder="smart_url", params={"url": _MOVIE_URL},
+        title="Pasted Horror", builder="smart_url", params={"url": _MOVIE_URL_WITH_TOKEN},
     )
 
-    run = await run_library(
-        session, section, "Shows", "Show", [definition], _config(libraries=["Shows"]),
-    )
+    with caplog.at_level(logging.DEBUG):
+        run = await run_library(
+            session, section, "Shows", "Show", [definition], _config(libraries=["Shows"]),
+        )
 
     [action] = run.actions
     assert "refused 'Pasted Horror'" in action
@@ -396,3 +524,6 @@ async def test_a_movie_url_on_a_show_library_is_refused_by_class_and_by_message(
     # The builder's own class, not a bare ValueError -- the engine's log line
     # carries the class name and nothing else.
     assert LibraryTypeMismatch in SmartUrlBuilder.REFUSALS
+    assert _TOKEN not in action
+    for record in caplog.records:
+        assert _TOKEN not in record.getMessage()

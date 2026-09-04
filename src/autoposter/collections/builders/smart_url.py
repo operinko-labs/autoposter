@@ -22,13 +22,31 @@ out of ``parse_qs`` and ``str.index`` and Kometa catches only ``ValueError``
 there. Named refusals here, because "the config is wrong" and "the service
 crashed" have to look different to an operator.
 
-**The pasted value is token-stripped before anything reads it.** This is the
-first config value in the collections package that an operator pastes from a
-BROWSER, and a Plex Web URL can carry ``X-Plex-Token``. ``strip_plex_token``
-runs ahead of the parse, so the token cannot reach a parse error, a log line,
-an action string, or the query stored on the server -- compare
-``smart_filter.py:182``'s ``logger.debug("smart_filter: %s -> %s", ...)``, which
-is safe only because that URL was BUILT rather than pasted.
+**The pasted value is token-stripped before it reaches the model at all.**
+This is the first config value in the collections package that an operator
+pastes from a BROWSER, and a Plex Web URL can carry ``X-Plex-Token``.
+``SmartUrlParams``'s own ``mode="before"`` field validator runs
+``strip_plex_token`` on the raw string ahead of pydantic's own type check and
+ahead of ``_the_url_must_carry_a_filter``, so a successfully-parsed
+``params.url`` never carries the token forward either -- not into the query
+stored on Plex's server, a log line, an action string, nor into
+``GET /api/config``, a config snapshot, or ``/api/config/overrides/export``.
+``model_config``'s ``hide_input_in_errors`` is set for the refusal path, for
+the same reason: pydantic-core otherwise echoes the RAW field input in
+``input_value=`` even once a ``mode="before"`` validator has transformed it,
+which would put the token straight back into ``str(ValidationError)``.
+``smart_query_from_uri`` strips again internally (belt-and-braces), so it
+stays safe called directly, outside this model. Compare
+``smart_filter.py:182``'s ``logger.debug("smart_filter: %s -> %s", ...)``,
+which is safe only because that URL was BUILT rather than pasted.
+
+**What this cannot reach.** ``CollectionDefinition``'s own ``mode="after"``
+validator (``config/schema.py``, outside this module) echoes its WHOLE raw
+input dict when any of its checks fail, this one included -- so a config-load
+refusal's ``str(ValidationError)``/``traceback.format_exc()``, taken through
+that OUTER model, still carries the token via that dict. Nothing in this
+module can close that; it is a controller-level residual on Global
+Constraint 8, not a lapse here.
 """
 import logging
 import re
@@ -41,7 +59,6 @@ from autoposter.collections.builders.base import (
     SmartContext,
     require_library_type,
 )
-from autoposter.collections.search_sorts import SORT_TYPES
 from autoposter.collections.smart import (
     SmartCollectionUnavailable,
     SmartFilterMatchedNothing,
@@ -74,14 +91,17 @@ class SmartUrlNotAFilter(Exception):
 # past it -- which is why this is a regex over the raw string and not a
 # parse-and-rebuild. The value character class is Plex's own token alphabet
 # plus the URL-unreserved set, so the match stops at the next separator in
-# either encoding.
+# either encoding. The NAME is the exact two Plex spells (``X-Plex-Token``,
+# ``token``), not a suffix match: an earlier ``[A-Za-z0-9_.-]*token`` also
+# matched a hypothetical ``titletoken=`` field, which is not a token. The
+# trailing separator is captured HERE, in the same term, rather than mopped
+# up by a second unconditional pass -- a second pass cannot tell a stripped
+# term's leftover ``?&`` from a value that happens to END in an encoded ``?``
+# (``title=Who%3F``), and ate the ``&`` after it too.
 _TOKEN_TERM = re.compile(
-    r"(?i)(?P<lead>[?&]|%3F|%26)[A-Za-z0-9_.-]*token(?:=|%3D)[A-Za-z0-9._~-]*"
+    r"(?i)(?P<lead>[?&]|%3F|%26)(?:X-Plex-Token|token)(?:=|%3D)"
+    r"[A-Za-z0-9._~-]*(?P<trail>&|%26)?"
 )
-# ``?`` is structural and ``&`` is not, so a stripped FIRST term leaves the
-# ``?`` behind and then an empty term behind it. Collapsed here rather than by
-# a smarter substitution, so both encodings are handled by one rule.
-_EMPTY_FIRST_TERM = re.compile(r"(?i)(\?|%3F)(?:&|%26)")
 
 
 def strip_plex_token(value: str) -> str:
@@ -91,12 +111,23 @@ def strip_plex_token(value: str) -> str:
     ``X-Plex-Token=REDACTED`` inside the query this service STORES on the
     server, which is a filter term Plex was never sent before. Nothing
     downstream needs to know a token was there -- only that it is not.
+
+    Run to a fixed point rather than once: a match consumes its own trailing
+    separator, so two ADJACENT token terms (``?token=a&token=b&type=1``) only
+    expose the second one's own leading separator once the first is already
+    gone. One pass would leave it behind; iterating until nothing changes
+    removes both.
     """
     def _drop(match: re.Match) -> str:
         lead = match.group("lead")
-        return lead if lead.lower() in ("?", "%3f") else ""
+        trail = match.group("trail") or ""
+        return lead if lead.lower() in ("?", "%3f") else trail
 
-    return _EMPTY_FIRST_TERM.sub(r"\1", _TOKEN_TERM.sub(_drop, value))
+    while True:
+        stripped = _TOKEN_TERM.sub(_drop, value)
+        if stripped == value:
+            return stripped
+        value = stripped
 
 
 # Plex's own search types, for the two libtypes this service builds collections
@@ -130,42 +161,46 @@ def smart_query_from_uri(uri: str) -> tuple[str, str]:
     Correcting it here would diverge from the oracle for no operator-visible
     gain.
 
-    Every refusal is a ``SmartUrlNotAFilter`` naming the pasted value AFTER the
-    token strip, because the operator has to recognise which of their
-    definitions is wrong and the value carries no credential once stripped.
+    Every refusal is a ``SmartUrlNotAFilter`` naming the ATTRIBUTE
+    (``params.url``) and the shape that's wrong, never the pasted value or
+    its host: a paste can be an intranet address the operator did not mean to
+    publish, the same call ``source_urls.py`` made for its sibling refusal
+    (8379eab). ``key`` and ``args`` are echoed where they help, because
+    neither carries a host or (once stripped) a credential.
     """
     safe = strip_plex_token(uri)
     query = urlparse(safe.replace("/#!/", "/")).query
     keys = parse_qs(query).get("key") or []
     if not keys:
         raise SmartUrlNotAFilter(
-            f"{safe!r} has no `key` parameter, so it is not a Plex smart-filter "
-            "URL. Build the search in Plex Web and copy the whole address, "
-            "which looks like `https://app.plex.tv/desktop/#!/server/.../"
-            "com.plexapp.plugins.library?...&key=%2Flibrary%2Fsections%2F...` "
-            "-- a `.../web/index.html#!/...` address keeps its query in the "
-            "URL fragment, where nothing can read it"
+            "`params.url` is not a Plex library URL -- it has no `key` "
+            "parameter. Build the search in Plex Web and copy the whole "
+            "address, which looks like `https://app.plex.tv/desktop/#!/"
+            "server/.../com.plexapp.plugins.library?...&key=%2Flibrary%2F"
+            "sections%2F...` -- a `.../web/index.html#!/...` address keeps "
+            "its query in the URL fragment, where nothing can read it"
         )
     key = keys[0]
     if "?" not in key:
         raise SmartUrlNotAFilter(
-            f"{safe!r} carries a `key` with no query of its own "
-            f"({key!r}), so there is no filter in it. This is what a plain "
-            "library view looks like; switch a filter on in Plex Web first"
+            f"`params.url` has no query string -- its `key` parameter "
+            f"({key!r}) names a library section but no filter. This is what "
+            "a plain library view looks like; switch a filter on in Plex "
+            "Web first"
         )
     args = strip_plex_token(key[key.index("?"):])
     marker = args.find("type=")
     if marker < 0:
         raise SmartUrlNotAFilter(
-            f"{safe!r} carries a query with no `type=` in it ({args!r}), so "
-            "there is nothing to say what kind of items it searches"
+            f"`params.url` carries a query with no `type=` in it ({args!r}), "
+            "so there is nothing to say what kind of items it searches"
         )
     libtype = _LIBTYPE_BY_TYPE_KEY.get(args[marker + 5:marker + 6])
     if libtype is None:
         raise SmartUrlNotAFilter(
-            f"{safe!r} searches a kind of item this service does not build "
-            f"collections for ({args[marker:marker + 6]!r}) -- only movie or "
-            "show searches can become a managed collection"
+            f"`params.url` searches a kind of item this service does not "
+            f"build collections for ({args[marker:marker + 6]!r}) -- only "
+            "movie or show searches can become a managed collection"
         )
     return args, libtype
 
@@ -173,9 +208,16 @@ def smart_query_from_uri(uri: str) -> tuple[str, str]:
 class SmartUrlParams(BaseModel):
     """One key: the URL. ``extra="forbid"`` for the reason every params model
     here has it -- a mis-spelled key is an error rather than a silently ignored
-    one."""
+    one.
 
-    model_config = ConfigDict(extra="forbid")
+    ``hide_input_in_errors`` is set for the reason the module docstring
+    explains: pydantic-core auto-appends the RAW field input to a
+    ``value_error`` in ``input_value=`` regardless of what a ``mode="before"``
+    validator did to it, so without this flag ``_strip_the_token_before_the_model_sees_it``
+    would strip the token from the message and the value while pydantic put
+    it right back in the envelope around them."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     url: str = Field(
         min_length=1,
@@ -184,6 +226,18 @@ class SmartUrlParams(BaseModel):
             "Any X-Plex-Token in it is stripped before anything reads it."
         ),
     )
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _strip_the_token_before_the_model_sees_it(cls, value: object) -> object:
+        """Runs before pydantic's own type check and before
+        ``_the_url_must_carry_a_filter``, so the token is gone from the value
+        this model ever stores -- a valid paste's ``params.url`` included --
+        and from the raw input pydantic-core would otherwise echo on a
+        failure. A non-string value is returned unchanged and left to
+        pydantic's ordinary type error; nothing here should call a string
+        method on it."""
+        return strip_plex_token(value) if isinstance(value, str) else value
 
     @field_validator("url")
     @classmethod
@@ -210,10 +264,10 @@ class SmartUrlBuilder:
     smart = True
     params_model = SmartUrlParams
 
-    # Character for character ``SmartFilterBuilder``'s table, and deliberately
-    # so: the two builders produce the SAME kind of collection by the same
-    # route, so a field one cannot apply the other cannot either. Spelled out
-    # rather than imported from ``smart_filter`` because
+    # The same five keys as ``SmartFilterBuilder``'s, with messages phrased
+    # for a pasted URL: the two builders produce the SAME kind of collection
+    # by the same route, so a field one cannot apply the other cannot either.
+    # Spelled out rather than imported from ``smart_filter`` because
     # ``config/schema.py``'s validator reads this attribute off the registry
     # entry and a shared mutable dict between two builders would let one edit
     # move the other's refusals; the test asserts the two sets are equal, which
@@ -276,13 +330,14 @@ class SmartUrlBuilder:
         )
         url, libtype = smart_query_from_uri(params.url)
         if libtype != ctx.library_type.lower():
+            marker = url.find("type=")
             raise LibraryTypeMismatch(
-                "this smart_url is a %s search (`type=%d` in the pasted URL), "
+                "this smart_url is a %s search (`%s` in the pasted URL), "
                 "but this pass is running against a %s library, where Plex "
                 "would store a filter it cannot evaluate. Narrow the "
                 "definition with `libraries:`, or paste the URL from the "
                 "library you meant"
-                % (libtype, SORT_TYPES[libtype].key, ctx.library_type)
+                % (libtype, url[marker:marker + 6], ctx.library_type)
             )
         return url
 
