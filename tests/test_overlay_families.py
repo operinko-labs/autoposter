@@ -15,10 +15,15 @@ import hashlib
 import pytest
 from pydantic import ValidationError
 
+from autoposter.badges.compose import _resolve_definitions
+from autoposter.collections.filters import evaluate
 from autoposter.config.schema import BadgesConfig
 from autoposter.overlays.assets import ASSETS, IMAGES
 from autoposter.overlays.families import FAMILIES
 from autoposter.overlays.schema import OverlayDefinition
+from autoposter.overlays.selection import parse_condition
+from autoposter.overlays.sources import BUNDLED_FONTS
+from autoposter.overlays.variables import literal_of, tokens_in
 
 OVERLAY_MANIFEST = ASSETS / "OVERLAY-MANIFEST.sha256"
 BUILTIN_MANIFEST = ASSETS / "MANIFEST.sha256"
@@ -32,14 +37,14 @@ CR_COUNT = 98
 
 
 def test_the_builtin_manifest_did_not_grow_when_the_family_art_landed():
-    """Global Constraint 12 and the storm guard's third arm. `manifest_sha()`
-    is in every item's fingerprint; adding `CR_COUNT + 1` entries here would
-    re-badge every already-uploaded item in a library that enables no
-    family."""
+    """Global Constraint 7 and the storm guard's third arm. `manifest_sha()`
+    is in every item's fingerprint; adding these entries here would re-badge
+    every already-uploaded item in a library that enables no family."""
     lines = BUILTIN_MANIFEST.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 513
     assert not [line for line in lines if "images/cr/" in line]
     assert not [line for line in lines if "Direct-Play" in line]
+    assert not [line for line in lines if "_audio" in line]
 
 
 def test_the_family_art_has_its_own_manifest_and_it_is_accurate():
@@ -57,15 +62,30 @@ def test_the_cr_directory_holds_the_pinned_regional_count():
     assert len(list((IMAGES / "cr").glob("*.png"))) == CR_COUNT
 
 
-def test_every_family_definition_names_an_image_that_exists():
+def test_every_image_family_definition_names_an_image_that_exists():
     """`overlays/sources.py::resolve_image_path` REFUSES a `builtin:` naming a
     missing file, so a mistyped filename is a hard per-definition failure at
     render time. This is the transcription's real checksum: it catches every
     wrong region prefix, wrong bucket spelling and wrong colour suffix at
-    once."""
+    once.
+
+    **A-7's second stale-doc correction (sub-phase C2b):** this asserted
+    `definition.builtin` for EVERY family definition, which was true until
+    `aspect` -- the first shipped family that draws TEXT and names no image
+    at all. A text definition is exempted by its `text(...)` name rather than
+    by an allow-list of family keys, so a future text family is covered
+    without an edit, and a definition that is NEITHER a text one nor an
+    image one still fails here (which would be a definition that draws
+    nothing but a backdrop)."""
     missing = []
     for family, definitions in FAMILIES.items():
         for definition in definitions:
+            if literal_of(definition.name) is not None:
+                assert not definition.builtin, (
+                    f"{family}/{definition.name} draws text AND names an image; "
+                    "no row-100 family does both"
+                )
+                continue
             assert definition.builtin, f"{family}/{definition.name} names no image"
             path = IMAGES / (definition.builtin + ".png")
             if not path.exists():
@@ -263,3 +283,177 @@ def test_naming_the_same_family_twice_is_refused():
     every group's members."""
     with pytest.raises(ValidationError):
         BadgesConfig(families=["direct_play", "direct_play"])
+
+
+ASPECT_BANDS = [
+    # (name, low, high, weight) -- probe section 4.1, from `aspect.yml:48-72`
+    # at the pinned v2.4.8 tag. Eight overlays and NO 2.0 and NO 2.4: the
+    # brief that commissioned this sub-phase guessed a nine-entry list with
+    # both of those in it, and the vendored file has neither.
+    ("1.33", 1.32, 1.34, 80),
+    ("1.65", 1.64, 1.66, 70),
+    ("1.66", 1.65, 1.67, 60),
+    ("1.78", 1.77, 1.79, 50),
+    ("1.85", 1.84, 1.86, 40),
+    ("2.2", 2.19, 2.21, 30),
+    ("2.35", 2.34, 2.36, 20),
+    ("2.77", 2.76, 2.78, 10),
+]
+
+
+def test_the_aspect_family_transcribes_all_eight_bands():
+    """The transcription's checksum. A dropped band is not a crash; it is a
+    silently missing badge on every film shot at that ratio."""
+    definitions = FAMILIES["aspect"]
+    assert len(definitions) == 8
+    for definition, (label, low, high, weight) in zip(definitions, ASPECT_BANDS, strict=True):
+        assert definition.name == f"text({label})", label
+        assert definition.condition == {"aspect.gt": low, "aspect.lt": high}, label
+        assert (definition.group, definition.weight) == ("aspect", weight), label
+
+
+def test_the_aspect_family_draws_its_own_name_and_names_no_image():
+    """`final_name: text(<<text_<<key>>>>)` with `text_<<key>>:
+    <<overlay_name>>` (`aspect.yml:12,38`) -- resolved flat, the drawn string
+    is the overlay's own name, the literal `1.33`, and there is no
+    `<<variable>>` token in it at all. So `render_text` has nothing to
+    substitute and `UnresolvedVariable` can never fire for this family."""
+    for definition in FAMILIES["aspect"]:
+        literal = literal_of(definition.name)
+        assert literal is not None
+        assert tokens_in(literal) == [], definition.name
+        assert definition.builtin is None
+        assert definition.file is None
+        assert definition.url is None
+
+
+def test_the_aspect_family_shares_one_box_and_the_bundled_face():
+    """Probe section 4.1: 305x105, bottom-centre at `vertical_offset: 150`,
+    `Inter-Medium` at 63. The font is written as the BARE bundled name, which
+    `overlays/sources.py::resolve_font_path`'s A-4 rung answers for every
+    operator, whatever their `fonts_root` holds."""
+    for definition in FAMILIES["aspect"]:
+        assert (definition.back_width, definition.back_height) == (305, 105)
+        assert definition.back_color == "#00000099"
+        assert definition.back_radius == 30
+        assert (definition.horizontal_align, definition.horizontal_offset) == ("center", 0)
+        assert (definition.vertical_align, definition.vertical_offset) == ("bottom", 150)
+        assert definition.font == "Inter-Medium.ttf"
+        assert definition.font_size == 63
+        assert definition.font in BUNDLED_FONTS
+
+
+def test_the_1_65_and_1_66_bands_genuinely_overlap_and_weight_resolves_it():
+    """**A-5's first case, and it reads like a transcription error unless it
+    is pinned.** 1.65's band is 1.64-1.66 and 1.66's is 1.65-1.67, so a 1.655
+    item satisfies BOTH conditions. This is upstream's own arithmetic,
+    transcribed rather than corrected; what makes it well-defined is the
+    shared `group` plus the weights -- 70 beats 60, so the 1.65 badge draws
+    and only that one. C1's regionals never needed this: their buckets are
+    mutually exclusive."""
+    bands = {literal_of(d.name): d for d in FAMILIES["aspect"]}
+    low, high = bands["1.65"], bands["1.66"]
+    assert low.condition["aspect.lt"] > high.condition["aspect.gt"], (
+        "the two bands must actually overlap, or this pin proves nothing"
+    )
+    assert low.group == high.group == "aspect"
+    assert low.weight > high.weight
+    view = {"aspect": 1.655}
+    assert evaluate(parse_condition(low.condition), view) is True
+    assert evaluate(parse_condition(high.condition), view) is True
+    assert _resolve_definitions([low, high]) == [low]
+    assert _resolve_definitions([high, low]) == [low], (
+        "highest weight wins regardless of configured order"
+    )
+
+
+def test_the_language_count_family_is_dual_then_multi():
+    """Probe section 4.2, from `language_count.yml:53-79`. Dual is
+    `count_gte: 2` AND `count_lt: 3` -- exactly two; Multi is `count_gte: 2`
+    unbounded. Both on `audio_language`: `use_subtitles` is a template
+    variable upstream and this service ships flat definitions, so only the
+    `false` resolution is a family here (the subtitle STREAMS are collected
+    all the same -- see `MediaInfo.subtitle_stream_languages`).
+
+    **THE SLOT IS PINNED, and it is pinned because this plan got it wrong
+    once.** The draft hardcoded the regionals' left/15, bottom/270 and
+    asserted no position at all, so nothing would have caught a family drawn
+    on top of the content-rating badge. `language_count.yml:13-14` sets
+    `horizontal_align: center` / `vertical_align: bottom` and its
+    `conditionals:` resolve `horizontal_offset` -> 0 (`:33-34`) and
+    `vertical_offset` -> 30 (`:28-29`). The four assertions below are the
+    same shape `test_direct_play_is_one_definition_with_the_measured_box`
+    already carries -- and `direct_play` is exactly what this family shares
+    the slot with, upstream's own arrangement between two of its own
+    defaults, transcribed rather than rearranged."""
+    definitions = FAMILIES["language_count"]
+    assert len(definitions) == 2
+    dual, multi = definitions
+    assert (dual.name, dual.builtin) == ("dual_audio", "dual_audio")
+    assert (multi.name, multi.builtin) == ("multi_audio", "multi_audio")
+    assert dual.condition == {
+        "audio_language.count_gte": 2, "audio_language.count_lt": 3,
+    }
+    assert multi.condition == {"audio_language.count_gte": 2}
+    for definition in definitions:
+        assert (definition.back_width, definition.back_height) == (188, 105)
+        assert definition.back_color == "#00000099"
+        assert definition.back_radius == 30
+        assert (definition.horizontal_align, definition.horizontal_offset) == ("center", 0)
+        assert (definition.vertical_align, definition.vertical_offset) == ("bottom", 30)
+        assert definition.font is None, "an image overlay names no face"
+
+    # The slot `language_count` shares, and the one it does NOT. Pinned in
+    # the same test rather than a second one, because the whole point is
+    # that the four assertions above are the interesting half and this is
+    # what they MEAN: the overlap is with `direct_play` (upstream's own
+    # arrangement between two of its own defaults, `direct_play.yml:12-32`),
+    # and there is no overlap at all with the content-rating regionals at
+    # left/15, bottom/270 -- the collision this plan's draft feared and
+    # built a STOP gate for, which the pinned image showed was never real.
+    # Neither family is moved: this module transcribes, it does not
+    # redesign.
+    slot = {
+        (d.horizontal_align, d.horizontal_offset, d.vertical_align, d.vertical_offset)
+        for d in definitions + FAMILIES["direct_play"]
+    }
+    assert slot == {("center", 0, "bottom", 30)}
+    assert slot.isdisjoint({
+        (d.horizontal_align, d.horizontal_offset, d.vertical_align, d.vertical_offset)
+        for d in FAMILIES["content_rating_uk"]
+    })
+
+
+def test_dual_beats_multi_on_a_two_language_item():
+    """**A-5's second case: this family CANNOT ship without group/weight.** A
+    2-language item satisfies Dual's band and Multi's band both, by
+    construction -- Multi is deliberately unbounded above. Group `language`
+    plus weights 20 > 10 is the whole of what makes the answer
+    deterministic."""
+    dual, multi = FAMILIES["language_count"]
+    assert dual.group == multi.group == "language"
+    assert (dual.weight, multi.weight) == (20, 10)
+    two = {"audio_language": ("en", "fi")}
+    assert evaluate(parse_condition(dual.condition), two) is True
+    assert evaluate(parse_condition(multi.condition), two) is True
+    assert _resolve_definitions([dual, multi]) == [dual]
+    assert _resolve_definitions([multi, dual]) == [dual]
+
+    three = {"audio_language": ("en", "fi", "sv")}
+    assert evaluate(parse_condition(dual.condition), three) is False
+    assert evaluate(parse_condition(multi.condition), three) is True
+
+
+def test_the_two_new_families_ship_and_no_more():
+    assert sorted(FAMILIES) == [
+        "aspect",
+        "content_rating_au",
+        "content_rating_de",
+        "content_rating_nz",
+        "content_rating_uk",
+        "content_rating_us_movie",
+        "content_rating_us_show",
+        "direct_play",
+        "language_count",
+        "versions",
+    ]
