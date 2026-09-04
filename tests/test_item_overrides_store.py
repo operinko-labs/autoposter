@@ -214,6 +214,17 @@ def test_a_refusal_never_carries_the_operator_s_value():
     assert getattr(caught.value, "served_detail", False) is False
 
 
+async def test_a_non_string_value_is_refused_by_its_own_shape():
+    """A non-string body value -- reachable from a loosely typed PUT such as
+    ``{"value": 5}`` -- must not be told to clear an override it never
+    created. ``cannot be empty`` describes a different fault; the refusal
+    here names the type and nothing else."""
+    with pytest.raises(OverrideValueError) as caught:
+        parse_override("title", 5)
+    assert "cannot be empty" not in str(caught.value)
+    assert "int" in str(caught.value)
+
+
 async def test_the_loader_returns_typed_values_keyed_by_our_field_names(session):
     item = await _item(session)
     session.add(ItemMetadataOverride(item_id=item.id, field="critic_rating", value="8.7"))

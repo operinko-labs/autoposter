@@ -115,7 +115,11 @@ def parse_override(field: str, raw: str) -> object:
     DELETE, and accepting one here would give two spellings for one act.
     """
     if field in TEXT_FIELDS:
-        text = raw.strip() if isinstance(raw, str) else ""
+        if not isinstance(raw, str):
+            raise OverrideValueError(
+                f"{field} must be text, not {type(raw).__name__}"
+            )
+        text = raw.strip()
         if not text:
             raise OverrideValueError(
                 f"{field} cannot be empty; clear the override instead"
