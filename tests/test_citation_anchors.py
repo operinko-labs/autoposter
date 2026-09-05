@@ -86,7 +86,14 @@ SURFACES = (
 # ``test_builder_plex_search.py`` each cite
 # ``tests/oracle/9b/kometa_build_filter.py:800`` (the driver's own
 # ``return_as="%Y-%m-%d"`` truncation) by name.
-EXPECTED_REF_COUNT = 30
+#
+# The 72 added past 30 are search-tail E-1's (roadmap row 173, family E):
+# twenty new ``FILTER_ATTRIBUTES`` rows in ``filters.py``, each citing several
+# ``kometa_build_filter.py`` lines by name in its note (the field, the kind
+# list, the type category, the operator set), plus the ``SEARCH_OPERATORS_EXCLUDED``
+# entry for ``episode_plays`` and the three new tests appended to
+# ``test_collection_filters.py``.
+EXPECTED_REF_COUNT = 102
 
 _FILE_REF = re.compile(r"\b([\w./-]+\.(?:py|md|ts|tsx|yml|yaml)):(\d+)(?:-(\d+))?")
 _BARE_REF = re.compile(r"(?<![\w:]):(\d+)(?:-(\d+))?")
