@@ -255,6 +255,35 @@ def smart_definition_hash(url: str, summary: str | None, settings=None, config=N
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _level_conflict(collection, want_level: str) -> str | None:
+    """Task 3 review I-1: an existing smart collection whose Plex-side LEVEL
+    the definition's ``builder_level`` changed.
+
+    Mirrors ``reconcile.shape_conflict`` for the level axis, one door down in
+    this same file: ``Collection.subtype`` is Plex's record of the level the
+    collection was CREATED at (movie/show/season/episode -- the same
+    vocabulary ``COLLECTION_TYPES`` uses), and there is no PUT that re-levels a
+    smart collection -- ``update_smart_collection`` sends only the uri, onto a
+    collection Plex already created at the OLD type. Applying it anyway would
+    write the new level's filter onto the old level's collection and report it
+    as an update, which is exactly what this closes. So this refuses instead,
+    the same call ``shape_conflict`` makes for a smart/list conversion: no
+    delete, no PUT, name the two manual paths by naming the two levels.
+
+    Returns ``None`` when the collection's own subtype agrees with what the
+    definition wants now (including when Plex reports no subtype at all -- a
+    library this old code path never created one for), and the fixed refusal
+    sentence otherwise, naming the two level tokens and nothing else.
+    """
+    have = getattr(collection, "subtype", None)
+    if have is None or have == want_level:
+        return None
+    return (
+        "smart collection exists at %s level; the definition asks for %s "
+        "level -- delete it and let the next pass recreate it" % (have, want_level)
+    )
+
+
 async def reconcile_smart_collection(
     session: AsyncSession,
     section,
@@ -329,9 +358,14 @@ async def reconcile_smart_collection(
     which is what a direct caller with no pass around it gets.
 
     ``level`` is the definition's ``builder_level`` (search-tail E-2). It
-    decides the ``type`` on the create POST and nothing else: the stored
-    filter already carries its own ``type=``, built by ``build_search_url``
-    from the same field, and ``update_smart_collection`` sends no type at all.
+    decides the ``type`` on the create POST: the stored filter already
+    carries its own ``type=``, built by ``build_search_url`` from the same
+    field, and ``update_smart_collection`` sends no type at all. On the update
+    path it is instead compared against the EXISTING collection's own level
+    (``_level_conflict``, Task 3 review I-1) -- Plex has no PUT that re-levels
+    a smart collection, so a definition whose ``builder_level`` changed after
+    the collection was created refuses rather than writing the new level's
+    filter onto the old level's collection.
 
     ``poster_kind``/``poster_key`` name this collection's default artwork, the
     way ``BuilderResult``'s two fields of the same name do on the list path.
@@ -372,6 +406,11 @@ async def reconcile_smart_collection(
         if conflict is not None:
             logger.warning("%s: %s", library, conflict)
             return [conflict]
+
+        level_mismatch = _level_conflict(collection, collection_type)
+        if level_mismatch is not None:
+            logger.warning("%s: %s", library, level_mismatch)
+            return [level_mismatch]
 
         ok, message = resolve_collision(
             collection, label, adopt, adopt_from or [], adopt_removes_prior_label,

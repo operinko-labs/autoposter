@@ -730,7 +730,7 @@ async def _run_one(
         return outcome
     # Belt-and-braces on the EFFECTIVE level, not the declared one. The three
     # schema validators above (`_arr_overrides_need_a_list_builder_at_item_level`,
-    # `_builder_level_needs_a_list_builder`) run at config load and can only
+    # `_builder_level_needs_a_builder_that_reads_it`) run at config load and can only
     # ever see `definition.builder_level` -- so a builder that self-declares a
     # non-item `result.level` while `builder_level` stays "item" (the default)
     # satisfies every one of them and would otherwise reach `restricted_members`

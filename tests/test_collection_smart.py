@@ -95,10 +95,11 @@ class FakeServer:
 class FakeCollection:
     """Mirrors plexapi's lazy ``labels``/``fields``: empty until ``reload()``."""
 
-    def __init__(self, title, labels=(), rating_key="12345", smart=True, summary=None):
+    def __init__(self, title, labels=(), rating_key="12345", smart=True, summary=None, subtype="movie"):
         self.title = title
         self.ratingKey = rating_key
         self.smart = smart
+        self.subtype = subtype
         self.summary = summary
         self.titleSort = None
         self.collectionMode = None
@@ -758,3 +759,23 @@ async def test_an_episode_level_smart_create_posts_type_four(session):
     )
     assert "type=4" in section._server.queries[0][0]
     assert section._server.queries[0][1] == "POST"
+
+
+async def test_a_smart_collection_that_exists_at_another_level_is_refused(session):
+    """Task 3 review I-1: an existing SHOW-level smart collection whose
+    definition now asks for episode level. There is no PUT that re-levels a
+    smart collection, so this refuses -- the same call ``shape_conflict``
+    makes for a smart/list conversion, one axis over -- rather than PUTting
+    the episode-level filter onto the collection Plex created at show level."""
+    existing = FakeCollection(TITLE, labels=[LABEL], smart=True, subtype="show")
+    section = FakeSection(matches=7, existing=[existing])
+    actions = await reconcile_smart_collection(
+        session, section, "TV Shows", "Show", TITLE, URL, LABEL,
+        dry_run=False, level="episode",
+    )
+    assert section._server.queries == []
+    assert actions == [
+        "smart collection exists at show level; the definition asks for "
+        "episode level -- delete it and let the next pass recreate it"
+    ]
+    assert await _row(session, "TV Shows", TITLE) is None
