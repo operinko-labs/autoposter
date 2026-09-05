@@ -18,7 +18,11 @@ library names are already served by ``GET /api/items/filters``.
 
 from sqlalchemy import case, func, select
 
+from fastapi import APIRouter, Depends, Request
+
+from autoposter.api.auth import ApiKeyPrincipal, api_key_or_session
 from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Session as SessionModel
 
 # The four artifact kinds, in the order the response reports them. Every
 # library's ``by_art_kind`` carries all four, zero-filled -- ``jobs_by_state``'s
@@ -113,3 +117,28 @@ async def storage_snapshot(session) -> dict:
         "by_library": by_library,
         "generated_at": generated_at,
     }
+
+
+router = APIRouter()
+
+
+@router.get("/stats/storage")
+async def storage_stats(
+    request: Request,
+    _: SessionModel | ApiKeyPrincipal = Depends(api_key_or_session),
+) -> dict:
+    """Counts and bytes for every rendered artifact, by library and art kind.
+
+    Readable with a browser session OR with the read-only ``X-API-Key``
+    (roadmap row 51) -- the intended consumer is a gethomepage ``customapi``
+    widget, which has no session. Both halves of row 51's scope have to agree:
+    this handler takes ``api_key_or_session`` AND ``/api/stats/storage`` is in
+    ``api.auth.ALLOWLIST``, which the dependency checks itself, so a
+    ``Depends`` placed here without the allowlist entry fails closed rather
+    than opening a route.
+
+    One session, two SELECTs, no filesystem (see this module's docstring).
+    """
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        return await storage_snapshot(session)

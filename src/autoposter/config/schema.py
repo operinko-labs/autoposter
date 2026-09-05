@@ -3144,6 +3144,25 @@ class SchedulerConfig(BaseModel):
         default=7,
         description="How often the Plex maintenance pass runs.",
     )
+    # Roadmap row 52's backfill. Weekly like every other maintenance pass:
+    # renders.size_bytes is stamped at render time, so this pass only ever
+    # has to catch up rows written before that column existed (and rows whose
+    # stat failed at publish). Once the library is measured it finds nothing
+    # and costs one indexed SELECT a week.
+    asset_stats_days: int = Field(
+        default=7,
+        description="How often the asset-size backfill sweep runs.",
+    )
+    # The safety valve, drift_batch_size's rule: a ~16,000-artifact library on
+    # an NFS mount is measured over successive runs rather than in one
+    # multi-minute stat storm.
+    asset_stats_batch_size: int = Field(
+        default=500,
+        description=(
+            "The most render rows one asset-size sweep stats, so a large "
+            "library is measured gradually rather than all at once."
+        ),
+    )
     cleanup_days: int = Field(
         default=7,
         description="How often the asset cleanup sweep runs.",
