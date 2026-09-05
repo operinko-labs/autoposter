@@ -84,6 +84,18 @@ def test_pillow_specifically_is_declared():
     assert "pillow" in _declared()
 
 
+def test_python_multipart_specifically_is_declared():
+    """The same class of absence as Pillow's, one layer further out.
+
+    Nothing in ``src/`` imports it, so the AST walk above cannot see it: it is
+    ``starlette.formparsers`` that imports ``python_multipart`` at request
+    time, and only when a form is parsed. Undeclared, the built image installs
+    nothing, and the manual-upload route answers 500 on its first real request
+    while every test on a developer's machine passes.
+    """
+    assert "python_multipart" in _declared()
+
+
 def test_the_audit_can_actually_fail():
     """Guards the guard: if the AST walk silently found nothing, the test
     above would pass no matter what was missing."""

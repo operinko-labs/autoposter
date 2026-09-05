@@ -795,11 +795,48 @@ up next time round. Nothing else in the library moves: the setting is in the
 
 **What is not here.** Images are not overridden from this panel — that is the
 "Use file or URL" control on the same page, which has been there since the
-manual-assets work and carries an SSRF guard. Kometa's *advanced settings*
-(agent language, episode sorting, subtitle mode and the rest) are a different
-Plex API this service has never called and are not available. And there is no
-YAML import: autoposter never parses Kometa or Posterizarr files, by a
-long-standing project decision, so the panel is the way in.
+manual-assets work, carries an SSRF guard, and now also takes a file from the
+operator's own machine (see *Manual artwork sources* below). Kometa's
+*advanced settings* (agent language, episode sorting, subtitle mode and the
+rest) are a different Plex API this service has never called and are not
+available. And there is no YAML import: autoposter never parses Kometa or
+Posterizarr files, by a long-standing project decision, so the panel is the
+way in.
+
+## Manual artwork sources
+
+An item's detail page has one control, "Use file or URL", that installs an
+image of the operator's choosing as that item's base artwork. It takes three
+forms of source, and all three end in the same place — a file on
+`/manualassets` at the deterministic mirror name the render pipeline already
+looks for, with that row's fingerprints cleared and one re-render queued:
+
+- **A URL.** Fetched through the SSRF guard: scheme allowlist, address checks
+  after resolution, redirects followed by hand. A refusal names the reason and
+  never the URL.
+- **A path under `/manualassets`.** Resolved against the mount with both sides
+  put through `realpath` first, so a symlink planted inside the mount is
+  refused on its target rather than accepted on its name.
+- **A file from the browser.** Uploaded as multipart. Capped at the same 50 MiB
+  every other source is capped at, and the cap is applied while the body is
+  still arriving — an oversized upload is refused with "the upload exceeds the
+  size cap" and never reaches the disk. The only content check is a full image
+  decode, so the browser's declared content type is irrelevant and an
+  undecodable file is refused with nothing written. The stored file name is
+  built by this service; the uploaded file's own name is read for nothing and
+  appears in no response, no log line and no events row.
+
+Posters, backgrounds, season posters and title cards accept all three. A
+**clearlogo** accepts the first two only: a logo is installed untranscoded and
+keeps its container, and the container is read from the source's name — which
+an upload does not supply.
+
+**Nothing here uploads to Plex.** Every source writes to the manual-assets
+mount and stops; the render pipeline picks the file up on the next pass and
+uploads what it composites. That is deliberate and not an oversight: an image
+pushed straight to Plex lands as an `upload://` entry, and Plex's API has no
+way to delete one (verified by probe) — a mistake made from a browser would be
+permanent.
 
 ## Badge overlays config
 

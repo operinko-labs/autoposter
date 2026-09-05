@@ -27,6 +27,14 @@ dependencies = [
     # Imported directly by app.py. It arrives transitively via fastapi, but a
     # module this codebase imports itself belongs in its own dependency list.
     "starlette>=0.40",
+    # Starlette's form parser imports it at REQUEST time (starlette/formparsers.py
+    # sets `multipart = None` when it is absent), so an undeclared upload route
+    # answers 500 on its first real multipart request with every test green --
+    # the Pillow failure again, one layer further out. Floored at 0.0.20 for two
+    # reasons: 0.0.18 fixed the malformed-multipart logging DoS, and by 0.0.12
+    # the canonical module name is `python_multipart`, which is the import
+    # Starlette tries first.
+    "python-multipart>=0.0.20",
     # Password hashing for the Web UI's API (api/auth.py).
     "bcrypt>=4.2",
     # The ISO 639 reduction behind `plex_search`'s audio_language/

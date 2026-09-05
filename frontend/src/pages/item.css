@@ -134,6 +134,19 @@
   max-width: 100%;
 }
 
+/* The second row of the same panel. Its own top margin rather than a gap on a
+ * shared container: the two rows are two different requests, and the space is
+ * what says so. */
+.manual-upload {
+  margin-top: 8px;
+}
+
+.manual-file {
+  flex: 1 1 22rem;
+  min-width: 12rem;
+  max-width: 100%;
+}
+
 .candidate-heading {
   margin: 0 0 12px;
   font-size: 13px;
