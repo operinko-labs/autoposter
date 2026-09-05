@@ -704,7 +704,11 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity MEDIUM,HIGH,CRITICAL --no-progress             ${{ env.CI_IMAGE }}
           # Medium findings are reported above but do not block; anything
           # HIGH or CRITICAL fails the job and so is never pushed.
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity HIGH,CRITICAL --exit-code 1 --no-progress             ${{ env.CI_IMAGE }}
+          # `.trivyignore` at the repo root carries the dated, explained
+          # exceptions (base-image CVEs whose fix the pinned Alpine branch does
+          # not ship yet). It is mounted in because trivy reads the ignore file
+          # from its own working directory, which inside this container is /.
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             -v "$PWD/.trivyignore:/.trivyignore:ro"             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity HIGH,CRITICAL --exit-code 1 --no-progress             --ignorefile /.trivyignore ${{ env.CI_IMAGE }}
 
       # `needs.gate_verified.result == 'success'` on all three of these, on top
       # of the job-level `if`, is belt and braces. The event conditions alone

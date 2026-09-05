@@ -83,11 +83,16 @@ RUN apk add --no-cache \
  && magick -version | grep -q HDRI \
  && magick -version
 
-# 2026-08-26 -- CVE-2026-14456: openssl 3.5.7-r0 -> 3.5.8-r0. Remove when the
-# pinned python:alpine base ships openssl >= 3.5.8 (Renovate's next base bump).
+# 2026-08-26 -- CVE-2026-14456: openssl 3.5.7-r0 -> 3.5.8-r0. Widened
+# 2026-09-05 -- CVE-2026-53612 / CVE-2026-76642: util-linux 2.42.1-r0 -> 2.42.3-r0
+# (libblkid, libmount, libuuid) failed the Trivy HIGH gate on main the same way.
+# A targeted list re-breaks main on every new base-package CVE, so this now
+# upgrades every Alpine package the base ships; python itself is built from
+# source in the official image and is not an apk package, so it is untouched.
+# Remove when the pinned python:alpine base catches up (Renovate's next bump).
 #
-# The base is Alpine 3.24.1, whose repository already has the fixed package;
-# only the image predates it. Both stages that ship anything inherit this one,
+# The base is Alpine 3.24.1, whose repository already has the fixed packages;
+# only the image predates them. Both stages that ship anything inherit this one,
 # so patching here covers `runtime` and the `dev` stage CI runs the
 # ImageMagick-gated tests in. The node stages are not in scope: `frontend`
 # contributes only /frontend/dist to the final image and `webdev` is never
@@ -98,7 +103,7 @@ RUN apk add --no-cache \
 # stages -- putting it any lower would rebuild it whenever pyproject.toml or
 # src/ changed, which is the layer ordering the dev stage was reshaped to
 # avoid.
-RUN apk upgrade --no-cache libcrypto3 libssl3
+RUN apk upgrade --no-cache
 
 WORKDIR /app
 
