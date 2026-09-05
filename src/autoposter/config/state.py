@@ -11,7 +11,9 @@ different lifetimes and different readers:
   echoes the overrides. A separate file with its own reader is what lets that
   rule stay.
 * ``autoposter.yaml`` -- the config document, consulted by
-  ``config/loader.py`` only when ``AUTOPOSTER_CONFIG`` names nothing.
+  ``config/loader.py`` when ``AUTOPOSTER_CONFIG`` names nothing or names a
+  file that is not there (the image bakes that variable, so "set" alone
+  cannot mean "mounted").
 
 Reading order is the environment first and the file second, everywhere. That
 one rule is what makes "a GitOps/ExternalSecrets deployment is unaffected"
@@ -19,10 +21,14 @@ true by construction rather than by a mode check happening to be right: a
 deployment whose environment is complete never opens either file.
 """
 
+import logging
 import os
+import stat
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 STATE_DIR_ENV = "AUTOPOSTER_STATE_DIR"
 DEFAULT_STATE_DIR = Path("/state")
@@ -66,10 +72,11 @@ def read_secrets_file(path: Path) -> dict[str, str]:
         return {}
     values: dict[str, str] = {}
     for line in raw.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
+        if not line.strip() or line.lstrip().startswith("#") or "=" not in line:
             continue
-        name, _, value = stripped.partition("=")
+        name, _, value = line.partition("=")
+        # The NAME is stripped, the value never is: a credential that ends in
+        # a space is a credential, and eating it would corrupt it silently.
         values[name.strip()] = value
     return values
 
@@ -93,6 +100,29 @@ def render_secrets_file(values: Mapping[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _tighten_directory(directory: Path) -> None:
+    """0700, when this process is allowed to say so.
+
+    Best-effort by design, and only when the mode is wider than 0700 already.
+    The production shape is a Kubernetes PVC mounted at /state with
+    ``runAsUser: 568`` and ``fsGroup: 568``: fsGroup fixes GROUP ownership and
+    adds group bits, but the mount root's owning uid stays 0, and ``chmod``
+    requires ownership -- so an unconditional call raises ``PermissionError``
+    on the one deployment shape this row targets, before a single credential
+    can be stored.
+
+    Losing this is survivable; the file's own 0600 is what actually protects
+    the credentials, and ``tempfile.mkstemp`` gives it that from creation
+    rather than after a window.
+    """
+    try:
+        if stat.S_IMODE(directory.stat().st_mode) & ~_DIR_MODE:
+            os.chmod(directory, _DIR_MODE)
+    except PermissionError:
+        # The PATH, never a value: everything this module writes is a secret.
+        logger.warning("cannot set 0700 on the state directory: %s", directory)
+
+
 def write_state_file(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` atomically, 0600, in a 0700 directory.
 
@@ -109,7 +139,7 @@ def write_state_file(path: Path, text: str) -> None:
     """
     directory = path.parent
     directory.mkdir(parents=True, exist_ok=True)
-    os.chmod(directory, _DIR_MODE)
+    _tighten_directory(directory)
     handle, temp_name = tempfile.mkstemp(dir=directory, prefix=".autoposter-", suffix=".partial")
     temp_path = Path(temp_name)
     try:

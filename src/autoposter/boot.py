@@ -16,8 +16,21 @@ process that will not start and will not offer to be fixed.
 CONFIGURED means both halves, in this order:
 
 1. every hard secret resolves -- the environment first, the state file second
-   (``config/schema.resolve_secret_values``);
-2. the database those credentials name answers ``SELECT 1``.
+   (``config/schema.resolve_secret_values``), with an EMPTY value counting as
+   absent on both sides;
+2. a config document is readable -- the ``AUTOPOSTER_CONFIG`` path when that
+   file exists, the state directory's ``autoposter.yaml`` otherwise
+   (``config/loader.config_document_path``).
+
+The database is NOT consulted. A deployment that has both halves boots exactly
+as it did before this module existed, including when postgres is down: the
+migration fails, the process exits non-zero, the orchestrator restarts it
+until the database answers. Demoting that boot into setup mode instead would
+take a production pod restarted during a postgres rollout, stop it being the
+application, and put an unauthenticated first-start wizard on the port the
+Service and Ingress already point at. The ``SELECT 1`` probe still exists, in
+``db/base.database_answers``, as the setup wizard's database-step validation --
+where a human is waiting for the answer and no traffic is being served.
 
 Configured: the resolved names are exported into this process's environment
 (so ``alembic/env.py`` and the exec'd application read a file-configured
@@ -27,7 +40,6 @@ what the old shell line did. Unconfigured: no migration, no engine, no
 database session; the setup application is served instead.
 """
 
-import asyncio
 import logging
 import os
 import subprocess
@@ -35,8 +47,9 @@ import sys
 
 import uvicorn
 
+from autoposter.config.loader import config_document_path
 from autoposter.config.schema import missing_hard_secret_names, resolve_secret_values
-from autoposter.db.base import database_answers
+from autoposter.config.state import state_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -48,32 +61,40 @@ DEFAULT_COMMAND = (sys.executable, "-m", "autoposter.main")
 
 
 def is_configured(resolved: dict[str, str]) -> bool:
-    """Whether this deployment can run the application at all.
+    """Whether this deployment has been told what it is.
 
-    The credential check runs first and short-circuits, so an unconfigured
-    deployment never opens a socket to a database it was never told about.
+    Credentials first and short-circuiting, so a deployment that was never
+    told anything does not go looking for a config document either.
     """
     missing = missing_hard_secret_names(resolved)
     if missing:
         # Names, never values: these are the variables an operator sets.
-        logger.info(
-            "credentials do not resolve; unset: %s", ", ".join(missing)
+        logger.warning("credentials do not resolve; unset: %s", ", ".join(missing))
+        return False
+    if config_document_path() is None:
+        # Paths, never contents. The two candidates are named because "no
+        # config document" is otherwise indistinguishable from "the wrong one".
+        logger.warning(
+            "no config document at %s and none at %s",
+            os.environ.get("AUTOPOSTER_CONFIG") or "(AUTOPOSTER_CONFIG unset)",
+            state_config_path(),
         )
         return False
-    answered, failure = asyncio.run(database_answers(resolved["AUTOPOSTER_DATABASE_URL"]))
-    if not answered:
-        # Class name only. A connection error's own text carries the DSN, and
-        # this line goes to stdout, which api/logs.py's scrub does not cover.
-        logger.warning("the configured database did not answer (%s)", failure)
-    return answered
+    return True
 
 
 def _export(resolved: dict[str, str]) -> None:
     """Publish the resolved names into this process's environment.
 
-    ``setdefault``, so a value that came from the environment is never
-    rewritten by one from the file -- the precedence rule, restated where it
-    would otherwise be possible to invert it by accident.
+    A plain assignment, not ``setdefault``: ``resolved`` already encodes the
+    precedence rule (environment first, file second), so ``setdefault`` would
+    re-implement it -- and get it wrong for the one case that matters. A name
+    that is present but EMPTY (``AUTOPOSTER_DATABASE_URL=`` in a copied .env,
+    a blanked GitOps secret) counts as ABSENT everywhere else in this row --
+    ``resolve_secret_values``, ``missing_hard_secret_names``, ``Secrets.load``
+    -- and ``setdefault`` would leave the empty string standing, so alembic
+    would refuse to run with a credential this process had just decided it
+    had.
 
     This is what makes the file-configured deployment indistinguishable from
     the env-configured one downstream: ``alembic/env.py`` reads
@@ -81,7 +102,7 @@ def _export(resolved: dict[str, str]) -> None:
     below passes this environment to the new process image.
     """
     for name, value in resolved.items():
-        os.environ.setdefault(name, value)
+        os.environ[name] = value
 
 
 def _migrate() -> None:
@@ -115,7 +136,7 @@ def main(argv: list[str] | None = None) -> None:
         from autoposter.api.setup import build_setup_app
 
         logger.warning(
-            "no complete set of credentials resolved; serving the first-start "
+            "this deployment is not configured yet; serving the first-start "
             "setup wizard instead of the application"
         )
         uvicorn.run(
@@ -124,6 +145,10 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     _export(resolved)
+    # The plaintext credentials leave this frame as soon as they are published:
+    # any traceback renderer that prints locals (pytest --tb=long, an error
+    # reporter added later) would otherwise dump all fourteen of them.
+    del resolved
     _migrate()
     if command:
         os.execvp(command[0], command)

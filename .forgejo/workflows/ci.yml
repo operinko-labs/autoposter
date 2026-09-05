@@ -655,8 +655,9 @@ jobs:
           "
 
       - name: Verify migrations apply to an empty database
-        # The container runs `alembic upgrade head` on startup, so a migration
-        # that cannot apply is a failure to boot, not a deferred problem.
+        # `autoposter.boot` runs `alembic upgrade head` on startup of every
+        # configured deployment, so a migration that cannot apply is a failure
+        # to boot, not a deferred problem.
         run: |
           docker network create "$MIG_NETWORK"
           docker run -d --name "$MIG_CONTAINER" --network "$MIG_NETWORK" \

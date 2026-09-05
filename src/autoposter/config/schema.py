@@ -45,6 +45,14 @@ def resolve_secret_values() -> dict[str, str]:
     """Every secret env NAME that resolves to a value: environment first, the
     state file second. Names that resolve to nothing are absent from the map.
 
+    An EMPTY environment value counts as absent, here and in every other
+    reader of this map (``missing_hard_secret_names``, ``Secrets.load``, and
+    ``boot._export``, which overwrites an empty value with the resolved one).
+    ``AUTOPOSTER_DATABASE_URL=`` in a copied .env or a blanked GitOps secret
+    is a name nobody supplied, and the one rule that must not vary between
+    the reader that decides the boot mode and the writer that publishes the
+    environment alembic then reads.
+
     Keyed by environment variable name rather than by model field because its
     callers speak in environment variables: ``boot`` exports these, and
     ``alembic/env.py`` reads one of them directly out of ``os.environ``.
@@ -53,7 +61,11 @@ def resolve_secret_values() -> dict[str, str]:
     name -- a deployment whose environment is complete never opens it at all,
     which is what makes the GitOps/ExternalSecrets exemption true by
     construction. Once opened, a state directory with no file in it reads as
-    an empty mapping rather than failing.
+    an empty mapping rather than failing. The corollary is that on an
+    env-complete deployment the file is unreachable for the SOFT names too: a
+    wizard-written ``AUTOPOSTER_API_KEY`` would be ignored there. That is
+    harmless because such a deployment never runs the wizard, and it is said
+    here so no later caller assumes otherwise.
     """
     env_names = (*_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
     # A deployment whose environment carries every hard name never opens the

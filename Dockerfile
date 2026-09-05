@@ -145,7 +145,8 @@ FROM pybase AS runtime
 COPY pyproject.toml ./
 COPY src ./src
 # Remove pip once the package is installed. Nothing at runtime needs it --
-# the container runs `alembic upgrade head && python -m autoposter.main` --
+# the container runs `python -m autoposter.boot`, which runs the migration
+# itself once it has decided the deployment is configured --
 # and pip is where the image's only reported vulnerabilities come from. They
 # are not in anything this application imports: pip *vendors* its own
 # dependencies and declares them in pip/_vendor/vendor.txt, which scanners

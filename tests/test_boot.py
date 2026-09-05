@@ -5,10 +5,18 @@ and stored nowhere: there is no "setup complete" marker, because a marker is
 a second source of truth that can disagree with the credentials, and the
 disagreement's failure mode is a process that will not start and will not
 offer to be fixed.
+
+CONFIGURED is credentials plus a config document. The database is not part of
+it -- the last section here pins the probe that used to be, which is now the
+setup wizard's step-2 validation and nothing else.
 """
 import os
+import socket
 import stat
+import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -21,6 +29,7 @@ from autoposter.config.schema import (
     missing_hard_secret_names,
     resolve_secret_values,
 )
+from autoposter.db import base as db_base
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -31,6 +40,17 @@ HARD = (
     "AUTOPOSTER_TVDB_APIKEY",
     "AUTOPOSTER_FANART_APIKEY",
     "AUTOPOSTER_WEBHOOK_SECRET",
+)
+
+SOFT = (
+    "AUTOPOSTER_ADMIN_PASSWORD_HASH",
+    "AUTOPOSTER_API_KEY",
+    "AUTOPOSTER_MDBLIST_APIKEY",
+    "AUTOPOSTER_RADARR_APIKEY",
+    "AUTOPOSTER_SONARR_APIKEY",
+    "AUTOPOSTER_HARBOR_TOKEN",
+    "AUTOPOSTER_PLEX_ACCOUNT_TOKEN",
+    "AUTOPOSTER_TRACEARR_APIKEY",
 )
 
 # Distinctive so the T6 grep gate can prove they never entered src/ or the
@@ -46,18 +66,38 @@ def clean_secret_environment(monkeypatch, tmp_path):
     The container's own environment carries none of these today, but a suite
     that depends on that is one `docker run -e` away from passing for the
     wrong reason.
+
+    Saved and restored by hand rather than through `monkeypatch.delenv`
+    alone: `boot._export` assigns into `os.environ` directly, and monkeypatch
+    records no undo entry for a name that was absent when the test began, so
+    a boot test would otherwise leak a credential into every test after it.
     """
-    for name in (*HARD, "AUTOPOSTER_ADMIN_PASSWORD_HASH", "AUTOPOSTER_API_KEY",
-                 "AUTOPOSTER_MDBLIST_APIKEY", "AUTOPOSTER_RADARR_APIKEY",
-                 "AUTOPOSTER_SONARR_APIKEY", "AUTOPOSTER_HARBOR_TOKEN",
-                 "AUTOPOSTER_PLEX_ACCOUNT_TOKEN", "AUTOPOSTER_TRACEARR_APIKEY"):
+    names = (*HARD, *SOFT, "AUTOPOSTER_CONFIG")
+    saved = {name: os.environ[name] for name in names if name in os.environ}
+    for name in names:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(state_module.STATE_DIR_ENV, str(tmp_path / "state"))
+    yield
+    for name in names:
+        os.environ.pop(name, None)
+    os.environ.update(saved)
 
 
 def _write_state_secrets(values: dict[str, str]) -> None:
     path = state_module.secrets_file_path()
     state_module.write_state_file(path, state_module.render_secrets_file(values))
+
+
+def _write_state_config() -> Path:
+    """The document the wizard's last step writes: the second half of
+    CONFIGURED."""
+    path = state_module.state_config_path()
+    state_module.write_state_file(path, yaml.safe_dump({"workers": 2}))
+    return path
+
+
+def _must_not_run(*args, **kwargs):
+    raise AssertionError("this boot must not migrate, exec, or open a database")
 
 
 # --- precedence: environment first, state file second -----------------------
@@ -114,6 +154,21 @@ def test_from_env_keeps_its_name_and_its_refusal_sentence(monkeypatch):
         Secrets.from_env()
 
 
+def test_an_empty_environment_value_counts_as_absent(monkeypatch):
+    """`AUTOPOSTER_PLEX_TOKEN=` in a copied .env is a name nobody supplied.
+
+    Empty-means-absent has to hold in every reader at once, or the reader
+    that decides the boot mode and the reader that builds `Secrets` disagree
+    about whether this deployment has credentials at all.
+    """
+    _write_state_secrets({name: "from-file" for name in HARD})
+    monkeypatch.setenv("AUTOPOSTER_PLEX_TOKEN", "")
+
+    assert resolve_secret_values()["AUTOPOSTER_PLEX_TOKEN"] == "from-file"
+    assert Secrets.load().plex_token == "from-file"
+    assert missing_hard_secret_names({name: "" for name in HARD}) == list(HARD)
+
+
 # --- the atomic writer ------------------------------------------------------
 
 
@@ -123,6 +178,31 @@ def test_the_written_file_is_0600_inside_a_0700_directory():
 
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+
+
+def test_a_directory_this_process_may_not_chmod_is_still_written_to(monkeypatch, caplog):
+    """The production shape is a PVC whose mount root is owned by uid 0 while
+    the process runs as 568: fsGroup fixes group ownership, not the owner, and
+    chmod requires the owner. An unconditional chmod would leave the wizard
+    unable to store anything on the one deployment shape this row targets."""
+    path = state_module.secrets_file_path()
+    real_chmod = state_module.os.chmod
+
+    def chmod(target, mode):
+        if Path(target) == path.parent:
+            raise PermissionError(1, "Operation not permitted")
+        return real_chmod(target, mode)
+
+    monkeypatch.setattr(state_module.os, "chmod", chmod)
+
+    with caplog.at_level("WARNING"):
+        _write_state_secrets({"AUTOPOSTER_API_KEY": FAKE_PLEX_TOKEN})
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert state_module.read_secrets_file(path) == {"AUTOPOSTER_API_KEY": FAKE_PLEX_TOKEN}
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert str(path.parent) in logged
+    assert FAKE_PLEX_TOKEN not in logged
 
 
 def test_a_failed_write_leaves_neither_a_partial_file_nor_a_temp_file(monkeypatch):
@@ -150,6 +230,16 @@ def test_a_value_with_a_line_break_is_refused_without_echoing_it():
     assert "one" not in str(caught.value)
 
 
+def test_a_value_that_ends_in_a_space_round_trips_intact():
+    """A credential ending in whitespace is a credential; eating it would
+    corrupt the one thing this file exists to hold, silently."""
+    _write_state_secrets({"AUTOPOSTER_API_KEY": " value "})
+
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+
+    assert held == {"AUTOPOSTER_API_KEY": " value "}
+
+
 def test_an_absent_state_file_is_an_empty_mapping_not_an_error():
     assert state_module.read_secrets_file(state_module.secrets_file_path()) == {}
 
@@ -167,19 +257,44 @@ def test_merging_keeps_the_names_an_earlier_step_wrote():
 
 def test_the_config_path_falls_back_to_the_state_directory(monkeypatch):
     monkeypatch.delenv("AUTOPOSTER_CONFIG", raising=False)
-    written = state_module.state_config_path()
-    state_module.write_state_file(written, yaml.safe_dump({"workers": 5}))
+    written = _write_state_config()
 
     assert loader_module._default_config_path() == written
 
 
-def test_an_explicit_autoposter_config_is_never_overridden(monkeypatch):
-    """C5: the new lookup fires only when AUTOPOSTER_CONFIG is unset. Both
-    real deployments set it, so both keep exactly today's path."""
-    monkeypatch.setenv("AUTOPOSTER_CONFIG", "/config/autoposter.yaml")
-    state_module.write_state_file(state_module.state_config_path(), yaml.safe_dump({"a": 1}))
+def test_a_present_configured_document_always_wins(monkeypatch, tmp_path):
+    """C5: a deployment that mounts a document at the path it names keeps
+    exactly today's path, whatever the state directory holds."""
+    mounted = tmp_path / "mounted.yaml"
+    mounted.write_text(yaml.safe_dump({"workers": 9}), encoding="utf-8")
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(mounted))
+    _write_state_config()
 
-    assert loader_module._default_config_path() == Path("/config/autoposter.yaml")
+    assert loader_module._default_config_path() == mounted
+    assert loader_module.config_document_path() == mounted
+
+
+def test_a_configured_path_that_is_not_there_falls_back_to_the_state_document(
+    monkeypatch, tmp_path
+):
+    """The shape every container from this image has on its first start: the
+    variable is baked into the image and nothing is mounted at it. Keying the
+    fallback on "the variable is set" makes it unreachable exactly there --
+    the wizard would write its document, the next boot would still read
+    /config/autoposter.yaml, raise FileNotFoundError, and crash-loop with no
+    wizard left to fix it."""
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(tmp_path / "config" / "autoposter.yaml"))
+    written = _write_state_config()
+
+    assert loader_module._default_config_path() == written
+    assert loader_module.config_document_path() == written
+
+
+def test_the_image_bakes_a_config_path_a_first_start_container_has_no_file_at():
+    """Why the predicate above is about presence and not about the variable."""
+    dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "ENV AUTOPOSTER_CONFIG=/config/autoposter.yaml" in dockerfile
 
 
 def test_with_neither_the_path_is_the_mount_it_has_always_been(monkeypatch):
@@ -188,50 +303,55 @@ def test_with_neither_the_path_is_the_mount_it_has_always_been(monkeypatch):
     assert loader_module._default_config_path() == Path("/config/autoposter.yaml")
 
 
+def test_no_document_anywhere_is_reported_as_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(tmp_path / "absent.yaml"))
+
+    assert loader_module.config_document_path() is None
+
+
 # --- the decision matrix ----------------------------------------------------
 
 
-def test_configured_needs_every_hard_name_and_a_database_that_answers(monkeypatch):
+def test_configured_needs_every_hard_name_and_a_config_document(monkeypatch):
     for name in HARD:
         monkeypatch.setenv(name, "x")
-    monkeypatch.setattr(boot, "database_answers", _answering(True))
+    _write_state_config()
 
     assert boot.is_configured(resolve_secret_values()) is True
 
 
-def test_a_missing_hard_name_means_setup_mode_without_touching_the_database(monkeypatch):
+def test_a_missing_hard_name_means_setup_mode(monkeypatch):
     for name in HARD[1:]:
         monkeypatch.setenv(name, "x")
-
-    def never(url):
-        raise AssertionError("the database was probed with an incomplete credential set")
-
-    monkeypatch.setattr(boot, "database_answers", never)
+    _write_state_config()
 
     assert boot.is_configured(resolve_secret_values()) is False
 
 
-def test_a_database_that_refuses_means_setup_mode(monkeypatch):
+def test_credentials_without_a_config_document_mean_setup_mode(monkeypatch, tmp_path):
+    """The wizard's last step writes the document. Until it has, the
+    deployment has been told its secrets and nothing about what to do with
+    them, and finishing setup is the only thing it can usefully offer."""
     for name in HARD:
         monkeypatch.setenv(name, "x")
-    monkeypatch.setattr(boot, "database_answers", _answering(False, "ConnectionRefusedError"))
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(tmp_path / "absent.yaml"))
 
     assert boot.is_configured(resolve_secret_values()) is False
 
 
-def test_the_refusal_is_logged_as_a_class_name_and_never_as_the_url(monkeypatch, caplog):
+def test_the_decision_never_opens_a_database(monkeypatch):
+    """The amended C1. A configured deployment whose database is down keeps
+    failing its migration and restarting, exactly as the shell line this
+    replaced did -- it never demotes itself into an unauthenticated wizard on
+    the port the Service and Ingress already point at."""
     for name in HARD[1:]:
         monkeypatch.setenv(name, "x")
     monkeypatch.setenv("AUTOPOSTER_DATABASE_URL", FAKE_DB_URL)
-    monkeypatch.setattr(boot, "database_answers", _answering(False, "ConnectionRefusedError"))
+    _write_state_config()
+    monkeypatch.setattr(db_base, "make_engine", _must_not_run)
+    monkeypatch.setattr(db_base, "database_answers", _must_not_run)
 
-    with caplog.at_level("INFO"):
-        boot.is_configured(resolve_secret_values())
-
-    text = "\n".join(record.getMessage() for record in caplog.records)
-    assert "ConnectionRefusedError" in text
-    assert "row-121-db-secret" not in text
-    assert FAKE_DB_URL not in text
+    assert boot.is_configured(resolve_secret_values()) is True
 
 
 def test_missing_hard_names_are_reported_as_names_only():
@@ -244,19 +364,30 @@ def test_missing_hard_names_are_reported_as_names_only():
     ]
 
 
+def test_both_refusals_log_names_and_paths_and_never_a_value(monkeypatch, tmp_path, caplog):
+    absent = tmp_path / "absent.yaml"
+    monkeypatch.setenv("AUTOPOSTER_DATABASE_URL", FAKE_DB_URL)
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(absent))
+
+    with caplog.at_level("INFO"):
+        assert boot.is_configured(resolve_secret_values()) is False
+        for name in HARD[1:]:
+            monkeypatch.setenv(name, "x")
+        assert boot.is_configured(resolve_secret_values()) is False
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "AUTOPOSTER_PLEX_TOKEN" in logged
+    assert str(absent) in logged
+    assert "row-121-db-secret" not in logged
+    assert FAKE_DB_URL not in logged
+
+
 # --- the handover -----------------------------------------------------------
-
-
-def _answering(ok: bool, failure: str = ""):
-    async def answers(url: str) -> tuple[bool, str]:
-        return ok, failure
-
-    return answers
 
 
 def test_a_configured_boot_exports_migrates_and_execs_the_default_command(monkeypatch):
     _write_state_secrets({name: "from-file" for name in HARD})
-    monkeypatch.setattr(boot, "database_answers", _answering(True))
+    _write_state_config()
     order: list[str] = []
     monkeypatch.setattr(boot, "_migrate", lambda: order.append("migrate"))
     monkeypatch.setattr(
@@ -271,13 +402,31 @@ def test_a_configured_boot_exports_migrates_and_execs_the_default_command(monkey
     assert os.environ["AUTOPOSTER_DATABASE_URL"] == "from-file"
 
 
+def test_an_empty_environment_value_is_overwritten_by_the_file_value(monkeypatch):
+    """The half `setdefault` got wrong. A present-but-empty name resolves to
+    the file's value, so boot decides the deployment is configured -- and
+    then has to publish that same value, or `alembic/env.py` raises on the
+    empty string and the container dies with no wizard to fix it."""
+    _write_state_secrets(
+        {**{name: "from-file" for name in HARD}, "AUTOPOSTER_DATABASE_URL": FAKE_DB_URL}
+    )
+    _write_state_config()
+    monkeypatch.setenv("AUTOPOSTER_DATABASE_URL", "")
+    monkeypatch.setattr(boot, "_migrate", lambda: None)
+    monkeypatch.setattr(boot.os, "execv", lambda path, argv: None)
+
+    boot.main([])
+
+    assert os.environ["AUTOPOSTER_DATABASE_URL"] == FAKE_DB_URL
+
+
 def test_a_configured_boot_execs_the_command_argv_names(monkeypatch):
     """docker-compose.yml's api service passes its uvicorn --reload line; the
     image's CMD passes nothing. That is now the only difference between the
     two boots."""
     for name in HARD:
         monkeypatch.setenv(name, "x")
-    monkeypatch.setattr(boot, "database_answers", _answering(True))
+    _write_state_config()
     monkeypatch.setattr(boot, "_migrate", lambda: None)
     seen: list[list[str]] = []
     monkeypatch.setattr(boot.os, "execvp", lambda file, argv: seen.append(argv))
@@ -287,20 +436,62 @@ def test_a_configured_boot_execs_the_command_argv_names(monkeypatch):
     assert seen == [["uvicorn", "autoposter.main:build", "--factory", "--reload"]]
 
 
+def test_a_configured_boot_with_an_unreachable_database_still_migrates(monkeypatch):
+    for name in HARD[1:]:
+        monkeypatch.setenv(name, "x")
+    monkeypatch.setenv("AUTOPOSTER_DATABASE_URL", FAKE_DB_URL)
+    _write_state_config()
+    monkeypatch.setattr(db_base, "make_engine", _must_not_run)
+    monkeypatch.setattr(boot.uvicorn, "run", _must_not_run)
+    order: list[str] = []
+    monkeypatch.setattr(boot, "_migrate", lambda: order.append("migrate"))
+    monkeypatch.setattr(boot.os, "execv", lambda path, argv: order.append("execv"))
+
+    boot.main([])
+
+    assert order == ["migrate", "execv"]
+
+
+def test_a_migration_that_fails_exits_instead_of_serving_the_wizard(monkeypatch):
+    """What a configured deployment does while postgres is down: exactly what
+    the shell line did -- exit non-zero and let the orchestrator restart it."""
+    for name in HARD:
+        monkeypatch.setenv(name, "x")
+    _write_state_config()
+    monkeypatch.setattr(boot, "_migrate", _failing_migration)
+    monkeypatch.setattr(boot.uvicorn, "run", _must_not_run)
+    monkeypatch.setattr(boot.os, "execv", _must_not_run)
+
+    with pytest.raises(SystemExit) as caught:
+        boot.main([])
+
+    assert caught.value.code == 3
+
+
+def _failing_migration() -> None:
+    raise SystemExit(3)
+
+
 def test_an_unconfigured_boot_runs_no_migration_and_serves_the_setup_app(monkeypatch):
+    """The contract is pinned, not the collaborator: Task 2 owns the real
+    `build_setup_app`, and stubbing it here keeps this commit green on its own
+    so every later gate reads B + n with no standing failure for a new one to
+    hide behind."""
+    monkeypatch.setitem(
+        sys.modules,
+        "autoposter.api.setup",
+        SimpleNamespace(build_setup_app=lambda: SimpleNamespace(title="autoposter setup")),
+    )
     served: list[object] = []
     monkeypatch.setattr(boot, "_migrate", _must_not_run)
     monkeypatch.setattr(boot.os, "execv", _must_not_run)
+    monkeypatch.setattr(db_base, "make_engine", _must_not_run)
     monkeypatch.setattr(boot.uvicorn, "run", lambda app, **kwargs: served.append(app))
 
     boot.main([])
 
     assert len(served) == 1
     assert served[0].title == "autoposter setup"
-
-
-def _must_not_run(*args, **kwargs):
-    raise AssertionError("an unconfigured boot must not migrate or exec")
 
 
 # --- the two entrypoints ----------------------------------------------------
@@ -325,3 +516,39 @@ def test_the_image_still_execs_so_python_is_pid_one():
     dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
 
     assert '"exec python -m autoposter.boot"' in dockerfile
+
+
+# --- the probe, which is now the wizard's step-2 validation only ------------
+
+
+async def test_a_database_that_never_answers_fails_within_the_bound(monkeypatch):
+    """A host that accepts the connection and then says nothing -- a paused
+    VM, a failing-over pgbouncer, a DROP rule applied after accept. No dialect
+    bounds the query, and asyncpg's 60 s connect default is incidental rather
+    than chosen, so the wizard's step 2 would hold its request open with
+    nothing to show for it."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    monkeypatch.setattr(db_base, "PROBE_TIMEOUT_SECONDS", 0.25)
+
+    started = time.monotonic()
+    try:
+        answered, failure = await db_base.database_answers(
+            f"postgresql+asyncpg://u:p@127.0.0.1:{port}/db"
+        )
+    finally:
+        listener.close()
+
+    assert answered is False
+    assert failure == "TimeoutError"
+    assert time.monotonic() - started < 5.0
+
+
+async def test_the_probe_reports_a_class_name_and_never_the_url():
+    answered, failure = await db_base.database_answers(FAKE_DB_URL)
+
+    assert answered is False
+    assert "row-121-db-secret" not in failure
+    assert FAKE_DB_URL not in failure
