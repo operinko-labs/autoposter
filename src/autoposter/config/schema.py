@@ -580,12 +580,58 @@ class CollectionPosterTitleConfig(BaseModel):
         return self
 
 
+class SeasonPosterConfig(ArtKindConfig):
+    """Season posters can carry the SHOW's own title above their season text."""
+
+    # Roadmap row 78 -- Posterizarr's ShowTitleOnSeasonPosterPart. Shaped
+    # exactly like TitleCardConfig.episode_text: a second, independent
+    # TextStyle whose own add_text is the feature's gate (upstream's
+    # AddShowTitletoSeason). None by default, so a config that never mentions
+    # the key draws precisely what it drew before this row -- the same
+    # off-by-construction the title card's second block has always had.
+    #
+    # This block's OWN text_offset AND gravity are IGNORED once the gate is
+    # on: render/pipeline.py::stacked_above always uses the SEASON TEXT
+    # block's text_offset as its base and raises it by one fitted line of the
+    # season text plus a 10px gutter, and the caller draws the result at the
+    # SEASON TEXT block's own gravity -- that is what "stacked above the
+    # season text" means: the stacking rule owns the position AND the
+    # anchor. Upstream gives this block the same "+300"/south as the season
+    # text it is supposed to sit ABOVE, which would land the two on top of
+    # each other; upstream's own toggle ships false, so those values were
+    # never tuned against a real render, and no captured output of this
+    # feature exists anywhere to match. The raise itself is OURS, adjudicated,
+    # and said so wherever it is described. Both fields ARE live on the one
+    # path where there is no season text to stack above -- a blanked
+    # `artwork.title_card.season_name_overrides` entry for that season -- see
+    # `compose_styled`'s guard.
+    show_title: TextStyle | None = Field(
+        default=None,
+        description=(
+            "The show's own title, drawn as a second text block above the "
+            "season poster's season text -- font and sizing. This block's "
+            "own text_offset and gravity are IGNORED here: position and "
+            "anchor are decided entirely by the stacking rule, which draws "
+            "above the season text block's own text_offset, at the season "
+            "text block's own gravity. Both are live only when the season "
+            "text is blank (an override in "
+            "artwork.title_card.season_name_overrides), since then there is "
+            "nothing to stack above. Unset means no show title is drawn. "
+            "The season's own wording is renamed by "
+            "artwork.title_card.season_name_overrides."
+        ),
+    )
+
+
 class ArtworkConfig(BaseModel):
     poster: ArtKindConfig = Field(
         description="Movie/show poster art: whether it is built, its sources and its text block.",
     )
-    season_poster: ArtKindConfig = Field(
-        description="Season poster art: whether it is built, its sources and its text block.",
+    season_poster: SeasonPosterConfig = Field(
+        description=(
+            "Season poster art: whether it is built, its sources, its season "
+            "text block and the show title drawn above it."
+        ),
     )
     background: ArtKindConfig = Field(
         description="Background/fanart art: whether it is built, its sources and its text block.",

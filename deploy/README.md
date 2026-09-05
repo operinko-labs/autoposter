@@ -119,6 +119,43 @@ Practical consequences:
   and `artwork.output_quality` are members of every kind's payload by
   construction. The editor's preview says exactly how many renders that is,
   and which kinds, before you commit to it.
+  - Roadmap row 78 added `artwork.season_poster.show_title`. Adding the key
+    moved the `season_poster` art kind's render version once, so every season
+    poster re-rendered once through the provider ladder on the deploy that
+    landed it — with the block still off, and off is how it ships. Posters,
+    backgrounds and title cards were untouched. `config.version` (the
+    wholesale hash the Settings page shows as "version A to B") also moved.
+    Since row 111 that value is not a component of any per-kind fingerprint,
+    so nothing re-composites because of it — but it IS what row 111's dual
+    read computes a pre-111 row's legacy candidate from, so any artifact that
+    had not yet migrated off its pre-111 fingerprint took the grandfather's
+    `unchanged` arm on its next pass: the per-kind fingerprint was re-stamped
+    and nothing else happened. No composite, no provider request, no upload,
+    once per row. Adoption is not a mitigation for any of it — the adoption
+    walk refuses to clobber a real fingerprint, so a re-adopt after the move
+    re-fingerprints nothing.
+  - Turning the gate on stacks the show's title one fitted line of the
+    season text plus a 10px gutter above it, at the season block's own
+    gravity: the offset is ADDED under a south* gravity (case-insensitive —
+    `South`/`SOUTHEAST` both count) and clears the season block's FITTED
+    point size, not its configured maximum — the show-title block's own
+    `text_offset` AND `gravity` are IGNORED once the gate is on; the
+    stacking rule owns the position AND the anchor, so the show title is
+    always drawn at the season block's own gravity regardless of what the
+    show-title block itself is set to. The shipped example deliberately
+    ships `show_title.text_offset: "+120"` against the season block's
+    `"+300"` (Posterizarr gives both the same `"+300"`, which would overlap)
+    so the wiring is exercised by two different numbers rather than one that
+    happens to agree. Both ignored fields are live again on the one path
+    where there is no season text to stack above — a blanked season for that
+    show under `artwork.title_card.season_name_overrides`. **Limitation:**
+    the clearance is one fitted point size, not the season block's rendered
+    height, so a season title that wraps to two lines is only cleared past
+    its bottom line. For an episode, the impact preview's show title is
+    always `None` — episodes carry `title_card` rows only, and
+    `season_poster` rows are always seasons. No test for this feature
+    carries `@pytest.mark.imagemagick`; the compositor is stubbed
+    throughout.
 
 ## Secrets
 

@@ -303,6 +303,17 @@ def _moved(mutate) -> set[str]:
 # field name -> (a mutation away from the example's value, the kinds it must move)
 _PARTITION = {
     # Each kind's own `artwork.<kind>` subsection, confined to that kind.
+    #
+    # ONE exception, deliberate, since roadmap row 78: the key
+    # `artwork.title_card.season_name_overrides` also decides what a SEASON
+    # POSTER draws (render/pipeline.py's title_text_for), so
+    # `render_version_for` projects it into that kind's payload and an edit to
+    # it moves TWO kinds. This table cannot express that -- its mutations are
+    # keyed by ArtworkConfig field name and that key lives one level down, on
+    # TitleCardConfig -- so the pin lives at
+    # tests/test_season_show_title.py::test_a_season_name_override_moves_the_season_posters_version_too.
+    # The `title_card` entry below mutates `season_label`, which IS confined,
+    # so this table's own answers stay correct.
     "poster": (lambda c: setattr(c.artwork.poster, "border_width", 31), {"poster"}),
     "season_poster": (lambda c: setattr(c.artwork.season_poster, "add_border", True), {"season_poster"}),
     "background": (lambda c: setattr(c.artwork.background, "overlay_file", "other-overlay.png"), {"background"}),
@@ -464,7 +475,17 @@ def test_render_version_for_is_stable_across_two_loads_of_identical_content(tmp_
 # roots through `str(Path)`, which is what the pod and CI compute.
 EXAMPLE_PER_KIND_VERSIONS = {
     "poster": "4ac64b5874ce0ff3",
-    "season_poster": "056434d7e3ab6d49",
+    # Moved THREE times, on purpose, by roadmap row 78: artwork.season_poster
+    # gained its show_title block, render_version_for then gained a second,
+    # unconditional projection of artwork.title_card.season_name_overrides
+    # into this kind's payload (row 43's gap, co-delivered), and the task-2
+    # fix round's I2 correction shipped show_title.text_offset at "+120"
+    # instead of "+300" so it visibly differs from the season block's own
+    # offset (its own value is ignored by the stacking rule either way). The
+    # other three did not move -- that is the partition doing its job, and
+    # tests/test_season_show_title.py pins them against the values measured
+    # before the key existed.
+    "season_poster": "14f86f656d6fa935",
     "background": "9ae9ab3b95ae68ec",
     "title_card": "31f00cfe0ef31fba",
 }

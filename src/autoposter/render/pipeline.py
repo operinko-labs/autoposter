@@ -25,7 +25,7 @@ from autoposter.badges.values import (
     video_format_text,
 )
 from autoposter.config.loader import render_version_for
-from autoposter.config.schema import Config
+from autoposter.config.schema import Config, TextStyle
 from autoposter.db.models import EventLog, ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
@@ -200,6 +200,83 @@ def known_with_text(candidate) -> bool:
     return getattr(candidate, "includes_text", None) is True
 
 
+# The gap between the show title and the season text it sits above (roadmap
+# row 78). OURS: there is no captured upstream render of this feature to
+# measure one from -- see `stacked_above`.
+SHOW_TITLE_GUTTER = 10
+
+
+def stacked_above(below: TextStyle, below_point_size: int) -> str:
+    """The ``text_offset`` that puts one text block a line above ``below``'s.
+
+    Roadmap row 78's layout adjudication, and it is an adjudication rather
+    than a transcription. Posterizarr gives ``ShowTitleOnSeasonPosterPart``
+    the same ``text_offset: "+300"`` and ``TextGravity: "south"`` as
+    ``SeasonPosterOverlayPart``, so drawn as configured the show title lands
+    on top of the season text. Its own toggle ships ``false`` upstream, so
+    those values were never tuned against a real render, and no captured
+    output of this feature exists anywhere to compare against -- the same
+    "no oracle" this project already declares for row 105
+    (``collections/poster_title.py``). The ruling: the show title stacks ABOVE
+    the season text by one line of it plus ``SHOW_TITLE_GUTTER``, at the
+    season block's own gravity.
+
+    **The sign is not a detail.** ``compositor.build_text_argv`` composites
+    the caption with ``-gravity <g> -geometry +0<offset>``, and ImageMagick
+    measures that offset INWARD from the named edge: under a bottom-anchored
+    gravity a larger value is HIGHER on the canvas, under every other gravity
+    a larger value is lower. So the raise is ADDED for ``south``/
+    ``southwest``/``southeast`` -- the shipped configuration, and the only one
+    upstream's block was written for -- and SUBTRACTED otherwise, which is
+    what keeps the layout the right way up for an operator who anchored the
+    season text to the top of the poster.
+
+    ``below_point_size`` is the season block's FITTED size, not its configured
+    maximum: ``compose_styled`` already records exactly that value by
+    identity, and using the maximum would push the show title a hundred points
+    clear of a title that auto-fitted small.
+
+    Answers a SIGNED string, because ``TextStyle.text_offset`` is validated to
+    carry a sign (``config/schema.py``'s ``_must_carry_sign``) and
+    ``build_text_argv`` concatenates it after ``+0``.
+    """
+    raise_by = below_point_size + SHOW_TITLE_GUTTER
+    base = int(below.text_offset)
+    # `.lower()`: `TextStyle.gravity` is a free-form string with no validator
+    # (unlike the collection side's `_COLLECTION_GRAVITIES`, `config/schema.py`),
+    # and ImageMagick's own `-gravity` argument matches case-insensitively, so
+    # "South" and "SOUTHEAST" are both legal today and both render identically
+    # to "south". A case-sensitive compare here would take the wrong branch for
+    # either -- silently, since ImageMagick draws something regardless of sign.
+    value = (
+        base + raise_by if below.gravity.lower().startswith("south") else base - raise_by
+    )
+    return f"+{value}" if value >= 0 else str(value)
+
+
+def show_title_for(art_kind: str, item: ResolvedItem, config: Config) -> str | None:
+    """The SHOW's own title, for the block a season poster draws above its
+    season text (roadmap row 78).
+
+    ``None`` for every other art kind; for a season poster whose
+    ``show_title`` block is unset or has ``add_text`` off; and for an item
+    carrying no show title, which is the ordinary case for anything that is
+    not a season (``ResolvedItem.show_title`` is filled only there).
+
+    The caller passes the answer as ``compose_styled``'s ``secondary_text``.
+    That parameter already exists for the title card's second block,
+    ``gather_fingerprint_inputs`` already folds it into ``text_inputs``, and
+    riding it leaves ``compose_styled``'s signature and both of its other
+    callers (``api/testing.py``, and the pipeline's own call site) untouched.
+    """
+    if art_kind != "season_poster":
+        return None
+    style = art_config_for(config, art_kind).show_title
+    if style is None or not style.add_text:
+        return None
+    return item.show_title or None
+
+
 def title_text_for(
     art_kind: str, item: ResolvedItem, config: Config
 ) -> tuple[str | None, str | None]:
@@ -223,6 +300,25 @@ def title_text_for(
                 f"{season} {_BULLET} {settings.episode_label} {item.episode_number}"
             )
         return primary_title_for(item, config), secondary
+    if art_kind == "season_poster":
+        # Roadmap row 43's other half, co-delivered here (facts C7).
+        # Posterizarr puts OverrideSeasonName in SeasonPosterOverlayPart -- it
+        # renames the text on the SEASON POSTER -- while row 43 landed the
+        # table on TitleCardConfig and wired it only to the card's second
+        # line. The SAME table is read here, from the same key: an operator
+        # who already wrote {"0": "Specials"} gets it on both artifacts, and
+        # the season_poster kind pays its version move once rather than twice.
+        # `.get(key, default)`, deliberately, NOT `override or <default>`:
+        # the title card's own arm (`:216-219`) draws whatever the table says,
+        # so an entry of "" draws nothing there. One shared table must not
+        # mean two behaviours for one degenerate value -- an operator who
+        # blanks an entry is blanking it on both artifacts or on neither.
+        return (
+            config.artwork.title_card.season_name_overrides.get(
+                str(item.season_number), primary_title_for(item, config)
+            ),
+            show_title_for(art_kind, item, config),
+        )
     return primary_title_for(item, config), None
 
 
@@ -422,6 +518,22 @@ async def gather_fingerprint_inputs(
         font_hashes.append(
             await asyncio.to_thread(
                 _file_sha256, Path(config.fonts_root) / settings.episode_text.font
+            )
+        )
+    # Row 78's block, gated the same three ways `compose_styled` gates it --
+    # plus `draw_text`, which the title card's block above deliberately does
+    # not carry (a card draws its episode line even when the title is
+    # suppressed; a season poster's show title does not, facts C6). Miss this
+    # and a font swap on the new block silently does not re-render.
+    if (
+        art_kind == "season_poster"
+        and draw_text
+        and settings.show_title is not None
+        and secondary_text
+    ):
+        font_hashes.append(
+            await asyncio.to_thread(
+                _file_sha256, Path(config.fonts_root) / settings.show_title.font
             )
         )
     return text_inputs, [overlay_hash, *font_hashes, logo_sha]
@@ -881,6 +993,18 @@ async def compose_styled(
         blocks.append((settings.text, primary_text))
     if art_kind == "title_card":
         blocks.append((settings.episode_text, secondary_text))
+    # Roadmap row 78. Inside the `draw_text` arm, and appended LAST, for two
+    # separate reasons. Inside: facts C6 -- the show title obeys the same flag
+    # the season text does, inheriting row 39's skip_local_text_add, row 41's
+    # suppression and the poster logo swap for free rather than inventing a
+    # fourth precedence rule. Last: its offset is computed from the season
+    # block's FITTED point size, which only exists once that block has been
+    # measured.
+    show_title_style = (
+        settings.show_title if art_kind == "season_poster" and draw_text else None
+    )
+    if show_title_style is not None:
+        blocks.append((show_title_style, secondary_text))
     primary_point_size: int | None = None
     for style, text in blocks:
         if style is None or not text:
@@ -909,10 +1033,24 @@ async def compose_styled(
                     f"{style.min_point_size}pt"
                 ),
             )
+        # Row 78: the show title is drawn one line above the season text, so
+        # it is composited at a DERIVED offset AND the season block's own
+        # gravity, rather than its configured ones -- the stacking rule owns
+        # the position AND the anchor, so the two blocks agree on which edge
+        # "above" is measured from. A copy, never a mutation: `settings` is
+        # the live config object the holder serves to every other reader.
+        draw_style = style
+        if style is show_title_style and primary_point_size is not None:
+            draw_style = style.model_copy(
+                update={
+                    "text_offset": stacked_above(settings.text, primary_point_size),
+                    "gravity": settings.text.gravity,
+                }
+            )
         await asyncio.to_thread(
             compositor.run,
             compositor.build_text_argv(
-                config.magick_binary, str(working), style, font_path,
+                config.magick_binary, str(working), draw_style, font_path,
                 fit.point_size, prepared, config.artwork.output_quality,
             ),
         )

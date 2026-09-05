@@ -516,6 +516,82 @@ async def test_resolved_season_and_episode_feed_the_right_text_into_title_text_f
     assert episode_primary == "Who Is Alive?"
 
 
+async def test_resolve_a_season_carries_the_shows_own_title():
+    """Roadmap row 78, the GUID-search producer.
+
+    ``ResolvedItem.title`` for a season is the SEASON's own Plex title --
+    "Season 2", "Specials", or a bare year for a year-grouped season -- so
+    there was nothing for a season poster to draw the show's name from. The
+    show object is already in hand here (``item`` IS the show; ``target`` is
+    the season it descends to), so this costs no extra Plex request.
+    """
+    show = _show_with_season_and_episode()
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+    client = PlexClient(server=FakeServer([shows]), excluded_libraries=[])
+
+    item = await client.resolve(
+        RenderIntent(kind="season", title="Severance", tvdb_id=371980, season_number=2)
+    )
+
+    assert item.title == "Season 2", "the season's own identity is unchanged"
+    assert item.show_title == "Severance"
+
+
+async def test_a_direct_rating_key_fetch_of_a_season_carries_the_shows_own_title():
+    """The same field off the OTHER producer, which arrives at the show from
+    the opposite direction -- it fetches the season by key and climbs back up
+    via ``item.show()``. ``_RawMatch``'s docstring requires the two paths to
+    fill these fields identically; this is that requirement, asserted."""
+    show = _show_with_season_and_episode()
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+    client = PlexClient(
+        server=FakeServer([shows], items_by_key=_by_key(show)), excluded_libraries=[],
+    )
+
+    item = await client.resolve(
+        RenderIntent(
+            kind="season", title="Severance", tvdb_id=371980,
+            season_number=2, rating_key="556",
+        )
+    )
+
+    assert item.rating_key == "556", "the stored key resolved it"
+    assert item.show_title == "Severance"
+
+
+async def test_a_movie_and_an_episode_carry_no_show_title():
+    """The field is filled for a SEASON and nothing else.
+
+    Only the season poster draws it (``render/pipeline.py``'s
+    ``show_title_for`` refuses every other art kind), and only the season
+    producers have the show in scope in all three places -- the adoption
+    walk's ``_resolved_episode`` is handed the SEASON, not the show. Filling
+    it for an episode would mean threading a fourth argument through that walk
+    to feed a field nothing reads.
+    """
+    show = _show_with_season_and_episode()
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [show], section_type="show")
+    movies = FakeSection("Movies", "/mnt/Media/Movies", [
+        FakeItem("12345", "Dune: Part Two", 2024,
+                 "/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv",
+                 ["tmdb://693134"]),
+    ])
+    client = PlexClient(server=FakeServer([movies, shows]), excluded_libraries=[])
+
+    movie = await client.resolve(
+        RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134)
+    )
+    episode = await client.resolve(
+        RenderIntent(
+            kind="episode", title="Severance", tvdb_id=371980,
+            season_number=2, episode_number=3,
+        )
+    )
+
+    assert movie.show_title is None
+    assert episode.show_title is None
+
+
 async def test_an_episode_intent_never_queries_a_movie_library():
     """The section walk is constrained by the intent's kind.
 

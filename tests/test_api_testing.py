@@ -110,6 +110,32 @@ async def test_a_missing_field_is_422(client, auth_headers):
     assert response.status_code == 422
 
 
+def test_a_season_poster_sample_carries_a_sample_show_title():
+    """The config editor's sample sheet is where an operator SEES the row 78
+    layout before committing to it, so the synthetic item has to carry the one
+    field the block reads. Without this the sample would render the gate as a
+    no-op and the operator would conclude the feature does not work.
+
+    Asserted through ``title_text_for`` rather than through the endpoint,
+    because the endpoint composites and this file's compositing tests carry
+    the imagemagick marker that CI's main run deselects.
+    """
+    from autoposter.api.testing import SAMPLE_SHOW_TITLE, SAMPLE_TITLES, _sample_item
+    from autoposter.render.pipeline import title_text_for
+
+    config = load_config(EXAMPLE)
+    config.artwork.season_poster.show_title.add_text = True
+
+    primary, secondary = title_text_for("season_poster", _sample_item("short"), config)
+
+    assert primary == SAMPLE_TITLES["short"]
+    assert secondary == SAMPLE_SHOW_TITLE
+    assert SAMPLE_SHOW_TITLE, "a sample show title has to be a non-empty string"
+
+    config.artwork.season_poster.show_title.add_text = False
+    assert title_text_for("season_poster", _sample_item("short"), config)[1] is None
+
+
 # --- real compositing (ImageMagick) -----------------------------------------
 
 
