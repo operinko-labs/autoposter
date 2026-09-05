@@ -524,11 +524,23 @@ def test_the_driver_defaults_its_library_kind_to_its_sort_type():
 
 
 def test_the_driver_types_by_the_sort_type_and_scopes_by_the_library_kind():
-    """The half the default cannot prove. A ``type=4`` search on a SHOW library
-    must still render ``episode.title`` and ``show.unmatched`` -- Kometa applies
-    ``show_translation`` because ``self.library.is_show``, whatever the search
-    level is -- while the ``type=`` term comes from the level. A driver that
-    kept the conflation would answer this with a bare ``title``.
+    """The half the default cannot prove, with a predicate that actually
+    discriminates it. ``episode_title``/``show_unmatched`` both resolve
+    through ``search_translation``, which is kind-independent -- so a driver
+    that kept the conflation (``is_show = sort_type == "show"``) answers the
+    original version of this test identically whether ``library_kind`` is
+    honoured or ignored (Task 1 review, Important I-1). ``title.begins`` is
+    the discriminating case: ``title`` is bare in ``search_translation`` and
+    reachable through ``show_translation`` only (kometa_build_filter.py:904),
+    so it renders ``show.title`` under ``library_kind="show"`` and bare
+    ``title`` when the kind is left to default from ``sort_type`` --
+    "episode" here, neither "movie" nor "show" -- and ONLY if ``is_show`` is
+    actually gated on ``library_kind``. A conflated driver renders both calls
+    as bare ``title`` (confirmed empirically against a driver copy with the
+    conflated ``is_show = sort_type == "show"`` restored, without touching
+    this repo's tracked driver file: both calls answer
+    ``?type=4&sort=titleSort&title%3C=Pilot``, so the first assertion below
+    fails).
     """
     import importlib.util
 
@@ -536,12 +548,20 @@ def test_the_driver_types_by_the_sort_type_and_scopes_by_the_library_kind():
     driver = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(driver)
 
-    _, url = driver.build_filter(
+    _, show = driver.build_filter(
         "plex_search",
-        {"all": {"episode_title.begins": "Pilot", "show_unmatched": False}},
+        {"all": {"title.begins": "Pilot"}},
         "episode",
         library_kind="show",
     )
-    assert url.startswith("?type=4&")
-    assert "episode.title%3C=Pilot" in url
-    assert "show.unmatched!=1" in url
+    assert show.startswith("?type=4&")
+    assert "show.title%3C=Pilot" in show
+
+    _, bare = driver.build_filter(
+        "plex_search",
+        {"all": {"title.begins": "Pilot"}},
+        "episode",
+    )
+    assert bare.startswith("?type=4&")
+    assert "title%3C=Pilot" in bare
+    assert "show.title" not in bare
