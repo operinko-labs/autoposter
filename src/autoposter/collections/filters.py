@@ -383,11 +383,11 @@ SEARCH_OPERATORS_EXCLUDED: dict[str, tuple[str, ...]] = {
     # per-row subtraction, so it needs no entry here either.
     "decade": ("not", "gt", "gte", "lt", "lte"),
     # ``episode_plays`` is ``plays`` one level down: a ``number_attribute``
-    # and not a ``year_attribute`` (kometa_build_filter.py:395 vs :394), so
+    # and not a ``year_attribute`` (kometa_build_filter.py:404 vs :403), so
     # it takes ``number_modifiers`` alone -- show_only_searches lists exactly
-    # ``.gt``/``.gte``/``.lt``/``.lte`` for it (:321-324) and no bare form.
-    # ``episode_year`` needs no entry: it IS a year_attribute (:394) and keeps
-    # the full ``int`` set the way ``year`` does (:340-345).
+    # ``.gt``/``.gte``/``.lt``/``.lte`` for it (:330-333) and no bare form.
+    # ``episode_year`` needs no entry: it IS a year_attribute (:403) and keeps
+    # the full ``int`` set the way ``year`` does (:349-354).
     "episode_plays": ("eq", "not"),
 }
 
@@ -759,7 +759,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "`_CurrentYear` sentinel, parsed at load and resolved against the "
         "run's own moment at match time -- the same deferred-resolution "
         "pattern `_Today` already has for dates. Subtraction, per Kometa's own "
-        "transcription (tests/oracle/9b/kometa_build_filter.py:768-788): "
+        "transcription (tests/oracle/9b/kometa_build_filter.py:777-797): "
         "`current_year-5` means five years ago. "
         "Bare/`.not` missing-value routing follows Kometa's tag branch -- see "
         "_matches and roadmap row 159.",
@@ -1269,12 +1269,12 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "title", "str", _BOTH, "unprobed",
         "The item's own title -- a string_attribute upstream "
-        "(kometa_build_filter.py:355, transcribing plex.py:507), so it takes "
+        "(kometa_build_filter.py:364, transcribing plex.py:507), so it takes "
         "the six string modifiers exactly as `studio` does: a bare "
         "`title: Dune` is a case-insensitive SUBSTRING match, not an exact "
         "one. No search_translation entry, so the movie field is the bare "
         "`title`; re-scoped to `show.title` on a show library by "
-        "show_translation (kometa_build_filter.py:166). Dual-vocabulary like "
+        "show_translation (kometa_build_filter.py:175). Dual-vocabulary like "
         "`country`: Kometa FILTERS on `title` too (`string_filters` -- the 9a "
         "oracle's verbatim transcription of builder.py:377-447 opens with "
         "it), so `filterable` is True -- and `unprobed` for the reason "
@@ -1289,12 +1289,12 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "edition", "str", ("movie",), "unprobed",
         "Plex's edition title. The search field is `editionTitle` via "
-        "search_translation (kometa_build_filter.py:88), then "
+        "search_translation (kometa_build_filter.py:97), then "
         "`show.editionTitle` on a show library via show_translation's entry "
-        "for the TRANSLATED name (kometa_build_filter.py:182) -- the one row "
+        "for the TRANSLATED name (kometa_build_filter.py:191) -- the one row "
         "in the table that composes both tables, which is why oracle config "
         "19 pins the show render. Dual-LISTED in `searches` exactly like "
-        "`studio` -- a string_attribute (:355) AND a tag_attribute (:421) -- "
+        "`studio` -- a string_attribute (:364) AND a tag_attribute (:430) -- "
         "and for `studio`'s own reason every non-regex operator this table "
         "ships takes the STRING branch: the value goes to Plex quoted and "
         "unresolved. `.regex` (roadmap row 178) takes neither branch, but "
@@ -1318,9 +1318,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "High dynamic range, a server-side boolean: `hdr: true` emits "
         "`hdr=1`, `false` emits `hdr!=1` -- the `unplayed` row documents the "
         "bool rendering once for the whole type. In boolean_attributes "
-        "(kometa_build_filter.py:359); no search_translation entry, so the "
+        "(kometa_build_filter.py:368); no search_translation entry, so the "
         "movie field is the bare `hdr`; re-scoped to the EPISODE libtype on "
-        "a show library (`episode.hdr`, kometa_build_filter.py:184) -- the "
+        "a show library (`episode.hdr`, kometa_build_filter.py:193) -- the "
         "same re-scoping `resolution` already does, because HDR is a "
         "property of the FILE and a show's files are its episodes'. "
         "`search-only`: Kometa has no `hdr` FILTER (row 96's 29-name "
@@ -1332,10 +1332,10 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "dovi", "bool", _BOTH, "search-only",
         "Dolby Vision. The one boolean with a search_translation entry, and "
-        "it is the IDENTITY (kometa_build_filter.py:110: `dovi` -> `dovi`) -- "
+        "it is the IDENTITY (kometa_build_filter.py:119: `dovi` -> `dovi`) -- "
         "transcribed as such rather than skipped; re-scoped to "
-        "`episode.dovi` on a show library (kometa_build_filter.py:185). In "
-        "boolean_attributes at :358. `search-only`: Kometa's client-side "
+        "`episode.dovi` on a show library (kometa_build_filter.py:194). In "
+        "boolean_attributes at :367. `search-only`: Kometa's client-side "
         "vocabulary has `has_dolby_vision` -- a DIFFERENT name, one of the "
         "44 filter-only ones -- and no `dovi` filter, so `filters:` refuses "
         "this spelling by pointing at the search block.",
@@ -1346,9 +1346,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "trash", "bool", _BOTH, "search-only",
         "Plex's trash flag: an item whose file has gone missing but has not "
         "yet been emptied from the library. In boolean_attributes "
-        "(kometa_build_filter.py:364); no search_translation entry, so the "
+        "(kometa_build_filter.py:373); no search_translation entry, so the "
         "movie field is the bare `trash`; re-scoped to `episode.trash` on a "
-        "show library (kometa_build_filter.py:188) -- file-level, like "
+        "show library (kometa_build_filter.py:197) -- file-level, like "
         "`hdr`/`dovi`. `search-only`: Kometa has no filter of this name.",
         search_field="trash", show_search_field="episode.trash",
         search_kinds=_BOTH, filterable=False,
@@ -1356,11 +1356,11 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "duplicate", "bool", ("movie",), "search-only",
         "Items carrying more than one media version. MOVIE-ONLY -- it is in "
-        "movie_only_searches (kometa_build_filter.py:282), like `unplayed` "
+        "movie_only_searches (kometa_build_filter.py:291), like `unplayed` "
         "-- so a show library refuses it BY NAME rather than being sent a "
         "query Plex answers with the wrong set; the show-side spelling is "
         "`episode_duplicate`, one of family E's twenty (roadmap row 173), "
-        "deliberately not aliased. In boolean_attributes at :361. "
+        "deliberately not aliased. In boolean_attributes at :370. "
         "`search-only`: Kometa has no filter of this name (its `versions` "
         "filter counts media items and is one of the 44 filter-only "
         "names).",
@@ -1370,9 +1370,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "unmatched", "bool", _BOTH, "search-only",
         "Items with no agent match. In boolean_attributes "
-        "(kometa_build_filter.py:360); no search_translation entry, so the "
+        "(kometa_build_filter.py:369); no search_translation entry, so the "
         "movie field is the bare `unmatched`; re-scoped to `show.unmatched` "
-        "on a show library (kometa_build_filter.py:175) -- the SHOW level, "
+        "on a show library (kometa_build_filter.py:184) -- the SHOW level, "
         "not the episode's, unlike `hdr`/`dovi`/`trash`: a match belongs to "
         "the ITEM, not the file. `show_unmatched` and `episode_unmatched` "
         "remain family E's separate names (roadmap row 173), not aliases of "
@@ -1526,7 +1526,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     # Twenty rows, appended rather than interleaved like every batch before
     # them, in the order row 173 names them. Every one is the ``network``
     # row's shape: a field ``search_translation`` ALREADY scopes with a dot
-    # (kometa_build_filter.py:85-119, transcribing plex.py:61-95), so
+    # (kometa_build_filter.py:94-128, transcribing plex.py:61-95), so
     # ``show_translation`` never sees it and the two field columns are equal;
     # show-only in both kind columns: nineteen because every name is in
     # ``show_only_searches`` (:293-351, plex.py:446-506), and
@@ -1558,8 +1558,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "season_collection", "tag", ("show",), "search-only",
         "Plex collections a SEASON belongs to: `season.collection` via "
-        "search_translation (kometa_build_filter.py:116), in "
-        "show_only_searches (:295-296) and tag_attributes (:419), so the tag "
+        "search_translation (kometa_build_filter.py:125), in "
+        "show_only_searches (:304-305) and tag_attributes (:428), so the tag "
         "modifiers -- bare, `.not`, `.regex`. Enumerated at the SEASON scope, "
         "which is what the dotted field says and what Kometa's `get_tags` asks "
         "(`listFilters('season')`, plex.py:1347-1355). NO enumeration override "
@@ -1577,8 +1577,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "season_label", "tag", ("show",), "search-only",
         "Labels carried by a SEASON: `season.label` via search_translation "
-        "(kometa_build_filter.py:118), show_only_searches (:299-300), "
-        "tag_attributes (:411). Enumerated at the season scope by the dotted "
+        "(kometa_build_filter.py:127), show_only_searches (:308-309), "
+        "tag_attributes (:420). Enumerated at the season scope by the dotted "
         "field, which `LibraryTagResolver._field_and_scope` already does for "
         "`episode.resolution` and which Kometa's `get_tags` does the same way. "
         "NOT probed live: the 2026-09-04 probe asked `actor` and `collection` "
@@ -1592,8 +1592,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_collection", "tag", ("show",), "search-only",
         "Plex collections an EPISODE belongs to: `episode.collection` via "
-        "search_translation (kometa_build_filter.py:117), show_only_searches "
-        "(:297-298), tag_attributes (:420). MECHANISM ROW, transcribed from "
+        "search_translation (kometa_build_filter.py:126), show_only_searches "
+        "(:306-307), tag_attributes (:429). MECHANISM ROW, transcribed from "
         "the live probe (2026-09-04, plexapi `listFilterChoices`): "
         "`collection` answers 11 choices at the show libtype, `NotFound` at "
         "season, and ZERO choices at episode. That is why Kometa's `get_tags` "
@@ -1613,8 +1613,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_label", "tag", ("show",), "search-only",
         "Labels carried by an EPISODE: `episode.label` via search_translation "
-        "(kometa_build_filter.py:119), show_only_searches (:301-302), "
-        "tag_attributes (:412). Enumerated at the episode scope by the dotted "
+        "(kometa_build_filter.py:128), show_only_searches (:310-311), "
+        "tag_attributes (:421). Enumerated at the episode scope by the dotted "
         "field, like `episode.resolution`; not probed live (see "
         "`season_label`), so a `NotFound` here would surface class-name-only "
         "through the resolver's wrap. `search-only`: Kometa has no filter of "
@@ -1625,10 +1625,10 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_title", "str", ("show",), "search-only",
         "An EPISODE's own title: `episode.title` via search_translation "
-        "(kometa_build_filter.py:86), a string_attribute (:355), so the six "
+        "(kometa_build_filter.py:95), a string_attribute (:364), so the six "
         "string modifiers exactly as `title` and `studio` take them -- a bare "
         "`episode_title: Pilot` is a case-insensitive SUBSTRING match, quoted "
-        "on the wire; show_only_searches lists all six (:303-308). Under a "
+        "on the wire; show_only_searches lists all six (:312-317). Under a "
         "show collection this selects SHOWS having such an episode "
         "(`type=2&...&episode.title=...`), which is Kometa's own render for "
         "the key. `.regex` (row 178) is the client-side vocabulary expansion, "
@@ -1641,8 +1641,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_actor", "tag", ("show",), "search-only",
         "A person credited on an EPISODE (guest cast, in practice): "
-        "`episode.actor` via search_translation (kometa_build_filter.py:85), "
-        "in tag_attributes (:402) and reachable through `searches` "
+        "`episode.actor` via search_translation (kometa_build_filter.py:94), "
+        "in tag_attributes (:411) and reachable through `searches` "
         "(plex.py:594-601). DECLARED DIVERGENCE: `episode_actor` is the one "
         "family-E name in NEITHER show_only_searches nor movie_only_searches "
         "(verified: it occurs only at plex.py:61 and :554), so Kometa would "
@@ -1672,9 +1672,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_added", "date", ("show",), "search-only",
         "When an EPISODE was added: `episode.addedAt` via search_translation "
-        "(kometa_build_filter.py:102), a date_attribute (:378), so the bare "
+        "(kometa_build_filter.py:111), a date_attribute (:387), so the bare "
         "relative window, `.not`, `.before` and `.after` (show_only_searches "
-        ":309-312) render exactly as `added` does -- `episode_added: 30` is "
+        ":318-321) render exactly as `added` does -- `episode_added: 30` is "
         "`episode.addedAt%3E%3E=-30d`. Per-library clock caveats are row "
         "154's, unchanged. `search-only`: Kometa has no filter of this name.",
         search_field="episode.addedAt", show_search_field="episode.addedAt",
@@ -1683,8 +1683,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_air_date", "date", ("show",), "search-only",
         "When an EPISODE aired: `episode.originallyAvailableAt` via "
-        "search_translation (kometa_build_filter.py:103), a date_attribute "
-        "(:380), the four date forms (show_only_searches :313-316). This is "
+        "search_translation (kometa_build_filter.py:112), a date_attribute "
+        "(:389), the four date forms (show_only_searches :322-325). This is "
         "the search Kometa's own `status.yml` AIRING band is built on "
         "(`plex_search: {any: {episode_air_date: 14}}`) -- 'does the LIBRARY "
         "hold an episode that aired in the last 14 days' -- where this "
@@ -1699,8 +1699,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_last_played", "date", ("show",), "search-only",
         "When an EPISODE was last played: `episode.lastViewedAt` via "
-        "search_translation (kometa_build_filter.py:107), a date_attribute "
-        "(:382), the four date forms (show_only_searches :317-320). "
+        "search_translation (kometa_build_filter.py:116), a date_attribute "
+        "(:391), the four date forms (show_only_searches :326-329). "
         "PER-ACCOUNT like `last_played`: the value is whichever account's "
         "token the pass authenticated as. `search-only`: Kometa has no filter "
         "of this name.",
@@ -1710,10 +1710,10 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_plays", "int", ("show",), "search-only",
         "How many times an EPISODE was played: `episode.viewCount` via "
-        "search_translation (kometa_build_filter.py:105), in "
-        "`number_attributes` (:395) and NOT `year_attributes` (:394), so the "
+        "search_translation (kometa_build_filter.py:114), in "
+        "`number_attributes` (:404) and NOT `year_attributes` (:403), so the "
         "four ranges alone "
-        "(show_only_searches :321-324) -- `SEARCH_OPERATORS_EXCLUDED` "
+        "(show_only_searches :330-333) -- `SEARCH_OPERATORS_EXCLUDED` "
         "subtracts the bare form and `.not` exactly as it does for `plays`, "
         "and a bare `episode_plays:` refuses naming the row. Per-account, "
         "like `plays`. `search-only`: Kometa has no filter of this name.",
@@ -1724,8 +1724,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "episode_user_rating", "float", ("show",), "search-only",
         "An EPISODE's star rating from WHOSE TOKEN THE PASS AUTHENTICATED AS: "
         "`episode.userRating` via search_translation "
-        "(kometa_build_filter.py:94), a float_attribute (:397), so the four "
-        "ranges plus `.rated` and nothing else (show_only_searches :325-329) "
+        "(kometa_build_filter.py:103), a float_attribute (:406), so the four "
+        "ranges plus `.rated` and nothing else (show_only_searches :334-338) "
         "-- no bare form and no `.not`, the same Kometa inheritance row 183 "
         "records for the item-level ratings. Per-account, like `user_rating`. "
         "`search-only`: Kometa has no filter of this name.",
@@ -1735,9 +1735,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_critic_rating", "float", ("show",), "search-only",
         "An EPISODE's critic rating: `episode.rating` via search_translation "
-        "(kometa_build_filter.py:91) -- Plex's wire name is `rating`, as for "
-        "`critic_rating` -- a float_attribute (:397), four ranges plus "
-        "`.rated` (show_only_searches :330-334). `search-only`: Kometa has no "
+        "(kometa_build_filter.py:100) -- Plex's wire name is `rating`, as for "
+        "`critic_rating` -- a float_attribute (:406), four ranges plus "
+        "`.rated` (show_only_searches :339-343). `search-only`: Kometa has no "
         "filter of this name.",
         search_field="episode.rating", show_search_field="episode.rating",
         search_kinds=("show",), filterable=False,
@@ -1745,8 +1745,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_audience_rating", "float", ("show",), "search-only",
         "An EPISODE's audience rating: `episode.audienceRating` via "
-        "search_translation (kometa_build_filter.py:92), a float_attribute "
-        "(:397), four ranges plus `.rated` (show_only_searches :335-339). "
+        "search_translation (kometa_build_filter.py:101), a float_attribute "
+        "(:406), four ranges plus `.rated` (show_only_searches :344-348). "
         "`search-only`: Kometa has no filter of this name.",
         search_field="episode.audienceRating",
         show_search_field="episode.audienceRating",
@@ -1755,9 +1755,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_year", "int", ("show",), "search-only",
         "An EPISODE's year: `episode.year` via search_translation "
-        "(kometa_build_filter.py:96), a year_attribute (:394) and therefore a "
-        "number_attribute too (:395), so the bare form, `.not` AND the four "
-        "ranges (show_only_searches :340-345) -- `year`'s full set, needing "
+        "(kometa_build_filter.py:105), a year_attribute (:403) and therefore a "
+        "number_attribute too (:404), so the bare form, `.not` AND the four "
+        "ranges (show_only_searches :349-354) -- `year`'s full set, needing "
         "no `SEARCH_OPERATORS_EXCLUDED` entry. `current_year` and its offsets "
         "resolve here exactly as on `year` (row 171's grammar is keyed on the "
         "value, not the row). `search-only`: Kometa has no filter of this "
@@ -1768,8 +1768,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_unplayed", "bool", ("show",), "search-only",
         "Plex's `unwatched` at the episode libtype: `episode.unwatched` via "
-        "search_translation (kometa_build_filter.py:109), a "
-        "boolean_attribute (:366), bare only (show_only_searches :347); "
+        "search_translation (kometa_build_filter.py:118), a "
+        "boolean_attribute (:375), bare only (show_only_searches :356); "
         "`true` emits `episode.unwatched=1`, `false` `episode.unwatched!=1` "
         "-- the `unplayed` row documents the bool render once. A show having "
         "an unplayed episode, NOT the show-level `unplayed_episodes` below. "
@@ -1780,8 +1780,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_duplicate", "bool", ("show",), "search-only",
         "An EPISODE carrying more than one media version: `episode.duplicate` "
-        "via search_translation (kometa_build_filter.py:100), a "
-        "boolean_attribute (:367), bare only (show_only_searches :348). The "
+        "via search_translation (kometa_build_filter.py:109), a "
+        "boolean_attribute (:376), bare only (show_only_searches :357). The "
         "show-side spelling the movie-only `duplicate` row deferred to by "
         "name -- still a separate row, not an alias. `search-only`: Kometa "
         "has no filter of this name.",
@@ -1791,8 +1791,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_progress", "bool", ("show",), "search-only",
         "Plex's `inProgress` at the episode libtype: `episode.inProgress` via "
-        "search_translation (kometa_build_filter.py:114), a boolean_attribute "
-        "(:368), bare only (show_only_searches :349). Per-account, like "
+        "search_translation (kometa_build_filter.py:123), a boolean_attribute "
+        "(:377), bare only (show_only_searches :358). Per-account, like "
         "`progress`. `search-only`: Kometa has no filter of this name.",
         search_field="episode.inProgress", show_search_field="episode.inProgress",
         search_kinds=("show",), filterable=False,
@@ -1800,8 +1800,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "episode_unmatched", "bool", ("show",), "search-only",
         "An EPISODE with no agent match: `episode.unmatched` via "
-        "search_translation (kometa_build_filter.py:99), a boolean_attribute "
-        "(:369), bare only (show_only_searches :350). The episode-level "
+        "search_translation (kometa_build_filter.py:108), a boolean_attribute "
+        "(:378), bare only (show_only_searches :359). The episode-level "
         "spelling the `unmatched` row deferred to by name. `search-only`: "
         "Kometa has no filter of this name.",
         search_field="episode.unmatched", show_search_field="episode.unmatched",
@@ -1810,8 +1810,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "show_unmatched", "bool", ("show",), "search-only",
         "A SHOW with no agent match: `show.unmatched` via search_translation "
-        "(kometa_build_filter.py:98), a boolean_attribute (:370), bare only "
-        "(show_only_searches :351). Renders the SAME wire term as `unmatched` "
+        "(kometa_build_filter.py:107), a boolean_attribute (:379), bare only "
+        "(show_only_searches :360). Renders the SAME wire term as `unmatched` "
         "on a show library (`show.unmatched`, via show_translation) -- two "
         "Kometa names for one Plex field, both transcribed, neither aliased "
         "to the other, so a config written for Kometa loads under either "
@@ -1822,8 +1822,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "unplayed_episodes", "bool", ("show",), "search-only",
         "Plex's `unwatchedLeaves` at the SHOW level: `show.unwatchedLeaves` "
-        "via search_translation (kometa_build_filter.py:115), a "
-        "boolean_attribute (:365), bare only (show_only_searches :346). The "
+        "via search_translation (kometa_build_filter.py:124), a "
+        "boolean_attribute (:374), bare only (show_only_searches :355). The "
         "show-library counterpart the movie-only `unplayed` row named and "
         "refused to alias: 'has unplayed episodes', a property of the SHOW's "
         "leaf count, not of any one episode -- `episode_unplayed` above is "
@@ -2049,7 +2049,7 @@ class _CurrentYear:
     """Kometa's ``current_year``/``current_year-N``, resolved against the
     run's MOMENT rather than the parse's -- the same deferred-resolution
     shape ``_Today`` already has for dates. Kometa's own transcription
-    (``tests/oracle/9b/kometa_build_filter.py:768-788``, vendored for the 9b
+    (``tests/oracle/9b/kometa_build_filter.py:777-797``, vendored for the 9b
     oracle rather than cited from Kometa's source tree, which is not in this
     repo) computes ``datetime.now().year - int(offset)`` -- subtraction, so
     ``current_year-5`` means five years ago, never five years from now.
