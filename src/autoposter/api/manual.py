@@ -40,7 +40,6 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.formparsers import MultiPartException
 
 from autoposter.api.auth import require_session
 from autoposter.api.candidates import (
@@ -284,20 +283,15 @@ async def _uploaded_source(request: Request, workspace: Path) -> Path:
     except _UploadTooLarge:
         logger.warning("refused a manual upload: past the byte budget")
         raise HTTPException(status_code=413, detail=UPLOAD_TOO_LARGE) from None
-    except MultiPartException as exc:
-        # The parser's own message names sizes and part counts; the class name
-        # is all that is written down and a fixed sentence is all that is served.
-        logger.warning("refused a manual upload: %s", type(exc).__name__)
-        raise HTTPException(status_code=422, detail=UPLOAD_MALFORMED) from None
     except StarletteHTTPException as exc:
-        # Starlette's own Request._get_form catches MultiPartException itself
-        # and re-raises it as HTTPException(400, exc.message) whenever the
-        # request scope carries an "app" key -- true for every real request --
-        # so the MultiPartException branch above is unreachable in practice.
-        # Its message carries the same sizes and part counts and is withheld
-        # the same way. Caught by the STARLETTE base class rather than
-        # fastapi's: fastapi.HTTPException subclasses it, so the instance
-        # Starlette itself raises here is never caught by the subclass alone.
+        # Starlette's own Request._get_form catches the parser's own
+        # MultiPartException and re-raises it as HTTPException(400,
+        # exc.message) whenever the request scope carries an "app" key --
+        # true for every real request. Its message carries sizes and part
+        # counts and is withheld the same way a class name would be. Caught
+        # by the STARLETTE base class rather than fastapi's: fastapi's
+        # HTTPException subclasses it, so the instance Starlette itself
+        # raises here is never caught by the subclass alone.
         if exc.status_code == 400:
             logger.warning("refused a manual upload: malformed multipart body")
             raise HTTPException(status_code=422, detail=UPLOAD_MALFORMED) from None
