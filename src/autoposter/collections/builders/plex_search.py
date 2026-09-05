@@ -63,6 +63,7 @@ from autoposter.collections.builders.base import (
 )
 from autoposter.collections.filters import (
     BY_NAME,
+    LANGUAGE_FOLD_ATTRIBUTES,
     base_language_code,
     language_fold_key,
     parse_filters,
@@ -375,9 +376,9 @@ class PlexSearchBuilder:
 # a method body at call time rather than at class-definition time.
 _MISSING = object()
 
-# The two stream-language attributes, named once so ``__call__`` and
-# ``known`` cannot answer the question "is this a language row" differently.
-_LANGUAGE_ATTRIBUTES = ("audio_language", "subtitle_language")
+# The two stream-language attributes, imported from ``filters`` so ``__call__``
+# and ``known`` here and ``_matches_one`` there cannot answer the question "is
+# this a language row" differently (one set, no second spelling to drift).
 
 
 class LibraryTagResolver:
@@ -411,7 +412,7 @@ class LibraryTagResolver:
 
     def __call__(self, attribute: str, value: str, /) -> tuple[str, ...]:
         scope, name = self._field_and_scope(attribute)
-        if attribute in _LANGUAGE_ATTRIBUTES:
+        if attribute in LANGUAGE_FOLD_ATTRIBUTES:
             return self._language_keys(attribute, scope, name, value)
         choices = self._choices(attribute, scope, name)
         for spelling in (str(value), str(value).lower()):
@@ -436,7 +437,7 @@ class LibraryTagResolver:
         Important 1). Every other attribute keeps ``__call__``'s existing
         match.
         """
-        if attribute in _LANGUAGE_ATTRIBUTES:
+        if attribute in LANGUAGE_FOLD_ATTRIBUTES:
             scope, name = self._field_and_scope(attribute)
             wanted = language_fold_key(value)
             return any(

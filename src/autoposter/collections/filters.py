@@ -138,6 +138,7 @@ __all__ = [
     "FILTERABLE_ATTRIBUTES",
     "FILTER_ATTRIBUTES",
     "ITEM_KINDS",
+    "LANGUAGE_FOLD_ATTRIBUTES",
     "MATCHES_NOTHING",
     "OPERATORS_BY_TYPE",
     "PLEXAPI_EQUIVALENT",
@@ -2464,7 +2465,7 @@ def _is_missing(value: object, value_type: str) -> bool:
 # (`English`) still matches nothing: langcodes cannot reduce it, the
 # fallback returns it unchanged, and the name->code seam is row 204's
 # still-open half (`iso_names.LANGUAGE_NAMES` is the table it awaits).
-_LANGUAGE_FOLD_ATTRIBUTES = frozenset({"audio_language", "subtitle_language"})
+LANGUAGE_FOLD_ATTRIBUTES = frozenset({"audio_language", "subtitle_language"})
 
 
 # ``base_language_code`` moved to ``autoposter/lang.py`` and is imported at the
@@ -2500,7 +2501,7 @@ def _matches_one(
         tags = _as_tags(have, attribute.name)
         if operator == "regex":
             return any(want.search(tag) for tag in tags)
-        if attribute.name in _LANGUAGE_FOLD_ATTRIBUTES:
+        if attribute.name in LANGUAGE_FOLD_ATTRIBUTES:
             wanted = language_fold_key(want)
             return any(language_fold_key(tag) == wanted for tag in tags)
         return any(tag.casefold() == want.casefold() for tag in tags)

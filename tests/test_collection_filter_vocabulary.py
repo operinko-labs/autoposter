@@ -28,9 +28,19 @@ from types import SimpleNamespace
 
 from plexapi.exceptions import BadRequest
 
+from autoposter.collections.builders.base import BuilderContext, SourceClients
+from autoposter.collections.builders.plex_search import LibraryTagResolver
+from autoposter.collections.builders.sources_bundle import PlexSectionAccess
 from autoposter.collections.catalog import preset_definitions
 from autoposter.collections.engine import run_library
-from autoposter.collections.filters import parse_filters, predicates, tag_predicates, without_values
+from autoposter.collections.filters import (
+    BY_NAME,
+    LANGUAGE_FOLD_ATTRIBUTES,
+    parse_filters,
+    predicates,
+    tag_predicates,
+    without_values,
+)
 from autoposter.config.schema import CollectionDefinition
 
 LABEL = "autoposter"
@@ -492,3 +502,33 @@ def test_tag_predicates_and_without_values_agree_on_which_rows_are_checkable():
     for predicate in every_predicate:
         pruned = without_values(predicate, lambda p, v: True)
         assert (pruned is not predicate) == (predicate in checkable)
+
+
+# --- one shared set: the evaluator's fold and the resolver's fold agree -----
+
+
+def test_known_folds_every_shared_language_attribute_to_its_evaluator_base():
+    """``filters.LANGUAGE_FOLD_ATTRIBUTES`` is now the ONE definition of
+    "which attributes fold to the base ISO 639-1 code" -- before this fix
+    ``filters._matches_one`` (the evaluator) and ``plex_search.
+    LibraryTagResolver`` (the resolver) each spelled ``{"audio_language",
+    "subtitle_language"}`` a second time. Iterating the shared set itself
+    here, rather than naming the two attributes, is what pins the fix: a
+    third language attribute added to it later is covered by this test with
+    no edit."""
+    assert LANGUAGE_FOLD_ATTRIBUTES  # never silently empty
+
+    section = FakeSection(vocabulary={
+        BY_NAME[attribute].field_for("movie"): ["pt"]
+        for attribute in LANGUAGE_FOLD_ATTRIBUTES
+    })
+    ctx = BuilderContext(
+        library="Movies", library_type="Movie", config={}, run_cache={},
+        sources=SourceClients(plex=PlexSectionAccess(section, lambda: {})),
+    )
+    resolver = LibraryTagResolver(ctx, section, "movie")
+
+    for attribute in LANGUAGE_FOLD_ATTRIBUTES:
+        # A REGIONAL written value folds to the library's own BASE stream
+        # tag -- the same reduction ``_matches_one`` applies at evaluation.
+        assert resolver.known(attribute, "pt-BR") is True, attribute
