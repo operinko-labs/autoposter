@@ -494,6 +494,31 @@ def test_the_action_center_pages_art_kinds_match_the_pipelines():
     assert literals == rendered
 
 
+def test_the_item_detail_pages_upload_cap_matches_the_backend():
+    """A third statement of the upload byte cap, in ItemDetail.tsx's own
+    `PICK_MAX_BYTES` constant -- checked client-side before an oversized file
+    is sent (a 413 with an undrained request body can be lost to a connection
+    reset). Not fetched from the server, so the agreement is pinned here
+    rather than assumed, exactly as `test_the_action_center_pages_art_kinds_
+    match_the_pipelines` pins its own frontend-hardcoded constant.
+
+    Reads the source file as text and evaluates the numeric literal rather
+    than parsing TypeScript, so the pin survives reformatting.
+    """
+    import re
+
+    from autoposter.api.candidates import PICK_MAX_BYTES
+
+    frontend = (
+        Path(__file__).parent.parent / "frontend" / "src" / "pages" / "ItemDetail.tsx"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"const PICK_MAX_BYTES = ([0-9 *]+);", frontend)
+    assert match is not None, "ItemDetail.tsx no longer declares a const PICK_MAX_BYTES = ..."
+    # Digits and `*` only, straight from our own source file -- eval is safe here.
+    literal = eval(match.group(1), {"__builtins__": {}})
+    assert literal == PICK_MAX_BYTES
+
+
 def test_every_flag_declares_a_label_a_description_and_a_detail(config):
     """The page renders all three; a flag that shipped with an empty label is
     a chip an operator cannot identify."""
