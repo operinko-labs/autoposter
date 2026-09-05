@@ -711,8 +711,7 @@ jobs:
           # work here, because the docker socket is the runner HOST's and the
           # checkout lives inside the job container, so the host has no such
           # path (run 344: "ignore file not found: /.trivyignore").
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             -e TRIVY_IGNORE_TEXT="$(cat .trivyignore)" --entrypoint sh             aquasec/trivy:0.70.0 -c 'printf "%s
-" "$TRIVY_IGNORE_TEXT" > /.trivyignore             && trivy image --quiet --scanners vuln --severity HIGH,CRITICAL             --exit-code 1 --no-progress --ignorefile /.trivyignore "$0"' ${{ env.CI_IMAGE }}
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             -e TRIVY_IGNORE_TEXT="$(cat .trivyignore)" --entrypoint sh             aquasec/trivy:0.70.0 -c 'printf \"%s\n\" \"$TRIVY_IGNORE_TEXT\" > /.trivyignore             && trivy image --quiet --scanners vuln --severity HIGH,CRITICAL             --exit-code 1 --no-progress --ignorefile /.trivyignore "$0"' ${{ env.CI_IMAGE }}
 
       # `needs.gate_verified.result == 'success'` on all three of these, on top
       # of the job-level `if`, is belt and braces. The event conditions alone
