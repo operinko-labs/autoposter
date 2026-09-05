@@ -928,6 +928,52 @@ membership live and this service never touches it — the same arrangement
   service, and the sync-semantics and summary-clearing rules described above
   apply unchanged.
 
+## Searching a show library by its episodes and seasons
+
+`plex_search` and `smart_filter` accept twenty attributes that read a show's
+**episode** or **season** data rather than the show's own: `season_collection`,
+`season_label`, `episode_collection`, `episode_label`, `episode_title`,
+`episode_actor`, `episode_added`, `episode_air_date`, `episode_last_played`,
+`episode_plays`, `episode_user_rating`, `episode_critic_rating`,
+`episode_audience_rating`, `episode_year`, `episode_unplayed`,
+`episode_duplicate`, `episode_progress`, `episode_unmatched`, `show_unmatched`
+and `unplayed_episodes` — Kometa's names, with Kometa's modifiers for each
+type.
+
+- **They select shows, not episodes.** `episode_title.begins: Pilot` builds
+  the collection of shows *having* an episode whose title begins with
+  `Pilot`, which is exactly what the same key does in Kometa under a show
+  collection. Collecting the matching episodes themselves — a collection
+  whose members are episodes — is the `builder_level` selector on a search
+  definition, which is not shipped yet. Until it is, a `builder_level:` on a
+  `smart_filter` definition is refused when the config loads, and one on a
+  `plex_search` definition loads but is not honoured — the search still runs
+  at the show level and the definition resolves to nothing. Leave
+  `builder_level` off search definitions until the selector lands.
+- **Show libraries only.** On a Movie library each name is refused by name;
+  for nineteen of them that is Kometa's own refusal, and `episode_actor` is
+  refused by this service's judgement because a movie library has no
+  episodes (Kometa would send that one and get nothing back). Narrow the
+  definition with `libraries:`.
+- **`episode_plays` takes only the four ranges** (`.gt`/`.gte`/`.lt`/`.lte`),
+  like `plays`; `episode_year` takes the bare form, `.not` and the ranges,
+  like `year`; the three `episode_*_rating` attributes take the ranges and
+  `.rated`, like their item-level rows. `episode_added: 30` is "an episode
+  added in the last 30 days", the same window grammar as `added`.
+- **Two of the tag attributes resolve their values against the show-level
+  list, on purpose.** Plex exposes no episode-level `actor` filter and an
+  empty episode-level `collection` one, so a written `episode_actor` value
+  is looked up in the library's show-level actor list (which is what Kometa
+  does too) and a written `episode_collection` value in the show-level
+  collection list; the search itself still runs at the episode field.
+  `season_collection` asks Plex's season-level collection filter, which
+  current Plex servers do not have — the definition is reported as
+  unavailable for that library, by exception class name, the same way Kometa
+  reports "attribute not supported" for it.
+- **They cannot be written in a `filters:` block or an overlay
+  `condition:`.** Kometa has no client-side filter of any of these names, and
+  the refusal says which block they belong in.
+
 ## Collection posters
 
 The same `collections:` block also controls whether the collections this
