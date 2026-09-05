@@ -452,6 +452,16 @@ async def run_library(
             # the caller's per-library rollback rather than being swallowed here
             # as a dead source.
             #
+            # One more thing can escape, in principle: a builder's own internal
+            # params re-validation (``smart_url.search_url``'s
+            # ``SmartUrlParams.model_validate``, ``dynamic``'s own
+            # ``DynamicParams.model_validate``) raises ``pydantic.ValidationError``,
+            # which every builder's ``REFUSALS`` tuple deliberately excludes
+            # (``dynamic.py:220-222``). It cannot happen for a definition that
+            # already loaded and validated, so an escape here is a defect
+            # signal, not an operator refusal, and aborting the whole pass is
+            # the right failure mode for it.
+            #
             # Row 186: the tmdb_summary pull happens HERE, where ``summaries``
             # lives, through the same ``_summary_for`` every list definition
             # uses -- for every smart builder that refuses ``tmdb_summary`` at

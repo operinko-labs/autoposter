@@ -1150,6 +1150,63 @@ async def test_an_unrelated_save_is_untouched_while_the_file_lists_definitions(
     assert response.status_code == 200
 
 
+# --- A token-bearing `smart_url` PUT is refused end to end (filter-parity
+#     branch review, I2) ---------------------------------------------------
+#
+# The branch's whole security posture for a pasted Plex Web URL rests on
+# `_validated_generation` (routes.py) projecting only `_dotted(e["loc"])` and
+# `e["msg"]` from the `ValidationError` `build_config` raises, never `input`.
+# `tests/test_builder_smart_url.py` pins that at the model; this pins it
+# through the real `PUT /api/config/overrides` endpoint, so a later edit that
+# starts serving `str(exc)` or `e["input"]` fails here instead of shipping a
+# live Plex token to a browser and a reverse-proxy access log.
+
+_TOKEN_BEARING_URL = (
+    "http://192.168.1.50:32400/web/index.html#!/server/abc123/"
+    "com.plexapp.plugins.library"
+    "?key=%2Flibrary%2Fsections%2F1%2Fall%3Ftype%3D1%26sort%3Drandom%26genre%3D1138"
+    "&X-Plex-Token=SEKRIT"
+)
+
+TOKEN_BEARING_DEFINITIONS = {
+    "collections": {
+        "definitions": [
+            {"title": "Pasted", "builder": "smart_url", "params": {"url": _TOKEN_BEARING_URL}}
+        ]
+    }
+}
+
+
+async def test_a_token_bearing_smart_url_override_is_refused_with_a_token_free_body(
+    client, auth_headers, session_factory
+):
+    """PUT a `smart_url` definition whose `params.url` carries both a live
+    `X-Plex-Token` and the operator's own intranet host. The response must be
+    422 with neither the token, the host nor the raw URL anywhere in the
+    body; the refusal sentence must be the one actually served; and nothing
+    may be stored -- the mounted config's `collections.definitions` is empty,
+    so the definitions guard (above) does not intercept this before
+    `build_config` gets to it."""
+    response = await client.put(
+        "/api/config/overrides",
+        json={"document": TOKEN_BEARING_DEFINITIONS},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 422
+    assert "SEKRIT" not in response.text
+    assert "192.168.1.50" not in response.text
+    assert _TOKEN_BEARING_URL not in response.text
+    detail = response.json()["detail"]
+    assert any("params.url carries a Plex token" in item["message"] for item in detail)
+
+    # Never half-apply: no override row was written.
+    async with session_factory() as session:
+        assert (await session.execute(select(ConfigOverride))).scalars().first() is None
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+    assert served["overridden_paths"] == []
+
+
 # --- The wholesale-replace law (row 138's editor is built on it) ----------
 #
 # CHARACTERIZATION, not RED-first: these pin behavior `merge_overrides` and

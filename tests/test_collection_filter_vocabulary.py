@@ -245,6 +245,29 @@ async def test_a_value_written_in_another_case_is_not_dropped(session):
     assert [i.ratingKey for i in section._existing["Grown Up"]._live] == ["101"]
 
 
+async def test_a_hyphenated_rating_written_in_another_case_is_known(session):
+    """M2 (branch review): ``LibraryTagResolver.known``'s non-language branch
+    now compares ``.casefold()`` against the raw choices rather than
+    delegating to ``__call__``'s ``.lower()``. A ``content_rating`` value is
+    the realistic case where that distinction matters -- ratings carry
+    hyphens and mixed case (`TV-MA`) -- so pin it directly rather than only
+    through the generic single-letter case in the test above."""
+    section = FakeSection(
+        _rated(("101", "TV-MA")), vocabulary={"contentRating": ["TV-MA"]},
+    )
+    definition = CollectionDefinition(
+        title="Mature", builder="plex_all", filters={"content_rating": "tv-ma"},
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition], _config(),
+    )
+
+    [result] = run.definitions
+    assert not any("dropped" in action for action in result.actions)
+    assert [i.ratingKey for i in section._existing["Mature"]._live] == ["101"]
+
+
 async def test_a_predicate_that_loses_every_value_matches_nothing_and_says_so(
     session,
 ):

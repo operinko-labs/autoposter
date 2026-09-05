@@ -376,10 +376,6 @@ class PlexSearchBuilder:
 # a method body at call time rather than at class-definition time.
 _MISSING = object()
 
-# The two stream-language attributes, imported from ``filters`` so ``__call__``
-# and ``known`` here and ``_matches_one`` there cannot answer the question "is
-# this a language row" differently (one set, no second spelling to drift).
-
 
 class LibraryTagResolver:
     """The library's tag vocabulary, cached per pass.
@@ -437,14 +433,25 @@ class LibraryTagResolver:
         Important 1). Every other attribute keeps ``__call__``'s existing
         match.
         """
+        scope, name = self._field_and_scope(attribute)
         if attribute in LANGUAGE_FOLD_ATTRIBUTES:
-            scope, name = self._field_and_scope(attribute)
             wanted = language_fold_key(value)
             return any(
                 language_fold_key(choice.key) == wanted
                 for choice in self._raw_choices(attribute, scope, name)
             )
-        return bool(self(attribute, value))
+        # Compared with ``.casefold()`` against the raw choices, matching
+        # ``filters._matches_one``'s own comparison (``tag.casefold() ==
+        # want.casefold()``) exactly -- not ``__call__``'s ``.lower()``,
+        # whose search semantics stay untouched. The two differ only for a
+        # handful of characters (``ß``, final ``ς``), but row 158 promises
+        # membership never narrows against what the evaluator would actually
+        # match (M2).
+        wanted = str(value).casefold()
+        return any(
+            wanted in (str(choice.title).casefold(), str(choice.key).casefold())
+            for choice in self._raw_choices(attribute, scope, name)
+        )
 
     def choices(self, attribute: str, /) -> tuple[tuple[str, str], ...]:
         """Every ``(key, title)`` this library reports for ``attribute``.
