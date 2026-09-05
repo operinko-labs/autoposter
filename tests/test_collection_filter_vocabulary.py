@@ -30,6 +30,7 @@ from plexapi.exceptions import BadRequest
 
 from autoposter.collections.catalog import preset_definitions
 from autoposter.collections.engine import run_library
+from autoposter.collections.filters import parse_filters, predicates, tag_predicates, without_values
 from autoposter.config.schema import CollectionDefinition
 
 LABEL = "autoposter"
@@ -57,6 +58,24 @@ class FakeItem:
         self.guids = []
         self.contentRating = content_rating
         self.media = [SimpleNamespace(videoResolution=r) for r in resolutions]
+
+
+class FakeStream:
+    def __init__(self, stream_type, language_tag):
+        self.streamType = stream_type
+        self.languageTag = language_tag
+
+
+class FakeMetadataItem:
+    """What ``section.fetchItems`` hands back for the batched tier-2 read --
+    the only place ``audio_language``'s stream tags live (``plex.client.
+    _stream_languages`` reads ``<Media><Part><Stream streamType=2>``)."""
+
+    def __init__(self, rating_key, audio_languages=()):
+        self.ratingKey = rating_key
+        self.media = [SimpleNamespace(parts=[SimpleNamespace(
+            streams=[FakeStream(2, tag) for tag in audio_languages]
+        )])]
 
 
 class FakeCollection:
@@ -120,15 +139,22 @@ class FakeSection:
     ``raises`` makes the call fail, which is the outage case.
     """
 
-    def __init__(self, items=(), vocabulary=None, raises=None):
+    def __init__(self, items=(), vocabulary=None, raises=None, metadata=None):
         self._items = list(items)
         self._existing = {}
         self._vocabulary = dict(vocabulary or {})
         self._raises = raises
         self.choice_calls: list[tuple[str, str]] = []
+        # ``{rating_key: FakeMetadataItem}`` for the tier-2 enrichment a
+        # language-attribute filter needs before it ever reaches the
+        # vocabulary check.
+        self._metadata = dict(metadata or {})
 
     def all(self):
         return list(self._items)
+
+    def fetchItems(self, ekey):
+        return [self._metadata[str(k)] for k in ekey if str(k) in self._metadata]
 
     def collections(self, **kw):
         return list(self._existing.values())
@@ -380,3 +406,89 @@ async def test_the_shipped_content_rating_and_resolution_presets_still_run(sessi
     # The buckets whose values the library DOES use were built.
     assert "R Movies" in section._existing
     assert "1080 Movies" in section._existing
+
+
+# --- Fix round 1, Important 1: language rows fold to the base code ----------
+
+
+async def test_a_regional_audio_language_value_matches_its_base_and_is_not_dropped(
+    session,
+):
+    """The known-value check must agree with the evaluator's own fold
+    (``filters.language_fold_key``, ``filters.py`` ~2483-2487): a REGIONAL
+    written value (``pt-BR``) matches a library whose stream tag is only the
+    BASE code (``pt``), exactly as ``_matches_one`` already matches it.
+    Before this fix ``_known_tag_values`` asked ``LibraryTagResolver.__call__``'s
+    SEARCH semantics instead -- which accepts a regional value only under its
+    own exact spelling -- and dropped this one, narrowing a collection a
+    correctly-spelled filter would have built (Task 2 review, Important 1)."""
+    section = FakeSection(
+        [FakeItem("101")],
+        vocabulary={"audioLanguage": ["pt"]},
+        metadata={"101": FakeMetadataItem("101", audio_languages=["pt"])},
+    )
+    definition = CollectionDefinition(
+        title="Portuguese Audio", builder="plex_all",
+        filters={"audio_language": "pt-BR"},
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition], _config(),
+    )
+
+    [result] = run.definitions
+    assert result.failed is False
+    assert not any("dropped" in action for action in result.actions)
+    # The pre-158 membership: the item's `pt` stream is exactly what
+    # `audio_language: pt-BR` would have matched with no vocabulary check at
+    # all.
+    assert [i.ratingKey for i in section._existing["Portuguese Audio"]._live] == ["101"]
+
+
+async def test_an_audio_language_value_with_no_matching_base_is_still_dropped(session):
+    """The inverse boundary: a written value whose base (``xx``) is not any
+    library stream's base is still dropped -- the fold agrees with the
+    evaluator in both directions, it does not turn the check into a no-op."""
+    section = FakeSection(
+        [FakeItem("101")],
+        vocabulary={"audioLanguage": ["en"]},
+        metadata={"101": FakeMetadataItem("101", audio_languages=["en"])},
+    )
+    definition = CollectionDefinition(
+        title="Nonsense Audio", builder="plex_all",
+        filters={"audio_language": "xx-YY"},
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie", [definition], _config(),
+    )
+
+    [result] = run.definitions
+    assert result.failed is False
+    assert "Nonsense Audio" not in section._existing
+    dropped = [a for a in result.actions if "dropped" in a]
+    assert len(dropped) == 1 and "xx-YY" in dropped[0]
+
+
+# --- Fix round 1, Important 2: one predicate for "is this row checkable" ----
+
+
+def test_tag_predicates_and_without_values_agree_on_which_rows_are_checkable():
+    """The rule -- a tag-typed row under ``eq``/``not`` -- lives in one place
+    (``filters._vocabulary_checked``), so ``tag_predicates`` (which rows
+    ``_known_tag_values`` walks) and ``without_values`` (which rows it may
+    prune) cannot answer the question differently. Proven without restating
+    the rule itself: for every predicate in a filter with one eligible row
+    (``content_rating``, tag/eq) and one ineligible row (``year.gte``,
+    int/gte), asking ``without_values`` to drop everything changes exactly
+    the predicates ``tag_predicates`` names, and none of the others
+    (Task 2 review, Important 2)."""
+    parsed = parse_filters({"content_rating": "R", "year.gte": 1990})
+    every_predicate = tuple(predicates(parsed))
+    assert len(every_predicate) == 2
+    checkable = set(tag_predicates(parsed))
+    assert len(checkable) == 1
+
+    for predicate in every_predicate:
+        pruned = without_values(predicate, lambda p, v: True)
+        assert (pruned is not predicate) == (predicate in checkable)

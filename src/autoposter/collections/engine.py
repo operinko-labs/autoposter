@@ -1074,10 +1074,12 @@ def _known_tag_values(parsed, ctx, section, library, definition):
         row = predicate.attribute
         # A row this libtype has no Plex search field for cannot be resolved at
         # all -- ``LibraryTagResolver._field_and_scope`` calls ``field_for``,
-        # which raises rather than guessing. Skipped explicitly rather than
-        # caught, so an exception here would still mean a real bug. No shipped
-        # row reaches this today: all seven evaluable tag rows are searchable
-        # on both libtypes, and the other seven refuse at config load.
+        # which raises rather than guessing. Skipped explicitly here so it
+        # never reaches the blanket ``except Exception`` below, which would
+        # otherwise fold it into a "could not be checked" action instead of
+        # the real bug it is (Task 2 review, Minor 5). No shipped row reaches
+        # this today: all seven evaluable tag rows are searchable on both
+        # libtypes, and the other seven refuse at config load.
         if not row.searchable or libtype not in row.search_kinds:
             continue
         checkable.append(predicate)
@@ -1086,7 +1088,7 @@ def _known_tag_values(parsed, ctx, section, library, definition):
             if row.name in unavailable or pair in unknown:
                 continue
             try:
-                keys = resolve(row.name, str(value))
+                known = resolve.known(row.name, str(value))
             except PlexSearchUnavailable as error:
                 # The resolver's OWN wrap, and the only failure it MEMOISES:
                 # ``NotFound``/``BadRequest`` ("Plex has no such filter for
@@ -1131,7 +1133,7 @@ def _known_tag_values(parsed, ctx, section, library, definition):
                     % (definition.title, row.name)
                 )
                 continue
-            if keys:
+            if known:
                 continue
             unknown.add(pair)
             logger.warning(
@@ -1149,18 +1151,27 @@ def _known_tag_values(parsed, ctx, section, library, definition):
     if not unknown:
         return parsed, actions
 
+    # Deduped by (attribute, its written values) -- not by predicate identity
+    # -- so the same values named twice (``any: [{content_rating: X}, {content_
+    # rating: X}]``) get one line rather than two substantively identical ones
+    # differing only in which ``filters.any[i]`` wrote them (Task 2 review,
+    # Minor 1).
+    emptied: set[tuple[str, tuple[str, ...]]] = set()
     for predicate in checkable:
         name = predicate.attribute.name
-        if all((name, str(value)) in unknown for value in predicate.values):
-            logger.warning(
-                "%s: %r: every %s value in %s is unknown to this library",
-                library, definition.title, name, predicate.field,
-            )
-            actions.append(
-                "%r: every %s value in %s is unknown to this library, so it "
-                "matches nothing and no members were kept"
-                % (definition.title, name, predicate.field)
-            )
+        key = (name, tuple(str(value) for value in predicate.values))
+        if key in emptied or not all((name, value) in unknown for value in key[1]):
+            continue
+        emptied.add(key)
+        logger.warning(
+            "%s: %r: every %s value in %s is unknown to this library",
+            library, definition.title, name, predicate.field,
+        )
+        actions.append(
+            "%r: every %s value in %s is unknown to this library, so it "
+            "matches nothing and no members were kept"
+            % (definition.title, name, predicate.field)
+        )
 
     pruned = without_values(
         parsed,

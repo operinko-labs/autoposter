@@ -157,6 +157,7 @@ __all__ = [
     "base_language_code",
     "batched_attributes",
     "evaluate",
+    "language_fold_key",
     "parse_filters",
     "predicates",
     "resolve_search_values",
@@ -2305,6 +2306,16 @@ MATCHES_NOTHING: "FilterGroup" = FilterGroup(
 )
 
 
+def _vocabulary_checked(predicate: "FilterPredicate") -> bool:
+    """Row 158's rule -- a written TAG value, under ``eq``/``not`` -- spelled
+    ONCE and consulted by both ``tag_predicates`` and ``without_values`` below,
+    so which predicates get READ and which predicates may get PRUNED cannot
+    drift apart (Task 2 review, Important 2). See ``tag_predicates`` for why
+    exactly these two exclusions.
+    """
+    return predicate.attribute.type == "tag" and predicate.operator in ("eq", "not")
+
+
 def tag_predicates(group: FilterGroup) -> tuple[FilterPredicate, ...]:
     """Every predicate in a parsed tree whose values are written TAG VALUES.
 
@@ -2325,10 +2336,7 @@ def tag_predicates(group: FilterGroup) -> tuple[FilterPredicate, ...]:
       (builder.py:4400-4440) is a different branch from its regex one
       (:4301-4310) and from its count-modifier handling (:4350).
     """
-    return tuple(
-        predicate for predicate in predicates(group)
-        if predicate.attribute.type == "tag" and predicate.operator in ("eq", "not")
-    )
+    return tuple(predicate for predicate in predicates(group) if _vocabulary_checked(predicate))
 
 
 def without_values(
@@ -2355,7 +2363,7 @@ def without_values(
     have returned, so a regex or a count modifier cannot lose a value here.
     """
     if isinstance(node, FilterPredicate):
-        if node.attribute.type != "tag" or node.operator not in ("eq", "not"):
+        if not _vocabulary_checked(node):
             return node
         kept = tuple(value for value in node.values if not drop(node, value))
         if len(kept) == len(node.values):
@@ -2465,6 +2473,18 @@ _LANGUAGE_FOLD_ATTRIBUTES = frozenset({"audio_language", "subtitle_language"})
 # badge needs the same reduction and ``badges/`` must not import this module.
 
 
+def language_fold_key(value: str) -> str:
+    """The base ISO 639-1 code ``_matches_one``'s language fold compares at.
+
+    Extracted so a caller outside this module -- roadmap row 158's vocabulary
+    check, ``LibraryTagResolver.known`` -- folds a written value and a
+    library's own vocabulary through exactly the reduction the evaluator uses
+    below, by calling this rather than re-spelling ``casefold`` then
+    ``base_language_code`` a second time (Task 2 review, Important 1).
+    """
+    return base_language_code(str(value).casefold())
+
+
 def _matches_one(
     attribute: FilterAttribute, operator: str, have: object, want: object, now: dt.datetime
 ) -> bool:
@@ -2481,10 +2501,8 @@ def _matches_one(
         if operator == "regex":
             return any(want.search(tag) for tag in tags)
         if attribute.name in _LANGUAGE_FOLD_ATTRIBUTES:
-            wanted = base_language_code(want.casefold())
-            return any(
-                base_language_code(tag.casefold()) == wanted for tag in tags
-            )
+            wanted = language_fold_key(want)
+            return any(language_fold_key(tag) == wanted for tag in tags)
         return any(tag.casefold() == want.casefold() for tag in tags)
 
     if kind == "str":
