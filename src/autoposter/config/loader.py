@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from autoposter.config.schema import Config
+from autoposter.config.schema import Config, _merged_sections
 
 # Where the YAML lives, for the code that needs the *file* rather than the
 # loaded object: the config editor merges its overrides onto that document, so
@@ -241,6 +241,59 @@ def moved_kinds(before: Config, after: Config) -> set[str]:
         art_kind for art_kind in RENDER_ART_KINDS
         if render_version_for(art_kind, before) != render_version_for(art_kind, after)
     }
+
+
+def config_for_library(config: Config, library: str) -> Config:
+    """``config`` as it applies to ONE Plex library (roadmap row 92).
+
+    Beside ``render_version`` and ``render_version_for`` because the version
+    question and the library-effective question are the same question asked
+    two ways, and because ``build_config`` below is already the one
+    construction path -- a second one in a second module is how a derived
+    value drifts.
+
+    **Identity when there is nothing to do.** A library that names no
+    override, or names one that states no leaf, gets the very object it was
+    handed back: the ordinary deployment -- every one whose operator never
+    opened the matrix -- allocates nothing per item. That is the posture
+    ``config/overrides.py``'s ``without_migrated_sections`` already takes.
+
+    **Only the whitelisted sections are rebuilt**, through
+    ``model_copy(update=...)``, so ``artwork``, ``version`` and every other
+    section are carried through BY IDENTITY. That is the storm proof restated
+    at runtime: an effective config cannot carry a different ``artwork``, so
+    it cannot carry a different version, so no per-library setting can
+    invalidate a stored fingerprint however a caller uses the result.
+
+    **The merge is ``config/overrides.py``'s own**, reached by a local import
+    because that module imports this one. Nested mappings merge key by key;
+    scalars and lists are replaced. Reusing it rather than writing a second
+    merge is the whole point: an operator's expectation of what a stored
+    override does to ``operations.genre_mapper`` should not change depending
+    on whether the override was global or per library.
+
+    **Pure, and cheap enough not to cache.** No I/O, no session, no mutation
+    of the argument. A deployment WITH overrides pays three model
+    constructions per resolution, which is nothing beside the provider ladder
+    and the ImageMagick subprocess on the same code path; a cache keyed on
+    (library, generation) is a thing to add when a profile asks for it, not
+    before. It is also idempotent, so a caller that resolves once for a gate
+    and a callee that resolves again at its own reads cost nothing but that.
+    """
+    override = config.libraries.get(library)
+    if override is None:
+        return config
+
+    from autoposter.config.overrides import _merge
+
+    sections = _merged_sections(config, override, _merge)
+    if not sections:
+        return config
+    # `model_copy`, not a re-validation: each section above was rebuilt
+    # through its own model and so ran its own rules, and re-running
+    # `Config`'s cross-section validators once per item would be work with
+    # nothing to find.
+    return config.model_copy(update=sections)
 
 
 def read_config_document(path: Path) -> dict:

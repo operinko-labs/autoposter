@@ -830,6 +830,47 @@ class PlexConfig(BaseModel):
     )
 
 
+def _validate_field_verbs(value: dict[str, str]) -> dict[str, str]:
+    """Refuse an unknown field name or verb at LOAD time.
+
+    Extracted from ``OperationsConfig``'s own validator so the per-library
+    partial model can reach the same rule without a second copy of it
+    (roadmap row 92). A copy is the shape this particular bug takes: the
+    global and the per-library halves would drift, and the half that drifted
+    would accept a verb the writer never fires.
+
+    The row-81 precedent, one vocabulary along: a typo'd field name would
+    otherwise be a setting that silently never fires, which is
+    indistinguishable from the feature not working.
+    """
+    from autoposter.plex.writer import FIELD_VERBS, WRITABLE_BY_KIND
+
+    known = set().union(*WRITABLE_BY_KIND.values())
+    for field, verb in value.items():
+        if field not in known:
+            raise ValueError(
+                f"operations.field_verbs names {field!r}, which is not a "
+                f"field this service writes; known fields are "
+                f"{', '.join(sorted(known))}"
+            )
+        if verb not in FIELD_VERBS:
+            raise ValueError(
+                f"operations.field_verbs[{field!r}] is {verb!r}; the verbs "
+                f"are {', '.join(sorted(FIELD_VERBS))}"
+            )
+        # Row 87's STOP-and-file: ``remove`` on the list-shaped ``genres``
+        # has no defined semantics (a verb-as-source with no items
+        # supplied) -- refused here rather than accepted and silently
+        # doing nothing. lock/unlock on genres are unaffected.
+        if field == "genres" and verb == "remove":
+            raise ValueError(
+                "operations.field_verbs['genres'] cannot be 'remove': "
+                "removing a list-shaped field has no defined semantics "
+                "(row 87 STOP-and-file); 'lock' and 'unlock' are valid"
+            )
+    return value
+
+
 class OperationsConfig(BaseModel):
     """Per-item metadata operations, replacing Kometa's mass_*_update."""
 
@@ -993,36 +1034,11 @@ class OperationsConfig(BaseModel):
     def _known_fields_and_verbs(cls, value: dict[str, str]) -> dict[str, str]:
         """Refuse an unknown field name or verb at LOAD time.
 
-        The row-81 precedent, one vocabulary along: a typo'd field name would
-        otherwise be a setting that silently never fires, which is
-        indistinguishable from the feature not working.
+        The rule itself lives in ``_validate_field_verbs`` above, so the
+        per-library partial model (roadmap row 92) can reach it without a
+        copy that would drift.
         """
-        from autoposter.plex.writer import FIELD_VERBS, WRITABLE_BY_KIND
-
-        known = set().union(*WRITABLE_BY_KIND.values())
-        for field, verb in value.items():
-            if field not in known:
-                raise ValueError(
-                    f"operations.field_verbs names {field!r}, which is not a "
-                    f"field this service writes; known fields are "
-                    f"{', '.join(sorted(known))}"
-                )
-            if verb not in FIELD_VERBS:
-                raise ValueError(
-                    f"operations.field_verbs[{field!r}] is {verb!r}; the verbs "
-                    f"are {', '.join(sorted(FIELD_VERBS))}"
-                )
-            # Row 87's STOP-and-file: ``remove`` on the list-shaped ``genres``
-            # has no defined semantics (a verb-as-source with no items
-            # supplied) -- refused here rather than accepted and silently
-            # doing nothing. lock/unlock on genres are unaffected.
-            if field == "genres" and verb == "remove":
-                raise ValueError(
-                    "operations.field_verbs['genres'] cannot be 'remove': "
-                    "removing a list-shaped field has no defined semantics "
-                    "(row 87 STOP-and-file); 'lock' and 'unlock' are valid"
-                )
-        return value
+        return _validate_field_verbs(value)
 
     # Roadmap row 86. Off by default: the mode reads Plex and writes a tree,
     # and a deployment that has not provided the mount must get a refusal
@@ -1297,6 +1313,304 @@ class MaintenanceConfig(BaseModel):
         default=False,
         description="Ask Plex to optimize its database on a schedule.",
     )
+
+
+#: Roadmap row 92. Paths inside a ``libraries:`` block that are structurally
+#: global -- refused at load rather than accepted and silently ignored, which
+#: is the posture ``config/overrides.py``'s ``unknown_key_paths`` already
+#: takes for a typo. Each value says WHY, because "not overridable" without
+#: the why is a shrug.
+#:
+#: Keyed on the path INSIDE a library block, so one map serves the file loader
+#: and the config editor and neither one holds a library name.
+LIBRARY_OVERRIDE_EXCLUSIONS: dict[str, str] = {
+    "operations.imdb_refresh_enabled": (
+        "the IMDb auto-refresh loop is one process-wide loop, started once at "
+        "startup; it cannot be switched on or off underneath itself, per "
+        "library or at all"
+    ),
+    "operations.imdb_refresh_hours": (
+        "the IMDb auto-refresh loop captures one cadence when it starts, for "
+        "the whole process"
+    ),
+    "operations.imdb_miss_refresh_minutes": (
+        "the miss-triggered IMDb refresh is installed process-wide at startup; "
+        "gather_facts carries no client of its own to vary per library"
+    ),
+    "operations.tmdb_backoff_seconds": (
+        "one TMDb rate budget serves every library, and it captures its window "
+        "when the facts client is built"
+    ),
+    "operations.metadata_backup_enabled": (
+        "the metadata backup writes one file tree for the whole server"
+    ),
+    "operations.metadata_backup_root": (
+        "the metadata backup writes one file tree for the whole server"
+    ),
+    "maintenance.clean_bundles": (
+        "cleanBundles is a server-wide Plex call with no per-section form, so "
+        "a per-library value could only be ignored or applied everywhere"
+    ),
+    "maintenance.optimize": (
+        "optimize is a server-wide Plex call with no per-section form, so a "
+        "per-library value could only be ignored or applied everywhere"
+    ),
+    "badges.definitions": (
+        "a list replaces wholesale, so a per-library definitions list would "
+        "silently drop every global definition; a definition targets its own "
+        "libraries instead"
+    ),
+    "badges.definition_image_max_bytes": (
+        "a download safety bound rather than a preference"
+    ),
+}
+
+
+def library_override_refusals(document: dict) -> list[tuple[str, str]]:
+    """Every ``libraries:`` path in ``document`` that is structurally global.
+
+    Answers ``(dotted path, reason)`` pairs, dotted from the document ROOT so
+    the config editor can report each one on the row it sits on.
+
+    Public and shared by two callers, which is the point. ``Config``'s
+    before-validator below refuses these for the mounted YAML -- where
+    pydantic would otherwise drop them in silence, because the partial models
+    do not declare them -- and ``api/routes.py`` calls it ahead of
+    ``unknown_key_paths`` so the editor answers with the structural reason
+    rather than the true-but-useless "unknown setting". One walk, one
+    vocabulary, two entry points.
+
+    Sorted, so a document with several offenders reports them in a stable
+    order rather than a dict's.
+    """
+    libraries = document.get("libraries")
+    if not isinstance(libraries, dict):
+        return []
+    refusals: list[tuple[str, str]] = []
+    for library, block in libraries.items():
+        if not isinstance(block, dict):
+            continue
+        for section, settings in block.items():
+            if not isinstance(settings, dict):
+                continue
+            for name in settings:
+                reason = LIBRARY_OVERRIDE_EXCLUSIONS.get(f"{section}.{name}")
+                if reason is not None:
+                    refusals.append((f"libraries.{library}.{section}.{name}", reason))
+    return sorted(refusals)
+
+
+def _per_library(section: str, name: str) -> str:
+    """One override leaf's description: what setting it is, then the global
+    field's own sentence.
+
+    Composed rather than rewritten so the two can never drift: an operator
+    reading the per-library row and the global row is reading one description
+    of one setting, and a second hand-written copy is how they would stop
+    agreeing. Says nothing about WHEN a change applies -- ``frozen_paths``
+    owns that fact and the editor renders it separately.
+    """
+    source = {
+        "operations": OperationsConfig,
+        "badges": BadgesConfig,
+        "maintenance": MaintenanceConfig,
+    }[section]
+    return (
+        f"This library's value for {section}.{name}; unset inherits the "
+        f"global setting. " + (source.model_fields[name].description or "")
+    )
+
+
+class OperationsOverride(BaseModel):
+    """One library's metadata-operations settings (roadmap row 92).
+
+    Every field of ``OperationsConfig`` except the six that are structurally
+    global (``LIBRARY_OVERRIDE_EXCLUSIONS``), each optional so that ABSENT
+    means "inherit the global" and a stated value means "this library instead".
+    The distinction is pydantic's ``model_fields_set``, which is why
+    ``config/loader.py``'s ``config_for_library`` dumps with
+    ``exclude_unset=True``: without it every unstated field would arrive as an
+    explicit ``None`` and blank the global.
+
+    Kometa's own per-library merge is this, field by field
+    (``modules/config.py``'s ``check_for_attribute``), with ONE exception this
+    codebase deliberately does not copy: it UNIONs ``ignore_ids`` and
+    ``ignore_imdb_ids`` with the global rather than replacing them. Here a
+    list replaces, because every list in this config is a complete statement
+    of intent (``config/overrides.py``'s ``merge_overrides``) -- an operator
+    removing an id from a library's list must get a shorter list back, not
+    the same one. One merge rule in this codebase is worth more than byte
+    parity with Kometa on two keys.
+
+    A dict-valued leaf (``genre_mapper``, ``content_rating_mapper``,
+    ``field_verbs``) merges key by key rather than replacing, because that is
+    what ``_merge`` does to a nested mapping -- and it is already what the
+    stored overrides document does to those same three settings, so the two
+    layers agree.
+    """
+
+    enabled: bool | None = Field(
+        default=None, description=_per_library("operations", "enabled"))
+    write_to_plex: bool | None = Field(
+        default=None, description=_per_library("operations", "write_to_plex"))
+    ignore_ids: list[str] | None = Field(
+        default=None, description=_per_library("operations", "ignore_ids"))
+    ignore_imdb_ids: list[str] | None = Field(
+        default=None, description=_per_library("operations", "ignore_imdb_ids"))
+    ignore_labels: list[str] | None = Field(
+        default=None, description=_per_library("operations", "ignore_labels"))
+    user_rating_source: Literal["imdb", "tmdb"] | None = Field(
+        default=None, description=_per_library("operations", "user_rating_source"))
+    original_title_source: Literal["tmdb"] | None = Field(
+        default=None, description=_per_library("operations", "original_title_source"))
+    genre_mapper: dict[str, str] | None = Field(
+        default=None, description=_per_library("operations", "genre_mapper"))
+    content_rating_mapper: dict[str, str] | None = Field(
+        default=None, description=_per_library("operations", "content_rating_mapper"))
+    field_verbs: dict[str, str] | None = Field(
+        default=None, description=_per_library("operations", "field_verbs"))
+    lock_apply: bool | None = Field(
+        default=None, description=_per_library("operations", "lock_apply"))
+    unlock_apply: bool | None = Field(
+        default=None, description=_per_library("operations", "unlock_apply"))
+    remove_apply: bool | None = Field(
+        default=None, description=_per_library("operations", "remove_apply"))
+    item_overrides_enabled: bool | None = Field(
+        default=None, description=_per_library("operations", "item_overrides_enabled"))
+    genres_source: Literal["tmdb", "tvdb"] | None = Field(
+        default=None, description=_per_library("operations", "genres_source"))
+    studio_source: Literal["tmdb", "tvdb"] | None = Field(
+        default=None, description=_per_library("operations", "studio_source"))
+    originally_available_source: Literal["tmdb", "tvdb"] | None = Field(
+        default=None,
+        description=_per_library("operations", "originally_available_source"))
+    parental_labels_enabled: bool | None = Field(
+        default=None, description=_per_library("operations", "parental_labels_enabled"))
+    parental_labels_apply: bool | None = Field(
+        default=None, description=_per_library("operations", "parental_labels_apply"))
+    parental_labels_include_none: bool | None = Field(
+        default=None,
+        description=_per_library("operations", "parental_labels_include_none"))
+
+
+class BadgesOverride(BaseModel):
+    """One library's badge settings (roadmap row 92).
+
+    ``definitions`` and ``definition_image_max_bytes`` are excluded and say
+    why in ``LIBRARY_OVERRIDE_EXCLUSIONS``. ``families`` IS here and is a
+    list, so it replaces the global list wholesale -- a library naming no
+    family draws none, which is the statement an empty list makes everywhere
+    else in this config.
+    """
+
+    enabled: bool | None = Field(
+        default=None, description=_per_library("badges", "enabled"))
+    upload_to_plex: bool | None = Field(
+        default=None, description=_per_library("badges", "upload_to_plex"))
+    lock_artwork: bool | None = Field(
+        default=None, description=_per_library("badges", "lock_artwork"))
+    apply_overlay_label: bool | None = Field(
+        default=None, description=_per_library("badges", "apply_overlay_label"))
+    adopt_from_plex: bool | None = Field(
+        default=None, description=_per_library("badges", "adopt_from_plex"))
+    families: list[str] | None = Field(
+        default=None, description=_per_library("badges", "families"))
+
+
+class MaintenanceOverride(BaseModel):
+    """One library's Plex housekeeping (roadmap row 92).
+
+    ONE field, and that is a fact about plexapi rather than a retreat.
+    ``cleanBundles`` and ``optimize`` exist on ``Library`` only -- server-wide
+    calls with no per-section form -- so a per-library value for either could
+    be honoured in exactly two ways and both are wrong: ignore it, or run the
+    server-wide call and apply one library's opinion to every library.
+    ``emptyTrash`` exists on ``LibrarySection`` as well, so it is the one that
+    can be scoped honestly, and ``scheduler/jobs.py``'s maintenance job scopes
+    it. The other two are refused with that reason recorded.
+    """
+
+    empty_trash: bool | None = Field(
+        default=None, description=_per_library("maintenance", "empty_trash"))
+
+
+class LibraryOverride(BaseModel):
+    """What one Plex library does differently (roadmap row 92).
+
+    Three sections and no more. ``artwork`` is deliberately absent and the
+    absence is load-bearing: ``config/loader.py``'s ``render_version`` hashes
+    ``config.artwork`` WHOLESALE into the one ``config.version`` every stored
+    fingerprint carries, so a per-library artwork setting inside that payload
+    would strand ~16,000 fingerprints across libraries it never named, and one
+    outside it would silently never invalidate anything. The correct shape is
+    roadmap row 111's ``render_version_for(art_kind, config)`` taking a third
+    ``library`` argument, so that a library's artwork projection moves that
+    library's four versions and nobody else's. Filed, not forgotten.
+
+    ``collections`` and ``playlists`` are absent too, and for a duller reason:
+    a definition already targets its own libraries
+    (``CollectionDefinition.libraries``, ``PlaylistDefinition.libraries``), so
+    a second per-library dimension over the same thing would be two ways to
+    say one sentence.
+    """
+
+    operations: OperationsOverride | None = Field(
+        default=None,
+        description=(
+            "The metadata-operations settings this library uses instead of "
+            "the global ones. Absent settings are the global ones."
+        ),
+    )
+    badges: BadgesOverride | None = Field(
+        default=None,
+        description=(
+            "The badge settings this library uses instead of the global ones. "
+            "Absent settings are the global ones."
+        ),
+    )
+    maintenance: MaintenanceOverride | None = Field(
+        default=None,
+        description=(
+            "The Plex housekeeping this library asks for instead of the "
+            "global setting. Absent settings are the global ones."
+        ),
+    )
+
+
+def _merged_sections(config, override: LibraryOverride, merge) -> dict[str, BaseModel]:
+    """One library's whitelisted sections, its stated leaves merged over the
+    global ones.
+
+    Returns only the sections the override actually names something in, so a
+    caller can hand the result straight to ``model_copy(update=...)`` and
+    every unnamed section is carried through by identity.
+
+    ``merge`` is passed in rather than imported, because the one merge this
+    codebase has lives in ``config/overrides.py``, which imports THIS module.
+    Taking it as an argument keeps the dependency pointing one way and keeps
+    the rule in one place: nested mappings merge key by key, everything else
+    -- scalars and lists alike -- is replaced.
+
+    Each section is rebuilt through its REAL model, not patched onto the
+    existing instance, so every cross-field rule that model carries
+    (``operations.field_verbs``' vocabulary, ``badges.families``' closed set)
+    runs against the merged result. That is why the partial models above
+    re-state none of them.
+    """
+    sections: dict[str, BaseModel] = {}
+    for name, model in (
+        ("operations", OperationsConfig),
+        ("badges", BadgesConfig),
+        ("maintenance", MaintenanceConfig),
+    ):
+        partial = getattr(override, name)
+        if partial is None:
+            continue
+        delta = partial.model_dump(exclude_unset=True)
+        if not delta:
+            continue
+        sections[name] = model(**merge(getattr(config, name).model_dump(), delta))
+    return sections
 
 
 class ScheduleGate(BaseModel):
@@ -3441,6 +3755,15 @@ class Config(BaseModel):
         default_factory=MaintenanceConfig,
         description="Plex's own housekeeping operations -- clean bundles, empty trash, optimize.",
     )
+    libraries: dict[str, LibraryOverride] = Field(
+        default_factory=dict,
+        description=(
+            "Per-library overrides, keyed by Plex library name: the metadata "
+            "operations, badge and maintenance settings that library uses "
+            "instead of the global ones. A setting absent from a library's "
+            "block is the global setting."
+        ),
+    )
     artwork_modes: ArtworkModesConfig = Field(
         default_factory=ArtworkModesConfig,
         description=(
@@ -3512,6 +3835,37 @@ class Config(BaseModel):
             )
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _libraries_refuse_structurally_global_keys(cls, data):
+        """A ``libraries:`` block naming a structurally global setting is a
+        refusal, not a silent drop.
+
+        ``mode="before"`` is required to see them at all: the partial models
+        do not declare these fields, so by ``mode="after"`` pydantic has
+        already discarded them and the operator would have a line in their
+        YAML that documents a choice this service never makes -- the exact
+        failure ``tests/test_example_config_matches_schema.py`` exists for,
+        arriving through a different door.
+
+        The message names the path INSIDE a library block and the reason,
+        both constants of this codebase, and never the library name the
+        operator typed. The document that failed is in the pod log, which is
+        where a config-load refusal is read.
+        """
+        if not isinstance(data, dict):
+            return data
+        refusals = library_override_refusals(data)
+        if not refusals:
+            return data
+        inside = sorted({
+            (path.split(".", 2)[2], reason) for path, reason in refusals
+        })
+        raise ValueError(
+            "libraries: %d setting(s) cannot be overridden per library -- %s"
+            % (len(refusals), "; ".join(f"{path} ({why})" for path, why in inside))
+        )
+
     @model_validator(mode="after")
     def _playlist_libraries_must_be_configured(self) -> "Config":
         """Every library a playlist scopes itself to is one this config knows.
@@ -3551,4 +3905,57 @@ class Config(BaseModel):
                        ", ".join(repr(n) for n in unknown),
                        ", ".join(repr(n) for n in sorted(known)))
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _library_names_must_be_configured(self) -> "Config":
+        """Every key of ``libraries:`` is a library this config knows.
+
+        Cross-section, so it cannot live on the sub-model: the names come
+        from ``collections.libraries``. Refused rather than ignored, and the
+        limit is the one ``_playlist_libraries_must_be_configured`` records
+        for itself -- this document holds library NAMES and nothing that says
+        whether a name is real, so a name absent from ``collections.libraries``
+        cannot be told apart from a typo. A typo'd block would otherwise sit
+        there overriding nothing, forever, looking like it worked.
+
+        A COUNT rather than the names: the served refusal must not echo what
+        the operator typed, and the document is in the pod log for whoever
+        needs to see which key it was.
+        """
+        unknown = [
+            name for name in self.libraries
+            if name not in self.collections.libraries
+        ]
+        if unknown:
+            raise ValueError(
+                "libraries: %d key(s) name a library that is not in "
+                "collections.libraries; every key must be one of the "
+                "configured library names" % len(unknown)
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _every_library_block_validates(self) -> "Config":
+        """Every library's merged sections are built once, here.
+
+        So a bad value inside a ``libraries:`` block is a load-time refusal
+        rather than an exception in the render loop an hour later. The merged
+        models carry every cross-field rule the global sections have --
+        ``operations.field_verbs``' vocabulary, ``badges.families``' closed
+        set -- so nothing here re-states one and nothing can drift out of step
+        with one. The result is discarded: this validator exists for its
+        exceptions.
+
+        The import is local for the reason ``BadgesConfig._check_families``'
+        is: ``config/overrides.py`` imports this module, so a module-level
+        import here would be a cycle.
+        """
+        if not self.libraries:
+            return self
+
+        from autoposter.config.overrides import _merge
+
+        for override in self.libraries.values():
+            _merged_sections(self, override, _merge)
         return self

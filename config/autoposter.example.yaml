@@ -465,6 +465,49 @@ maintenance:
   empty_trash: false
   optimize: false
 
+# Roadmap row 92. Per-library overrides: a Plex library name, then only the
+# settings that library does differently. Anything absent is the global value
+# above -- so this block stays exactly as long as the differences are, and an
+# empty block is the same as no block.
+#
+# Every key must be one of `collections.libraries` above; a name that is not
+# is refused at load, because this file holds library NAMES and nothing that
+# says whether a name is real, so a typo cannot be told apart from a rename.
+#
+# Three sections are overridable, and each excludes what cannot be scoped:
+#   operations  -- everything except the four IMDb/TMDb loop settings (one
+#                  process-wide object each) and the two metadata_backup
+#                  paths (one file tree for the whole server)
+#   badges      -- everything except `definitions` (a list replaces wholesale,
+#                  so a per-library list would silently drop every global
+#                  definition -- a definition targets its own libraries
+#                  instead) and `definition_image_max_bytes` (a safety bound)
+#   maintenance -- `empty_trash` only: Plex's cleanBundles and optimize are
+#                  server-wide calls with no per-section form
+# A setting named here that is not overridable is refused with that reason,
+# never dropped in silence.
+#
+# `artwork` is deliberately NOT here. `render_version` hashes that section
+# wholesale into the one version every stored fingerprint carries, so a
+# per-library artwork setting would either strand every library's renders or
+# silently never invalidate anything. It waits for roadmap row 111's
+# `render_version_for` to grow a library argument.
+#
+# Merge rule: leaf by leaf. A stated leaf wins for that library; an absent one
+# inherits. Lists replace wholesale (`ignore_labels: []` means none, not "the
+# global ones"); mappings like `genre_mapper` merge key by key, exactly as the
+# stored overrides document already merges them.
+libraries: {}
+#  TV Shows:
+#    operations:
+#      write_to_plex: false
+#      ignore_labels:
+#        - skip_autoposter
+#    badges:
+#      upload_to_plex: false
+#    maintenance:
+#      empty_trash: true
+
 artwork_modes:
   # Operator-triggered bulk operations: backup, restore, poster reset,
   # remove-overlays revert, logo updater/revert. Every Plex-writing mode is dry
