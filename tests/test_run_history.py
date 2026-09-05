@@ -99,6 +99,25 @@ async def test_retention_counts_each_name_independently(session):
     assert [row.id for row in await _rows(session, name="quiet")] == [quiet_id]
 
 
+async def test_opening_a_run_closes_its_orphaned_predecessor_as_interrupted(session):
+    """Important 2: a pod SIGKILL or crash between a prior open and its own
+    close leaves that row `running` forever with nothing else to reconcile
+    it. The next pass of the SAME name is the first thing to notice, and
+    closes it as `interrupted` -- in the same transaction as its own open."""
+    first_id = await open_run(session, kind="scheduled", name="plex_prune")
+    await session.commit()
+    # No close_run call for first_id -- as if the process died mid-run.
+
+    second_id = await open_run(session, kind="scheduled", name="plex_prune")
+    await session.commit()
+
+    rows = {row.id: row for row in await _rows(session, name="plex_prune")}
+    assert rows[first_id].status == "interrupted"
+    assert rows[first_id].finished_at is not None
+    assert rows[second_id].status == "running"
+    assert rows[second_id].finished_at is None
+
+
 async def test_retention_deletes_nothing_below_the_threshold(session):
     """The pass runs weekly on a table that is usually well inside the cap;
     the statement must be a no-op then, not a rewrite of every row."""

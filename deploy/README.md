@@ -1367,9 +1367,11 @@ part of the database:
   has at least 20 directories, below which a share means nothing.
 
 A refusal is recorded in `scheduled_runs.last_detail` with the real numbers
-(`refused: 11900 of 12000 asset directory(ies) look orphaned …`). If that
-count is genuinely correct, raise the cap deliberately for one run rather
-than leaving it raised.
+(`refused: 11900 of 12000 asset directory(ies) look orphaned …`), which may
+carry a trailing `; trimmed N run history row(s)` (roadmap row 53's
+retention clause, which runs ahead of this refusal). If that count is
+genuinely correct, raise the cap deliberately for one run rather than
+leaving it raised.
 
 Nothing is ever deleted: orphans move to `backup_root` keeping their path
 relative to `assets_root`. If a destination already exists there from an

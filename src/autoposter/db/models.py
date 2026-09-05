@@ -966,9 +966,15 @@ class Run(Base):
     ``full_pass`` (one row per ``POST /api/full-pass``). ``name`` is the
     scheduled job's name, or the literal ``full_pass``; it is not unique and
     is not indexed -- the retention clause in ``scheduler/jobs.py``'s cleanup
-    pass keeps the newest ``RUN_HISTORY_KEEP`` rows per name, so this table is
-    bounded at roughly 5,500 rows and the only query worth an index is the
-    endpoint's ``ORDER BY started_at DESC``.
+    pass keeps the newest ``RUN_HISTORY_KEEP`` rows per recorded name. That
+    bound does NOT hold unconditionally (fix round 1, Critical): it holds
+    while ``scheduler.enabled``, because every job that records a row here
+    other than ``stale_job_reclaim`` is registered behind that same switch
+    alongside the trim. ``stale_job_reclaim`` -- the one job registered
+    unconditionally, five-minutely -- records no row at all
+    (``scheduler/run_history.py``'s ``UNRECORDED``), so a disabled scheduler
+    never leaves this table growing untrimmed. The only query worth an index
+    is the endpoint's ``ORDER BY started_at DESC``.
 
     ``status`` is ``running`` until something closes the row, then ``ok`` or
     ``failed`` for a scheduled job (copied from ``_maybe_run``'s own status),

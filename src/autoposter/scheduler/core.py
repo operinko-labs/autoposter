@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.db.models import ScheduledRun
 from autoposter.notify.dispatch import NullNotifier
-from autoposter.scheduler.run_history import close_run, open_run
+from autoposter.scheduler.run_history import UNRECORDED, close_run, open_run
 
 logger = logging.getLogger(__name__)
 
@@ -175,13 +175,25 @@ class Scheduler:
         # history is bookkeeping, and failing to record it must never stop the
         # pass it would have recorded. `run_id` stays None in that case and
         # the completion write below simply has nothing to close.
+        #
+        # `UNRECORDED` is consulted here, before `open_run` is even called
+        # (fix round 1, Critical): `stale_job_reclaim` is registered
+        # unconditionally and runs every five minutes regardless of
+        # `scheduler.enabled`, while the retention trim only ever runs from
+        # inside the (conditionally-registered) cleanup pass -- recording
+        # this job's passes would grow the table forever with nothing ever
+        # trimming it. `run_id` stays None for an unrecorded name, which
+        # already skips the `close_run` call below.
         run_id: int | None = None
-        try:
-            async with self._session_factory() as session:
-                run_id = await open_run(session, kind="scheduled", name=job.name)
-                await session.commit()
-        except Exception:
-            logger.warning("scheduler: could not open a run row for %s", job.name, exc_info=True)
+        if job.name not in UNRECORDED:
+            try:
+                async with self._session_factory() as session:
+                    run_id = await open_run(session, kind="scheduled", name=job.name)
+                    await session.commit()
+            except Exception:
+                logger.warning(
+                    "scheduler: could not open a run row for %s", job.name, exc_info=True
+                )
 
         # Roadmap row 19's run_start, from the same after-the-commit position
         # the completion send uses: the claim above is committed, so the

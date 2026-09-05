@@ -780,6 +780,32 @@ async def test_a_job_that_is_not_due_records_no_run_row(session_factory, session
     assert len(await _runs(session)) == 1
 
 
+async def test_stale_job_reclaim_writes_no_run_history_row(session_factory, session):
+    """Critical fix: `stale_job_reclaim` is registered unconditionally
+    (app.py:366) and runs every five minutes regardless of
+    `scheduler.enabled`, while the retention trim only ever runs from inside
+    the cleanup pass, which IS gated on that switch (app.py:383). Recording
+    this job's passes would grow `runs` forever with nothing ever trimming
+    it -- so it must write no row at all (`run_history.UNRECORDED`)."""
+    scheduler = Scheduler(session_factory, [], poll_seconds=1)
+    await scheduler._maybe_run(_job(name="stale_job_reclaim"))
+
+    assert await _runs(session) == []
+
+
+async def test_a_differently_named_pass_still_writes_a_run_history_row(
+    session_factory, session
+):
+    """The other half of the same guarantee: only the one allowlisted name is
+    excluded, not scheduled passes in general."""
+    scheduler = Scheduler(session_factory, [], poll_seconds=1)
+    await scheduler._maybe_run(_job(name="plex_prune"))
+
+    rows = await _runs(session)
+    assert len(rows) == 1
+    assert rows[0].name == "plex_prune"
+
+
 async def test_the_counts_stay_null_for_a_scheduled_run(session_factory, session):
     """Window attribution is honest only where the window IS the run's own
     work. A scheduled job's window overlaps whatever the worker pool happened

@@ -40,8 +40,14 @@ def upgrade() -> None:
     #
     # One index, on `started_at`, for the endpoint's ORDER BY ... DESC LIMIT.
     # `name` and `kind` are deliberately unindexed: the cleanup pass's
-    # retention clause holds this table to 500 rows per name (~5.5k rows in
-    # all), which is not a size that pays for two more indexes to maintain.
+    # retention clause holds each recorded name to 500 rows, which is not a
+    # size that pays for two more indexes to maintain. That bound is NOT
+    # unconditional (fix round 1, Critical): it holds while
+    # `scheduler.enabled`, because every recording job is registered behind
+    # that switch alongside the trim, except `stale_job_reclaim` -- the one
+    # job registered unconditionally -- which records no history row at all
+    # (see `scheduler/run_history.py`'s `UNRECORDED`), so the switch being
+    # off never leaves this table growing untrimmed.
     op.create_table(
         'runs',
         sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),

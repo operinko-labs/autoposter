@@ -895,19 +895,26 @@ def make_cleanup_job(holder: ConfigHolder) -> Job:
     scheduled job of its own because a fifth job would need a name, a cadence
     setting, an allowlist entry and a dashboard row to do one DELETE a week --
     and because this pass is already the tree's housekeeping pass. The trim
-    runs FIRST, ahead of every refusal below: those refusals are about the
-    operator's files and can legitimately hold for weeks, while retention is
-    what keeps an unbounded table bounded and must not be hostage to an NFS
-    mount.
+    runs FIRST, ahead of every refusal below, and commits in its OWN
+    transaction (fix round 1, Important 1) rather than riding the rest of the
+    pass's session: the orphan walk below is documented as "minutes of wall
+    time" against an NFS mount, and a DELETE left uncommitted across it would
+    hold a write XID (pinning autovacuum's cleanup horizon and `runs` row
+    locks) for that whole span, and would be rolled back with everything else
+    if the walk or the move ever raises. Those refusals are about the
+    operator's files and can legitimately hold for weeks; retention is what
+    keeps an unbounded table bounded and must not be hostage to an NFS mount
+    OR to a later raise in this same pass.
     """
 
     async def run(session: AsyncSession) -> str:
         # Row 53's retention clause. First, ahead of every refusal below, and
-        # committed with whatever this pass does next -- see the docstring.
+        # committed IMMEDIATELY in its own transaction -- see the docstring.
         # RUN_HISTORY_KEEP is read as a module-level name in THIS module (the
         # `from ... import` above), which is what the test's monkeypatch of
         # `autoposter.scheduler.jobs.RUN_HISTORY_KEEP` reaches.
         trimmed = await trim_run_history(session, RUN_HISTORY_KEEP)
+        await session.commit()
         trim_note = f"; trimmed {trimmed} run history row(s)" if trimmed else ""
 
         config = holder.current
