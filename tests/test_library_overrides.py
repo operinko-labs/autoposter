@@ -57,6 +57,10 @@ def test_render_version_hashes_exactly_six_named_inputs(config_factory):
     assert '"manual_assets_root": str(config.manual_assets_root)' in source
     assert '"fonts_root": str(config.fonts_root)' in source
     assert '"overlays_root": str(config.overlays_root)' in source
+    # A widened payload -- a 7th key added alongside the six above -- would
+    # still satisfy every assert above, since none of them is removed by an
+    # addition. The literal pin is what a widening cannot survive.
+    assert render_version(config) == "386ea7cf4844f52e"
     # And the value is stable across two calls on one config, so the
     # assertions above are about the thing the rest of this row leans on.
     assert render_version(config) == render_version(config)
@@ -79,10 +83,15 @@ def test_no_per_kind_version_reads_anything_outside_artwork_and_the_roots(
             f"{key} is neither an artwork setting nor a root"
         )
 
+    # Pinned literally, not just shape-checked: a widened per-kind payload
+    # would still be a 16-char string, so only the exact value catches it.
     versions = {kind: render_version_for(kind, config) for kind in RENDER_ART_KINDS}
-    assert len(versions) == 4
-    for kind, value in versions.items():
-        assert isinstance(value, str) and len(value) == 16, (kind, value)
+    assert versions == {
+        "poster": "4ac64b5874ce0ff3",
+        "background": "9ae9ab3b95ae68ec",
+        "title_card": "31f00cfe0ef31fba",
+        "season_poster": "14f86f656d6fa935",
+    }
 
 
 def test_every_fingerprint_call_site_passes_the_config_version():
